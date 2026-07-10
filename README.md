@@ -1,0 +1,84 @@
+# Aliran
+
+**Aliran** (Malay/Indonesian: *flow / stream / current*) — a self-hostable,
+open-source, **peer-to-peer OTT streaming platform** built on the
+[Holepunch/Pear](https://pears.com) stack. Streams flow peer to peer: viewers
+re-seed each other, so there are **no central media servers** and near-zero
+bandwidth cost.
+
+> Status: **early scaffold**. This repo currently contains project structure,
+> configuration, and documented stubs — not a finished build. See
+> [`docs/`](docs/) and each package's `README.md` for what to implement next.
+
+## What it is
+
+Three cooperating peer-to-peer components (all serverless in transport — they find
+each other over the Hyperswarm DHT by public key):
+
+| Component | Runs on | Role |
+|-----------|---------|------|
+| **[`panel/`](panel/)** | Linux / desktop | Origin of truth: signed account DB + stream catalog, OPRF login (brute-force resistant), entitlement tokens |
+| **[`broadcaster/`](broadcaster/)** | Linux (headless) | Ingests the original stream (OBS/RTSP/HLS/file) → encrypted P2P feed, seeds the swarm |
+| **[`client/`](client/)** | Android (phone + TV) | The app/APK: logs in, browses an OTT UI, plays the stream, **and re-seeds to other viewers** |
+
+```
+ ORIGIN (OBS/RTSP/HLS)      Hyperswarm DHT (find peers by public key)
+        │                ┌───────────────┬───────────────────────────┐
+        ▼                │               │                           │
+  broadcaster ──encrypted feed──►  client (APK) ◄──re-seed──► client (APK)
+        │                                ▲
+        └── registers stream ──►  panel  │  login + catalog + entitlement
+                                  (accounts, catalog, OPRF)
+```
+
+## Why P2P / why this design
+
+- **No infrastructure cost at scale** — clients distribute to each other.
+- **Runs behind a firewall** — the panel needs no public IP or open ports (DHT hole-punching); optional relay-only mode hides its origin IP.
+- **Self-hostable & brandable** — every operator generates their own keys and config; nothing is hardcoded to a single deployment.
+- **Security by secrets, not obscurity** — public code, per-deployment keys. See [`docs/security-model.md`](docs/security-model.md).
+
+## Quickstart (once implemented)
+
+```bash
+# 1. Panel (origin of truth)
+cd panel && cp .env.example .env && npm install
+node src/admin-cli.js init            # generate panel + OPRF keys
+node src/admin-cli.js create-user alice
+node src/index.js                     # start the panel node
+
+# 2. Broadcaster (content origin)
+cd ../broadcaster && cp .env.example .env && npm install
+node src/index.js                     # ingest -> encrypted Hyperdrive -> swarm
+
+# 3. Client (Android app) — see client/README.md for the native build
+```
+
+## Features
+
+- Live P2P streaming (HLS-over-Hyperdrive), viewers re-seed each other
+- Phone **and** Android TV from one codebase
+- Username/password login validated against a **panel-signed** P2P database
+- Brute-force resistance (OPRF + throttling), device limits, long-TTL sessions
+- OTT-style GUI: hero, rails, LIVE badges, D-pad navigation on TV
+- **Optional** modules: commercial multi-DRM (BuyDRM/KeyOS, EZDRM, Axinom…), geo-locking, VOD
+
+## Documentation
+
+Start at [`docs/README.md`](docs/README.md). Highlights:
+[Architecture](docs/architecture.md) ·
+[Security model](docs/security-model.md) ·
+[Operator guide](docs/operator-guide.md) ·
+[Configuration](docs/configuration.md).
+
+## ⚠️ Content-rights disclaimer
+
+Aliran is neutral infrastructure. **Operators are solely responsible** for holding
+the rights to any content they stream and for complying with DRM licensing and
+regional/legal requirements in the territories they serve. See
+[`docs/legal-compliance.md`](docs/legal-compliance.md).
+
+## License
+
+[MIT](LICENSE) — see the file for details. (Chosen for maximum adoption; change if
+you prefer AGPL-3.0 to keep hosted forks open.)

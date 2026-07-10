@@ -1,0 +1,14 @@
+{
+  "//": "Aliran service descriptor. Either bake this into the build (build-time config) or deliver it to the app at runtime via a QR/deep link so one generic APK can connect to any operator's panel.",
+  "panelPubKey": "REPLACE_WITH_YOUR_PANEL_PUBLIC_KEY_HEX",
+  "name": "My Aliran Service",
+  "branding": {
+    "logo": "assets/logo.png",
+    "colors": {
+      "primary": "#0EA5E9",
+      "background": "#0B1220",
+      "accent": "#22D3EE"
+    }
+  },
+  "bootstrap": []
+}

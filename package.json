@@ -1,0 +1,29 @@
+{
+  "name": "aliran",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Self-hostable peer-to-peer OTT streaming platform on the Holepunch/Pear stack",
+  "license": "MIT",
+  "workspaces": [
+    "panel",
+    "broadcaster"
+  ],
+  "scripts": {
+    "panel": "npm --workspace panel start",
+    "broadcaster": "npm --workspace broadcaster start"
+  },
+  "keywords": [
+    "p2p",
+    "streaming",
+    "ott",
+    "holepunch",
+    "pear",
+    "hyperswarm",
+    "hyperdrive",
+    "webrtc-alternative"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "comment": "client/ is a separate React Native (react-native-tvos) project and is intentionally NOT an npm workspace here — it has its own toolchain. See client/README.md."
+}

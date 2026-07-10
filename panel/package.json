@@ -1,0 +1,25 @@
+{
+  "name": "@aliran/panel",
+  "version": "0.0.1",
+  "description": "Aliran panel — P2P origin of truth: signed account DB + catalog + OPRF login",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "aliran-panel": "./src/admin-cli.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "cli": "node src/admin-cli.js"
+  },
+  "dependencies": {
+    "b4a": "^1.6.6",
+    "corestore": "^6.18.0",
+    "hyperbee": "^2.20.0",
+    "hyperdrive": "^11.13.0",
+    "hyperswarm": "^4.8.0",
+    "hypercore-crypto": "^3.4.0",
+    "protomux-rpc": "^1.5.0",
+    "sodium-native": "^4.3.0"
+  },
+  "comment": "Dependency versions are indicative — run `npm install` and pin actual resolved versions. OPRF uses sodium-native's ristretto255 scalar ops; prefer a vetted OPAQUE/OPRF lib over hand-rolled math for production."
+}

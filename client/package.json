@@ -1,0 +1,25 @@
+{
+  "name": "@aliran/client",
+  "version": "0.0.1",
+  "description": "Aliran client — React Native (phone + Android TV) P2P OTT app",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "bundle-backend": "bare-pack --target android --linked --out backend/app.bundle backend/backend.mjs"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-native": "npm:react-native-tvos@latest",
+    "react-native-bare-kit": "^0.5.0",
+    "react-native-video": "^6.19.0",
+    "@react-navigation/native": "^7.0.0",
+    "@react-navigation/native-stack": "^7.0.0",
+    "b4a": "^1.6.6"
+  },
+  "devDependencies": {
+    "bare-pack": "^1.7.0"
+  },
+  "comment": "This is a source skeleton. Generate the native project with the react-native-tvos CLI, then copy src/, backend/, and config/ in. Versions are indicative — see client/README.md and docs/client-build.md. react-native-bare-kit needs a real native build (NOT Expo Go)."
+}

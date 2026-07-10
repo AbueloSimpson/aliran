@@ -1,0 +1,69 @@
+// Login screen. Username + password -> backend OPRF login. No plaintext leaves the
+// device. On success the backend seals a session and returns the allowed stream list.
+import React, { useEffect, useState } from 'react'
+import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native'
+import type { NativeStackScreenProps } from '@react-navigation/native-stack'
+import type { RootStackParamList } from '../App'
+import { backend } from '../worklet'
+import { theme } from '../theme'
+
+type Props = NativeStackScreenProps<RootStackParamList, 'Login'> & { backendReady: boolean }
+
+export function LoginScreen ({ navigation, backendReady }: Props) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    return backend.onMessage((m) => {
+      if (m.type === 'streams') { setBusy(false); navigation.replace('Home') }
+      if (m.type === 'login-error') { setBusy(false); setError(m.message) }
+    })
+  }, [navigation])
+
+  const onSubmit = () => {
+    setError(null); setBusy(true)
+    backend.login(username, password)
+  }
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Aliran</Text>
+      <TextInput
+        style={styles.input}
+        placeholder="Username"
+        placeholderTextColor={theme.colors.textDim}
+        autoCapitalize="none"
+        value={username}
+        onChangeText={setUsername}
+      />
+      <TextInput
+        style={styles.input}
+        placeholder="Password"
+        placeholderTextColor={theme.colors.textDim}
+        secureTextEntry
+        value={password}
+        onChangeText={setPassword}
+      />
+      {error && <Text style={styles.error}>{error}</Text>}
+      <Pressable
+        style={styles.button}
+        disabled={busy || !backendReady}
+        hasTVPreferredFocus
+        onPress={onSubmit}
+      >
+        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{backendReady ? 'Sign in' : 'Connecting…'}</Text>}
+      </Pressable>
+    </View>
+  )
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.colors.background, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  title: { color: theme.colors.text, fontSize: theme.isTV ? 56 : 40, fontWeight: '800', marginBottom: 32 },
+  input: { width: theme.isTV ? 480 : 300, backgroundColor: theme.colors.surface, color: theme.colors.text, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 14, fontSize: 18 },
+  button: { marginTop: 8, backgroundColor: theme.colors.primary, borderRadius: 10, paddingHorizontal: 32, paddingVertical: 14, minWidth: 200, alignItems: 'center' },
+  buttonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  error: { color: theme.colors.live, marginBottom: 10 }
+})
