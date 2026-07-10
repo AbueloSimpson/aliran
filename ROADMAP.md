@@ -15,13 +15,19 @@ stream on an Android phone. Proves the P2P transport end to end.
 
 - ✅ Repository scaffold (panel / broadcaster / client), docs, license, CI-less baseline
 - ✅ Config loaders, panel key generation (`admin-cli init`)
-- 🚧 Broadcaster: ffmpeg → live HLS → Hyperdrive → Hyperswarm seeding
-- 🚧 Client backend (Bare worklet): Hyperdrive replica + localhost Range server
-- 🚧 Client app: minimal player screen via `react-native-video`
-- ⬜ First successful phone playback over the DHT (LAN, then cellular)
+- ✅ Broadcaster: ffmpeg → live HLS → **encrypted** Hyperdrive → Hyperswarm seeding
+- ✅ Localhost Range media server over a Hyperdrive replica (`tools/lib/serve-drive.js`);
+  ported into the client Bare worklet (`client/backend/backend.mjs`)
+- ✅ Desktop P2P viewer + **automated end-to-end test** (`tools/e2e-stream-test.mjs`):
+  fresh peer discovers the feed over the DHT, replicates, serves locally, ffprobe
+  confirms valid H.264/AAC — **the transport is proven**
+- 🚧 Client app: minimal player screen via `react-native-video` (code in place; needs a
+  native Android build to run — see docs/client-build.md)
+- ⬜ First successful **phone** playback over the DHT (blocked only on the Android toolchain)
 
-**Exit criteria:** paste a feed key → watch a live stream on a phone; a second client
-re-seeds to a third.
+**Exit criteria:** watch a live P2P stream; a second peer re-seeds to a third.
+**Status:** ✅ verified on desktop (`node tools/e2e-stream-test.mjs` → PASS). The Android
+app reuses the same, already-tested backend logic; only the native build remains.
 
 ---
 

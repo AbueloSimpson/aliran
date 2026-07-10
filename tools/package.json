@@ -1,0 +1,20 @@
+{
+  "name": "@aliran/tools",
+  "version": "0.0.1",
+  "description": "Aliran developer tools — desktop P2P viewer / test harness",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "aliran-viewer": "./viewer.js"
+  },
+  "scripts": {
+    "viewer": "node viewer.js"
+  },
+  "dependencies": {
+    "b4a": "^1.6.6",
+    "corestore": "^6.18.0",
+    "hyperdrive": "^11.13.0",
+    "hyperswarm": "^4.8.0"
+  },
+  "comment": "The viewer replicates a feed and serves it on localhost — the reference implementation the client's Bare worklet mirrors. Lets you test the P2P path without an Android build."
+}

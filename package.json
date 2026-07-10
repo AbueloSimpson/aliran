@@ -6,11 +6,14 @@
   "license": "MIT",
   "workspaces": [
     "panel",
-    "broadcaster"
+    "broadcaster",
+    "tools"
   ],
   "scripts": {
     "panel": "npm --workspace panel start",
-    "broadcaster": "npm --workspace broadcaster start"
+    "broadcaster": "npm --workspace broadcaster start",
+    "viewer": "npm --workspace tools run viewer --",
+    "test:e2e": "node tools/e2e-stream-test.mjs"
   },
   "keywords": [
     "p2p",

@@ -16,8 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Material site config (`mkdocs.yml`).
 - Repository metadata: README, LICENSE (MIT), SECURITY, CONTRIBUTING, Code of Conduct.
 
-### To do (see docs/ and per-package READMEs)
-- Panel: signed Hyperbee (accounts + catalog), OPRF login, sessions/devices, assets drive.
-- Broadcaster: ingest → ffmpeg/packager → encrypted Hyperdrive → Hyperswarm.
-- Client: Bare worklet backend + React Native (phone + TV) OTT UI.
-- Optional: multi-DRM, geo-locking, VOD.
+### v0.1 progress — "it streams" (verified)
+- Broadcaster: ffmpeg → live HLS → **encrypted** Hyperdrive → Hyperswarm seeding
+  (`broadcaster/src/hls.js`, `index.js`); persisted feed encryption key.
+- Localhost Range media server over a Hyperdrive replica (`tools/lib/serve-drive.js`),
+  ported into the client Bare worklet (`client/backend/backend.mjs`).
+- Desktop P2P viewer (`tools/viewer.js`) + automated end-to-end test
+  (`tools/e2e-stream-test.mjs`): a fresh peer discovers the feed over the DHT,
+  replicates the encrypted feed, serves it locally, and ffprobe confirms valid
+  H.264/AAC. **P2P transport proven on desktop.**
+
+### To do (see ROADMAP.md and per-package READMEs)
+- Client app: native Android build (phone + TV) to run the existing player over P2P.
+- Panel (v0.2): signed Hyperbee (accounts + catalog), OPRF login, sessions/devices, assets.
+- Optional (v1.x): multi-DRM, geo-locking, VOD.

@@ -1,80 +1,82 @@
-// Aliran broadcaster — content origin.
+// Aliran broadcaster — v0.1.
 //
-// Pipeline (see docs/architecture.md):
-//   ingest (OBS RTMP / RTSP / HLS / file)
-//     -> ffmpeg transcode to live HLS   (PROTECTION=self)
-//        or multi-DRM packager to CENC   (PROTECTION=drm)
-//     -> write rolling segments into an ENCRYPTED Hyperdrive
-//     -> seed over Hyperswarm; clients replicate + re-seed each other
-//   -> register the stream (feedKey, encryptionKey, metadata) with the panel
+//   ingest (test pattern / RTSP / HLS / file)
+//     -> ffmpeg live HLS
+//     -> mirror rolling segments into an ENCRYPTED Hyperdrive
+//     -> seed over Hyperswarm (clients replicate + re-seed each other)
 //
-// SCAFFOLD: drive/swarm wiring is laid out; the ffmpeg spawn + directory->drive mirror
-// and the panel registration RPC are marked TODO.
+// The feed identity (drive key) is stable across restarts as long as DATA_DIR persists;
+// the encryption key is persisted alongside it. Share {feedKey, encryptionKey} with
+// entitled clients (via the panel, or manually for testing).
 
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
 import { config } from './config.js'
+import { startFfmpeg, mirrorDirToDrive } from './hls.js'
+
+// Persist (and reuse) the feed encryption key so the feed identity is stable.
+function loadOrCreateEncryptionKey (dataDir) {
+  const p = path.join(dataDir, 'feed.key')
+  if (fs.existsSync(p)) return b4a.from(fs.readFileSync(p, 'utf8').trim(), 'hex')
+  fs.mkdirSync(dataDir, { recursive: true })
+  const key = crypto.randomBytes(32)
+  fs.writeFileSync(p, b4a.toString(key, 'hex'), { mode: 0o600 })
+  return key
+}
 
 async function main () {
-  if (!config.panelPubKey) {
-    console.warn('PANEL_PUBKEY not set — the stream will seed but will not be registered in a catalog.')
-  }
-
   const store = new Corestore(config.dataDir)
   await store.ready()
 
-  // The feed: an ENCRYPTED Hyperdrive. The encryption key is shared only with
-  // entitled clients (via the panel). Persist/reuse it across restarts.
-  const encryptionKey = crypto.randomBytes(32) // TODO: persist in DATA_DIR and reuse
+  const encryptionKey = loadOrCreateEncryptionKey(config.dataDir)
   const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey })
   await drive.ready()
 
-  console.log('Feed key       :', b4a.toString(drive.key, 'hex'))
-  console.log('Encryption key :', b4a.toString(encryptionKey, 'hex'), '(share only via the panel)')
+  const feedKeyHex = b4a.toString(drive.key, 'hex')
+  const encKeyHex = b4a.toString(encryptionKey, 'hex')
 
-  const swarm = new Hyperswarm({
-    bootstrap: config.bootstrap.length ? config.bootstrap : undefined
-  })
-  swarm.on('connection', (socket) => {
-    // TODO (optional): check the peer against the panel allowlist before replicating
-    // (best-effort bandwidth gate; encryption is the hard gate).
-    drive.replicate(socket)
-  })
+  console.log('=== Aliran broadcaster ===')
+  console.log('Stream id :', config.streamId)
+  console.log('Feed key  :', feedKeyHex)
+  console.log('Enc key   :', encKeyHex)
+  console.log('Share {feedKey, encKey} with clients. To test locally:')
+  console.log(`  node ../tools/viewer.js ${feedKeyHex} ${encKeyHex}`)
+  console.log('==========================')
+
+  // Seed the feed.
+  const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
+  swarm.on('connection', (socket) => drive.replicate(socket))
   swarm.join(drive.discoveryKey, { server: true, client: false })
   await swarm.flush()
-  console.log('Seeding feed on the DHT…')
+  console.log('Seeding on the DHT…')
 
-  // --- Ingest + packaging -------------------------------------------------------
-  // TODO:
-  //  1. Resolve INPUT:
-  //     - 'rtmp'  -> start an RTMP listener (e.g. node-media-server) on RTMP_PORT for OBS
-  //     - rtsp/http/file -> pass directly to ffmpeg -i
-  //  2. PROTECTION=self: spawn ffmpeg ->
-  //       ffmpeg -re -i <INPUT> -c:v libx264 -c:a aac -f hls \
-  //         -hls_time <HLS_TIME> -hls_list_size <HLS_LIST_SIZE> \
-  //         -hls_flags delete_segments+append_list -hls_segment_type fmp4 out/index.m3u8
-  //     PROTECTION=drm: run a CENC/CMAF multi-DRM packager instead (CPIX vendor keys).
-  //  3. Watch out/ and mirror new/changed files into the drive:
-  //       drive.put('/index.m3u8', ...); drive.put('/segN.m4s', ...)
-  //     Delete old segments from the drive to keep it small.
-  //
-  // registerWithPanel({ feedKey: drive.key, encryptionKey, streamId: config.streamId })
+  // Ingest → HLS → mirror into the drive.
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-hls-'))
+  const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500 })
+  const ff = startFfmpeg(config, outDir, {
+    onExit: (code) => console.log('ffmpeg exited with code', code)
+  })
+  console.log('ffmpeg producing HLS in', outDir)
 
-  console.log('[stub] ffmpeg ingest + drive mirror not wired yet — see TODO in src/index.js.')
+  // TODO(v0.2): register {feedKey, encKey, metadata} with the panel over RPC.
 
-  process.on('SIGINT', async () => {
+  const shutdown = async () => {
     console.log('\nShutting down…')
+    stopMirror()
+    try { ff.kill('SIGINT') } catch {}
     await swarm.destroy()
     await store.close()
+    try { fs.rmSync(outDir, { recursive: true, force: true }) } catch {}
     process.exit(0)
-  })
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
 }
-
-// TODO: connect to the panel by PANEL_PUBKEY over the DHT and call an authenticated
-// `register-stream` RPC (or write via a shared admin credential).
-// async function registerWithPanel ({ feedKey, encryptionKey, streamId }) { ... }
 
 main().catch((err) => { console.error(err); process.exit(1) })
