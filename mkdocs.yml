@@ -1,0 +1,46 @@
+# MkDocs Material configuration for the Aliran documentation site.
+# Build:  pip install mkdocs-material mkdocs-mermaid2-plugin && mkdocs serve
+# Publish: mkdocs gh-deploy   (GitHub Pages)
+site_name: Aliran
+site_description: Self-hostable peer-to-peer OTT streaming on the Holepunch/Pear stack
+repo_url: https://github.com/AbueloSimpson/aliran
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: cyan
+      accent: cyan
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+plugins:
+  - search
+  - mermaid2
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom
+
+nav:
+  - Home: README.md
+  - Getting started: getting-started.md
+  - Concepts: concepts.md
+  - Architecture: architecture.md
+  - Security model: security-model.md
+  - Operator guide: operator-guide.md
+  - Configuration: configuration.md
+  - Content management: content-management.md
+  - Client build: client-build.md
+  - User management: user-management.md
+  - Reference: reference.md
+  - FAQ & troubleshooting: faq.md
+  - Legal & compliance: legal-compliance.md

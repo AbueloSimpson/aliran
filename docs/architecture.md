@@ -52,5 +52,54 @@ catalog**, plus an **assets Hyperdrive** (posters/art). Serves an **OPRF login**
 
 ## Sequence diagrams
 
-> TODO: add Mermaid `sequenceDiagram` blocks for login/OPRF, stream join, and DRM
-> license acquisition.
+### Login (OPRF — brute-force resistant)
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant P as Panel (OPRF + throttle)
+  participant DB as Signed account DB (replicated)
+  C->>C: solve proof-of-work; blind(password)
+  C->>P: login(username, blindedPassword, pow)
+  P->>P: verify PoW; check lockout(username, peerKey)
+  P-->>C: OPRF(oprfKey, blindedPassword)
+  Note over P: never sees password or result
+  C->>C: rwd = unblind(...); wrapKey = Argon2id(rwd, salt)
+  C->>DB: read signed user/<username>
+  C->>C: verify against record; unwrap stream keys
+  C->>C: seal session in Keystore (long TTL)
+```
+
+### Stream join & playback
+
+```mermaid
+sequenceDiagram
+  participant U as UI (RN)
+  participant B as Bare backend
+  participant SW as Hyperswarm
+  participant V as react-native-video
+  U->>B: play(streamId)
+  B->>B: resolve {feedKey, encryptionKey} from catalog
+  B->>SW: join(feed topic) — server+client (re-seed)
+  SW-->>B: replicate encrypted segments (from broadcaster + peers)
+  B->>B: start localhost HTTP server (Range) over decrypting drive
+  B-->>U: { port }
+  U->>V: source = http://127.0.0.1:port/index.m3u8
+  V->>B: GET /index.m3u8, /segN.m4s (Range)
+  B-->>V: decrypted HLS bytes → live playback
+```
+
+### DRM license (optional)
+
+```mermaid
+sequenceDiagram
+  participant C as Client (ExoPlayer/Widevine)
+  participant P as Panel
+  participant L as DRM license server (vendor)
+  C->>P: entitlement(username, streamId, sessionToken)
+  P->>P: check authorization (+ geo, if enabled)
+  P-->>C: signed entitlement JWT
+  C->>L: license request (CDM challenge) + JWT header
+  L-->>C: license (content key) — decrypt in secure path
+  Note over C: encrypted CENC media still arrives via P2P
+```

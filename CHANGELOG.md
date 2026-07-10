@@ -9,8 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Initial project scaffold: `panel/`, `broadcaster/`, `client/` structure.
-- Documentation skeleton under `docs/` (architecture, security model, operator guide,
-  configuration, content management, client build, reference, legal/compliance).
+- Documentation under `docs/` (getting-started, concepts, architecture with sequence
+  diagrams, security model, operator guide, configuration, content management, client
+  build, user management, reference, FAQ/troubleshooting, legal/compliance) + ADRs.
+- `ROADMAP.md` (alpha → 1.0 milestones + optional modules) and a publishable MkDocs
+  Material site config (`mkdocs.yml`).
 - Repository metadata: README, LICENSE (MIT), SECURITY, CONTRIBUTING, Code of Conduct.
 
 ### To do (see docs/ and per-package READMEs)

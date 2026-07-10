@@ -66,10 +66,17 @@ node src/index.js                     # ingest -> encrypted Hyperdrive -> swarm
 ## Documentation
 
 Start at [`docs/README.md`](docs/README.md). Highlights:
+[Getting started](docs/getting-started.md) ·
 [Architecture](docs/architecture.md) ·
 [Security model](docs/security-model.md) ·
 [Operator guide](docs/operator-guide.md) ·
-[Configuration](docs/configuration.md).
+[Configuration](docs/configuration.md) ·
+[FAQ](docs/faq.md).
+
+## Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md) for the path from alpha to a production-ready 1.0
+(streaming → auth/OTT UI → HA/hardening) and the optional modules (VOD, DRM, geo).
 
 ## ⚠️ Content-rights disclaimer
 

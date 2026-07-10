@@ -1,0 +1,86 @@
+# Aliran Roadmap
+
+Aliran is a self-hostable, peer-to-peer OTT streaming platform on the Holepunch/Pear
+stack. This roadmap describes the path from scaffold to a production-ready 1.0 and
+beyond. It is a living document — dates are directional, not commitments.
+
+Legend: ✅ done · 🚧 in progress · ⬜ planned
+
+---
+
+## v0.1 — Alpha: "It streams" (foundations)
+
+Goal: a single operator can run a panel + broadcaster and watch a **live, unencrypted**
+stream on an Android phone. Proves the P2P transport end to end.
+
+- ✅ Repository scaffold (panel / broadcaster / client), docs, license, CI-less baseline
+- ✅ Config loaders, panel key generation (`admin-cli init`)
+- 🚧 Broadcaster: ffmpeg → live HLS → Hyperdrive → Hyperswarm seeding
+- 🚧 Client backend (Bare worklet): Hyperdrive replica + localhost Range server
+- 🚧 Client app: minimal player screen via `react-native-video`
+- ⬜ First successful phone playback over the DHT (LAN, then cellular)
+
+**Exit criteria:** paste a feed key → watch a live stream on a phone; a second client
+re-seeds to a third.
+
+---
+
+## v0.2 — Beta: "It's secure and browsable"
+
+Goal: accounts, encryption, and an OTT UI.
+
+- ⬜ Panel: single-writer **signed** account/catalog Hyperbee; catalog `bee.watch()` push
+- ⬜ **Encrypted** feeds (per-stream `encryptionKey`), per-user key wrapping
+- ⬜ **OPRF login** + Argon2id verifiers + proof-of-work + throttling/lockout
+- ⬜ Sessions (long-TTL, device-sealed), device limits, `tokenVersion` revocation
+- ⬜ OTT GUI: home rails, hero, LIVE badges, channel detail, search
+- ⬜ Assets Hyperdrive (posters/art) served over localhost
+- ⬜ Android **TV** target (leanback + D-pad focus) from the same APK
+
+**Exit criteria:** username/password login validated against the P2P DB; browse a
+branded catalog on phone and TV; unauthorized users can't decrypt.
+
+---
+
+## v1.0 — Production: "Operators can run a real service"
+
+- ⬜ Panel **HA / threshold OPRF** across replicas; documented backup & key-rotation runbooks
+- ⬜ Hardening pass + **independent security review** of the crypto paths
+- ⬜ Robust reconnect/resilience (broadcaster restart, peer churn, background service)
+- ⬜ Config validation, structured logging, health/metrics endpoints
+- ⬜ One-command deploy (Docker Compose) + operator quickstart verified on a fresh VPS
+- ⬜ Complete documentation site published (GitHub Pages)
+- ⬜ Automated tests (unit + an end-to-end harness) and CI
+
+**Exit criteria:** a new operator can go from clone → live service in under an hour,
+following only the docs.
+
+---
+
+## v1.x — Optional modules (opt-in, provider-pluggable)
+
+- ⬜ **VOD**: finished-file Hyperdrives, seek/resume, Continue Watching, live→VOD recording
+- ⬜ **Commercial DRM**: CENC/CMAF packaging + BuyDRM/KeyOS, EZDRM, Axinom… via CPIX;
+  panel-issued entitlement JWTs; Widevine on Android/TV
+- ⬜ **Geo-locking**: MaxMind GeoIP at entitlement time + vendor license geo policy
+- ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
+- ⬜ Concurrency limits, HDCP/output protection, rental windows, blackout dates
+
+---
+
+## Future / exploratory
+
+- ⬜ iOS / Apple TV client (FairPlay + HLS)
+- ⬜ Web client (Bare/WebRTC bridge)
+- ⬜ Chat / interactivity alongside live streams
+- ⬜ Multi-broadcaster / multi-admin (Autobase) catalogs
+- ⬜ Adaptive bitrate ladders; low-latency HLS/LL-DASH
+- ⬜ Analytics that respect privacy (aggregate, no per-user tracking)
+
+---
+
+## How to contribute
+
+Pick an unchecked item, open an issue to claim it, and see
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Security-sensitive items (OPRF, key-wrapping,
+tokens) should be discussed in an issue first and prefer vetted libraries.
