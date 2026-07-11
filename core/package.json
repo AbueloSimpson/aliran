@@ -1,0 +1,18 @@
+{
+  "name": "@aliran/core",
+  "version": "0.0.1",
+  "description": "Aliran shared crypto: OPRF login, Argon2id verifiers, key wrapping",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0",
+    "b4a": "^1.6.6",
+    "sodium-native": "^4.3.0"
+  },
+  "comment": "OPRF group math uses the audited @noble/curves ristretto255 (sodium-native in this build lacks ristretto ops). Argon2id + secretbox use sodium-native. Have the crypto independently reviewed before production."
+}

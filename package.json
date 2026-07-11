@@ -5,6 +5,7 @@
   "description": "Self-hostable peer-to-peer OTT streaming platform on the Holepunch/Pear stack",
   "license": "MIT",
   "workspaces": [
+    "core",
     "panel",
     "broadcaster",
     "tools"
