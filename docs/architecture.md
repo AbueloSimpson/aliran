@@ -60,14 +60,14 @@ sequenceDiagram
   participant C as Client
   participant P as Panel (OPRF + throttle)
   participant DB as Signed account DB (replicated)
-  C->>C: solve proof-of-work; blind(password)
+  C->>C: solve proof-of-work, then blind(password)
   C->>P: login(username, blindedPassword, pow)
-  P->>P: verify PoW; check lockout(username, peerKey)
+  P->>P: verify PoW, check lockout(username, peerKey)
   P-->>C: OPRF(oprfKey, blindedPassword)
   Note over P: never sees password or result
-  C->>C: rwd = unblind(...); wrapKey = Argon2id(rwd, salt)
+  C->>C: rwd = unblind(...), wrapKey = Argon2id(rwd, salt)
   C->>DB: read signed user/<username>
-  C->>C: verify against record; unwrap stream keys
+  C->>C: verify against record, unwrap stream keys
   C->>C: seal session in Keystore (long TTL)
 ```
 
