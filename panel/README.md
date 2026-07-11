@@ -26,11 +26,14 @@ src/admin-cli.js   admin commands (users, streams, devices, art)
 ## Status / TODO
 
 - [x] Key generation (`init`), config loader, DB open, DHT announce + replication wiring
-- [ ] **OPRF login RPC** (blinded eval, PoW, throttling/lockout) — *security-critical*
-- [ ] Argon2id verifier + per-user key wrapping (`create-user`, `grant`)
+- [x] Argon2id verifier + OPRF enrollment + per-user key sealing (`create-user`, `grant`)
+- [x] Control plane: `create-user`, `set-password`, `add-stream`, `grant`, `set-meta`,
+      `set-max-devices`, `logout-all`, `list` — writing signed records (verified: a
+      simulated login recovers the granted key; wrong password rejected)
+- [ ] **OPRF login RPC** (blinded eval, PoW, throttling/lockout) — *security-critical* (next)
 - [ ] Session/entitlement token signing + `tokenVersion` revocation
-- [ ] Device-limit enforcement
-- [ ] Catalog/metadata + assets commands (`set-meta`, `upload-art`)
+- [ ] Device-limit enforcement at login
+- [ ] Assets Hyperdrive + `upload-art`
 - [ ] HA / threshold OPRF across replicas
 - [ ] Optional geo (GeoIP) + DRM entitlement endpoints
 
