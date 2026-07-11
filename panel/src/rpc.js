@@ -2,7 +2,7 @@
 import ProtomuxRPC from 'protomux-rpc'
 import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
-import { evaluate, powVerify } from '@aliran/core'
+import { evaluate, powVerify, authVerify, signToken } from '@aliran/core'
 
 const json = (o) => b4a.from(JSON.stringify(o))
 
@@ -19,12 +19,15 @@ export function makeThrottle (threshold, windowSec) {
   }
 }
 
-// Attach `hello` + `login` responders to a connection. `throttle` is shared across
-// connections (created with makeThrottle).
-export function attachLoginRpc (socket, { oprfKey, difficulty, throttle }) {
+// Attach `hello` + `login` + `session` responders to a connection. `throttle` is shared
+// across connections. `keys` = { oprf, signing }; `db` is the signed account Hyperbee;
+// `sessionTtlMs` is the token lifetime; `devicePolicy` is 'evict' (default) or 'reject'.
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict' }) {
+  const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
   let challenge = hcrypto.randomBytes(16)
+  let sessionChallenge = null // issued in the login response, consumed by `session`
 
   rpc.respond('hello', () => json({ challenge: b4a.toString(challenge, 'hex'), difficulty }))
 
@@ -38,8 +41,51 @@ export function attachLoginRpc (socket, { oprfKey, difficulty, throttle }) {
     const t = throttle((username || '') + '|' + peerHex)
     if (t.locked) return json({ error: 'locked', retryAfter: t.retryAfter })
     try {
-      return json({ evaluated: b4a.toString(evaluate(oprfKey, b4a.from(blinded, 'hex')), 'hex') })
+      const evaluated = b4a.toString(evaluate(oprf, b4a.from(blinded, 'hex')), 'hex')
+      sessionChallenge = hcrypto.randomBytes(16) // client will sign this to prove login
+      return json({ evaluated, sessionChallenge: b4a.toString(sessionChallenge, 'hex') })
     } catch { return json({ error: 'eval failed' }) }
   })
+
+  // Prove login (Ed25519 signature over sessionChallenge) → device-limit enforcement +
+  // a panel-signed session token. Requires `db` + `keys.signing`.
+  rpc.respond('session', async (reqBuf) => {
+    if (!db || !keys || !keys.signing) return json({ error: 'sessions unavailable' })
+    let req
+    try { req = JSON.parse(b4a.toString(reqBuf)) } catch { return json({ error: 'bad request' }) }
+    const { username, deviceId, deviceLabel, sig } = req || {}
+    const chal = sessionChallenge
+    sessionChallenge = null // one-shot
+    if (!chal) return json({ error: 'no session challenge (login first)' })
+    const node = await db.get('user/' + username)
+    if (!node) return json({ error: 'unknown user' })
+    const user = node.value
+    if (user.status && user.status !== 'active') return json({ error: 'account disabled' })
+    if (!user.authPub || !sig || !authVerify(b4a.from(user.authPub, 'hex'), chal, b4a.from(sig, 'hex'))) {
+      return json({ error: 'auth failed' })
+    }
+    if (!deviceId) return json({ error: 'missing deviceId' })
+
+    const now = Date.now()
+    let devices = (user.devices || []).filter((d) => !d.expiresAt || d.expiresAt > now)
+    const expiresAt = now + sessionTtlMs
+    const existing = devices.find((d) => d.deviceId === deviceId)
+    if (existing) {
+      existing.expiresAt = expiresAt; existing.tokenVersion = user.tokenVersion
+    } else {
+      if (devices.length >= (user.maxDevices || 2)) {
+        if (devicePolicy === 'reject') return json({ error: 'device-limit', devices: devices.map((d) => ({ deviceId: d.deviceId, label: d.label })) })
+        devices.sort((a, b) => (a.issuedAt || 0) - (b.issuedAt || 0))
+        devices.shift() // evict oldest
+      }
+      devices.push({ deviceId, label: deviceLabel || '', issuedAt: now, expiresAt, tokenVersion: user.tokenVersion, status: 'active' })
+    }
+    user.devices = devices
+    await db.put('user/' + username, user)
+
+    const token = signToken(keys.signing.secretKey, { userId: username, deviceId, issuedAt: now, expiresAt, tokenVersion: user.tokenVersion })
+    return json({ token, expiresAt, tokenVersion: user.tokenVersion })
+  })
+
   return rpc
 }

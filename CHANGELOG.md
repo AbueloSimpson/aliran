@@ -37,8 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - End-to-end test (`npm run test:login`): panel + broadcaster + client login →
   entitlement → P2P playback (ffprobe-validated); wrong password rejected.
 
+### v0.2 progress — sessions & device limits (verified)
+- `@aliran/core`: per-user Ed25519 auth keypair (`authKeyPair`/`authSign`/`authVerify`)
+  and panel-signed session tokens (`token.js`); +2 unit tests (8 total).
+- Panel: `session` RPC — client proves login by signing the panel's challenge; the panel
+  enforces `maxDevices` (evict oldest), issues a signed token, updates the signed record;
+  revocation via `tokenVersion`. Enrollment stores `authPub`/`authPrivEnc`.
+- Client: `login.mjs` completes the session step and verifies the returned token;
+  `checkSession()` for offline validation.
+- Tests: `npm run test:session` (device eviction, forged-sig rejection, revocation);
+  `test:login` now also asserts a valid session token.
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- Sessions (long-TTL tokens, device sealing/Keystore), device-limit enforcement.
-- Catalog `bee.watch()` live push; OTT UI; assets Hyperdrive.
-- Client app: native Android build (phone + TV).
+- Catalog `bee.watch()` live push; broadcaster↔panel registration; assets Hyperdrive.
+- OTT UI + client app: native Android build (phone + TV), Keystore session sealing.
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

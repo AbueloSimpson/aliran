@@ -46,5 +46,6 @@ and plays it (ffprobe-validated). Wrong passwords are rejected.
 ```bash
 npm run test:core     # @aliran/core crypto unit tests (fast, no ffmpeg/network)
 npm run test:stream   # v0.1 streaming e2e (needs ffmpeg + DHT)
-npm run test:login    # v0.2 login e2e (needs ffmpeg + DHT)
+npm run test:login    # v0.2 login + session token e2e (needs ffmpeg + DHT)
+npm run test:session  # v0.2 sessions + device limits e2e (DHT only, no ffmpeg)
 ```

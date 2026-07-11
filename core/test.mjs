@@ -4,7 +4,9 @@ import b4a from 'b4a'
 import {
   oprfKeyGen, blind, evaluate, finalize, evaluateFull,
   randomSalt, deriveVerifier, verify, wrapKeyFrom, wrap, unwrap,
-  userKeyPair, sealTo, sealOpen
+  userKeyPair, sealTo, sealOpen,
+  authKeyPair, authSign, authVerify,
+  signToken, verifyToken, tokenValid
 } from './index.js'
 
 let passed = 0
@@ -98,6 +100,29 @@ test('end-to-end account: enroll -> grant (no pw) -> login -> open stream key', 
   // an attacker with the DB but the WRONG password cannot recover the key
   const bad = blind('wrong'); const rwdBad = finalize('wrong', bad.r, evaluate(k, bad.blinded))
   assert.strictEqual(unwrap(wrapKeyFrom(rwdBad), record.encPriv), null, 'wrong password must not recover priv')
+})
+
+// 7. Auth keypair: prove login by signing a challenge; wrong key / tampered msg fail.
+test('auth keypair sign/verify a challenge', () => {
+  const kp = authKeyPair()
+  const challenge = b4a.from('panel-challenge-123')
+  const sig = authSign(kp.secretKey, challenge)
+  assert.strictEqual(authVerify(kp.publicKey, challenge, sig), true)
+  assert.strictEqual(authVerify(authKeyPair().publicKey, challenge, sig), false) // wrong key
+  assert.strictEqual(authVerify(kp.publicKey, b4a.from('other'), sig), false)     // tampered msg
+})
+
+// 8. Session tokens: panel-signed, offline-verifiable, tamper-evident, expiry-aware.
+test('session token sign/verify/expiry/tamper', () => {
+  const panel = authKeyPair() // stands in for the panel Ed25519 signing key
+  const now = Date.now()
+  const token = signToken(panel.secretKey, { userId: 'alice', deviceId: 'd1', issuedAt: now, expiresAt: now + 1000, tokenVersion: 1 })
+  const payload = verifyToken(panel.publicKey, token)
+  assert.ok(payload && payload.userId === 'alice', 'valid token should verify')
+  assert.strictEqual(verifyToken(authKeyPair().publicKey, token), null, 'wrong panel key must fail')
+  assert.strictEqual(verifyToken(panel.publicKey, token.slice(0, -2) + 'xx'), null, 'tampered sig must fail')
+  assert.ok(tokenValid(panel.publicKey, token, now), 'unexpired token valid')
+  assert.strictEqual(tokenValid(panel.publicKey, token, now + 2000), null, 'expired token invalid')
 })
 
 console.log(`\nRESULT: PASS ✅  (${passed} tests)`)

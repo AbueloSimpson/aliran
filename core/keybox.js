@@ -31,3 +31,25 @@ export function sealOpen (publicKey, secretKey, sealedHex) {
   const out = b4a.alloc(cipher.length - sodium.crypto_box_SEALBYTES)
   return sodium.crypto_box_seal_open(out, cipher, publicKey, secretKey) ? out : null
 }
+
+// --- Per-user auth keypair (Ed25519) ------------------------------------------------
+// Lets a client PROVE it logged in (signs a panel challenge) without revealing the
+// password. The auth public key is stored in the clear; the private key is sealed under
+// the password (like the X25519 key), so only a correct login can sign.
+
+export function authKeyPair () {
+  const publicKey = b4a.alloc(sodium.crypto_sign_PUBLICKEYBYTES)
+  const secretKey = b4a.alloc(sodium.crypto_sign_SECRETKEYBYTES)
+  sodium.crypto_sign_keypair(publicKey, secretKey)
+  return { publicKey, secretKey }
+}
+
+export function authSign (secretKey, message) {
+  const sig = b4a.alloc(sodium.crypto_sign_BYTES)
+  sodium.crypto_sign_detached(sig, message, secretKey)
+  return sig
+}
+
+export function authVerify (publicKey, message, sig) {
+  return sodium.crypto_sign_verify_detached(sig, message, publicKey)
+}

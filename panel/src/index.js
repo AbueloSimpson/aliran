@@ -29,10 +29,11 @@ export async function startPanel () {
 
   const throttle = makeThrottle(config.lockout.threshold, config.lockout.seconds)
 
+  const sessionTtlMs = config.sessionTtlDays * 86400000
   const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
   swarm.on('connection', (socket) => {
     store.replicate(socket) // clients replicate the signed account/catalog DB
-    attachLoginRpc(socket, { oprfKey: keys.oprf, difficulty: config.pow.difficulty, throttle })
+    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, sessionTtlMs })
   })
 
   const topic = hcrypto.hash(keys.signing.publicKey)

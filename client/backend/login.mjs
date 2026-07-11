@@ -6,7 +6,7 @@
 
 import ProtomuxRPC from 'protomux-rpc'
 import b4a from 'b4a'
-import { blind, finalize, verify, wrapKeyFrom, unwrap, sealOpen, powSolve } from '@aliran/core'
+import { blind, finalize, verify, wrapKeyFrom, unwrap, sealOpen, powSolve, authSign, verifyToken } from '@aliran/core'
 
 // Wrap a connection to the panel as a JSON RPC caller.
 export function panelClient (socket) {
@@ -19,7 +19,7 @@ export function panelClient (socket) {
   return { rpc, call }
 }
 
-export async function login (call, db, username, password) {
+export async function login (call, db, username, password, { deviceId, deviceLabel } = {}) {
   // 1. proof-of-work challenge from the panel
   const hello = await call('hello')
   const nonce = powSolve(b4a.from(hello.challenge, 'hex'), hello.difficulty)
@@ -38,8 +38,9 @@ export async function login (call, db, username, password) {
     throw new Error('invalid credentials')
   }
 
-  // 4. recover the private key and open the granted stream keys
-  const priv = unwrap(wrapKeyFrom(rwd), user.encPriv)
+  // 4. recover private keys and open the granted stream keys
+  const wk = wrapKeyFrom(rwd)
+  const priv = unwrap(wk, user.encPriv)
   if (!priv) throw new Error('key recovery failed')
   const streams = []
   for (const id of Object.keys(user.wrapped || {})) {
@@ -58,5 +59,30 @@ export async function login (call, db, username, password) {
       })
     }
   }
-  return { streams, tokenVersion: user.tokenVersion }
+
+  // 5. prove login (sign the panel's session challenge with the recovered auth key) to
+  //    obtain a panel-signed session token + register this device.
+  let token = null; let expiresAt = null
+  const authPriv = user.authPrivEnc ? unwrap(wk, user.authPrivEnc) : null
+  const did = deviceId || b4a.toString(b4a.from(user.pub, 'hex').subarray(0, 8), 'hex') // fallback dev id
+  if (authPriv && res.sessionChallenge) {
+    const sig = authSign(authPriv, b4a.from(res.sessionChallenge, 'hex'))
+    const sres = await call('session', { username, deviceId: did, deviceLabel, sig: b4a.toString(sig, 'hex') })
+    if (sres.error) throw new Error('session failed: ' + sres.error)
+    // verify the token with the panel signing public key (= the account DB core key)
+    const payload = verifyToken(db.core.key, sres.token)
+    if (!payload) throw new Error('panel returned an invalid session token')
+    token = sres.token; expiresAt = sres.expiresAt
+  }
+
+  return { streams, token, expiresAt, deviceId: did, tokenVersion: user.tokenVersion }
+}
+
+// Offline session check: valid panel signature + not expired. tokenVersion is checked
+// against the replicated record when online.
+export function checkSession (panelPublicKey, token, now = Date.now()) {
+  const p = verifyToken(panelPublicKey, token)
+  if (!p) return null
+  if (typeof p.expiresAt === 'number' && now >= p.expiresAt) return null
+  return p
 }

@@ -12,7 +12,7 @@ import b4a from 'b4a'
 import { spawnSync } from 'child_process'
 import {
   evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
-  userKeyPair, sealTo, ARGON2_DEFAULT
+  userKeyPair, sealTo, authKeyPair, verifyToken, ARGON2_DEFAULT
 } from '@aliran/core'
 import { startFfmpeg, mirrorDirToDrive } from '../broadcaster/src/hls.js'
 import { driveHandler } from './lib/serve-drive.js'
@@ -64,12 +64,16 @@ try {
   const rwd = evaluateFull(keys.oprf, PASSWORD)
   const salt = randomSalt()
   const kp = userKeyPair()
+  const auth = authKeyPair()
+  const wk = wrapKeyFrom(rwd)
   await db.put('user/alice', {
     salt: b4a.toString(salt, 'hex'),
     verifier: b4a.toString(deriveVerifier(rwd, salt, ARGON2_DEFAULT), 'hex'),
     argon: ARGON2_DEFAULT,
     pub: b4a.toString(kp.publicKey, 'hex'),
-    encPriv: wrap(wrapKeyFrom(rwd), kp.secretKey),
+    encPriv: wrap(wk, kp.secretKey),
+    authPub: b4a.toString(auth.publicKey, 'hex'),
+    authPrivEnc: wrap(wk, auth.secretKey),
     wrapped: { news: sealTo(kp.publicKey, encKey) },
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
@@ -78,7 +82,7 @@ try {
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
   const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
-  panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { oprfKey: keys.oprf, difficulty: DIFFICULTY, throttle }) })
+  panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: DIFFICULTY, throttle, db, sessionTtlMs: 3600000 }) })
   panelSwarm.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false }); await panelSwarm.flush()
   log('panel: serving login RPC; pubkey', panelPubKey.slice(0, 16) + '…')
 
@@ -96,11 +100,15 @@ try {
   await waitFor(async () => await cliBee.get('user/alice'), 30000, 'DB replication to client')
   log('client: DB replicated; logging in…')
 
-  const { streams } = await login(call, cliBee, 'alice', PASSWORD)
+  const { streams, token } = await login(call, cliBee, 'alice', PASSWORD, { deviceId: 'device-1', deviceLabel: 'Test Phone' })
   if (!streams.length) throw new Error('no streams after login')
   const s = streams[0]
   log('client: login OK; entitled to', JSON.stringify(streams.map(x => x.id)), '- feedKey', s.feedKey.slice(0, 16) + '…')
   if (b4a.toString(encKey, 'hex') !== s.encryptionKey) throw new Error('recovered encryptionKey mismatch')
+  // session token must be present and verify against the panel signing (DB core) key
+  const sess = token && verifyToken(cliBee.core.key, token)
+  if (!sess || sess.userId !== 'alice' || sess.deviceId !== 'device-1') throw new Error('missing/invalid session token')
+  log('client: session token OK (deviceId', sess.deviceId + ', expires', new Date(sess.expiresAt).toISOString() + ')')
 
   // wrong password must be rejected
   let rejected = false
@@ -127,8 +135,8 @@ try {
   const probeOut = (probe.stdout || '').trim()
   log('client: played', full.body.length, 'bytes; ffprobe:', JSON.stringify(probeOut))
 
-  const pass = streams.length && full.body.length > 0 && /video/.test(probeOut) && rejected
-  log('\nRESULT:', pass ? 'PASS ✅  (login → entitlement → P2P playback verified)' : 'FAIL ❌')
+  const pass = streams.length && sess && full.body.length > 0 && /video/.test(probeOut) && rejected
+  log('\nRESULT:', pass ? 'PASS ✅  (login → session token → entitlement → P2P playback verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

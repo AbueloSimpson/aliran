@@ -42,8 +42,10 @@ Goal: accounts, encryption, and an OTT UI.
   (`@aliran/core`, `panel/src/rpc.js`, `client/backend/login.mjs`)
 - ✅ Verified end-to-end on desktop (`npm run test:login`): login → entitlement →
   P2P playback, wrong password rejected, recovered key matches
-- 🚧 Sessions (long-TTL, device-sealed) + device limits + `tokenVersion` revocation
-  (records carry `tokenVersion`/`devices`/`maxDevices`; session tokens not issued yet)
+- ✅ Sessions + device limits + `tokenVersion` revocation: per-user Ed25519 auth key
+  proves login; panel issues a signed session token; `maxDevices` enforced (evict
+  oldest); revocation via `tokenVersion`. Verified (`npm run test:session`).
+  Device-sealing into Android Keystore comes with the app build.
 - ⬜ Catalog `bee.watch()` live push to the UI
 - ⬜ OTT GUI: home rails, hero, LIVE badges, channel detail, search
 - ⬜ Assets Hyperdrive (posters/art) served over localhost

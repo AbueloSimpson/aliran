@@ -12,7 +12,7 @@ import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import {
   evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
-  userKeyPair, sealTo
+  userKeyPair, sealTo, authKeyPair
 } from '@aliran/core'
 import { config } from './config.js'
 import { initKeys, openKeys } from './keys.js'
@@ -70,12 +70,16 @@ async function main () {
       const salt = randomSalt()
       const argon = argonOpts(config)
       const kp = userKeyPair()
+      const auth = authKeyPair()
+      const wk = wrapKeyFrom(rwd)
       const record = {
         salt: b4a.toString(salt, 'hex'),
         verifier: b4a.toString(deriveVerifier(rwd, salt, argon), 'hex'),
         argon,
         pub: b4a.toString(kp.publicKey, 'hex'),
-        encPriv: wrap(wrapKeyFrom(rwd), kp.secretKey),
+        encPriv: wrap(wk, kp.secretKey),
+        authPub: b4a.toString(auth.publicKey, 'hex'),
+        authPrivEnc: wrap(wk, auth.secretKey),
         wrapped: {},
         devices: [],
         tokenVersion: 1,
@@ -97,6 +101,8 @@ async function main () {
       const salt = randomSalt()
       const argon = argonOpts(config)
       const kp = userKeyPair()
+      const auth = authKeyPair()
+      const wk = wrapKeyFrom(rwd)
       // Re-seal existing grants to the new keypair (admin has the stream secrets).
       const secrets = loadSecrets(config.dataDir)
       const wrapped = {}
@@ -108,8 +114,11 @@ async function main () {
       user.verifier = b4a.toString(deriveVerifier(rwd, salt, argon), 'hex')
       user.argon = argon
       user.pub = b4a.toString(kp.publicKey, 'hex')
-      user.encPriv = wrap(wrapKeyFrom(rwd), kp.secretKey)
+      user.encPriv = wrap(wk, kp.secretKey)
+      user.authPub = b4a.toString(auth.publicKey, 'hex')
+      user.authPrivEnc = wrap(wk, auth.secretKey)
       user.wrapped = wrapped
+      user.devices = []
       user.tokenVersion = (user.tokenVersion || 1) + 1 // invalidate old sessions
       await db.put('user/' + username, user)
       console.log(`Password updated for "${username}" (re-sealed ${Object.keys(wrapped).length} grant(s)).`)
