@@ -35,16 +35,24 @@ app reuses the same, already-tested backend logic; only the native build remains
 
 Goal: accounts, encryption, and an OTT UI.
 
-- ⬜ Panel: single-writer **signed** account/catalog Hyperbee; catalog `bee.watch()` push
-- ⬜ **Encrypted** feeds (per-stream `encryptionKey`), per-user key wrapping
-- ⬜ **OPRF login** + Argon2id verifiers + proof-of-work + throttling/lockout
-- ⬜ Sessions (long-TTL, device-sealed), device limits, `tokenVersion` revocation
+- ✅ Panel: single-writer **signed** account/catalog Hyperbee (`panel/src/store.js`)
+- ✅ **Encrypted** feeds (per-stream `encryptionKey`) + per-user key sealing
+  (grant-after-enrollment via X25519 seal; private key sealed under the password)
+- ✅ **OPRF login** + Argon2id verifiers + proof-of-work + per-(user,peer) throttling
+  (`@aliran/core`, `panel/src/rpc.js`, `client/backend/login.mjs`)
+- ✅ Verified end-to-end on desktop (`npm run test:login`): login → entitlement →
+  P2P playback, wrong password rejected, recovered key matches
+- 🚧 Sessions (long-TTL, device-sealed) + device limits + `tokenVersion` revocation
+  (records carry `tokenVersion`/`devices`/`maxDevices`; session tokens not issued yet)
+- ⬜ Catalog `bee.watch()` live push to the UI
 - ⬜ OTT GUI: home rails, hero, LIVE badges, channel detail, search
 - ⬜ Assets Hyperdrive (posters/art) served over localhost
 - ⬜ Android **TV** target (leanback + D-pad focus) from the same APK
 
 **Exit criteria:** username/password login validated against the P2P DB; browse a
 branded catalog on phone and TV; unauthorized users can't decrypt.
+**Status:** the **security core is done and verified on desktop**; remaining v0.2 work
+is sessions/devices, the live catalog push, and the OTT UI (needs the Android build).
 
 ---
 

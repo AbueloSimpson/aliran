@@ -21,3 +21,4 @@
 export * from './oprf.js'
 export * from './password.js'
 export * from './keybox.js'
+export * from './pow.js'

@@ -29,3 +29,22 @@ node tools/e2e-stream-test.mjs   # exits 0 on PASS
 This is the automated proof of the **v0.1 "it streams"** milestone: an encrypted feed is
 produced by ffmpeg, seeded on Hyperswarm, discovered + replicated by a separate peer,
 served over localhost with HTTP Range, and confirmed to be valid H.264/AAC.
+
+## Login end-to-end test (v0.2)
+
+```bash
+node tools/e2e-login-test.mjs    # exits 0 on PASS
+```
+
+Proof of the **v0.2 secure-login** milestone: a panel serves the OPRF login RPC and
+replicates a signed account/catalog DB; a client logs in (proof-of-work → blinded OPRF →
+verify → unwrap its keys), resolves the granted stream, replicates the encrypted feed,
+and plays it (ffprobe-validated). Wrong passwords are rejected.
+
+## All tests
+
+```bash
+npm run test:core     # @aliran/core crypto unit tests (fast, no ffmpeg/network)
+npm run test:stream   # v0.1 streaming e2e (needs ffmpeg + DHT)
+npm run test:login    # v0.2 login e2e (needs ffmpeg + DHT)
+```

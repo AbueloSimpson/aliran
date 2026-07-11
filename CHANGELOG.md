@@ -26,7 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replicates the encrypted feed, serves it locally, and ffprobe confirms valid
   H.264/AAC. **P2P transport proven on desktop.**
 
+### v0.2 progress — secure login (verified)
+- `@aliran/core`: OPRF (ristretto255), Argon2id verifiers, X25519 key sealing,
+  proof-of-work — 6 unit tests (`npm run test:core`).
+- Panel: signed account/catalog control plane (`admin-cli`), and a login RPC with
+  proof-of-work + per-(user,peer) throttling + oblivious OPRF evaluation
+  (`panel/src/rpc.js`, `panel/src/index.js`).
+- Client: runtime-agnostic OPRF login (`client/backend/login.mjs`), wired into the Bare
+  worklet; recovers per-user stream keys from the signed DB.
+- End-to-end test (`npm run test:login`): panel + broadcaster + client login →
+  entitlement → P2P playback (ffprobe-validated); wrong password rejected.
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- Client app: native Android build (phone + TV) to run the existing player over P2P.
-- Panel (v0.2): signed Hyperbee (accounts + catalog), OPRF login, sessions/devices, assets.
+- Sessions (long-TTL tokens, device sealing/Keystore), device-limit enforcement.
+- Catalog `bee.watch()` live push; OTT UI; assets Hyperdrive.
+- Client app: native Android build (phone + TV).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
