@@ -46,9 +46,10 @@ set your panel public key in `client/config/service.json`, and build the APK.
 
 ## Current status
 
-This is an early scaffold. Runnable pieces: config + panel key generation. The
-streaming pipeline, auth, and app UI are in progress — see the [Roadmap](../ROADMAP.md)
-and each package's `README.md` for exactly what's implemented vs. stubbed.
+Early / in development. **Working and verified on desktop:** the P2P streaming pipeline
+(`npm run test:stream`) and brute-force-resistant OPRF login (`npm run test:login`),
+plus the crypto core unit tests (`npm run test:core`). **Not built yet:** the Android app
+and the OTT UI. See the [Roadmap](../ROADMAP.md) for exactly what's done vs. planned.
 
 ## Next steps
 

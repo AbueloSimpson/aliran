@@ -6,9 +6,11 @@ open-source, **peer-to-peer OTT streaming platform** built on the
 re-seed each other, so there are **no central media servers** and near-zero
 bandwidth cost.
 
-> Status: **early scaffold**. This repo currently contains project structure,
-> configuration, and documented stubs — not a finished build. See
-> [`docs/`](docs/) and each package's `README.md` for what to implement next.
+> **Status: early / in development.** The peer-to-peer core works and is verified on
+> desktop — live streaming over P2P (`npm run test:stream`) and brute-force-resistant
+> username/password login (`npm run test:login`) both pass end to end. The Android app
+> and the OTT UI are not built yet. See the [Roadmap](ROADMAP.md) for exactly what's
+> done vs. planned, and each package's `README.md` for details.
 
 ## What it is
 

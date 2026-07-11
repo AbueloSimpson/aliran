@@ -31,5 +31,10 @@ mkdocs gh-deploy      # publish to GitHub Pages
 
 ## Status
 
-Scaffold. Each page contains an outline and the key decisions already made in the
-approved design; fill them in as the implementation lands.
+In active development. The pages describe the full design; the peer-to-peer core
+(streaming + login) is implemented and verified on desktop, while the Android app and
+OTT UI are still to come. Each page notes what is built vs. planned — see the
+[Roadmap](../ROADMAP.md) for the overall picture.
+
+> Note: a couple of pages are being reconciled with the shipped crypto — see
+> [issue #1](https://github.com/AbueloSimpson/aliran/issues/1).
