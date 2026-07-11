@@ -18,24 +18,35 @@ A **single-writer, panel-signed Hyperbee**. Clients replicate it read-only and p
 panel public key, so records are provably authentic. Namespaces:
 
 - `catalog/<streamId>` → OTT metadata `{ title, description, category[], type,
-  protection, allowedRegions?, isLive, poster, backdrop, logo, feedKey,
-  encryptionKey?, drm?, status }`
-- `user/<username>` → `{ salt, verifier, wrapped:{ [streamId]: encStreamKey }, status,
-  devices[], tokenVersion }`
+  protection, allowedRegions?, isLive, poster, backdrop, logo, feedKey, drm?, status }`
+  — **note:** the stream's content encryption key is **not** in the catalog. It is held
+  in a panel-private, non-replicated secrets file and delivered per-user (below).
+- `user/<username>` → `{ salt, verifier, argon, pub, encPriv,
+  wrapped:{ [streamId]: sealedStreamKey }, devices[], tokenVersion, maxDevices, status }`
 
 ## Login without reading secrets
 
-- Passwords stored only as **Argon2id verifiers** (`sodium-native crypto_pwhash`).
-- Per-user **stream keys are wrapped** under a key derived from the user's password —
-  other members replicating the DB see only ciphertext.
-- So clients can **view** the DB to validate, but cannot read protected data in clear.
+- Passwords are **never stored**. Login runs an OPRF with the panel to produce
+  `rwd` (see below); the record stores only `verifier = Argon2id(rwd, salt)`
+  (`sodium-native crypto_pwhash`), which confirms a correct password but reveals nothing.
+- Each user has an **X25519 keypair**. The public key `pub` is stored in the clear; the
+  private key is stored **sealed** (`encPriv`) under a key derived from `rwd`, so only
+  the correct password can recover it.
+- A stream is **granted** by sealing its content key to the user's `pub`
+  (`crypto_box_seal` → `wrapped[streamId]`). This needs no password, so grants can be
+  added any time after enrollment. Only the user — after logging in and recovering
+  their private key — can open it.
+- So clients can **view** the replicated DB to validate, but see only ciphertext for
+  every secret; they cannot read protected data in clear.
 
 ## Brute-force protections (layered)
 
 1. **OPRF-bound key derivation (kills offline attack).** Login runs an Oblivious PRF
-   with the panel: the client blinds the password, the panel evaluates with its secret
-   OPRF key and returns the result; `wrapKey = Argon2id(rwd, salt)`. Without the panel's
-   key an attacker with a DB copy **cannot test guesses offline**.
+   with the panel: the client blinds the password, the panel evaluates it with its
+   secret OPRF key and returns the result, which the client unblinds into `rwd`. From
+   `rwd` the client derives the `verifier` (`Argon2id`, memory-hard) and the key that
+   unseals its private key. Without the panel's OPRF key, an attacker with a DB copy
+   **cannot compute `rwd`** and so cannot test guesses offline.
 2. **Panel-side throttling + lockout** per username and per peer key (exponential
    backoff, temporary lockout). Enforceable because #1 funnels guesses through the panel.
 3. **Proof-of-work** admission on each login attempt.

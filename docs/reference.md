@@ -40,20 +40,27 @@
   "backdrop": "assets/<hash>.jpg",
   "logo": "assets/<hash>.png",
   "feedKey": "<hex>",
-  "encryptionKey": "<hex|null>",
   "drm": null,                 // or { scheme, licenseServerRef }
   "status": "live"
 }
 ```
 
+> The stream's content **encryption key is not in the catalog**. It is kept in a
+> panel-private, non-replicated secrets file (`DATA_DIR/secrets/streams.json`) and
+> delivered per-user via `user.wrapped[streamId]`.
+
 ### User record (`user/<username>`)
 ```jsonc
 {
   "salt": "<hex>",
-  "verifier": "<hex>",         // Argon2id(OPRF output, salt)
-  "wrapped": { "<streamId>": "<ciphertext>" },
+  "verifier": "<hex>",         // Argon2id(rwd, salt); rwd = OPRF output
+  "argon": { "opslimit": 2, "memlimit": 67108864 },
+  "pub": "<hex>",              // user X25519 public key
+  "encPriv": "<nonce||cipher hex>",   // private key sealed under a key derived from rwd
+  "wrapped": { "<streamId>": "<stream key sealed to pub, hex>" },
   "devices": [ { "deviceId": "<pubkey>", "label": "Pixel 8", "expiresAt": 0, "tokenVersion": 1, "status": "active" } ],
   "tokenVersion": 1,
+  "maxDevices": 2,
   "status": "active"
 }
 ```

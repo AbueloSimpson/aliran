@@ -45,7 +45,8 @@ catalog**, plus an **assets Hyperdrive** (posters/art). Serves an **OPRF login**
   against the signed DB → unwraps stream keys. See
   [security-model.md](security-model.md).
 - **Catalog:** panel appends signed metadata; clients `bee.watch()` for live updates.
-- **Stream join:** client resolves `{ feedKey, encryptionKey }` → joins the feed swarm
+- **Stream join:** client takes `feedKey` from the catalog and the `encryptionKey` it
+  unsealed at login (not from the catalog) → joins the feed swarm
   → replicates (decrypting) → serves locally → plays.
 - **DRM (optional):** encrypted CENC bytes flow P2P; the license request goes to the
   DRM vendor with a panel-issued entitlement JWT.
@@ -79,7 +80,7 @@ sequenceDiagram
   participant SW as Hyperswarm
   participant V as react-native-video
   U->>B: play(streamId)
-  B->>B: resolve {feedKey, encryptionKey} from catalog
+  B->>B: feedKey from catalog + encryptionKey unsealed at login
   B->>SW: join(feed topic) — server+client (re-seed)
   SW-->>B: replicate encrypted segments (from broadcaster + peers)
   B->>B: start localhost HTTP server (Range) over decrypting drive
