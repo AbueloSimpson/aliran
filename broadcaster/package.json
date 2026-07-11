@@ -8,11 +8,13 @@
     "start": "node src/index.js"
   },
   "dependencies": {
+    "@aliran/core": "*",
     "b4a": "^1.6.6",
     "corestore": "^6.18.0",
     "hyperdrive": "^11.13.0",
     "hyperswarm": "^4.8.0",
-    "hypercore-crypto": "^3.4.0"
+    "hypercore-crypto": "^3.4.0",
+    "protomux-rpc": "^1.5.0"
   },
   "comment": "Requires ffmpeg on PATH. For DRM (PROTECTION=drm) use a multi-DRM packager (Nimble Streamer / Unified Streaming / shaka-packager) instead of plain ffmpeg."
 }

@@ -18,7 +18,8 @@
     "test:core": "node core/test.mjs",
     "test:stream": "node tools/e2e-stream-test.mjs",
     "test:login": "node tools/e2e-login-test.mjs",
-    "test:session": "node tools/e2e-session-test.mjs"
+    "test:session": "node tools/e2e-session-test.mjs",
+    "test:register": "node tools/e2e-register-test.mjs"
   },
   "keywords": [
     "p2p",

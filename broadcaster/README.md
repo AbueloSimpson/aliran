@@ -31,7 +31,8 @@ node ../tools/e2e-stream-test.mjs                   # PASS = end-to-end P2P veri
 - [x] ffmpeg ingest → live HLS (test pattern / RTSP / HLS / file), `out/ → drive` mirror
 - [x] Verified end-to-end (ffmpeg → P2P → localhost → ffprobe) via `tools/e2e-stream-test.mjs`
 - [ ] `PROTECTION=drm` path via a multi-DRM packager (CENC/CMAF, CPIX keys) — v1.x
-- [ ] Register stream + metadata with the panel; flip `isLive` on start/stop — v0.2
-- [ ] Optional peer allowlist check before replicating — v0.2
+- [x] Auto-register stream + metadata with the panel over an authenticated RPC
+      (set `PANEL_PUBKEY` + `PUBLISHER_KEY` from `admin-cli init`) — verified `test:register`
+- [ ] Flip `isLive`/`status` on stop; optional peer allowlist check before replicating
 
 See [`../docs/content-management.md`](../docs/content-management.md).

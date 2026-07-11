@@ -19,6 +19,7 @@ import path from 'path'
 import os from 'os'
 import { config } from './config.js'
 import { startFfmpeg, mirrorDirToDrive } from './hls.js'
+import { panelClient, registerWithPanel } from './register.js'
 
 // Persist (and reuse) the feed encryption key so the feed identity is stable.
 function loadOrCreateEncryptionKey (dataDir) {
@@ -64,13 +65,39 @@ async function main () {
   })
   console.log('ffmpeg producing HLS in', outDir)
 
-  // TODO(v0.2): register {feedKey, encKey, metadata} with the panel over RPC.
+  // Auto-register the stream with the panel (if configured).
+  let panelSwarm = null
+  if (config.panelPubKey && config.publisherKey) {
+    panelSwarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
+    let registered = false
+    panelSwarm.on('connection', async (socket) => {
+      if (registered) return
+      try {
+        const { call } = panelClient(socket)
+        await registerWithPanel(call, config.publisherKey, {
+          streamId: config.streamId,
+          feedKey: feedKeyHex,
+          encryptionKey: encKeyHex,
+          title: config.title || config.streamId,
+          category: config.category ? [config.category] : [],
+          isLive: true
+        })
+        registered = true
+        console.log('Registered stream "' + config.streamId + '" with the panel.')
+      } catch (err) { console.error('Panel registration failed:', err.message) }
+    })
+    panelSwarm.join(crypto.hash(b4a.from(config.panelPubKey, 'hex')), { client: true, server: false })
+    console.log('Connecting to panel to register…')
+  } else {
+    console.log('No PANEL_PUBKEY/PUBLISHER_KEY set — seeding only (register manually with admin-cli).')
+  }
 
   const shutdown = async () => {
     console.log('\nShutting down…')
     stopMirror()
     try { ff.kill('SIGINT') } catch {}
     await swarm.destroy()
+    if (panelSwarm) { try { await panelSwarm.destroy() } catch {} }
     await store.close()
     try { fs.rmSync(outDir, { recursive: true, force: true }) } catch {}
     process.exit(0)

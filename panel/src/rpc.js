@@ -3,6 +3,7 @@ import ProtomuxRPC from 'protomux-rpc'
 import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { evaluate, powVerify, authVerify, signToken } from '@aliran/core'
+import { loadSecrets, saveSecrets } from './store.js'
 
 const json = (o) => b4a.from(JSON.stringify(o))
 
@@ -22,7 +23,7 @@ export function makeThrottle (threshold, windowSec) {
 // Attach `hello` + `login` + `session` responders to a connection. `throttle` is shared
 // across connections. `keys` = { oprf, signing }; `db` is the signed account Hyperbee;
 // `sessionTtlMs` is the token lifetime; `devicePolicy` is 'evict' (default) or 'reject'.
-export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict' }) {
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict' }) {
   const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
@@ -85,6 +86,39 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
 
     const token = signToken(keys.signing.secretKey, { userId: username, deviceId, issuedAt: now, expiresAt, tokenVersion: user.tokenVersion })
     return json({ token, expiresAt, tokenVersion: user.tokenVersion })
+  })
+
+  // Broadcaster registers a stream. Authenticated with the publisher key (Ed25519):
+  // the broadcaster signs hash(challenge || payload). The panel writes the PUBLIC catalog
+  // record (no encryptionKey) and stores the encryption key in its private secrets file.
+  rpc.respond('register', async (reqBuf) => {
+    if (!db || !keys || !keys.publisher || !dataDir) return json({ error: 'registration unavailable' })
+    let req
+    try { req = JSON.parse(b4a.toString(reqBuf)) } catch { return json({ error: 'bad request' }) }
+    const { payload, sig } = req || {}
+    const chal = challenge
+    challenge = hcrypto.randomBytes(16) // one-shot
+    if (!payload || !payload.streamId || !sig) return json({ error: 'bad request' })
+    const msg = hcrypto.hash(b4a.concat([chal, b4a.from(JSON.stringify(payload))]))
+    if (!authVerify(keys.publisher.publicKey, msg, b4a.from(sig, 'hex'))) return json({ error: 'unauthorized' })
+
+    const { streamId, encryptionKey } = payload
+    if (encryptionKey) {
+      const secrets = loadSecrets(dataDir); secrets[streamId] = encryptionKey; saveSecrets(dataDir, secrets)
+    }
+    const existing = (await db.get('catalog/' + streamId))?.value || {}
+    await db.put('catalog/' + streamId, {
+      title: payload.title ?? existing.title ?? streamId,
+      description: payload.description ?? existing.description ?? '',
+      category: payload.category ?? existing.category ?? [],
+      type: 'live',
+      protection: payload.protection ?? existing.protection ?? 'self',
+      feedKey: payload.feedKey ?? existing.feedKey ?? null,
+      isLive: payload.isLive !== false,
+      poster: existing.poster ?? null, backdrop: existing.backdrop ?? null, logo: existing.logo ?? null,
+      status: payload.status ?? (payload.isLive !== false ? 'live' : 'idle')
+    })
+    return json({ ok: true })
   })
 
   return rpc

@@ -11,6 +11,7 @@ import path from 'path'
 import crypto from 'hypercore-crypto'
 import sodium from 'sodium-native'
 import b4a from 'b4a'
+import { authKeyPair } from '@aliran/core'
 
 function keysDir (dataDir) {
   return path.join(dataDir, 'keys')
@@ -38,7 +39,18 @@ export function initKeys (dataDir) {
   sodium.randombytes_buf(oprf)
   fs.writeFileSync(oprfPath, b4a.toString(oprf, 'hex'), { mode: 0o600 })
 
-  return { publicKeyHex: b4a.toString(signing.publicKey, 'hex') }
+  // Publisher keypair (Ed25519): broadcasters sign stream registrations with the secret;
+  // the panel verifies with the public key. The secret goes in the broadcaster config.
+  const publisher = authKeyPair()
+  fs.writeFileSync(path.join(dir, 'publisher.json'), JSON.stringify({
+    publicKey: b4a.toString(publisher.publicKey, 'hex'),
+    secretKey: b4a.toString(publisher.secretKey, 'hex')
+  }, null, 2), { mode: 0o600 })
+
+  return {
+    publicKeyHex: b4a.toString(signing.publicKey, 'hex'),
+    publisherSecretHex: b4a.toString(publisher.secretKey, 'hex')
+  }
 }
 
 // Load keys, or return null if not initialized.
@@ -49,11 +61,17 @@ export function openKeys (dataDir) {
   if (!fs.existsSync(signingPath) || !fs.existsSync(oprfPath)) return null
 
   const s = JSON.parse(fs.readFileSync(signingPath, 'utf8'))
-  return {
+  const out = {
     signing: {
       publicKey: b4a.from(s.publicKey, 'hex'),
       secretKey: b4a.from(s.secretKey, 'hex')
     },
     oprf: b4a.from(fs.readFileSync(oprfPath, 'utf8').trim(), 'hex')
   }
+  const pubPath = path.join(dir, 'publisher.json')
+  if (fs.existsSync(pubPath)) {
+    const p = JSON.parse(fs.readFileSync(pubPath, 'utf8'))
+    out.publisher = { publicKey: b4a.from(p.publicKey, 'hex'), secretKey: b4a.from(p.secretKey, 'hex') }
+  }
+  return out
 }

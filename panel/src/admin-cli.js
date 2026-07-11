@@ -53,8 +53,11 @@ async function main () {
   const { pos, opts } = parseArgs(rest)
 
   if (cmd === 'init') {
-    const { publicKeyHex } = initKeys(config.dataDir)
-    console.log('Panel initialized. Public key (give to clients):\n  ' + publicKeyHex)
+    const { publicKeyHex, publisherSecretHex } = initKeys(config.dataDir)
+    console.log('Panel initialized.')
+    console.log('Panel public key (give to clients):\n  ' + publicKeyHex)
+    console.log('Publisher key (put in the broadcaster .env as PUBLISHER_KEY):\n  ' + publisherSecretHex)
+    console.log('Keys are in ' + config.dataDir + '/keys (gitignored — BACK UP).')
     return
   }
 

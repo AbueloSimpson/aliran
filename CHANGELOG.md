@@ -48,7 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests: `npm run test:session` (device eviction, forged-sig rejection, revocation);
   `test:login` now also asserts a valid session token.
 
+### v0.2 progress — broadcaster auto-registration (verified)
+- Panel generates a **publisher keypair** at `init` (secret goes in the broadcaster
+  `.env` as `PUBLISHER_KEY`). Broadcaster signs a `register` RPC; the panel verifies,
+  writes the public catalog record, and stores the encryption key privately.
+- `broadcaster/src/register.js` + wired into `index.js` (auto-registers on start).
+- Test: `npm run test:register` (register → private secret, unauthorized rejected,
+  grant → login recovers the registered key).
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- Catalog `bee.watch()` live push; broadcaster↔panel registration; assets Hyperdrive.
+- Catalog `bee.watch()` live push; assets Hyperdrive.
 - OTT UI + client app: native Android build (phone + TV), Keystore session sealing.
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

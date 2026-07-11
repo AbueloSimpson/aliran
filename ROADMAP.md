@@ -46,6 +46,9 @@ Goal: accounts, encryption, and an OTT UI.
   proves login; panel issues a signed session token; `maxDevices` enforced (evict
   oldest); revocation via `tokenVersion`. Verified (`npm run test:session`).
   Device-sealing into Android Keystore comes with the app build.
+- ✅ Broadcaster ↔ panel auto-registration: publisher key at `init`; broadcaster signs
+  a `register` RPC; panel writes the public catalog record and stores the encryption key
+  privately. Verified (`npm run test:register`).
 - ⬜ Catalog `bee.watch()` live push to the UI
 - ⬜ OTT GUI: home rails, hero, LIVE badges, channel detail, search
 - ⬜ Assets Hyperdrive (posters/art) served over localhost

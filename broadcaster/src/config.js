@@ -20,7 +20,10 @@ const int = (v, d) => (v === undefined || v === '' ? d : parseInt(v, 10))
 export const config = {
   dataDir: process.env.DATA_DIR || './data',
   panelPubKey: process.env.PANEL_PUBKEY || null,
+  publisherKey: process.env.PUBLISHER_KEY || null,
   streamId: process.env.STREAM_ID || 'default',
+  title: process.env.TITLE || null,
+  category: process.env.CATEGORY || null,
   input: process.env.INPUT || 'rtmp',
   rtmpPort: int(process.env.RTMP_PORT, 1935),
   hls: { time: int(process.env.HLS_TIME, 2), listSize: int(process.env.HLS_LIST_SIZE, 6) },
