@@ -49,9 +49,11 @@ Goal: accounts, encryption, and an OTT UI.
 - ✅ Broadcaster ↔ panel auto-registration: publisher key at `init`; broadcaster signs
   a `register` RPC; panel writes the public catalog record and stores the encryption key
   privately. Verified (`npm run test:register`).
+- ✅ Assets Hyperdrive (posters/art): panel seeds it, key advertised in the signed DB
+  (`meta/assetsKey`), `admin-cli upload-art`, client serves `/assets/*` over localhost.
+  Verified (`npm run test:assets`).
 - ⬜ Catalog `bee.watch()` live push to the UI
 - ⬜ OTT GUI: home rails, hero, LIVE badges, channel detail, search
-- ⬜ Assets Hyperdrive (posters/art) served over localhost
 - ⬜ Android **TV** target (leanback + D-pad focus) from the same APK
 
 **Exit criteria:** username/password login validated against the P2P DB; browse a

@@ -56,7 +56,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test: `npm run test:register` (register → private secret, unauthorized rejected,
   grant → login recovers the registered key).
 
+### v0.2 progress — assets pipeline (verified)
+- Panel seeds an assets Hyperdrive; its key is advertised in the signed DB
+  (`meta/assetsKey`). `admin-cli upload-art <stream> <poster|backdrop|logo> <file>`
+  writes art and updates the catalog. Client opens the assets replica and serves
+  `/assets/*` over the localhost media server.
+- Test: `npm run test:assets` (upload → P2P replication → localhost serve, bytes match).
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- Catalog `bee.watch()` live push; assets Hyperdrive.
+- Catalog `bee.watch()` live push to the UI.
 - OTT UI + client app: native Android build (phone + TV), Keystore session sealing.
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

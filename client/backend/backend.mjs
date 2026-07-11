@@ -28,7 +28,7 @@ import { panelClient, login as oprfLogin } from './login.mjs'
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
 
-let store, swarm, panelBee, call, server
+let store, swarm, panelBee, call, server, assetsDrive
 const entitled = new Map() // streamId -> { feedKey, encryptionKey }
 
 async function ensureStore () {
@@ -55,6 +55,7 @@ async function boot (panelPubKey) {
 async function login (username, password) {
   if (!call) { send({ type: 'login-error', message: 'not connected to panel' }); return }
   const { streams } = await oprfLogin(call, panelBee, username, password)
+  await openAssets()
   entitled.clear()
   const display = streams.map((s) => {
     entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey })
@@ -67,6 +68,17 @@ async function play (streamId) {
   const keys = entitled.get(streamId)
   if (!keys) { send({ type: 'error', message: 'not entitled to ' + streamId }); return }
   await serveFeed(keys.feedKey, keys.encryptionKey)
+}
+
+// Open the panel's assets Hyperdrive (posters/art) so the localhost server can serve
+// /assets/* for the OTT UI. Key is advertised in the signed DB under meta/assetsKey.
+async function openAssets () {
+  if (assetsDrive || !panelBee) return
+  const meta = await panelBee.get('meta/assetsKey')
+  if (!meta || !meta.value.key) return
+  assetsDrive = new Hyperdrive(store.namespace('assets-replica'), b4a.from(meta.value.key, 'hex'))
+  await assetsDrive.ready()
+  swarm.join(assetsDrive.discoveryKey, { client: true, server: true })
 }
 
 // Replicate an encrypted feed + serve it on localhost with Range for react-native-video.
@@ -87,7 +99,10 @@ function driveRequest (drive) {
   return async function (req, res) {
     try {
       let p = decodeURIComponent((req.url || '/').split('?')[0]); if (p === '/') p = '/index.m3u8'
-      const entry = await drive.entry(p)
+      // /assets/* is served from the panel's assets drive (posters/art).
+      let target = drive
+      if (p.startsWith('/assets/') && assetsDrive) { target = assetsDrive; p = p.slice('/assets'.length) }
+      const entry = await target.entry(p)
       if (!entry || !entry.value.blob) { res.writeHead(404); return res.end('not found') }
       const size = entry.value.blob.byteLength
       const range = req.headers.range
@@ -99,14 +114,14 @@ function driveRequest (drive) {
         if (isNaN(start) || isNaN(end) || start > end || end >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end() }
         const wanted = end - start + 1
         res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
-        const rs = drive.createReadStream(p, { start })
+        const rs = target.createReadStream(p, { start })
         let sent = 0
         rs.on('data', (chunk) => { if (sent >= wanted) return; const out = sent + chunk.length > wanted ? chunk.subarray(0, wanted - sent) : chunk; sent += out.length; res.write(out); if (sent >= wanted) { res.end(); rs.destroy() } })
         rs.on('end', () => { if (sent < wanted) res.end() })
         rs.on('error', () => { try { res.destroy() } catch {} })
       } else {
         res.writeHead(200, { ...headers, 'Content-Length': String(size) })
-        drive.createReadStream(p).pipe(res)
+        target.createReadStream(p).pipe(res)
       }
     } catch (err) { res.writeHead(500); res.end('server error: ' + (err && err.message)) }
   }

@@ -8,6 +8,8 @@
 
 import readline from 'readline'
 import { Writable } from 'stream'
+import fs from 'fs'
+import path from 'path'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import {
@@ -62,7 +64,7 @@ async function main () {
   }
 
   const keys = requireKeys()
-  const { store, db } = await openStore(config.dataDir, keys)
+  const { store, db, assets } = await openStore(config.dataDir, keys)
   const done = async () => { await store.close() }
 
   switch (cmd) {
@@ -179,6 +181,20 @@ async function main () {
       if (opts.live != null) c.isLive = opts.live === true || /^(1|true|yes)$/i.test(opts.live)
       await db.put('catalog/' + id, c)
       console.log(`Updated metadata for "${id}".`)
+      break
+    }
+
+    case 'upload-art': {
+      const [id, kind, file] = pos
+      if (!id || !kind || !file) return usage(await done())
+      if (!['poster', 'backdrop', 'logo'].includes(kind)) { console.error('kind must be poster|backdrop|logo'); break }
+      if (!fs.existsSync(file)) { console.error('file not found:', file); break }
+      const ext = path.extname(file) || '.bin'
+      const p = `/${id}/${kind}${ext}`
+      await assets.put(p, fs.readFileSync(file))
+      const node = await db.get('catalog/' + id)
+      if (node) { node.value[kind] = 'assets' + p; await db.put('catalog/' + id, node.value) }
+      console.log(`Uploaded ${kind} for "${id}" → assets${p}`)
       break
     }
 

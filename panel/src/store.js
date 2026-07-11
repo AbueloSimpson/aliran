@@ -6,9 +6,11 @@
 
 import Corestore from 'corestore'
 import Hyperbee from 'hyperbee'
+import Hyperdrive from 'hyperdrive'
 import fs from 'fs'
 import path from 'path'
 import sodium from 'sodium-native'
+import b4a from 'b4a'
 
 export async function openStore (dataDir, keys) {
   const store = new Corestore(dataDir)
@@ -16,7 +18,16 @@ export async function openStore (dataDir, keys) {
   const core = store.get({ keyPair: keys.signing })
   const db = new Hyperbee(core, { keyEncoding: 'utf-8', valueEncoding: 'json' })
   await db.ready()
-  return { store, db, core }
+
+  // Assets Hyperdrive (posters/art). Panel-owned, replicated to clients; its key is
+  // advertised in the signed DB under meta/assetsKey so clients can discover it.
+  const assets = new Hyperdrive(store.namespace('assets'))
+  await assets.ready()
+  const assetsKeyHex = b4a.toString(assets.key, 'hex')
+  const metaNode = await db.get('meta/assetsKey')
+  if (!metaNode || metaNode.value.key !== assetsKeyHex) await db.put('meta/assetsKey', { key: assetsKeyHex })
+
+  return { store, db, core, assets }
 }
 
 // Argon2id parameters from config, recorded per-user so the client verifies with the
