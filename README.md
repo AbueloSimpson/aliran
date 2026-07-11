@@ -80,6 +80,16 @@ Start at [`docs/README.md`](docs/README.md). Highlights:
 See [`ROADMAP.md`](ROADMAP.md) for the path from alpha to a production-ready 1.0
 (streaming → auth/OTT UI → HA/hardening) and the optional modules (VOD, DRM, geo).
 
+## Support
+
+Aliran is free and open source. If it's useful to you and you'd like to help fund
+its development, you can buy me a coffee:
+
+[![Support on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/abuelosimpson)
+
+Every contribution is appreciated and goes toward building the Android app and the
+optional modules on the [Roadmap](ROADMAP.md).
+
 ## ⚠️ Content-rights disclaimer
 
 Aliran is neutral infrastructure. **Operators are solely responsible** for holding
