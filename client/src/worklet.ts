@@ -4,9 +4,10 @@
 // @ts-expect-error — provided natively by react-native-bare-kit
 import { Worklet } from 'react-native-bare-kit'
 import b4a from 'b4a'
-// The bundle produced by `npm run bundle-backend`.
-// @ts-expect-error — resolved at build time
-import bundle from '../backend/app.bundle'
+// Base64-encoded Bare bundle produced by `npm run bundle-backend` (app.bundle.js is a
+// generated CommonJS module: `module.exports = "<base64>"`). Decoded to bytes below.
+// @ts-expect-error — generated build artifact, present after bundling
+import bundleBase64 from '../backend/app.bundle.js'
 
 export type BackendMessage =
   | { type: 'ready' }
@@ -35,7 +36,9 @@ export class Backend {
   private listeners = new Set<(m: BackendMessage) => void>()
 
   start (panelPubKey: string) {
-    this.worklet.start('/app.bundle', bundle)
+    // Pass the bundle as bytes (TypedArray -> startBytes) so the binary bare-bundle is
+    // preserved intact; a UTF-8 string would corrupt it. Filename ext must be .bundle.
+    this.worklet.start('/app.bundle', b4a.from(bundleBase64, 'base64'))
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
     this.send({ panelPubKey })

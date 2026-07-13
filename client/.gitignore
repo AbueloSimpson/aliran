@@ -57,7 +57,7 @@ yarn-error.log
 *.jsbundle
 
 # Bare worklet bundle (build artifact — regenerate with `npm run bundle-backend`)
-backend/app.bundle
+backend/app.bundle*
 
 # Ruby / CocoaPods
 **/Pods/
