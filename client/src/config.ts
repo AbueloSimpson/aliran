@@ -17,6 +17,9 @@ export interface ServiceDescriptor {
     colors?: { primary?: string; background?: string; accent?: string }
   }
   bootstrap?: string[]
+  // Dev-only auto-login credentials for the worklet smoke test (local service.json
+  // is gitignored). Never present in a shipped descriptor.
+  dev?: { username: string; password: string }
 }
 
 export function loadServiceDescriptor (): ServiceDescriptor {

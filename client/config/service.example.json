@@ -10,5 +10,6 @@
       "accent": "#22D3EE"
     }
   },
-  "bootstrap": []
+  "bootstrap": [],
+  "//dev": "Optional local-dev block (auto-login for the worklet smoke test): \"dev\": { \"username\": \"...\", \"password\": \"...\" }. Never include it in a shipped descriptor."
 }
