@@ -44,7 +44,10 @@ a **phone** and an **Android TV** target. See [`../docs/client-build.md`](../doc
 ## Status / TODO
 
 - [x] App navigation, IPC wrapper, theme, Login/Home/Player screens, backend worklet skeleton
-- [ ] Native project init + `react-native-bare-kit`/`react-native-video` linking
+- [x] Native project init — `react-native-tvos` (RN 0.83.0-0 / React 19); `android/` builds & runs
+  the empty app on the emulator (New Arch / Fabric, Hermes). Entry is the scaffold `App.tsx`;
+  `src/` is present but not yet wired.
+- [ ] `react-native-bare-kit`/`react-native-video`/navigation linking
 - [ ] Implement OPRF login + session sealing (Android Keystore/StrongBox) in the worklet
 - [ ] Localhost Range server mapping to the decrypting Hyperdrive + `/assets`
 - [ ] Live catalog `bee.watch()` → stream list; peer-count status
