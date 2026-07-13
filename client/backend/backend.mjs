@@ -32,7 +32,7 @@ import { panelClient, login as oprfLogin } from './login.mjs'
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
 
-let store, swarm, panelBee, call, server, assetsDrive, feedDrive
+let store, swarm, panelBee, call, server, assetsDrive, feedDrive, statusTimer
 const entitled = new Map() // streamId -> { feedKey, encryptionKey }
 
 // The worklet's cwd on Android is '/' (bare-kit sets no cwd/HOME), so a relative
@@ -42,7 +42,11 @@ function storeDir () {
   try {
     const name = b4a.toString(fs.readFileSync('/proc/self/cmdline')).split('\0')[0].trim()
     if (/^[a-zA-Z][a-zA-Z0-9_.]*$/.test(name)) {
+      // The files dir may not exist yet (fresh install, or right after `pm clear`
+      // wipes it) — create it rather than probing, or the worklet falls back to a
+      // relative path that ENOENTs from cwd '/'.
       const dir = '/data/data/' + name + '/files'
+      try { fs.mkdirSync(dir, { recursive: true }) } catch {}
       if (fs.existsSync(dir)) return dir + '/aliran-store'
     }
   } catch {}
@@ -135,12 +139,20 @@ async function ensureServer () {
 
 // Replicate an encrypted feed + serve it on localhost with Range for react-native-video.
 async function serveFeed (feedKeyHex, encKeyHex) {
+  send({ type: 'status', state: 'feed:open' })
   await ensureStore()
   const drive = new Hyperdrive(store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
   await drive.ready()
+  send({ type: 'status', state: 'feed:ready' })
   swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
   feedDrive = drive
   send({ type: 'port', port: await ensureServer() })
+  // Feed-health ticker for the player overlay: how many peers serve the current feed.
+  if (!statusTimer) {
+    statusTimer = setInterval(() => {
+      if (feedDrive) send({ type: 'status', peers: feedDrive.core.peers.length })
+    }, 3000)
+  }
 }
 
 // Range-capable Hyperdrive request handler (mirrors tools/lib/serve-drive.js, verified on desktop).

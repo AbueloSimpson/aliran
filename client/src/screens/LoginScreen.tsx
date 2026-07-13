@@ -5,7 +5,13 @@ import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend } from '../worklet'
+import { loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
+
+// Dev-only convenience: the gitignored local service.json may carry dev credentials
+// (see config.ts ServiceDescriptor.dev) — prefill them so a dev build signs in with
+// one tap. Absent in any shipped descriptor, so production builds start empty.
+const dev = loadServiceDescriptor().dev
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Login'> & { backendReady: boolean }
 
@@ -18,8 +24,8 @@ const RETRY_MS = 2500
 const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up
 
 export function LoginScreen ({ navigation, backendReady }: Props) {
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
+  const [username, setUsername] = useState(dev?.username ?? '')
+  const [password, setPassword] = useState(dev?.password ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const tries = useRef(0)

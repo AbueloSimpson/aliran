@@ -31,6 +31,9 @@ export class Backend {
   // Last entitlement list from the backend. Screens that mount AFTER login (e.g. Home,
   // navigated to on {type:'streams'}) read this instead of missing the one-shot message.
   streams: Stream[] = []
+  // Last media-server port. The server is persistent (one port per session), and the
+  // one-shot {type:'port'} reply to play() usually lands BEFORE PlayerScreen mounts.
+  port: number | null = null
 
   private worklet = new Worklet()
   private ipc: any
@@ -62,7 +65,9 @@ export class Backend {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line) as BackendMessage
+        console.log('[backend]', line.length > 200 ? msg.type : line)
         if (msg.type === 'streams') this.streams = msg.streams
+        if (msg.type === 'port') this.port = msg.port
         this.listeners.forEach(fn => fn(msg))
       } catch { /* ignore partial/invalid */ }
     }

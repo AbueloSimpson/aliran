@@ -22,7 +22,8 @@
     "react-native": "npm:react-native-tvos@0.83.0-0",
     "react-native-bare-kit": "^0.13.3",
     "react-native-safe-area-context": "^5.5.2",
-    "react-native-screens": "4.25.0"
+    "react-native-screens": "4.25.0",
+    "react-native-video": "6.19.2"
   },
   "_appDependencies_TODO": "Added per segment as screens are wired (pin against react-native-tvos 0.83 — latest majors require RN>=0.84): @react-navigation/native + @react-navigation/native-stack + react-native-screens (S6a/S6b), react-native-video (S6c).",
   "devDependencies": {

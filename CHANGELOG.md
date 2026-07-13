@@ -87,6 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android release builds permit cleartext HTTP **only to loopback** via a network
   security config — required for the on-device media/assets server (API 28+ blocks
   cleartext by default; also needed by the S6c video player).
+- **Player screen — live P2P playback verified on-device**: tapping a channel sends
+  `{streamId}` to the worklet, which replicates the encrypted feed over the DHT,
+  re-seeds it, and serves it on the session's localhost port; `react-native-video`
+  (6.19.2, ExoPlayer HLS) plays `http://127.0.0.1:<port>/index.m3u8` with LIVE badge,
+  peer count, buffering indicator, and auto-retry while the live edge replicates.
+  Verified end-to-end on the emulator: origin HLS → desktop broadcaster (ffmpeg →
+  encrypted Hyperdrive) → Hyperswarm → phone worklet → ExoPlayer.
+- Client backend hardening: the Android store dir is created (not just probed) so a
+  fresh install or `pm clear` can't strand the worklet; playback errors now surface
+  on the Player screen instead of an endless spinner.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.
