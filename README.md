@@ -99,6 +99,5 @@ regional/legal requirements in the territories they serve. See
 
 ## License
 
-[MIT](LICENSE) — see the file for details. MIT is one of the most permissive,
-open licenses available: anyone is free to use, modify, and redistribute this
-code, including in commercial and closed-source projects.
+[MIT](LICENSE) — see the file for details. Free for any use: edit it, redistribute
+it, or use it commercially.
