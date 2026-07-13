@@ -99,5 +99,5 @@ regional/legal requirements in the territories they serve. See
 
 ## License
 
-[MIT](LICENSE) — see the file for details. (Chosen for maximum adoption; change if
-you prefer AGPL-3.0 to keep hosted forks open.)
+[MIT](LICENSE) — see the file for details. MIT was chosen for maximum adoption; a
+copyleft license such as AGPL-3.0 would instead keep hosted forks open.
