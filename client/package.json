@@ -9,7 +9,8 @@
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
-    "test": "jest"
+    "test": "jest",
+    "bundle-backend": "bare-pack --preset android --builtins backend/bare-builtins.cjs --out backend/app.bundle backend/backend.mjs"
   },
   "dependencies": {
     "react": "19.2.0",
@@ -17,7 +18,7 @@
     "@react-native/new-app-screen": "0.83.0",
     "react-native-safe-area-context": "^5.5.2"
   },
-  "_appDependencies_TODO": "Added per segment as screens/worklet are wired (pin against react-native-tvos 0.83 — latest majors require RN>=0.84): react-native-bare-kit + b4a + bare-pack (S5a/S5b), @react-navigation/native + @react-navigation/native-stack + react-native-screens (S6a/S6b), react-native-video (S6c).",
+  "_appDependencies_TODO": "Added per segment as screens/worklet are wired (pin against react-native-tvos 0.83 — latest majors require RN>=0.84): react-native-bare-kit + b4a (S5b), @react-navigation/native + @react-navigation/native-stack + react-native-screens (S6a/S6b), react-native-video (S6c).",
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@babel/preset-env": "^7.25.3",
@@ -30,6 +31,7 @@
     "@react-native/metro-config": "0.83.0",
     "@react-native/typescript-config": "0.83.0",
     "@types/jest": "^29.5.13",
+    "bare-pack": "^2.2.0",
     "@types/react": "^19.2.0",
     "@types/react-test-renderer": "^19.1.0",
     "eslint": "^8.19.0",

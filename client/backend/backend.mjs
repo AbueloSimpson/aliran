@@ -1,6 +1,8 @@
 // Aliran client backend — runs inside the Android app via react-native-bare-kit.
 //
-// Bundle with:  npx bare-pack --target android --linked --out backend/app.bundle backend/backend.mjs
+// Bundle with:  npm run bundle-backend   (from client/)
+//   -> bare-pack --preset android --builtins backend/bare-builtins.cjs --out backend/app.bundle backend/backend.mjs
+// (app.bundle is a build artifact, gitignored; regenerate it as part of the app build.)
 //
 // Streaming (v0.1) and OPRF login (v0.2) are both wired here and verified on desktop
 // via the tools/ harnesses (tools/e2e-stream-test.mjs, tools/e2e-login-test.mjs), which
