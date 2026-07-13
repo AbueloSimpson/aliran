@@ -15,7 +15,12 @@
 //        { streamId }                 -> play an entitled stream -> { port }
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
 //   out: { type:'ready' } | { type:'streams', streams } | { type:'port', port }
-//        { type:'login-error'|'error', message }
+//        { type:'status', state|peers } | { type:'login-error'|'error', message }
+//
+// The on-disk store is a DISPOSABLE replica cache. If a previous process died
+// mid-write, opening a core can fail permanently (OPLOG_CORRUPT et al) — recovery
+// purges the whole store and retries once (see recover.mjs); everything re-replicates
+// from peers and the in-memory session (entitled stream keys) survives.
 
 /* global BareKit */
 import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for the Bare worklet
@@ -28,11 +33,13 @@ import http from 'bare-http1'
 import fs from 'bare-fs'
 import b4a from 'b4a'
 import { panelClient, login as oprfLogin } from './login.mjs'
+import { isCorruptionError, withRecovery } from './recover.mjs'
 
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
 
 let store, swarm, panelBee, call, server, assetsDrive, feedDrive, statusTimer
+let panelKey, assetsOpen, purging
 const entitled = new Map() // streamId -> { feedKey, encryptionKey }
 
 // The worklet's cwd on Android is '/' (bare-kit sets no cwd/HOME), so a relative
@@ -73,15 +80,60 @@ async function ensureStore () {
 }
 
 async function boot (panelPubKey) {
-  await ensureStore()
-  panelBee = new Hyperbee(store.get({ key: b4a.from(panelPubKey, 'hex') }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
-  await panelBee.ready()
-  swarm.join(hcrypto.hash(b4a.from(panelPubKey, 'hex')), { client: true, server: false })
+  panelKey = panelPubKey
+  await recover(openPanel)
   send({ type: 'ready' })
+}
+
+// Open (or re-open, after a corruption purge) the panel DB and join its topic.
+async function openPanel () {
+  await ensureStore()
+  panelBee = new Hyperbee(store.get({ key: b4a.from(panelKey, 'hex') }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
+  await panelBee.ready()
+  swarm.join(hcrypto.hash(b4a.from(panelKey, 'hex')), { client: true, server: false })
+}
+
+// Any open of on-disk replica state can fail with a corruption error if a previous
+// process died mid-write (observed: emulator GPU crash during playback -> OPLOG_CORRUPT
+// forever). The store is a disposable cache: purge it, rebuild, retry the op once; a
+// second failure surfaces over IPC as usual.
+function recover (op) {
+  return withRecovery(op, purge, (err) => send({ type: 'status', state: 'store:reset', message: String(err && err.message || err) }))
+}
+
+// Single-flight purge: tear down everything holding the store, delete it from disk,
+// and re-arm the panel connection. Feed/assets drives re-open on demand; the in-memory
+// session (entitled stream keys) survives, so the user does not have to log in again.
+function purge () {
+  if (!purging) purging = purgeAndRebuild().finally(() => { purging = null })
+  return purging
+}
+
+async function purgeAndRebuild () {
+  if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
+  const closing = [feedDrive, assetsDrive, panelBee, store]
+  feedDrive = assetsDrive = panelBee = store = null
+  assetsOpen = null
+  call = null
+  if (swarm) { const s = swarm; swarm = null; try { await s.destroy() } catch {} }
+  for (const c of closing) { if (c) { try { await c.close() } catch {} } } // corrupt cores may refuse to close
+  try { fs.rmSync(storeDir(), { recursive: true, force: true }) } catch {}
+  if (panelKey) {
+    await openPanel()
+    openAssets().catch(() => {}) // posters re-replicate in the background once the panel reconnects
+  }
 }
 
 async function login (username, password) {
   if (!call) { send({ type: 'login-error', message: 'not connected to panel' }); return }
+  // On a corrupt store, recovery purges it and retries; the retry then usually fails
+  // fast with 'not connected to panel' (the purge dropped the panel socket), which the
+  // login screen already treats as transient and retries until the swarm reconnects.
+  send({ type: 'streams', streams: await recover(() => doLogin(username, password)) })
+}
+
+async function doLogin (username, password) {
+  if (!call) throw new Error('not connected to panel')
   const { streams } = await oprfLogin(call, panelBee, username, password)
   await openAssets()
   const port = await ensureServer() // posters must be loadable before anything plays
@@ -99,7 +151,7 @@ async function login (username, password) {
       logo: assetUrl(port, s.logo)
     }
   })
-  send({ type: 'streams', streams: display })
+  return display
 }
 
 // Catalog art fields hold drive paths like 'assets/<id>/poster.png'; turn them into
@@ -117,7 +169,19 @@ async function play (streamId) {
 
 // Open the panel's assets Hyperdrive (posters/art) so the localhost server can serve
 // /assets/* for the OTT UI. Key is advertised in the signed DB under meta/assetsKey.
-async function openAssets () {
+// Single-flight: login and post-purge recovery can call this concurrently.
+function openAssets () {
+  if (!assetsOpen) {
+    const p = doOpenAssets().then(
+      () => { if (assetsOpen === p && !assetsDrive) assetsOpen = null }, // nothing advertised yet — re-check on the next login
+      (err) => { if (assetsOpen === p) assetsOpen = null; throw err }
+    )
+    assetsOpen = p
+  }
+  return assetsOpen
+}
+
+async function doOpenAssets () {
   if (assetsDrive || !panelBee) return
   const meta = await panelBee.get('meta/assetsKey')
   if (!meta || !meta.value.key) return
@@ -140,9 +204,12 @@ async function ensureServer () {
 // Replicate an encrypted feed + serve it on localhost with Range for react-native-video.
 async function serveFeed (feedKeyHex, encKeyHex) {
   send({ type: 'status', state: 'feed:open' })
-  await ensureStore()
-  const drive = new Hyperdrive(store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
-  await drive.ready()
+  const drive = await recover(async () => {
+    await ensureStore()
+    const d = new Hyperdrive(store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
+    await d.ready()
+    return d
+  })
   send({ type: 'status', state: 'feed:ready' })
   swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
   feedDrive = drive
@@ -187,7 +254,12 @@ function driveRequest () {
         res.writeHead(200, { ...headers, 'Content-Length': String(size) })
         target.createReadStream(p).pipe(res)
       }
-    } catch (err) { res.writeHead(500); res.end('server error: ' + (err && err.message)) }
+    } catch (err) {
+      // Corruption can also surface at read time (the blobs core opens lazily): heal in
+      // the background; the player's auto-retry remount re-opens the feed on the fresh store.
+      if (isCorruptionError(err)) purge().catch(() => {})
+      res.writeHead(500); res.end('server error: ' + (err && err.message))
+    }
   }
 }
 

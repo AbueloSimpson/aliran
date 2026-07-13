@@ -23,7 +23,8 @@
     "test:login": "node tools/e2e-login-test.mjs",
     "test:session": "node tools/e2e-session-test.mjs",
     "test:register": "node tools/e2e-register-test.mjs",
-    "test:assets": "node tools/e2e-assets-test.mjs"
+    "test:assets": "node tools/e2e-assets-test.mjs",
+    "test:corrupt": "node tools/e2e-corrupt-test.mjs"
   },
   "keywords": [
     "p2p",

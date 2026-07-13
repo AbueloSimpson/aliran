@@ -97,6 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Client backend hardening: the Android store dir is created (not just probed) so a
   fresh install or `pm clear` can't strand the worklet; playback errors now surface
   on the Player screen instead of an endless spinner.
+- Client store corruption recovery: the on-device Corestore is a disposable replica
+  cache, so if a crash mid-write leaves it unopenable (`OPLOG_CORRUPT` and friends —
+  previously permanent until the user wiped app data), the worklet now purges the
+  store, rebuilds the panel connection, and retries the open once before surfacing an
+  error (`client/backend/recover.mjs`); in-memory entitlements survive, everything
+  re-replicates from peers. Test: `npm run test:corrupt` (reproduces the corruption
+  locally, asserts detection + purge + clean reopen).
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.

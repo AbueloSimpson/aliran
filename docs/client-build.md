@@ -43,6 +43,17 @@ Notes:
   dependency graph — that is why `client/package.json` depends on
   `@aliran/client-backend`.
 
+## The on-device store is a disposable cache
+
+The worklet keeps its Corestore at `/data/data/<pkg>/files/aliran-store`. It holds
+**only replicas** (panel DB, assets drive, feed drives) — every byte re-replicates from
+peers, and nothing user-owned lives there. If the app process dies mid-write (crash,
+task kill), hypercore can refuse to reopen a core (`OPLOG_CORRUPT` and friends); the
+backend detects this, **wipes the store automatically and retries once**
+(`client/backend/recover.mjs`), so playback recovers without user action. Deleting the
+directory by hand (or `adb shell pm clear <pkg>`) is always safe — it only costs a
+re-replication. Verified by `npm run test:corrupt` (repo root).
+
 ## Configure the panel key
 
 - **Build-time:** put the operator `panelPubKey` + branding in `client/config`.
