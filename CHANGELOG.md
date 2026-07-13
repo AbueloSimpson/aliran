@@ -77,6 +77,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Verified on the emulator: the real `app.bundle` worklet boots and reports
   `{type:'ready'}` (smoke screen in `client/src/WorkletSmokeTest.tsx`).
 
+### Android client progress — OTT UI: login + catalog browse (verified)
+- Login screen performs the OPRF login through the worklet (retrying while the DHT
+  dials) and navigates Login → Home → Player (react-navigation, screens pinned 4.25.0).
+- Home screen: category rails + featured hero + LIVE badges; poster/backdrop art is
+  replicated P2P from the panel's assets drive and served by the worklet's localhost
+  server, which now starts at login on one persistent port (asset URLs stay valid
+  across playbacks) — art fields arrive in `{type:'streams'}` as ready-to-use URLs.
+- Android release builds permit cleartext HTTP **only to loopback** via a network
+  security config — required for the on-device media/assets server (API 28+ blocks
+  cleartext by default; also needed by the S6c video player).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.
 - OTT UI + client app: native Android build (phone + TV), Keystore session sealing.

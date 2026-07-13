@@ -32,7 +32,7 @@ import { panelClient, login as oprfLogin } from './login.mjs'
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
 
-let store, swarm, panelBee, call, server, assetsDrive
+let store, swarm, panelBee, call, server, assetsDrive, feedDrive
 const entitled = new Map() // streamId -> { feedKey, encryptionKey }
 
 // The worklet's cwd on Android is '/' (bare-kit sets no cwd/HOME), so a relative
@@ -80,12 +80,29 @@ async function login (username, password) {
   if (!call) { send({ type: 'login-error', message: 'not connected to panel' }); return }
   const { streams } = await oprfLogin(call, panelBee, username, password)
   await openAssets()
+  const port = await ensureServer() // posters must be loadable before anything plays
   entitled.clear()
   const display = streams.map((s) => {
     entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey })
-    return { id: s.id, title: s.title, description: s.description, category: s.category, isLive: s.isLive, poster: s.poster }
+    return {
+      id: s.id,
+      title: s.title,
+      description: s.description,
+      category: s.category,
+      isLive: s.isLive,
+      poster: assetUrl(port, s.poster),
+      backdrop: assetUrl(port, s.backdrop),
+      logo: assetUrl(port, s.logo)
+    }
   })
   send({ type: 'streams', streams: display })
+}
+
+// Catalog art fields hold drive paths like 'assets/<id>/poster.png'; turn them into
+// URLs on the local server, which proxies /assets/* from the panel's assets drive.
+function assetUrl (port, p) {
+  if (!p) return undefined
+  return `http://127.0.0.1:${port}/${p.replace(/^\//, '')}`
 }
 
 async function play (streamId) {
@@ -105,27 +122,38 @@ async function openAssets () {
   swarm.join(assetsDrive.discoveryKey, { client: true, server: true })
 }
 
+// One persistent localhost server for the whole session: /assets/* is served from the
+// panel's assets drive (posters/art), everything else from the currently playing feed.
+// The port never changes, so asset URLs handed out at login stay valid across plays.
+async function ensureServer () {
+  if (!server) {
+    server = http.createServer(driveRequest())
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  }
+  return server.address().port
+}
+
 // Replicate an encrypted feed + serve it on localhost with Range for react-native-video.
 async function serveFeed (feedKeyHex, encKeyHex) {
   await ensureStore()
   const drive = new Hyperdrive(store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
   await drive.ready()
   swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
-  if (server) { try { server.close() } catch {} }
-  server = http.createServer(driveRequest(drive))
-  server.listen(0, '127.0.0.1', () => send({ type: 'port', port: server.address().port }))
+  feedDrive = drive
+  send({ type: 'port', port: await ensureServer() })
 }
 
 // Range-capable Hyperdrive request handler (mirrors tools/lib/serve-drive.js, verified on desktop).
-function driveRequest (drive) {
+function driveRequest () {
   const TYPES = { '.m3u8': 'application/vnd.apple.mpegurl', '.ts': 'video/mp2t', '.m4s': 'video/iso.segment', '.mp4': 'video/mp4', '.jpg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
   const ctype = (p) => { const i = p.lastIndexOf('.'); return (i >= 0 && TYPES[p.slice(i).toLowerCase()]) || 'application/octet-stream' }
   return async function (req, res) {
     try {
       let p = decodeURIComponent((req.url || '/').split('?')[0]); if (p === '/') p = '/index.m3u8'
       // /assets/* is served from the panel's assets drive (posters/art).
-      let target = drive
+      let target = feedDrive
       if (p.startsWith('/assets/') && assetsDrive) { target = assetsDrive; p = p.slice('/assets'.length) }
+      if (!target) { res.writeHead(404); return res.end('not found') }
       const entry = await target.entry(p)
       if (!entry || !entry.value.blob) { res.writeHead(404); return res.end('not found') }
       const size = entry.value.blob.byteLength

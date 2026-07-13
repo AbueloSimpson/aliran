@@ -53,7 +53,8 @@ Goal: accounts, encryption, and an OTT UI.
   (`meta/assetsKey`), `admin-cli upload-art`, client serves `/assets/*` over localhost.
   Verified (`npm run test:assets`).
 - ⬜ Catalog `bee.watch()` live push to the UI
-- ⬜ OTT GUI: home rails, hero, LIVE badges, channel detail, search
+- 🚧 OTT GUI: login screen + home (category rails, hero, LIVE badges, P2P poster art)
+  verified on-device; remaining: player screen, channel detail, search
 - ⬜ Android **TV** target (leanback + D-pad focus) from the same APK
 
 **Exit criteria:** username/password login validated against the P2P DB; browse a
