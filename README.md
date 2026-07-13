@@ -99,5 +99,6 @@ regional/legal requirements in the territories they serve. See
 
 ## License
 
-[MIT](LICENSE) — see the file for details. MIT was chosen for maximum adoption; a
-copyleft license such as AGPL-3.0 would instead keep hosted forks open.
+[MIT](LICENSE) — see the file for details. MIT is one of the most permissive,
+open licenses available: anyone is free to use, modify, and redistribute this
+code, including in commercial and closed-source projects.
