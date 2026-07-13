@@ -10,6 +10,9 @@
     "broadcaster",
     "tools"
   ],
+  "dependencies": {
+    "@aliran/bare-node-crypto": "file:client/backend/shims/bare-node-crypto"
+  },
   "scripts": {
     "panel": "npm --workspace panel start",
     "broadcaster": "npm --workspace broadcaster start",

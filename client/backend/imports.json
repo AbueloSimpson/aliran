@@ -1,0 +1,4 @@
+{
+  "node:crypto": "@aliran/bare-node-crypto",
+  "crypto": "@aliran/bare-node-crypto"
+}

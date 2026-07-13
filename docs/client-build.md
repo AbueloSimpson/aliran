@@ -17,23 +17,31 @@ Install in order:
 
 Windows is fully supported for Android builds (no Mac needed).
 
-## Initialize the native project
+## Install dependencies
 
-> The `client/` folder currently holds source stubs and config. The native
-> `android/` project is generated once by the RN CLI:
+The native `android/` project is checked in (react-native-tvos 0.83, New Architecture).
 
 ```bash
 cd client
-# scaffold a react-native-tvos app, then copy in src/, backend/, config/
-# (see the TODO in client/README.md for exact steps)
-npm install
+npm install            # app deps (also links backend/ via @aliran/client-backend)
+cd backend && npm install && cd ..   # backend worklet deps (@aliran/core + hyper stack)
 ```
 
 ## Bundle the Bare backend
 
 ```bash
-npx bare-pack --target android --linked --out backend/app.bundle backend/backend.mjs
+npm run bundle-backend   # bare-pack --preset android → backend/app.bundle.js (base64)
 ```
+
+Notes:
+- `backend/imports.json` remaps `node:crypto` to `@aliran/bare-node-crypto` (a small
+  sodium-backed WebCrypto shim) because the bare-kit worklet runtime has no node-style
+  builtins; `backend/globals.mjs` polyfills TextEncoder/TextDecoder/`globalThis.crypto`.
+- Native addons (sodium-native ×2 majors, udx-native, quickbit/rabin/simdle/crc,
+  fs-native-extensions) ship as npm prebuilds and are packaged per-ABI automatically by
+  `react-native-bare-kit`'s gradle `link` task (`bare-link`), which walks the app's
+  dependency graph — that is why `client/package.json` depends on
+  `@aliran/client-backend`.
 
 ## Configure the panel key
 

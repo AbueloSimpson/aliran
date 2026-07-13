@@ -63,6 +63,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/assets/*` over the localhost media server.
 - Test: `npm run test:assets` (upload → P2P replication → localhost serve, bytes match).
 
+### Android client progress — Bare backend runs on-device (verified)
+- `client/` is a real `react-native-tvos` 0.83 project (`android/` native build, app id
+  `com.aliranclient`); `react-native-bare-kit` boots a Bare worklet with JS↔Bare IPC.
+- The P2P backend bundles with `npm run bundle-backend` (bare-pack, `--preset android`)
+  and the **full Holepunch native addon stack loads on Android** — sodium-native (4.x
+  **and** 5.x), udx-native, quickbit/rabin/simdle/crc, fs-native-extensions — packaged
+  per-ABI by bare-kit's `bare-link` gradle step from npm prebuilds (no cross-compiling).
+- Worklet-runtime gaps shimmed: `node:crypto` → `@aliran/bare-node-crypto`
+  (sodium-backed WebCrypto, wired via the bare-pack global imports map),
+  TextEncoder/TextDecoder/`globalThis.crypto` polyfills (`client/backend/globals.mjs`),
+  and an Android-aware corestore path (worklet cwd is `/`).
+- Verified on the emulator: the real `app.bundle` worklet boots and reports
+  `{type:'ready'}` (smoke screen in `client/src/WorkletSmokeTest.tsx`).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.
 - OTT UI + client app: native Android build (phone + TV), Keystore session sealing.

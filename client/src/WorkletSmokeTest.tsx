@@ -1,17 +1,12 @@
-// S5b smoke test — verifies the react-native-bare-kit worklet runtime works end to end.
+// S5b/S5c smoke test — verifies the react-native-bare-kit worklet runtime end to end.
 //
-// This boots a tiny INLINE Bare worklet and round-trips a message over IPC, proving that
-// react-native-bare-kit builds + runs on this RN 0.83 (New Arch) app and that the JS<->Bare
-// IPC channel works.
+// Card 1 (S5b): boots a tiny INLINE Bare worklet and round-trips a message over IPC,
+// proving bare-kit builds + runs on this RN 0.83 (New Arch) app and JS<->Bare IPC works.
 //
-// It intentionally does NOT boot the real P2P backend (client/backend/app.bundle) yet:
-//   1. The Holepunch native addons the bundle needs (sodium-native, udx-native, quickbit,
-//      rabin, simdle, crc, fs-native-extensions) are NOT part of the bare-kit runtime and
-//      must still be cross-compiled for Android — see the dedicated native-addons segment.
-//   2. The real bundle should be delivered to the worklet as a native ASSET (Worklet
-//      `assets` + startFile), not embedded as base64 in the JS bundle — embedding ~3.9MB
-//      bloats the dev JS bundle and breaks the Metro bundle download. worklet.ts keeps the
-//      base64 path as a release-mode reference; asset loading is wired with the addons.
+// Card 2 (S5c): boots the REAL P2P backend (client/backend/app.bundle via bare-pack),
+// which imports the whole Holepunch stack — sodium-native (4.x AND 5.x), udx-native,
+// quickbit/rabin/simdle/crc, fs-native-extensions — so a `{type:'ready'}` here proves all
+// Android addon .so files load and initialize. The panel key comes from config/service.json.
 //
 // Temporary app root until S6 wires the real Login/Home/Player navigation.
 
@@ -20,9 +15,12 @@ import { ScrollView, Text, View, StyleSheet } from 'react-native'
 // @ts-expect-error — native module (react-native-bare-kit)
 import { Worklet } from 'react-native-bare-kit'
 import b4a from 'b4a'
+import { backend, type BackendMessage } from './worklet'
+import { loadServiceDescriptor } from './config'
 
 export default function WorkletSmokeTest () {
   const [hello, setHello] = useState('(booting…)')
+  const [log, setLog] = useState<string[]>(['(starting backend worklet…)'])
 
   useEffect(() => {
     try {
@@ -39,31 +37,42 @@ export default function WorkletSmokeTest () {
     }
   }, [])
 
+  useEffect(() => {
+    try {
+      const { panelPubKey } = loadServiceDescriptor()
+      const off = backend.onMessage((m: BackendMessage) => {
+        setLog((prev) => [...prev.slice(-19), JSON.stringify(m)])
+      })
+      backend.start(panelPubKey)
+      setLog((prev) => [...prev, `started; panel=${panelPubKey.slice(0, 16)}…`])
+      return () => { off() }
+    } catch (e: any) {
+      setLog((prev) => [...prev, 'ERROR: ' + String(e?.message || e)])
+    }
+  }, [])
+
   const ok = hello.startsWith('echo:')
+  const ready = log.some((l) => l.includes('"ready"'))
 
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.h1}>Aliran — Worklet smoke test</Text>
-        <Text style={styles.sub}>S5b · react-native-bare-kit → Bare worklet IPC</Text>
+        <Text style={styles.sub}>S5b · bare-kit IPC &nbsp;·&nbsp; S5c · real backend + native addons</Text>
 
         <View style={styles.card}>
           <Text style={styles.label}>bare-kit runtime (inline hello):</Text>
           <Text style={[styles.value, { color: ok ? '#4ADE80' : '#E2E8F0' }]} selectable>{hello}</Text>
-          <Text style={styles.note}>
-            {ok
-              ? 'Worklet booted and echoed over IPC — the Bare runtime works on-device.'
-              : 'Waiting for the worklet to echo back…'}
-          </Text>
         </View>
 
         <View style={styles.card}>
           <Text style={styles.label}>P2P backend (app.bundle):</Text>
-          <Text style={styles.value}>deferred</Text>
-          <Text style={styles.note}>
-            Needs the Holepunch native addons (sodium-native, udx-native, …) cross-compiled
-            for Android + asset-based bundle loading. Tracked as its own segment.
+          <Text style={[styles.value, { color: ready ? '#4ADE80' : '#E2E8F0' }]}>
+            {ready ? 'READY — Holepunch addons loaded' : 'waiting for {type:ready}…'}
           </Text>
+          {log.map((l, i) => (
+            <Text key={i} style={styles.logLine} selectable>{l}</Text>
+          ))}
         </View>
       </ScrollView>
     </View>
@@ -78,5 +87,5 @@ const styles = StyleSheet.create({
   card: { backgroundColor: '#111a2e', borderRadius: 12, padding: 16, gap: 6 },
   label: { fontSize: 14, fontWeight: 'bold', color: '#93C5FD' },
   value: { fontSize: 15, color: '#E2E8F0', fontFamily: 'monospace' },
-  note: { fontSize: 12, color: '#94A3B8', marginTop: 8 }
+  logLine: { fontSize: 11, color: '#94A3B8', fontFamily: 'monospace' }
 })

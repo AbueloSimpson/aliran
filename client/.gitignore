@@ -59,6 +59,9 @@ yarn-error.log
 # Bare worklet bundle (build artifact — regenerate with `npm run bundle-backend`)
 backend/app.bundle*
 
+# Per-deployment service descriptor (copy from config/service.example.json)
+config/service.json
+
 # Ruby / CocoaPods
 **/Pods/
 /vendor/bundle/

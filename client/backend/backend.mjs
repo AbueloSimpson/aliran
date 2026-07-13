@@ -18,12 +18,14 @@
 //        { type:'login-error'|'error', message }
 
 /* global BareKit */
+import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for the Bare worklet
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
 import Hyperbee from 'hyperbee'
 import Hyperdrive from 'hyperdrive'
 import hcrypto from 'hypercore-crypto'
 import http from 'bare-http1'
+import fs from 'bare-fs'
 import b4a from 'b4a'
 import { panelClient, login as oprfLogin } from './login.mjs'
 
@@ -33,9 +35,23 @@ function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
 let store, swarm, panelBee, call, server, assetsDrive
 const entitled = new Map() // streamId -> { feedKey, encryptionKey }
 
+// The worklet's cwd on Android is '/' (bare-kit sets no cwd/HOME), so a relative
+// store path fails with ENOENT. Derive the app sandbox from the process name
+// (/proc/self/cmdline == the Android package name) and store under its files dir.
+function storeDir () {
+  try {
+    const name = b4a.toString(fs.readFileSync('/proc/self/cmdline')).split('\0')[0].trim()
+    if (/^[a-zA-Z][a-zA-Z0-9_.]*$/.test(name)) {
+      const dir = '/data/data/' + name + '/files'
+      if (fs.existsSync(dir)) return dir + '/aliran-store'
+    }
+  } catch {}
+  return './aliran-store' // desktop / non-Android fallback
+}
+
 async function ensureStore () {
   if (store) return
-  store = new Corestore('./aliran-store')
+  store = new Corestore(storeDir())
   await store.ready()
   swarm = new Hyperswarm()
   // The first connection after boot() is the panel (we join only its topic first); wire

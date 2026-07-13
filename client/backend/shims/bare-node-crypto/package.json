@@ -1,0 +1,11 @@
+{
+  "name": "@aliran/bare-node-crypto",
+  "version": "0.0.1",
+  "description": "Minimal node:crypto stand-in for the Bare worklet bundle (WebCrypto randomness via sodium-native). Wired in by bare-pack --imports (see client/backend/imports.json).",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "sodium-native": "^4.3.0"
+  }
+}
