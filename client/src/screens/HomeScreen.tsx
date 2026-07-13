@@ -10,7 +10,7 @@ import { theme } from '../theme'
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>
 
 export function HomeScreen ({ navigation }: Props) {
-  const [streams, setStreams] = useState<Stream[]>([])
+  const [streams, setStreams] = useState<Stream[]>(backend.streams)
 
   useEffect(() => {
     // Live catalog: the backend pushes updated stream lists as the panel catalog changes.

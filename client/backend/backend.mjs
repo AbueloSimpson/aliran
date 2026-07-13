@@ -56,9 +56,15 @@ async function ensureStore () {
   swarm = new Hyperswarm()
   // The first connection after boot() is the panel (we join only its topic first); wire
   // the RPC there. Later feed connections are ignored for RPC (call is already set).
+  // If the panel socket drops, clear `call` so the next reconnect re-arms it (otherwise
+  // every RPC after a drop fails with CHANNEL_CLOSED forever).
   swarm.on('connection', (socket) => {
     store.replicate(socket)
-    if (!call && panelBee) call = panelClient(socket).call
+    if (!call && panelBee) {
+      const rpcCall = panelClient(socket).call
+      call = rpcCall
+      socket.on('close', () => { if (call === rpcCall) call = null })
+    }
   })
 }
 

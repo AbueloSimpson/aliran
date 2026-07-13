@@ -18,7 +18,6 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { ScrollView, Text, View, StyleSheet } from 'react-native'
-// @ts-expect-error — native module (react-native-bare-kit)
 import { Worklet } from 'react-native-bare-kit'
 import b4a from 'b4a'
 import { backend, type BackendMessage } from './worklet'
@@ -43,7 +42,7 @@ export default function WorkletSmokeTest () {
         IPC.on('data', (data) => { IPC.write(Buffer.from('echo: ' + data.toString())) })
       `
       w.start('/hello.js', source)
-      w.IPC.on('data', (d: Uint8Array) => setHello(b4a.toString(d)))
+      w.IPC.on('data', (d: unknown) => setHello(b4a.toString(d as Uint8Array)))
       w.IPC.write(b4a.from('hello from React Native'))
     } catch (e: any) {
       setHello('ERROR: ' + String(e?.message || e))

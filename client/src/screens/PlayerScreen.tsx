@@ -3,6 +3,7 @@
 // panel-issued entitlement token (see docs/content-management.md).
 import React, { useEffect, useState } from 'react'
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native'
+// @ts-expect-error — react-native-video is installed in S6c (this screen isn't wired until then)
 import Video from 'react-native-video'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'

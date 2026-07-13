@@ -6,7 +6,6 @@
 //
 // This stub imports a bundled JSON; swap in runtime loading if you ship one generic APK.
 
-// @ts-expect-error — provide config/service.json at build time (copy from service.example.json)
 import service from '../config/service.json'
 
 export interface ServiceDescriptor {

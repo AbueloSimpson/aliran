@@ -1,12 +1,10 @@
 // Boots the Bare worklet (the P2P backend) and provides a small typed IPC wrapper.
 // See docs/architecture.md and backend/backend.mjs.
 
-// @ts-expect-error — provided natively by react-native-bare-kit
 import { Worklet } from 'react-native-bare-kit'
 import b4a from 'b4a'
 // Base64-encoded Bare bundle produced by `npm run bundle-backend` (app.bundle.js is a
 // generated CommonJS module: `module.exports = "<base64>"`). Decoded to bytes below.
-// @ts-expect-error — generated build artifact, present after bundling
 import bundleBase64 from '../backend/app.bundle.js'
 
 export type BackendMessage =
@@ -30,6 +28,10 @@ export interface Stream {
 }
 
 export class Backend {
+  // Last entitlement list from the backend. Screens that mount AFTER login (e.g. Home,
+  // navigated to on {type:'streams'}) read this instead of missing the one-shot message.
+  streams: Stream[] = []
+
   private worklet = new Worklet()
   private ipc: any
   private buf = ''
@@ -44,7 +46,10 @@ export class Backend {
     this.send({ panelPubKey })
   }
 
-  onMessage (fn: (m: BackendMessage) => void) { this.listeners.add(fn); return () => this.listeners.delete(fn) }
+  onMessage (fn: (m: BackendMessage) => void) {
+    this.listeners.add(fn)
+    return () => { this.listeners.delete(fn) } // void, so it can be a useEffect cleanup
+  }
   login (username: string, password: string) { this.send({ username, password }) }
   play (streamId: string) { this.send({ streamId }) }
 
@@ -57,6 +62,7 @@ export class Backend {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line) as BackendMessage
+        if (msg.type === 'streams') this.streams = msg.streams
         this.listeners.forEach(fn => fn(msg))
       } catch { /* ignore partial/invalid */ }
     }
