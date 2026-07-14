@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aliran broadcaster control</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23fb923c'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<!-- ============ login ============ -->
+<div id="login-view" hidden>
+  <form id="login-form" class="card login-card">
+    <h1 class="brand">Aliran <span>broadcaster</span></h1>
+    <label>Admin
+      <input id="login-user" autocomplete="username" required>
+    </label>
+    <label>Password
+      <input id="login-pass" type="password" autocomplete="current-password" required>
+    </label>
+    <button class="btn primary" id="login-btn">Sign in</button>
+    <p id="login-error" class="error" hidden></p>
+  </form>
+</div>
+
+<!-- ============ app ============ -->
+<div id="app-view" hidden>
+  <header>
+    <h1 class="brand">Aliran <span>broadcaster</span></h1>
+    <div id="status-chips" class="chips"></div>
+    <div class="spacer"></div>
+    <span id="who" class="muted"></span>
+    <button class="btn ghost" id="logout-btn">Sign out</button>
+  </header>
+
+  <main>
+    <form id="add-channel-form" class="card row-form">
+      <strong>Add channel</strong>
+      <input id="nc-id" placeholder="id (e.g. news-24)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" maxlength="64">
+      <input id="nc-title" placeholder="Title">
+      <input id="nc-category" placeholder="Category">
+      <input id="nc-input" placeholder="input: test · URL · file path">
+      <button class="btn primary">Add</button>
+    </form>
+    <p class="hint muted">Channel art (poster / backdrop / logo) is a <b>panel</b> operation — upload it in the
+    panel admin dashboard. The broadcaster's register call carries metadata only, never art.</p>
+    <div id="channels-list" class="cards"></div>
+  </main>
+</div>
+
+<!-- generic modal -->
+<dialog id="dlg">
+  <form method="dialog" id="dlg-form">
+    <h2 id="dlg-title"></h2>
+    <div id="dlg-body"></div>
+    <div class="dlg-buttons">
+      <button class="btn ghost" value="cancel" id="dlg-cancel" type="button">Cancel</button>
+      <button class="btn primary" value="ok" id="dlg-ok">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

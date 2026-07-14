@@ -46,10 +46,16 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `POST /api/streams/:id/art/:kind` | Upload poster/backdrop/logo (raw image body) |
 | `GET /api/assets/:id/:file` | Art bytes from the assets drive (for previews) |
 
-## Broadcaster control API (`CONTROL_ENABLED=1`)
+## Broadcaster control API + UI (`CONTROL_ENABLED=1`)
 
 Served by the broadcaster process (default `127.0.0.1:3310`; put TLS in front if
-exposed). Channels are runtime start/stoppable; each has its own persisted feed
+exposed). Opening the address in a browser loads the **control UI**
+(`broadcaster/control-ui/`, plain HTML/JS): sign in with a control admin to add/edit
+channels, start/stop them, and watch live status (ffmpeg health, peer count, panel
+registration, playlist presence). Channel art is a panel admin operation (the
+register RPC carries no art) — upload it in the panel dashboard. The UI consumes
+only the API below.
+Channels are runtime start/stoppable; each has its own persisted feed
 identity (feedKey + encryption key). Admins are created with
 `node src/control-cli.js add-admin <name>` (Argon2id verifiers in the local
 `DATA_DIR/secrets/admins.json`); login returns a session token signed with a
