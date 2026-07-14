@@ -52,6 +52,19 @@ function ok (name) { n++; console.log('  ok ', name) }
   ok('constructor + method guards (no side effects before connect)')
 }
 
+// --- hybrid config validation (S10b) ---
+{
+  assert.throws(() => createPlayer({ hybrid: { mode: 'bogus' } }), /hybrid\.mode/)
+  assert.throws(() => createPlayer({ hybrid: { mode: 'hybrid' } }), /cdnUrl/)
+  assert.throws(() => createPlayer({ hybrid: { mode: 'cdn-only' } }), /cdnUrl/)
+  assert.throws(() => createPlayer({ hybrid: { start: 'sometimes' } }), /hybrid\.start/)
+  const p = createPlayer({ hybrid: { mode: 'hybrid', cdnUrl: 'http://cdn.example/{streamId}/index.m3u8' } })
+  assert.strictEqual(p.source(), null, 'no active source before resolve')
+  const q = createPlayer({}) // p2p-only default needs no cdnUrl
+  assert.strictEqual(q.source(), null)
+  ok('hybrid config validation (mode/start/cdnUrl); source() null before resolve')
+}
+
 // --- event emitter basics (on/off/once, no throw on unhandled error) ---
 {
   const p = createPlayer({})

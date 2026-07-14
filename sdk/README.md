@@ -36,7 +36,38 @@ inject `node:http`/`node:fs` or `bare-http1`/`bare-fs`):
 
 Events: `ready` · `streams` (display list) · `status` (`{state: 'feed:open'|'feed:ready'}`)
 · `peers` (count, every 3 s while serving) · `recovered` (corrupt store purged + retried)
-· `error`. The emitter never throws on unhandled `error`.
+· `error` · `fallback` (`{streamId, url, reason: 'timeout'|'stall'}`) ·
+`source-changed` (`{streamId, source, url}`). The emitter never throws on unhandled `error`.
+
+## Hybrid CDN↔P2P
+
+Pass a `hybrid` config to fail over to a CDN when P2P isn't healthy — and return
+automatically when it is:
+
+```js
+const player = createPlayer({
+  panelPubKey,
+  hybrid: {
+    mode: 'hybrid',              // 'p2p-only' (default) | 'hybrid' | 'cdn-only'
+    start: 'preferP2P',          // or 'preferCDN' (start on CDN, probe to P2P)
+    cdnUrl: (id) => `https://cdn.example.com/${id}/index.m3u8`, // or '…/{streamId}/…' template
+    readyTimeoutMs: 8000,        // max wait for the P2P playlist before falling back
+    rebufferMsToFallback: 10000, // P2P playlist stalls this long -> fall back
+    probeIntervalMs: 5000        // background P2P health probe while on CDN
+  }
+})
+const { url, source } = await player.resolve(streamId) // url = the ACTIVE source
+player.on('fallback', ({ url }) => video.src = url)         // P2P -> CDN
+player.on('source-changed', ({ url }) => video.src = url)   // CDN -> P2P (auto-return)
+```
+
+The SDK never decodes video: it exposes the current source URL (`resolve()` /
+`source()`) and switches it based on playlist health in the feed replica (present
+within `readyTimeoutMs`, advancing between probes). While on CDN the feed keeps
+replicating in the background — the DHT lookup is re-run on every probe so a
+broadcaster that comes up later is found quickly — and after two consecutive
+advancing probes playback is handed back to P2P. With `mode: 'p2p-only'` (the
+default, used by the app worklet) behavior is exactly the pre-hybrid engine.
 
 The on-disk store is a **disposable replica cache**: corruption (e.g. a crash mid-write →
 `OPLOG_CORRUPT`) is detected, the store is purged and the operation retried once —
@@ -61,5 +92,4 @@ The app's worklet (`client/backend/backend.mjs`) is a thin IPC shell over `playe
 - `npm run test:sdk` (repo root) — headless e2e: real panel + broadcaster, SDK
   login → resolve → ffprobe-validated HLS over P2P. Needs ffmpeg/ffprobe on PATH.
 
-Coming next (see ROADMAP): hybrid CDN↔P2P failover/auto-return (S10b) and a
-React Native `<AliranVideo>` binding (S10c).
+Coming next (see ROADMAP): a React Native `<AliranVideo>` binding (S10c).

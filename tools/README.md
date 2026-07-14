@@ -51,5 +51,5 @@ npm run test:session  # v0.2 sessions + device limits e2e (DHT only, no ffmpeg)
 npm run test:register # v0.2 broadcaster auto-registration e2e (DHT only, no ffmpeg)
 npm run test:assets   # v0.2 assets pipeline e2e (DHT only, no ffmpeg)
 npm run test:corrupt  # client store corruption recovery (local only, no ffmpeg/network)
-npm run test:sdk      # @aliran/player-sdk headless e2e: login → resolve → HLS (ffmpeg + DHT)
+npm run test:sdk      # @aliran/player-sdk headless e2e: login → resolve → HLS + hybrid CDN↔P2P (ffmpeg + DHT)
 ```

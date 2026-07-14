@@ -22,6 +22,15 @@
 //   'peers'   (count)    feed-health ticker while a stream is being served
 //   'recovered' (err)    a corrupt store was purged and the operation retried
 //   'error'   (err)      background failures that have no caller to throw to
+//   'fallback' ({streamId,url,reason})        hybrid: P2P unhealthy -> switched to CDN
+//   'source-changed' ({streamId,source,url})  hybrid: active source switched (e.g. back to P2P)
+//
+// Hybrid CDN<->P2P (S10b): pass `hybrid` config to choose the active source per play.
+// The SDK never decodes video — it exposes the CURRENT source URL + health signals and
+// keeps replicating the P2P feed in the background while on CDN so it can auto-return.
+// Health is playlist-based: the feed is "ready" when /index.m3u8 exists in the replica,
+// and "advancing" when its content changes between probes (live edge moving). Playback
+// stalls the host player would see show up here as a non-advancing playlist.
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
@@ -47,10 +56,36 @@ class Emitter {
   }
 }
 
+// Hybrid defaults: p2p-only keeps the pre-hybrid behavior exactly (the app worklet
+// runs with this). cdnUrl may be a function (streamId => url) or a template string
+// containing '{streamId}'.
+function normalizeHybrid (h) {
+  const cfg = {
+    mode: 'p2p-only',
+    start: 'preferP2P',
+    cdnUrl: null,
+    readyTimeoutMs: 8000,
+    rebufferMsToFallback: 10000,
+    probeIntervalMs: 5000,
+    ...h
+  }
+  if (!['p2p-only', 'hybrid', 'cdn-only'].includes(cfg.mode)) throw new Error('hybrid.mode must be p2p-only | hybrid | cdn-only')
+  if (!['preferP2P', 'preferCDN'].includes(cfg.start)) throw new Error('hybrid.start must be preferP2P | preferCDN')
+  if (cfg.mode !== 'p2p-only') {
+    if (typeof cfg.cdnUrl === 'string') { const tpl = cfg.cdnUrl; cfg.cdnUrl = (id) => tpl.replace('{streamId}', id) }
+    if (typeof cfg.cdnUrl !== 'function') throw new Error('hybrid.cdnUrl (function or template string) is required for mode ' + cfg.mode)
+  }
+  return cfg
+}
+
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
+    this._hybrid = normalizeHybrid(hybrid)
+    this._active = null // hybrid state for the current play: { streamId, localUrl, cdnUrl, source, lastSig, lastAdvance }
+    this._watchTimer = null // P2P stall watchdog (while source === 'p2p')
+    this._probeTimer = null // P2P recovery probe (while source === 'cdn')
     this._panelKey = panelPubKey || null
     this._storeDir = storeDir
     this._http = http
@@ -62,6 +97,7 @@ export class AliranPlayer extends Emitter {
     this._server = null
     this._assetsDrive = null
     this._feedDrive = null
+    this._feedDiscovery = null
     this._statusTimer = null
     this._assetsOpen = null
     this._purging = null
@@ -95,12 +131,49 @@ export class AliranPlayer extends Emitter {
   listStreams () { return this._streams }
 
   // Start (or reuse) the localhost server for an entitled stream and return where to
-  // point the host's video player.
+  // point the host's video player. `url`/`source` reflect the ACTIVE source under the
+  // hybrid policy (p2p-only: always the localhost URL — pre-hybrid shape unchanged).
   async resolve (streamId) {
     const keys = this._entitled.get(streamId)
     if (!keys) throw new Error('not entitled to ' + streamId)
+    const cfg = this._hybrid
+    this._clearHybridTimers()
+
+    if (cfg.mode === 'cdn-only') {
+      const url = cfg.cdnUrl(streamId)
+      this._active = { streamId, localUrl: null, cdnUrl: url, source: 'cdn', lastSig: null, lastAdvance: 0 }
+      return { url, source: 'cdn', localUrl: undefined, port: undefined, feedKey: keys.feedKey }
+    }
+
     const port = await this.serveFeed(keys.feedKey, keys.encryptionKey)
-    return { localUrl: `http://127.0.0.1:${port}/index.m3u8`, port, feedKey: keys.feedKey }
+    const localUrl = `http://127.0.0.1:${port}/index.m3u8`
+    if (cfg.mode === 'p2p-only') {
+      this._active = { streamId, localUrl, cdnUrl: null, source: 'p2p', lastSig: null, lastAdvance: Date.now() }
+      return { url: localUrl, source: 'p2p', localUrl, port, feedKey: keys.feedKey }
+    }
+
+    // hybrid: pick the starting source, then keep watching/probing in the background.
+    this._active = { streamId, localUrl, cdnUrl: cfg.cdnUrl(streamId), source: null, lastSig: null, lastAdvance: Date.now() }
+    if (cfg.start === 'preferCDN') {
+      this._active.source = 'cdn'
+      this._startRecoveryProbe()
+    } else if (await this._waitP2PReady(cfg.readyTimeoutMs)) {
+      this._active.source = 'p2p'
+      this._startStallWatchdog()
+    } else {
+      this._active.source = 'cdn'
+      this.emit('fallback', { streamId, url: this._active.cdnUrl, reason: 'timeout' })
+      this._startRecoveryProbe()
+    }
+    const url = this._active.source === 'p2p' ? localUrl : this._active.cdnUrl
+    return { url, source: this._active.source, localUrl, port, feedKey: keys.feedKey }
+  }
+
+  // Current active source for the last resolve(), or null.
+  source () {
+    const a = this._active
+    if (!a) return null
+    return { streamId: a.streamId, source: a.source, url: a.source === 'p2p' ? a.localUrl : a.cdnUrl }
   }
 
   // Low-level: replicate an encrypted feed by its keys and serve it on localhost with
@@ -115,7 +188,7 @@ export class AliranPlayer extends Emitter {
       return d
     })
     this.emit('status', { state: 'feed:ready' })
-    this._swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
+    this._feedDiscovery = this._swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
     this._feedDrive = drive
     const port = await this._ensureServer()
     // Feed-health ticker for player overlays: how many peers serve the current feed.
@@ -137,15 +210,94 @@ export class AliranPlayer extends Emitter {
   // Full teardown (tests / host shutdown). The worklet never calls this — it dies with
   // the app process.
   async stop () {
+    this._clearHybridTimers()
+    this._active = null
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const server = this._server; this._server = null
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
     const closing = [this._feedDrive, this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
+    this._feedDiscovery = null
     this._assetsOpen = null
     this._call = null
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
     for (const c of closing) { if (c) { try { await c.close() } catch {} } }
+  }
+
+  // --- hybrid internals ---
+
+  _clearHybridTimers () {
+    if (this._watchTimer) { clearInterval(this._watchTimer); this._watchTimer = null }
+    if (this._probeTimer) { clearInterval(this._probeTimer); this._probeTimer = null }
+  }
+
+  // Playlist probe against the current feed replica. Returns a signature (null =
+  // playlist not available). Metadata-only (drive.entry, no blob download — cannot
+  // hang on missing blocks); the bee seq for the playlist key bumps on every rewrite,
+  // so a changing signature means the live edge advances.
+  async _playlistSig () {
+    try {
+      const drive = this._feedDrive
+      if (!drive) return null
+      const entry = await drive.entry('/index.m3u8')
+      return entry ? 'seq:' + entry.seq : null
+    } catch {
+      return null
+    }
+  }
+
+  // Initial readiness: the playlist exists in the replica within `timeoutMs`.
+  async _waitP2PReady (timeoutMs) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (await this._playlistSig() !== null) return true
+      await new Promise((resolve) => setTimeout(resolve, Math.min(400, timeoutMs)))
+    }
+    return (await this._playlistSig()) !== null
+  }
+
+  // While on P2P: fall back to CDN if the playlist stops advancing for too long
+  // (covers both peer loss and a stalled live edge — what the host player would
+  // experience as rebuffering).
+  _startStallWatchdog () {
+    const cfg = this._hybrid
+    const a = this._active
+    a.lastAdvance = Date.now()
+    this._watchTimer = setInterval(async () => {
+      if (!this._active || this._active !== a || a.source !== 'p2p') return
+      const sig = await this._playlistSig()
+      if (sig !== null && sig !== a.lastSig) { a.lastSig = sig; a.lastAdvance = Date.now(); return }
+      if (Date.now() - a.lastAdvance > cfg.rebufferMsToFallback) {
+        a.source = 'cdn'
+        this._clearHybridTimers()
+        this.emit('fallback', { streamId: a.streamId, url: a.cdnUrl, reason: 'stall' })
+        this._startRecoveryProbe()
+      }
+    }, Math.min(cfg.probeIntervalMs, 1000))
+  }
+
+  // While on CDN: the feed keeps replicating in the background; once the playlist
+  // ADVANCES across two consecutive probes (healthy for ~probeIntervalMs), switch the
+  // active source back to P2P and tell the host.
+  _startRecoveryProbe () {
+    const cfg = this._hybrid
+    const a = this._active
+    let healthyStreak = 0
+    this._probeTimer = setInterval(async () => {
+      if (!this._active || this._active !== a || a.source !== 'cdn') return
+      // Re-run the DHT lookup for the feed topic: a broadcaster that came up AFTER we
+      // joined is otherwise only found on hyperswarm's slow periodic refresh.
+      try { const r = this._feedDiscovery && this._feedDiscovery.refresh(); if (r && r.catch) r.catch(() => {}) } catch {}
+      const sig = await this._playlistSig()
+      if (sig !== null && sig !== a.lastSig) { a.lastSig = sig; healthyStreak++ } else if (sig === null) { healthyStreak = 0 }
+      if (healthyStreak >= 2) {
+        a.source = 'p2p'
+        a.lastAdvance = Date.now()
+        this._clearHybridTimers()
+        this.emit('source-changed', { streamId: a.streamId, source: 'p2p', url: a.localUrl })
+        this._startStallWatchdog()
+      }
+    }, cfg.probeIntervalMs)
   }
 
   // --- internals (extracted 1:1 from the worklet backend) ---
@@ -196,6 +348,7 @@ export class AliranPlayer extends Emitter {
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const closing = [this._feedDrive, this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
+    this._feedDiscovery = null
     this._assetsOpen = null
     this._call = null
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }

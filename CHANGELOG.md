@@ -125,6 +125,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (headless e2e: real panel + broadcaster → SDK login → resolve → ffprobe-valid HLS
   over P2P, Range requests, peers ticker). Partial-adoption path: integrators can keep
   their own catalog and use only `login()` + `resolve()` for the video URL.
+- **Hybrid CDN↔P2P failover in the player SDK**: `hybrid` config
+  (`mode: 'p2p-only'|'hybrid'|'cdn-only'`, `start`, `cdnUrl(streamId)`,
+  `readyTimeoutMs`, `rebufferMsToFallback`, `probeIntervalMs`). In hybrid mode
+  `resolve()` returns the ACTIVE source URL: P2P if the feed playlist is available in
+  time, otherwise the CDN (`fallback` event, reasons `timeout`/`stall`); while on CDN
+  the feed keeps replicating with the DHT lookup re-run each probe, and once the
+  playlist advances across consecutive probes the source switches back
+  (`source-changed` event). Health checks are metadata-only (no blob downloads).
+  Default `p2p-only` keeps the app worklet's behavior identical. Verified in
+  `test:sdk`: unseeded stream + tiny timeout → CDN fallback (local HLS file server);
+  broadcaster starts → auto-return to P2P and the local playlist serves.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.

@@ -4,6 +4,10 @@
 //   connect() -> 'ready'; login() -> display list (no keys leaked) + 'streams' event;
 //   wrong password rejected; resolve() -> localhost URL serving valid HLS (ffprobe);
 //   assetUrl() shape; 'status' feed:open/feed:ready breadcrumbs; 'peers' ticker; stop().
+// Then the HYBRID CDN<->P2P policy (S10b): an entitled but UNSEEDED stream with a tiny
+// readyTimeoutMs must fall back to a local "CDN" HLS server ('fallback', source cdn);
+// once a broadcaster starts seeding the feed, the SDK must auto-return
+// ('source-changed', source p2p) and serve the playlist from the local P2P server.
 // Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -42,7 +46,7 @@ function httpGet (port, p, headers = {}) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), cli: tmp('e2es-cli-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -57,6 +61,11 @@ try {
   const ff = startFfmpeg({ input: 'test', hls: { time: 2, listSize: 6 } }, dirs.out); cleanups.push(() => ff.kill())
   const stopMirror = mirrorDirToDrive(dirs.out, feed, { interval: 400 }); cleanups.push(() => stopMirror())
   log('broadcaster: feed key', b4a.toString(feed.key, 'hex').slice(0, 16) + '…')
+
+  // Second encrypted feed for the hybrid case — created (key known) but NOT seeded yet.
+  const encKey2 = hcrypto.randomBytes(32)
+  const feedStore2 = new Corestore(dirs.feed2); await feedStore2.ready(); cleanups.push(() => feedStore2.close())
+  const feed2 = new Hyperdrive(feedStore2.namespace('feed'), { encryptionKey: encKey2 }); await feed2.ready()
 
   // ===== Panel: keys, enroll alice + stream + grant, serve RPC =====
   initKeys(dirs.panel)
@@ -75,10 +84,11 @@ try {
     encPriv: wrap(wk, kp.secretKey),
     authPub: b4a.toString(auth.publicKey, 'hex'),
     authPrivEnc: wrap(wk, auth.secretKey),
-    wrapped: { news: sealTo(kp.publicKey, encKey) },
+    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2) },
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
   await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live' })
+  await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live' })
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
@@ -109,7 +119,7 @@ try {
     if (Date.now() > deadline) throw new Error('timeout: SDK login')
     try {
       const s = await player.login('alice', PASSWORD)
-      if (s.length) streams = s
+      if (s.length >= 2) streams = s // both catalog records replicated
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
     }
@@ -118,7 +128,7 @@ try {
   log('sdk: login OK; entitled to', JSON.stringify(streams.map(x => x.id)))
   if (events.streams < 1) throw new Error("login did not emit 'streams'")
   if (player.listStreams() !== streams) throw new Error('listStreams() must return the cached display list')
-  const disp = streams[0]
+  const disp = streams.find(x => x.id === 'news')
   if (disp.encryptionKey || disp.feedKey) throw new Error('display list leaked stream keys')
   if (disp.title !== 'News 24' || disp.isLive !== true) throw new Error('display metadata wrong')
 
@@ -156,8 +166,71 @@ try {
   log('sdk: peers ticker OK (' + events.peers[events.peers.length - 1] + ' peer)')
 
   await player.stop()
-  const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut))
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: connect → login → resolve → P2P HLS verified)' : 'FAIL ❌')
+
+  // ===== Hybrid CDN<->P2P (S10b) =====
+  // Local "CDN": a plain HTTP file server over the ffmpeg HLS dir.
+  const cdn = http.createServer((req, res) => {
+    try {
+      const rel = decodeURIComponent((req.url || '/').split('?')[0]).replace(/^\//, '') || 'index.m3u8'
+      const data = fs.readFileSync(path.join(dirs.out, rel))
+      res.writeHead(200); res.end(data)
+    } catch { res.writeHead(404); res.end() }
+  })
+  await new Promise(r => cdn.listen(0, '127.0.0.1', r)); cleanups.push(() => cdn.close())
+  const cdnPort = cdn.address().port
+  const cdnUrl = `http://127.0.0.1:${cdnPort}/index.m3u8`
+
+  const ev2 = { fallback: [], sourceChanged: [] }
+  const player2 = createPlayer({
+    panelPubKey,
+    storeDir: dirs.cli2,
+    hybrid: { mode: 'hybrid', cdnUrl: () => cdnUrl, readyTimeoutMs: 2000, probeIntervalMs: 700, rebufferMsToFallback: 5000 }
+  })
+  player2.on('fallback', (e) => ev2.fallback.push(e))
+  player2.on('source-changed', (e) => ev2.sourceChanged.push(e))
+  cleanups.push(() => player2.stop())
+
+  await player2.connect()
+  let streams2 = null
+  const deadline2 = Date.now() + 60000
+  while (!streams2) {
+    if (Date.now() > deadline2) throw new Error('timeout: hybrid SDK login')
+    try {
+      const s = await player2.login('alice', PASSWORD)
+      if (s.length >= 2) streams2 = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streams2) await sleep(1500)
+  }
+
+  // 'movies' is entitled but nobody seeds it -> tiny readyTimeout forces CDN fallback.
+  const r2 = await player2.resolve('movies')
+  if (r2.source !== 'cdn' || r2.url !== cdnUrl) throw new Error('expected CDN fallback, got ' + JSON.stringify({ source: r2.source, url: r2.url }))
+  if (ev2.fallback.length !== 1 || ev2.fallback[0].reason !== 'timeout' || ev2.fallback[0].streamId !== 'movies') throw new Error("missing/wrong 'fallback' event: " + JSON.stringify(ev2.fallback))
+  const viaCdn = await httpGet(cdnPort, '/index.m3u8')
+  if (viaCdn.status !== 200 || !viaCdn.body.includes('.ts')) throw new Error('CDN source not playable')
+  if (player2.source().source !== 'cdn') throw new Error('source() should report cdn')
+  log('hybrid: fell back to CDN (reason timeout); CDN playlist serves')
+
+  // "Start the broadcaster" for movies: seed feed2 with the same live HLS dir.
+  const feedSwarm2 = new Hyperswarm(); cleanups.push(() => feedSwarm2.destroy())
+  feedSwarm2.on('connection', s => feed2.replicate(s))
+  feedSwarm2.join(feed2.discoveryKey, { server: true, client: false }); await feedSwarm2.flush()
+  const stopMirror2 = mirrorDirToDrive(dirs.out, feed2, { interval: 400 }); cleanups.push(() => stopMirror2())
+  log('hybrid: broadcaster for "movies" started; waiting for auto-return to P2P…')
+
+  await waitFor(async () => ev2.sourceChanged.some(e => e.source === 'p2p'), 60000, "'source-changed' back to P2P")
+  const sc = ev2.sourceChanged.find(e => e.source === 'p2p')
+  if (sc.streamId !== 'movies' || sc.url !== r2.localUrl) throw new Error("wrong 'source-changed' payload: " + JSON.stringify(sc))
+  if (player2.source().source !== 'p2p' || player2.source().url !== r2.localUrl) throw new Error('source() should report p2p after recovery')
+  const viaP2P = await waitFor(async () => { const r = await httpGet(r2.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') ? r : null }, 20000, 'P2P playlist after auto-return')
+  log('hybrid: auto-returned to P2P; local playlist serves (' + viaP2P.body.length + ' bytes)')
+  await player2.stop()
+
+  const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
+    ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p'))
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + hybrid CDN fallback/auto-return verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
