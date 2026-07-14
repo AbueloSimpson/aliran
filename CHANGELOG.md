@@ -257,6 +257,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that never connects hangs rather than fails), and the job is `continue-on-error`
   so hosted-runner DHT flakiness can never block a merge.
 
+### Deploy pack (Docker Compose + systemd + TLS recipe)
+- **The Docker images build now.** `panel/Dockerfile` and `broadcaster/Dockerfile`
+  previously depended on `@aliran/core` as a registry package (it is an unpublished
+  workspace) and could never build. They now build from the **repo root context**,
+  vendor `core/` into the image, and resolve it via a `file:../core` dependency
+  (panel + broadcaster package.json — same pattern the SDK already used). Images
+  pinned to `node:24-bookworm-slim` (matches CI); the broadcaster image ships
+  Debian's ffmpeg (includes libsrt). A root `.dockerignore` keeps local state,
+  secrets, and the React Native tree out of the build context.
+- **`docker-compose.yml` uses `network_mode: host`** (deliberate: no double NAT on
+  Hyperswarm hole-punching, dashboards keep their loopback-only default binding,
+  future push-ingest ports need no compose edits) with named data volumes and
+  restart policies; first-run key/admin bootstrap documented inline.
+- **systemd units** (`deploy/systemd/aliran-panel.service`, `aliran-broadcaster.service`)
+  for the bare-metal path: auto-restart, `EnvironmentFile`, sandboxing
+  (`ProtectSystem=strict`, data-dir-only writes), VAAPI note for GPU transcode.
+- **TLS for the dashboards**: `deploy/Caddyfile.example` (two-liner reverse proxy,
+  automatic HTTPS) and the no-domain SSH-tunnel alternative, both documented in a
+  rewritten `docs/operator-guide.md` (Compose + systemd quickstarts, firewall table
+  — P2P still needs **no inbound ports**).
+- **CI builds the images**: a new non-blocking `docker-build` job builds both
+  Dockerfiles on every push and smoke-runs them (`admin-cli init` in a throwaway
+  container; ffmpeg `-protocols` must list `srt`).
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- OTT UI + client app: native Android build (phone + TV), Keystore session sealing.
+- Verify the deploy on a real VPS over the internet (remote acceptance harness).
+- Broadcaster push ingest (RTMP/SRT/UDP-TS) + per-channel transcode incl. GPU.
+- Panel admin completeness (admins mgmt, deletes, search, observability, curation).
+- Hybrid artwork (https URLs alongside the P2P assets drive).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

@@ -2,26 +2,89 @@
 
 Run your own Aliran service. Everything is configuration — no code changes needed.
 
+Two supported deployments, same result:
+
+- **Docker Compose (recommended):** one command, images bundle Node + ffmpeg,
+  auto-restart built in.
+- **Bare metal + systemd:** plain Node processes under systemd; easier to poke at
+  with standard tools.
+
+Networking headline: **the P2P layer needs no inbound ports.** Clients find the
+panel by its public key over the DHT (outbound UDP hole-punching), and viewers
+re-seed each other. A $5 VPS behind a strict firewall works.
+
 ## Prerequisites
 
-- Node.js 20+ on a Linux box (a cheap VPS or a home machine — no inbound ports needed).
-- `ffmpeg` for the broadcaster.
-- (Optional) Docker + Docker Compose.
+- A Linux box — Ubuntu 24.04 LTS is what we test on (a cheap VPS or a home machine).
+- Docker + Docker Compose plugin (`apt-get install docker.io docker-compose-v2`),
+  **or** Node.js 20+ and `ffmpeg` for the bare-metal path.
+- (Optional) two DNS A-records pointing at the box, for HTTPS dashboards via Caddy.
 - (Optional, DRM) an account with a multi-DRM vendor (BuyDRM/KeyOS, EZDRM, Axinom…).
 - (Optional, geo) a MaxMind GeoLite2 database file.
 
-## 1. Generate keys (panel)
+## A. Docker Compose (recommended)
 
 ```bash
-cd panel && cp .env.example .env && npm install
-node src/admin-cli.js init
+git clone https://github.com/AbueloSimpson/aliran && cd aliran
+cp panel/.env.example panel/.env
+cp broadcaster/.env.example broadcaster/.env
+
+docker compose build
+
+# One-time: generate the panel keys (prints the panel PUBLIC key for clients and
+# the PUBLISHER key for the broadcaster .env — back both up, see Operations).
+docker compose run --rm panel node src/admin-cli.js init
+
+# One-time: create dashboard admin accounts (min 8-char passwords).
+docker compose run --rm panel node src/admin-cli.js add-admin admin
+docker compose run --rm broadcaster node src/control-cli.js add-admin admin
+
+# Fill in the .env files: broadcaster needs PANEL_PUBKEY + PUBLISHER_KEY from init;
+# set ADMIN_ENABLED=1 / CONTROL_ENABLED=1 to serve the dashboards.
+docker compose up -d
+docker compose logs -f     # watch both come up
 ```
 
-This creates the panel signing key + OPRF key in a **gitignored** data directory and
-prints the **panel public key** — you'll put this in the client config / service
-descriptor. Back these keys up securely; losing the OPRF key locks everyone out.
+The compose file uses `network_mode: host` on purpose: Hyperswarm's hole-punching
+works without Docker's bridge NAT stacked on the host's, the dashboards keep their
+safe `127.0.0.1` binding, and future push-ingest ports need no compose edits. If you
+must use a bridge network (e.g. rootless Docker), drop `network_mode: host`, add
+`ports:` for anything you expose, and expect somewhat slower peer connectivity.
 
-## 2. Create accounts & streams
+Data lives in the named volumes `panel-data` / `broadcaster-data` (`DATA_DIR=/data`
+inside the containers).
+
+## B. Bare metal + systemd
+
+```bash
+sudo apt-get install -y nodejs npm ffmpeg     # or NodeSource for Node 24
+sudo useradd -r -m -d /var/lib/aliran -s /usr/sbin/nologin aliran
+sudo git clone https://github.com/AbueloSimpson/aliran /opt/aliran
+sudo chown -R aliran: /opt/aliran
+cd /opt/aliran && sudo -u aliran npm install --omit=dev --workspaces
+
+# Keys + admin accounts (same commands, no Docker wrapper):
+cd panel && sudo -u aliran cp .env.example .env
+sudo -u aliran node src/admin-cli.js init
+sudo -u aliran node src/admin-cli.js add-admin admin
+cd ../broadcaster && sudo -u aliran cp .env.example .env
+sudo -u aliran node src/control-cli.js add-admin admin
+
+sudo cp /opt/aliran/deploy/systemd/aliran-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now aliran-panel aliran-broadcaster
+journalctl -u aliran-panel -f
+```
+
+The unit files
+([deploy/systemd/](https://github.com/AbueloSimpson/aliran/tree/main/deploy/systemd))
+restart on crash and are sandboxed to their data dirs.
+
+## C. Create accounts & streams
+
+Via the **admin dashboard** (below), or the CLI (bare metal shown; prefix with
+`docker compose run --rm panel` under Docker — note store-writing CLI commands need
+the panel *stopped*, the dashboard does not):
 
 ```bash
 node src/admin-cli.js create-user alice
@@ -30,31 +93,60 @@ node src/admin-cli.js upload-art news poster ./art/news-poster.jpg
 node src/admin-cli.js grant alice news
 ```
 
-## 3. Run the panel
+## D. The dashboards (admin + broadcaster control)
 
-```bash
-node src/index.js        # or: docker compose up panel
-```
+Set `ADMIN_ENABLED=1` (panel, port 3210) and `CONTROL_ENABLED=1` (broadcaster,
+port 3310). Both bind `127.0.0.1` and speak plain HTTP — **never expose them raw.**
 
-For availability run a **replica set** (threshold OPRF) — see
-[configuration.md](configuration.md) and the HA notes.
+- **With a domain:** install Caddy and use
+  [deploy/Caddyfile.example](https://github.com/AbueloSimpson/aliran/blob/main/deploy/Caddyfile.example)
+  — automatic HTTPS, the plain-HTTP APIs never leave loopback.
+- **Without a domain:** SSH tunnel from your workstation, no server changes at all:
 
-## 4. Run the broadcaster
+  ```bash
+  ssh -N -L 3210:127.0.0.1:3210 -L 3310:127.0.0.1:3310 user@your-vps
+  ```
 
-```bash
-cd ../broadcaster && cp .env.example .env && npm install
-# configure INPUT (rtmp listener for OBS, or an rtsp/hls/file URL) in .env
-node src/index.js        # or: docker compose up broadcaster
-```
+  then browse `http://127.0.0.1:3210` (panel) and `http://127.0.0.1:3310`
+  (broadcaster control).
 
-## 5. Point the client at your panel
+## E. Broadcaster input
 
-Build/brand the client with your **panel public key** (build-time config) or generate a
-**service-descriptor QR** for runtime pairing. See [client-build.md](client-build.md).
+`INPUT` in `broadcaster/.env` (or per-channel via the control dashboard) currently
+supports: `test` (built-in test pattern), a **file path** (looped), or a **pull
+URL** (`rtsp://`, `http(s)://` HLS, etc.). Push ingest — RTMP for OBS, SRT with
+passphrase, MPEG-TS over UDP — plus per-channel transcode/GPU settings are the next
+roadmap items (see [ROADMAP.md](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md));
+they will require opening their listen ports in the firewall.
+
+## F. Point the client at your panel
+
+Build/brand the client with your **panel public key** (build-time config) or generate
+a **service-descriptor QR** for runtime pairing. See [client-build.md](client-build.md).
+Nothing else is needed — clients reach the panel through the DHT, not an IP/domain.
+
+## Firewall
+
+| Purpose | Direction | Ports |
+|---|---|---|
+| P2P (DHT, replication, viewers) | outbound only | UDP, any |
+| Dashboards via Caddy | inbound | 80 + 443 TCP |
+| Dashboards via SSH tunnel | inbound | 22 TCP only |
+| Push ingest (when it lands) | inbound | the channel's listen port, restricted: `ufw allow from <encoder-ip> to any port <port>` |
+
+`RELAY_ONLY=1` on the panel hides the origin IP behind DHT relays (slower, more
+private).
 
 ## Operations
 
-- **Backups:** the data dir (keys + cores). The OPRF/signing keys are critical.
-- **Key rotation:** rotating the OPRF key requires user re-enrollment; document a runbook.
-- **Monitoring:** watch panel login RPC, peer counts, lockouts.
-- **Firewall:** outbound UDP only; set `relayOnly` to hide the origin IP.
+- **Backups:** the data dirs (keys + cores). `DATA_DIR/keys` and
+  `DATA_DIR/secrets` are the critical, unrecoverable parts; losing the OPRF key
+  locks everyone out.
+- **Updates:** `git pull && docker compose up -d --build` (Compose) or
+  `git pull && npm install --omit=dev --workspaces && systemctl restart aliran-panel aliran-broadcaster`.
+- **Key rotation:** rotating the OPRF key requires user re-enrollment; document a
+  runbook before you need it.
+- **Monitoring:** watch panel login RPC, peer counts, lockouts; the dashboards show
+  live channel health (ffmpeg, peers, registration).
+- **HA:** for availability run a replica set (threshold OPRF) — see
+  [configuration.md](configuration.md); still on the roadmap.

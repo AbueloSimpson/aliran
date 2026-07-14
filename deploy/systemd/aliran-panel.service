@@ -1,0 +1,35 @@
+# Aliran panel — bare-metal systemd unit (alternative to Docker Compose).
+# Assumes a checkout at /opt/aliran owned by the service user:
+#   sudo useradd -r -m -d /var/lib/aliran -s /usr/sbin/nologin aliran
+#   sudo git clone https://github.com/AbueloSimpson/aliran /opt/aliran
+#   cd /opt/aliran && sudo -u aliran npm install --omit=dev --workspaces
+#   sudo cp deploy/systemd/aliran-panel.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aliran-panel
+# Configure via /opt/aliran/panel/.env (see panel/.env.example). Set DATA_DIR to a
+# path inside ReadWritePaths below (default here: /opt/aliran/panel/data).
+
+[Unit]
+Description=Aliran panel (P2P control plane: signed catalog + OPRF login)
+Documentation=https://abuelosimpson.github.io/aliran/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aliran
+Group=aliran
+WorkingDirectory=/opt/aliran/panel
+# config.js also loads panel/.env itself; EnvironmentFile is belt-and-braces ("-" = optional).
+EnvironmentFile=-/opt/aliran/panel/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+# Hardening — the service only ever writes inside its data dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/aliran/panel/data
+
+[Install]
+WantedBy=multi-user.target

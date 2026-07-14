@@ -1,0 +1,36 @@
+# Aliran broadcaster — bare-metal systemd unit (alternative to Docker Compose).
+# Same checkout/user as aliran-panel.service; also needs ffmpeg:
+#   sudo apt-get install -y ffmpeg
+#   sudo cp deploy/systemd/aliran-broadcaster.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aliran-broadcaster
+# Configure via /opt/aliran/broadcaster/.env (see broadcaster/.env.example). Set
+# DATA_DIR to a path inside ReadWritePaths below (default: /opt/aliran/broadcaster/data).
+
+[Unit]
+Description=Aliran broadcaster (ingest -> encrypted P2P feed; control API/UI)
+Documentation=https://abuelosimpson.github.io/aliran/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aliran
+Group=aliran
+WorkingDirectory=/opt/aliran/broadcaster
+EnvironmentFile=-/opt/aliran/broadcaster/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+# Hardening — writes only inside its data dir; /tmp for HLS mirror staging.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/aliran/broadcaster/data
+
+# For GPU transcoding via VAAPI (/dev/dri access), uncomment:
+# SupplementaryGroups=render video
+# PrivateDevices=false
+
+[Install]
+WantedBy=multi-user.target

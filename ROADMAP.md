@@ -76,11 +76,32 @@ Remaining polish (channel detail, search) rides along in v1.0.
   worklet (e2e-tested via `test:sdk`; the worklet is a thin shell over it), hybrid
   CDN↔P2P failover/auto-return, and the `@aliran/react-native` `<AliranVideo>`
   binding — dogfooded by the app on the TV emulator (P2P + observable CDN fallback)
+- ✅ **Deploy pack**: working Docker images + Compose (host networking for the DHT),
+  systemd units, Caddy TLS recipe for the dashboards, firewall guidance — and a CI
+  job that builds the images on every push
+- ⬜ **Verified on a real VPS over the internet**: remote acceptance harness
+  (headless SDK login → resolve → ffprobe from another machine, concurrent
+  streams), Android app playing live P2P against the VPS panel — no localhost
+- ⬜ **Complete admin panel**: admin-account management incl. password change (today
+  CLI-only), stream/user delete with full purge, user search + pagination,
+  observability (peers, storage, uptime, activity), catalog curation
+  (`order`/`featured`), per-device session revoke
+- ⬜ **Broadcaster ingest expansion**: push ingest — RTMP (OBS), SRT with passphrase
+  (authenticated), MPEG-TS over UDP — plus correct HLS/RTSP pull; typed per-channel
+  input config with auto port allocation and an ffmpeg capability probe
+- ⬜ **Per-channel transcode controls incl. GPU**: resolution/fps/bitrate/preset,
+  encoder selection (x264, NVENC, QSV, VAAPI, AMF, passthrough `copy`) with
+  boot-time deep verification so the UI only offers what the host can do
+- ⬜ **Broadcaster reliability**: ffmpeg watchdog (auto-restart with backoff,
+  re-listen after publisher disconnect), per-channel log capture in the control UI,
+  `isLive:false` pushed to the catalog on stop/crash
+- ⬜ **Hybrid artwork**: P2P assets drive stays the default; `https://` art URLs pass
+  through for CDN/web hosting
+- ⬜ **Android app GUI redesign** to reference designs (phone + TV), plus the
+  remaining OTT screens: channel detail and search
 - ⬜ Panel **HA / threshold OPRF** across replicas; documented backup & key-rotation runbooks
 - ⬜ Hardening pass + **independent security review** of the crypto paths
-- ⬜ Robust reconnect/resilience (broadcaster restart, peer churn, background service)
 - ⬜ Config validation, structured logging, health/metrics endpoints
-- ⬜ One-command deploy (Docker Compose) + operator quickstart verified on a fresh VPS
 - ✅ Complete documentation site published (GitHub Pages — https://abuelosimpson.github.io/aliran/)
 - ✅ Automated tests (unit + e2e harnesses) and CI (GitHub Actions: a required fast
   deterministic lane + a best-effort real-DHT e2e lane that never blocks merges)

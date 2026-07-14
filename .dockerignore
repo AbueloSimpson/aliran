@@ -1,0 +1,27 @@
+# Keep the Docker build context small and secret-free. Images are built from the
+# repo ROOT (they need core/ + the service dir); everything else stays out.
+.git
+.github
+.claude
+**/node_modules
+**/package-lock.json
+
+# Never ship local state or secrets into an image.
+**/.env
+**/data/
+**/keys/
+**/store/
+**/secrets/
+**/*.key
+**/GeoLite2*.mmdb
+
+# Not needed inside the panel/broadcaster images.
+client/
+sdk/
+tools/
+docs/
+site/
+deploy/
+*.md
+mkdocs.yml
+docker-compose.yml

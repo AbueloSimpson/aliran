@@ -1,0 +1,18 @@
+# TLS for the two Aliran dashboards with Caddy (automatic HTTPS via Let's Encrypt).
+#
+# The admin (panel, :3210) and control (broadcaster, :3310) APIs speak plain HTTP and
+# bind 127.0.0.1 by default — NEVER expose them raw. Point two DNS A-records at the
+# box, install Caddy (https://caddyserver.com/docs/install), drop this file at
+# /etc/caddy/Caddyfile with your domains, and `sudo systemctl reload caddy`.
+#
+# No domain? Skip Caddy entirely and use an SSH tunnel from your workstation:
+#   ssh -N -L 3210:127.0.0.1:3210 -L 3310:127.0.0.1:3310 user@your-vps
+# then browse http://127.0.0.1:3210 (panel) and http://127.0.0.1:3310 (broadcaster).
+
+panel.example.com {
+	reverse_proxy 127.0.0.1:3210
+}
+
+studio.example.com {
+	reverse_proxy 127.0.0.1:3310
+}

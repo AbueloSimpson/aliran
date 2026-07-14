@@ -36,6 +36,31 @@ jobs:
       - name: Client store corruption recovery (test:corrupt)
         run: npm run test:corrupt
 
+  docker-build:
+    name: docker images build (best effort, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # Both images build from the repo ROOT context (they vendor the unpublished
+      # @aliran/core workspace package via the file:../core dependency).
+      - name: Build panel image
+        run: docker build -f panel/Dockerfile -t aliran-panel .
+      - name: Build broadcaster image
+        if: ${{ !cancelled() }}
+        run: docker build -f broadcaster/Dockerfile -t aliran-broadcaster .
+      # Prove the images actually run: `init` exercises the whole panel dependency
+      # graph (sodium-native, @aliran/core) in a throwaway container, and the
+      # broadcaster image must ship ffmpeg with SRT protocol support (needed for
+      # authenticated push ingest).
+      - name: Smoke panel image (admin-cli init in a throwaway container)
+        if: ${{ !cancelled() }}
+        run: docker run --rm aliran-panel node src/admin-cli.js init
+      - name: Smoke broadcaster image (ffmpeg + libsrt present)
+        if: ${{ !cancelled() }}
+        run: docker run --rm --entrypoint ffmpeg aliran-broadcaster -hide_banner -protocols | grep -w srt
+
   e2e-dht:
     name: e2e over the public DHT (best effort, non-blocking)
     runs-on: ubuntu-latest

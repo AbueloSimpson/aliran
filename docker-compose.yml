@@ -1,23 +1,38 @@
 # Low-cost self-hosting: run the panel + broadcaster on one box.
-# No inbound ports are required for P2P (outbound UDP hole-punching). Only map RTMP if
-# you push from OBS (broadcaster INPUT=rtmp).
+#
+# network_mode: host (Linux-only) is deliberate:
+#   - Hyperswarm's UDP hole-punching works without Docker's bridge NAT stacked on
+#     the host's NAT (double NAT measurably hurts connectivity).
+#   - The admin/control dashboards keep their safe 127.0.0.1 default binding —
+#     reachable from the box (or an SSH tunnel / local Caddy), never raw on the WAN.
+#   - Push-ingest listeners (RTMP/SRT/TS) added at runtime need no compose edits.
+# A bridge-network variant is documented in docs/operator-guide.md if you need it.
+#
+# First-time setup (creates the panel keys, then an admin account):
+#   docker compose build
+#   docker compose run --rm panel node src/admin-cli.js init
+#   docker compose run --rm panel node src/admin-cli.js add-admin <name> <password>
+#   docker compose up -d
 services:
   panel:
-    build: ./panel
+    build:
+      context: .
+      dockerfile: panel/Dockerfile
+    network_mode: host
     restart: unless-stopped
     env_file: ./panel/.env
     volumes:
       - panel-data:/data
-    # Run `docker compose run --rm panel node src/admin-cli.js init` once to make keys.
 
   broadcaster:
-    build: ./broadcaster
+    build:
+      context: .
+      dockerfile: broadcaster/Dockerfile
+    network_mode: host
     restart: unless-stopped
     env_file: ./broadcaster/.env
     volumes:
       - broadcaster-data:/data
-    # ports:
-    #   - "1935:1935"   # uncomment for OBS RTMP push (INPUT=rtmp)
 
 volumes:
   panel-data:
