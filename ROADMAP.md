@@ -56,7 +56,9 @@ Goal: accounts, encryption, and an OTT UI.
 - 🚧 OTT GUI: login screen, home (category rails, hero, LIVE badges, P2P poster art),
   and the player (live HLS from the P2P feed via react-native-video, peers/buffering
   status) verified on-device; remaining: channel detail, search
-- ⬜ Android **TV** target (leanback + D-pad focus) from the same APK
+- ✅ Android **TV** target (leanback + D-pad focus) from the same APK: focus rings +
+  rail focus memory (`TVFocusGuideView`), verified remote-only on an Android TV
+  emulator (login → browse → live P2P playback → back)
 
 **Exit criteria:** username/password login validated against the P2P DB; browse a
 branded catalog on phone and TV; unauthorized users can't decrypt.

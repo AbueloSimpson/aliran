@@ -104,6 +104,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error (`client/backend/recover.mjs`); in-memory entitlements survive, everything
   re-replicates from peers. Test: `npm run test:corrupt` (reproduces the corruption
   locally, asserts detection + purge + clean reopen).
+- **Android TV support verified on a TV emulator (remote-only)**: visible D-pad focus
+  rings on Login inputs/button and Home hero/cards (transparent border on phone, cyan
+  `theme.colors.focus` ring on TV), and each Home rail is a `TVFocusGuideView` with
+  focus memory (returning from the Player lands on the card you left). The manifest
+  already declared `LEANBACK_LAUNCHER` + `leanback`/`touchscreen` not-required from
+  the tvos template. Verified on an Android TV (API 36, 1080p) emulator end-to-end
+  with only D-pad key events: focus traversal → sign-in → browse → live P2P playback
+  → Back to Home.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.

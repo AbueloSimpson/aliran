@@ -10,8 +10,11 @@ export const theme = {
     accent: '#22D3EE',
     text: '#E5EEF7',
     textDim: '#93A4BF',
-    live: '#EF4444'
+    live: '#EF4444',
+    focus: '#22D3EE'
   },
+  // D-pad focus ring for the 10-foot UI (invisible border keeps layout stable on phone).
+  focusRing: Platform.isTV ? 3 : 0,
   // Android TV uses a "10-foot" UI: larger type, more spacing, focus rings.
   isTV: Platform.isTV,
   spacing: (n: number) => n * (Platform.isTV ? 12 : 8),

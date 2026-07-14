@@ -28,6 +28,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
   const [password, setPassword] = useState(dev?.password ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [focused, setFocused] = useState<'user' | 'pass' | 'submit' | null>(null)
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const creds = useRef({ username: '', password: '' })
@@ -59,26 +60,32 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
     <View style={styles.container}>
       <Text style={styles.title}>Aliran</Text>
       <TextInput
-        style={styles.input}
+        style={[styles.input, focused === 'user' && styles.focused]}
         placeholder="Username"
         placeholderTextColor={theme.colors.textDim}
         autoCapitalize="none"
         value={username}
         onChangeText={setUsername}
+        onFocus={() => setFocused('user')}
+        onBlur={() => setFocused(null)}
       />
       <TextInput
-        style={styles.input}
+        style={[styles.input, focused === 'pass' && styles.focused]}
         placeholder="Password"
         placeholderTextColor={theme.colors.textDim}
         secureTextEntry
         value={password}
         onChangeText={setPassword}
+        onFocus={() => setFocused('pass')}
+        onBlur={() => setFocused(null)}
       />
       {error && <Text style={styles.error}>{error}</Text>}
       <Pressable
-        style={styles.button}
+        style={[styles.button, focused === 'submit' && styles.focused]}
         disabled={busy || !backendReady}
         hasTVPreferredFocus
+        onFocus={() => setFocused('submit')}
+        onBlur={() => setFocused(null)}
         onPress={onSubmit}
       >
         {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{backendReady ? 'Sign in' : 'Connecting…'}</Text>}
@@ -90,8 +97,9 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.background, alignItems: 'center', justifyContent: 'center', padding: 24 },
   title: { color: theme.colors.text, fontSize: theme.isTV ? 56 : 40, fontWeight: '800', marginBottom: 32 },
-  input: { width: theme.isTV ? 480 : 300, backgroundColor: theme.colors.surface, color: theme.colors.text, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 14, fontSize: 18 },
-  button: { marginTop: 8, backgroundColor: theme.colors.primary, borderRadius: 10, paddingHorizontal: 32, paddingVertical: 14, minWidth: 200, alignItems: 'center' },
+  input: { width: theme.isTV ? 480 : 300, backgroundColor: theme.colors.surface, color: theme.colors.text, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 14, fontSize: 18, borderWidth: theme.focusRing, borderColor: 'transparent' },
+  button: { marginTop: 8, backgroundColor: theme.colors.primary, borderRadius: 10, paddingHorizontal: 32, paddingVertical: 14, minWidth: 200, alignItems: 'center', borderWidth: theme.focusRing, borderColor: 'transparent' },
+  focused: { borderColor: theme.colors.focus },
   buttonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
   error: { color: theme.colors.live, marginBottom: 10 }
 })
