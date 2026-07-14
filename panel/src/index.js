@@ -18,6 +18,7 @@ import { openStore } from './store.js'
 import { makeThrottle, attachLoginRpc } from './rpc.js'
 import { startAdminServer } from './admin-server.js'
 import { loadAdmins } from './ops.js'
+import { makeRing } from './activity.js'
 
 export async function startPanel () {
   const keys = openKeys(config.dataDir)
@@ -30,12 +31,13 @@ export async function startPanel () {
   console.log('====================')
 
   const throttle = makeThrottle(config.lockout.threshold, config.lockout.seconds)
+  const activity = makeRing(200) // in-memory observability feed (admin API + RPC events)
 
   const sessionTtlMs = config.sessionTtlDays * 86400000
   const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
   swarm.on('connection', (socket) => {
     store.replicate(socket) // clients replicate the signed account/catalog DB
-    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs })
+    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity })
   })
 
   const topic = hcrypto.hash(keys.signing.publicKey)
@@ -50,7 +52,7 @@ export async function startPanel () {
     if (Object.keys(loadAdmins(config.dataDir)).length === 0) {
       console.warn('Admin API enabled but no admins exist — create one: node src/admin-cli.js add-admin <name>')
     }
-    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir }, {
+    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity }, {
       host: config.admin.host,
       port: config.admin.port,
       sessionTtlMs: config.admin.sessionTtlHours * 3600000,

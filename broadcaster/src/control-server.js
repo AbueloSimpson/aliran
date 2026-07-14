@@ -15,6 +15,10 @@
 //   DELETE /api/channels/:id             remove from registry (must be stopped; data kept)
 //   POST   /api/channels/:id/start
 //   POST   /api/channels/:id/stop
+//   GET    /api/admins
+//   POST   /api/admins                   {username,password}
+//   DELETE /api/admins/:name
+//   POST   /api/admins/:name/password    {password} (bumps tokenVersion → re-login)
 //
 // Non-/api GETs serve the control UI from broadcaster/control-ui/ (S12b).
 
@@ -24,7 +28,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
 import { ControlError } from './channel.js'
-import { makeThrottle, controlKeys, verifyAdmin, adminTokenLive } from './control-auth.js'
+import { makeThrottle, controlKeys, verifyAdmin, adminTokenLive, addAdmin, removeAdmin, listAdmins, setAdminPassword } from './control-auth.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
@@ -81,6 +85,20 @@ export function startControlServer (ctx, opts = {}) {
 
     if (r1 === 'status' && req.method === 'GET' && seg.length === 2) {
       return sendJson(res, 200, await ctx.manager.statusSummary())
+    }
+
+    if (r1 === 'admins') {
+      if (seg.length === 2) {
+        if (req.method === 'GET') return sendJson(res, 200, listAdmins(ctx))
+        if (req.method === 'POST') {
+          const b = await readJson(req)
+          return sendJson(res, 201, addAdmin(ctx, b.username, b.password))
+        }
+      }
+      if (seg.length === 3 && req.method === 'DELETE') return sendJson(res, 200, removeAdmin(ctx, r2))
+      if (seg.length === 4 && r3 === 'password' && req.method === 'POST') {
+        return sendJson(res, 200, setAdminPassword(ctx, r2, (await readJson(req)).password))
+      }
     }
 
     if (r1 === 'channels') {

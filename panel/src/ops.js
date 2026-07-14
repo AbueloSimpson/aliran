@@ -155,16 +155,54 @@ export async function listDevices (ctx, username) {
   }))
 }
 
+// Remove ONE device enrollment without bumping tokenVersion (that would log out
+// every device). Cooperative session hygiene: the SDK's online check (sdk
+// sessionLive) sees the enrollment is gone and drops to login, but a hostile
+// client with a cached token + unsealed keys is unaffected — real access
+// revocation is grant revoke + stream-key rotation.
+export async function revokeDevice (ctx, username, deviceId) {
+  const user = await requireUser(ctx, username)
+  const devices = user.devices || []
+  const idx = devices.findIndex((d) => d.deviceId === deviceId)
+  if (idx < 0) notFound(`user "${username}" has no device "${deviceId}"`)
+  devices.splice(idx, 1)
+  user.devices = devices
+  await ctx.db.put('user/' + username, user)
+  return userSummary(username, user)
+}
+
+// Deleting a user removes the whole record — and with it every sealed grant and
+// device enrollment. Session tokens already issued keep validating OFFLINE until
+// they expire (inherent to signed tokens); online checks and future logins fail
+// immediately.
+export async function deleteUser (ctx, username) {
+  await requireUser(ctx, username)
+  await ctx.db.del('user/' + username)
+  return { username, deleted: true }
+}
+
 export async function getUser (ctx, username) {
   return userSummary(username, await requireUser(ctx, username))
 }
 
-export async function listUsers (ctx) {
-  const out = []
-  for await (const { key, value } of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) {
-    out.push(userSummary(key.slice('user/'.length), value))
+// Prefix search + cursor paging over user records: `after` is the last username of
+// the previous page (exclusive), `next` is the cursor for the following page (null
+// on the last one). Prefix-only by design — substring search would be a full scan
+// of the replicated Hyperbee.
+export async function listUsers (ctx, { prefix = '', after = '', limit = 50 } = {}) {
+  if (typeof prefix !== 'string' || typeof after !== 'string') bad('prefix/after must be strings')
+  const lim = parseInt(limit, 10)
+  if (!Number.isInteger(lim) || lim < 1 || lim > 500) bad('limit must be an integer 1-500')
+  const range = { lt: 'user/' + prefix + '\xff' } // usernames are ASCII (NAME_RE), so \xff bounds the prefix
+  if (after && after >= prefix) range.gt = 'user/' + after
+  else range.gte = 'user/' + prefix
+  const users = []
+  let next = null
+  for await (const { key, value } of ctx.db.createReadStream(range)) {
+    if (users.length === lim) { next = users[lim - 1].username; break }
+    users.push(userSummary(key.slice('user/'.length), value))
   }
-  return out
+  return { users, next }
 }
 
 async function requireUser (ctx, username) {
@@ -207,6 +245,8 @@ export async function addStream (ctx, id, opts = {}) {
     poster: null,
     backdrop: null,
     logo: null,
+    order: opts.order != null ? normOrder(opts.order) : null,
+    featured: normBool(opts.featured),
     status: opts.feedKey ? 'live' : 'idle'
   }
   await ctx.db.put('catalog/' + id, catalog)
@@ -221,9 +261,35 @@ export async function setMeta (ctx, id, fields = {}) {
     if (fields[f] != null) c[f] = String(fields[f])
   }
   if (fields.category != null) c.category = normCategory(fields.category)
-  if (fields.isLive != null) c.isLive = fields.isLive === true || /^(1|true|yes)$/i.test(String(fields.isLive))
+  if (fields.isLive != null) c.isLive = normBool(fields.isLive)
+  if (fields.order !== undefined) c.order = normOrder(fields.order) // null clears
+  if (fields.featured != null) c.featured = normBool(fields.featured)
   await ctx.db.put('catalog/' + id, c)
   return { id, catalog: c }
+}
+
+// FULL purge of a stream: its art files, every user's sealed grant, the
+// panel-private secret, and finally the catalog record. Clients converge on the
+// next catalog push (their display list is grants ∩ catalog). A client that
+// already unsealed the key may have it cached — real revocation of live content
+// is a key rotation — and re-adding the id later mints a FRESH key.
+export async function deleteStream (ctx, id) {
+  await requireStream(ctx, id)
+  try {
+    for await (const entry of ctx.assets.list('/' + id + '/')) await ctx.assets.del(entry.key)
+  } catch {} // an empty/never-used assets drive must not block the purge
+  let grantsRevoked = 0
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) {
+    if (value.wrapped && value.wrapped[id] !== undefined) {
+      delete value.wrapped[id]
+      await ctx.db.put(key, value)
+      grantsRevoked++
+    }
+  }
+  const secrets = loadSecrets(ctx.dataDir)
+  if (secrets[id] !== undefined) { delete secrets[id]; saveSecrets(ctx.dataDir, secrets) }
+  await ctx.db.del('catalog/' + id)
+  return { id, deleted: true, grantsRevoked }
 }
 
 export const ART_KINDS = ['poster', 'backdrop', 'logo']
@@ -262,14 +328,25 @@ function normCategory (cat) {
   return [String(cat)]
 }
 
+// Curation hints for client UIs (rail sort / hero pick). order is nullable.
+function normOrder (v) {
+  if (v === null || v === '' || v === 'null') return null
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isInteger(n) || n < 0 || n > 9999) bad('order must be an integer 0-9999, or null to clear')
+  return n
+}
+
+const normBool = (v) => v === true || /^(1|true|yes)$/i.test(String(v))
+
 // ---------------------------------------------------------------- status
 
 export async function statusSummary (ctx) {
-  const users = await listUsers(ctx)
+  let users = 0
+  for await (const _ of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) users++ // eslint-disable-line no-unused-vars
   const streams = await listStreams(ctx)
   return {
     panelKey: b4a.toString(ctx.keys.signing.publicKey, 'hex'),
-    users: users.length,
+    users,
     streams: streams.length,
     live: streams.filter((s) => s.isLive).length,
     admins: Object.keys(loadAdmins(ctx.dataDir)).length
@@ -320,6 +397,34 @@ export function removeAdmin (ctx, name) {
   delete admins[name]
   saveAdmins(ctx.dataDir, admins)
   return { name, removed: true }
+}
+
+// Public-safe admin listing: names + status only, never salts/verifiers.
+export function listAdmins (ctx) {
+  return Object.entries(loadAdmins(ctx.dataDir)).map(([name, a]) => ({
+    name,
+    status: a.status || 'active',
+    createdAt: a.createdAt || null
+  }))
+}
+
+// Rotate an admin password: fresh salt + Argon2id verifier, and a tokenVersion
+// bump so every session issued under the old password dies (including the caller's
+// own if they rotate themselves — the dashboard must re-login). admins.json is
+// file-based and the panel is single-process, so read-modify-write is safe here.
+export function setAdminPassword (ctx, name, password) {
+  if (typeof password !== 'string' || password.length < 8) bad('admin password must be at least 8 characters')
+  const admins = loadAdmins(ctx.dataDir)
+  const a = admins[name]
+  if (!a) notFound(`no such admin: ${name}`)
+  const salt = randomSalt()
+  const argon = argonOpts(ctx.config)
+  a.salt = b4a.toString(salt, 'hex')
+  a.verifier = b4a.toString(deriveVerifier(b4a.from(password), salt, argon), 'hex')
+  a.argon = argon
+  a.tokenVersion = (a.tokenVersion || 1) + 1
+  saveAdmins(ctx.dataDir, admins)
+  return { name, tokenVersion: a.tokenVersion }
 }
 
 // A dummy record keeps the Argon2 work (and thus response time) the same whether or

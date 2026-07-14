@@ -3,13 +3,15 @@
 //
 //   node src/control-cli.js add-admin <name> [--password <pw>]
 //   node src/control-cli.js remove-admin <name>
+//   node src/control-cli.js set-admin-password <name> [--password <pw>]
+//   node src/control-cli.js list-admins
 //
 // Touches only DATA_DIR/secrets/admins.json — safe while the broadcaster runs.
 
 import readline from 'readline'
 import { Writable } from 'stream'
 import { config } from './config.js'
-import { addAdmin, removeAdmin } from './control-auth.js'
+import { addAdmin, removeAdmin, listAdmins, setAdminPassword } from './control-auth.js'
 
 function parseArgs (argv) {
   const pos = []; const opts = {}
@@ -49,6 +51,17 @@ async function main () {
     console.log(`Removed control admin "${name}".`)
     return
   }
+  if (cmd === 'set-admin-password') {
+    const name = pos[0]; if (!name) return usage()
+    const password = opts.password != null && opts.password !== true ? String(opts.password) : await promptHidden(`Password for ${name}: `)
+    setAdminPassword(ctx, name, password)
+    console.log(`Password updated for control admin "${name}" (existing sessions revoked).`)
+    return
+  }
+  if (cmd === 'list-admins') {
+    for (const a of listAdmins(ctx)) console.log(a.name, '->', JSON.stringify({ status: a.status, createdAt: a.createdAt }))
+    return
+  }
   usage()
 }
 
@@ -57,6 +70,8 @@ function usage () {
 
   add-admin <name> [--password <pw>]    Create an admin for the control API (min 8 chars)
   remove-admin <name>                   Delete an admin account
+  set-admin-password <name> [--password <pw>]   Rotate an admin password (revokes their sessions)
+  list-admins                           List admin accounts
 `)
 }
 

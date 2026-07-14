@@ -177,6 +177,26 @@ try {
   await api('POST', '/api/channels/api-chan/stop', undefined, token)
   log('F: stop clean (ffmpeg down), double stop 400, restart with the same feed key ✓')
 
+  // ===== Test F2: admins management (S16a — parity with the panel admin API) =====
+  r = await api('GET', '/api/admins', undefined, token)
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.find((a) => a.name === 'op'), 'admin list shows op')
+  assert.strictEqual(JSON.stringify(r.body).includes('verifier'), false, 'admin list must not leak verifiers')
+  assert.strictEqual((await api('POST', '/api/admins', { username: 'op2', password: 'short' }, token)).status, 400, 'weak admin password 400')
+  assert.strictEqual((await api('POST', '/api/admins', { username: 'op2', password: 'op2-password-1' }, token)).status, 201, 'admin created')
+  assert.strictEqual((await api('POST', '/api/admins', { username: 'op2', password: 'op2-password-1' }, token)).status, 409, 'duplicate admin 409')
+  const tokOp2 = (await api('POST', '/api/login', { username: 'op2', password: 'op2-password-1' })).body.token
+  assert.ok(tokOp2, 'op2 logs in')
+  assert.strictEqual((await api('POST', '/api/admins/op2/password', { password: 'op2-password-2' }, token)).status, 200, 'password rotated')
+  assert.strictEqual((await api('GET', '/api/status', undefined, tokOp2)).status, 401, 'old op2 token dead after rotation')
+  const tokOp2b = (await api('POST', '/api/login', { username: 'op2', password: 'op2-password-2' })).body.token
+  assert.ok(tokOp2b, 'op2 logs in with the new password')
+  assert.strictEqual((await api('GET', '/api/status', undefined, tokOp2b)).status, 200, 'new op2 token works')
+  assert.strictEqual((await api('DELETE', '/api/admins/op2', undefined, token)).status, 200, 'admin removed')
+  assert.strictEqual((await api('GET', '/api/status', undefined, tokOp2b)).status, 401, 'removed admin token dead')
+  assert.strictEqual((await api('DELETE', '/api/admins/op2', undefined, token)).status, 404, 'missing admin 404')
+  log('F2: control admins list/create/rotate/delete with token revocation ✓')
+
   // ===== Test G: lockout =====
   for (let i = 0; i < 3; i++) {
     assert.strictEqual((await api('POST', '/api/login', { username: 'op', password: 'wrong-' + i })).status, 401, 'still 401 pre-lockout')

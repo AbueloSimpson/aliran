@@ -83,10 +83,15 @@ Remaining polish (channel detail, search) rides along in v1.0.
   (headless SDK login → resolve → ffprobe from another machine) passed for two
   concurrent streams against a fresh 1 vCPU/1 GB VPS, and the Android app logged
   in and played live P2P against the VPS panel — no localhost anywhere
-- ⬜ **Complete admin panel**: admin-account management incl. password change (today
-  CLI-only), stream/user delete with full purge, user search + pagination,
-  observability (peers, storage, uptime, activity), catalog curation
-  (`order`/`featured`), per-device session revoke
+- ✅ **Complete admin surface (ops + API + CLI)**: admins CRUD + password rotation
+  (panel **and** broadcaster control API), stream delete = full purge / user delete,
+  user prefix-search + cursor pagination, `GET /api/observability` (uptime, memory,
+  swarm peers, storage, last-200 activity ring), typed catalog curation
+  (`order`/`featured`, preserved across broadcaster re-register), cooperative
+  per-device revoke + SDK `sessionLive` online check — verified by the extended
+  `test:admin-api` / `test:broadcaster-api`
+- ⬜ **Admin dashboard UI for the above**: admins tab, delete confirm flows, user
+  search + load-more, observability card, curation controls, device revoke buttons
 - ⬜ **Broadcaster ingest expansion**: push ingest — RTMP (OBS), SRT with passphrase
   (authenticated), MPEG-TS over UDP — plus correct HLS/RTSP pull; typed per-channel
   input config with auto port allocation and an ffmpeg capability probe

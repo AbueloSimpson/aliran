@@ -79,8 +79,10 @@ for (const tab of document.querySelectorAll('.tab')) {
 // ---------------------------------------------------------------- refresh + render
 
 async function refresh () {
-  const [status, u, s] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/users'), api('GET', '/api/streams')])
-  users = u
+  // /api/users is cursor-paged since S16a ({users,next}); real search/paging UI is S16b —
+  // until then one max-size page keeps the table complete for realistic deployments.
+  const [status, u, s] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/users?limit=500'), api('GET', '/api/streams')])
+  users = u.users
   streams = s
   $('#status-chips').innerHTML =
     `<span class="chip"><b>${status.users}</b> users</span>` +

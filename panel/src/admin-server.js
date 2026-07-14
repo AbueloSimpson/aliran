@@ -14,10 +14,13 @@
 //
 //   POST   /api/login                        {username,password} → {token,expiresAt}
 //   GET    /api/status
-//   GET    /api/users
+//   GET    /api/observability                uptime/mem/swarm/data + activity ring
+//   GET    /api/users?prefix&after&limit     → {users,next} (prefix search + cursor)
 //   POST   /api/users                        {username,password}
 //   GET    /api/users/:u
+//   DELETE /api/users/:u                     delete the account record
 //   GET    /api/users/:u/devices
+//   DELETE /api/users/:u/devices/:deviceId   drop one enrollment (no tokenVersion bump)
 //   POST   /api/users/:u/password            {password}
 //   POST   /api/users/:u/status              {status:'active'|'disabled'}
 //   POST   /api/users/:u/logout-all
@@ -25,10 +28,15 @@
 //   POST   /api/users/:u/grants              {streamId}
 //   DELETE /api/users/:u/grants/:streamId
 //   GET    /api/streams
-//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?}
-//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,...}
+//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?}
+//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,...}
+//   DELETE /api/streams/:id                  FULL purge (catalog+secret+grants+art)
 //   POST   /api/streams/:id/art/:kind        raw image body (content-type → extension)
 //   GET    /api/assets/:id/:file             art bytes from the assets drive (authed)
+//   GET    /api/admins
+//   POST   /api/admins                       {username,password}
+//   DELETE /api/admins/:name
+//   POST   /api/admins/:name/password        {password} (bumps tokenVersion → re-login)
 //
 // Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
 // directory, GET only — see serveStatic for the traversal guard).
@@ -53,7 +61,8 @@ const CONTENT_EXT = {
   'image/gif': '.gif'
 }
 
-// ctx = { config, keys, db, assets, dataDir } (open panel store).
+// ctx = { config, keys, db, assets, dataDir, swarm?, activity? } (open panel store;
+// swarm + activity ring are optional — observability degrades gracefully without them).
 // opts = { host, port, sessionTtlMs, lockout: { threshold, seconds } }.
 // Resolves to { server, host, port, close } once listening (port 0 → ephemeral).
 export function startAdminServer (ctx, opts = {}) {
@@ -103,9 +112,38 @@ export function startAdminServer (ctx, opts = {}) {
     if (!payload || !ops.adminTokenLive(ctx, payload)) {
       return sendJson(res, 401, { error: 'unauthorized' })
     }
+    // Feed the observability activity ring on every successful admin mutation
+    // (called only after the op resolved — a thrown OpsError records nothing).
+    const act = (op, fields = {}) => { if (ctx.activity) ctx.activity.record('admin', { op, admin: payload.adminId, ...fields }) }
 
     if (r1 === 'status' && req.method === 'GET' && seg.length === 2) {
       return sendJson(res, 200, await ops.statusSummary(ctx))
+    }
+
+    if (r1 === 'observability' && req.method === 'GET' && seg.length === 2) {
+      return sendJson(res, 200, await observability(ctx))
+    }
+
+    if (r1 === 'admins') {
+      if (seg.length === 2) {
+        if (req.method === 'GET') return sendJson(res, 200, ops.listAdmins(ctx))
+        if (req.method === 'POST') {
+          const b = await readJson(req)
+          const out = ops.addAdmin(ctx, b.username, b.password)
+          act('admin-create', { target: b.username })
+          return sendJson(res, 201, out)
+        }
+      }
+      if (seg.length === 3 && req.method === 'DELETE') {
+        const out = ops.removeAdmin(ctx, r2)
+        act('admin-remove', { target: r2 })
+        return sendJson(res, 200, out)
+      }
+      if (seg.length === 4 && r3 === 'password' && req.method === 'POST') {
+        const out = ops.setAdminPassword(ctx, r2, (await readJson(req)).password)
+        act('admin-password', { target: r2 })
+        return sendJson(res, 200, out)
+      }
     }
 
     // Art bytes for the dashboard previews. Authed like everything else — the
@@ -119,26 +157,53 @@ export function startAdminServer (ctx, opts = {}) {
 
     if (r1 === 'users') {
       if (seg.length === 2) {
-        if (req.method === 'GET') return sendJson(res, 200, await ops.listUsers(ctx))
+        if (req.method === 'GET') {
+          return sendJson(res, 200, await ops.listUsers(ctx, {
+            prefix: url.searchParams.get('prefix') || '',
+            after: url.searchParams.get('after') || '',
+            limit: url.searchParams.get('limit') || 50
+          }))
+        }
         if (req.method === 'POST') {
           const b = await readJson(req)
-          return sendJson(res, 201, await ops.createUser(ctx, b.username, b.password))
+          const out = await ops.createUser(ctx, b.username, b.password)
+          act('user-create', { user: b.username })
+          return sendJson(res, 201, out)
         }
       }
-      if (seg.length === 3 && req.method === 'GET') return sendJson(res, 200, await ops.getUser(ctx, r2))
+      if (seg.length === 3) {
+        if (req.method === 'GET') return sendJson(res, 200, await ops.getUser(ctx, r2))
+        if (req.method === 'DELETE') {
+          const out = await ops.deleteUser(ctx, r2)
+          act('user-delete', { user: r2 })
+          return sendJson(res, 200, out)
+        }
+      }
       if (seg.length === 4 && req.method === 'POST') {
         const u = r2
-        if (r3 === 'password') return sendJson(res, 200, await ops.setPassword(ctx, u, (await readJson(req)).password))
-        if (r3 === 'status') return sendJson(res, 200, await ops.setUserStatus(ctx, u, (await readJson(req)).status))
-        if (r3 === 'logout-all') return sendJson(res, 200, await ops.logoutAll(ctx, u))
-        if (r3 === 'max-devices') return sendJson(res, 200, await ops.setMaxDevices(ctx, u, (await readJson(req)).maxDevices))
-        if (r3 === 'grants') return sendJson(res, 200, await ops.grant(ctx, u, ops.checkName((await readJson(req)).streamId, 'stream id')))
+        let out = null
+        if (r3 === 'password') { out = await ops.setPassword(ctx, u, (await readJson(req)).password); act('user-password', { user: u }) }
+        else if (r3 === 'status') { out = await ops.setUserStatus(ctx, u, (await readJson(req)).status); act('user-status', { user: u, status: out.status }) }
+        else if (r3 === 'logout-all') { out = await ops.logoutAll(ctx, u); act('user-logout-all', { user: u }) }
+        else if (r3 === 'max-devices') { out = await ops.setMaxDevices(ctx, u, (await readJson(req)).maxDevices); act('user-max-devices', { user: u }) }
+        else if (r3 === 'grants') {
+          const streamId = ops.checkName((await readJson(req)).streamId, 'stream id')
+          out = await ops.grant(ctx, u, streamId); act('grant', { user: u, streamId })
+        }
+        if (out) return sendJson(res, 200, out)
       }
       if (seg.length === 4 && r3 === 'devices' && req.method === 'GET') {
         return sendJson(res, 200, await ops.listDevices(ctx, r2))
       }
+      if (seg.length === 5 && r3 === 'devices' && req.method === 'DELETE') {
+        const out = await ops.revokeDevice(ctx, r2, r4)
+        act('device-revoke', { user: r2, deviceId: r4 })
+        return sendJson(res, 200, out)
+      }
       if (seg.length === 5 && r3 === 'grants' && req.method === 'DELETE') {
-        return sendJson(res, 200, await ops.revoke(ctx, r2, r4))
+        const out = await ops.revoke(ctx, r2, r4)
+        act('revoke', { user: r2, streamId: r4 })
+        return sendJson(res, 200, out)
       }
     }
 
@@ -147,16 +212,29 @@ export function startAdminServer (ctx, opts = {}) {
         if (req.method === 'GET') return sendJson(res, 200, await ops.listStreams(ctx))
         if (req.method === 'POST') {
           const b = await readJson(req)
-          return sendJson(res, 201, await ops.addStream(ctx, b.id, b))
+          const out = await ops.addStream(ctx, b.id, b)
+          act('stream-create', { streamId: b.id })
+          return sendJson(res, 201, out)
         }
       }
-      if (seg.length === 3 && req.method === 'PATCH') {
-        return sendJson(res, 200, await ops.setMeta(ctx, r2, await readJson(req)))
+      if (seg.length === 3) {
+        if (req.method === 'PATCH') {
+          const out = await ops.setMeta(ctx, r2, await readJson(req))
+          act('stream-meta', { streamId: r2 })
+          return sendJson(res, 200, out)
+        }
+        if (req.method === 'DELETE') {
+          const out = await ops.deleteStream(ctx, r2)
+          act('stream-delete', { streamId: r2, grantsRevoked: out.grantsRevoked })
+          return sendJson(res, 200, out)
+        }
       }
       if (seg.length === 5 && r3 === 'art' && req.method === 'POST') {
         const data = await readBody(req, ART_BODY_LIMIT)
         const ext = CONTENT_EXT[(req.headers['content-type'] || '').split(';')[0].trim()] || '.bin'
-        return sendJson(res, 200, await ops.uploadArt(ctx, r2, r4, data, ext))
+        const out = await ops.uploadArt(ctx, r2, r4, data, ext)
+        act('stream-art', { streamId: r2, kind: r4 })
+        return sendJson(res, 200, out)
       }
     }
 
@@ -176,6 +254,39 @@ export function startAdminServer (ctx, opts = {}) {
       })
     })
   })
+}
+
+// Process/network/storage snapshot + the in-memory activity ring. Everything is
+// best-effort: no swarm/ring in ctx (tests, exotic setups) degrades to zeros, and
+// the activity feed is empty again after every panel restart.
+async function observability (ctx) {
+  const mem = process.memoryUsage()
+  let diskFree = null
+  try { const s = fs.statfsSync(ctx.dataDir); diskFree = s.bavail * s.bsize } catch {}
+  return {
+    uptimeSec: Math.floor(process.uptime()),
+    mem: { rss: mem.rss, heapUsed: mem.heapUsed },
+    swarm: {
+      connections: ctx.swarm ? ctx.swarm.connections.size : 0,
+      peers: ctx.swarm ? ctx.swarm.peers.size : 0
+    },
+    data: { bytes: await dirSize(ctx.dataDir), diskFree },
+    activity: ctx.activity ? ctx.activity.list() : []
+  }
+}
+
+// Recursive on-disk size of DATA_DIR (store + assets + keys). The dir is a handful
+// of large append-only files, so the walk is cheap even under dashboard polling.
+async function dirSize (dir) {
+  let total = 0
+  let entries = []
+  try { entries = await fs.promises.readdir(dir, { withFileTypes: true }) } catch { return total }
+  for (const e of entries) {
+    const p = path.join(dir, e.name)
+    if (e.isDirectory()) total += await dirSize(p)
+    else if (e.isFile()) { try { total += (await fs.promises.stat(p)).size } catch {} }
+  }
+  return total
 }
 
 // No leading dot (blocks '..' and dotfiles), no separators — traversal-proof.

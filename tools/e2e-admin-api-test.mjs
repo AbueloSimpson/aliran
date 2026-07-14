@@ -12,12 +12,14 @@ import hcrypto from 'hypercore-crypto'
 import assert from 'assert'
 import os from 'os'; import fs from 'fs'; import path from 'path'
 import b4a from 'b4a'
-import { panelClient, login } from '../sdk/login.js'
+import { panelClient, login, checkSession, sessionLive } from '../sdk/login.js'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore, loadSecrets } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
+import { makeRing } from '../panel/src/activity.js'
 import * as ops from '../panel/src/ops.js'
 import { startAdminServer } from '../panel/src/admin-server.js'
+import { panelClient as pubRpc, registerWithPanel } from '../broadcaster/src/register.js'
 
 const log = (...a) => console.log(...a)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -39,7 +41,8 @@ try {
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
   const { store: panelStore, db, assets } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
-  const ctx = { config, keys, db, assets, dataDir: dirs.panel }
+  const ring = makeRing(200)
+  const ctx = { config, keys, db, assets, dataDir: dirs.panel, activity: ring } // ctx.swarm attached in Test D
 
   assert.throws(() => ops.addAdmin(ctx, 'root', 'short'), /8 characters/, 'weak admin password must be rejected')
   ops.addAdmin(ctx, 'root', ADMIN_PASSWORD)
@@ -81,6 +84,8 @@ try {
   assert.strictEqual(r.status, 201, 'add stream: ' + JSON.stringify(r.body))
   const encKey = r.body.encryptionKey
   assert.match(encKey, /^[0-9a-f]{64}$/, 'add-stream returns the encryption key once')
+  assert.strictEqual(r.body.catalog.order, null, 'curation default: order null')
+  assert.strictEqual(r.body.catalog.featured, false, 'curation default: featured false')
   r = await api('POST', '/api/streams', { id: 'movie-night' }, { token })
   assert.strictEqual(r.status, 409, 'duplicate stream must be 409')
 
@@ -103,7 +108,8 @@ try {
 
   r = await api('GET', '/api/users', undefined, { token })
   assert.strictEqual(r.status, 200)
-  const bobRow = r.body.find((u) => u.username === 'bob')
+  assert.strictEqual(r.body.next, null, 'single page -> next is null')
+  const bobRow = r.body.users.find((u) => u.username === 'bob')
   assert.ok(bobRow && bobRow.grants.includes('movie-night'), 'user list shows the grant')
   assert.strictEqual(bobRow.salt, undefined, 'user list must not leak record secrets')
 
@@ -132,8 +138,9 @@ try {
   // ===== Test D: a real viewer can log in and open the granted stream key =====
   const throttle = makeThrottle(1000, 60)
   const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
-  panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: 8, throttle, db, sessionTtlMs: 3600000 }) })
+  panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: 8, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000, activity: ring }) })
   panelSwarm.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false }); await panelSwarm.flush()
+  ctx.swarm = panelSwarm // observability (Test N) reports these connections
 
   const cliStore = new Corestore(dirs.cli); await cliStore.ready(); cleanups.push(() => cliStore.close())
   const cliBee = new Hyperbee(cliStore.get({ key: keys.signing.publicKey }), { keyEncoding: 'utf-8', valueEncoding: 'json' }); await cliBee.ready()
@@ -201,7 +208,194 @@ try {
   assert.ok(b4a.equals(b4a.from(await artRes.arrayBuffer()), PNG_1PX), 'asset bytes match the upload')
   log('G: dashboard static files, traversal guard, authed art endpoint ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD over HTTP lands in the signed DB; viewer login works end-to-end)')
+  // ===== Test H: admins management (S16a) =====
+  r = await api('GET', '/api/admins', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.find((a) => a.name === 'root'), 'admin list shows root')
+  assert.strictEqual(JSON.stringify(r.body).includes('verifier'), false, 'admin list must not leak verifiers')
+
+  r = await api('POST', '/api/admins', { username: 'ops2', password: 'short' }, { token })
+  assert.strictEqual(r.status, 400, 'weak admin password rejected over HTTP')
+  r = await api('POST', '/api/admins', { username: 'ops2', password: 'ops2-password' }, { token })
+  assert.strictEqual(r.status, 201, 'create admin over HTTP')
+  r = await api('POST', '/api/admins', { username: 'ops2', password: 'ops2-password' }, { token })
+  assert.strictEqual(r.status, 409, 'duplicate admin rejected')
+  r = await api('POST', '/api/admins', { username: 'root2', password: 'root2-password' }, { token })
+  assert.strictEqual(r.status, 201)
+
+  const loginR2 = await api('POST', '/api/login', { username: 'root2', password: 'root2-password' })
+  assert.strictEqual(loginR2.status, 200)
+  const tokenR2 = loginR2.body.token
+  r = await api('GET', '/api/status', undefined, { token: tokenR2 })
+  assert.strictEqual(r.status, 200, 'root2 token works before rotation')
+
+  r = await api('POST', '/api/admins/root2/password', { password: 'nope' }, { token })
+  assert.strictEqual(r.status, 400, 'weak rotated password rejected')
+  r = await api('POST', '/api/admins/root2/password', { password: 'root2-NEW-password' }, { token })
+  assert.strictEqual(r.status, 200, 'admin password rotated')
+  r = await api('GET', '/api/status', undefined, { token: tokenR2 })
+  assert.strictEqual(r.status, 401, 'rotation kills the old admin token (tokenVersion bump)')
+  r = await api('POST', '/api/login', { username: 'root2', password: 'root2-password' })
+  assert.strictEqual(r.status, 401, 'old admin password no longer logs in')
+  r = await api('POST', '/api/login', { username: 'root2', password: 'root2-NEW-password' })
+  assert.strictEqual(r.status, 200, 'new admin password logs in')
+
+  const tokenOps2 = (await api('POST', '/api/login', { username: 'ops2', password: 'ops2-password' })).body.token
+  r = await api('DELETE', '/api/admins/ops2', undefined, { token })
+  assert.strictEqual(r.status, 200, 'admin removed')
+  r = await api('GET', '/api/status', undefined, { token: tokenOps2 })
+  assert.strictEqual(r.status, 401, 'removed admin token dies immediately')
+  r = await api('DELETE', '/api/admins/ops2', undefined, { token })
+  assert.strictEqual(r.status, 404, 'removing a missing admin is 404')
+  log('H: admins list/create/rotate/delete; rotation + removal kill live tokens ✓')
+
+  // ===== Test I: user prefix search + cursor paging (S16a) =====
+  for (let i = 0; i < 12; i++) {
+    const name = 'pguser' + String(i).padStart(2, '0')
+    r = await api('POST', '/api/users', { username: name, password: 'pw-' + name }, { token })
+    assert.strictEqual(r.status, 201, 'create ' + name)
+  }
+  r = await api('GET', '/api/users?prefix=pguser&limit=5', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.deepStrictEqual(r.body.users.map((u) => u.username), ['pguser00', 'pguser01', 'pguser02', 'pguser03', 'pguser04'], 'page 1')
+  assert.strictEqual(r.body.next, 'pguser04', 'page 1 cursor')
+  r = await api('GET', '/api/users?prefix=pguser&limit=5&after=' + r.body.next, undefined, { token })
+  assert.deepStrictEqual(r.body.users.map((u) => u.username), ['pguser05', 'pguser06', 'pguser07', 'pguser08', 'pguser09'], 'page 2')
+  r = await api('GET', '/api/users?prefix=pguser&limit=5&after=' + r.body.next, undefined, { token })
+  assert.deepStrictEqual(r.body.users.map((u) => u.username), ['pguser10', 'pguser11'], 'last page')
+  assert.strictEqual(r.body.next, null, 'last page has no cursor')
+  r = await api('GET', '/api/users?prefix=pguser1', undefined, { token })
+  assert.deepStrictEqual(r.body.users.map((u) => u.username), ['pguser10', 'pguser11'], 'narrower prefix')
+  r = await api('GET', '/api/users?prefix=bob', undefined, { token })
+  assert.deepStrictEqual(r.body.users.map((u) => u.username), ['bob'], 'prefix isolates')
+  r = await api('GET', '/api/users?limit=0', undefined, { token })
+  assert.strictEqual(r.status, 400, 'limit must be >= 1')
+  r = await api('GET', '/api/users?limit=abc', undefined, { token })
+  assert.strictEqual(r.status, 400, 'non-numeric limit rejected')
+  log('I: prefix search + cursor paging over 12 users ✓')
+
+  // ===== Test J: typed curation fields + register-merge preservation (S16a) =====
+  r = await api('PATCH', '/api/streams/movie-night', { order: 3, featured: true }, { token })
+  assert.strictEqual(r.status, 200)
+  let cat2 = (await db.get('catalog/movie-night')).value
+  assert.strictEqual(cat2.order, 3, 'order lands typed')
+  assert.strictEqual(cat2.featured, true, 'featured lands typed')
+  r = await api('PATCH', '/api/streams/movie-night', { order: '7', featured: 'false' }, { token })
+  assert.strictEqual(r.status, 200)
+  cat2 = (await db.get('catalog/movie-night')).value
+  assert.strictEqual(cat2.order, 7, 'string order coerced to int')
+  assert.strictEqual(cat2.featured, false, 'string featured coerced to bool')
+  for (const badOrder of [10000, -1, 1.5, 'x']) {
+    r = await api('PATCH', '/api/streams/movie-night', { order: badOrder }, { token })
+    assert.strictEqual(r.status, 400, 'bad order must be rejected: ' + badOrder)
+  }
+  r = await api('PATCH', '/api/streams/movie-night', { order: null }, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual((await db.get('catalog/movie-night')).value.order, null, 'null clears order')
+  r = await api('POST', '/api/streams', { id: 'temp-curated', order: 2, featured: true }, { token })
+  assert.strictEqual(r.status, 201)
+  assert.strictEqual(r.body.catalog.order, 2, 'add-stream accepts order')
+  assert.strictEqual(r.body.catalog.featured, true, 'add-stream accepts featured')
+  r = await api('PATCH', '/api/streams/movie-night', { order: 5, featured: true }, { token })
+  assert.strictEqual(r.status, 200)
+
+  // a broadcaster re-register must NOT erase admin curation (or art)
+  let pcall = null
+  const pubSwarm = new Hyperswarm(); cleanups.push(() => pubSwarm.destroy())
+  pubSwarm.on('connection', (s) => { if (!pcall) pcall = pubRpc(s).call })
+  pubSwarm.join(hcrypto.hash(keys.signing.publicKey), { client: true, server: false })
+  await waitFor(async () => pcall, 30000, 'publisher connection')
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'movie-night', feedKey, title: 'Movie Night LIVE', isLive: true
+  })
+  cat2 = (await db.get('catalog/movie-night')).value
+  assert.strictEqual(cat2.title, 'Movie Night LIVE', 'register updates title')
+  assert.strictEqual(cat2.order, 5, 'register preserves order')
+  assert.strictEqual(cat2.featured, true, 'register preserves featured')
+  assert.strictEqual(cat2.poster, 'assets/movie-night/poster.png', 'register preserves art')
+  log('J: typed order/featured; re-register preserves curation ✓')
+
+  // ===== Test K: stream delete = FULL purge (S16a) =====
+  r = await api('POST', '/api/users', { username: 'carol', password: 'carol-secret-1' }, { token })
+  assert.strictEqual(r.status, 201)
+  r = await api('POST', '/api/users/carol/grants', { streamId: 'movie-night' }, { token })
+  assert.strictEqual(r.status, 200)
+  r = await api('POST', '/api/users/bob/grants', { streamId: 'movie-night' }, { token })
+  assert.strictEqual(r.status, 200, 're-grant to bob (revoked in F)')
+  assert.ok(loadSecrets(dirs.panel)['movie-night'], 'precondition: private secret exists')
+  assert.ok(await assets.get('/movie-night/poster.png'), 'precondition: art exists')
+
+  r = await api('DELETE', '/api/streams/movie-night', undefined, { token })
+  assert.strictEqual(r.status, 200, 'purge: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.grantsRevoked, 2, 'both grants scrubbed')
+  assert.strictEqual(await db.get('catalog/movie-night'), null, 'catalog record gone')
+  assert.strictEqual(loadSecrets(dirs.panel)['movie-night'], undefined, 'private secret gone')
+  assert.ok(!('movie-night' in ((await db.get('user/bob')).value.wrapped || {})), 'bob grant scrubbed')
+  assert.ok(!('movie-night' in ((await db.get('user/carol')).value.wrapped || {})), 'carol grant scrubbed')
+  assert.strictEqual(await assets.get('/movie-night/poster.png'), null, 'art gone from the assets drive')
+  r = await api('DELETE', '/api/streams/movie-night', undefined, { token })
+  assert.strictEqual(r.status, 404, 'double delete is 404')
+  r = await api('DELETE', '/api/streams/temp-curated', undefined, { token })
+  assert.strictEqual(r.status, 200, 'purge of a grantless/artless stream works')
+
+  r = await api('POST', '/api/streams', { id: 'movie-night', title: 'Movie Night II' }, { token })
+  assert.strictEqual(r.status, 201, 're-adding the purged id works')
+  assert.notStrictEqual(r.body.encryptionKey, encKey, 're-added stream mints a FRESH key')
+  log('K: purge scrubs catalog+secret+grants+art; re-add mints a fresh key ✓')
+
+  // ===== Test L: user delete (S16a) =====
+  r = await api('DELETE', '/api/users/carol', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(await db.get('user/carol'), null, 'user record gone')
+  r = await api('GET', '/api/users/carol', undefined, { token })
+  assert.strictEqual(r.status, 404)
+  r = await api('DELETE', '/api/users/carol', undefined, { token })
+  assert.strictEqual(r.status, 404, 'double delete is 404')
+  log('L: user delete removes the record ✓')
+
+  // ===== Test M: per-device revoke (no tokenVersion bump) + SDK cooperative check (S16a) =====
+  r = await api('POST', '/api/users/bob/status', { status: 'active' }, { token })
+  assert.strictEqual(r.status, 200, 're-enable bob (disabled in F)')
+  const session2 = await login(call, cliBee, 'bob', USER_PASSWORD, { deviceId: 'device-2', deviceLabel: 'e2e-2' })
+  assert.ok(session2.token, 'bob logged in again')
+  const payload2 = checkSession(keys.signing.publicKey, session2.token)
+  assert.ok(payload2 && payload2.deviceId === 'device-2', 'token payload carries the device')
+  await waitFor(async () => sessionLive(cliBee, payload2), 30000, 'sessionLive true after login (replication)')
+
+  r = await api('DELETE', '/api/users/bob/devices/nope', undefined, { token })
+  assert.strictEqual(r.status, 404, 'unknown device is 404')
+  const tvBeforeRevoke = (await db.get('user/bob')).value.tokenVersion
+  r = await api('DELETE', '/api/users/bob/devices/device-2', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.devices, 0, 'enrollment removed')
+  const bobPost = (await db.get('user/bob')).value
+  assert.strictEqual(bobPost.tokenVersion, tvBeforeRevoke, 'device revoke must NOT bump tokenVersion')
+  assert.deepStrictEqual(bobPost.devices, [], 'device gone from the record')
+  await waitFor(async () => !(await sessionLive(cliBee, payload2)), 30000, 'sessionLive false after revoke (replication)')
+  assert.ok(checkSession(keys.signing.publicKey, session2.token), 'offline token check still passes (inherent) — the online check is what notices')
+  log('M: device revoke drops the enrollment; SDK sessionLive notices; tokenVersion untouched ✓')
+
+  // ===== Test N: observability (S16a) =====
+  r = await api('GET', '/api/observability', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  const ob = r.body
+  assert.ok(Number.isInteger(ob.uptimeSec) && ob.uptimeSec >= 0, 'uptimeSec')
+  assert.ok(ob.mem.rss > 0 && ob.mem.heapUsed > 0, 'mem counters')
+  assert.ok(ob.swarm.connections >= 1, 'swarm connections visible (viewer/publisher connected)')
+  assert.ok(ob.swarm.peers >= 1, 'swarm peers visible')
+  assert.ok(ob.data.bytes > 0, 'data dir size measured')
+  assert.ok(ob.data.diskFree === null || ob.data.diskFree > 0, 'diskFree from statfs')
+  assert.ok(Array.isArray(ob.activity) && ob.activity.length > 0, 'activity feed populated')
+  assert.ok(ob.activity.every((e) => typeof e.t === 'number' && typeof e.type === 'string'), 'activity entry shape')
+  assert.ok(ob.activity[0].t >= ob.activity[ob.activity.length - 1].t, 'activity is newest-first')
+  const kinds = new Set(ob.activity.map((e) => e.type + (e.op ? ':' + e.op : '')))
+  assert.ok(kinds.has('admin:stream-delete'), 'admin mutations recorded')
+  assert.ok(kinds.has('admin:user-create'), 'user creates recorded')
+  assert.ok(kinds.has('session'), 'viewer sessions recorded')
+  assert.ok(kinds.has('register'), 'broadcaster registers recorded')
+  log('N: observability shape + activity ring (admin/session/register events) ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, device revoke + sessionLive, observability — all land in the signed DB; viewer login works end-to-end)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

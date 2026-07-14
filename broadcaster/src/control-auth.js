@@ -98,6 +98,32 @@ export function removeAdmin (ctx, name) {
   return { name, removed: true }
 }
 
+// Public-safe admin listing: names + status only, never salts/verifiers.
+export function listAdmins (ctx) {
+  return Object.entries(loadAdmins(ctx.dataDir)).map(([name, a]) => ({
+    name,
+    status: a.status || 'active',
+    createdAt: a.createdAt || null
+  }))
+}
+
+// Rotate an admin password: fresh salt + verifier, and a tokenVersion bump so every
+// session issued under the old password dies (the caller's own too, if self-rotating).
+export function setAdminPassword (ctx, name, password) {
+  if (typeof password !== 'string' || password.length < 8) bad('admin password must be at least 8 characters')
+  const admins = loadAdmins(ctx.dataDir)
+  const a = admins[name]
+  if (!a) throw new ControlError('not-found', `no such admin: ${name}`)
+  const salt = randomSalt()
+  const argon = argonOpts(ctx.config)
+  a.salt = b4a.toString(salt, 'hex')
+  a.verifier = b4a.toString(deriveVerifier(b4a.from(password), salt, argon), 'hex')
+  a.argon = argon
+  a.tokenVersion = (a.tokenVersion || 1) + 1
+  saveAdmins(ctx.dataDir, admins)
+  return { name, tokenVersion: a.tokenVersion }
+}
+
 // Equal Argon2 work whether or not the name exists — login timing does not confirm
 // admin usernames.
 const DUMMY_ADMIN = {

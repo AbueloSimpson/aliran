@@ -77,6 +77,18 @@ async function main () {
     console.log(`Removed admin "${name}".`)
     return
   }
+  if (cmd === 'set-admin-password') {
+    const name = pos[0]; if (!name) return usage()
+    ops.setAdminPassword({ config, keys, dataDir: config.dataDir }, name, await needPassword(name, opts))
+    console.log(`Password updated for admin "${name}" (existing admin sessions revoked).`)
+    return
+  }
+  if (cmd === 'list-admins') {
+    for (const a of ops.listAdmins({ config, keys, dataDir: config.dataDir })) {
+      console.log(a.name, '->', JSON.stringify({ status: a.status, createdAt: a.createdAt }))
+    }
+    return
+  }
 
   const { store, db, assets } = await openStore(config.dataDir, keys)
   const ctx = { config, keys, db, assets, dataDir: config.dataDir }
@@ -101,6 +113,36 @@ async function main () {
       const [username, status] = pos; if (!username || !status) return usage(await done())
       const u = await ops.setUserStatus(ctx, username, status)
       console.log(`User "${username}" is now ${u.status}.`)
+      break
+    }
+
+    case 'delete-user': {
+      const username = pos[0]; if (!username) return usage(await done())
+      await ops.deleteUser(ctx, username)
+      console.log(`Deleted user "${username}". (Already-issued session tokens ride out their offline validity window.)`)
+      break
+    }
+
+    case 'delete-stream': {
+      const id = pos[0]; if (!id) return usage(await done())
+      const r = await ops.deleteStream(ctx, id)
+      console.log(`Purged stream "${id}": catalog record, private key, art, and ${r.grantsRevoked} grant(s).`)
+      console.log('(Clients that already unsealed the key may have it cached; re-adding the id mints a fresh key.)')
+      break
+    }
+
+    case 'list-devices': {
+      const username = pos[0]; if (!username) return usage(await done())
+      for (const d of await ops.listDevices(ctx, username)) {
+        console.log(d.deviceId, '->', JSON.stringify({ label: d.label, issuedAt: d.issuedAt, expiresAt: d.expiresAt, expired: d.expired }))
+      }
+      break
+    }
+
+    case 'logout-device': {
+      const [username, deviceId] = pos; if (!username || !deviceId) return usage(await done())
+      const u = await ops.revokeDevice(ctx, username, deviceId)
+      console.log(`Removed device "${deviceId}" from "${username}" (${u.devices} enrolled). Cooperative: the SDK drops to login on its next online check.`)
       break
     }
 
@@ -144,7 +186,9 @@ async function main () {
         logo: str(opts.logo),
         status: str(opts.status),
         category: str(opts.category),
-        isLive: opts.live != null ? opts.live : undefined
+        isLive: opts.live != null ? opts.live : undefined,
+        order: opts.order != null ? String(opts.order) : undefined, // ops validates (0-9999 | 'null')
+        featured: opts.featured != null ? opts.featured : undefined
       })
       console.log(`Updated metadata for "${id}".`)
       break
@@ -175,9 +219,14 @@ async function main () {
     }
 
     case 'list': {
-      for (const u of await ops.listUsers(ctx)) {
-        console.log('user/' + u.username, '->', JSON.stringify({ status: u.status, grants: u.grants, maxDevices: u.maxDevices }))
-      }
+      let after = ''
+      do {
+        const { users, next } = await ops.listUsers(ctx, { after, limit: 500 })
+        for (const u of users) {
+          console.log('user/' + u.username, '->', JSON.stringify({ status: u.status, grants: u.grants, maxDevices: u.maxDevices }))
+        }
+        after = next
+      } while (after)
       for (const s of await ops.listStreams(ctx)) {
         console.log('catalog/' + s.id, '->', JSON.stringify({ title: s.title, feedKey: s.feedKey, isLive: s.isLive, status: s.status }))
       }
@@ -197,15 +246,21 @@ function usage () {
   create-user <u> [--password <pw>]     Create a user (OPRF-enrolled)
   set-password <u> [--password <pw>]    Rotate password (re-seals grants, revokes sessions)
   set-status <u> <active|disabled>      Disable/re-enable an account (disable revokes sessions)
+  delete-user <u>                       Delete the account record entirely
   add-stream <id> [--feed <hex>] [--key <hex>] [--title T] [--category C]
+  delete-stream <id>                    FULL purge: catalog + private key + grants + art
   grant <u> <streamId>                  Entitle a user to a stream
   revoke <u> <streamId>                 Remove an entitlement
-  set-meta <id> [--title --feed --live --poster ...]
+  set-meta <id> [--title --feed --live --order <n|null> --featured [true|false] --poster ...]
   set-max-devices <u> <n>               Concurrent device limit
+  list-devices <u>                      Show a user's enrolled devices
+  logout-device <u> <deviceId>          Drop one device enrollment (no tokenVersion bump)
   logout-all <u>                        Revoke all sessions
   list                                  List users and streams
   add-admin <name> [--password <pw>]    Create an admin for the HTTP admin API (min 8 chars)
   remove-admin <name>                   Delete an admin account
+  set-admin-password <name> [--password <pw>]   Rotate an admin password (revokes their sessions)
+  list-admins                           List admin accounts
 `)
 }
 

@@ -45,6 +45,9 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
 - [x] Assets Hyperdrive + `upload-art`
 - [x] Broadcaster auto-registration (publisher-signed `register` RPC)
 - [x] Admin HTTP API over shared ops + web dashboard (`npm run test:admin-api`)
+- [x] Admin completeness: admins CRUD + password rotation, stream purge / user delete,
+      user prefix-search + cursor paging, observability (`/api/observability` + activity
+      ring), curation (`order`/`featured`, register-safe), cooperative per-device revoke
 - [ ] HA / threshold OPRF across replicas
 - [ ] Optional geo (GeoIP) + DRM entitlement endpoints
 

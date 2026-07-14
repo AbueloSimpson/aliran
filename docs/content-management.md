@@ -12,8 +12,19 @@ only by the panel (via `admin-cli`), appended and signed; clients see changes li
 
 ```bash
 admin-cli set-meta news --title "News 24" --description "..." --category news --featured
+admin-cli set-meta news --order 10          # rail position 0-9999; --order null clears
 admin-cli upload-art news poster ./poster.jpg      # into the assets Hyperdrive
 ```
+
+**Curation** (`order` 0–9999 or null, `featured` bool) is admin-owned: a broadcaster
+re-registering its stream updates title/feedKey/liveness but **never** erases
+curation or art. Client UIs sort rails by `order` and prefer `featured` live streams
+for the hero slot.
+
+**Deleting a stream** (`delete-stream` / `DELETE /api/streams/:id`) is a full purge:
+catalog record, panel-private key, every user's sealed grant, and its art. Clients
+that already unsealed the key may have it cached — full revocation of live content is
+a key rotation — and re-adding the id mints a fresh key.
 
 ## Assets (posters/backdrops/logos)
 

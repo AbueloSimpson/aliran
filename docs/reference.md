@@ -7,14 +7,23 @@
 | `init` | Generate panel signing key + OPRF key (gitignored data dir) |
 | `create-user <u>` / `set-password <u>` | Create/rotate a user (Argon2id verifier) |
 | `set-status <u> <active\|disabled>` | Disable/re-enable an account (disable revokes sessions) |
+| `delete-user <u>` | Delete the account record (issued tokens ride out their offline validity) |
 | `grant <u> <stream>` / `revoke <u> <stream>` | Entitle / un-entitle a user for a stream |
 | `add-stream <id> [--title --category --feed --key]` | Register a stream + gen encryption key |
-| `set-meta <id> …` | Update catalog metadata |
+| `delete-stream <id>` | **Full purge**: catalog + private key + every grant + art (see caveat below) |
+| `set-meta <id> [--order <n\|null> --featured …]` | Update catalog metadata (incl. curation) |
 | `upload-art <id> <poster\|backdrop\|logo> <file>` | Add art to the assets drive |
 | `set-max-devices <u> <n>` | Concurrent device limit |
+| `list-devices <u>` | Show a user's enrolled devices |
+| `logout-device <u> <deviceId>` | Drop one enrollment (cooperative — no tokenVersion bump) |
 | `logout-all <u>` | Revoke all of a user's sessions (tokenVersion bump) |
 | `list` | List users and streams |
 | `add-admin <name>` / `remove-admin <name>` | Manage admin accounts for the HTTP admin API |
+| `set-admin-password <name>` / `list-admins` | Rotate an admin password (revokes their sessions) / list admins |
+
+> **Stream deletion caveat:** the purge removes everything the panel can remove, but a
+> client that already unsealed the stream key may have it cached — full revocation of
+> live content is a stream-key rotation. Re-adding a deleted id mints a **fresh** key.
 
 CLI and HTTP API share one implementation (`panel/src/ops.js`), so they cannot drift.
 
@@ -35,16 +44,23 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 |----------|-------------|
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
 | `GET /api/status` | Counts: users, streams, live, admins |
-| `GET/POST /api/users` | List / create (`{username,password}`) |
-| `GET /api/users/:u` · `GET /api/users/:u/devices` | One user / their devices |
+| `GET /api/observability` | Uptime, memory, swarm peers, data size/disk free + last-200 activity ring (in-memory — cleared by a restart) |
+| `GET /api/users?prefix&after&limit` | → `{users, next}` — prefix search + cursor paging (`next` is the `after` for the following page) |
+| `POST /api/users` | Create (`{username,password}`) |
+| `GET /api/users/:u` · `DELETE /api/users/:u` | One user / delete the account record |
+| `GET /api/users/:u/devices` | Enrolled devices |
+| `DELETE /api/users/:u/devices/:deviceId` | Drop one enrollment (cooperative — no tokenVersion bump) |
 | `POST /api/users/:u/password` | Rotate password (re-seals grants) |
 | `POST /api/users/:u/status` `{status}` | `active` \| `disabled` |
 | `POST /api/users/:u/logout-all` · `POST /api/users/:u/max-devices` | Session/device controls |
 | `POST /api/users/:u/grants` `{streamId}` · `DELETE /api/users/:u/grants/:id` | Grant / revoke |
-| `GET/POST /api/streams` | List / add (`add-stream` fields; returns the encryption key once) |
-| `PATCH /api/streams/:id` | Update catalog metadata |
+| `GET/POST /api/streams` | List / add (`add-stream` fields + `order`/`featured`; returns the encryption key once) |
+| `PATCH /api/streams/:id` | Update catalog metadata (incl. `order` 0–9999 \| null, `featured` bool) |
+| `DELETE /api/streams/:id` | **Full purge** — catalog + private key + grants + art (see the deletion caveat above) |
 | `POST /api/streams/:id/art/:kind` | Upload poster/backdrop/logo (raw image body) |
 | `GET /api/assets/:id/:file` | Art bytes from the assets drive (for previews) |
+| `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage admin accounts |
+| `POST /api/admins/:name/password` | Rotate an admin password (bumps tokenVersion → their sessions die) |
 
 ## Broadcaster control API + UI (`CONTROL_ENABLED=1`)
 
@@ -73,6 +89,8 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
 | `PATCH /api/channels/:id` | Edit meta/input (applies on next start) |
 | `DELETE /api/channels/:id` | Remove from the registry (must be stopped; data kept) |
 | `POST /api/channels/:id/start` · `…/stop` | Spawn / tear down the pipeline |
+| `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage control admin accounts |
+| `POST /api/admins/:name/password` | Rotate an admin password (revokes their sessions) |
 
 ## Panel RPC (over Hyperswarm)
 
@@ -94,7 +112,8 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
   "allowedRegions": null,      // or ["US","CA"]
   "isLive": true,
   "viewerCount": null,         // derived, not durable
-  "order": 0,
+  "order": 0,                  // curation: rail sort 0-9999, or null (unordered)
+  "featured": false,           // curation: hero-pick hint for client UIs
   "poster": "assets/<hash>.jpg",
   "backdrop": "assets/<hash>.jpg",
   "logo": "assets/<hash>.png",

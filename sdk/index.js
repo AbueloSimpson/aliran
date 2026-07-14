@@ -7,7 +7,7 @@ import fs from 'fs'
 import { AliranPlayer } from './player.js'
 
 export { AliranPlayer }
-export { panelClient, login, checkSession } from './login.js'
+export { panelClient, login, checkSession, sessionLive } from './login.js'
 export { isCorruptionError, withRecovery } from './recover.js'
 
 export function createPlayer (opts = {}) {

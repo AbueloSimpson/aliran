@@ -22,8 +22,9 @@ export function makeThrottle (threshold, windowSec) {
 
 // Attach `hello` + `login` + `session` responders to a connection. `throttle` is shared
 // across connections. `keys` = { oprf, signing }; `db` is the signed account Hyperbee;
-// `sessionTtlMs` is the token lifetime; `devicePolicy` is 'evict' (default) or 'reject'.
-export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict' }) {
+// `sessionTtlMs` is the token lifetime; `devicePolicy` is 'evict' (default) or 'reject';
+// `activity` is an optional ring (src/activity.js) fed for the observability feed.
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null }) {
   const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
@@ -85,6 +86,7 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     await db.put('user/' + username, user)
 
     const token = signToken(keys.signing.secretKey, { userId: username, deviceId, issuedAt: now, expiresAt, tokenVersion: user.tokenVersion })
+    if (activity) activity.record('session', { user: username, deviceId })
     return json({ token, expiresAt, tokenVersion: user.tokenVersion })
   })
 
@@ -116,8 +118,12 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       feedKey: payload.feedKey ?? existing.feedKey ?? null,
       isLive: payload.isLive !== false,
       poster: existing.poster ?? null, backdrop: existing.backdrop ?? null, logo: existing.logo ?? null,
+      // curation is admin-owned — a re-register must never erase it
+      order: existing.order ?? null,
+      featured: existing.featured ?? false,
       status: payload.status ?? (payload.isLive !== false ? 'live' : 'idle')
     })
+    if (activity) activity.record('register', { streamId, isLive: payload.isLive !== false })
     return json({ ok: true })
   })
 

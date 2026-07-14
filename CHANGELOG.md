@@ -308,8 +308,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Operator guide: sizing notes for small VPSes (swap + `ARGON2_MEM_KIB=65536`,
   ~1 vCPU per two test channels), restart note, tunnel/Caddy verified flows.
 
+### Panel admin completeness (verified)
+- **Admin-account management everywhere:** `GET/POST /api/admins`,
+  `DELETE /api/admins/:name`, `POST /api/admins/:name/password` on the panel admin
+  API **and** the broadcaster control API, plus CLI `set-admin-password` /
+  `list-admins` on both. A password rotation bumps the admin's tokenVersion, so
+  every session issued under the old password (including the caller's own) dies
+  immediately.
+- **Stream delete = FULL purge** (`DELETE /api/streams/:id`, CLI `delete-stream`):
+  removes the catalog record, the panel-private encryption key, every user's sealed
+  grant, and the stream's art from the assets drive. Clients converge on the next
+  catalog push. Honest caveat: a client that already unsealed the key may have it
+  cached — real revocation of live content is a stream-key rotation — and re-adding
+  the same id mints a fresh key. `DELETE /api/users/:u` / `delete-user` removes an
+  account record (already-issued tokens ride out their offline validity window).
+- **User search + cursor paging:** `GET /api/users?prefix&after&limit` →
+  `{users,next}` over a Hyperbee key range (prefix-only by design; substring search
+  would scan the whole replicated DB).
+- **Observability:** `GET /api/observability` → uptime, memory, swarm
+  connections/peers, data-dir size + free disk, and an in-memory ring of the last
+  200 events (viewer sessions, broadcaster registers, every admin mutation — feeds
+  from `panel/src/activity.js`; cleared on restart by design).
+- **Curation fields:** `order` (0–9999, nullable) and `featured` (bool) are typed
+  in `setMeta`/`addStream`, and the broadcaster register merge now **preserves
+  them** (plus art) so a re-register never erases admin curation.
+- **Per-device revoke (cooperative):** `DELETE /api/users/:u/devices/:deviceId` /
+  CLI `logout-device` removes one enrollment WITHOUT a tokenVersion bump; new SDK
+  `sessionLive(db, payload)` (companion to `checkSession`) notices against the
+  replicated record so well-behaved clients drop to login. Documented plainly as
+  session hygiene, not content protection.
+- Verified end-to-end by `test:admin-api` (admins lifecycle with token revocation,
+  purge reflected in bee+secrets+grants+assets, paging, typed curation incl.
+  register-merge preservation, device revoke + `sessionLive`, observability shape)
+  + a control-API admins section in `test:broadcaster-api`; regressions
+  `test:core`/`test:session`/`test:register`/`test:sdk` green.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster push ingest (RTMP/SRT/UDP-TS) + per-channel transcode incl. GPU.
-- Panel admin completeness (admins mgmt, deletes, search, observability, curation).
+- Panel dashboard UI for the S16a admin surface; curation passthrough in the app.
 - Hybrid artwork (https URLs alongside the P2P assets drive).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
