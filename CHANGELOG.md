@@ -112,6 +112,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the tvos template. Verified on an Android TV (API 36, 1080p) emulator end-to-end
   with only D-pad key events: focus traversal → sign-in → browse → live P2P playback
   → Back to Home.
+- **`@aliran/player-sdk` (new `sdk/` package)** — the player engine extracted from the
+  app's Bare worklet into a reusable, runtime-agnostic `AliranPlayer` class
+  (`connect`/`login`/`listStreams`/`resolve`/`serveFeed`/`assetUrl`/`stop` + events
+  `ready|streams|status|peers|recovered|error`). Runtime modules are injected
+  (`node:http`/`node:fs` via the Node entry, `bare-http1`/`bare-fs` in the worklet), so
+  one graph runs headless in Node and on-device in Bare. `login.mjs` and `recover.mjs`
+  moved into the SDK (canonical home); the old client/backend paths re-export them.
+  **`client/backend/backend.mjs` is now a thin IPC shell** over the SDK — the IPC
+  protocol and app behavior are unchanged (verified by the full e2e suite and on the
+  Android TV emulator). New tests: `sdk/test.mjs` (unit) and `npm run test:sdk`
+  (headless e2e: real panel + broadcaster → SDK login → resolve → ffprobe-valid HLS
+  over P2P, Range requests, peers ticker). Partial-adoption path: integrators can keep
+  their own catalog and use only `login()` + `resolve()` for the video URL.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.

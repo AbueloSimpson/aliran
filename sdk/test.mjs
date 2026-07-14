@@ -1,0 +1,72 @@
+// @aliran/player-sdk unit tests — fast, no network/ffmpeg. The full engine is
+// exercised end-to-end by `npm run test:sdk` (tools/e2e-sdk-test.mjs) from the repo root.
+import assert from 'assert'
+import { AliranPlayer, createPlayer, isCorruptionError, withRecovery } from './index.js'
+
+let n = 0
+function ok (name) { n++; console.log('  ok ', name) }
+
+// --- corruption detection (re-exported from recover.js) ---
+{
+  const err = new Error('nope'); err.code = 'OPLOG_CORRUPT'
+  assert.strictEqual(isCorruptionError(err), true)
+  assert.strictEqual(isCorruptionError(new Error('Oplog file appears corrupt or out of date')), true)
+  assert.strictEqual(isCorruptionError(new Error('ECONNRESET')), false)
+  assert.strictEqual(isCorruptionError(null), false)
+  ok('isCorruptionError codes + message fallback')
+}
+
+// --- withRecovery: purge once on corruption, propagate everything else ---
+{
+  let purges = 0; let recovered = null
+  const corrupt = () => { const e = new Error('bad'); e.code = 'INVALID_CHECKSUM'; return e }
+  let failures = 1
+  const result = await withRecovery(
+    async () => { if (failures-- > 0) throw corrupt(); return 42 },
+    async () => { purges++ },
+    (err) => { recovered = err }
+  )
+  assert.strictEqual(result, 42)
+  assert.strictEqual(purges, 1)
+  assert.ok(recovered && recovered.code === 'INVALID_CHECKSUM')
+
+  purges = 0
+  await assert.rejects(
+    () => withRecovery(async () => { throw new Error('ordinary') }, async () => { purges++ }),
+    /ordinary/
+  )
+  assert.strictEqual(purges, 0, 'ordinary errors must not purge')
+  ok('withRecovery purges once and only on corruption')
+}
+
+// --- constructor contract ---
+{
+  assert.throws(() => new AliranPlayer({}), /injected \{ http, fs \}/)
+  const p = createPlayer({ storeDir: './never-created' }) // Node entry injects http/fs
+  assert.deepStrictEqual(p.listStreams(), [])
+  assert.strictEqual(p.assetUrl('assets/x/poster.png'), undefined, 'no server before login')
+  assert.strictEqual(p.assetUrl(null), undefined)
+  await assert.rejects(() => p.connect(), /no panelPubKey/)
+  await assert.rejects(() => p.resolve('nope'), /not entitled/)
+  await assert.rejects(() => p.login('u', 'p'), /not connected to panel/)
+  ok('constructor + method guards (no side effects before connect)')
+}
+
+// --- event emitter basics (on/off/once, no throw on unhandled error) ---
+{
+  const p = createPlayer({})
+  let hits = 0
+  const fn = () => hits++
+  p.on('status', fn)
+  p.emit('status', { state: 'x' })
+  p.off('status', fn)
+  p.emit('status', { state: 'x' })
+  assert.strictEqual(hits, 1)
+  p.once('peers', fn)
+  p.emit('peers', 1); p.emit('peers', 2)
+  assert.strictEqual(hits, 2)
+  p.emit('error', new Error('unhandled')) // must not throw
+  ok('emitter on/off/once; unhandled error event is safe')
+}
+
+console.log(`\nRESULT: PASS ✅  (${n} tests)`)

@@ -8,6 +8,7 @@
     "core",
     "panel",
     "broadcaster",
+    "sdk",
     "tools"
   ],
   "dependencies": {
@@ -24,7 +25,8 @@
     "test:session": "node tools/e2e-session-test.mjs",
     "test:register": "node tools/e2e-register-test.mjs",
     "test:assets": "node tools/e2e-assets-test.mjs",
-    "test:corrupt": "node tools/e2e-corrupt-test.mjs"
+    "test:corrupt": "node tools/e2e-corrupt-test.mjs",
+    "test:sdk": "node tools/e2e-sdk-test.mjs"
   },
   "keywords": [
     "p2p",
