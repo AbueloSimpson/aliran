@@ -52,7 +52,9 @@ Goal: accounts, encryption, and an OTT UI.
 - ✅ Assets Hyperdrive (posters/art): panel seeds it, key advertised in the signed DB
   (`meta/assetsKey`), `admin-cli upload-art`, client serves `/assets/*` over localhost.
   Verified (`npm run test:assets`).
-- ⬜ Catalog `bee.watch()` live push to the UI
+- ✅ Catalog `bee.watch()` live push to the UI: the player SDK watches the replicated
+  `catalog/` range and re-emits `streams` with fresh display metadata on every edit
+  (no polling, no re-login; verified in `npm run test:sdk`)
 - 🚧 OTT GUI: login screen, home (category rails, hero, LIVE badges, P2P poster art),
   and the player (live HLS from the P2P feed via react-native-video, peers/buffering
   status) verified on-device; remaining: channel detail, search
@@ -62,8 +64,9 @@ Goal: accounts, encryption, and an OTT UI.
 
 **Exit criteria:** username/password login validated against the P2P DB; browse a
 branded catalog on phone and TV; unauthorized users can't decrypt.
-**Status:** the **security core is done and verified on desktop**; remaining v0.2 work
-is sessions/devices, the live catalog push, and the OTT UI (needs the Android build).
+**Status:** **done end-to-end** — security core verified on desktop; the app logs in,
+browses, and plays live P2P on phone **and** TV emulators; catalog edits push live.
+Remaining polish (channel detail, search) rides along in v1.0.
 
 ---
 
