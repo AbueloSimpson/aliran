@@ -79,9 +79,10 @@ Remaining polish (channel detail, search) rides along in v1.0.
 - ✅ **Deploy pack**: working Docker images + Compose (host networking for the DHT),
   systemd units, Caddy TLS recipe for the dashboards, firewall guidance — and a CI
   job that builds the images on every push
-- ⬜ **Verified on a real VPS over the internet**: remote acceptance harness
-  (headless SDK login → resolve → ffprobe from another machine, concurrent
-  streams), Android app playing live P2P against the VPS panel — no localhost
+- ✅ **Verified on a real VPS over the internet**: `tools/acceptance-remote.mjs`
+  (headless SDK login → resolve → ffprobe from another machine) passed for two
+  concurrent streams against a fresh 1 vCPU/1 GB VPS, and the Android app logged
+  in and played live P2P against the VPS panel — no localhost anywhere
 - ⬜ **Complete admin panel**: admin-account management incl. password change (today
   CLI-only), stream/user delete with full purge, user search + pagination,
   observability (peers, storage, uptime, activity), catalog curation
