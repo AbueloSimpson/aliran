@@ -31,8 +31,28 @@ for the endpoints.
 
 ## Inputs
 
-- `INPUT=rtmp` → run an RTMP listener; push from **OBS** to `rtmp://<host>:1935/live/stream`
-- `INPUT=rtsp://…` / `http://…/playlist.m3u8` / `/path/file.mp4` → pull/loop a source
+Channels take a typed `input` (strings auto-upgrade; the control API accepts objects):
+
+- `{"kind":"rtmp","port":1935,"streamKey":"…"}` — RTMP listener; push from **OBS** to
+  `rtmp://<host>:<port>/live/<streamKey>`. The key is auto-generated when omitted and
+  is obscurity, not authentication — firewall the port, or prefer SRT.
+- `{"kind":"srt","port":5000,"passphrase":"…","latencyMs":200}` — SRT listener; the
+  passphrase IS enforced by the SRT handshake (the recommended authenticated push).
+- `{"kind":"udp","port":5000,"timeoutMs":10000}` — raw MPEG-TS over UDP.
+- `{"kind":"pull","url":"rtsp://… | https://…/live.m3u8 | rtmp://… | srt://… | udp://…"}`
+  — live pulls run unpaced (no `-re`); plain-http VOD files are paced to realtime.
+- `{"kind":"file","path":"/media/loop.mp4"}` (looped) · `{"kind":"test"}` (bars + tone).
+- Env shorthand: `INPUT=rtmp` → RTMP listener on `RTMP_PORT` (the push URL with the
+  generated stream key is printed at startup); `INPUT=<url>` → pull; `INPUT=<path>` → file.
+
+Push ports are unique per channel and auto-allocated from
+`INGEST_PORT_BASE`–`INGEST_PORT_MAX` (default 5000–5999) when omitted — remember to
+open them on the firewall for your encoder. A per-channel `transcode` object selects
+the encoder (`libx264`, `copy` passthrough, or GPU: `h264_nvenc`/`h264_qsv`/
+`h264_vaapi`/`h264_amf`), resolution, fps, bitrate and preset; GPU encoders are
+deep-verified by a real test encode at startup and a channel that needs an unusable
+one is refused with the probe's error (no silent fallback). With `copy`, set the
+encoder's keyframe interval to `HLS_TIME` seconds so segments cut cleanly.
 
 ## Test it (no Android needed)
 

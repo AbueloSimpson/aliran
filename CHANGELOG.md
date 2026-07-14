@@ -308,6 +308,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Operator guide: sizing notes for small VPSes (swap + `ARGON2_MEM_KIB=65536`,
   ~1 vCPU per two test channels), restart note, tunnel/Caddy verified flows.
 
+### Broadcaster ingest engine + transcode incl. GPU (verified)
+- **Push ingest**: a channel's `input` is now a typed object — `{kind:'rtmp', port,
+  streamKey}` (OBS-style FLV publish via `-listen 1`; one publisher per port),
+  `{kind:'srt', port, passphrase?, latencyMs}` (the passphrase is enforced by the
+  libsrt handshake — the recommended authenticated push; an RTMP stream key is
+  obscurity, not auth), and `{kind:'udp', port, timeoutMs}` (raw MPEG-TS) — alongside
+  `test` / `file` / `pull`. Strings auto-upgrade everywhere (env `INPUT`, pre-existing
+  `channels.json`, API bodies), so `INPUT=rtmp` finally implements the documented
+  default: an RTMP listener on `RTMP_PORT` with a generated stream key that is
+  persisted across restarts and printed as a push URL at startup. Push ports are
+  validated 1024–65535, unique across channels, and auto-allocated from
+  `INGEST_PORT_BASE`–`INGEST_PORT_MAX` (default 5000–5999) when omitted;
+  `channels.json` is written mode 0600 now that it holds stream keys/passphrases.
+- **Pull pacing fixed**: `-re` used to be applied to every URL; live sources
+  (rtsp/rtmp/srt/udp pulls and live `.m3u8`) pace themselves and now run without it —
+  only `test`, local files and plain-http VOD keep `-re`. RTSP pulls get
+  `-rtsp_transport tcp`.
+- **Per-channel `transcode`** (absent = previous behavior): `encoder`
+  `libx264|copy|h264_nvenc|h264_qsv|h264_vaapi|h264_amf`, `resolution`
+  (source/1080p/720p/480p/360p), `fps` (source/24/25/30/50/60), `videoBitrateKbps`
+  (sets `-b:v -maxrate -bufsize 2×`; null keeps CRF), `audioBitrateKbps`, `preset
+  fast|balanced|quality` mapped per encoder (x264 veryfast/medium/slow; nvenc
+  p2/p4/p6 + `-tune ll`; amf speed/balanced/quality). Keyframes are segment-aligned
+  on every encoder via `-force_key_frames expr:gte(t,n_forced*hls.time)` (replaces
+  `-g 60`, which only lined up at 30 fps); `copy` passthrough requires source
+  resolution/fps + no bitrate (audio still transcodes to AAC) — the publisher must
+  send a keyframe every `hls.time` seconds. VAAPI/QSV get their hardware-device
+  init (`-init_hw_device` before `-i`; VAAPI adds the `format=nv12,hwupload` chain).
+- **ffmpeg capability probe (`broadcaster/src/capabilities.js`)**, warmed at manager
+  init and cached: protocols from `-protocols` (rtsp via `-demuxers` — it is a
+  demuxer, not a protocol), h264 encoders from `-encoders`, and every listed **HW
+  encoder deep-verified by actually encoding 8 test frames** — "listed" only means
+  compiled in. `start()` refuses cleanly (HTTP 400 with the probe's error, no silent
+  fallback) when a channel needs an unavailable protocol/encoder, and bind-tests
+  push ports first so a taken port is an API error instead of an ffmpeg crash loop.
+- Tests: new **`npm run test:args`** (pure argument/validation table, no ffmpeg);
+  `test:broadcaster-api` grew an **RTMP push round-trip** (a second local ffmpeg
+  publishes → HLS → encrypted P2P feed → ffprobe validates), a **UDP-TS push**,
+  typed-input validation over HTTP (auto-alloc, uniqueness, PATCH stream-key
+  inheritance) and the capability/port gates. On the dev box the probe deep-verified
+  `h264_qsv` (Intel) — a real QSV channel encode produced spec-exact output — and
+  rejected nvenc/amf/vaapi with their true driver errors.
+
 ### Panel admin completeness (verified)
 - **Admin-account management everywhere:** `GET/POST /api/admins`,
   `DELETE /api/admins/:name`, `POST /api/admins/:name/password` on the panel admin
@@ -344,7 +387,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test:core`/`test:session`/`test:register`/`test:sdk` green.
 
 ### To do (see ROADMAP.md and per-package READMEs)
-- Broadcaster push ingest (RTMP/SRT/UDP-TS) + per-channel transcode incl. GPU.
+- Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
+  and ingest/transcode/logs surfaced in the control API + UI.
 - Panel dashboard UI for the S16a admin surface; curation passthrough in the app.
 - Hybrid artwork (https URLs alongside the P2P assets drive).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

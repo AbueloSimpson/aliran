@@ -92,12 +92,14 @@ Remaining polish (channel detail, search) rides along in v1.0.
   `test:admin-api` / `test:broadcaster-api`
 - ⬜ **Admin dashboard UI for the above**: admins tab, delete confirm flows, user
   search + load-more, observability card, curation controls, device revoke buttons
-- ⬜ **Broadcaster ingest expansion**: push ingest — RTMP (OBS), SRT with passphrase
+- ✅ **Broadcaster ingest expansion**: push ingest — RTMP (OBS), SRT with passphrase
   (authenticated), MPEG-TS over UDP — plus correct HLS/RTSP pull; typed per-channel
-  input config with auto port allocation and an ffmpeg capability probe
-- ⬜ **Per-channel transcode controls incl. GPU**: resolution/fps/bitrate/preset,
+  input config with auto port allocation and an ffmpeg capability probe (verified:
+  RTMP + UDP-TS push round-trips to a P2P viewer in `test:broadcaster-api`)
+- ✅ **Per-channel transcode controls incl. GPU**: resolution/fps/bitrate/preset,
   encoder selection (x264, NVENC, QSV, VAAPI, AMF, passthrough `copy`) with
-  boot-time deep verification so the UI only offers what the host can do
+  deep verification at startup so only encoders that really work are accepted
+  (QSV proven on real hardware; control-UI selectors land with the ingest UI)
 - ⬜ **Broadcaster reliability**: ffmpeg watchdog (auto-restart with backoff,
   re-listen after publisher disconnect), per-channel log capture in the control UI,
   `isLive:false` pushed to the catalog on stop/crash

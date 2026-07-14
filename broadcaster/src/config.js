@@ -27,6 +27,17 @@ export const config = {
   category: process.env.CATEGORY || null,
   input: process.env.INPUT || 'rtmp',
   rtmpPort: int(process.env.RTMP_PORT, 1935),
+  // Display-only host for push URLs shown to operators (rtmp://<publicHost>:<port>/…).
+  // Never used for binding — listeners bind 0.0.0.0.
+  publicHost: process.env.PUBLIC_HOST || null,
+  // Port range for auto-allocated push-ingest listeners (rtmp/srt/udp inputs
+  // created without an explicit port).
+  ingest: {
+    portBase: int(process.env.INGEST_PORT_BASE, 5000),
+    portMax: int(process.env.INGEST_PORT_MAX, 5999)
+  },
+  // DRM render node for h264_vaapi (Linux only).
+  vaapiDevice: process.env.VAAPI_DEVICE || '/dev/dri/renderD128',
   hls: { time: int(process.env.HLS_TIME, 2), listSize: int(process.env.HLS_LIST_SIZE, 6) },
   protection: process.env.PROTECTION || 'self',
   bootstrap: (process.env.BOOTSTRAP || '')

@@ -15,9 +15,12 @@ import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import fs from 'fs'
+import net from 'net'
+import dgram from 'dgram'
 import path from 'path'
 import os from 'os'
-import { startFfmpeg, mirrorDirToDrive } from './hls.js'
+import { startFfmpeg, mirrorDirToDrive, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
+import { probeCapabilities } from './capabilities.js'
 import { panelClient, registerWithPanel } from './register.js'
 
 export class ControlError extends Error {
@@ -28,6 +31,200 @@ const notFound = (m) => { throw new ControlError('not-found', m) }
 const exists = (m) => { throw new ControlError('exists', m) }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+// --- typed inputs + transcode (S15a) -----------------------------------------
+
+const PULL_SCHEME_RE = /^(https?|rtsp|rtmps?|srt|udp):\/\//i
+const STREAM_KEY_RE = /^[A-Za-z0-9]{8,64}$/
+const PASSPHRASE_RE = /^[A-Za-z0-9._-]{10,79}$/
+const PUSH_KINDS = new Set(['rtmp', 'srt', 'udp'])
+const KEY_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+
+const ENCODERS = new Set(['libx264', 'copy', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf'])
+const RESOLUTIONS = new Set(['source', '1080p', '720p', '480p', '360p'])
+const FPS_VALUES = new Set([24, 25, 30, 50, 60])
+const PRESETS = new Set(['fast', 'balanced', 'quality'])
+
+export function isPushInput (input) {
+  return !!input && typeof input === 'object' && PUSH_KINDS.has(input.kind)
+}
+
+export function randomStreamKey (len = 22) {
+  let out = ''
+  while (out.length < len) {
+    for (const byte of crypto.randomBytes(32)) {
+      if (byte >= 248) continue // rejection-sample away the modulo bias (248 = 4*62)
+      out += KEY_ALPHABET[byte % 62]
+      if (out.length === len) break
+    }
+  }
+  return out
+}
+
+// Operator-facing push URL (display only — listeners always bind 0.0.0.0).
+export function pushUrl (input, publicHost) {
+  if (!isPushInput(input)) return null
+  const host = publicHost || '<this-host>'
+  if (input.kind === 'rtmp') return `rtmp://${host}:${input.port}/live/${input.streamKey}`
+  if (input.kind === 'srt') {
+    let url = `srt://${host}:${input.port}?latency=${(input.latencyMs ?? 200) * 1000}`
+    if (input.passphrase) url += `&passphrase=${input.passphrase}`
+    return url
+  }
+  return `udp://${host}:${input.port}`
+}
+
+function intInRange (v, min, max, label) {
+  const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < min || n > max) {
+    bad(`${label} must be an integer ${min}-${max}`)
+  }
+  return n
+}
+
+function allocPort (requested, { config, usedPorts }) {
+  if (requested != null) {
+    const port = intInRange(requested, 1024, 65535, 'input.port')
+    if (usedPorts.has(port)) bad(`port ${port} is already used by another channel`)
+    return port
+  }
+  const base = config?.ingest?.portBase ?? 5000
+  const max = config?.ingest?.portMax ?? 5999
+  for (let port = base; port <= max; port++) if (!usedPorts.has(port)) return port
+  bad(`no free ingest port in ${base}-${max} (set input.port explicitly or raise INGEST_PORT_MAX)`)
+}
+
+// Validate/normalize a channel input. String shorthands auto-upgrade to typed
+// objects — env INPUT, pre-S15a channels.json entries and API strings all land
+// here. Result is one of:
+//   { kind:'test' } | { kind:'file', path } | { kind:'pull', url }
+//   { kind:'rtmp', port, streamKey }            (push; OBS-style FLV publish)
+//   { kind:'srt',  port, latencyMs, passphrase? } (push; passphrase = real auth)
+//   { kind:'udp',  port, timeoutMs }             (push; raw MPEG-TS)
+// opts: { config, usedPorts: Set<port>, existing?: previous typed input }
+// Push ports must be unique across channels — ffmpeg -listen is single-client,
+// so one port is one channel (a shared-port RTMP demux is explicitly post-v1).
+// Omitted port → first free in the INGEST_PORT range. When the kind matches
+// `existing`, omitted fields are inherited so a PATCH never silently rotates the
+// stream key / passphrase an encoder is already configured with.
+export function normalizeInput (value, { config, usedPorts = new Set(), existing = null } = {}) {
+  if (value == null) bad('input is required')
+  if (typeof value === 'string') {
+    const s = value
+    if (s.length > 512 || /[\r\n]/.test(s)) bad('invalid input source')
+    if (s === 'test') return { kind: 'test' }
+    if (s === 'rtmp') {
+      // The documented legacy default: an RTMP listener on RTMP_PORT.
+      value = { kind: 'rtmp', port: config?.rtmpPort ?? 1935 }
+    } else if (PULL_SCHEME_RE.test(s)) {
+      value = { kind: 'pull', url: s }
+    } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+      bad('unsupported input url scheme (allowed: http(s), rtsp, rtmp(s), srt, udp)')
+    } else {
+      value = { kind: 'file', path: s }
+    }
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) bad('input must be a string or an object')
+  const kind = value.kind
+  const inherit = existing && typeof existing === 'object' && existing.kind === kind ? existing : null
+
+  if (kind === 'test') return { kind: 'test' }
+  if (kind === 'file') {
+    const p = value.path == null ? '' : String(value.path)
+    if (!p || p.length > 512 || /[\r\n]/.test(p)) bad('file input needs a path (≤512 chars)')
+    return { kind: 'file', path: p }
+  }
+  if (kind === 'pull') {
+    const url = value.url == null ? '' : String(value.url)
+    if (!url || url.length > 512 || /[\r\n]/.test(url)) bad('pull input needs a url (≤512 chars)')
+    if (!PULL_SCHEME_RE.test(url)) bad('unsupported pull url scheme (allowed: http(s), rtsp, rtmp(s), srt, udp)')
+    return { kind: 'pull', url }
+  }
+  if (!PUSH_KINDS.has(kind)) bad('input.kind must be one of: test, file, pull, rtmp, srt, udp')
+
+  const port = allocPort(value.port ?? inherit?.port, { config, usedPorts })
+
+  if (kind === 'rtmp') {
+    const streamKey = value.streamKey !== undefined
+      ? String(value.streamKey)
+      : (inherit?.streamKey ?? randomStreamKey())
+    if (!STREAM_KEY_RE.test(streamKey)) bad('streamKey must be 8-64 letters/digits')
+    return { kind: 'rtmp', port, streamKey }
+  }
+  if (kind === 'srt') {
+    // passphrase: undefined → inherit; null/'' → none (unencrypted).
+    let passphrase = value.passphrase === undefined ? (inherit ? inherit.passphrase ?? null : null) : value.passphrase
+    if (passphrase != null && passphrase !== '') {
+      passphrase = String(passphrase)
+      if (!PASSPHRASE_RE.test(passphrase)) bad('srt passphrase must be 10-79 chars of A-Z a-z 0-9 . _ -')
+    } else passphrase = null
+    const latencyMs = intInRange(value.latencyMs ?? inherit?.latencyMs ?? 200, 20, 5000, 'latencyMs')
+    const out = { kind: 'srt', port, latencyMs }
+    if (passphrase) out.passphrase = passphrase
+    return out
+  }
+  const timeoutMs = intInRange(value.timeoutMs ?? inherit?.timeoutMs ?? 10000, 1000, 60000, 'timeoutMs')
+  return { kind: 'udp', port, timeoutMs }
+}
+
+// Validate/normalize per-channel transcode settings. Every field is optional and
+// the defaults reproduce pre-S15a behavior. This validates VALUES only — encoder
+// availability on the host is checked at start() against the capability probe.
+export function normalizeTranscode (value) {
+  if (value == null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) bad('transcode must be an object')
+  const t = { ...TRANSCODE_DEFAULTS }
+  if (value.encoder !== undefined) {
+    if (!ENCODERS.has(value.encoder)) bad('transcode.encoder must be one of: ' + [...ENCODERS].join(', '))
+    t.encoder = value.encoder
+  }
+  if (value.resolution !== undefined) {
+    if (!RESOLUTIONS.has(value.resolution)) bad('transcode.resolution must be one of: ' + [...RESOLUTIONS].join(', '))
+    t.resolution = value.resolution
+  }
+  if (value.fps !== undefined) {
+    if (value.fps === 'source') t.fps = 'source'
+    else {
+      const n = Number(value.fps)
+      if (!FPS_VALUES.has(n)) bad('transcode.fps must be source, 24, 25, 30, 50 or 60')
+      t.fps = n
+    }
+  }
+  if (value.videoBitrateKbps !== undefined && value.videoBitrateKbps !== null) {
+    t.videoBitrateKbps = intInRange(value.videoBitrateKbps, 100, 20000, 'transcode.videoBitrateKbps')
+  }
+  if (value.audioBitrateKbps !== undefined) {
+    t.audioBitrateKbps = intInRange(value.audioBitrateKbps, 64, 320, 'transcode.audioBitrateKbps')
+  }
+  if (value.preset !== undefined) {
+    if (!PRESETS.has(value.preset)) bad('transcode.preset must be fast, balanced or quality')
+    t.preset = value.preset
+  }
+  if (t.encoder === 'copy') {
+    if (t.resolution !== 'source' || t.fps !== 'source') bad('encoder "copy" cannot change resolution/fps (leave them "source")')
+    if (t.videoBitrateKbps != null) bad('encoder "copy" cannot set videoBitrateKbps')
+  }
+  return t
+}
+
+// Bind-test a push listener port before spawning ffmpeg, so a taken port is a
+// clean API error instead of an ffmpeg crash loop. (Small TOCTOU window between
+// close and spawn — acceptable; the watchdog surfaces the rest.)
+function assertPortFree (input) {
+  return new Promise((resolve, reject) => {
+    const fail = (err) => reject(new ControlError('bad-request',
+      `ingest port ${input.port} is not bindable (${err.code || err.message}) — another process may be using it`))
+    if (input.kind === 'rtmp') { // rtmp is TCP; srt/udp listen on UDP
+      const srv = net.createServer()
+      srv.once('error', fail)
+      srv.listen(input.port, '0.0.0.0', () => srv.close(() => resolve()))
+    } else {
+      const sock = dgram.createSocket('udp4')
+      sock.once('error', (err) => { try { sock.close() } catch {}; fail(err) })
+      sock.bind(input.port, '0.0.0.0', () => sock.close(() => resolve()))
+    }
+  })
+}
 
 // Persist (and reuse) the feed encryption key so the feed identity is stable.
 function loadOrCreateEncryptionKey (storeDir) {
@@ -71,6 +268,9 @@ class Channel {
   async start () {
     if (this.run) bad(`channel "${this.meta.id}" is already running`)
     const { config } = this.manager
+    // Refuse cleanly BEFORE any resources spin up: unavailable encoder/protocol
+    // (capability probe) and unbindable push ports are operator errors, not crashes.
+    await this.manager.assertStartable(this.meta)
     const encryptionKey = loadOrCreateEncryptionKey(this.storeDir)
     const store = new Corestore(this.storeDir)
     await store.ready()
@@ -101,7 +301,12 @@ class Channel {
       registered: false,
       registerError: null
     }
-    run.ff = startFfmpeg({ input: this.meta.input, hls: this.meta.hls }, outDir, {
+    run.ff = startFfmpeg({
+      input: this.meta.input,
+      transcode: this.meta.transcode,
+      hls: this.meta.hls,
+      vaapiDevice: config.vaapiDevice
+    }, outDir, {
       onExit: (code) => { run.ffmpegExit = code ?? -1 }
     })
 
@@ -182,6 +387,7 @@ export class ChannelManager {
   constructor (config) {
     this.config = config
     this.channels = new Map()
+    this._caps = null
   }
 
   registryPath () { return path.join(this.config.dataDir, 'channels.json') }
@@ -190,14 +396,80 @@ export class ChannelManager {
     let reg = {}
     try { reg = JSON.parse(fs.readFileSync(this.registryPath(), 'utf8')) } catch {}
     for (const meta of Object.values(reg)) this.channels.set(meta.id, new Channel(this, meta))
+    // Upgrade pre-S15a string inputs to typed objects and persist, so generated
+    // stream keys stay stable across boots.
+    let upgraded = false
+    for (const ch of this.channels.values()) {
+      if (typeof ch.meta.input === 'string') {
+        const opts = { config: this.config, usedPorts: this.usedPushPorts(ch.meta.id) }
+        try {
+          ch.meta.input = normalizeInput(ch.meta.input, opts)
+        } catch (err) {
+          // 'rtmp' entries can collide on RTMP_PORT if several exist — fall back
+          // to an auto-allocated ingest port rather than refusing to boot.
+          if (ch.meta.input !== 'rtmp') throw err
+          ch.meta.input = normalizeInput({ kind: 'rtmp' }, opts)
+        }
+        upgraded = true
+      }
+    }
+    if (upgraded) this._save()
+    this.capabilities().catch(() => {}) // warm the ffmpeg probe in the background
     return this
+  }
+
+  // One ffmpeg capability probe per process, shared by every start().
+  capabilities () {
+    if (!this._caps) {
+      this._caps = probeCapabilities({ vaapiDevice: this.config.vaapiDevice })
+        .catch((err) => { this._caps = null; throw err })
+    }
+    return this._caps
+  }
+
+  // Throws ControlError('bad-request') when the host ffmpeg lacks the protocol or
+  // the (deep-verified) encoder a channel needs, or its push port isn't bindable.
+  // No silent fallback — the operator picked these settings, tell them the truth.
+  async assertStartable (meta) {
+    const caps = await this.capabilities()
+    if (!caps.ffmpeg) bad('ffmpeg not found on PATH')
+
+    const input = meta.input
+    const proto = isPushInput(input) ? input.kind
+      : input?.kind === 'pull' ? urlScheme(input.url)
+      : null
+    if (proto && caps.protocols[proto] === false) {
+      bad(`this ffmpeg build has no "${proto}" protocol support (input needs it)`)
+    }
+
+    const encoder = meta.transcode?.encoder ?? TRANSCODE_DEFAULTS.encoder
+    if (encoder !== 'copy') {
+      const e = caps.encoders[encoder]
+      if (!e || !e.verified) {
+        bad(`encoder "${encoder}" is not usable on this host` +
+          (e?.error ? ` (${e.error})` : e && !e.listed ? ' (not in this ffmpeg build)' : ''))
+      }
+    }
+
+    if (isPushInput(input)) await assertPortFree(input)
+  }
+
+  // Ports already claimed by push channels (uniqueness domain for allocPort).
+  usedPushPorts (excludeId = null) {
+    const used = new Set()
+    for (const [id, ch] of this.channels) {
+      if (id !== excludeId && isPushInput(ch.meta.input)) used.add(ch.meta.input.port)
+    }
+    return used
   }
 
   _save () {
     const reg = {}
     for (const [id, ch] of this.channels) reg[id] = ch.meta
     fs.mkdirSync(this.config.dataDir, { recursive: true })
-    fs.writeFileSync(this.registryPath(), JSON.stringify(reg, null, 2))
+    // 0600: channels.json now holds push stream keys / SRT passphrases.
+    fs.writeFileSync(this.registryPath(), JSON.stringify(reg, null, 2), { mode: 0o600 })
+    try { fs.chmodSync(this.registryPath(), 0o600) } catch {} // pre-existing file; no-op on Windows
   }
 
   _get (id) {
@@ -207,17 +479,19 @@ export class ChannelManager {
     return ch
   }
 
-  normalizeMeta (fields = {}) {
+  normalizeMeta (fields = {}, { excludeId = null } = {}) {
     const out = {}
     if (fields.title != null) out.title = String(fields.title)
     if (fields.description != null) out.description = String(fields.description)
     if (fields.category != null) out.category = Array.isArray(fields.category) ? fields.category.map(String) : [String(fields.category)]
     if (fields.input != null) {
-      const input = String(fields.input)
-      // ffmpeg args are spawn()ed (no shell), but keep inputs sane anyway.
-      if (input.length > 512 || /[\r\n]/.test(input)) bad('invalid input source')
-      out.input = input
+      out.input = normalizeInput(fields.input, {
+        config: this.config,
+        usedPorts: this.usedPushPorts(excludeId),
+        existing: excludeId ? this.channels.get(excludeId)?.meta.input : null
+      })
     }
+    if (fields.transcode !== undefined) out.transcode = normalizeTranscode(fields.transcode) // null clears
     if (fields.hlsTime != null || fields.hlsListSize != null) {
       const time = parseInt(fields.hlsTime ?? 2, 10)
       const listSize = parseInt(fields.hlsListSize ?? 6, 10)
@@ -237,7 +511,8 @@ export class ChannelManager {
       title: norm.title || id,
       description: norm.description || '',
       category: norm.category || [],
-      input: norm.input || 'test',
+      input: norm.input || { kind: 'test' },
+      transcode: norm.transcode ?? null,
       hls: norm.hls || { time: this.config.hls.time, listSize: this.config.hls.listSize },
       protection: 'self',
       feedKey: null,
@@ -266,7 +541,14 @@ export class ChannelManager {
       title: title || id,
       description: ch.meta.description || '',
       category: category ? [category] : (ch.meta.category || []),
-      input: input || 'test',
+      // env INPUT is refreshed every boot, but a previously generated stream key
+      // is inherited (kind-matching `existing`) so it survives restarts.
+      input: normalizeInput(input || 'test', {
+        config: this.config,
+        usedPorts: this.usedPushPorts(id),
+        existing: ch.meta.input
+      }),
+      transcode: ch.meta.transcode ?? null,
       hls: hls || { time: 2, listSize: 6 },
       protection: protection || 'self'
     })
@@ -277,7 +559,7 @@ export class ChannelManager {
 
   async update (id, fields) {
     const ch = this._get(id)
-    Object.assign(ch.meta, this.normalizeMeta(fields))
+    Object.assign(ch.meta, this.normalizeMeta(fields, { excludeId: id }))
     this._save()
     return { ...(await ch.status()), restartRequired: !!ch.run }
   }

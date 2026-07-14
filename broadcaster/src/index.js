@@ -16,7 +16,7 @@
 // channel is auto-started only if STREAM_ID is explicitly set.
 
 import { config } from './config.js'
-import { ChannelManager } from './channel.js'
+import { ChannelManager, isPushInput, pushUrl } from './channel.js'
 import { startControlServer } from './control-server.js'
 import { loadAdmins } from './control-auth.js'
 
@@ -56,6 +56,10 @@ async function main () {
     console.log('Stream id :', ch.meta.id)
     console.log('Feed key  :', feedKey)
     console.log('Enc key   :', encryptionKey)
+    if (isPushInput(ch.meta.input)) {
+      console.log('Push URL  :', pushUrl(ch.meta.input, config.publicHost))
+      console.log(`            (waiting for a publisher; set the encoder keyframe interval to ${ch.meta.hls.time}s)`)
+    }
     console.log('Share {feedKey, encKey} with clients. To test locally:')
     console.log(`  node ../tools/viewer.js ${feedKey} ${encryptionKey}`)
     console.log('==========================')

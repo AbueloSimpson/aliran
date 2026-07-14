@@ -20,6 +20,7 @@
     "viewer": "npm --workspace tools run viewer --",
     "test": "npm run test:core",
     "test:core": "node core/test.mjs",
+    "test:args": "node tools/args-test.mjs",
     "test:stream": "node tools/e2e-stream-test.mjs",
     "test:login": "node tools/e2e-login-test.mjs",
     "test:session": "node tools/e2e-session-test.mjs",
