@@ -78,8 +78,9 @@ is sessions/devices, the live catalog push, and the OTT UI (needs the Android bu
 - ⬜ Robust reconnect/resilience (broadcaster restart, peer churn, background service)
 - ⬜ Config validation, structured logging, health/metrics endpoints
 - ⬜ One-command deploy (Docker Compose) + operator quickstart verified on a fresh VPS
-- ⬜ Complete documentation site published (GitHub Pages)
-- ⬜ Automated tests (unit + an end-to-end harness) and CI
+- ✅ Complete documentation site published (GitHub Pages — https://abuelosimpson.github.io/aliran/)
+- ✅ Automated tests (unit + e2e harnesses) and CI (GitHub Actions: a required fast
+  deterministic lane + a best-effort real-DHT e2e lane that never blocks merges)
 
 **Exit criteria:** a new operator can go from clone → live service in under an hour,
 following only the docs.
