@@ -46,6 +46,28 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `POST /api/streams/:id/art/:kind` | Upload poster/backdrop/logo (raw image body) |
 | `GET /api/assets/:id/:file` | Art bytes from the assets drive (for previews) |
 
+## Broadcaster control API (`CONTROL_ENABLED=1`)
+
+Served by the broadcaster process (default `127.0.0.1:3310`; put TLS in front if
+exposed). Channels are runtime start/stoppable; each has its own persisted feed
+identity (feedKey + encryption key). Admins are created with
+`node src/control-cli.js add-admin <name>` (Argon2id verifiers in the local
+`DATA_DIR/secrets/admins.json`); login returns a session token signed with a
+broadcaster-local keypair, and attempts are rate-limited. Starting a channel spawns
+its ffmpeg pipeline, seeds the encrypted feed, and auto-registers with the panel
+(publisher-key auth — unchanged). The env-configured channel (`STREAM_ID`) keeps the
+legacy `DATA_DIR`-root store, so existing feed identities are preserved.
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
+| `GET /api/status` | Channels, running count, panel configured |
+| `GET/POST /api/channels` | List (+ live status) / add (`{id,title,category,input,…}`) |
+| `GET /api/channels/:id` | Status: running, ffmpegUp, peers, registered, playlist |
+| `PATCH /api/channels/:id` | Edit meta/input (applies on next start) |
+| `DELETE /api/channels/:id` | Remove from the registry (must be stopped; data kept) |
+| `POST /api/channels/:id/start` · `…/stop` | Spawn / tear down the pipeline |
+
 ## Panel RPC (over Hyperswarm)
 
 - `login(blindedPassword, username, pow)` → OPRF evaluation (throttled; never returns

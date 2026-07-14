@@ -1,105 +1,75 @@
-// Aliran broadcaster — v0.1.
+// Aliran broadcaster — multi-channel node (S12a).
 //
-//   ingest (test pattern / RTSP / HLS / file)
+//   channel = ingest (test pattern / RTSP / HLS / file)
 //     -> ffmpeg live HLS
 //     -> mirror rolling segments into an ENCRYPTED Hyperdrive
 //     -> seed over Hyperswarm (clients replicate + re-seed each other)
+//     -> auto-register with the panel (publisher-key auth)
 //
-// The feed identity (drive key) is stable across restarts as long as DATA_DIR persists;
-// the encryption key is persisted alongside it. Share {feedKey, encryptionKey} with
-// entitled clients (via the panel, or manually for testing).
+// Channels are runtime start/stoppable via the ChannelManager (src/channel.js) and,
+// when CONTROL_ENABLED=1, over the authed HTTP control API (src/control-server.js).
+//
+// Back-compat: with the control API disabled this behaves exactly like the old
+// single-stream broadcaster — the env-configured channel (STREAM_ID/INPUT/...) keeps
+// the legacy DATA_DIR-root store + feed.key, so existing feed identities and
+// pre-seeded feed.key files keep working. With the control API enabled, the env
+// channel is auto-started only if STREAM_ID is explicitly set.
 
-import Corestore from 'corestore'
-import Hyperswarm from 'hyperswarm'
-import Hyperdrive from 'hyperdrive'
-import crypto from 'hypercore-crypto'
-import b4a from 'b4a'
-import fs from 'fs'
-import path from 'path'
-import os from 'os'
 import { config } from './config.js'
-import { startFfmpeg, mirrorDirToDrive } from './hls.js'
-import { panelClient, registerWithPanel } from './register.js'
-
-// Persist (and reuse) the feed encryption key so the feed identity is stable.
-function loadOrCreateEncryptionKey (dataDir) {
-  const p = path.join(dataDir, 'feed.key')
-  if (fs.existsSync(p)) return b4a.from(fs.readFileSync(p, 'utf8').trim(), 'hex')
-  fs.mkdirSync(dataDir, { recursive: true })
-  const key = crypto.randomBytes(32)
-  fs.writeFileSync(p, b4a.toString(key, 'hex'), { mode: 0o600 })
-  return key
-}
+import { ChannelManager } from './channel.js'
+import { startControlServer } from './control-server.js'
+import { loadAdmins } from './control-auth.js'
 
 async function main () {
-  const store = new Corestore(config.dataDir)
-  await store.ready()
+  const manager = new ChannelManager(config)
+  await manager.init()
 
-  const encryptionKey = loadOrCreateEncryptionKey(config.dataDir)
-  const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey })
-  await drive.ready()
-
-  const feedKeyHex = b4a.toString(drive.key, 'hex')
-  const encKeyHex = b4a.toString(encryptionKey, 'hex')
-
-  console.log('=== Aliran broadcaster ===')
-  console.log('Stream id :', config.streamId)
-  console.log('Feed key  :', feedKeyHex)
-  console.log('Enc key   :', encKeyHex)
-  console.log('Share {feedKey, encKey} with clients. To test locally:')
-  console.log(`  node ../tools/viewer.js ${feedKeyHex} ${encKeyHex}`)
-  console.log('==========================')
-
-  // Seed the feed.
-  const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
-  swarm.on('connection', (socket) => drive.replicate(socket))
-  swarm.join(drive.discoveryKey, { server: true, client: false })
-  await swarm.flush()
-  console.log('Seeding on the DHT…')
-
-  // Ingest → HLS → mirror into the drive.
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-hls-'))
-  const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500 })
-  const ff = startFfmpeg(config, outDir, {
-    onExit: (code) => console.log('ffmpeg exited with code', code)
-  })
-  console.log('ffmpeg producing HLS in', outDir)
-
-  // Auto-register the stream with the panel (if configured).
-  let panelSwarm = null
-  if (config.panelPubKey && config.publisherKey) {
-    panelSwarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
-    let registered = false
-    panelSwarm.on('connection', async (socket) => {
-      if (registered) return
-      try {
-        const { call } = panelClient(socket)
-        await registerWithPanel(call, config.publisherKey, {
-          streamId: config.streamId,
-          feedKey: feedKeyHex,
-          encryptionKey: encKeyHex,
-          title: config.title || config.streamId,
-          category: config.category ? [config.category] : [],
-          isLive: true
-        })
-        registered = true
-        console.log('Registered stream "' + config.streamId + '" with the panel.')
-      } catch (err) { console.error('Panel registration failed:', err.message) }
+  let control = null
+  if (config.control.enabled) {
+    if (Object.keys(loadAdmins(config.dataDir)).length === 0) {
+      console.warn('Control API enabled but no admins exist — create one: node src/control-cli.js add-admin <name>')
+    }
+    control = await startControlServer({ config, manager, dataDir: config.dataDir }, {
+      host: config.control.host,
+      port: config.control.port,
+      sessionTtlMs: config.control.sessionTtlHours * 3600000,
+      lockout: config.lockout
     })
-    panelSwarm.join(crypto.hash(b4a.from(config.panelPubKey, 'hex')), { client: true, server: false })
-    console.log('Connecting to panel to register…')
-  } else {
-    console.log('No PANEL_PUBKEY/PUBLISHER_KEY set — seeding only (register manually with admin-cli).')
+    console.log(`Control API on http://${control.host}:${control.port}`)
+  }
+
+  // The env-configured channel. Always started in legacy mode (no control API);
+  // with the API enabled it starts only when STREAM_ID is explicitly configured.
+  const wantEnvChannel = !config.control.enabled || process.env.STREAM_ID !== undefined
+  if (wantEnvChannel) {
+    const ch = await manager.ensureLegacy({
+      id: config.streamId,
+      title: config.title,
+      category: config.category,
+      input: config.input,
+      hls: config.hls,
+      protection: config.protection
+    })
+    const { feedKey, encryptionKey } = await manager.start(ch.meta.id)
+
+    console.log('=== Aliran broadcaster ===')
+    console.log('Stream id :', ch.meta.id)
+    console.log('Feed key  :', feedKey)
+    console.log('Enc key   :', encryptionKey)
+    console.log('Share {feedKey, encKey} with clients. To test locally:')
+    console.log(`  node ../tools/viewer.js ${feedKey} ${encryptionKey}`)
+    console.log('==========================')
+    console.log('Seeding on the DHT…')
+    if (config.panelPubKey && config.publisherKey) console.log('Connecting to panel to register…')
+    else console.log('No PANEL_PUBKEY/PUBLISHER_KEY set — seeding only (register manually with admin-cli).')
+  } else if (control) {
+    console.log('No STREAM_ID in the environment — channels are managed via the control API.')
   }
 
   const shutdown = async () => {
     console.log('\nShutting down…')
-    stopMirror()
-    try { ff.kill('SIGINT') } catch {}
-    await swarm.destroy()
-    if (panelSwarm) { try { await panelSwarm.destroy() } catch {} }
-    await store.close()
-    try { fs.rmSync(outDir, { recursive: true, force: true }) } catch {}
+    if (control) { try { await control.close() } catch {} }
+    await manager.close()
     process.exit(0)
   }
   process.on('SIGINT', shutdown)

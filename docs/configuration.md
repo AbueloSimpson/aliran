@@ -38,6 +38,12 @@ Copy each component's `.env.example` to `.env`.
 | `HLS_TIME` | `2` | Segment duration (seconds) |
 | `HLS_LIST_SIZE` | `6` | Rolling playlist window |
 | `PROTECTION` | `self` | `self` (encrypted Hyperdrive) or `drm` (CENC via packager) |
+| `CONTROL_ENABLED` | `false` | Serve the channel control HTTP API |
+| `CONTROL_HOST` | `127.0.0.1` | Control API bind address (use TLS in front if not loopback) |
+| `CONTROL_PORT` | `3310` | Control API port |
+| `CONTROL_SESSION_TTL_HOURS` | `12` | Control session token lifetime |
+| `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | `10` / `900` | Control login lockout |
+| `ARGON2_MEM_KIB` / `ARGON2_TIME` | `65536` / `2` | Argon2id cost for control-admin passwords |
 
 ## Client
 

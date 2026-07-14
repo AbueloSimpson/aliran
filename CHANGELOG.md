@@ -159,6 +159,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   traps, and Bare worklet/bundling lore — wired into the MkDocs nav and linked from
   the README and FAQ.
 
+### Broadcaster control API (verified)
+- **Runtime start/stoppable channels (`broadcaster/src/channel.js`)**: the broadcaster
+  is now multi-channel — a `ChannelManager` persists a channel registry
+  (`DATA_DIR/channels.json`) and each channel owns its ingest→ffmpeg→encrypted-
+  Hyperdrive→Hyperswarm pipeline with a stable per-channel feed identity
+  (`channels/<id>/feed.key`). Back-compat: the env-configured stream keeps the legacy
+  `DATA_DIR`-root store + `feed.key`, so existing deployments and pre-seeded feed
+  keys keep their identity (proven: same feedKey/encKey across the old layout, a
+  restart, and an API start).
+- **Control HTTP API (`broadcaster/src/control-server.js`)**: opt-in
+  (`CONTROL_ENABLED=1`, default `127.0.0.1:3310`), same auth pattern as the panel
+  admin API — admins via `control-cli add-admin` (Argon2id, local
+  `DATA_DIR/secrets/admins.json`), session tokens signed with an auto-generated
+  broadcaster-local keypair, login lockout, equal Argon2 work for unknown names.
+  Endpoints: login, status, channels (list with live ffmpeg/peers/registered/playlist
+  status, add, edit, remove, **start**, **stop**). Panel registration reuses the
+  publisher-key `register` RPC unchanged. Verified by `npm run test:broadcaster-api`:
+  add+start a channel over HTTP → registers with a real panel over Hyperswarm + a
+  fresh viewer replicates the encrypted feed P2P and ffprobe validates the media →
+  clean stop (ffmpeg down) → restart with the same feed key → lockout enforced.
+
 ### Panel admin dashboard (verified)
 - **Web dashboard (`panel/admin-ui/`)** served by the admin server at `/` when
   `ADMIN_ENABLED=1` — plain HTML/JS/CSS, no build step, consumes only the admin API.
