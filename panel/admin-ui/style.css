@@ -30,6 +30,9 @@ body {
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 
 /* ---- login ---- */
+/* The id rule below outranks the UA sheet's [hidden] { display: none } — restate it,
+   or the login card stays visible after app.js sets .hidden on sign-in. */
+#login-view[hidden] { display: none; }
 #login-view { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .login-card { width: 320px; display: flex; flex-direction: column; gap: 12px; }
 .login-card h1 { text-align: center; margin-bottom: 8px; }
