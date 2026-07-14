@@ -159,6 +159,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   traps, and Bare worklet/bundling lore — wired into the MkDocs nav and linked from
   the README and FAQ.
 
+### Panel admin API (verified)
+- **Shared ops layer (`panel/src/ops.js`)**: every admin operation (users, streams,
+  grants, art, admin accounts) has one implementation used by BOTH the CLI and the
+  HTTP API, so the two cannot drift. `create-user` and `add-stream` now refuse to
+  overwrite existing records (previously a silent overwrite destroyed grants /
+  rotated the stream secret); new `set-status` (disable revokes sessions) and
+  `revoke <u> <stream>` commands.
+- **Admin HTTP API (`panel/src/admin-server.js`)**: opt-in (`ADMIN_ENABLED=1`,
+  default `127.0.0.1:3210`) and served from the panel process — the Corestore is
+  single-writer, so a separate admin process would hit ELOCKED. Auth: admin accounts
+  (`admin-cli add-admin`, Argon2id verifiers in the panel-private
+  `DATA_DIR/secrets/admins.json`, never replicated) → panel-signed session tokens
+  (`core/token.js`, `role:'admin'`, revocable via tokenVersion); login shares the
+  fixed-window lockout from the login RPC, with equal Argon2 work for unknown names.
+  Endpoints: login, status, users (create/password/status/logout-all/max-devices/
+  devices/grant/revoke), streams (add/meta/art upload/list). Verified by
+  `npm run test:admin-api` (bad creds + lockout rejected; every HTTP write asserted
+  in the signed DB/secrets/assets; then a real viewer logs in over Hyperswarm and
+  unseals the granted stream key).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.
 - OTT UI + client app: native Android build (phone + TV), Keystore session sealing.

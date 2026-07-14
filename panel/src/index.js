@@ -16,12 +16,14 @@ import { config } from './config.js'
 import { openKeys } from './keys.js'
 import { openStore } from './store.js'
 import { makeThrottle, attachLoginRpc } from './rpc.js'
+import { startAdminServer } from './admin-server.js'
+import { loadAdmins } from './ops.js'
 
 export async function startPanel () {
   const keys = openKeys(config.dataDir)
   if (!keys) { console.error('No panel keys. Run: node src/admin-cli.js init'); process.exit(1) }
 
-  const { store, db } = await openStore(config.dataDir, keys)
+  const { store, db, assets } = await openStore(config.dataDir, keys)
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   console.log('=== Aliran panel ===')
   console.log('Panel public key:', panelPubKey)
@@ -41,9 +43,25 @@ export async function startPanel () {
   await swarm.flush()
   console.log('Panel announced on the DHT. Serving login + catalog replication…')
 
-  const shutdown = async () => { await swarm.destroy(); await store.close(); process.exit(0) }
+  // Admin HTTP API (in-process — the Corestore is single-writer, so it can't run
+  // as a separate process next to the panel). Opt-in via ADMIN_ENABLED=1.
+  let admin = null
+  if (config.admin.enabled) {
+    if (Object.keys(loadAdmins(config.dataDir)).length === 0) {
+      console.warn('Admin API enabled but no admins exist — create one: node src/admin-cli.js add-admin <name>')
+    }
+    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir }, {
+      host: config.admin.host,
+      port: config.admin.port,
+      sessionTtlMs: config.admin.sessionTtlHours * 3600000,
+      lockout: config.lockout
+    })
+    console.log(`Admin API listening on http://${admin.host}:${admin.port}`)
+  }
+
+  const shutdown = async () => { if (admin) await admin.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys }
+  return { swarm, store, db, keys, admin }
 }
 
 // Run directly (not when imported by a test).

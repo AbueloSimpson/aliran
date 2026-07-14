@@ -6,14 +6,39 @@
 |---------|-------------|
 | `init` | Generate panel signing key + OPRF key (gitignored data dir) |
 | `create-user <u>` / `set-password <u>` | Create/rotate a user (Argon2id verifier) |
-| `grant <u> <stream>` / `revoke <u>` | Entitle / disable a user for a stream |
-| `add-stream <id> [--title --category --featured]` | Register a stream + gen encryption key |
+| `set-status <u> <active\|disabled>` | Disable/re-enable an account (disable revokes sessions) |
+| `grant <u> <stream>` / `revoke <u> <stream>` | Entitle / un-entitle a user for a stream |
+| `add-stream <id> [--title --category --feed --key]` | Register a stream + gen encryption key |
 | `set-meta <id> …` | Update catalog metadata |
 | `upload-art <id> <poster\|backdrop\|logo> <file>` | Add art to the assets drive |
 | `set-max-devices <u> <n>` | Concurrent device limit |
-| `list-devices <u>` / `logout-device <u> <id>` / `logout-all <u>` | Device/session management |
-| `unlock <u>` | Clear brute-force lockout |
+| `logout-all <u>` | Revoke all of a user's sessions (tokenVersion bump) |
 | `list` | List users and streams |
+| `add-admin <name>` / `remove-admin <name>` | Manage admin accounts for the HTTP admin API |
+
+CLI and HTTP API share one implementation (`panel/src/ops.js`), so they cannot drift.
+
+## Admin HTTP API (`ADMIN_ENABLED=1`)
+
+Served by the panel process (default `127.0.0.1:3210`; put TLS in front if exposed).
+Log in with an admin account (`add-admin`) to get a panel-signed session token, then
+send it as `Authorization: Bearer <token>`. Admin credentials are Argon2id verifiers
+in the panel-private `DATA_DIR/secrets/admins.json` — never in the replicated DB.
+Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
+| `GET /api/status` | Counts: users, streams, live, admins |
+| `GET/POST /api/users` | List / create (`{username,password}`) |
+| `GET /api/users/:u` · `GET /api/users/:u/devices` | One user / their devices |
+| `POST /api/users/:u/password` | Rotate password (re-seals grants) |
+| `POST /api/users/:u/status` `{status}` | `active` \| `disabled` |
+| `POST /api/users/:u/logout-all` · `POST /api/users/:u/max-devices` | Session/device controls |
+| `POST /api/users/:u/grants` `{streamId}` · `DELETE /api/users/:u/grants/:id` | Grant / revoke |
+| `GET/POST /api/streams` | List / add (`add-stream` fields; returns the encryption key once) |
+| `PATCH /api/streams/:id` | Update catalog metadata |
+| `POST /api/streams/:id/art/:kind` | Upload poster/backdrop/logo (raw image body) |
 
 ## Panel RPC (over Hyperswarm)
 

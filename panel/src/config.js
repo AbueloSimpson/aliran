@@ -39,6 +39,14 @@ export const config = {
   },
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean),
+  admin: {
+    enabled: bool(process.env.ADMIN_ENABLED, false),
+    // Bind loopback by default. 0.0.0.0 is for a VPS behind a TLS reverse proxy —
+    // the API itself is plain HTTP.
+    host: process.env.ADMIN_HOST || '127.0.0.1',
+    port: int(process.env.ADMIN_PORT, 3210),
+    sessionTtlHours: int(process.env.ADMIN_SESSION_TTL_HOURS, 12)
+  },
   geoipDb: process.env.GEOIP_DB || null,
   drm: process.env.DRM_PROVIDER
     ? {

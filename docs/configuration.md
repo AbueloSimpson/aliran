@@ -16,6 +16,10 @@ Copy each component's `.env.example` to `.env`.
 | `POW_DIFFICULTY` | `16` | Login proof-of-work difficulty (bits) |
 | `LOCKOUT_THRESHOLD` | `10` | Failed attempts before lockout |
 | `LOCKOUT_SECONDS` | `900` | Lockout duration |
+| `ADMIN_ENABLED` | `false` | Serve the admin HTTP API from the panel process |
+| `ADMIN_HOST` | `127.0.0.1` | Admin API bind address (use TLS in front if not loopback) |
+| `ADMIN_PORT` | `3210` | Admin API port |
+| `ADMIN_SESSION_TTL_HOURS` | `12` | Admin session token lifetime |
 | `BOOTSTRAP` | *(empty)* | Custom DHT bootstrap nodes (optional) |
 | `GEOIP_DB` | *(empty)* | Path to MaxMind GeoLite2 mmdb (enables geo) |
 | `DRM_PROVIDER` | *(empty)* | `keyos` \| `ezdrm` \| `axinom` … (enables DRM) |
