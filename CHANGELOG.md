@@ -386,9 +386,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   + a control-API admins section in `test:broadcaster-api`; regressions
   `test:core`/`test:session`/`test:register`/`test:sdk` green.
 
+### Panel dashboard UI for the admin surface (verified)
+- The web dashboard (`panel/admin-ui/`, still vanilla no-build HTML/JS) now covers
+  the full S16a admin surface:
+  - **Admins tab** — add/remove admins and rotate passwords from the browser;
+    rotating or removing **your own** account warns explicitly and signs you out
+    (the API kills the token server-side; the UI drops to the login view).
+  - **Users** — prefix **search box** driving the paged API + a cursor **“Load
+    more”** button; a **delete** flow whose confirm dialog states the offline-token
+    caveat. The devices dialog lists enrollments with a **revoke ✕** per device and
+    explains the cooperative semantics (no token bump; other devices stay in).
+  - **Streams** — inline **curation controls** (order 0–9999 number input, featured
+    toggle with hero hint; ★ FEATURED badge) and a **permanent purge** flow that
+    requires typing the stream id and spells out the key-rotation caveat.
+  - **Overview tab** — health chips (uptime, rss/heap, swarm connections/peers,
+    data size, disk free) + the last-200 **activity feed**, polling every 10 s
+    while the tab is open (and only then).
+- Verified by the extended `test:admin-api` static assertions and a **live browser
+  session** against a temp panel exercising every flow above end-to-end — finishing
+  with a real Hyperswarm viewer login that unsealed the exact key the dashboard
+  displayed once, showed up in the devices dialog and the activity feed, and was
+  then revoked from the UI.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.
-- Panel dashboard UI for the S16a admin surface; curation passthrough in the app.
+- SDK/app curation passthrough (order/featured → the client Home screen).
 - Hybrid artwork (https URLs alongside the P2P assets drive).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

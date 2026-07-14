@@ -150,3 +150,33 @@ ul.devices li { margin-bottom: 6px; }
   border-radius: 8px; padding: 10px 18px; box-shadow: 0 6px 24px rgba(0,0,0,.5); z-index: 10;
 }
 #toast.err { border-color: var(--danger); color: #fecaca; }
+
+/* ---- curation controls (S16b) ---- */
+.curation { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.curation input[type=number] { width: 72px; padding: 3px 8px; }
+.badge.featured { background: #78350f; color: #fde68a; }
+.stream-foot .spacer { flex: 1; }
+
+/* ---- dialogs: destructive warnings ---- */
+.warn-text { color: var(--warn); margin: 0 0 4px; }
+
+/* ---- devices dialog ---- */
+.device-x { cursor: pointer; color: var(--muted); border: none; background: none; font: inherit; padding: 0 4px; }
+.device-x:hover { color: var(--danger); }
+
+/* ---- users paging ---- */
+#users-more { margin-top: 12px; }
+#user-search { min-width: 220px; }
+.footnote { font-size: 12px; }
+
+/* ---- overview / observability (S16b) ---- */
+.card-title { margin: 0 0 10px; font-size: 14px; }
+.card-title .muted { font-weight: 400; font-size: 12px; }
+#overview-section { display: flex; flex-direction: column; gap: 12px; }
+ul.activity { list-style: none; margin: 0; padding: 0; max-height: 440px; overflow-y: auto; }
+ul.activity li { padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+ul.activity li:last-child { border-bottom: none; }
+.act-type { border-radius: 4px; padding: 1px 7px; font-size: 11px; font-weight: 700; letter-spacing: .4px; }
+.act-session { background: #064e3b; color: #a7f3d0; }
+.act-register { background: #1e3a8a; color: #bfdbfe; }
+.act-admin { background: #78350f; color: #fde68a; }

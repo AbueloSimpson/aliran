@@ -31,10 +31,16 @@ CLI and HTTP API share one implementation (`panel/src/ops.js`), so they cannot d
 
 Served by the panel process (default `127.0.0.1:3210`; put TLS in front if exposed).
 Opening the address in a browser loads the **admin dashboard** (`panel/admin-ui/`,
-plain HTML/JS): sign in with an admin account to manage users (create, password,
-disable, grants, devices, limits) and streams (add — the encryption key is shown
-once —, metadata, poster/backdrop/logo upload with preview) plus a status summary.
-The dashboard consumes only the API below.
+plain HTML/JS): sign in with an admin account to manage users (create, prefix
+**search** with cursor-paged “Load more”, password, disable, **delete**, grants,
+devices — including per-device revoke ✕ —, limits) and streams (add — the encryption
+key is shown once —, metadata, **curation**: order + featured hero hint, art upload
+with preview, **permanent purge** behind a type-the-id confirmation), plus an
+**Admins** tab (add/remove/rotate passwords — rotating your own signs you out) and an
+**Overview** tab (uptime/memory/peers/storage chips + the live activity feed, polled
+every 10 s while open). Destructive flows state their caveats inline (key-rotation
+for purge, offline-token validity for user delete, cooperative semantics for device
+revoke). The dashboard consumes only the API below.
 Log in with an admin account (`add-admin`) to get a panel-signed session token, then
 send it as `Authorization: Bearer <token>`. Admin credentials are Argon2id verifiers
 in the panel-private `DATA_DIR/secrets/admins.json` — never in the replicated DB.

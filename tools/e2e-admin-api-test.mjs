@@ -193,10 +193,18 @@ try {
   const home = await fetch(base + '/')
   assert.strictEqual(home.status, 200, 'dashboard index served')
   assert.match(home.headers.get('content-type'), /text\/html/)
-  assert.ok((await home.text()).includes('Aliran'), 'index.html is the dashboard')
+  const homeHtml = await home.text()
+  assert.ok(homeHtml.includes('Aliran'), 'index.html is the dashboard')
+  for (const marker of ['data-tab="admins"', 'data-tab="overview"', 'user-search', 'users-more', 'add-admin-form', 'activity-feed']) {
+    assert.ok(homeHtml.includes(marker), `dashboard carries the S16b surface: ${marker}`)
+  }
   for (const f of ['app.js', 'style.css']) {
     const fr = await fetch(base + '/' + f)
     assert.strictEqual(fr.status, 200, f + ' served')
+  }
+  const appJs = await (await fetch(base + '/app.js')).text()
+  for (const marker of ['api/observability', 'api/admins', 'order-input', 'featured-input', 'device-x', 'Purge permanently']) {
+    assert.ok(appJs.includes(marker), `app.js wires the S16b flows: ${marker}`)
   }
   const trav = await fetch(base + '/%2e%2e/package.json')
   assert.strictEqual(trav.status, 404, 'path traversal must be 404')

@@ -48,6 +48,8 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
 - [x] Admin completeness: admins CRUD + password rotation, stream purge / user delete,
       user prefix-search + cursor paging, observability (`/api/observability` + activity
       ring), curation (`order`/`featured`, register-safe), cooperative per-device revoke
+- [x] Dashboard UI for all of the above (Admins + Overview tabs, search/load-more,
+      confirm-guarded deletes, curation controls, device revoke ✕)
 - [ ] HA / threshold OPRF across replicas
 - [ ] Optional geo (GeoIP) + DRM entitlement endpoints
 

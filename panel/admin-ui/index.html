@@ -37,6 +37,8 @@
   <nav>
     <button class="tab active" data-tab="streams">Streams</button>
     <button class="tab" data-tab="users">Users</button>
+    <button class="tab" data-tab="admins">Admins</button>
+    <button class="tab" data-tab="overview">Overview</button>
   </nav>
 
   <main>
@@ -59,6 +61,11 @@
         <input id="nu-pass" type="password" placeholder="password" required autocomplete="new-password">
         <button class="btn primary">Create</button>
       </form>
+      <div class="card row-form">
+        <strong>Search</strong>
+        <input id="user-search" placeholder="username prefix…">
+        <span id="user-count" class="muted"></span>
+      </div>
       <div class="card table-card">
         <table id="users-table">
           <thead><tr>
@@ -66,6 +73,37 @@
           </tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+      <button class="btn" id="users-more" hidden>Load more</button>
+    </section>
+
+    <section id="admins-section" hidden>
+      <form id="add-admin-form" class="card row-form">
+        <strong>Add admin</strong>
+        <input id="na-name" placeholder="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+        <input id="na-pass" type="password" placeholder="password (min 8 chars)" required minlength="8" autocomplete="new-password">
+        <button class="btn primary">Add</button>
+      </form>
+      <div class="card table-card">
+        <table id="admins-table">
+          <thead><tr>
+            <th>Admin</th><th>Status</th><th>Created</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted footnote">Admin accounts live in the panel-private <span class="mono">secrets/admins.json</span>.
+        If you ever lock yourself out, recover from the box with <span class="mono">admin-cli add-admin</span>.</p>
+    </section>
+
+    <section id="overview-section" hidden>
+      <div class="card">
+        <h3 class="card-title">Panel health</h3>
+        <div id="obs-chips" class="chips"></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Recent activity <span class="muted">(in-memory — clears on panel restart · refreshes every 10 s)</span></h3>
+        <ul id="activity-feed" class="activity"></ul>
       </div>
     </section>
   </main>

@@ -90,8 +90,11 @@ Remaining polish (channel detail, search) rides along in v1.0.
   (`order`/`featured`, preserved across broadcaster re-register), cooperative
   per-device revoke + SDK `sessionLive` online check — verified by the extended
   `test:admin-api` / `test:broadcaster-api`
-- ⬜ **Admin dashboard UI for the above**: admins tab, delete confirm flows, user
-  search + load-more, observability card, curation controls, device revoke buttons
+- ✅ **Admin dashboard UI for the above**: Admins tab (incl. self-rotation with
+  sign-out), typed-confirmation stream purge + user delete flows, user search +
+  cursor “Load more”, Overview tab (health chips + 10 s-polled activity feed),
+  inline curation controls (order/featured + ★ badge), per-device revoke ✕ —
+  verified by a live browser session ending in a real P2P viewer login
 - ✅ **Broadcaster ingest expansion**: push ingest — RTMP (OBS), SRT with passphrase
   (authenticated), MPEG-TS over UDP — plus correct HLS/RTSP pull; typed per-channel
   input config with auto port allocation and an ffmpeg capability probe (verified:
