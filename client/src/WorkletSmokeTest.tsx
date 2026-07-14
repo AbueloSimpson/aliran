@@ -1,15 +1,15 @@
-// S5b/S5c smoke test — verifies the react-native-bare-kit worklet runtime end to end.
+﻿// S5b/S5c smoke test â€” verifies the react-native-bare-kit worklet runtime end to end.
 //
 // Card 1 (S5b): boots a tiny INLINE Bare worklet and round-trips a message over IPC,
 // proving bare-kit builds + runs on this RN 0.83 (New Arch) app and JS<->Bare IPC works.
 //
 // Card 2 (S5c): boots the REAL P2P backend (client/backend/app.bundle via bare-pack),
-// which imports the whole Holepunch stack — sodium-native (4.x AND 5.x), udx-native,
-// quickbit/rabin/simdle/crc, fs-native-extensions — so a `{type:'ready'}` here proves all
+// which imports the whole Holepunch stack â€” sodium-native (4.x AND 5.x), udx-native,
+// quickbit/rabin/simdle/crc, fs-native-extensions â€” so a `{type:'ready'}` here proves all
 // Android addon .so files load and initialize. The panel key comes from config/service.json.
 //
 // Card 3 (S5b finish): full IPC LOGIN round-trip against the desktop dev panel over the
-// DHT — {username,password} -> OPRF login -> {type:'streams'}. `ready` fires right after
+// DHT â€” {username,password} -> OPRF login -> {type:'streams'}. `ready` fires right after
 // swarm.join (before the panel connection exists), so login retries on
 // "not connected to panel" until the swarm connects. Credentials come from the dev
 // section of the gitignored config/service.json.
@@ -27,9 +27,9 @@ const LOGIN_RETRY_MS = 3000
 const LOGIN_MAX_TRIES = 40 // DHT connect from the emulator can take a while
 
 export default function WorkletSmokeTest () {
-  const [hello, setHello] = useState('(booting…)')
-  const [log, setLog] = useState<string[]>(['(starting backend worklet…)'])
-  const [loginState, setLoginState] = useState('(waiting for backend ready…)')
+  const [hello, setHello] = useState('(bootingâ€¦)')
+  const [log, setLog] = useState<string[]>(['(starting backend workletâ€¦)'])
+  const [loginState, setLoginState] = useState('(waiting for backend readyâ€¦)')
   const [streams, setStreams] = useState<string[] | null>(null)
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -53,9 +53,9 @@ export default function WorkletSmokeTest () {
     try {
       const { panelPubKey, dev } = loadServiceDescriptor()
       const tryLogin = () => {
-        if (!dev) { setLoginState('(no dev credentials in service.json — skipped)'); return }
+        if (!dev) { setLoginState('(no dev credentials in service.json â€” skipped)'); return }
         tries.current += 1
-        setLoginState(`logging in as "${dev.username}" (attempt ${tries.current})…`)
+        setLoginState(`logging in as "${dev.username}" (attempt ${tries.current})â€¦`)
         backend.login(dev.username, dev.password)
       }
       const off = backend.onMessage((m: BackendMessage) => {
@@ -64,20 +64,20 @@ export default function WorkletSmokeTest () {
           tryLogin()
         } else if (m.type === 'streams') {
           if (timer.current) clearTimeout(timer.current)
-          setStreams(m.streams.map((s) => `${s.id} — ${s.title}${s.isLive ? ' (LIVE)' : ''}`))
-          setLoginState(`LOGIN OK — ${m.streams.length} entitled stream(s)`)
+          setStreams(m.streams.map((s) => `${s.id} â€” ${s.title}${s.isLive ? ' (LIVE)' : ''}`))
+          setLoginState(`LOGIN OK â€” ${m.streams.length} entitled stream(s)`)
         } else if (m.type === 'login-error') {
-          // Not connected yet: the swarm is still dialing the panel — retry.
+          // Not connected yet: the swarm is still dialing the panel â€” retry.
           if (m.message.includes('not connected') && tries.current < LOGIN_MAX_TRIES) {
-            setLoginState(`waiting for panel connection (attempt ${tries.current})…`)
+            setLoginState(`waiting for panel connection (attempt ${tries.current})â€¦`)
             timer.current = setTimeout(tryLogin, LOGIN_RETRY_MS)
           } else {
             setLoginState('LOGIN FAILED: ' + m.message)
           }
         }
       })
-      backend.start(panelPubKey)
-      setLog((prev) => [...prev, `started; panel=${panelPubKey.slice(0, 16)}…`])
+      backend.boot(panelPubKey)
+      setLog((prev) => [...prev, `started; panel=${panelPubKey.slice(0, 16)}â€¦`])
       return () => { off(); if (timer.current) clearTimeout(timer.current) }
     } catch (e: any) {
       setLog((prev) => [...prev, 'ERROR: ' + String(e?.message || e)])
@@ -91,8 +91,8 @@ export default function WorkletSmokeTest () {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.body}>
-        <Text style={styles.h1}>Aliran — Worklet smoke test</Text>
-        <Text style={styles.sub}>S5b · bare-kit IPC + login &nbsp;·&nbsp; S5c · real backend + native addons</Text>
+        <Text style={styles.h1}>Aliran â€” Worklet smoke test</Text>
+        <Text style={styles.sub}>S5b Â· bare-kit IPC + login &nbsp;Â·&nbsp; S5c Â· real backend + native addons</Text>
 
         <View style={styles.card}>
           <Text style={styles.label}>bare-kit runtime (inline hello):</Text>
@@ -102,7 +102,7 @@ export default function WorkletSmokeTest () {
         <View style={styles.card}>
           <Text style={styles.label}>P2P backend (app.bundle):</Text>
           <Text style={[styles.value, { color: ready ? '#4ADE80' : '#E2E8F0' }]}>
-            {ready ? 'READY — Holepunch addons loaded' : 'waiting for {type:ready}…'}
+            {ready ? 'READY â€” Holepunch addons loaded' : 'waiting for {type:ready}â€¦'}
           </Text>
           {log.map((l, i) => (
             <Text key={i} style={styles.logLine} selectable>{l}</Text>
@@ -131,3 +131,4 @@ const styles = StyleSheet.create({
   value: { fontSize: 15, color: '#E2E8F0', fontFamily: 'monospace' },
   logLine: { fontSize: 11, color: '#94A3B8', fontFamily: 'monospace' }
 })
+

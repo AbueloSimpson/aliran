@@ -69,10 +69,10 @@ is sessions/devices, the live catalog push, and the OTT UI (needs the Android bu
 
 ## v1.0 — Production: "Operators can run a real service"
 
-- 🚧 **`@aliran/player-sdk`**: headless player engine extracted from the app worklet
-  (done, e2e-tested via `test:sdk`; the worklet is now a thin shell over it) +
-  hybrid CDN↔P2P failover/auto-return (done, in `test:sdk`); next: a React Native
-  `<AliranVideo>` binding dogfooded by the app
+- ✅ **Player SDK track**: `@aliran/player-sdk` headless engine extracted from the app
+  worklet (e2e-tested via `test:sdk`; the worklet is a thin shell over it), hybrid
+  CDN↔P2P failover/auto-return, and the `@aliran/react-native` `<AliranVideo>`
+  binding — dogfooded by the app on the TV emulator (P2P + observable CDN fallback)
 - ⬜ Panel **HA / threshold OPRF** across replicas; documented backup & key-rotation runbooks
 - ⬜ Hardening pass + **independent security review** of the crypto paths
 - ⬜ Robust reconnect/resilience (broadcaster restart, peer churn, background service)

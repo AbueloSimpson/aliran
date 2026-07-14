@@ -7,6 +7,7 @@
 // This stub imports a bundled JSON; swap in runtime loading if you ship one generic APK.
 
 import service from '../config/service.json'
+import type { HybridConfig } from '@aliran/react-native'
 
 export interface ServiceDescriptor {
   panelPubKey: string
@@ -16,6 +17,9 @@ export interface ServiceDescriptor {
     colors?: { primary?: string; background?: string; accent?: string }
   }
   bootstrap?: string[]
+  // Optional hybrid CDN<->P2P playback policy (cdnUrl is a '{streamId}' template
+  // string). Omit for pure P2P. See sdk/react-native and sdk/README.md.
+  hybrid?: HybridConfig
   // Dev-only auto-login credentials for the worklet smoke test (local service.json
   // is gitignored). Never present in a shipped descriptor.
   dev?: { username: string; password: string }

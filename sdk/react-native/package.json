@@ -1,0 +1,16 @@
+{
+  "name": "@aliran/react-native",
+  "version": "0.0.1",
+  "description": "Aliran React Native binding — Bare worklet host + drop-in <AliranVideo> on react-native-video",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "peerDependencies": {
+    "b4a": "*",
+    "react": "*",
+    "react-native": "*",
+    "react-native-bare-kit": "*",
+    "react-native-video": "*"
+  },
+  "comment": "Ships TypeScript source — Metro consumes it directly (RN CLI's default sourceExts include ts/tsx). No native code of its own: react-native-bare-kit provides the worklet runtime and react-native-video the player. The host app supplies the worklet bundle (bare-pack output; see client/backend). Install alongside those peers; with react-native-tvos prereleases use --legacy-peer-deps."
+}

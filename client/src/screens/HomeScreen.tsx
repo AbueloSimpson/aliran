@@ -65,7 +65,7 @@ export function HomeScreen ({ navigation }: Props) {
   )
 
   function open (s: Stream) {
-    backend.play(s.id)
+    // <AliranVideo> sends play() itself on mount — no pre-play needed here.
     navigation.navigate('Player', { streamId: s.id, title: s.title })
   }
 }

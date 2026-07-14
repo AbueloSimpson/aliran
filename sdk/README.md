@@ -92,4 +92,5 @@ The app's worklet (`client/backend/backend.mjs`) is a thin IPC shell over `playe
 - `npm run test:sdk` (repo root) — headless e2e: real panel + broadcaster, SDK
   login → resolve → ffprobe-validated HLS over P2P. Needs ffmpeg/ffprobe on PATH.
 
-Coming next (see ROADMAP): a React Native `<AliranVideo>` binding (S10c).
+For React Native apps, see **[`@aliran/react-native`](react-native/README.md)** — a
+drop-in `<AliranVideo>` component + worklet host built on this engine.

@@ -444,13 +444,23 @@ export class AliranPlayer extends Emitter {
           const wanted = end - start + 1
           res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
           const rs = target.createReadStream(p, { start })
+          // The player aborts in-flight requests routinely (source switch, seek,
+          // teardown) — writing into the closed response must not become an unhandled
+          // stream error (it SIGABRTs the Bare worklet).
+          const abort = () => { try { rs.destroy() } catch {} }
+          res.on('error', abort)
+          res.on('close', abort)
           let sent = 0
-          rs.on('data', (chunk) => { if (sent >= wanted) return; const out = sent + chunk.length > wanted ? chunk.subarray(0, wanted - sent) : chunk; sent += out.length; res.write(out); if (sent >= wanted) { res.end(); rs.destroy() } })
-          rs.on('end', () => { if (sent < wanted) res.end() })
+          rs.on('data', (chunk) => { if (sent >= wanted) return; const out = sent + chunk.length > wanted ? chunk.subarray(0, wanted - sent) : chunk; sent += out.length; try { res.write(out) } catch { abort(); return } if (sent >= wanted) { try { res.end() } catch {} rs.destroy() } })
+          rs.on('end', () => { if (sent < wanted) { try { res.end() } catch {} } })
           rs.on('error', () => { try { res.destroy() } catch {} })
         } else {
           res.writeHead(200, { ...headers, 'Content-Length': String(size) })
-          target.createReadStream(p).pipe(res)
+          const rs = target.createReadStream(p)
+          res.on('error', () => { try { rs.destroy() } catch {} })
+          res.on('close', () => { try { rs.destroy() } catch {} })
+          rs.on('error', () => { try { res.destroy() } catch {} })
+          rs.pipe(res, () => {}) // callback swallows abort errors under streamx (Bare); ignored by Node
         }
       } catch (err) {
         // Corruption can also surface at read time (the blobs core opens lazily): heal

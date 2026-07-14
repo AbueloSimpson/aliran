@@ -2,6 +2,17 @@
   "extends": "@react-native/typescript-config",
   "compilerOptions": {
     "types": ["jest"],
+    // @aliran/react-native is a file: symlink; tsc follows it to ../sdk/react-native,
+    // from where its peer deps don't resolve — map them back to THIS app's node_modules.
+    "baseUrl": ".",
+    "paths": {
+      "react": ["node_modules/@types/react"],
+      "react/*": ["node_modules/@types/react/*"],
+      "react-native": ["node_modules/react-native"],
+      "react-native-video": ["node_modules/react-native-video"],
+      "react-native-bare-kit": ["node_modules/react-native-bare-kit"],
+      "b4a": ["node_modules/b4a"]
+    },
   },
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["**/node_modules", "**/Pods"]

@@ -136,6 +136,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Default `p2p-only` keeps the app worklet's behavior identical. Verified in
   `test:sdk`: unseeded stream + tiny timeout → CDN fallback (local HLS file server);
   broadcaster starts → auto-return to P2P and the local playlist serves.
+- **`@aliran/react-native` (new `sdk/react-native/` package)** — drop-in RN binding:
+  `AliranBackend` hosts the engine in the Bare worklet (bundle supplied by the host
+  app; caches streams/port/url/source) and `<AliranVideo>` renders the ACTIVE source
+  on react-native-video with the proven error-retry remount, switching sources on
+  `fallback`/`source-changed`. The worklet IPC gained hybrid pass-through
+  (`{panelPubKey, hybrid}` — cdnUrl as a JSON-safe `{streamId}` template) plus
+  `fallback`/`source-changed` relays and `url`/`source` in the port reply (additive).
+  The app now dogfoods the binding (`client/src/worklet.ts` is a thin wrapper,
+  PlayerScreen uses `<AliranVideo>` + a P2P/CDN source badge). Verified on the
+  Android TV emulator with a hybrid dev descriptor: live P2P playback through the
+  binding → kill the broadcaster → `fallback` (stall) switches playback to the CDN
+  (video keeps playing) → restart the broadcaster → `source-changed` returns to P2P.
+- **Media-server hardening (found by the on-device hybrid test)**: players abort
+  in-flight requests routinely (source switch, seek, teardown), and writing into the
+  closed response was an unhandled stream error that killed the whole Bare worklet
+  (SIGABRT). The Range handler now tolerates client aborts on both paths, and the
+  worklet installs a last-resort `uncaughtException` guard that reports over IPC
+  instead of crashing the app.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.

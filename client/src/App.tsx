@@ -28,7 +28,7 @@ export default function App () {
     const off = backend.onMessage((m) => {
       if (m.type === 'ready') setReady(true)
     })
-    backend.start(service.panelPubKey)
+    backend.boot(service.panelPubKey, service.hybrid)
     // TODO: check for a valid cached session (Keystore); if present, setHasSession(true)
     return off
   }, [])
