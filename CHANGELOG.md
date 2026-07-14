@@ -154,6 +154,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (SIGABRT). The Range handler now tolerates client aborts on both paths, and the
   worklet installs a last-resort `uncaughtException` guard that reports over IPC
   instead of crashing the app.
+- **Knowledge base (`docs/kb/`)**: public, field-tested symptom→cause→fix pages —
+  playback & client runtime, operating the panel/broadcaster, Android/RN build
+  traps, and Bare worklet/bundling lore — wired into the MkDocs nav and linked from
+  the README and FAQ.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.

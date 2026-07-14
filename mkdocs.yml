@@ -42,5 +42,11 @@ nav:
   - Client build: client-build.md
   - User management: user-management.md
   - Reference: reference.md
+  - Knowledge base:
+      - Overview: kb/index.md
+      - Playback & client runtime: kb/playback.md
+      - Operating panel & broadcaster: kb/operator.md
+      - Android & RN builds: kb/android-build.md
+      - Bare worklet & bundling: kb/bare-worklet.md
   - FAQ & troubleshooting: faq.md
   - Legal & compliance: legal-compliance.md

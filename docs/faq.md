@@ -1,5 +1,10 @@
 # FAQ & Troubleshooting
 
+!!! tip "Hitting a specific error?"
+    The [knowledge base](kb/index.md) has field-tested **symptom → cause → fix**
+    entries for playback, operations, Android builds, and the Bare worklet — search
+    it for the error text you're seeing.
+
 ## Concept FAQ
 
 **Is this "Pear as an Android app"?**

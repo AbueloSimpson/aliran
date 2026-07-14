@@ -16,6 +16,7 @@ MkDocs Material; diagrams use Mermaid).
 - [Client build](client-build.md) — build the Android (phone + TV) app
 - [User management](user-management.md) — accounts, passwords, devices, sessions
 - [Reference](reference.md) — admin-cli, panel RPC, schemas
+- [Knowledge base](kb/index.md) — field-tested symptom→cause→fix entries
 - [FAQ & troubleshooting](faq.md) — common questions and fixes
 - [Legal & compliance](legal-compliance.md) — content rights, DRM licensing, regional rules
 - [Roadmap](../ROADMAP.md) — milestones from alpha to 1.0 and beyond

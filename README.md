@@ -73,6 +73,7 @@ Start at [`docs/README.md`](docs/README.md). Highlights:
 [Security model](docs/security-model.md) ·
 [Operator guide](docs/operator-guide.md) ·
 [Configuration](docs/configuration.md) ·
+[Knowledge base](docs/kb/index.md) ·
 [FAQ](docs/faq.md).
 
 ## Roadmap
