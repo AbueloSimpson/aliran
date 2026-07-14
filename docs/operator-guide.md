@@ -98,6 +98,10 @@ node src/admin-cli.js grant alice news
 Set `ADMIN_ENABLED=1` (panel, port 3210) and `CONTROL_ENABLED=1` (broadcaster,
 port 3310). Both bind `127.0.0.1` and speak plain HTTP — **never expose them raw.**
 
+> Note (current behavior): after a broadcaster restart, channels stay stopped until
+> you press Start again (dashboard or API). Auto-resume + a crash watchdog are on the
+> roadmap.
+
 - **With a domain:** install Caddy and use
   [deploy/Caddyfile.example](https://github.com/AbueloSimpson/aliran/blob/main/deploy/Caddyfile.example)
   — automatic HTTPS, the plain-HTTP APIs never leave loopback.
@@ -136,6 +140,16 @@ Nothing else is needed — clients reach the panel through the DHT, not an IP/do
 
 `RELAY_ONLY=1` on the panel hides the origin IP behind DHT relays (slower, more
 private).
+
+## Sizing
+
+Verified on a 1 vCPU / 1 GB VPS: two concurrent test channels encode fine (load ≈1.5).
+On boxes with ≤2 GB RAM, add swap and lower the login KDF memory in `panel/.env` —
+`ARGON2_MEM_KIB=65536` (64 MiB per login instead of the 256 MiB default; the
+parameters are stored per user record, so changing them later only affects new
+enrollments/password rotations). Each running channel costs one ffmpeg encode —
+budget roughly one vCPU per two test-pattern channels until per-channel transcode
+controls land.
 
 ## Operations
 

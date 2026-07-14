@@ -281,8 +281,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dockerfiles on every push and smoke-runs them (`admin-cli init` in a throwaway
   container; ffmpeg `-protocols` must list `srt`).
 
+### Verified on a real VPS over the internet
+- **The whole stack now has an internet-grade proof, not a localhost one.** Deployed
+  via `docker compose` on a fresh 1 vCPU / 1 GB Ubuntu VPS (keys + admin accounts
+  bootstrapped with the documented commands, dashboards enabled), two live channels
+  created and started through the control API. From a machine on a different
+  network, `tools/acceptance-remote.mjs` (new) logged in as a real viewer **through
+  the public DHT** — no IP, no ports, just the panel public key — replicated both
+  encrypted feeds **concurrently**, and ffprobe-validated the media (~8–20 s to
+  first playable segment). Catalog assertions (`--expect-live`) held; both
+  dashboards verified over the documented SSH tunnel; `docker compose restart`
+  self-heals (channels currently need a manual Start after a broadcaster restart —
+  auto-resume is on the roadmap with the watchdog).
+- **`tools/acceptance-remote.mjs`**: reusable remote acceptance harness — one
+  `AliranPlayer` per stream (own store = N real concurrent viewers), login retry
+  that never trips the panel throttle (pre-connection failures are local),
+  per-stream PASS/FAIL table (time-to-play, segment bytes, peers), `--expect-live`
+  / `--expect-off` catalog assertions, exit 0 iff everything passed.
+- **SDK teardown race fixed (found by the acceptance run):** a swarm connection
+  whose handshake was in flight when `stop()` (or a recovery purge) nulled the
+  store crashed the process — `sdk/player.js` now drops such late sockets. The same
+  class of crash would have taken down the app worklet.
+- **Compose hardening:** `DATA_DIR=/data` is pinned via `environment` (wins over
+  `env_file`), so a copied bare-metal `.env` (`DATA_DIR=./data`) can no longer
+  silently divert container data off the persistent volume.
+- Operator guide: sizing notes for small VPSes (swap + `ARGON2_MEM_KIB=65536`,
+  ~1 vCPU per two test channels), restart note, tunnel/Caddy verified flows.
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- Verify the deploy on a real VPS over the internet (remote acceptance harness).
 - Broadcaster push ingest (RTMP/SRT/UDP-TS) + per-channel transcode incl. GPU.
 - Panel admin completeness (admins mgmt, deletes, search, observability, curation).
 - Hybrid artwork (https URLs alongside the P2P assets drive).

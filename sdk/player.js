@@ -317,6 +317,9 @@ export class AliranPlayer extends Emitter {
     // already set). If the panel socket drops, clear `call` so the next reconnect
     // re-arms it (otherwise every RPC after a drop fails with CHANNEL_CLOSED forever).
     this._swarm.on('connection', (socket) => {
+      // A handshake that was in flight when stop()/a recovery purge nulled the store
+      // can still land here (swarm.destroy() resolves later) — drop it, don't crash.
+      if (!this._store) { try { socket.destroy() } catch {} return }
       this._store.replicate(socket)
       if (!this._call && this._panelBee) {
         const rpcCall = panelClient(socket).call

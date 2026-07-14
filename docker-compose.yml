@@ -21,6 +21,10 @@ services:
     network_mode: host
     restart: unless-stopped
     env_file: ./panel/.env
+    environment:
+      # The .env examples say ./data (bare-metal); in a container the data MUST live
+      # on the volume. `environment` wins over env_file, so this can't be broken.
+      DATA_DIR: /data
     volumes:
       - panel-data:/data
 
@@ -31,6 +35,8 @@ services:
     network_mode: host
     restart: unless-stopped
     env_file: ./broadcaster/.env
+    environment:
+      DATA_DIR: /data
     volumes:
       - broadcaster-data:/data
 
