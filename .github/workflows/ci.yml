@@ -1,0 +1,80 @@
+# Test suites on every push to main and every PR. Two lanes:
+#   core    — fast + deterministic (no network, no ffmpeg). REQUIRED: keep it green.
+#   e2e-dht — end-to-end suites over the real Hyperswarm DHT (+ ffmpeg for the media
+#             ones). The public DHT can be flaky from hosted runners, so this job is
+#             continue-on-error: it reports signal but can never block a merge.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer commit supersedes any in-flight run for the same ref (tests are safe to cancel).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: core (required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Crypto unit tests (test:core)
+        run: npm run test:core
+      - name: Client store corruption recovery (test:corrupt)
+        run: npm run test:corrupt
+
+  e2e-dht:
+    name: e2e over the public DHT (best effort, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install ffmpeg (needed by test:sdk / test:broadcaster-api)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - run: npm ci
+      # Each suite retries once (DHT discovery is the flaky part) and is time-capped:
+      # a peer that never connects hangs the harness rather than failing it, so the
+      # step timeout is the real guard. !cancelled() keeps the remaining suites
+      # running after an earlier one fails.
+      - name: Sessions + device limits (test:session)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: npm run test:session || npm run test:session
+      - name: Broadcaster auto-registration (test:register)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: npm run test:register || npm run test:register
+      - name: Assets pipeline (test:assets)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: npm run test:assets || npm run test:assets
+      - name: Panel admin API (test:admin-api)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 8
+        run: npm run test:admin-api || npm run test:admin-api
+      - name: Player SDK + hybrid CDN↔P2P (test:sdk)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: npm run test:sdk || npm run test:sdk
+      - name: Broadcaster control API (test:broadcaster-api)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: npm run test:broadcaster-api || npm run test:broadcaster-api

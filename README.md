@@ -1,5 +1,7 @@
 # Aliran
 
+[![ci](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml/badge.svg)](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml)
+
 **Aliran** (Malay/Indonesian: *flow / stream / current*) — a self-hostable,
 open-source, **peer-to-peer OTT streaming platform** built on the
 [Holepunch/Pear](https://pears.com) stack. Streams flow peer to peer: viewers

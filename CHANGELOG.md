@@ -215,6 +215,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the signed DB/secrets/assets; then a real viewer logs in over Hyperswarm and
   unseals the granted stream key).
 
+### Continuous integration
+- **GitHub Actions CI (`.github/workflows/ci.yml`)**: every push to `main` and every
+  pull request runs the fast deterministic suites (`test:core`, `test:corrupt`) as the
+  required job, plus a best-effort second job for the end-to-end suites that use the
+  real Hyperswarm DHT (`test:session` / `test:register` / `test:assets` /
+  `test:admin-api`, and — with ffmpeg installed — `test:sdk` /
+  `test:broadcaster-api`). Each e2e suite retries once and is time-capped (a peer
+  that never connects hangs rather than fails), and the job is `continue-on-error`
+  so hosted-runner DHT flakiness can never block a merge.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Catalog `bee.watch()` live push to the UI.
 - OTT UI + client app: native Android build (phone + TV), Keystore session sealing.
