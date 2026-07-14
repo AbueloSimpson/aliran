@@ -4,8 +4,8 @@
 // Boots a real panel (register RPC over Hyperswarm) and a ChannelManager + control
 // server in-process, then over real HTTP: admin login (+lockout) → add a channel →
 // START it → the channel registers with the panel and produces an encrypted P2P feed
-// a fresh viewer replicates and ffprobe-validates → STOP it clean → restart works.
-// Exits 0 on PASS.
+// a fresh viewer replicates and ffprobe-validates → STOP it clean → restart works →
+// the control UI (S12b) is served traversal-proof. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
@@ -184,6 +184,22 @@ try {
   const locked = await api('POST', '/api/login', { username: 'op', password: ADMIN_PASSWORD })
   assert.strictEqual(locked.status, 429, 'locked after threshold (even valid creds)')
   log('G: login lockout after threshold ✓')
+
+  // ===== Test H: control UI static files (S12b; mirrors the panel's Test G) =====
+  const home = await fetch(base + '/')
+  assert.strictEqual(home.status, 200, 'control UI index served')
+  assert.match(home.headers.get('content-type'), /text\/html/)
+  assert.match(await home.text(), /Aliran/, 'index looks like the control UI')
+  for (const [f, type] of [['app.js', /javascript/], ['style.css', /text\/css/]]) {
+    const fr = await fetch(base + '/' + f)
+    assert.strictEqual(fr.status, 200, f + ' served')
+    assert.match(fr.headers.get('content-type'), type, f + ' content-type')
+  }
+  for (const p of ['/%2e%2e/package.json', '/..%5Cpackage.json', '/.env']) {
+    assert.strictEqual((await fetch(base + p)).status, 404, p + ' must be 404')
+  }
+  assert.strictEqual((await fetch(base + '/index.html', { method: 'POST' })).status, 404, 'non-GET static must be 404')
+  log('H: control UI static files served; traversal/backslash/dotfile guarded ✓')
 
   log('\nRESULT: PASS ✅  (channel added+started over HTTP → panel registration + ffprobe-valid P2P feed → clean stop + restart)')
   await cleanup(); process.exit(0)

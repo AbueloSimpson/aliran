@@ -19,6 +19,11 @@ node src/control-cli.js add-admin op    # prompts for a password (min 8 chars)
 CONTROL_ENABLED=1 node src/index.js     # control API at http://127.0.0.1:3310
 ```
 
+Opening that address in a browser loads the **control UI** (`control-ui/`, plain
+HTML/JS, no build step): sign in to add/edit channels, start/stop them, and watch
+live status (ffmpeg health, peers, panel registration, playlist). Channel art is a
+panel admin operation — upload it in the panel dashboard, not here.
+
 With the control API enabled, the env-configured channel starts only if `STREAM_ID`
 is explicitly set; it keeps the legacy `DATA_DIR`-root store, so existing feed
 identities (and pre-seeded `feed.key` files) are preserved. See `docs/reference.md`
@@ -48,7 +53,9 @@ node ../tools/e2e-stream-test.mjs                   # PASS = end-to-end P2P veri
 - [x] Auto-register stream + metadata with the panel over an authenticated RPC
       (set `PANEL_PUBKEY` + `PUBLISHER_KEY` from `admin-cli init`) — verified `test:register`
 - [x] Multi-channel: runtime start/stop via `ChannelManager` + authed control API
-      (`CONTROL_ENABLED=1`) — verified `npm run test:broadcaster-api`; web UI next
+      (`CONTROL_ENABLED=1`) — verified `npm run test:broadcaster-api`
+- [x] Web control UI (`control-ui/`) served by the control server — login, channel
+      add/edit/start/stop, live status (ffmpeg/peers/registered/playlist)
 - [ ] Flip `isLive`/`status` on stop; optional peer allowlist check before replicating
 
 See [`../docs/content-management.md`](../docs/content-management.md).

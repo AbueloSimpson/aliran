@@ -1,0 +1,121 @@
+/* Aliran broadcaster control UI — dark, lean, no framework (panel/admin-ui sibling). */
+
+:root {
+  --bg: #100e0b;
+  --panel: #1a1712;
+  --panel-2: #241f18;
+  --border: #3a3227;
+  --text: #eee7db;
+  --muted: #a09280;
+  --accent: #fb923c;
+  --accent-dim: #c2410c;
+  --danger: #f87171;
+  --ok: #34d399;
+  --warn: #fbbf24;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.brand { font-size: 20px; font-weight: 700; letter-spacing: .3px; margin: 0; }
+.brand span { color: var(--accent); font-weight: 400; }
+.muted { color: var(--muted); }
+.error { color: var(--danger); margin: 8px 0 0; }
+.spacer { flex: 1; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+/* ---- login ---- */
+/* [hidden] must beat the display:flex below (UA's [hidden] rule loses to an id selector). */
+#login-view[hidden] { display: none; }
+#login-view { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.login-card { width: 320px; display: flex; flex-direction: column; gap: 12px; }
+.login-card h1 { text-align: center; margin-bottom: 8px; }
+.login-card label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+
+/* ---- layout ---- */
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--panel);
+}
+main { padding: 16px 20px 60px; max-width: 1080px; }
+
+/* ---- cards / forms ---- */
+.card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+}
+.row-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.row-form strong { margin-right: 4px; }
+.cards { display: flex; flex-direction: column; gap: 12px; }
+.hint { font-size: 12px; margin: 0 2px 16px; }
+
+input, textarea, select {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 10px; font: inherit;
+}
+input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent-dim); border-color: var(--accent-dim); }
+input:invalid { border-color: #7f1d1d; }
+
+.btn {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent-dim); }
+.btn.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff7ed; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.15); }
+.btn.ghost { background: none; }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover { border-color: var(--danger); }
+.btn.small { padding: 3px 8px; font-size: 12px; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* ---- chips / badges ---- */
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chip {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 10px; font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px;
+}
+.chip b { color: var(--text); }
+.chip.warn { color: var(--warn); border-color: var(--warn); }
+.badge { border-radius: 4px; padding: 1px 7px; font-size: 11px; font-weight: 700; letter-spacing: .4px; }
+.badge.live { background: #7f1d1d; color: #fecaca; }
+.badge.idle { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+.badge.ok { background: #064e3b; color: #a7f3d0; }
+.badge.err { background: #3f1d1d; color: #fca5a5; }
+.badge.dim { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); font-weight: 400; }
+.badge.legacy { background: var(--panel-2); color: var(--warn); border: 1px solid var(--warn); font-weight: 400; }
+
+/* ---- channel cards ---- */
+.chan-card { display: flex; flex-direction: column; gap: 6px; }
+.chan-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chan-head h3 { margin: 0; font-size: 16px; }
+.chan-desc { color: var(--muted); margin: 0; }
+.status-strip { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-height: 22px; }
+.chan-foot { display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+
+/* ---- dialog ---- */
+dialog {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px; min-width: 340px; max-width: 460px;
+}
+dialog::backdrop { background: rgba(10, 7, 3, .7); }
+dialog h2 { margin: 0 0 14px; font-size: 16px; }
+#dlg-body { display: flex; flex-direction: column; gap: 10px; }
+#dlg-body label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.dlg-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.keybox {
+  background: var(--panel-2); border: 1px solid var(--warn); border-radius: 6px;
+  padding: 10px; word-break: break-all;
+}
+
+/* ---- toast ---- */
+#toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--panel-2); border: 1px solid var(--accent-dim); color: var(--text);
+  border-radius: 8px; padding: 10px 18px; box-shadow: 0 6px 24px rgba(0,0,0,.5); z-index: 10;
+}
+#toast.err { border-color: var(--danger); color: #fecaca; }

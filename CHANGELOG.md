@@ -180,6 +180,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fresh viewer replicates the encrypted feed P2P and ffprobe validates the media →
   clean stop (ffmpeg down) → restart with the same feed key → lockout enforced.
 
+### Broadcaster control UI (verified)
+- **Web control UI (`broadcaster/control-ui/`)** served by the control server at `/`
+  when `CONTROL_ENABLED=1` — plain HTML/JS/CSS, no build step, consumes only the
+  control API (panel/admin-ui sibling: token in sessionStorage, free text escaped,
+  any API 401 drops back to the login view). Sign in → status chips (channels /
+  running / panel configured), add-channel form (with the feed-encryption-key
+  dialog), and per-channel cards with **live status polled every 5 s** — ON AIR
+  badge, ffmpeg health (incl. exit code on silent death), peer count, panel
+  registration (with the register error on failure), playlist presence, uptime —
+  plus start/stop (confirm on stop), metadata/input/HLS editing ("applies on next
+  start" when running), and remove (guarded while running; feed identity kept on
+  disk). Channel art is deliberately absent: it is a panel admin operation (the
+  register RPC carries no art), and the UI says so. Verified in
+  `test:broadcaster-api` (control UI static files, `%2e%2e`/backslash/dotfile
+  requests 404, non-GET 404) and end-to-end in a browser: a channel added and
+  started from the UI registered into a live panel's catalog and a fresh
+  `tools/viewer.js` peer replicated and played the encrypted feed (ffprobe-valid
+  h264/aac), with the card's peer counter showing the viewer.
+
 ### Panel admin dashboard (verified)
 - **Web dashboard (`panel/admin-ui/`)** served by the admin server at `/` when
   `ADMIN_ENABLED=1` — plain HTML/JS/CSS, no build step, consumes only the admin API.
