@@ -17,7 +17,9 @@
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
 //        { streamId }                 -> play an entitled stream -> { port, url, source }
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
-//   out: { type:'ready' } | { type:'streams', streams }
+//   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
+//                                        live whenever the panel edits the catalog —
+//                                        same shape; the Home screen re-renders on it)
 //        { type:'port', port, url, source }   (url = ACTIVE source under hybrid)
 //        { type:'status', state|peers } | { type:'login-error'|'error', message }
 //        { type:'fallback', streamId, url, reason } | { type:'source-changed', streamId, source, url }
