@@ -17,7 +17,9 @@
 //
 // Events (no throw on unhandled 'error'):
 //   'ready'              connected to the panel topic (login may still need to dial)
-//   'streams' (list)     display catalog after a successful login (no keys inside)
+//   'streams' (list)     display catalog (no keys inside): after a successful login,
+//                        and re-emitted live whenever the panel edits the catalog
+//                        (title/isLive/art/... — no polling, no re-login)
 //   'status'  ({state})  breadcrumbs: 'feed:open' | 'feed:ready'
 //   'peers'   (count)    feed-health ticker while a stream is being served
 //   'recovered' (err)    a corrupt store was purged and the operation retried
@@ -93,6 +95,7 @@ export class AliranPlayer extends Emitter {
     this._store = null
     this._swarm = null
     this._panelBee = null
+    this._catalogWatcher = null
     this._call = null
     this._server = null
     this._assetsDrive = null
@@ -215,6 +218,8 @@ export class AliranPlayer extends Emitter {
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const server = this._server; this._server = null
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
+    const watcher = this._catalogWatcher; this._catalogWatcher = null
+    if (watcher) { try { await watcher.close() } catch {} }
     const closing = [this._feedDrive, this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
@@ -327,6 +332,46 @@ export class AliranPlayer extends Emitter {
     this._panelBee = new Hyperbee(this._store.get({ key: b4a.from(this._panelKey, 'hex') }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
     await this._panelBee.ready()
     this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
+    this._watchCatalog()
+  }
+
+  // Live catalog push: watch the replicated bee's catalog/ range and re-emit 'streams'
+  // whenever a record changes, so hosts update their UI without polling. Armed with
+  // the panel DB (also after a recovery purge re-opens it); emits only once a login
+  // has established what the user is entitled to see.
+  _watchCatalog () {
+    if (!this._panelBee) return
+    const watcher = this._panelBee.watch({ gt: 'catalog/', lt: 'catalog0' }) // '0' = next char after '/'
+    this._catalogWatcher = watcher
+    const run = async () => {
+      try {
+        for await (const _ of watcher) { // eslint-disable-line no-unused-vars
+          if (this._catalogWatcher !== watcher) return // superseded by purge/stop
+          await this._recover(() => this._pushCatalog())
+        }
+      } catch (err) {
+        // The bee closing underneath us (stop/purge) ends the watcher — not an error.
+        if (this._catalogWatcher === watcher && !this._purging) this.emit('error', err)
+      }
+    }
+    run()
+  }
+
+  // Rebuild the display list for the current session from the latest replicated
+  // catalog records and emit it. Display-only: the sealed stream keys in _entitled
+  // come from the user record at login and are not touched — a stream whose feed was
+  // re-keyed (new feedKey in the catalog) needs a fresh login to unseal anyway, and
+  // a newly granted stream only appears after the next login.
+  async _pushCatalog () {
+    if (!this._entitled.size || !this._panelBee) return
+    const port = await this._ensureServer()
+    const streams = []
+    for (const id of this._entitled.keys()) {
+      const node = await this._panelBee.get('catalog/' + id)
+      if (node && node.value) streams.push(this._display(port, id, node.value))
+    }
+    this._streams = streams
+    this.emit('streams', streams)
   }
 
   // Any open of on-disk replica state can fail with a corruption error if a previous
@@ -346,6 +391,8 @@ export class AliranPlayer extends Emitter {
 
   async _purgeAndRebuild () {
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
+    const watcher = this._catalogWatcher; this._catalogWatcher = null
+    if (watcher) { try { await watcher.close() } catch {} } // corrupt bees may refuse; bee close below retries
     const closing = [this._feedDrive, this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
@@ -368,17 +415,23 @@ export class AliranPlayer extends Emitter {
     this._entitled.clear()
     return streams.map((s) => {
       this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey })
-      return {
-        id: s.id,
-        title: s.title,
-        description: s.description,
-        category: s.category,
-        isLive: s.isLive,
-        poster: this._artUrl(port, s.poster),
-        backdrop: this._artUrl(port, s.backdrop),
-        logo: this._artUrl(port, s.logo)
-      }
+      return this._display(port, s.id, s)
     })
+  }
+
+  // Catalog record -> display shape handed to hosts (login result and live pushes):
+  // metadata only — never the feed/encryption keys — with art paths as localhost URLs.
+  _display (port, id, cat) {
+    return {
+      id,
+      title: cat.title,
+      description: cat.description,
+      category: cat.category,
+      isLive: cat.isLive,
+      poster: this._artUrl(port, cat.poster),
+      backdrop: this._artUrl(port, cat.backdrop),
+      logo: this._artUrl(port, cat.logo)
+    }
   }
 
   _artUrl (port, p) {

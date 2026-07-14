@@ -159,6 +159,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   traps, and Bare worklet/bundling lore — wired into the MkDocs nav and linked from
   the README and FAQ.
 
+### Catalog live-push (verified)
+- **Panel catalog edits reach connected clients live — no polling, no re-login**: the
+  player SDK (`sdk/player.js`) watches the replicated signed DB's `catalog/` range
+  (`bee.watch`) and re-emits `streams` with fresh display metadata (title, isLive,
+  art URLs) whenever a record changes; the watch re-arms automatically after a
+  store-recovery purge. The Bare worklet already relays `streams` over IPC
+  (`{type:'streams'}`, same shape) and the app's Home screen already re-renders on
+  that message, so updates reach the UI with no app change. Entitlements are
+  untouched: a newly granted stream still appears on the next login. Verified in
+  `npm run test:sdk`: a catalog record is edited while a headless client is
+  connected and the update must arrive as a `streams` re-emit without `login()`
+  ever being called again.
+
 ### Broadcaster control API (verified)
 - **Runtime start/stoppable channels (`broadcaster/src/channel.js`)**: the broadcaster
   is now multi-channel — a `ChannelManager` persists a channel registry
@@ -245,6 +258,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so hosted-runner DHT flakiness can never block a merge.
 
 ### To do (see ROADMAP.md and per-package READMEs)
-- Catalog `bee.watch()` live push to the UI.
 - OTT UI + client app: native Android build (phone + TV), Keystore session sealing.
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

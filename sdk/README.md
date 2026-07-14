@@ -34,9 +34,13 @@ inject `node:http`/`node:fs` or `bare-http1`/`bare-fs`):
 | `assetUrl(path)` | Catalog art path → localhost URL (after login). |
 | `stop()` | Full teardown. |
 
-Events: `ready` · `streams` (display list) · `status` (`{state: 'feed:open'|'feed:ready'}`)
-· `peers` (count, every 3 s while serving) · `recovered` (corrupt store purged + retried)
-· `error` · `fallback` (`{streamId, url, reason: 'timeout'|'stall'}`) ·
+Events: `ready` · `streams` (display list — emitted at login, and **re-emitted live**
+whenever the panel edits the catalog: the SDK watches the replicated `catalog/` range,
+so title/isLive/art changes push to the host without polling or re-login; a newly
+*granted* stream still requires the next login) · `status`
+(`{state: 'feed:open'|'feed:ready'}`) · `peers` (count, every 3 s while serving) ·
+`recovered` (corrupt store purged + retried) · `error` ·
+`fallback` (`{streamId, url, reason: 'timeout'|'stall'}`) ·
 `source-changed` (`{streamId, source, url}`). The emitter never throws on unhandled `error`.
 
 ## Hybrid CDN↔P2P

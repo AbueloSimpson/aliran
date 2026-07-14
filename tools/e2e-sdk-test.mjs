@@ -3,7 +3,10 @@
 // engine the Android worklet runs, minus the IPC shell. Validates:
 //   connect() -> 'ready'; login() -> display list (no keys leaked) + 'streams' event;
 //   wrong password rejected; resolve() -> localhost URL serving valid HLS (ffprobe);
-//   assetUrl() shape; 'status' feed:open/feed:ready breadcrumbs; 'peers' ticker; stop().
+//   assetUrl() shape; 'status' feed:open/feed:ready breadcrumbs; 'peers' ticker;
+//   catalog LIVE-PUSH (S1): the panel edits a catalog record while the client is
+//   connected -> the SDK re-emits 'streams' with the update, no re-login, no polling;
+//   stop().
 // Then the HYBRID CDN<->P2P policy (S10b): an entitled but UNSEEDED stream with a tiny
 // readyTimeoutMs must fall back to a local "CDN" HLS server ('fallback', source cdn);
 // once a broadcaster starts seeding the feed, the SDK must auto-return
@@ -98,10 +101,10 @@ try {
   log('panel: serving login RPC; pubkey', panelPubKey.slice(0, 16) + '…')
 
   // ===== SDK: the whole client side, headless =====
-  const events = { ready: 0, streams: 0, status: [], peers: [] }
+  const events = { ready: 0, streams: 0, lastStreams: null, status: [], peers: [] }
   const player = createPlayer({ panelPubKey, storeDir: dirs.cli })
   player.on('ready', () => { events.ready++ })
-  player.on('streams', () => { events.streams++ })
+  player.on('streams', (s) => { events.streams++; events.lastStreams = s })
   player.on('status', (s) => { events.status.push(s.state) })
   player.on('peers', (n) => { events.peers.push(n) })
   cleanups.push(() => player.stop())
@@ -164,6 +167,23 @@ try {
   // peers ticker fires while serving (the broadcaster is the 1 peer)
   await waitFor(async () => events.peers.some(n => n >= 1), 15000, "'peers' ticker")
   log('sdk: peers ticker OK (' + events.peers[events.peers.length - 1] + ' peer)')
+
+  // ===== Catalog live-push (S1) =====
+  // The panel edits a catalog record while the client is connected. The SDK watches
+  // the replicated catalog/ range and must re-emit 'streams' with the update — login()
+  // is never called again (the SDK cannot re-login by itself: it keeps no password),
+  // and nothing here polls.
+  const pushesBefore = events.streams
+  await db.put('catalog/news', { title: 'News 24 Prime', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: false, poster: 'assets/news/poster.png', status: 'live' })
+  await waitFor(async () => events.streams > pushesBefore && (events.lastStreams || []).some(s => s.id === 'news' && s.title === 'News 24 Prime'), 30000, "catalog live-push ('streams' re-emit)")
+  const pushedNews = events.lastStreams.find(s => s.id === 'news')
+  if (pushedNews.isLive !== false) throw new Error('live-push did not carry the isLive change')
+  if (pushedNews.encryptionKey || pushedNews.feedKey) throw new Error('live-push leaked stream keys')
+  if (pushedNews.poster !== au) throw new Error('live-push poster should stay a localhost URL: ' + pushedNews.poster)
+  if (!events.lastStreams.some(s => s.id === 'movies')) throw new Error('live-push dropped an entitled stream')
+  if (player.listStreams() !== events.lastStreams) throw new Error('listStreams() must return the pushed display list')
+  const livePushed = events.streams - pushesBefore
+  log('sdk: catalog live-push OK — record edit reached the connected client without re-login (' + livePushed + ' push)')
 
   await player.stop()
 
@@ -229,8 +249,8 @@ try {
   await player2.stop()
 
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
-    ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p'))
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + hybrid CDN fallback/auto-return verified)' : 'FAIL ❌')
+    livePushed >= 1 && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p'))
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + hybrid CDN fallback/auto-return verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
