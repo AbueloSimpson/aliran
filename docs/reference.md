@@ -18,9 +18,14 @@
 
 CLI and HTTP API share one implementation (`panel/src/ops.js`), so they cannot drift.
 
-## Admin HTTP API (`ADMIN_ENABLED=1`)
+## Admin HTTP API + dashboard (`ADMIN_ENABLED=1`)
 
 Served by the panel process (default `127.0.0.1:3210`; put TLS in front if exposed).
+Opening the address in a browser loads the **admin dashboard** (`panel/admin-ui/`,
+plain HTML/JS): sign in with an admin account to manage users (create, password,
+disable, grants, devices, limits) and streams (add — the encryption key is shown
+once —, metadata, poster/backdrop/logo upload with preview) plus a status summary.
+The dashboard consumes only the API below.
 Log in with an admin account (`add-admin`) to get a panel-signed session token, then
 send it as `Authorization: Bearer <token>`. Admin credentials are Argon2id verifiers
 in the panel-private `DATA_DIR/secrets/admins.json` — never in the replicated DB.
@@ -39,6 +44,7 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `GET/POST /api/streams` | List / add (`add-stream` fields; returns the encryption key once) |
 | `PATCH /api/streams/:id` | Update catalog metadata |
 | `POST /api/streams/:id/art/:kind` | Upload poster/backdrop/logo (raw image body) |
+| `GET /api/assets/:id/:file` | Art bytes from the assets drive (for previews) |
 
 ## Panel RPC (over Hyperswarm)
 

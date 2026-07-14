@@ -56,7 +56,7 @@ export async function startPanel () {
       sessionTtlMs: config.admin.sessionTtlHours * 3600000,
       lockout: config.lockout
     })
-    console.log(`Admin API listening on http://${admin.host}:${admin.port}`)
+    console.log(`Admin dashboard + API on http://${admin.host}:${admin.port}`)
   }
 
   const shutdown = async () => { if (admin) await admin.close(); await swarm.destroy(); await store.close(); process.exit(0) }

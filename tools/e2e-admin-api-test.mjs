@@ -182,6 +182,25 @@ try {
   assert.deepStrictEqual(bobAfter.devices, [], 'disable clears devices')
   log('F: revoke + disable land in the signed DB ✓')
 
+  // ===== Test G: dashboard static files + authed assets endpoint (S11b) =====
+  const home = await fetch(base + '/')
+  assert.strictEqual(home.status, 200, 'dashboard index served')
+  assert.match(home.headers.get('content-type'), /text\/html/)
+  assert.ok((await home.text()).includes('Aliran'), 'index.html is the dashboard')
+  for (const f of ['app.js', 'style.css']) {
+    const fr = await fetch(base + '/' + f)
+    assert.strictEqual(fr.status, 200, f + ' served')
+  }
+  const trav = await fetch(base + '/%2e%2e/package.json')
+  assert.strictEqual(trav.status, 404, 'path traversal must be 404')
+  const artNoAuth = await fetch(base + '/api/assets/movie-night/poster.png')
+  assert.strictEqual(artNoAuth.status, 401, 'assets endpoint requires auth')
+  const artRes = await fetch(base + '/api/assets/movie-night/poster.png', { headers: { authorization: 'Bearer ' + token } })
+  assert.strictEqual(artRes.status, 200, 'assets endpoint serves art')
+  assert.strictEqual(artRes.headers.get('content-type'), 'image/png')
+  assert.ok(b4a.equals(b4a.from(await artRes.arrayBuffer()), PNG_1PX), 'asset bytes match the upload')
+  log('G: dashboard static files, traversal guard, authed art endpoint ✓')
+
   log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD over HTTP lands in the signed DB; viewer login works end-to-end)')
   await cleanup(); process.exit(0)
 } catch (err) {

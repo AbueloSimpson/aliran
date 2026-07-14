@@ -159,6 +159,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   traps, and Bare worklet/bundling lore — wired into the MkDocs nav and linked from
   the README and FAQ.
 
+### Panel admin dashboard (verified)
+- **Web dashboard (`panel/admin-ui/`)** served by the admin server at `/` when
+  `ADMIN_ENABLED=1` — plain HTML/JS/CSS, no build step, consumes only the admin API.
+  Sign in → status chips (users/streams/live/panel key), user management (create,
+  rotate password, disable/enable, device list, device limit, logout-all,
+  grant/revoke chips) and stream management (add — with the one-time encryption-key
+  dialog —, metadata editor, poster/backdrop/logo upload with live preview). Art
+  previews are fetched with the session token via the new authed
+  `GET /api/assets/:id/:file` endpoint and rendered as blob URLs; static serving is
+  GET-only from a flat directory (traversal-guarded) with a strict CSP. Verified in
+  `test:admin-api` (static files, traversal 404, authed assets round-trip) and
+  end-to-end in a browser against a live panel: every dashboard action (user,
+  stream, grant, metadata, poster) was then received by a real viewer login over
+  Hyperswarm, unsealing the exact key the dashboard displayed.
+
 ### Panel admin API (verified)
 - **Shared ops layer (`panel/src/ops.js`)**: every admin operation (users, streams,
   grants, art, admin accounts) has one implementation used by BOTH the CLI and the

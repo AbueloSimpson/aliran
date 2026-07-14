@@ -14,12 +14,12 @@ node src/admin-cli.js create-user alice
 node src/index.js            # start the panel node
 ```
 
-To manage the panel over HTTP (and later the web dashboard), create an admin and
-enable the API — it runs inside the panel process (the store is single-writer):
+To manage the panel from a browser, create an admin and enable the admin API +
+dashboard — they run inside the panel process (the store is single-writer):
 
 ```bash
 node src/admin-cli.js add-admin root   # prompts for a password (min 8 chars)
-ADMIN_ENABLED=1 node src/index.js      # → http://127.0.0.1:3210 (see docs/reference.md)
+ADMIN_ENABLED=1 node src/index.js      # dashboard at http://127.0.0.1:3210
 ```
 
 ## Layout
@@ -31,8 +31,9 @@ src/store.js         signed Hyperbee (accounts+catalog) + assets drive + private
 src/rpc.js           login RPC: PoW + throttle + OPRF eval + sessions + register
 src/ops.js           shared admin operations (single implementation for CLI + API)
 src/admin-cli.js     admin commands (users, streams, devices, art, admins)
-src/admin-server.js  authed admin HTTP+JSON API (ADMIN_ENABLED=1)
+src/admin-server.js  authed admin HTTP+JSON API + static dashboard (ADMIN_ENABLED=1)
 src/index.js         panel node: DB + assets + DHT announce + replication + RPC + admin API
+admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
 ```
 
 ## Status
@@ -43,7 +44,7 @@ src/index.js         panel node: DB + assets + DHT announce + replication + RPC 
 - [x] Session token signing + `tokenVersion` revocation + device-limit enforcement
 - [x] Assets Hyperdrive + `upload-art`
 - [x] Broadcaster auto-registration (publisher-signed `register` RPC)
-- [x] Admin HTTP API over shared ops (`npm run test:admin-api`); web dashboard next
+- [x] Admin HTTP API over shared ops + web dashboard (`npm run test:admin-api`)
 - [ ] HA / threshold OPRF across replicas
 - [ ] Optional geo (GeoIP) + DRM entitlement endpoints
 

@@ -28,11 +28,20 @@
 //   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?}
 //   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,...}
 //   POST   /api/streams/:id/art/:kind        raw image body (content-type → extension)
+//   GET    /api/assets/:id/:file             art bytes from the assets drive (authed)
+//
+// Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
+// directory, GET only — see serveStatic for the traversal guard).
 
 import http from 'http'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
 import { makeThrottle } from './rpc.js'
 import * as ops from './ops.js'
+
+const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'admin-ui')
 
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
 const ART_BODY_LIMIT = 10 * 1024 * 1024 // 10 MiB
@@ -68,7 +77,10 @@ export function startAdminServer (ctx, opts = {}) {
   async function handle (req, res) {
     const url = new URL(req.url, 'http://x')
     const seg = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
-    if (seg[0] !== 'api') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
+    if (seg[0] !== 'api') {
+      if (req.method !== 'GET') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
+      return serveStatic(res, url.pathname)
+    }
     const [, r1, r2, r3, r4] = seg
 
     // --- login (the only unauthenticated route) ---
@@ -94,6 +106,15 @@ export function startAdminServer (ctx, opts = {}) {
 
     if (r1 === 'status' && req.method === 'GET' && seg.length === 2) {
       return sendJson(res, 200, await ops.statusSummary(ctx))
+    }
+
+    // Art bytes for the dashboard previews. Authed like everything else — the
+    // dashboard fetches with the token and renders blob: URLs.
+    if (r1 === 'assets' && req.method === 'GET' && seg.length === 4) {
+      if (!SAFE_FILE_RE.test(r2) || !SAFE_FILE_RE.test(r3)) return sendJson(res, 404, { error: 'not found' })
+      const buf = await ctx.assets.get(`/${r2}/${r3}`)
+      if (!buf) return sendJson(res, 404, { error: 'not found' })
+      return sendRaw(res, 200, buf, EXT_CONTENT[path.extname(r3).toLowerCase()] || 'application/octet-stream')
     }
 
     if (r1 === 'users') {
@@ -155,6 +176,49 @@ export function startAdminServer (ctx, opts = {}) {
       })
     })
   })
+}
+
+// No leading dot (blocks '..' and dotfiles), no separators — traversal-proof.
+const SAFE_FILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+const EXT_CONTENT = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.ico': 'image/x-icon'
+}
+
+// The dashboard is a flat directory of small files — sync reads keep this simple,
+// and the traffic is one admin.
+function serveStatic (res, pathname) {
+  let name
+  try { name = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1)) } catch { name = null }
+  const type = name && SAFE_FILE_RE.test(name) && EXT_CONTENT[path.extname(name).toLowerCase()]
+  if (!type) return sendJson(res, 404, { error: 'not found' })
+  let data
+  try { data = fs.readFileSync(path.join(UI_DIR, name)) } catch { return sendJson(res, 404, { error: 'not found' }) }
+  sendRaw(res, 200, data, type)
+}
+
+// Never throws (same rationale as sendJson).
+function sendRaw (res, status, buf, type) {
+  if (res.destroyed || res.writableEnded || res.headersSent) return
+  try {
+    res.writeHead(status, {
+      'content-type': type,
+      'content-length': buf.length,
+      'cache-control': 'no-cache',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'self'; img-src 'self' blob: data:"
+    })
+    res.end(buf)
+  } catch {}
 }
 
 // Never throws — the socket may already be gone (e.g. destroyed by the body limit),
