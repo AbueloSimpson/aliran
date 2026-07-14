@@ -67,7 +67,8 @@ node src/index.js                     # ingest -> encrypted Hyperdrive -> swarm
 
 ## Documentation
 
-Start at [`docs/README.md`](docs/README.md). Highlights:
+Browse online at **<https://abuelosimpson.github.io/aliran/>**, or start at
+[`docs/README.md`](docs/README.md). Highlights:
 [Getting started](docs/getting-started.md) ·
 [Architecture](docs/architecture.md) ·
 [Security model](docs/security-model.md) ·

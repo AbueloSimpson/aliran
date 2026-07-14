@@ -1,7 +1,8 @@
 # MkDocs Material configuration for the Aliran documentation site.
-# Build:  pip install mkdocs-material mkdocs-mermaid2-plugin && mkdocs serve
-# Publish: mkdocs gh-deploy   (GitHub Pages)
+# Build:   pip install mkdocs-material mkdocs-mermaid2-plugin && mkdocs serve
+# Publish: automatic — .github/workflows/docs.yml deploys to GitHub Pages on push to main
 site_name: Aliran
+site_url: https://abuelosimpson.github.io/aliran/
 site_description: Self-hostable peer-to-peer OTT streaming on the Holepunch/Pear stack
 repo_url: https://github.com/AbueloSimpson/aliran
 docs_dir: docs

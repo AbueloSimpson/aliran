@@ -49,10 +49,10 @@ set your panel public key in `client/config/service.json`, and build the APK.
 Early / in development. **Working and verified on desktop:** the P2P streaming pipeline
 (`npm run test:stream`) and brute-force-resistant OPRF login (`npm run test:login`),
 plus the crypto core unit tests (`npm run test:core`). **Not built yet:** the Android app
-and the OTT UI. See the [Roadmap](../ROADMAP.md) for exactly what's done vs. planned.
+and the OTT UI. See the [Roadmap](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md) for exactly what's done vs. planned.
 
 ## Next steps
 
 - Understand the design → [Architecture](architecture.md) and [Security model](security-model.md)
 - Run a real deployment → [Operator Guide](operator-guide.md) + [Configuration](configuration.md)
-- Contribute → [CONTRIBUTING.md](../CONTRIBUTING.md), pick a Roadmap item
+- Contribute → [CONTRIBUTING.md](https://github.com/AbueloSimpson/aliran/blob/main/CONTRIBUTING.md), pick a Roadmap item

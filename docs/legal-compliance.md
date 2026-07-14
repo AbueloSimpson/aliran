@@ -28,5 +28,5 @@ compliance on its own.
 
 ## No warranty
 
-The software is provided "as is" under the [MIT License](../LICENSE), without warranty.
+The software is provided "as is" under the [MIT License](https://github.com/AbueloSimpson/aliran/blob/main/LICENSE), without warranty.
 Operators assume all responsibility for legal compliance in their jurisdictions.
