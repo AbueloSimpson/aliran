@@ -16,6 +16,10 @@ export interface Stream {
   poster?: string
   backdrop?: string
   logo?: string
+  /** Panel curation hint: rail/list sort key (lower first; null/absent sorts last). */
+  order?: number | null
+  /** Panel curation hint: featured stream (hero / menu wallpaper pick). */
+  featured?: boolean
 }
 
 // JSON-safe hybrid CDN<->P2P config, passed through to the engine (sdk/player.js).

@@ -91,7 +91,7 @@ try {
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
   await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live' })
-  await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live' })
+  await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live', order: 1, featured: true })
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
@@ -134,6 +134,10 @@ try {
   const disp = streams.find(x => x.id === 'news')
   if (disp.encryptionKey || disp.feedKey) throw new Error('display list leaked stream keys')
   if (disp.title !== 'News 24' || disp.isLive !== true) throw new Error('display metadata wrong')
+  // Curation passthrough (S16c): order/featured reach the display list untouched.
+  const dispMovies = streams.find(x => x.id === 'movies')
+  if (dispMovies.order !== 1 || dispMovies.featured !== true) throw new Error('curation fields missing from login display list: ' + JSON.stringify({ order: dispMovies.order, featured: dispMovies.featured }))
+  if (disp.order != null || disp.featured) throw new Error('uncurated stream must not grow curation values')
 
   // wrong password must be rejected (and must not clobber the entitled session)
   let rejected = false
@@ -174,10 +178,11 @@ try {
   // is never called again (the SDK cannot re-login by itself: it keeps no password),
   // and nothing here polls.
   const pushesBefore = events.streams
-  await db.put('catalog/news', { title: 'News 24 Prime', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: false, poster: 'assets/news/poster.png', status: 'live' })
+  await db.put('catalog/news', { title: 'News 24 Prime', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: false, poster: 'assets/news/poster.png', status: 'live', order: 5, featured: true })
   await waitFor(async () => events.streams > pushesBefore && (events.lastStreams || []).some(s => s.id === 'news' && s.title === 'News 24 Prime'), 30000, "catalog live-push ('streams' re-emit)")
   const pushedNews = events.lastStreams.find(s => s.id === 'news')
   if (pushedNews.isLive !== false) throw new Error('live-push did not carry the isLive change')
+  if (pushedNews.order !== 5 || pushedNews.featured !== true) throw new Error('live-push did not carry the curation change: ' + JSON.stringify({ order: pushedNews.order, featured: pushedNews.featured }))
   if (pushedNews.encryptionKey || pushedNews.feedKey) throw new Error('live-push leaked stream keys')
   if (pushedNews.poster !== au) throw new Error('live-push poster should stay a localhost URL: ' + pushedNews.poster)
   if (!events.lastStreams.some(s => s.id === 'movies')) throw new Error('live-push dropped an entitled stream')

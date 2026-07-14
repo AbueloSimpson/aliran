@@ -57,6 +57,8 @@ export async function login (call, db, username, password, { deviceId, deviceLab
         poster: cat.value.poster,
         backdrop: cat.value.backdrop,
         logo: cat.value.logo,
+        order: cat.value.order,
+        featured: cat.value.featured,
         feedKey: cat.value.feedKey,
         encryptionKey: b4a.toString(enc, 'hex')
       })

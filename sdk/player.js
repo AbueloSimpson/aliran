@@ -424,6 +424,7 @@ export class AliranPlayer extends Emitter {
 
   // Catalog record -> display shape handed to hosts (login result and live pushes):
   // metadata only — never the feed/encryption keys — with art paths as localhost URLs.
+  // order/featured are the panel's curation hints (S16c): rail sort / hero-wallpaper pick.
   _display (port, id, cat) {
     return {
       id,
@@ -431,6 +432,8 @@ export class AliranPlayer extends Emitter {
       description: cat.description,
       category: cat.category,
       isLive: cat.isLive,
+      order: cat.order,
+      featured: cat.featured,
       poster: this._artUrl(port, cat.poster),
       backdrop: this._artUrl(port, cat.backdrop),
       logo: this._artUrl(port, cat.logo)

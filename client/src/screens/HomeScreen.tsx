@@ -7,6 +7,7 @@ import { View, Text, FlatList, Pressable, Image, StyleSheet, Platform, TVFocusGu
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
+import { groupByCategory, pickHero } from '../catalog'
 import { theme } from '../theme'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>
@@ -23,8 +24,9 @@ export function HomeScreen ({ navigation }: Props) {
     return backend.onMessage((m) => { if (m.type === 'streams') setStreams(m.streams) })
   }, [])
 
+  // Panel curation (S16c): rails sort by (order ?? Infinity, title); hero prefers featured.
   const byCategory = useMemo(() => groupByCategory(streams), [streams])
-  const hero = streams.find(s => s.isLive) ?? streams[0]
+  const hero = useMemo(() => pickHero(streams), [streams])
 
   return (
     <View style={styles.container}>
@@ -86,15 +88,6 @@ function Card ({ stream, onPress }: { stream: Stream; onPress: () => void }) {
       <Text style={[styles.cardTitle, focused && styles.cardTitleFocused]} numberOfLines={1}>{stream.title}</Text>
     </Pressable>
   )
-}
-
-function groupByCategory (streams: Stream[]): Record<string, Stream[]> {
-  const out: Record<string, Stream[]> = {}
-  for (const s of streams) {
-    const cats = s.category?.length ? s.category : ['All']
-    for (const c of cats) (out[c] ??= []).push(s)
-  }
-  return out
 }
 
 const styles = StyleSheet.create({

@@ -408,9 +408,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   displayed once, showed up in the devices dialog and the activity feed, and was
   then revoked from the UI.
 
+### SDK/app curation passthrough (verified)
+- The SDK display list (login result AND catalog live-pushes) now carries the panel's
+  curation hints `order`/`featured` (`sdk/login.js`, `sdk/player.js` `_display`) —
+  still metadata-only, stream keys never leave the engine — and the React Native
+  `Stream` type declares them.
+- The app consumes them via a new shared module (`client/src/catalog.ts`): rails and
+  channel lists sort by `(order ?? Infinity, title)`, the hero/wallpaper pick prefers
+  the first featured live stream, and channel numbers are derived (1..N over the
+  curated sort — never stored).
+- `test:sdk` asserts the fields flow through login and live-push, and that uncurated
+  records stay bare.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.
-- SDK/app curation passthrough (order/featured → the client Home screen).
 - Hybrid artwork (https URLs alongside the P2P assets drive).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
