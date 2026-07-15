@@ -146,8 +146,24 @@ Why the shape:
     now reuses the cached feed, so flip-back is ~0.3 s. Covered by the `test:sdk`
     zap `news → movies → news` regression.
 
-To make the *first* zap to each channel fast too, **pre-warm**: join all entitled feed
-topics at login so discovery + live-edge replication overlaps with what the viewer is
-already watching, instead of blocking the switch. (Trade-off: every warmed channel
-replicates in the background, so bandwidth grows with channels kept warm — fine for a
-bounded TV lineup, worth an LRU cap for large catalogs.)
+### Pre-warm: make the *first* zap warm too
+
+The SDK can **pre-warm** entitled feeds right after login — open each channel's replica
+and join its DHT topic in the background, so the cold discovery + handshake is paid
+upfront (off the play path). Then even the *first* play or zap to a channel is a cache
+hit, not a cold open. On-device (release APK, phone), with pre-warm on, the first play
+of channel 1 and the first zap to channel 2 both logged `feed:ready` with **no**
+`feed:open` — i.e. instant — where before they were cold `feed:open → feed:ready`.
+
+Enable it with the `prewarm` option (`AliranPlayer` / the RN binding's `start()`):
+
+- `false` (SDK default) — off.
+- `true` — warm **all** entitled feeds.
+- a **positive integer** — cap to that many, warming **lowest curated order first** (the
+  channels a viewer is likeliest to reach). The app ships a bounded cap so a large lineup
+  doesn't join hundreds of topics at once.
+
+It's **bandwidth-cheap**: replication is sparse, so pre-warm warms the *connection*, not
+a full download — segments only transfer when a feed is actually served. Pre-warmed feeds
+share the same single-flight cache as played feeds, so a play that races the warm reuses
+the one open (never a second Hyperdrive on the same namespace).

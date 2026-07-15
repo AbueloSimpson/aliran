@@ -228,14 +228,16 @@ try {
   const cdnPort = cdn.address().port
   const cdnUrl = `http://127.0.0.1:${cdnPort}/index.m3u8`
 
-  const ev2 = { fallback: [], sourceChanged: [] }
+  const ev2 = { fallback: [], sourceChanged: [], status: [] }
   const player2 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli2,
+    prewarm: true, // open entitled feeds at login so the FIRST zap is warm
     hybrid: { mode: 'hybrid', cdnUrl: () => cdnUrl, readyTimeoutMs: 2000, probeIntervalMs: 700, rebufferMsToFallback: 5000 }
   })
   player2.on('fallback', (e) => ev2.fallback.push(e))
   player2.on('source-changed', (e) => ev2.sourceChanged.push(e))
+  player2.on('status', (s) => ev2.status.push(s.state))
   cleanups.push(() => player2.stop())
 
   await player2.connect()
@@ -251,6 +253,13 @@ try {
     }
     if (!streams2) await sleep(1500)
   }
+
+  // ===== Prewarm: login opened the entitled feeds ahead of any play =====
+  // With prewarm:true, both entitled feeds ('news' + 'movies') are opened+joined in the
+  // background at login, so the first zap to either is a cache hit — no cold feed:open.
+  await player2.prewarm() // idempotent; deterministically wait out the background warm
+  if (player2._feeds.size !== 2) throw new Error('prewarm should open both entitled feeds; got ' + player2._feeds.size)
+  log('prewarm: opened ' + player2._feeds.size + ' entitled feeds at login (warm first-zap)')
 
   // 'movies' is entitled but nobody seeds it -> tiny readyTimeout forces CDN fallback.
   const r2 = await player2.resolve('movies')
@@ -274,10 +283,16 @@ try {
   if (player2.source().source !== 'p2p' || player2.source().url !== r2.localUrl) throw new Error('source() should report p2p after recovery')
   const viaP2P = await waitFor(async () => { const r = await httpGet(r2.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') ? r : null }, 20000, 'P2P playlist after auto-return')
   log('hybrid: auto-returned to P2P; local playlist serves (' + viaP2P.body.length + ' bytes)')
+  // Prewarm proof: because both feeds were opened at login, no feed was ever COLD-opened
+  // on the play path — serveFeed only ever emitted feed:ready, never feed:open.
+  if (ev2.status.includes('feed:open')) throw new Error('prewarm: no feed should be cold-opened after prewarm, but got feed:open')
+  if (!ev2.status.includes('feed:ready')) throw new Error('prewarm: expected feed:ready on serve')
+  log('prewarm: served feeds were all warm (feed:ready, no feed:open)')
   await player2.stop()
 
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
-    livePushed >= 1 && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p'))
+    livePushed >= 1 && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
+    !ev2.status.includes('feed:open'))
   log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + hybrid CDN fallback/auto-return verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {

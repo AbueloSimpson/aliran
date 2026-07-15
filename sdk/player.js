@@ -80,11 +80,24 @@ function normalizeHybrid (h) {
   return cfg
 }
 
+// prewarm: after login, open+join entitled feeds in the background so the FIRST zap to
+// a channel is warm (the cold DHT discovery + handshake are paid upfront, off the play
+// path). false (default) = off; true = all entitled feeds; a positive integer = cap to
+// that many (lowest curated order first — the channels a viewer is likeliest to reach).
+function normalizePrewarm (v) {
+  if (v === true) return Infinity
+  if (v === false || v == null) return 0
+  const n = Number(v)
+  if (!Number.isInteger(n) || n < 0) throw new Error('prewarm must be a boolean or a non-negative integer')
+  return n
+}
+
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._hybrid = normalizeHybrid(hybrid)
+    this._prewarmN = normalizePrewarm(prewarm)
     this._active = null // hybrid state for the current play: { streamId, localUrl, cdnUrl, source, lastSig, lastAdvance }
     this._watchTimer = null // P2P stall watchdog (while source === 'p2p')
     this._probeTimer = null // P2P recovery probe (while source === 'cdn')
@@ -101,7 +114,7 @@ export class AliranPlayer extends Emitter {
     this._assetsDrive = null
     this._feedDrive = null // the CURRENTLY served feed (one of _feeds' drives)
     this._feedDiscovery = null
-    this._feeds = new Map() // feedKey:encKey -> { drive, discovery } — opened feeds, reused across resolve()s
+    this._feeds = new Map() // feedKey:encKey -> Promise<{ drive, discovery }> — opened feeds (single-flight), reused across resolve()s
     this._statusTimer = null
     this._assetsOpen = null
     this._purging = null
@@ -128,7 +141,32 @@ export class AliranPlayer extends Emitter {
     const streams = await this._recover(() => this._doLogin(username, password))
     this._streams = streams
     this.emit('streams', streams)
+    if (this._prewarmN) this.prewarm().catch(() => {}) // background warm the lineup — never blocks login
     return streams
+  }
+
+  // Open + join entitled feeds ahead of play so the FIRST zap to a channel is warm: the
+  // cold DHT lookup + peer handshake happen now, in the background, instead of on the
+  // play path. Best-effort and idempotent (reuses the feed cache) — safe to call again.
+  // Sparse replication means this warms the CONNECTION, not a full download: segments
+  // still only transfer when a feed is actually served, so the bandwidth cost is small.
+  async prewarm () {
+    const n = this._prewarmN
+    if (!n || this._hybrid.mode === 'cdn-only' || !this._entitled.size) return
+    // Warm lowest curated order first (viewers start at ch1 and zap up); fall back to
+    // login order for uncurated streams.
+    const rank = new Map(this._streams.map((s, i) => [s.id, (s.order ?? 1e9) * 1e6 + i]))
+    const ids = [...this._entitled.keys()]
+      .sort((a, b) => (rank.get(a) ?? 1e15) - (rank.get(b) ?? 1e15))
+      .slice(0, n === Infinity ? undefined : n)
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const k = this._entitled.get(id)
+        if (!k || !k.encryptionKey) return
+        const feedKey = await this._currentFeedKey(id, k.feedKey)
+        if (feedKey) await this._openFeed(feedKey, k.encryptionKey)
+      } catch { /* prewarm is best-effort; a real play will retry */ }
+    }))
   }
 
   // Last display list from a successful login.
@@ -146,11 +184,7 @@ export class AliranPlayer extends Emitter {
     // feedKey (falling back to the login-time value) so viewers survive broadcaster
     // restarts without re-login. A re-KEYED stream (new encryption key) still needs
     // a fresh login — that one is a deliberate access-control boundary.
-    let feedKey = keys.feedKey
-    try {
-      const node = this._panelBee && await this._panelBee.get('catalog/' + streamId)
-      if (node && node.value && node.value.feedKey) feedKey = node.value.feedKey
-    } catch { /* replicated catalog momentarily unreadable — use the cached key */ }
+    const feedKey = await this._currentFeedKey(streamId, keys.feedKey)
     // A catalog entry can exist before any broadcaster feeds it (feedKey null) —
     // surface that honestly instead of leaking a key-length error from hypercore.
     if (this._hybrid.mode !== 'cdn-only' && (!feedKey || !keys.encryptionKey)) {
@@ -208,20 +242,10 @@ export class AliranPlayer extends Emitter {
   // background (their swarm topic stays joined) until stop()/a recovery purge closes
   // them, so recently-watched channels stay ready to zap back to.
   async serveFeed (feedKeyHex, encKeyHex) {
-    const cacheKey = feedKeyHex + ':' + encKeyHex
-    let feed = this._feeds.get(cacheKey)
-    if (!feed) {
-      this.emit('status', { state: 'feed:open' })
-      const drive = await this._recover(async () => {
-        await this._ensureStore()
-        const d = new Hyperdrive(this._store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
-        await d.ready()
-        return d
-      })
-      const discovery = this._swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
-      feed = { drive, discovery }
-      this._feeds.set(cacheKey, feed)
-    }
+    // feed:open marks a COLD open (nothing cached yet). A prewarmed / recently-served
+    // feed skips it — the host player sees only feed:ready, i.e. an instant switch.
+    if (!this._feeds.has(feedKeyHex + ':' + encKeyHex)) this.emit('status', { state: 'feed:open' })
+    const feed = await this._openFeed(feedKeyHex, encKeyHex)
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
     this.emit('status', { state: 'feed:ready' })
@@ -233,6 +257,42 @@ export class AliranPlayer extends Emitter {
       }, 3000)
     }
     return port
+  }
+
+  // Open (or return the cached) feed drive for a key pair: replicate it and join its
+  // swarm topic. No side effects on the ACTIVE feed or status — serveFeed() makes it
+  // current, prewarm() just warms it. SINGLE-FLIGHT: the cache stores the open PROMISE,
+  // so a prewarm and a concurrent zap for the same feed share ONE Hyperdrive (opening a
+  // second over the same store namespace would deadlock — the very bug this cache fixes).
+  // Cached in this._feeds and closed by stop()/purge.
+  _openFeed (feedKeyHex, encKeyHex) {
+    const cacheKey = feedKeyHex + ':' + encKeyHex
+    let feed = this._feeds.get(cacheKey)
+    if (!feed) {
+      feed = (async () => {
+        const drive = await this._recover(async () => {
+          await this._ensureStore()
+          const d = new Hyperdrive(this._store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
+          await d.ready()
+          return d
+        })
+        const discovery = this._swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
+        return { drive, discovery }
+      })()
+      this._feeds.set(cacheKey, feed)
+      feed.catch(() => { if (this._feeds.get(cacheKey) === feed) this._feeds.delete(cacheKey) }) // drop a failed open so a retry re-opens
+    }
+    return feed
+  }
+
+  // Current feedKey for a stream: follow the replicated catalog (a broadcaster restart
+  // publishes a fresh key in RAM-buffer mode), falling back to the login-time value.
+  async _currentFeedKey (streamId, fallback) {
+    try {
+      const node = this._panelBee && await this._panelBee.get('catalog/' + streamId)
+      if (node && node.value && node.value.feedKey) return node.value.feedKey
+    } catch { /* replicated catalog momentarily unreadable — use the cached key */ }
+    return fallback
   }
 
   // Catalog art fields hold drive paths like 'assets/<id>/poster.png'; turn them into
@@ -252,15 +312,24 @@ export class AliranPlayer extends Emitter {
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} }
-    const feeds = [...this._feeds.values()].map((f) => f.drive) // every opened feed, not just the active one
-    this._feeds.clear()
-    const closing = [...feeds, this._assetsDrive, this._panelBee, this._store]
+    this._closeFeeds() // fire-and-forget close of every opened feed (see _closeFeeds)
+    const closing = [this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._assetsOpen = null
     this._call = null
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
     for (const c of closing) { if (c) { try { await c.close() } catch {} } }
+  }
+
+  // Close every opened feed and drop them from the cache. Fire-and-forget: the cache
+  // holds OPEN PROMISES that may still be in flight (and whose _recover() could be
+  // awaiting the very purge that calls this) — awaiting them here risks a deadlock, so
+  // schedule each close when its open settles instead.
+  _closeFeeds () {
+    const feedProms = [...this._feeds.values()]
+    this._feeds.clear()
+    for (const p of feedProms) Promise.resolve(p).then((f) => f && f.drive && f.drive.close()).catch(() => {})
   }
 
   // --- hybrid internals ---
@@ -430,9 +499,8 @@ export class AliranPlayer extends Emitter {
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} } // corrupt bees may refuse; bee close below retries
-    const feeds = [...this._feeds.values()].map((f) => f.drive) // drop every cached feed on the dead store
-    this._feeds.clear()
-    const closing = [...feeds, this._assetsDrive, this._panelBee, this._store]
+    this._closeFeeds() // drop every cached feed on the dead store (fire-and-forget; see _closeFeeds)
+    const closing = [this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._assetsOpen = null

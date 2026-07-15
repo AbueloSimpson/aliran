@@ -513,6 +513,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   future re-zap hang fails fast). KB: zapping sections added to `docs/kb/feed-buffer.md`
   and `docs/kb/playback.md`.
 
+### Feat: pre-warm entitled feeds at login — warm first zap (verified on-device)
+- New `prewarm` option (`AliranPlayer` + the `@aliran/react-native` binding `start()`):
+  after login, open+join entitled feeds' DHT topics in the background so the cold
+  discovery is paid upfront and even the FIRST play/zap to a channel is a cache hit, not
+  a cold open. `false` (SDK default) | `true` (all) | integer (cap, lowest curated order
+  first). The app enables it (bounded). Bandwidth-cheap: sparse replication warms the
+  connection, not a full download.
+- `serveFeed` split into `serveFeed` + `_openFeed`; the feed cache is now **single-flight**
+  (stores the open PROMISE), so a prewarm and a concurrent zap of the same feed share one
+  Hyperdrive — never a second open on the same namespace (the deadlock this guards). Feed
+  teardown (`stop`/purge) closes via a shared `_closeFeeds` (fire-and-forget, deadlock-safe
+  against an in-flight open whose recovery triggered the purge). Catalog-follow extracted
+  to `_currentFeedKey`, shared by `resolve()` and `prewarm()`.
+- `test:sdk` asserts prewarm opens all entitled feeds at login and that served feeds are
+  then all warm (only `feed:ready`, never `feed:open`). Verified on the emulator (release
+  APK): first play of ch1 and first zap to ch2 both `feed:ready` with no `feed:open`.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.

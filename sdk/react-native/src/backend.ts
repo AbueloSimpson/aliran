@@ -49,6 +49,13 @@ export type BackendMessage =
 export interface StartOptions {
   panelPubKey: string
   hybrid?: HybridConfig
+  /**
+   * Warm entitled feeds after login so the FIRST zap to a channel is fast (the cold DHT
+   * lookup happens in the background). false (default) = off; true = all; a positive
+   * integer caps how many (lowest curated order first). Bandwidth-cheap: sparse, so it
+   * warms the connection, not a full download.
+   */
+  prewarm?: boolean | number
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
 }
@@ -91,7 +98,7 @@ export class AliranBackend {
     this.worklet.start('/app.bundle', bytes as any)
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
-    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid })
+    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm })
     const queued = this.pending; this.pending = []
     for (const m of queued) this.send(m)
   }

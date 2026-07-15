@@ -99,9 +99,9 @@ function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
 
 let player = null
 
-function ensurePlayer (hybrid) {
+function ensurePlayer (hybrid, prewarm) {
   if (player) return player
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm })
   player.on('ready', () => send({ type: 'ready' }))
   player.on('streams', (streams) => send({ type: 'streams', streams }))
   player.on('status', (status) => send({ type: 'status', ...status }))
@@ -144,7 +144,7 @@ IPC.on('data', (data) => {
     } else if (msg.streamId) {
       ensurePlayer().resolve(msg.streamId).then(({ port, url, source }) => send({ type: 'port', port, url, source })).catch(fail)
     } else if (msg.panelPubKey) {
-      ensurePlayer(msg.hybrid).connect(msg.panelPubKey).catch(fail)
+      ensurePlayer(msg.hybrid, msg.prewarm).connect(msg.panelPubKey).catch(fail)
     }
   }
 })

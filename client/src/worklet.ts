@@ -8,11 +8,18 @@ import bundleBase64 from '../backend/app.bundle.js'
 
 export type { Stream, BackendMessage } from '@aliran/react-native'
 
+// How many channels to pre-warm at login (lowest curated order first). Covers the
+// typical zapping range; bounded so a big catalog doesn't open too many topics at once.
+const PREWARM_CHANNELS = 12
+
 class Backend extends AliranBackend {
   boot (panelPubKey: string, hybrid?: HybridConfig) {
     // debug: every backend message hits `adb logcat -s ReactNativeJS` — this
     // instrumentation has caught every on-device failure so far; keep it.
-    this.start(bundleBase64, { panelPubKey, hybrid, debug: true })
+    // prewarm: open the first N channels' feeds right after login so the FIRST zap to a
+    // channel is warm (not just re-zaps). Capped so a large lineup doesn't join hundreds
+    // of DHT topics at once; a bounded TV lineup warms fully.
+    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, debug: true })
   }
 }
 

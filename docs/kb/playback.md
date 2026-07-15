@@ -68,9 +68,10 @@ In likelihood order:
   Hyperdrive on the same store namespace and deadlocked. `sdk/player.js serveFeed` now
   reuses the cached feed per `feedKey`; update to a build that includes it (the
   `test:sdk` zap `news → movies → news` regression guards it).
-- **Want the first zap fast too?** Pre-join all entitled feed topics at login so
-  discovery overlaps with viewing. Rationale + measured numbers:
-  [P2P feed buffer & tuning](feed-buffer.md#channel-zapping-switching-in-a-warm-session).
+- **First zap also warm (pre-warm):** the SDK opens entitled feeds' topics at login (the
+  `prewarm` option; the app enables it), so even the first play/zap to a channel is a
+  cache hit — verified on-device as `feed:ready` with no `feed:open`. See
+  [P2P feed buffer & tuning](feed-buffer.md#pre-warm-make-the-first-zap-warm-too).
 
 ## App dies the moment the player seeks / switches source / closes (worklet SIGABRT)
 
