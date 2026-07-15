@@ -139,6 +139,11 @@ export class AliranPlayer extends Emitter {
   async resolve (streamId) {
     const keys = this._entitled.get(streamId)
     if (!keys) throw new Error('not entitled to ' + streamId)
+    // A catalog entry can exist before any broadcaster feeds it (feedKey null) —
+    // surface that honestly instead of leaking a key-length error from hypercore.
+    if (this._hybrid.mode !== 'cdn-only' && (!keys.feedKey || !keys.encryptionKey)) {
+      throw new Error('channel is not broadcasting right now')
+    }
     const cfg = this._hybrid
     this._clearHybridTimers()
 

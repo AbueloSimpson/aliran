@@ -33,6 +33,8 @@ export interface HybridConfig {
   probeIntervalMs?: number
 }
 
+export interface SavedCredentials { username: string; password: string }
+
 export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[] }
@@ -42,6 +44,7 @@ export type BackendMessage =
   | { type: 'error'; message: string }
   | { type: 'fallback'; streamId: string; url: string; reason: 'timeout' | 'stall' }
   | { type: 'source-changed'; streamId: string; source: 'p2p' | 'cdn'; url: string }
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[] }
 
 export interface StartOptions {
   panelPubKey: string
@@ -61,12 +64,21 @@ export class AliranBackend {
   port: number | null = null
   url: string | null = null
   source: 'p2p' | 'cdn' | null = null
+  // Device-local prefs mirrored from the worklet (see client/backend/backend.mjs):
+  // saved "remember me" credentials + favorite stream ids. `prefsLoaded` flips on the
+  // first {type:'prefs'} reply — request with requestPrefs().
+  creds: SavedCredentials | null = null
+  favorites: string[] = []
+  prefsLoaded = false
 
   private worklet = new Worklet()
   private ipc: any
   private buf = ''
   private debug = false
   private listeners = new Set<(m: BackendMessage) => void>()
+  // Messages sent before start() wires the IPC stream (e.g. a splash screen asking
+  // for prefs while the host is still booting the worklet) queue up and flush then.
+  private pending: unknown[] = []
 
   /**
    * Boot the worklet with a bare-pack bundle (base64 string or raw bytes) and connect
@@ -80,6 +92,8 @@ export class AliranBackend {
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
     this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid })
+    const queued = this.pending; this.pending = []
+    for (const m of queued) this.send(m)
   }
 
   onMessage (fn: (m: BackendMessage) => void) {
@@ -92,7 +106,26 @@ export class AliranBackend {
   /** Dev direct-play by raw keys (no login). */
   playRaw (feedKey: string, encryptionKey: string) { this.send({ feedKey, encryptionKey }) }
 
-  private send (obj: unknown) { this.ipc.write(b4a.from(JSON.stringify(obj) + '\n')) }
+  /** Ask the worklet for saved credentials + favorites; answers as {type:'prefs'}. */
+  requestPrefs () { this.send({ type: 'prefs-get' }) }
+  /** Persist "remember me" credentials (device-local; sign-out clears them). */
+  saveCredentials (username: string, password: string) { this.send({ type: 'creds-save', username, password }) }
+  clearCredentials () { this.creds = null; this.send({ type: 'creds-clear' }) }
+  /** Toggle a favorite; the worklet persists and answers with the new prefs. */
+  toggleFavorite (streamId: string) {
+    const next = this.favorites.includes(streamId)
+      ? this.favorites.filter(id => id !== streamId)
+      : [...this.favorites, streamId]
+    this.favorites = next // optimistic; the 'prefs' reply confirms
+    this.send({ type: 'favorites-set', favorites: next })
+  }
+
+  isFavorite (streamId: string) { return this.favorites.includes(streamId) }
+
+  private send (obj: unknown) {
+    if (!this.ipc) { this.pending.push(obj); return }
+    this.ipc.write(b4a.from(JSON.stringify(obj) + '\n'))
+  }
 
   private onData (chunk: string) {
     this.buf += chunk
@@ -102,7 +135,9 @@ export class AliranBackend {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line) as BackendMessage
-        if (this.debug) console.log('[backend]', line.length > 200 ? msg.type : line)
+        // Never log the raw 'prefs' line — it can carry the saved password.
+        if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.prefsLoaded = true }
         if (msg.type === 'streams') this.streams = msg.streams
         if (msg.type === 'port') {
           this.port = msg.port ?? null

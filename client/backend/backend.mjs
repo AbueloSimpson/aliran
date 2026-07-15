@@ -17,12 +17,21 @@
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
 //        { streamId }                 -> play an entitled stream -> { port, url, source }
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
+//        { type:'prefs-get' }         -> { type:'prefs', creds, favorites }
+//        { type:'creds-save', username, password } | { type:'creds-clear' }
+//        { type:'favorites-set', favorites: [streamId] }   (each replies with 'prefs')
 //   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
 //                                        live whenever the panel edits the catalog —
 //                                        same shape; the Home screen re-renders on it)
 //        { type:'port', port, url, source }   (url = ACTIVE source under hybrid)
 //        { type:'status', state|peers } | { type:'login-error'|'error', message }
 //        { type:'fallback', streamId, url, reason } | { type:'source-changed', streamId, source, url }
+//        { type:'prefs', creds: {username,password}|null, favorites: [streamId] }
+//
+// Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
+// the app-private files dir, the stated tradeoff; sign-out clears them) + favorites
+// (D4). Stored BESIDE the corestore, not in it — the store is a disposable cache that
+// corruption recovery purges wholesale, and prefs must survive that.
 
 /* global BareKit, Bare */
 import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for the Bare worklet
@@ -61,6 +70,33 @@ function storeDir () {
   return './aliran-store' // desktop / non-Android fallback
 }
 
+// --- device-local prefs (saved credentials + favorites) ---
+// Lives next to the store dir (files-dir root on Android, cwd on desktop) so the
+// corruption-recovery purge of the store never wipes login or favorites.
+function prefsPath () {
+  return storeDir().replace(/aliran-store$/, 'aliran-prefs.json')
+}
+
+function readPrefs () {
+  try {
+    const p = JSON.parse(b4a.toString(fs.readFileSync(prefsPath())))
+    return {
+      creds: p && p.creds && typeof p.creds.username === 'string' && typeof p.creds.password === 'string' ? p.creds : null,
+      favorites: Array.isArray(p && p.favorites) ? p.favorites.filter((x) => typeof x === 'string') : []
+    }
+  } catch {
+    return { creds: null, favorites: [] }
+  }
+}
+
+function writePrefs (prefs) {
+  try { fs.writeFileSync(prefsPath(), b4a.from(JSON.stringify(prefs))) } catch (err) {
+    send({ type: 'error', message: 'prefs write failed: ' + String((err && err.message) || err) })
+  }
+}
+
+function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
+
 let player = null
 
 function ensurePlayer (hybrid) {
@@ -86,7 +122,20 @@ IPC.on('data', (data) => {
     if (!line.trim()) continue
     let msg; try { msg = JSON.parse(line) } catch { continue }
     const fail = (err) => send({ type: 'error', message: String((err && err.message) || err) })
-    if (msg.feedKey && msg.encryptionKey) {
+    // Typed prefs messages first — 'creds-save' also carries username/password, which
+    // the legacy shape-based login dispatch below would otherwise swallow.
+    if (msg.type === 'prefs-get') {
+      sendPrefs()
+    } else if (msg.type === 'creds-save' && typeof msg.username === 'string' && typeof msg.password === 'string') {
+      writePrefs({ ...readPrefs(), creds: { username: msg.username, password: msg.password } })
+      sendPrefs()
+    } else if (msg.type === 'creds-clear') {
+      writePrefs({ ...readPrefs(), creds: null })
+      sendPrefs()
+    } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
+      writePrefs({ ...readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
+      sendPrefs()
+    } else if (msg.feedKey && msg.encryptionKey) {
       ensurePlayer().serveFeed(msg.feedKey, msg.encryptionKey).then((port) => send({ type: 'port', port })).catch(fail)
     } else if (msg.username) {
       // 'streams' is sent by the event relay on success; failures (including the
