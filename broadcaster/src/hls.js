@@ -173,8 +173,29 @@ export function startFfmpeg (spec, outDir, { onExit } = {}) {
   return proc
 }
 
+// Free the blob blocks of everything that has rotated OUT of the live window.
+// Hypercore is append-only — drive.del() drops the metadata entry but the segment
+// bytes stay stored forever (this is what filled a 19 GB disk in a day of streaming).
+// The playlist window is strictly rolling, so every block BELOW the lowest offset
+// still referenced by a live entry is garbage: clear() it. clear() only frees local
+// storage (RAM or disk) — the merkle tree stays valid and replication of the live
+// window is untouched; peers simply can't fetch expired segments any more, which is
+// the point: the m3u8 defines what exists.
+export async function reclaimExpiredBlobs (drive) {
+  const blobs = await drive.getBlobs()
+  let min = blobs.core.length
+  for await (const entry of drive.list('/')) {
+    const b = entry.value && entry.value.blob
+    if (b && b.blockOffset < min) min = b.blockOffset
+  }
+  if (min > 0) await blobs.core.clear(0, min)
+  return min
+}
+
 // Poll a directory and mirror changes into a Hyperdrive: put new/changed files,
-// delete files ffmpeg has rotated out. Returns a stop() function.
+// delete files ffmpeg has rotated out, and reclaim the expired blob storage so the
+// feed is an EPHEMERAL rolling buffer instead of an ever-growing log.
+// Returns a stop() function.
 export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
   const known = new Map() // name -> mtimeMs|size signature
   let stopped = false
@@ -185,6 +206,7 @@ export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
     try { names = fs.readdirSync(dir) } catch { /* dir not ready yet */ }
 
     const present = new Set(names)
+    let changed = false
     // Put new or changed files.
     for (const name of names) {
       try {
@@ -194,6 +216,7 @@ export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
           const buf = fs.readFileSync(path.join(dir, name))
           await drive.put('/' + name, buf)
           known.set(name, sig)
+          changed = true
         }
       } catch { /* file may vanish mid-cycle (ffmpeg rotation); skip */ }
     }
@@ -202,8 +225,12 @@ export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
       if (!present.has(name)) {
         try { await drive.del('/' + name) } catch {}
         known.delete(name)
+        changed = true
       }
     }
+    // Anything below the live window (rotated segments, superseded playlist
+    // versions) is unreachable — free it. Keeps storage O(window).
+    if (changed) { try { await reclaimExpiredBlobs(drive) } catch {} }
     if (!stopped) setTimeout(tick, interval)
   }
 

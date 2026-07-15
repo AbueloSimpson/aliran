@@ -54,6 +54,29 @@ deep-verified by a real test encode at startup and a channel that needs an unusa
 one is refused with the probe's error (no silent fallback). With `copy`, set the
 encoder's keyframe interval to `HLS_TIME` seconds so segments cut cleanly.
 
+## The feed is an ephemeral rolling buffer
+
+Live segments are **not archived**: the playlist (`index.m3u8`) is the source of
+truth, and everything that rotates out of the window is deleted from the drive and
+its blob storage reclaimed — a channel that streams for weeks occupies O(window)
+space, not O(history). The window defaults to **16 segments of ~4 s** (≈64 s,
+`HLS_TIME` / `HLS_LIST_SIZE`), deep enough that viewers hold a meaningful shareable
+window to re-seed each other.
+
+Two buffer modes (`FEED_BUFFER` env or per-channel `buffer` field):
+
+- **`ram`** (default) — the feed lives in memory as a **session core**: every
+  `start()` mints a fresh feed keypair and registers the new `feedKey` with the
+  panel. Nothing is written to disk. (Reusing one keypair over an emptied store
+  would fork the core and break existing replicas — a restart is a new session by
+  design.) Viewers follow along without re-login: the player SDK resolves the
+  CURRENT `feedKey` from the replicated catalog at play time.
+- **`disk`** — one persistent on-disk core; `feedKey` is stable across restarts;
+  the same rolling reclaim keeps it window-bounded.
+
+In both modes the **encryption key persists** (`feed.key` in the channel's store
+dir) — user grants seal it, so restarts never invalidate access.
+
 ## Test it (no Android needed)
 
 ```bash

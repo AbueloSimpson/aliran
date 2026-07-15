@@ -3,13 +3,23 @@
 // the ChannelManager persists the channel registry (DATA_DIR/channels.json) and is the
 // single owner of every channel's Corestore.
 //
-// Feed identity: each channel has its own store dir with a persisted feed.key
-// (encryption key), so feedKey/encryptionKey are stable across restarts. API-added
-// channels live under DATA_DIR/channels/<id>/; the env-configured channel keeps the
-// LEGACY layout (store at DATA_DIR root, feed.key beside it) so existing deployments
-// keep their feed identity and pre-seeded feed.key files.
+// Feed identity vs feed DATA (the ephemeral buffer):
+// - The ENCRYPTION key (feed.key in the channel's store dir) is persisted — user
+//   grants seal it, so it must survive restarts. API-added channels live under
+//   DATA_DIR/channels/<id>/; the env-configured channel keeps the LEGACY layout
+//   (feed.key at DATA_DIR root) so pre-seeded feed.key files keep working.
+// - The feed DATA is a rolling live window (the m3u8 defines what exists), held in a
+//   RAM-backed session core by default (buffer 'ram'): each start() mints a FRESH
+//   feed keypair, registers the new feedKey with the panel, and rotated-out segments
+//   are clear()ed — nothing accumulates, on disk or in RAM. (Reusing one keypair over
+//   an emptied store would FORK the core and break existing replicas — that is why a
+//   restart is a new session core.) Viewers follow the catalog: the SDK resolves the
+//   CURRENT feedKey at play time, so no re-login is needed after a restart.
+// - buffer 'disk' keeps the pre-ephemeral behavior (one persistent on-disk core,
+//   feedKey stable across restarts) with the same rolling clear() bounding growth.
 
 import Corestore from 'corestore'
+import RAM from 'random-access-memory'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
@@ -256,6 +266,9 @@ class Channel {
   async resolveFeedKey () {
     if (this.meta.feedKey) return this.meta.feedKey
     if (this.run) return this.run.feedKey
+    // Ephemeral (RAM) feeds are session cores: the feedKey only exists while the
+    // channel runs — each start() mints one and registers it with the panel.
+    if ((this.meta.buffer || this.manager.config.feedBuffer || 'ram') === 'ram') return null
     const store = new Corestore(this.storeDir)
     await store.ready()
     const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey: loadOrCreateEncryptionKey(this.storeDir) })
@@ -271,8 +284,11 @@ class Channel {
     // Refuse cleanly BEFORE any resources spin up: unavailable encoder/protocol
     // (capability probe) and unbindable push ports are operator errors, not crashes.
     await this.manager.assertStartable(this.meta)
-    const encryptionKey = loadOrCreateEncryptionKey(this.storeDir)
-    const store = new Corestore(this.storeDir)
+    const encryptionKey = loadOrCreateEncryptionKey(this.storeDir) // persisted — grants seal it
+    const buffer = this.meta.buffer || config.feedBuffer || 'ram'
+    // 'ram': ephemeral session core — fresh keypair, data only ever in memory.
+    // 'disk': persistent core with a stable feedKey across restarts.
+    const store = buffer === 'ram' ? new Corestore(RAM) : new Corestore(this.storeDir)
     await store.ready()
     const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey })
     await drive.ready()
@@ -492,6 +508,10 @@ export class ChannelManager {
       })
     }
     if (fields.transcode !== undefined) out.transcode = normalizeTranscode(fields.transcode) // null clears
+    if (fields.buffer != null) {
+      if (fields.buffer !== 'ram' && fields.buffer !== 'disk') bad("buffer must be 'ram' (ephemeral session feed) or 'disk' (persistent feed identity)")
+      out.buffer = fields.buffer
+    }
     if (fields.hlsTime != null || fields.hlsListSize != null) {
       const time = parseInt(fields.hlsTime ?? 2, 10)
       const listSize = parseInt(fields.hlsListSize ?? 6, 10)
@@ -513,6 +533,7 @@ export class ChannelManager {
       category: norm.category || [],
       input: norm.input || { kind: 'test' },
       transcode: norm.transcode ?? null,
+      buffer: norm.buffer ?? null, // null = config.feedBuffer default at start
       hls: norm.hls || { time: this.config.hls.time, listSize: this.config.hls.listSize },
       protection: 'self',
       feedKey: null,

@@ -457,6 +457,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contracts, and a gradle gotcha (the release JS-bundle task doesn't track
   `config/*.json` — delete `generated/assets/react` after descriptor swaps).
 
+### Ephemeral feed buffer — live segments stop accumulating (verified)
+- **The live feed is now a rolling buffer, not an archive.** The playlist defines
+  which segments exist; the drive mirror deletes rotated-out files AND reclaims
+  their blob storage (`hypercore clear()` below the live window's low watermark) —
+  a channel that streams for days occupies O(window) space. Previously the
+  append-only feed grew ~1–2 GB/h/channel and filled a 19 GB VPS disk in a day.
+- **Window deepened for P2P delivery: 16 segments × ~4 s (≈64 s)** — new
+  `HLS_TIME`/`HLS_LIST_SIZE` defaults (was 6 × 2 s), so peers hold a meaningful
+  shareable window to re-seed each other.
+- **RAM session feeds by default** (`FEED_BUFFER=ram`, per-channel `buffer` field):
+  segment data never touches disk; each channel start mints a fresh session feed
+  keypair and re-registers it (re-using a keypair over an emptied store would fork
+  the core and break replicas). The persisted **encryption key never rotates** on
+  restart, so user grants stay valid. `FEED_BUFFER=disk` keeps a stable feedKey
+  across restarts with the same window-bounded storage.
+- **The player SDK follows broadcaster restarts without re-login**: `resolve()`
+  reads the CURRENT `feedKey` from the replicated catalog at play time (the sealed
+  per-user encryption key is unchanged); a re-KEYED stream still requires a fresh
+  login, deliberately.
+- New deterministic `test:retention` (rolling mirror → entries deleted, expired
+  blocks freed, storage bounded across 40 rotations) wired into the required CI
+  lane alongside `test:args`; `test:broadcaster-api` updated to the session-core
+  contract (restart ⇒ new feedKey, catalog follows, encryption key stable).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.

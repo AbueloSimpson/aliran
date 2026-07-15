@@ -38,7 +38,13 @@ export const config = {
   },
   // DRM render node for h264_vaapi (Linux only).
   vaapiDevice: process.env.VAAPI_DEVICE || '/dev/dri/renderD128',
-  hls: { time: int(process.env.HLS_TIME, 2), listSize: int(process.env.HLS_LIST_SIZE, 6) },
+  // Live window: 16 segments of ~4 s (≈64 s) — deep enough that peers hold a real
+  // shareable window for P2P delivery; the playlist is the source of truth and
+  // everything that rotates out is reclaimed (see hls.js reclaimExpiredBlobs).
+  hls: { time: int(process.env.HLS_TIME, 4), listSize: int(process.env.HLS_LIST_SIZE, 16) },
+  // 'ram' (default) = ephemeral session feeds — fresh feedKey per start, segment
+  // data only ever in memory; 'disk' = persistent feed identity across restarts.
+  feedBuffer: process.env.FEED_BUFFER === 'disk' ? 'disk' : 'ram',
   protection: process.env.PROTECTION || 'self',
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean),

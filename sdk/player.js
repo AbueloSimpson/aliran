@@ -139,9 +139,20 @@ export class AliranPlayer extends Emitter {
   async resolve (streamId) {
     const keys = this._entitled.get(streamId)
     if (!keys) throw new Error('not entitled to ' + streamId)
+    // Live feeds are SESSION cores under the broadcaster's ephemeral buffer: a
+    // restart publishes a fresh feedKey to the catalog while the per-user sealed
+    // ENCRYPTION key stays the same. Follow the replicated catalog for the current
+    // feedKey (falling back to the login-time value) so viewers survive broadcaster
+    // restarts without re-login. A re-KEYED stream (new encryption key) still needs
+    // a fresh login — that one is a deliberate access-control boundary.
+    let feedKey = keys.feedKey
+    try {
+      const node = this._panelBee && await this._panelBee.get('catalog/' + streamId)
+      if (node && node.value && node.value.feedKey) feedKey = node.value.feedKey
+    } catch { /* replicated catalog momentarily unreadable — use the cached key */ }
     // A catalog entry can exist before any broadcaster feeds it (feedKey null) —
     // surface that honestly instead of leaking a key-length error from hypercore.
-    if (this._hybrid.mode !== 'cdn-only' && (!keys.feedKey || !keys.encryptionKey)) {
+    if (this._hybrid.mode !== 'cdn-only' && (!feedKey || !keys.encryptionKey)) {
       throw new Error('channel is not broadcasting right now')
     }
     const cfg = this._hybrid
@@ -150,14 +161,14 @@ export class AliranPlayer extends Emitter {
     if (cfg.mode === 'cdn-only') {
       const url = cfg.cdnUrl(streamId)
       this._active = { streamId, localUrl: null, cdnUrl: url, source: 'cdn', lastSig: null, lastAdvance: 0 }
-      return { url, source: 'cdn', localUrl: undefined, port: undefined, feedKey: keys.feedKey }
+      return { url, source: 'cdn', localUrl: undefined, port: undefined, feedKey }
     }
 
-    const port = await this.serveFeed(keys.feedKey, keys.encryptionKey)
+    const port = await this.serveFeed(feedKey, keys.encryptionKey)
     const localUrl = `http://127.0.0.1:${port}/index.m3u8`
     if (cfg.mode === 'p2p-only') {
       this._active = { streamId, localUrl, cdnUrl: null, source: 'p2p', lastSig: null, lastAdvance: Date.now() }
-      return { url: localUrl, source: 'p2p', localUrl, port, feedKey: keys.feedKey }
+      return { url: localUrl, source: 'p2p', localUrl, port, feedKey }
     }
 
     // hybrid: pick the starting source, then keep watching/probing in the background.
@@ -174,7 +185,7 @@ export class AliranPlayer extends Emitter {
       this._startRecoveryProbe()
     }
     const url = this._active.source === 'p2p' ? localUrl : this._active.cdnUrl
-    return { url, source: this._active.source, localUrl, port, feedKey: keys.feedKey }
+    return { url, source: this._active.source, localUrl, port, feedKey }
   }
 
   // Current active source for the last resolve(), or null.

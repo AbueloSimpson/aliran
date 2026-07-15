@@ -117,9 +117,10 @@ try {
   // ===== Test B: channel CRUD over HTTP =====
   let r = await api('POST', '/api/channels', { id: 'api-chan', title: 'API Channel', category: 'demo', input: 'test' }, token)
   assert.strictEqual(r.status, 201, 'add channel: ' + JSON.stringify(r.body))
-  const feedKey = r.body.feedKey
   const encryptionKey = r.body.encryptionKey
-  assert.match(feedKey, /^[0-9a-f]{64}$/, 'channel has a feed key')
+  // Ephemeral (RAM) feeds are session cores: no feedKey exists until the channel
+  // starts — only the persisted encryption key (what user grants seal) is known.
+  assert.strictEqual(r.body.feedKey, null, 'ephemeral channel has no feed key before start')
   assert.match(encryptionKey, /^[0-9a-f]{64}$/, 'channel has an encryption key')
   assert.strictEqual((await api('POST', '/api/channels', { id: 'api-chan' }, token)).status, 409, 'duplicate 409')
   assert.strictEqual((await api('POST', '/api/channels/nope/start', undefined, token)).status, 404, 'start unknown 404')
@@ -139,7 +140,8 @@ try {
   // ===== Test C: START over HTTP → ffmpeg + feed + panel registration =====
   r = await api('POST', '/api/channels/api-chan/start', undefined, token)
   assert.strictEqual(r.status, 200, 'start: ' + JSON.stringify(r.body))
-  assert.strictEqual(r.body.feedKey, feedKey, 'feed identity stable across add/start')
+  const feedKey = r.body.feedKey // the session feed key, minted at start
+  assert.match(feedKey, /^[0-9a-f]{64}$/, 'start mints a session feed key')
   assert.strictEqual((await api('POST', '/api/channels/api-chan/start', undefined, token)).status, 400, 'double start 400')
 
   const st = await waitFor(async () => {
@@ -197,13 +199,19 @@ try {
 
   r = await api('POST', '/api/channels/api-chan/start', undefined, token)
   assert.strictEqual(r.status, 200, 'restart')
-  assert.strictEqual(r.body.feedKey, feedKey, 'feed identity stable across restart')
+  const feedKey2 = r.body.feedKey
+  assert.match(feedKey2, /^[0-9a-f]{64}$/, 'restart mints a session feed key')
+  assert.notStrictEqual(feedKey2, feedKey, 'ephemeral buffer: a restart is a NEW session core (no fork of the old one)')
   await waitFor(async () => {
     const x = (await api('GET', '/api/channels/api-chan', undefined, token)).body
-    return x.running && x.ffmpegUp && x.playlist ? x : null
-  }, 60000, 'channel to come back after restart')
+    return x.running && x.ffmpegUp && x.playlist && x.registered ? x : null
+  }, 60000, 'channel to come back after restart (incl. re-registration)')
+  // The catalog follows the session key; the encryption key (what grants seal)
+  // never rotates on restart — existing viewers keep decrypting.
+  assert.strictEqual((await db.get('catalog/api-chan')).value.feedKey, feedKey2, 'panel catalog follows the new session feed key')
+  assert.strictEqual(loadSecrets(dirs.panel)['api-chan'], encryptionKey, 'encryption key stable across restarts (grants stay valid)')
   await api('POST', '/api/channels/api-chan/stop', undefined, token)
-  log('F: stop clean (ffmpeg down), double stop 400, restart with the same feed key ✓')
+  log('F: stop clean (ffmpeg down), double stop 400, restart = new session feedKey + catalog follows ✓')
 
   // ===== Test F2: admins management (S16a — parity with the panel admin API) =====
   r = await api('GET', '/api/admins', undefined, token)
@@ -226,7 +234,9 @@ try {
   log('F2: control admins list/create/rotate/delete with token revocation ✓')
 
   // ===== Test G: lockout =====
-  for (let i = 0; i < 3; i++) {
+  // Send a full threshold (5) of bad attempts back-to-back so the test doesn't
+  // depend on earlier tests' attempts still being inside the 60 s throttle window.
+  for (let i = 0; i < 5; i++) {
     assert.strictEqual((await api('POST', '/api/login', { username: 'op', password: 'wrong-' + i })).status, 401, 'still 401 pre-lockout')
   }
   const locked = await api('POST', '/api/login', { username: 'op', password: ADMIN_PASSWORD })
@@ -259,9 +269,9 @@ try {
   assert.strictEqual(r.body.input.kind, 'rtmp')
   assert.strictEqual(r.body.input.port, 5000, 'auto-allocated the first ingest-range port')
   assert.match(r.body.input.streamKey, /^[A-Za-z0-9]{22}$/, 'stream key generated')
-  const pushFeedKey = r.body.feedKey
   const pushEncKey = r.body.encryptionKey
   const streamKey = r.body.input.streamKey
+  assert.strictEqual(r.body.feedKey, null, 'ephemeral push channel also has no feed key before start')
 
   assert.strictEqual((await api('POST', '/api/channels', { id: 'clash', input: { kind: 'udp', port: 5000 } }, token)).status, 400, 'push-port uniqueness across channels')
 
@@ -275,6 +285,8 @@ try {
   // ===== Test J: RTMP push round-trip (a 2nd local ffmpeg is the OBS stand-in) =====
   r = await api('POST', '/api/channels/push-chan/start', undefined, token)
   assert.strictEqual(r.status, 200, 'start rtmp listener: ' + JSON.stringify(r.body))
+  const pushFeedKey = r.body.feedKey // session key, minted at start
+  assert.match(pushFeedKey, /^[0-9a-f]{64}$/, 'push channel start mints a session feed key')
   const preState = (await api('GET', '/api/channels/push-chan', undefined, token)).body
   assert.strictEqual(preState.running, true)
   assert.strictEqual(preState.playlist, false, 'no playlist before a publisher connects')
