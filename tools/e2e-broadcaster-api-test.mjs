@@ -238,6 +238,38 @@ try {
   assert.strictEqual((await api('DELETE', '/api/channels/disk-chan', undefined, token)).status, 200, 'cleanup disk-chan')
   log('F3: disk buffer keeps a stable feedKey before start + across restart (warm DHT topic) ✓')
 
+  // ===== Test F4: changing a disk channel's SOURCE rotates its feed identity =====
+  // F3 proves a disk feedKey is STABLE across a plain restart (unchanged input). Here the
+  // operator PATCHes the input to a NEW source: the feedKey MUST rotate (feedGen bump → a
+  // new deterministic key) so viewers drop their cached replica of the old loop. A PATCH
+  // that does NOT change the source must not rotate. The encryption key (grants) stays put.
+  r = await api('POST', '/api/channels', { id: 'rotate-chan', title: 'Rotate Channel', input: 'test', buffer: 'disk' }, token)
+  assert.strictEqual(r.status, 201, 'add rotate channel: ' + JSON.stringify(r.body))
+  const rotEncKey = r.body.encryptionKey
+  const rotKey1 = r.body.feedKey
+  assert.match(rotKey1 || '', /^[0-9a-f]{64}$/, 'disk feed key known before start')
+  r = await api('POST', '/api/channels/rotate-chan/start', undefined, token)
+  assert.strictEqual(r.body.feedKey, rotKey1, 'first start uses the pre-resolved disk key')
+  assert.strictEqual((await api('POST', '/api/channels/rotate-chan/stop', undefined, token)).status, 200, 'stop rotate-chan')
+  // a PATCH that does NOT change the source must not churn the feed identity
+  r = await api('PATCH', '/api/channels/rotate-chan', { input: 'test', description: 'same source' }, token)
+  assert.strictEqual(r.body.feedKey, rotKey1, 'same-source PATCH keeps the feedKey (no gratuitous rotation)')
+  assert.strictEqual(manager.channels.get('rotate-chan').meta.feedGen ?? 0, 0, 'feedGen unchanged when the source is unchanged')
+  // now CHANGE the source (test → a file input): the identity must rotate
+  r = await api('PATCH', '/api/channels/rotate-chan', { input: { kind: 'file', path: '/tmp/rotate-other.ts' } }, token)
+  assert.strictEqual(r.status, 200, 'patch input to a new source: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.feedKey, null, 'feed identity forgotten pending the next start (rotation)')
+  assert.strictEqual(manager.channels.get('rotate-chan').meta.feedGen, 1, 'feedGen bumped on a real source change')
+  r = await api('POST', '/api/channels/rotate-chan/start', undefined, token)
+  assert.strictEqual(r.status, 200, 'restart after source change: ' + JSON.stringify(r.body))
+  const rotKey2 = r.body.feedKey
+  assert.match(rotKey2, /^[0-9a-f]{64}$/, 'rotated feed key minted at start')
+  assert.notStrictEqual(rotKey2, rotKey1, 'disk source change ROTATED the feedKey (clients drop the stale replica)')
+  assert.strictEqual(manager.channels.get('rotate-chan').encryptionKeyHex(), rotEncKey, 'encryption key stable across the rotation (grants survive)')
+  assert.strictEqual((await api('POST', '/api/channels/rotate-chan/stop', undefined, token)).status, 200, 'stop rotate-chan again')
+  assert.strictEqual((await api('DELETE', '/api/channels/rotate-chan', undefined, token)).status, 200, 'cleanup rotate-chan')
+  log('F4: disk source change rotates the feedKey (stale-replica fix); same-source PATCH does not; grants survive ✓')
+
   // ===== Test F2: admins management (S16a — parity with the panel admin API) =====
   r = await api('GET', '/api/admins', undefined, token)
   assert.strictEqual(r.status, 200)

@@ -249,6 +249,36 @@ function loadOrCreateEncryptionKey (storeDir) {
   return key
 }
 
+// Watchdog (S15b) timing. Bounded exponential backoff, no hard attempt cap: a 24/7 live
+// channel should keep trying to reconnect a flaky source indefinitely, just never hot-loop.
+const WD = {
+  checkIntervalMs: 4000, // liveness poll period
+  stallGraceMs: 20000, // a pull-style source must advance the live edge within this window
+  backoffBaseMs: 1000, // first respawn delay after an ffmpeg exit
+  backoffMaxMs: 30000, // respawn backoff cap
+  backoffResetMs: 60000 // sustained health this long → backoff decays back to the base
+}
+
+// Deep-equal for typed input objects — flat, primitive-valued (see normalizeInput). Used
+// to decide whether a PATCH actually changed a channel's SOURCE (→ rotate the feed).
+function inputsEqual (a, b) {
+  if (a === b) return true
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
+  const ka = Object.keys(a).sort()
+  const kb = Object.keys(b).sort()
+  if (ka.length !== kb.length) return false
+  return ka.every((k, i) => k === kb[i] && a[k] === b[k])
+}
+
+// Signature of the HLS live edge: the muxer rewrites index.m3u8 on every new segment, so a
+// changing (mtime,size) means the live edge is advancing. null = no playlist yet.
+function liveEdgeSig (outDir) {
+  try {
+    const st = fs.statSync(path.join(outDir, 'index.m3u8'))
+    return `${st.mtimeMs}:${st.size}`
+  } catch { return null }
+}
+
 // One channel's live pipeline. Created stopped; start()/stop() any number of times.
 class Channel {
   constructor (manager, meta) {
@@ -265,6 +295,15 @@ class Channel {
     return b4a.toString(loadOrCreateEncryptionKey(this.storeDir), 'hex')
   }
 
+  // The Corestore namespace the feed core lives under. A source change bumps feedGen so the
+  // namespace — and therefore the deterministic DISK feedKey — rotates, forcing clients to
+  // drop their cached replica of the OLD source. feedGen 0/undefined → the original 'feed'
+  // namespace, so existing disk feeds keep their key across this upgrade. Harmless in RAM
+  // mode, which mints a fresh keypair every start regardless of the namespace.
+  feedNamespace () {
+    return this.meta.feedGen ? ('feed-gen-' + this.meta.feedGen) : 'feed'
+  }
+
   // Open the drive briefly to learn the (deterministic) feed key without starting.
   async resolveFeedKey () {
     if (this.meta.feedKey) return this.meta.feedKey
@@ -275,7 +314,7 @@ class Channel {
     if ((this.meta.buffer || this.manager.config.feedBuffer || 'disk') === 'ram') return null
     const store = new Corestore(this.storeDir)
     await store.ready()
-    const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey: loadOrCreateEncryptionKey(this.storeDir) })
+    const drive = new Hyperdrive(store.namespace(this.feedNamespace()), { encryptionKey: loadOrCreateEncryptionKey(this.storeDir) })
     await drive.ready()
     this.meta.feedKey = b4a.toString(drive.key, 'hex')
     await store.close()
@@ -294,7 +333,7 @@ class Channel {
     // 'ram': ephemeral session core — fresh keypair, data only ever in memory.
     const store = buffer === 'ram' ? new Corestore(RAM) : new Corestore(this.storeDir)
     await store.ready()
-    const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey })
+    const drive = new Hyperdrive(store.namespace(this.feedNamespace()), { encryptionKey })
     await drive.ready()
     const feedKeyHex = b4a.toString(drive.key, 'hex')
     this.meta.feedKey = feedKeyHex
@@ -307,6 +346,7 @@ class Channel {
 
     const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-hls-'))
     const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500 })
+    const now = Date.now()
     const run = {
       store,
       drive,
@@ -316,19 +356,35 @@ class Channel {
       outDir,
       feedKey: feedKeyHex,
       encryptionKey: b4a.toString(encryptionKey, 'hex'),
-      startedAt: Date.now(),
+      startedAt: now,
+      ff: null,
       ffmpegExit: null,
       registered: false,
-      registerError: null
+      registerError: null,
+      // S15b watchdog: keeps ffmpeg alive across source hiccups (crash, empty/off-air
+      // source, publisher disconnect) and restarts a stalled live edge. See _startWatchdog.
+      watchdog: {
+        timer: null,
+        respawnTimer: null,
+        stopped: false,
+        restarting: false,
+        restarts: 0,
+        stalls: 0,
+        lastExit: null,
+        backoffMs: WD.backoffBaseMs,
+        lastRestartAt: now,
+        lastAdvanceAt: now,
+        lastSig: null,
+        everAdvanced: false,
+        state: 'starting'
+      }
     }
-    run.ff = startFfmpeg({
-      input: this.meta.input,
-      transcode: this.meta.transcode,
-      hls: this.meta.hls,
-      vaapiDevice: config.vaapiDevice
-    }, outDir, {
-      onExit: (code) => { run.ffmpegExit = code ?? -1 }
-    })
+    // this.run must be live BEFORE the watchdog first ticks (its loop guards on
+    // this.run === run). Both calls below are synchronous, so status() can't observe a
+    // half-built run.
+    this.run = run
+    this._spawnFfmpeg(run)
+    this._startWatchdog(run)
 
     // Auto-register with the panel (publisher-key auth, unchanged from v0.2).
     if (config.panelPubKey && config.publisherKey) {
@@ -355,14 +411,97 @@ class Channel {
       panelSwarm.join(crypto.hash(b4a.from(config.panelPubKey, 'hex')), { client: true, server: false })
     }
 
-    this.run = run
     return { feedKey: feedKeyHex, encryptionKey: run.encryptionKey }
+  }
+
+  // Spawn (or respawn) ffmpeg into the run's outDir. onExit is bound to THIS process so a
+  // late exit callback from a process we already replaced can't clobber the live one.
+  _spawnFfmpeg (run) {
+    const { config } = this.manager
+    const proc = startFfmpeg({
+      input: this.meta.input,
+      transcode: this.meta.transcode,
+      hls: this.meta.hls,
+      vaapiDevice: config.vaapiDevice
+    }, run.outDir, {
+      onExit: (code) => {
+        if (run.ff !== proc) return // superseded process — ignore its exit
+        run.ffmpegExit = code ?? -1
+        run.watchdog.lastExit = code ?? -1
+        run.watchdog.state = 'exited'
+      }
+    })
+    run.ff = proc
+    run.ffmpegExit = null
+  }
+
+  // Watchdog loop (S15b). Two failure modes, both bounded by exponential backoff:
+  //  - ffmpeg EXITED (crash, source ended/off-air, publisher disconnected) → respawn.
+  //  - live edge STALLED (index.m3u8 stopped advancing) on a pull-style source → kill it,
+  //    which routes into the same exit→respawn path. Push listeners (rtmp/srt/udp) idle
+  //    legitimately while awaiting a publisher, so they respawn only on a real exit and are
+  //    never "stall"-cycled (that would drop the listen socket out from under a reconnect).
+  _startWatchdog (run) {
+    const wd = run.watchdog
+    const check = () => {
+      wd.timer = null
+      if (wd.stopped || this.run !== run) return
+      const t = Date.now()
+      const isPush = isPushInput(this.meta.input) // re-read: a respawn picks up a PATCHed input
+      const ffAlive = run.ffmpegExit === null && run.ff && run.ff.exitCode === null
+      if (!ffAlive) {
+        if (!wd.restarting) this._scheduleRespawn(run)
+      } else {
+        const sig = liveEdgeSig(run.outDir)
+        if (sig !== null && sig !== wd.lastSig) {
+          wd.lastSig = sig
+          wd.lastAdvanceAt = t
+          wd.everAdvanced = true
+          wd.state = 'live'
+          if (t - wd.lastRestartAt > WD.backoffResetMs) wd.backoffMs = WD.backoffBaseMs
+        } else if (!isPush && t - wd.lastAdvanceAt > WD.stallGraceMs) {
+          wd.stalls++
+          wd.state = 'stalled'
+          wd.lastAdvanceAt = t // debounce; the respawn re-arms fresh timing
+          try { run.ff.kill('SIGKILL') } catch {} // exit path respawns it with backoff
+        } else if (isPush && !wd.everAdvanced) {
+          wd.state = 'waiting' // listener up, no publisher yet — normal
+        }
+      }
+      if (!wd.stopped && this.run === run) wd.timer = setTimeout(check, WD.checkIntervalMs)
+    }
+    wd.timer = setTimeout(check, WD.checkIntervalMs)
+  }
+
+  // Respawn ffmpeg after the current backoff, then double it (capped at backoffMaxMs). A
+  // stretch of health decays the backoff back to the base (see _startWatchdog).
+  _scheduleRespawn (run) {
+    const wd = run.watchdog
+    if (wd.restarting || wd.stopped || this.run !== run) return
+    wd.restarting = true
+    wd.state = 'restarting'
+    wd.respawnTimer = setTimeout(() => {
+      wd.respawnTimer = null
+      wd.restarting = false
+      if (wd.stopped || this.run !== run) return
+      wd.restarts++
+      wd.lastRestartAt = Date.now()
+      wd.lastAdvanceAt = Date.now() // fresh grace window before stall detection re-arms
+      wd.lastSig = null
+      this._spawnFfmpeg(run)
+      wd.backoffMs = Math.min(wd.backoffMs * 2, WD.backoffMaxMs)
+    }, wd.backoffMs)
   }
 
   async stop () {
     const run = this.run
     if (!run) bad(`channel "${this.meta.id}" is not running`)
     this.run = null
+    // Silence the watchdog before we touch ffmpeg, so a pending tick/respawn can't fight
+    // the teardown (both also guard on this.run === run, which is now null).
+    run.watchdog.stopped = true
+    if (run.watchdog.timer) { clearTimeout(run.watchdog.timer); run.watchdog.timer = null }
+    if (run.watchdog.respawnTimer) { clearTimeout(run.watchdog.respawnTimer); run.watchdog.respawnTimer = null }
     run.stopMirror()
     try { run.ff.kill('SIGINT') } catch {}
     // Give ffmpeg a moment to exit; force-kill if it ignores SIGINT (Windows).
@@ -383,13 +522,24 @@ class Channel {
     const run = this.run
     const out = {
       ...this.meta,
+      // While running, report the LIVE key (meta.feedKey is nulled on a source change and
+      // only re-resolved on the next start — see _rotateFeedIfSourceChanged).
+      feedKey: run ? run.feedKey : this.meta.feedKey,
       running: !!run,
-      ffmpegUp: !!run && run.ffmpegExit === null && run.ff.exitCode === null,
+      ffmpegUp: !!run && run.ffmpegExit === null && !!run.ff && run.ff.exitCode === null,
       ffmpegExit: run ? run.ffmpegExit : null,
       peers: run ? run.swarm.connections.size : 0,
       registered: run ? run.registered : false,
       registerError: run ? run.registerError : null,
       startedAt: run ? run.startedAt : null,
+      // S15b watchdog surface: is ffmpeg being kept alive, and how hard.
+      watchdog: run ? {
+        state: run.watchdog.state,
+        restarts: run.watchdog.restarts,
+        stalls: run.watchdog.stalls,
+        lastExit: run.watchdog.lastExit,
+        backoffMs: run.watchdog.backoffMs
+      } : null,
       playlist: false,
       driveVersion: null
     }
@@ -541,6 +691,7 @@ export class ChannelManager {
       hls: norm.hls || { time: this.config.hls.time, listSize: this.config.hls.listSize },
       protection: 'self',
       feedKey: null,
+      feedGen: 0, // bumped whenever the source changes → rotates the disk feed identity
       legacy: false,
       createdAt: Date.now()
     }
@@ -561,18 +712,21 @@ export class ChannelManager {
       ch = new Channel(this, { id, legacy: true, createdAt: Date.now() })
       this.channels.set(id, ch)
     }
+    // env INPUT is refreshed every boot, but a previously generated stream key is
+    // inherited (kind-matching `existing`) so it survives restarts. If the operator
+    // changed INPUT across boots, rotate the feed identity like any other source change.
+    const newInput = normalizeInput(input || 'test', {
+      config: this.config,
+      usedPorts: this.usedPushPorts(id),
+      existing: ch.meta.input
+    })
+    this._rotateFeedIfSourceChanged(ch, newInput)
     Object.assign(ch.meta, {
       legacy: true,
       title: title || id,
       description: ch.meta.description || '',
       category: category ? [category] : (ch.meta.category || []),
-      // env INPUT is refreshed every boot, but a previously generated stream key
-      // is inherited (kind-matching `existing`) so it survives restarts.
-      input: normalizeInput(input || 'test', {
-        config: this.config,
-        usedPorts: this.usedPushPorts(id),
-        existing: ch.meta.input
-      }),
+      input: newInput,
       transcode: ch.meta.transcode ?? null,
       hls: hls || { time: this.config.hls?.time ?? 2, listSize: this.config.hls?.listSize ?? 8 },
       protection: protection || 'self'
@@ -582,9 +736,25 @@ export class ChannelManager {
     return ch
   }
 
+  // A channel's SOURCE changed → rotate its feed identity so clients drop their cached
+  // replica of the OLD source. In disk mode the feedKey is deterministic per feedGen, so
+  // bumping feedGen (and forgetting the cached feedKey) yields a fresh key on the next
+  // start; clients catalog-follow it. The feed.key (ENCRYPTION) is untouched — user grants
+  // survive. No-op on the initial assignment (no prior source) and in RAM mode, which mints
+  // a fresh key every start anyway.
+  _rotateFeedIfSourceChanged (ch, newInput) {
+    if (newInput === undefined) return // the update didn't touch input
+    if (ch.meta.input == null) return // first assignment — nothing to rotate
+    if (inputsEqual(ch.meta.input, newInput)) return
+    ch.meta.feedGen = (ch.meta.feedGen || 0) + 1
+    ch.meta.feedKey = null
+  }
+
   async update (id, fields) {
     const ch = this._get(id)
-    Object.assign(ch.meta, this.normalizeMeta(fields, { excludeId: id }))
+    const norm = this.normalizeMeta(fields, { excludeId: id })
+    this._rotateFeedIfSourceChanged(ch, norm.input)
+    Object.assign(ch.meta, norm)
     this._save()
     return { ...(await ch.status()), restartRequired: !!ch.run }
   }
