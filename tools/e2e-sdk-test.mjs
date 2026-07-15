@@ -45,6 +45,15 @@ function httpGet (port, p, headers = {}) {
     }).on('error', reject)
   })
 }
+// resolve() must always return promptly — a hang here is the re-zap regression (opening
+// a duplicate Hyperdrive over a still-open store namespace), so bound it rather than
+// letting a stall wedge the whole test.
+async function resolveWithin (p, id, ms) {
+  return Promise.race([
+    p.resolve(id),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`resolve('${id}') did not return within ${ms}ms — re-zap hang regression`)), ms))
+  ])
+}
 
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
@@ -171,6 +180,20 @@ try {
   // peers ticker fires while serving (the broadcaster is the 1 peer)
   await waitFor(async () => events.peers.some(n => n >= 1), 15000, "'peers' ticker")
   log('sdk: peers ticker OK (' + events.peers[events.peers.length - 1] + ' peer)')
+
+  // ===== Channel zapping: re-resolve a served feed must reuse it, not hang =====
+  // Zap news → movies → news. Switching BACK to 'news' (already served above) must
+  // reuse the warm feed drive; the pre-fix code opened a second Hyperdrive on the same
+  // store namespace and deadlocked on ready(). The port must stay stable across
+  // switches, and the warm re-zap must serve the news playlist again immediately.
+  const zapAway = await resolveWithin(player, 'movies', 20000) // different feed (unseeded is fine — we only need resolve() to return)
+  if (zapAway.port !== port) throw new Error('zap: localhost server port must stay stable across switches')
+  const zapBack = await resolveWithin(player, 'news', 20000) // RE-OPEN news — must reuse, not wedge
+  if (zapBack.port !== port) throw new Error('zap: port must stay stable on re-zap')
+  if (zapBack.feedKey !== b4a.toString(feed.key, 'hex')) throw new Error('zap: re-resolve news feedKey mismatch')
+  const zapPlaylist = await waitFor(async () => { const r = await httpGet(port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') ? r.body.toString() : null }, 20000, 're-zap to news serves the warm playlist')
+  const zapSegs = zapPlaylist.split('\n').filter(l => l.trim().endsWith('.ts')).length
+  log('sdk: zap news→movies→news OK — re-resolve reused the warm feed, no hang (' + zapSegs + ' segs live)')
 
   // ===== Catalog live-push (S1) =====
   // The panel edits a catalog record while the client is connected. The SDK watches

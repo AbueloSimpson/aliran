@@ -114,3 +114,40 @@ Bump `HLS_LIST_SIZE` as the audience grows.
 `1 peer` in broadcaster status means the broadcaster only; each extra viewer is an
 extra seeder. See also the latency notes in
 [Operating the panel & broadcaster](operator.md).
+
+## Channel zapping (switching in a warm session)
+
+Zapping is **not** the same as cold time-to-play. Once you're logged in, switching
+channels skips the panel connect + login entirely — the only cost is the target feed.
+Measured over the public DHT against a 2-channel deployment, warm session:
+
+| Switch | What it is | Time to playable |
+|---|---|---|
+| first channel | cold first-play (already logged in) | ~2.5 s |
+| → a **new** channel | cold first-zap | ~1.2 s |
+| → **back** to a watched channel | warm re-zap | **~0.3–0.4 s** |
+
+Why the shape:
+
+- Each channel is its **own P2P feed with its own DHT topic**, so the *first* zap to a
+  channel this session cold-joins that topic and replicates its window. It's fast
+  (~1 s) because the broadcaster peer is already connected — it seeds every channel —
+  so there's no fresh DHT bootstrap, just the new feed's first segments.
+- The SDK **caches opened feeds and reuses them**, keeping their topics replicating in
+  the background, so zapping *back* to a recently-watched channel is near-instant — the
+  replica is already warm (`resolve()` returns in ~1 ms; the ~0.3 s is just fetching the
+  current playlist + live segment). **Disk mode extends this across sessions**: the feed
+  identity is stable, so yesterday's replica resumes instead of cold-syncing.
+
+!!! note "Fixed: re-zap used to hang"
+    Before the feed-reuse fix, switching **back** to a channel opened earlier in the
+    session wedged `resolve()` — the SDK opened a *second* Hyperdrive over the same
+    store namespace and `ready()` deadlocked against the still-open first one. `serveFeed`
+    now reuses the cached feed, so flip-back is ~0.3 s. Covered by the `test:sdk`
+    zap `news → movies → news` regression.
+
+To make the *first* zap to each channel fast too, **pre-warm**: join all entitled feed
+topics at login so discovery + live-edge replication overlaps with what the viewer is
+already watching, instead of blocking the switch. (Trade-off: every warmed channel
+replicates in the background, so bandwidth grows with channels kept warm — fine for a
+bounded TV lineup, worth an LRU cap for large catalogs.)

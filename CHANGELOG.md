@@ -500,6 +500,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (disk vs ram, the cold-DHT explanation, window sizing; clarifies the transport is
   Hypercore, not WebRTC).
 
+### Fix: channel zap no longer hangs on flip-back (verified)
+- **Re-zapping to a channel already opened in the session wedged `resolve()`**:
+  `serveFeed` opened a *second* Hyperdrive over the same store namespace and `ready()`
+  deadlocked against the still-open first drive (it also leaked a drive + swarm topic on
+  every switch). `sdk/player.js` now **caches opened feeds by key and reuses them**;
+  `stop()`/recovery-purge close every cached feed. Flip-back is near-instant (the
+  replica is warm) instead of hanging.
+- Measured warm-session zap over the public DHT: **~1.2 s to a new channel, ~0.3–0.4 s
+  back to a watched one** (`resolve()` ~1 ms on reuse) — vs an indefinite hang before.
+- `test:sdk` gains a `news → movies → news` zap regression (bounded `resolve()` so a
+  future re-zap hang fails fast). KB: zapping sections added to `docs/kb/feed-buffer.md`
+  and `docs/kb/playback.md`.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.

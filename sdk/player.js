@@ -99,8 +99,9 @@ export class AliranPlayer extends Emitter {
     this._call = null
     this._server = null
     this._assetsDrive = null
-    this._feedDrive = null
+    this._feedDrive = null // the CURRENTLY served feed (one of _feeds' drives)
     this._feedDiscovery = null
+    this._feeds = new Map() // feedKey:encKey -> { drive, discovery } — opened feeds, reused across resolve()s
     this._statusTimer = null
     this._assetsOpen = null
     this._purging = null
@@ -198,19 +199,34 @@ export class AliranPlayer extends Emitter {
   // Low-level: replicate an encrypted feed by its keys and serve it on localhost with
   // Range support. Returns the port. (resolve() is the entitlement-checked path; this
   // one also powers the dev direct-play IPC message.)
+  //
+  // Opened feeds are cached by key and REUSED across resolve()s. Zapping back to a
+  // channel already served this session must NOT open a second Hyperdrive over the same
+  // store namespace — that call's ready() deadlocks against the still-open first drive
+  // (the old code leaked it and wedged on the flip-back). Reuse makes a re-zap
+  // near-instant: the replica is already warm. Cached feeds keep replicating in the
+  // background (their swarm topic stays joined) until stop()/a recovery purge closes
+  // them, so recently-watched channels stay ready to zap back to.
   async serveFeed (feedKeyHex, encKeyHex) {
-    this.emit('status', { state: 'feed:open' })
-    const drive = await this._recover(async () => {
-      await this._ensureStore()
-      const d = new Hyperdrive(this._store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
-      await d.ready()
-      return d
-    })
+    const cacheKey = feedKeyHex + ':' + encKeyHex
+    let feed = this._feeds.get(cacheKey)
+    if (!feed) {
+      this.emit('status', { state: 'feed:open' })
+      const drive = await this._recover(async () => {
+        await this._ensureStore()
+        const d = new Hyperdrive(this._store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
+        await d.ready()
+        return d
+      })
+      const discovery = this._swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
+      feed = { drive, discovery }
+      this._feeds.set(cacheKey, feed)
+    }
+    this._feedDrive = feed.drive
+    this._feedDiscovery = feed.discovery
     this.emit('status', { state: 'feed:ready' })
-    this._feedDiscovery = this._swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
-    this._feedDrive = drive
     const port = await this._ensureServer()
-    // Feed-health ticker for player overlays: how many peers serve the current feed.
+    // Feed-health ticker for player overlays: how many peers serve the CURRENT feed.
     if (!this._statusTimer) {
       this._statusTimer = setInterval(() => {
         if (this._feedDrive) this.emit('peers', this._feedDrive.core.peers.length)
@@ -236,7 +252,9 @@ export class AliranPlayer extends Emitter {
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} }
-    const closing = [this._feedDrive, this._assetsDrive, this._panelBee, this._store]
+    const feeds = [...this._feeds.values()].map((f) => f.drive) // every opened feed, not just the active one
+    this._feeds.clear()
+    const closing = [...feeds, this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._assetsOpen = null
@@ -412,7 +430,9 @@ export class AliranPlayer extends Emitter {
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} } // corrupt bees may refuse; bee close below retries
-    const closing = [this._feedDrive, this._assetsDrive, this._panelBee, this._store]
+    const feeds = [...this._feeds.values()].map((f) => f.drive) // drop every cached feed on the dead store
+    this._feeds.clear()
+    const closing = [...feeds, this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._assetsOpen = null

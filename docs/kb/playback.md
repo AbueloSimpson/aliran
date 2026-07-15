@@ -54,6 +54,24 @@ In likelihood order:
   `fallback` to the CDN URL (and auto-returns later) — see the
   [player SDK README](https://github.com/AbueloSimpson/aliran/tree/main/sdk).
 
+## Channel zapping is slow, or flipping back to a channel hangs
+
+- **How long a zap should take:** switching happens inside a warm (logged-in) session,
+  so it skips panel connect + login — expect **~1 s to a new channel** and **~0.3 s
+  back to a channel you already watched** this session. That's far below the cold
+  time-to-play (~10 s+ with login); if a zap takes that long, you're not actually in a
+  warm session (the player was torn down between switches).
+- **Each channel is a separate P2P feed/DHT topic,** so the *first* zap to a channel
+  can't be instant like cable — it joins that feed's topic and pulls its first
+  segments. Subsequent visits are near-instant because the SDK keeps opened feeds warm.
+- **Fixed: flipping *back* to a channel used to hang.** `resolve()` opened a duplicate
+  Hyperdrive on the same store namespace and deadlocked. `sdk/player.js serveFeed` now
+  reuses the cached feed per `feedKey`; update to a build that includes it (the
+  `test:sdk` zap `news → movies → news` regression guards it).
+- **Want the first zap fast too?** Pre-join all entitled feed topics at login so
+  discovery overlaps with viewing. Rationale + measured numbers:
+  [P2P feed buffer & tuning](feed-buffer.md#channel-zapping-switching-in-a-warm-session).
+
 ## App dies the moment the player seeks / switches source / closes (worklet SIGABRT)
 
 - **Symptom:** the whole app exits; logcat shows
