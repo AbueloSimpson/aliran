@@ -54,28 +54,36 @@ deep-verified by a real test encode at startup and a channel that needs an unusa
 one is refused with the probe's error (no silent fallback). With `copy`, set the
 encoder's keyframe interval to `HLS_TIME` seconds so segments cut cleanly.
 
-## The feed is an ephemeral rolling buffer
+## The feed is a rolling buffer (disk vs RAM)
 
 Live segments are **not archived**: the playlist (`index.m3u8`) is the source of
 truth, and everything that rotates out of the window is deleted from the drive and
 its blob storage reclaimed — a channel that streams for weeks occupies O(window)
-space, not O(history). The window defaults to **16 segments of ~4 s** (≈64 s,
-`HLS_TIME` / `HLS_LIST_SIZE`), deep enough that viewers hold a meaningful shareable
-window to re-seed each other.
+space, not O(history). The window defaults to **8 segments of ~2 s** (≈16 s,
+`HLS_TIME` / `HLS_LIST_SIZE`): short segments cut time-to-first-frame, and 8 is still
+a real shareable window for peers to re-seed each other. Deepen `HLS_LIST_SIZE`
+(12–16) for large swarms.
 
 Two buffer modes (`FEED_BUFFER` env or per-channel `buffer` field):
 
-- **`ram`** (default) — the feed lives in memory as a **session core**: every
-  `start()` mints a fresh feed keypair and registers the new `feedKey` with the
-  panel. Nothing is written to disk. (Reusing one keypair over an emptied store
-  would fork the core and break existing replicas — a restart is a new session by
-  design.) Viewers follow along without re-login: the player SDK resolves the
-  CURRENT `feedKey` from the replicated catalog at play time.
-- **`disk`** — one persistent on-disk core; `feedKey` is stable across restarts;
-  the same rolling reclaim keeps it window-bounded.
+- **`disk`** (default) — one persistent on-disk core. The `feedKey` and its DHT
+  discovery topic are **stable across restarts**, so a returning viewer rejoins a
+  *warm* topic and resumes its on-disk replica instead of cold-discovering a brand-new
+  core — markedly faster time-to-play and healthier P2P. The rolling reclaim keeps
+  storage window-bounded (tens of MB), not byte-flat.
+- **`ram`** — the feed lives in memory as a **session core**: every `start()` mints a
+  fresh feed keypair and registers the new `feedKey` with the panel, and segment data
+  never touches disk. (Reusing one keypair over an emptied RAM store would fork the
+  core and break existing replicas — a restart is a new session by design, which is
+  why every restart costs viewers a fresh DHT discovery.) Viewers follow along without
+  re-login: the SDK resolves the CURRENT `feedKey` from the replicated catalog at play
+  time. Choose this only when the host disk must stay byte-flat.
 
 In both modes the **encryption key persists** (`feed.key` in the channel's store
 dir) — user grants seal it, so restarts never invalidate access.
+
+See [`../docs/kb/feed-buffer.md`](../docs/kb/feed-buffer.md) for the P2P tuning
+rationale (why disk wins for time-to-play, and how to size the segment window).
 
 ## Test it (no Android needed)
 

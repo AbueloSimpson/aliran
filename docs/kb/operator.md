@@ -63,3 +63,7 @@ hunting a stuck ffmpeg, match its command line by the HLS output directory it wr
 - First DHT connect from a fresh client store: **30–90 s**; subsequent logins ~10 s.
 - After play: a few seconds of playlist 404s while the live edge replicates.
 - `1 peer` means the broadcaster only; more viewers = more seeders.
+- **Time-to-play jumps back to 40–55 s after every broadcaster restart?** You're on
+  `FEED_BUFFER=ram` — each restart mints a new feed identity, so viewers re-pay a cold
+  DHT discovery. Switch to the default `FEED_BUFFER=disk` for a stable, warm topic.
+  See [P2P feed buffer & tuning](feed-buffer.md).

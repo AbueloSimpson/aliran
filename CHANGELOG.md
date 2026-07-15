@@ -481,6 +481,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lane alongside `test:args`; `test:broadcaster-api` updated to the session-core
   contract (restart ⇒ new feedKey, catalog follows, encryption key stable).
 
+### Feed buffer defaults to `disk` — faster time-to-play (verified)
+- **`FEED_BUFFER=disk` is now the default** (`ram` stays available per-env or per
+  channel). A RAM feed mints a fresh keypair every start, so its `feedKey`/DHT topic
+  changes on each restart and viewers re-pay a **cold DHT discovery** every time
+  (time-to-play ~40–55 s). Disk keeps a **stable feed identity**: returning viewers
+  rejoin a warm topic and resume their on-disk replica (~10 s), while the same rolling
+  reclaim keeps storage window-bounded. `ram` remains the choice when the host disk
+  must stay byte-flat.
+- **HLS window default is now 8 × ~2 s (≈16 s)** (was 16 × ~4 s in code / 6 × 2 s in
+  `.env.example` — the two are now consistent). Short segments cut time-to-first-frame;
+  `HLS_LIST_SIZE` is the P2P-shareability knob — deepen to 12–16 for large swarms.
+  `normalizeMeta`/`ensureLegacy` now inherit the configured HLS default instead of a
+  stale hard-coded `2/6`.
+- `test:broadcaster-api` adds **Test F3**: a `disk` channel resolves its feedKey before
+  first start and keeps it **stable across restart** (RAM's session-core contract is now
+  asserted with an explicit `buffer: 'ram'`). New KB page `docs/kb/feed-buffer.md`
+  (disk vs ram, the cold-DHT explanation, window sizing; clarifies the transport is
+  Hypercore, not WebRTC).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.

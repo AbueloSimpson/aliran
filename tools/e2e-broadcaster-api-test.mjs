@@ -87,6 +87,7 @@ try {
     publisherKey: b4a.toString(keys.publisher.secretKey, 'hex'),
     bootstrap: [],
     hls: { time: 2, listSize: 6 },
+    feedBuffer: 'disk', // production default; channels below opt into 'ram' explicitly
     argon2: { memKiB: 8192, time: 1 }
   }
   const manager = new ChannelManager(bcConfig); await manager.init(); cleanups.push(() => manager.close())
@@ -115,7 +116,7 @@ try {
   log('A: bad creds/missing token 401; valid login -> token ✓')
 
   // ===== Test B: channel CRUD over HTTP =====
-  let r = await api('POST', '/api/channels', { id: 'api-chan', title: 'API Channel', category: 'demo', input: 'test' }, token)
+  let r = await api('POST', '/api/channels', { id: 'api-chan', title: 'API Channel', category: 'demo', input: 'test', buffer: 'ram' }, token)
   assert.strictEqual(r.status, 201, 'add channel: ' + JSON.stringify(r.body))
   const encryptionKey = r.body.encryptionKey
   // Ephemeral (RAM) feeds are session cores: no feedKey exists until the channel
@@ -213,6 +214,30 @@ try {
   await api('POST', '/api/channels/api-chan/stop', undefined, token)
   log('F: stop clean (ffmpeg down), double stop 400, restart = new session feedKey + catalog follows ✓')
 
+  // ===== Test F3: disk buffer (the DEFAULT) keeps a STABLE feed identity =====
+  // The mirror image of the RAM session-core contract: a disk-backed feed resolves a
+  // deterministic feedKey BEFORE it ever starts and keeps it across restarts, so
+  // returning viewers rejoin a warm DHT topic instead of cold-discovering a new one.
+  r = await api('POST', '/api/channels', { id: 'disk-chan', title: 'Disk Channel', input: 'test', buffer: 'disk' }, token)
+  assert.strictEqual(r.status, 201, 'add disk channel: ' + JSON.stringify(r.body))
+  const diskKey = r.body.feedKey
+  assert.match(diskKey || '', /^[0-9a-f]{64}$/, 'disk feed key is known before first start (deterministic identity)')
+  r = await api('POST', '/api/channels/disk-chan/start', undefined, token)
+  assert.strictEqual(r.status, 200, 'start disk channel: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.feedKey, diskKey, 'disk start reuses the pre-resolved feed key')
+  await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/disk-chan', undefined, token)).body
+    return x.running && x.ffmpegUp && x.playlist ? x : null
+  }, 90000, 'disk channel running + playlist (disk-backed feed flows end to end)')
+  await api('POST', '/api/channels/disk-chan/stop', undefined, token)
+  r = await api('POST', '/api/channels/disk-chan/start', undefined, token)
+  assert.strictEqual(r.status, 200, 'restart disk channel')
+  assert.strictEqual(r.body.feedKey, diskKey, 'disk buffer: feedKey STABLE across restart (warm topic, no re-discovery)')
+  assert.strictEqual((await db.get('catalog/disk-chan')).value.feedKey, diskKey, 'panel catalog keeps the stable disk feed key')
+  await api('POST', '/api/channels/disk-chan/stop', undefined, token)
+  assert.strictEqual((await api('DELETE', '/api/channels/disk-chan', undefined, token)).status, 200, 'cleanup disk-chan')
+  log('F3: disk buffer keeps a stable feedKey before start + across restart (warm DHT topic) ✓')
+
   // ===== Test F2: admins management (S16a — parity with the panel admin API) =====
   r = await api('GET', '/api/admins', undefined, token)
   assert.strictEqual(r.status, 200)
@@ -264,7 +289,7 @@ try {
   assert.strictEqual((await api('POST', '/api/channels', { id: 'bad2', transcode: { encoder: 'h264_bogus' } }, token)).status, 400, 'unknown encoder rejected')
   assert.strictEqual((await api('POST', '/api/channels', { id: 'bad3', transcode: { encoder: 'copy', resolution: '720p' } }, token)).status, 400, 'copy+scale rejected')
 
-  r = await api('POST', '/api/channels', { id: 'push-chan', title: 'Push Channel', input: { kind: 'rtmp' } }, token)
+  r = await api('POST', '/api/channels', { id: 'push-chan', title: 'Push Channel', input: { kind: 'rtmp' }, buffer: 'ram' }, token)
   assert.strictEqual(r.status, 201, 'rtmp push channel added: ' + JSON.stringify(r.body))
   assert.strictEqual(r.body.input.kind, 'rtmp')
   assert.strictEqual(r.body.input.port, 5000, 'auto-allocated the first ingest-range port')

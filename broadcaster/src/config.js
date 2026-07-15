@@ -38,13 +38,19 @@ export const config = {
   },
   // DRM render node for h264_vaapi (Linux only).
   vaapiDevice: process.env.VAAPI_DEVICE || '/dev/dri/renderD128',
-  // Live window: 16 segments of ~4 s (≈64 s) — deep enough that peers hold a real
-  // shareable window for P2P delivery; the playlist is the source of truth and
-  // everything that rotates out is reclaimed (see hls.js reclaimExpiredBlobs).
-  hls: { time: int(process.env.HLS_TIME, 4), listSize: int(process.env.HLS_LIST_SIZE, 16) },
-  // 'ram' (default) = ephemeral session feeds — fresh feedKey per start, segment
-  // data only ever in memory; 'disk' = persistent feed identity across restarts.
-  feedBuffer: process.env.FEED_BUFFER === 'disk' ? 'disk' : 'ram',
+  // Live window: 8 segments of ~2 s (≈16 s). Short segments cut time-to-first-frame
+  // (the player prebuffers ~3 × HLS_TIME before playback); 8 still gives peers a real
+  // shareable window for P2P re-seeding. The playlist is the source of truth and
+  // everything that rotates out is reclaimed (see hls.js reclaimExpiredBlobs). Deepen
+  // HLS_LIST_SIZE (12–16) for large swarms — see docs/kb/feed-buffer.md.
+  hls: { time: int(process.env.HLS_TIME, 2), listSize: int(process.env.HLS_LIST_SIZE, 8) },
+  // Feed buffer mode. 'disk' (default) = persistent feed identity: the feedKey and its
+  // DHT topic stay STABLE across restarts, so returning viewers rejoin a warm topic and
+  // resume their on-disk replica — much faster time-to-play and healthier P2P. 'ram' =
+  // ephemeral session feeds (fresh feedKey per start, segment data only ever in memory)
+  // for hosts that must keep the disk byte-flat. Both stay window-bounded via reclaim.
+  // See docs/kb/feed-buffer.md.
+  feedBuffer: process.env.FEED_BUFFER === 'ram' ? 'ram' : 'disk',
   protection: process.env.PROTECTION || 'self',
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean),

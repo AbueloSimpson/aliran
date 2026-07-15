@@ -3,20 +3,23 @@
 // the ChannelManager persists the channel registry (DATA_DIR/channels.json) and is the
 // single owner of every channel's Corestore.
 //
-// Feed identity vs feed DATA (the ephemeral buffer):
+// Feed identity vs feed DATA (the rolling buffer):
 // - The ENCRYPTION key (feed.key in the channel's store dir) is persisted — user
 //   grants seal it, so it must survive restarts. API-added channels live under
 //   DATA_DIR/channels/<id>/; the env-configured channel keeps the LEGACY layout
 //   (feed.key at DATA_DIR root) so pre-seeded feed.key files keep working.
-// - The feed DATA is a rolling live window (the m3u8 defines what exists), held in a
-//   RAM-backed session core by default (buffer 'ram'): each start() mints a FRESH
-//   feed keypair, registers the new feedKey with the panel, and rotated-out segments
-//   are clear()ed — nothing accumulates, on disk or in RAM. (Reusing one keypair over
-//   an emptied store would FORK the core and break existing replicas — that is why a
-//   restart is a new session core.) Viewers follow the catalog: the SDK resolves the
-//   CURRENT feedKey at play time, so no re-login is needed after a restart.
-// - buffer 'disk' keeps the pre-ephemeral behavior (one persistent on-disk core,
-//   feedKey stable across restarts) with the same rolling clear() bounding growth.
+// - The feed DATA is a rolling live window (the m3u8 defines what exists); rotated-out
+//   segments are clear()ed so storage stays O(window) in either mode. Two buffers:
+// - buffer 'disk' (DEFAULT): one persistent on-disk core — the feedKey and its DHT
+//   discovery topic are STABLE across restarts, so returning viewers rejoin a warm
+//   topic and resume their replica (fast time-to-play, healthier P2P). resolveFeedKey()
+//   returns the deterministic key even before the first start().
+// - buffer 'ram': a RAM-backed SESSION core — each start() mints a FRESH feed keypair,
+//   registers the new feedKey with the panel, and segment data never touches disk.
+//   (Reusing one keypair over an emptied RAM store would FORK the core and break
+//   existing replicas — that is why a RAM restart is a new session core.) The catalog
+//   follows: the SDK resolves the CURRENT feedKey at play time, so no re-login is
+//   needed after a restart. Pick 'ram' when the host disk must stay byte-flat.
 
 import Corestore from 'corestore'
 import RAM from 'random-access-memory'
@@ -267,8 +270,9 @@ class Channel {
     if (this.meta.feedKey) return this.meta.feedKey
     if (this.run) return this.run.feedKey
     // Ephemeral (RAM) feeds are session cores: the feedKey only exists while the
-    // channel runs — each start() mints one and registers it with the panel.
-    if ((this.meta.buffer || this.manager.config.feedBuffer || 'ram') === 'ram') return null
+    // channel runs — each start() mints one and registers it with the panel. Disk
+    // feeds (the default) resolve a stable, deterministic key here before first start.
+    if ((this.meta.buffer || this.manager.config.feedBuffer || 'disk') === 'ram') return null
     const store = new Corestore(this.storeDir)
     await store.ready()
     const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey: loadOrCreateEncryptionKey(this.storeDir) })
@@ -285,9 +289,9 @@ class Channel {
     // (capability probe) and unbindable push ports are operator errors, not crashes.
     await this.manager.assertStartable(this.meta)
     const encryptionKey = loadOrCreateEncryptionKey(this.storeDir) // persisted — grants seal it
-    const buffer = this.meta.buffer || config.feedBuffer || 'ram'
+    const buffer = this.meta.buffer || config.feedBuffer || 'disk'
+    // 'disk' (default): persistent core with a stable feedKey/DHT topic across restarts.
     // 'ram': ephemeral session core — fresh keypair, data only ever in memory.
-    // 'disk': persistent core with a stable feedKey across restarts.
     const store = buffer === 'ram' ? new Corestore(RAM) : new Corestore(this.storeDir)
     await store.ready()
     const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey })
@@ -513,8 +517,8 @@ export class ChannelManager {
       out.buffer = fields.buffer
     }
     if (fields.hlsTime != null || fields.hlsListSize != null) {
-      const time = parseInt(fields.hlsTime ?? 2, 10)
-      const listSize = parseInt(fields.hlsListSize ?? 6, 10)
+      const time = parseInt(fields.hlsTime ?? this.config.hls?.time ?? 2, 10)
+      const listSize = parseInt(fields.hlsListSize ?? this.config.hls?.listSize ?? 8, 10)
       if (!Number.isInteger(time) || time < 1 || time > 30) bad('hlsTime must be 1-30')
       if (!Number.isInteger(listSize) || listSize < 2 || listSize > 60) bad('hlsListSize must be 2-60')
       out.hls = { time, listSize }
@@ -570,7 +574,7 @@ export class ChannelManager {
         existing: ch.meta.input
       }),
       transcode: ch.meta.transcode ?? null,
-      hls: hls || { time: 2, listSize: 6 },
+      hls: hls || { time: this.config.hls?.time ?? 2, listSize: this.config.hls?.listSize ?? 8 },
       protection: protection || 'self'
     })
     await ch.resolveFeedKey()

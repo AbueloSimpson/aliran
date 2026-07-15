@@ -35,8 +35,9 @@ Copy each component's `.env.example` to `.env`.
 | `STREAM_ID` | `default` | Catalog id for this stream |
 | `INPUT` | *(required)* | `rtmp` (OBS listener), or an `rtsp://`/`http…m3u8`/file path |
 | `RTMP_PORT` | `1935` | If `INPUT=rtmp`, port for OBS to push to |
-| `HLS_TIME` | `2` | Segment duration (seconds) |
-| `HLS_LIST_SIZE` | `6` | Rolling playlist window |
+| `HLS_TIME` | `2` | Segment duration (seconds); shorter = faster time-to-first-frame |
+| `HLS_LIST_SIZE` | `8` | Rolling playlist window (segments); deepen to 12–16 for large swarms |
+| `FEED_BUFFER` | `disk` | `disk` (stable feed identity, warm DHT topic — faster joins) or `ram` (byte-flat disk, cold discovery each restart). See [KB](kb/feed-buffer.md) |
 | `PROTECTION` | `self` | `self` (encrypted Hyperdrive) or `drm` (CENC via packager) |
 | `CONTROL_ENABLED` | `false` | Serve the channel control HTTP API |
 | `CONTROL_HOST` | `127.0.0.1` | Control API bind address (use TLS in front if not loopback) |

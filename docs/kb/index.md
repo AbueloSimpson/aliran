@@ -6,6 +6,7 @@ Aliran. Each page is grep-friendly: search for the error text you're seeing.
 | Page | Covers |
 |---|---|
 | [Playback & client runtime](playback.md) | Blank posters, `OPLOG_CORRUPT`, login stalls, black player, worklet crashes |
+| [P2P feed buffer & tuning](feed-buffer.md) | `disk` vs `ram` feeds, slow/cold time-to-play, DHT discovery, HLS window sizing (not WebRTC) |
 | [Operating the panel & broadcaster](operator.md) | Env vars, grants breaking, `ELOCKED`, wedged processes, latency expectations |
 | [Android & React Native builds](android-build.md) | Toolchain traps, emulator crashes/rot, dependency pinning, stale JS bundles |
 | [Bare worklet & bundling](bare-worklet.md) | bare-pack flags, shims, native addons, worklet debugging, hyper-stack API traps |

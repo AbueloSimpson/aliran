@@ -107,11 +107,13 @@ auto-authorizes, browses live TV under overlay panels, and plays live P2P on pho
   encoder selection (x264, NVENC, QSV, VAAPI, AMF, passthrough `copy`) with
   deep verification at startup so only encoders that really work are accepted
   (QSV proven on real hardware; control-UI selectors land with the ingest UI)
-- ✅ **Ephemeral feed buffer**: live segments are a rolling window (16 × ~4 s by
-  default), RAM-backed session feeds, expired blob storage reclaimed — streaming
-  for days occupies O(window) space; the SDK follows broadcaster restarts via the
-  catalog without re-login (verified by `test:retention` + the updated
-  `test:broadcaster-api` restart contract)
+- ✅ **Rolling feed buffer**: live segments are a rolling window (8 × ~2 s by default),
+  expired blob storage reclaimed — streaming for days occupies O(window) space.
+  **`disk` buffer is the default** (stable feed identity → warm DHT topic → fast
+  time-to-play); `ram` session feeds stay available (byte-flat disk) with the SDK
+  following restarts via the catalog without re-login. Verified by `test:retention` +
+  `test:broadcaster-api` (RAM session-core contract **and** disk stable-identity F3).
+  Tuning rationale in `docs/kb/feed-buffer.md`.
 - ⬜ **Broadcaster reliability**: ffmpeg watchdog (auto-restart with backoff,
   re-listen after publisher disconnect), per-channel log capture in the control UI,
   `isLive:false` pushed to the catalog on stop/crash
