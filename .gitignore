@@ -11,6 +11,8 @@ node_modules/
 **/store/
 **/corestore/
 **/data/
+# extra local data dirs for multi-broadcaster dev (data-two, …)
+**/data-*/
 storage/
 secrets/
 

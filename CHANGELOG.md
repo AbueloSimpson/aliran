@@ -420,8 +420,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `test:sdk` asserts the fields flow through login and live-push, and that uncurated
   records stay bare.
 
+### Android app GUI redesign — live-TV-first, white-label (verified on device)
+- **New information architecture** (modeled on a commercial IPTV reference app's
+  organization — layout only, no assets):
+  `Splash → [Login] → Menu → { Live, Favorites, Search, Settings }`.
+- **Splash auto-auth**: the app boots behind a branded splash ("Authorizing device…")
+  and signs in with saved credentials; Login is now the exception path. "Remember me"
+  credentials + favorites persist in the app-private files dir **beside** the
+  disposable store (`aliran-prefs.json` — corruption recovery can't wipe them), via
+  new additive worklet IPC (`prefs-get`/`creds-save`/`creds-clear`/`favorites-set`);
+  the SDK binding exposes them (`requestPrefs`/`saveCredentials`/`clearCredentials`/
+  `toggleFavorite`) and never logs the prefs payload. Sign-out (Settings) clears them.
+- **Live TV is ONE fullscreen surface** (`<AliranVideo>` base layer) with overlay
+  panels — playback never stops while browsing: a category rail (accent-underline
+  focus) + a numbered channel list (derived numbers: curation order → title, 1..N,
+  never stored; light row-fill focus; LIVE badges; ★ favorites; now-playing line from
+  the catalog description) and a channel-detail panel (art, chips, synopsis, P2P/CDN
+  source + peer stats, favorite/watch actions, and an honest **"No program
+  information"** placeholder where an EPG lands later — no fake guides). Selecting a
+  row switches the stream in place; selecting the playing row collapses to
+  fullscreen; D-pad up/down zaps with an auto-hiding number+name OSD; BACK walks
+  detail → list → fullscreen → menu. Phone gets the same IA by tap (D7).
+- **Menu hub**: horizontal icon bar over the featured stream's backdrop (panel
+  curation picks it) with a dark scrim; sections are **descriptor-driven**
+  (favorites/search/settings toggles; Exit is TV-only by default; VOD hidden until it
+  ships). Old Home/Player screens dissolved into the new surfaces.
+- **White-label wiring**: `makeTheme(descriptor)` merges `branding.colors` over
+  defaults (full token set incl. overlay/brand-surface/focus-fill/onPrimary); screens
+  and components contain **zero** hardcoded brand strings or hex colors (grep-clean —
+  tokens live only in `theme.ts`; the brand name renders from `service.json`).
+  10-foot sizing follows the Google TV design guidance (type ramp, overscan-safe
+  margins, three-part focus grammar).
+- SDK: outbound IPC now queues until the worklet starts (a splash asking for prefs
+  during boot can't crash the binding).
+- Docs: `docs/client-build.md` gains the app-structure map, the prefs/white-label
+  contracts, and a gradle gotcha (the release JS-bundle task doesn't track
+  `config/*.json` — delete `generated/assets/react` after descriptor swaps).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.
 - Hybrid artwork (https URLs alongside the P2P assets drive).
+- White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

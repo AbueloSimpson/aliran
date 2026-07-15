@@ -55,18 +55,22 @@ Goal: accounts, encryption, and an OTT UI.
 - ✅ Catalog `bee.watch()` live push to the UI: the player SDK watches the replicated
   `catalog/` range and re-emits `streams` with fresh display metadata on every edit
   (no polling, no re-login; verified in `npm run test:sdk`)
-- 🚧 OTT GUI: login screen, home (category rails, hero, LIVE badges, P2P poster art),
-  and the player (live HLS from the P2P feed via react-native-video, peers/buffering
-  status) verified on-device; remaining: channel detail, search
+- ✅ OTT GUI (redesigned to the reference IA): splash auto-auth ("remember me" saved
+  device-local; login is the exception path), menu hub over the featured stream's
+  wallpaper, **Live TV as one fullscreen surface with browse/detail overlay panels**
+  (category rail, numbered channel list, channel-detail panel with an honest no-EPG
+  placeholder; playback never stops while browsing; D-pad zap), favorites
+  (device-local), search, settings — all on-device; **white-label**: every color and
+  brand string flows from the service descriptor via `makeTheme()`
 - ✅ Android **TV** target (leanback + D-pad focus) from the same APK: focus rings +
   rail focus memory (`TVFocusGuideView`), verified remote-only on an Android TV
   emulator (login → browse → live P2P playback → back)
 
 **Exit criteria:** username/password login validated against the P2P DB; browse a
 branded catalog on phone and TV; unauthorized users can't decrypt.
-**Status:** **done end-to-end** — security core verified on desktop; the app logs in,
-browses, and plays live P2P on phone **and** TV emulators; catalog edits push live.
-Remaining polish (channel detail, search) rides along in v1.0.
+**Status:** **done end-to-end** — security core verified on desktop; the app
+auto-authorizes, browses live TV under overlay panels, and plays live P2P on phone
+**and** TV emulators; catalog edits push live.
 
 ---
 
@@ -108,8 +112,11 @@ Remaining polish (channel detail, search) rides along in v1.0.
   `isLive:false` pushed to the catalog on stop/crash
 - ⬜ **Hybrid artwork**: P2P assets drive stays the default; `https://` art URLs pass
   through for CDN/web hosting
-- ⬜ **Android app GUI redesign** to reference designs (phone + TV), plus the
-  remaining OTT screens: channel detail and search
+- ✅ **Android app GUI redesign** to the reference organization (phone + TV, one
+  codebase): splash/auto-auth → menu hub → live-TV overlay browsing, plus the
+  previously missing channel-detail and search screens; the GUI is white-label-able
+  (descriptor-driven theme + sections — per-brand APK packaging is its own upcoming
+  segment)
 - ⬜ Panel **HA / threshold OPRF** across replicas; documented backup & key-rotation runbooks
 - ⬜ Hardening pass + **independent security review** of the crypto paths
 - ⬜ Config validation, structured logging, health/metrics endpoints

@@ -1,5 +1,8 @@
-// Login screen. Username + password -> backend OPRF login. No plaintext leaves the
-// device. On success the backend seals a session and returns the allowed stream list.
+// Login screen — the EXCEPTION path since the redesign: Splash auto-authorizes with
+// saved credentials and only lands here when there are none (first run / after sign
+// out) or they stopped working. Username + password -> backend OPRF login; no
+// plaintext leaves the device. On success the credentials are saved device-local
+// ("remember me", D1) so the next boot authorizes automatically.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -8,10 +11,12 @@ import { backend } from '../worklet'
 import { loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
 
+const service = loadServiceDescriptor()
+
 // Dev-only convenience: the gitignored local service.json may carry dev credentials
 // (see config.ts ServiceDescriptor.dev) — prefill them so a dev build signs in with
 // one tap. Absent in any shipped descriptor, so production builds start empty.
-const dev = loadServiceDescriptor().dev
+const dev = service.dev
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Login'> & { backendReady: boolean }
 
@@ -24,7 +29,8 @@ const RETRY_MS = 2500
 const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up
 
 export function LoginScreen ({ navigation, backendReady }: Props) {
-  const [username, setUsername] = useState(dev?.username ?? '')
+  // Prefill the last-known username (e.g. Splash fell through on a changed password).
+  const [username, setUsername] = useState(backend.creds?.username ?? dev?.username ?? '')
   const [password, setPassword] = useState(dev?.password ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -35,7 +41,13 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
 
   useEffect(() => {
     const off = backend.onMessage((m) => {
-      if (m.type === 'streams') { setBusy(false); navigation.replace('Home') }
+      if (m.type === 'streams') {
+        // Remember me (D1): persist the credentials that worked so the next boot
+        // auto-authorizes behind the splash. Sign out (Settings) clears them.
+        if (creds.current.username) backend.saveCredentials(creds.current.username, creds.current.password)
+        setBusy(false)
+        navigation.replace('Menu')
+      }
       if (m.type === 'login-error') {
         if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
           tries.current += 1
@@ -58,7 +70,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Aliran</Text>
+      <Text style={styles.title}>{service.name}</Text>
       <TextInput
         style={[styles.input, focused === 'user' && styles.focused]}
         placeholder="Username"
@@ -88,7 +100,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
         onBlur={() => setFocused(null)}
         onPress={onSubmit}
       >
-        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{backendReady ? 'Sign in' : 'Connecting…'}</Text>}
+        {busy ? <ActivityIndicator color={theme.colors.onPrimary} /> : <Text style={styles.buttonText}>{backendReady ? 'Sign in' : 'Connecting…'}</Text>}
       </Pressable>
     </View>
   )
@@ -100,6 +112,6 @@ const styles = StyleSheet.create({
   input: { width: theme.isTV ? 480 : 300, backgroundColor: theme.colors.surface, color: theme.colors.text, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 14, fontSize: 18, borderWidth: theme.focusRing, borderColor: 'transparent' },
   button: { marginTop: 8, backgroundColor: theme.colors.primary, borderRadius: 10, paddingHorizontal: 32, paddingVertical: 14, minWidth: 200, alignItems: 'center', borderWidth: theme.focusRing, borderColor: 'transparent' },
   focused: { borderColor: theme.colors.focus },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  buttonText: { color: theme.colors.onPrimary, fontSize: 18, fontWeight: '700' },
   error: { color: theme.colors.live, marginBottom: 10 }
 })

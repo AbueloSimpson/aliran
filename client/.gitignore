@@ -61,6 +61,7 @@ backend/app.bundle*
 
 # Per-deployment service descriptor (copy from config/service.example.json)
 config/service.json
+config/service.*-backup.json
 
 # Ruby / CocoaPods
 **/Pods/

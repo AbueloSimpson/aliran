@@ -54,11 +54,44 @@ backend detects this, **wipes the store automatically and retries once**
 directory by hand (or `adb shell pm clear <pkg>`) is always safe — it only costs a
 re-replication. Verified by `npm run test:corrupt` (repo root).
 
+## App structure (since the GUI redesign)
+
+```
+Splash (boot + auto-auth: "Authorizing device…")
+  ├─ Login       only when there are no saved credentials, or they stopped working
+  └─ Menu        icon-bar hub over the featured stream's wallpaper (sections are
+     │           descriptor-driven; Exit is TV-only by default)
+     ├─ Live        ONE fullscreen video surface; browsing happens in overlay panels
+     │              (category rail + channel list, and a channel-detail panel) — the
+     │              video keeps playing while you browse; selecting a row switches
+     │              the stream in place; D-pad up/down zaps when fullscreen
+     ├─ Favorites   device-local ★ channels
+     ├─ Search      client-side filter (title/description/category)
+     └─ Settings    account / service / diagnostics / sign out
+```
+
+- **Auto-login ("remember me"):** after a successful sign-in the app saves the
+  credentials to the **app-private files dir** (`aliran-prefs.json`, beside — not
+  inside — the disposable store, so corruption recovery never wipes them). This is
+  plaintext-at-rest inside the Android app sandbox — the normal tradeoff for this app
+  class; sign-out deletes it. Favorites live in the same file.
+- **White-label contract:** screens/components contain **no** brand names, colors, or
+  section lists. Everything flows from `config/service.json` (the service descriptor)
+  through `theme.ts makeTheme()` — swap the descriptor, ship a different brand.
+  Channel numbers are derived from the panel's curation (`order`, then title) — never
+  stored. No EPG data exists yet, so the channel-detail panel shows an honest
+  "No program information" placeholder instead of a fake guide.
+
 ## Configure the panel key
 
 - **Build-time:** put the operator `panelPubKey` + branding in `client/config`.
 - **Runtime:** accept a **service-descriptor QR/deep link** so one generic APK works
   for any operator.
+
+> **Gradle gotcha:** the release JS-bundling task does not track `client/config/*.json`
+> as an input — after editing `service.json`, delete
+> `android/app/build/generated/assets/react` (or run the bundle task with
+> `--rerun-tasks`) so the descriptor change actually lands in the APK.
 
 ## Build & install
 
