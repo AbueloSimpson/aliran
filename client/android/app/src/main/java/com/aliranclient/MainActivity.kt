@@ -1,5 +1,6 @@
 package com.aliranclient
 
+import android.os.Bundle
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -12,6 +13,18 @@ class MainActivity : ReactActivity() {
    * rendering of the component.
    */
   override fun getMainComponentName(): String = "AliranClient"
+
+  /**
+   * react-native-screens cannot rehydrate its fragment back-stack from restored instance
+   * state: on an activity RECREATION (a config change like theme/rotation, a process-death
+   * restore, or the system relaunching the activity under memory pressure) Android would
+   * otherwise try to restore it and crash with `ScreenStackFragment` InstantiationException.
+   * Passing null starts fresh — React Native rebuilds the JS-driven UI anyway. This is the
+   * documented RN Screens fix; without it a recreation is a guaranteed crash.
+   */
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(null)
+  }
 
   /**
    * Returns the instance of the [ReactActivityDelegate]. We use [DefaultReactActivityDelegate]

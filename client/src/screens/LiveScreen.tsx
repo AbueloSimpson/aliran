@@ -3,8 +3,8 @@
 //
 //   base   : fullscreen <AliranVideo> — playback NEVER stops while browsing
 //   overlay1: CategoryRail + ChannelListPanel — browse & zap; selecting a row
-//             switches the stream IN PLACE under the panels; selecting the row that
-//             is already playing collapses to fullscreen
+//             switches the stream AND collapses to fullscreen (the zap OSD confirms the
+//             channel for a moment); BACK/tap reopens the panels to keep browsing
 //   overlay2: ChannelInfoPanel — channel detail (long-press a row); honest
 //             "No program information" placeholder where an EPG lands later (D2)
 //
@@ -194,7 +194,7 @@ export function LiveScreen ({ navigation, route }: Props) {
                 numbers={numbers}
                 playingId={playingId}
                 favorites={favorites}
-                onSelect={(s) => play(s, { collapse: s.id === playingId })}
+                onSelect={(s) => play(s, { collapse: true })}
                 onInfo={(s) => { setInfoStream(s); setOverlay('info') }}
                 onCollapse={() => setOverlay('none')}
               />
