@@ -50,12 +50,21 @@ export function LiveScreen ({ navigation, route }: Props) {
   const osdTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const overlayRef = useRef(overlay); overlayRef.current = overlay
+  const playingIdRef = useRef(playingId); playingIdRef.current = playingId
 
   useEffect(() => {
     backend.requestPrefs() // favorites may not be loaded yet
     return backend.onMessage((m) => {
       if (m.type === 'streams') setStreams(m.streams)
       if (m.type === 'prefs') setFavorites(m.favorites)
+      // Broadcaster rotated the channel we're watching (source change / restart): the SDK
+      // re-resolved the feed behind the same URL and AliranVideo remounts. Clear any prior
+      // playback error (that had unmounted the video) so it re-mounts onto the fresh feed,
+      // and show the spinner until it buffers.
+      if (m.type === 'feed-changed' && m.streamId === playingIdRef.current) {
+        setError(null)
+        setBuffering(true)
+      }
     })
   }, [])
 

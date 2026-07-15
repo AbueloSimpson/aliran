@@ -26,6 +26,11 @@
 //   'error'   (err)      background failures that have no caller to throw to
 //   'fallback' ({streamId,url,reason})        hybrid: P2P unhealthy -> switched to CDN
 //   'source-changed' ({streamId,source,url})  hybrid: active source switched (e.g. back to P2P)
+//   'feed-changed' ({streamId,feedKey,url})   the ACTIVE stream's catalog feedKey rotated
+//                        underneath the viewer (broadcaster source change / RAM restart):
+//                        the SDK re-resolved and swapped the served feed WITHOUT a new
+//                        resolve() call. url is the unchanged localhost URL — the host
+//                        just reloads the player to flush the stale playlist/segments.
 //
 // Hybrid CDN<->P2P (S10b): pass `hybrid` config to choose the active source per play.
 // The SDK never decodes video — it exposes the CURRENT source URL + health signals and
@@ -98,7 +103,7 @@ export class AliranPlayer extends Emitter {
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._hybrid = normalizeHybrid(hybrid)
     this._prewarmN = normalizePrewarm(prewarm)
-    this._active = null // hybrid state for the current play: { streamId, localUrl, cdnUrl, source, lastSig, lastAdvance }
+    this._active = null // current play state: { streamId, feedKey, localUrl, cdnUrl, source, lastSig, lastAdvance }
     this._watchTimer = null // P2P stall watchdog (while source === 'p2p')
     this._probeTimer = null // P2P recovery probe (while source === 'cdn')
     this._panelKey = panelPubKey || null
@@ -195,19 +200,19 @@ export class AliranPlayer extends Emitter {
 
     if (cfg.mode === 'cdn-only') {
       const url = cfg.cdnUrl(streamId)
-      this._active = { streamId, localUrl: null, cdnUrl: url, source: 'cdn', lastSig: null, lastAdvance: 0 }
+      this._active = { streamId, feedKey, localUrl: null, cdnUrl: url, source: 'cdn', lastSig: null, lastAdvance: 0 }
       return { url, source: 'cdn', localUrl: undefined, port: undefined, feedKey }
     }
 
     const port = await this.serveFeed(feedKey, keys.encryptionKey)
     const localUrl = `http://127.0.0.1:${port}/index.m3u8`
     if (cfg.mode === 'p2p-only') {
-      this._active = { streamId, localUrl, cdnUrl: null, source: 'p2p', lastSig: null, lastAdvance: Date.now() }
+      this._active = { streamId, feedKey, localUrl, cdnUrl: null, source: 'p2p', lastSig: null, lastAdvance: Date.now() }
       return { url: localUrl, source: 'p2p', localUrl, port, feedKey }
     }
 
     // hybrid: pick the starting source, then keep watching/probing in the background.
-    this._active = { streamId, localUrl, cdnUrl: cfg.cdnUrl(streamId), source: null, lastSig: null, lastAdvance: Date.now() }
+    this._active = { streamId, feedKey, localUrl, cdnUrl: cfg.cdnUrl(streamId), source: null, lastSig: null, lastAdvance: Date.now() }
     if (cfg.start === 'preferCDN') {
       this._active.source = 'cdn'
       this._startRecoveryProbe()
@@ -454,6 +459,7 @@ export class AliranPlayer extends Emitter {
         for await (const _ of watcher) { // eslint-disable-line no-unused-vars
           if (this._catalogWatcher !== watcher) return // superseded by purge/stop
           await this._recover(() => this._pushCatalog())
+          await this._maybeReresolveActiveFeed() // follow a rotated feedKey for the stream being watched
         }
       } catch (err) {
         // The bee closing underneath us (stop/purge) ends the watcher — not an error.
@@ -478,6 +484,40 @@ export class AliranPlayer extends Emitter {
     }
     this._streams = streams
     this.emit('streams', streams)
+  }
+
+  // A stream's feedKey can rotate in the catalog WHILE a viewer is watching it (broadcaster
+  // source change / RAM-buffer restart): resolve() only reads the feedKey once, so the
+  // active viewer would keep replicating the DEAD feed until they re-zap. Called on every
+  // catalog change: if the ACTIVE stream now points at a different feedKey, open it and make
+  // it the one served on the (unchanged) localhost port, then emit 'feed-changed' so the host
+  // reloads its player. The per-user ENCRYPTION key is unchanged (a re-KEY still needs a fresh
+  // login) — only the feedKey moved. Best-effort: never throws (it runs inside the watch loop,
+  // whose only failure mode is to stop following the catalog); a failed open simply retries on
+  // the next catalog tick since a.feedKey is left untouched.
+  async _maybeReresolveActiveFeed () {
+    const a = this._active
+    if (!a || this._hybrid.mode === 'cdn-only') return // cdn-only never serves the P2P feed
+    const keys = this._entitled.get(a.streamId)
+    if (!keys || !keys.encryptionKey) return
+    // Fallback = the key we're already serving, so a momentarily unreadable catalog (or a
+    // channel that just went off-air, feedKey null) is a no-op, never a spurious rotation.
+    const feedKey = await this._currentFeedKey(a.streamId, a.feedKey)
+    if (!feedKey || feedKey === a.feedKey) return
+    let feed
+    try { feed = await this._openFeed(feedKey, keys.encryptionKey) } catch { return }
+    // A zap during the open moved _active on; leave _feedDrive to that resolve()'s serveFeed
+    // (don't clobber it back to this now-stale channel's feed).
+    if (this._active !== a) return
+    this._feedDrive = feed.drive
+    this._feedDiscovery = feed.discovery
+    a.feedKey = feedKey
+    a.lastSig = null
+    a.lastAdvance = Date.now()
+    this.emit('status', { state: 'feed:ready' })
+    // On CDN under hybrid the recovery probe now tracks the NEW feed and will emit
+    // 'source-changed' when it flips back; only tell the host to reload when P2P is live.
+    if (a.source === 'p2p') this.emit('feed-changed', { streamId: a.streamId, feedKey, url: a.localUrl })
   }
 
   // Any open of on-disk replica state can fail with a corruption error if a previous

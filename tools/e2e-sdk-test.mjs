@@ -6,7 +6,10 @@
 //   assetUrl() shape; 'status' feed:open/feed:ready breadcrumbs; 'peers' ticker;
 //   catalog LIVE-PUSH (S1): the panel edits a catalog record while the client is
 //   connected -> the SDK re-emits 'streams' with the update, no re-login, no polling;
-//   stop().
+//   active-feed ROTATION while watching: the broadcaster publishes a NEW feedKey (same
+//   sealed encryption key) for the stream being watched -> the SDK catalog-follows it,
+//   swaps the served feed on the SAME localhost port and emits 'feed-changed' with no
+//   re-zap / re-login / manual resolve(); stop().
 // Then the HYBRID CDN<->P2P policy (S10b): an entitled but UNSEEDED stream with a tiny
 // readyTimeoutMs must fall back to a local "CDN" HLS server ('fallback', source cdn);
 // once a broadcaster starts seeding the feed, the SDK must auto-return
@@ -58,7 +61,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -110,12 +113,13 @@ try {
   log('panel: serving login RPC; pubkey', panelPubKey.slice(0, 16) + '…')
 
   // ===== SDK: the whole client side, headless =====
-  const events = { ready: 0, streams: 0, lastStreams: null, status: [], peers: [] }
+  const events = { ready: 0, streams: 0, lastStreams: null, status: [], peers: [], feedChanged: [] }
   const player = createPlayer({ panelPubKey, storeDir: dirs.cli })
   player.on('ready', () => { events.ready++ })
   player.on('streams', (s) => { events.streams++; events.lastStreams = s })
   player.on('status', (s) => { events.status.push(s.state) })
   player.on('peers', (n) => { events.peers.push(n) })
+  player.on('feed-changed', (e) => { events.feedChanged.push(e) })
   cleanups.push(() => player.stop())
 
   await player.connect()
@@ -213,6 +217,37 @@ try {
   const livePushed = events.streams - pushesBefore
   log('sdk: catalog live-push OK — record edit reached the connected client without re-login (' + livePushed + ' push)')
 
+  // ===== Active-feed rotation WHILE watching (client follow-up to broadcaster 6e38b90) =====
+  // The broadcaster auto-rotates a channel's feed identity on a source change: a NEW feedKey
+  // under the SAME sealed encryption key is published to the catalog. A viewer ALREADY
+  // watching 'news' (feed A, resolved+served above) must catalog-FOLLOW to the rotated feed
+  // and emit 'feed-changed' with NO re-zap / re-login / manual resolve() — the localhost port
+  // is unchanged, the host just reloads the player. This closes the gap the broadcaster's
+  // auto-rotate left open (a mid-watch viewer used to keep replicating the dead feed).
+  if (events.feedChanged.length !== 0) throw new Error('unexpected feed-changed before any rotation (the isLive-only live-push must NOT rotate the feed)')
+  const rotStore = new Corestore(dirs.feedR); await rotStore.ready(); cleanups.push(() => rotStore.close())
+  const feedRot = new Hyperdrive(rotStore.namespace('feed'), { encryptionKey: encKey }); await feedRot.ready() // SAME encKey → fresh feedKey
+  const rotKeyHex = b4a.toString(feedRot.key, 'hex')
+  if (rotKeyHex === b4a.toString(feed.key, 'hex')) throw new Error('rotated feed must carry a fresh key')
+  const rotSwarm = new Hyperswarm(); cleanups.push(() => rotSwarm.destroy())
+  rotSwarm.on('connection', s => feedRot.replicate(s))
+  rotSwarm.join(feedRot.discoveryKey, { server: true, client: false }); await rotSwarm.flush()
+  const stopMirrorRot = mirrorDirToDrive(dirs.out, feedRot, { interval: 400 }); cleanups.push(() => stopMirrorRot())
+  log('rotate: seeding rotated news feed', rotKeyHex.slice(0, 16) + '… (encryption key unchanged)')
+
+  // Publish the rotated feedKey — the ONLY trigger. No resolve() call follows.
+  await db.put('catalog/news', { title: 'News 24 Prime', category: ['news'], type: 'live', protection: 'self', feedKey: rotKeyHex, isLive: true, poster: 'assets/news/poster.png', status: 'live', order: 5, featured: true })
+  const fc = await waitFor(async () => events.feedChanged.find(e => e.streamId === 'news' && e.feedKey === rotKeyHex), 40000, "'feed-changed' after the broadcaster rotated the ACTIVE feed")
+  if (fc.url !== localUrl) throw new Error("'feed-changed' url must be the stable localhost URL, got " + fc.url)
+  if (player.source().url !== localUrl || player.source().source !== 'p2p') throw new Error('source() should still report the p2p localhost URL after rotation')
+  // Direct proof the served drive swapped to the rotated feed (not just an event fired).
+  if (b4a.toString(player._feedDrive.key, 'hex') !== rotKeyHex) throw new Error('SDK did not swap _feedDrive to the rotated feed')
+  // The unchanged localhost port now serves the ROTATED feed's live playlist.
+  const rotPlaylist = await waitFor(async () => { const r = await httpGet(port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') ? r.body.toString() : null }, 30000, 'rotated feed playlist over the unchanged port')
+  const rotSegs = rotPlaylist.split('\n').filter(l => l.trim().endsWith('.ts')).length
+  const rotated = !!fc
+  log('rotate: SDK re-resolved the ACTIVE stream to the rotated feed + emitted feed-changed with no re-zap; same port serves it (' + rotSegs + ' segs)')
+
   await player.stop()
 
   // ===== Hybrid CDN<->P2P (S10b) =====
@@ -291,9 +326,9 @@ try {
   await player2.stop()
 
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
-    livePushed >= 1 && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
+    livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open'))
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + hybrid CDN fallback/auto-return verified)' : 'FAIL ❌')
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

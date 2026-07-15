@@ -41,7 +41,12 @@ so title/isLive/art changes push to the host without polling or re-login; a newl
 (`{state: 'feed:open'|'feed:ready'}`) · `peers` (count, every 3 s while serving) ·
 `recovered` (corrupt store purged + retried) · `error` ·
 `fallback` (`{streamId, url, reason: 'timeout'|'stall'}`) ·
-`source-changed` (`{streamId, source, url}`). The emitter never throws on unhandled `error`.
+`source-changed` (`{streamId, source, url}`) ·
+`feed-changed` (`{streamId, feedKey, url}` — the stream being watched had its `feedKey`
+rotated in the catalog (broadcaster source change / RAM restart); the SDK re-resolved and
+swapped the served feed behind the **same** localhost `url`, so the host just reloads the
+player to flush the stale playlist — no re-login or `resolve()` needed). The emitter never
+throws on unhandled `error`.
 
 ## Hybrid CDN↔P2P
 

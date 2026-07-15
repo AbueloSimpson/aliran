@@ -530,6 +530,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then all warm (only `feed:ready`, never `feed:open`). Verified on the emulator (release
   APK): first play of ch1 and first zap to ch2 both `feed:ready` with no `feed:open`.
 
+### Feat: viewers follow a rotated feed WHILE watching — no re-zap (verified headless)
+- Completes the broadcaster's auto-rotate-on-source-change (`6e38b90`): the SDK already
+  read the catalog `feedKey` at `resolve()` time, but a viewer **already watching** a
+  channel kept replicating the OLD feed when the broadcaster rotated it — the new key was
+  only picked up on a manual re-zap. `sdk/player.js` now re-resolves the ACTIVE stream off
+  the replicated catalog watch: when the watched stream's `feedKey` changes, it opens the
+  new feed (single-flight cache), swaps the served drive behind the **unchanged** localhost
+  port, and emits a new **`feed-changed`** (`{streamId, feedKey, url}`) event. The per-user
+  encryption key is untouched (a re-KEY still needs a fresh login); a zap mid-open never
+  clobbers the newer `resolve()`'s drive.
+- Relayed end to end: worklet IPC (`client/backend/backend.mjs`) → `@aliran/react-native`
+  (`feed-changed` message + `<AliranVideo onFeedChanged>`, which remounts the player onto
+  the same URL to flush the stale playlist) → the app's `LiveScreen` (clears any prior
+  playback error and shows the spinner while the new feed buffers).
+- `test:sdk` gains a rotation-while-watching case: publish a fresh `feedKey` (same sealed
+  encryption key) for the stream being served → the SDK emits `feed-changed`, swaps
+  `_feedDrive` to the rotated feed, and serves its playlist on the same port, all with no
+  `resolve()` call. The client half needs an APK rebuild to verify on-device.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.

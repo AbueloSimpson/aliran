@@ -44,6 +44,10 @@ export type BackendMessage =
   | { type: 'error'; message: string }
   | { type: 'fallback'; streamId: string; url: string; reason: 'timeout' | 'stall' }
   | { type: 'source-changed'; streamId: string; source: 'p2p' | 'cdn'; url: string }
+  // The active stream's feedKey rotated underneath the viewer (broadcaster source change /
+  // RAM restart); the engine re-resolved and swapped the served feed. url is the unchanged
+  // localhost URL — remount the player to flush the stale playlist. See sdk/player.js.
+  | { type: 'feed-changed'; streamId: string; feedKey: string; url: string }
   | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[] }
 
 export interface StartOptions {
@@ -153,6 +157,7 @@ export class AliranBackend {
         }
         if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn' }
         if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source }
+        if (msg.type === 'feed-changed') this.url = msg.url // unchanged localhost URL; the source (p2p) is unchanged too
         this.listeners.forEach(fn => fn(msg))
       } catch { /* ignore partial/invalid */ }
     }

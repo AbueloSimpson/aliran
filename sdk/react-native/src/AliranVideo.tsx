@@ -26,6 +26,9 @@ export interface AliranVideoProps {
   onSource?: (url: string, source: 'p2p' | 'cdn') => void
   onFallback?: (e: { url: string; reason: string }) => void
   onSourceChanged?: (e: { url: string; source: 'p2p' | 'cdn' }) => void
+  /** The active stream's feed rotated (broadcaster source change / restart); the player
+   *  was remounted onto the same URL to flush the stale playlist. */
+  onFeedChanged?: (e: { feedKey: string; url: string }) => void
   onPeers?: (peers: number) => void
   onBuffering?: (buffering: boolean) => void
   onError?: (message: string) => void
@@ -35,14 +38,14 @@ export interface AliranVideoProps {
 
 export function AliranVideo ({
   backend, streamId, autoPlay = true, style, controls = true, paused,
-  resizeMode = 'contain', onSource, onFallback, onSourceChanged, onPeers,
+  resizeMode = 'contain', onSource, onFallback, onSourceChanged, onFeedChanged, onPeers,
   onBuffering, onError, videoProps
 }: AliranVideoProps) {
   const [url, setUrl] = useState<string | null>(backend.url)
   const [attempt, setAttempt] = useState(0) // bump to remount <Video> after an error
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cb = useRef({ onSource, onFallback, onSourceChanged, onPeers, onBuffering, onError })
-  cb.current = { onSource, onFallback, onSourceChanged, onPeers, onBuffering, onError }
+  const cb = useRef({ onSource, onFallback, onSourceChanged, onFeedChanged, onPeers, onBuffering, onError })
+  cb.current = { onSource, onFallback, onSourceChanged, onFeedChanged, onPeers, onBuffering, onError }
 
   useEffect(() => {
     const off = backend.onMessage((m: BackendMessage) => {
@@ -57,6 +60,12 @@ export function AliranVideo ({
       if (m.type === 'source-changed' && m.streamId === streamId) {
         setUrl(m.url); setAttempt(a => a + 1)
         cb.current.onSourceChanged?.({ url: m.url, source: m.source })
+      }
+      if (m.type === 'feed-changed' && m.streamId === streamId) {
+        // Same localhost URL, new feed behind it — bump attempt to remount and flush the
+        // old playlist/segments the player has already buffered.
+        setUrl(m.url); setAttempt(a => a + 1)
+        cb.current.onFeedChanged?.({ feedKey: m.feedKey, url: m.url })
       }
       if (m.type === 'status' && typeof m.peers === 'number') cb.current.onPeers?.(m.peers)
       if (m.type === 'error') cb.current.onError?.(m.message) // e.g. corrupt store, not entitled

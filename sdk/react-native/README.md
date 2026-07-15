@@ -30,8 +30,10 @@ backend.start(bundleBase64, {
   `playRaw()`, `onMessage()`, with `streams` / `port` / `url` / `source` cached for
   screens that mount after the one-shot replies.
 - **`<AliranVideo>`** — chrome-free video surface: plays the ACTIVE source URL,
-  auto-retries while the P2P live edge replicates, and switches sources on
-  `fallback` / `source-changed`. Overlays (badges, peer counts, spinners) belong to
+  auto-retries while the P2P live edge replicates, switches sources on
+  `fallback` / `source-changed`, and remounts on `feed-changed` (the broadcaster
+  rotated the watched channel's feed — reload to flush the stale playlist). Overlays
+  (badges, peer counts, spinners) belong to
   the host app via the callbacks — see `client/src/screens/PlayerScreen.tsx` for a
   complete example (the Aliran app dogfoods this package).
 

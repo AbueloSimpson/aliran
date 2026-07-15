@@ -26,6 +26,7 @@
 //        { type:'port', port, url, source }   (url = ACTIVE source under hybrid)
 //        { type:'status', state|peers } | { type:'login-error'|'error', message }
 //        { type:'fallback', streamId, url, reason } | { type:'source-changed', streamId, source, url }
+//        { type:'feed-changed', streamId, feedKey, url }   (active stream's feedKey rotated)
 //        { type:'prefs', creds: {username,password}|null, favorites: [streamId] }
 //
 // Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
@@ -109,6 +110,7 @@ function ensurePlayer (hybrid, prewarm) {
   player.on('recovered', (err) => send({ type: 'status', state: 'store:reset', message: String((err && err.message) || err) }))
   player.on('fallback', (e) => send({ type: 'fallback', ...e }))
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
+  player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
   return player
 }
 
