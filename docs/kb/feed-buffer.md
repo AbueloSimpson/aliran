@@ -24,16 +24,16 @@ work did **not** remove segments — it stopped the feed *hoarding old ones* (se
 
 The live feed is a **rolling window**, not an archive: the playlist defines which
 segments exist, and everything that rotates out is deleted from the drive **and** its
-blob storage is reclaimed (`hypercore clear()` below the live window). A channel that
-streams for days occupies **O(window)** storage in either mode. Set the mode with the
-`FEED_BUFFER` env var or a per-channel `buffer` field.
+blob storage is reclaimed (`hypercore clear()` frees each segment's blocks *as it rotates
+out*). A channel that streams for days occupies **O(window)** storage in either mode. Set
+the mode with the `FEED_BUFFER` env var or a per-channel `buffer` field.
 
 | | **`disk`** (default) | **`ram`** |
 |---|---|---|
 | Feed identity (`feedKey`) | **Stable** across restarts | **Fresh** every start |
 | DHT discovery topic | Stable → returning viewers rejoin a **warm** topic | New every restart → **cold** discovery each time |
 | Viewer replica | **Resumable** from on-disk cache | Always cold-synced |
-| Broadcaster storage | Window-bounded (tens of MB), touches disk | Byte-flat (memory only) |
+| Broadcaster storage | Window-bounded (tens of MB of segment data)† | Byte-flat (memory only) |
 | Best for | **Normal operation — fastest time-to-play, healthiest P2P** | Hosts that must keep the disk byte-flat |
 
 In **both** modes the **encryption key persists** (`feed.key` in the channel's store
@@ -42,6 +42,38 @@ dir) — user grants seal it, so restarts never invalidate access. Viewers follo
 `feedKey` from the replicated catalog at play time, so no re-login is needed. A
 *re-keyed* stream (new encryption key) still needs a fresh login — that is a
 deliberate access-control boundary.
+
+### † Disk growth: O(window), and how it can fail
+
+> **Symptom:** a `disk`-buffer channel's store dir (`DATA_DIR/channels/<id>/`) grows to
+> **gigabytes** over a long run — far past the ~tens-of-MB window — and can fill the host
+> disk (this once filled a VPS to 100 % and killed the channels).
+>
+> **Cause:** the feed is a hypercore (append-only). `clear()` frees the blocks of rotated
+> segments, but reclaim used to only sweep **below the single lowest offset still
+> referenced by a live entry**. If *one* entry gets stuck at a low offset — an **orphaned
+> segment** stranded when the ffmpeg watchdog respawns (a fresh ffmpeg resets its `seg%d`
+> counter to 0 and abandons the previous run's high-numbered `.ts` files, which stay on
+> disk and never rotate out) — that entry **pins the watermark**, and *every* segment
+> above it accumulates forever. Disk mode persists the core across restarts, so the pin
+> (and the leak) survived reboots.
+>
+> **Fix (shipped):** the mirror now frees each blob **as its segment rotates out** (and
+> when a re-put supersedes it), so reclaim no longer depends on a global watermark a stuck
+> entry could pin. On (re)start it also **reconciles** the reopened core against the fresh
+> output dir, dropping any orphaned entries a prior run stranded — expect a **large first
+> reclaim** on the next start after upgrading. Covered by the orphan-pin scenario in
+> `test:retention`.
+
+!!! note "The window bound is on *segment data*; metadata creeps slowly"
+    The **tens of MB** figure is the reclaimed **segment (blob) data** — the acute term.
+    A hypercore's **merkle tree and metadata** are append-only and are *not* reclaimed by
+    `clear()`; they grow slowly with total runtime (order ~100 MB/day for a 2 s window at a
+    few Mbps), independent of window size. A broadcaster **restart does not** reset this
+    (disk mode reopens the same core); only a **feed rotation** (a source change bumps
+    `feedGen` → a fresh core) or a re-key starts the metadata over. For multi-week 24/7
+    channels, budget for this slow creep or rotate the feed periodically — viewers follow a
+    `feedKey` change automatically (next section).
 
 ### Why `ram` is *slower* to join, not faster
 

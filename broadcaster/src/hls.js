@@ -205,14 +205,26 @@ export function startFfmpeg (spec, outDir, { onExit, onLine } = {}) {
   return proc
 }
 
-// Free the blob blocks of everything that has rotated OUT of the live window.
-// Hypercore is append-only — drive.del() drops the metadata entry but the segment
-// bytes stay stored forever (this is what filled a 19 GB disk in a day of streaming).
-// The playlist window is strictly rolling, so every block BELOW the lowest offset
-// still referenced by a live entry is garbage: clear() it. clear() only frees local
-// storage (RAM or disk) — the merkle tree stays valid and replication of the live
-// window is untouched; peers simply can't fetch expired segments any more, which is
-// the point: the m3u8 defines what exists.
+// Free the blob blocks backing ONE drive entry. Hypercore is append-only — drive.del()
+// drops the metadata entry but the segment bytes stay stored forever unless we clear()
+// them. clear() only frees LOCAL storage (RAM buffers, or a disk hole-punch via
+// random-access-file → fs-native-extensions) — the merkle tree stays valid, so live-window
+// replication is untouched; peers simply can't fetch this now-expired segment, which is the
+// point: the m3u8 defines what exists. blockLength 0 (dirs/symlinks) and a missing blobs
+// core are no-ops.
+export async function clearBlob (blobs, blob) {
+  if (!blobs || !blob || !(blob.blockLength > 0)) return
+  try { await blobs.core.clear(blob.blockOffset, blob.blockOffset + blob.blockLength) } catch {}
+}
+
+// Safety-net sweep: free every blob block BELOW the lowest offset still referenced by a
+// live entry. This backs up the precise per-entry clears in mirrorDirToDrive (superseded
+// playlist versions, anything a desync missed) and does the bulk reclaim of a backlog left
+// by a previous run. NOTE: on its own this is NOT sufficient — a single stuck low entry (an
+// orphaned segment a crash/respawn stranded in the disk core) pins `min` and leaks the whole
+// history above it (this filled a 19 GB VPS disk in a day). Rotation-time clearing is what
+// makes reclaim independent of that watermark; reconcileStaleEntries drops the orphan so this
+// sweep can then bulk-free everything below the live edge.
 export async function reclaimExpiredBlobs (drive) {
   const blobs = await drive.getBlobs()
   let min = blobs.core.length
@@ -224,13 +236,38 @@ export async function reclaimExpiredBlobs (drive) {
   return min
 }
 
-// Poll a directory and mirror changes into a Hyperdrive: put new/changed files,
-// delete files ffmpeg has rotated out, and reclaim the expired blob storage so the
-// feed is an EPHEMERAL rolling buffer instead of an ever-growing log.
-// Returns a stop() function.
+// Drop every drive entry that isn't present in the output dir, freeing its blob. In disk
+// mode the core is REOPENED on each start with the previous run's entries still in it, and a
+// crash/respawn resets ffmpeg's seg%d counter — stranding the prior run's high-numbered
+// segments as entries that never rotate out. Left in place, the lowest such orphan pins the
+// reclaim watermark forever. Running this once at mirror start (against the fresh, near-empty
+// outDir) clears that backlog so storage returns to O(window). Returns the number dropped.
+export async function reconcileStaleEntries (dir, drive, blobs) {
+  let present = new Set()
+  try { present = new Set(fs.readdirSync(dir)) } catch { /* dir not ready yet */ }
+  let dropped = 0
+  for await (const entry of drive.list('/')) {
+    const name = entry.key.replace(/^\//, '')
+    if (present.has(name)) continue
+    try {
+      await drive.del(entry.key)
+      await clearBlob(blobs, entry.value && entry.value.blob)
+      dropped++
+    } catch { /* entry may already be gone; skip */ }
+  }
+  return dropped
+}
+
+// Poll a directory and mirror changes into a Hyperdrive: put new/changed files, delete files
+// ffmpeg has rotated out, and free each blob's blocks AS IT ROTATES so the feed is an
+// EPHEMERAL rolling buffer (O(window) storage) instead of an ever-growing log. Clearing at
+// rotation time — rather than only sweeping below a global watermark — is deliberate: it
+// keeps reclaim working even when a stuck low entry would otherwise pin the watermark and
+// leak the whole history above it. Returns a stop() function.
 export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
-  const known = new Map() // name -> mtimeMs|size signature
+  const known = new Map() // name -> mtimeMs:size signature
   let stopped = false
+  let blobs = null
 
   async function tick () {
     if (stopped) return
@@ -239,33 +276,55 @@ export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
 
     const present = new Set(names)
     let changed = false
-    // Put new or changed files.
+    // Put new or changed files. A CHANGED file (e.g. index.m3u8, rewritten every segment)
+    // supersedes its previous blob — free the old blocks so re-puts don't accumulate.
     for (const name of names) {
       try {
         const st = fs.statSync(path.join(dir, name))
         const sig = `${st.mtimeMs}:${st.size}`
         if (known.get(name) !== sig) {
+          const p = '/' + name
+          const prev = known.has(name) ? await drive.entry(p) : null
           const buf = fs.readFileSync(path.join(dir, name))
-          await drive.put('/' + name, buf)
+          await drive.put(p, buf)
           known.set(name, sig)
+          if (prev) await clearBlob(blobs, prev.value && prev.value.blob)
           changed = true
         }
       } catch { /* file may vanish mid-cycle (ffmpeg rotation); skip */ }
     }
-    // Delete files ffmpeg removed from the rolling window.
+    // Delete files ffmpeg removed from the rolling window, freeing each blob as it goes.
     for (const name of [...known.keys()]) {
       if (!present.has(name)) {
-        try { await drive.del('/' + name) } catch {}
+        const p = '/' + name
+        try {
+          const e = await drive.entry(p)
+          await drive.del(p)
+          await clearBlob(blobs, e && e.value && e.value.blob)
+        } catch {}
         known.delete(name)
         changed = true
       }
     }
-    // Anything below the live window (rotated segments, superseded playlist
-    // versions) is unreachable — free it. Keeps storage O(window).
+    // Safety net below the live window (see reclaimExpiredBlobs). The per-entry clears above
+    // already free the churn; this catches superseded remnants and any desync.
     if (changed) { try { await reclaimExpiredBlobs(drive) } catch {} }
     if (!stopped) setTimeout(tick, interval)
   }
 
-  tick()
+  // Resolve the blobs core and drop any prior-run backlog BEFORE the first tick, so an
+  // orphaned segment persisted in the disk core can't pin reclaim (see reconcileStaleEntries).
+  async function boot () {
+    try {
+      blobs = await drive.getBlobs()
+      if (stopped) return
+      await reconcileStaleEntries(dir, drive, blobs)
+      if (stopped) return
+      try { await reclaimExpiredBlobs(drive) } catch {}
+    } catch { /* drive not ready/closed; tick still mirrors, clears become no-ops until set */ }
+    if (!stopped) tick()
+  }
+
+  boot()
   return () => { stopped = true }
 }
