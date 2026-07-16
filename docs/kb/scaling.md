@@ -104,6 +104,18 @@ does ~125 copy channels does only **~8–12 x264 SD** channels.
     **marginal** RAM cost ~25–30 MB/channel, not the ~40 MB a single process suggests. On a
     RAM-bound box the wall is **RAM → swap-thrash**, not CPU or IOPS (disk writes stayed ~modest).
 
+!!! warning "Short-term ceiling ≠ sustained ceiling (7-hour duration test)"
+    Running those 15 channels for ~7 hours told a two-part story. **Disk passed:** segment data
+    stayed bounded (oscillated ~55–225 MB tracking the live channel count, no runaway; the metadata
+    tree crept only ~110 MB/day for the whole set — far below a naive per-channel extrapolation),
+    confirming the reclaim fix holds at scale over time. **But compute drifted:** the broadcaster's
+    RSS crept over the hours until the box began swapping (swap 0.6 → 1.1 GB), and it slid into a
+    **thrash + ffmpeg-respawn spiral** — the live ffmpeg count churned 9–15 (the watchdog kills a
+    CPU-starved stalled edge, then respawns it) and load ran a sustained 7–19 on the one core. No
+    OOM, but 15 channels is **not sustainable 24/7 on this box**. Treat the "runs cleanly" figure as
+    a *short-term* ceiling and size a long-running deployment **a few channels below it** (≈8–10
+    here): multi-hour RSS growth, not the fresh-start footprint, sets the real limit.
+
 > **Counter-intuitive but important:** on a **RAM-constrained** box, `FEED_BUFFER=ram` is the
 > *wrong* lever — it moves the whole feed store *into* RAM, so you hit the RAM wall **sooner**.
 > The scale profile (ram + tmpfs) is for boxes that are **IOPS-bound with RAM to spare** (spinning
