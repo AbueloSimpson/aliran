@@ -47,12 +47,37 @@ In likelihood order:
 
 - **Normal for a few seconds:** the playlist 404s until the live edge replicates from
   peers; the player auto-retries every 2.5 s.
-- **Persistent spinner >30 s with `0 peers`:** no seeder is reachable — the
-  broadcaster is down, or its ffmpeg ingest died while the process kept "seeding" a
-  frozen playlist. See [operator health checks](operator.md#dev-processes-rot).
+- **Persistent spinner with `0 peers`:** no seeder is *found* — the broadcaster is
+  down, its ffmpeg ingest died while the process kept "seeding" a frozen playlist, or
+  the device holds a **stale DHT record** (the broadcaster restarted since the last
+  lookup: its feed swarms are ephemeral identities, and hyperswarm re-queries a topic
+  only every ~10 min — the same failure PanelLink self-heals on the broadcaster side).
+- **Fix (shipped) — tune self-heal:** while a tune is incomplete the engine forces
+  fresh DHT lookups on a 5 s → 60 s backoff; at 30 s it evicts the cached feed open and
+  re-opens fresh once (`feed:retune` breadcrumb); if that also expires it surfaces a
+  friendly `tune timeout` error instead of spinning forever — zap to the channel again
+  to retry. Pre-fix builds could sit on the spinner **indefinitely** (S22, 2026-07-16:
+  a zap stuck at "90 %" for 10+ min against a healthy VPS; only an app restart — a
+  fresh swarm — cleared it, because the cached dead open poisoned every retry). The
+  `test:sdk` tune section guards the whole cycle.
 - With the **hybrid CDN↔P2P** policy configured, this case instead triggers a
   `fallback` to the CDN URL (and auto-returns later) — see the
   [player SDK README](https://github.com/AbueloSimpson/aliran/tree/main/sdk).
+
+## Video freezes while everything looks healthy (clock ticks, peers connected)
+
+- **Symptom:** the picture stops dead mid-watch; peer count and worklet heartbeats
+  stay healthy, the UI stays alive, no error fires. Zapping away and back fixes it.
+- **Cause:** the HLS live window is short (8×2 s = 16 s on the reference deploy). A
+  network blip longer than the window slides it past ExoPlayer's position, and
+  react-native-video raises **no error event** for that — the surface just freezes.
+- **Fix (shipped):** `<AliranVideo>` watches the playhead; once a mount has played and
+  the position sits still for 12 s (`stallTimeoutMs`) while not paused, it remounts
+  onto a fresh playlist load at the live edge (the same thing the manual zap did) and
+  fires `onStall` — the app re-shows the tuning pill until the first frame lands.
+- **Widen the margin (operators):** deepening the live window (`HLS_LIST_SIZE`
+  12–16) gives clients more room to recover from blips — the same lever as the
+  rebuffer cushion in [sizing the segment window](feed-buffer.md#sizing-the-segment-window-hls_time--hls_list_size).
 
 ## Channel zapping is slow, or flipping back to a channel hangs
 

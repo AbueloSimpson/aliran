@@ -679,6 +679,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - KB: `docs/kb/operator.md` gains the symptom→cause→fix entry (older builds:
   restart the broadcaster after a panel restart if `registered` stays false).
 
+### Fix: playback self-heals — tune timeout/evict/re-lookup (SDK) + frozen live edge (client)
+Two client-side recovery gaps observed on the S22 against a healthy VPS (2026-07-16):
+
+- **Tune that never completes** (`sdk/player.js`): a zap to a cold feed whose DHT
+  records were stale (broadcaster restarted since the last lookup; hyperswarm
+  re-queries a client topic only every ~10 min) sat at "90 %" for 10+ minutes with no
+  error — and the single-flight open cache handed every retry the same dead open
+  until an app restart. Now a **tune watchdog** (p2p-only mode) runs while the active
+  feed's playlist hasn't landed: forced `discovery.refresh()` on a 5 s → 60 s backoff
+  (the PanelLink self-heal, applied client-side), at `tune.timeoutMs` (default 30 s)
+  the cached open is **evicted** and re-opened fresh once (`feed:retune` breadcrumb),
+  and a second expiry emits a friendly `tune timeout` **error** the app surfaces.
+  `serveFeed()`'s open and the sparse catalog `get` are bounded too, so a wedged open
+  can no longer hang `resolve()` or park the catalog watcher; the worklet now relays
+  engine `error` events over IPC (previously dropped — no background failure could
+  reach the UI). Config: `tune {timeoutMs, relookupMinMs, relookupMaxMs}` through
+  `StartOptions.tune`.
+- **Frozen live edge** (`sdk/react-native <AliranVideo>`): the live window is short
+  (8×2 s = 16 s on the reference deploy), so a network blip longer than the window
+  slides it past the playhead and react-native-video fires **no error** — byte-identical
+  frames while peers/heartbeats/UI all stay healthy. Once a mount has played, a
+  playhead still for `stallTimeoutMs` (default 12 s, not paused) now triggers a
+  remount onto a fresh playlist load at the live edge (what the manual zap-away/back
+  did) + a new `onStall` callback; `LiveScreen` re-shows the tuning pill until the
+  first frame lands.
+- **Tests:** `test:sdk` gains the tune self-heal cycle — an entitled, cataloged, but
+  UNSEEDED stream must produce forced re-lookups, `feed:retune`, a friendly error
+  with the cache evicted, and a plain re-zap must open fresh and play once a
+  broadcaster appears (no app restart). KB: both symptoms in `docs/kb/playback.md`.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
