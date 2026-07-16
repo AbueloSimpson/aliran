@@ -10,7 +10,9 @@
 // and the capability/port gates returning clean 400s. S15b adds: the ffmpeg log ring,
 // watchdog auto-restart of a killed ffmpeg, the panel catalog flipping isLive:false on
 // stop (via the one shared PanelLink), and auto-resume + stale-live catch-up across a
-// simulated broadcaster restart (a 2nd ChannelManager over the same dataDir). Exits 0 on PASS.
+// simulated broadcaster restart (a 2nd ChannelManager over the same dataDir). Test P adds
+// the PanelLink reconnect hardening: a panel restart under a NEW swarm identity, with an
+// op stranded while it was down, self-heals via the forced topic re-lookup. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
@@ -547,7 +549,39 @@ try {
   assert.ok(uiHtml.includes('nc-kind'), 'UI add form has the input-kind selector')
   log('O: capabilities endpoint; status state+ingest.pushUrl; logs API (cap, 404); waiting-input; UI statics ✓')
 
-  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced)')
+  // ===== Test P: panel restart under a NEW swarm identity — stranded ops self-heal =====
+  // The 2026-07-16 VPS incident: panel + broadcaster bounced together, the panel came back
+  // under a fresh swarm keypair (its Hyperswarm identity is ephemeral), and the broadcaster's
+  // pre-restart topic lookup left every channel registered:false / lastError:null until a
+  // manual broadcaster restart. The PanelLink now force-refreshes the topic lookup (5 s → 60 s
+  // backoff) while ops are stranded, so this MUST recover with no broadcaster restart.
+  assert.strictEqual((await api('POST', '/api/channels/api-chan/start', undefined, token)).status, 200, 'start api-chan (panel-restart test)')
+  await waitFor(() => manager.panelLink.isRegistered('api-chan') || null, 60000, 'api-chan registered before the panel restart')
+  await panelSwarm.destroy() // the panel "goes down", taking the broadcaster's socket with it
+  await waitFor(() => !manager.panelLink.health().connected || null, 30000, 'link notices the panel is gone')
+  // An operator stop while the panel is down strands an isLive:false op in the queue
+  // (stop() waits ≤5 s for the flush, then proceeds — it must not hang).
+  assert.strictEqual((await api('POST', '/api/channels/api-chan/stop', undefined, token)).status, 200, 'stop succeeds while the panel is down')
+  assert.strictEqual((await db.get('catalog/api-chan')).value.isLive, true, 'catalog still (stale) live — the op is stranded')
+  // Status names the blocker instead of the incident's silent registered:false/lastError:null.
+  await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/api-chan', undefined, token)).body
+    return /no panel connection for \d+s/.test(x.registerError || '') ? x : null
+  }, 45000, 'status surfaces "no panel connection for Ns"')
+  // The panel returns with the SAME signing keys (same topic) but a NEW swarm identity —
+  // exactly what a container restart does.
+  const panelSwarm2 = new Hyperswarm(); cleanups.push(() => panelSwarm2.destroy())
+  panelSwarm2.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: 8, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000 }) })
+  panelSwarm2.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false }); await panelSwarm2.flush()
+  // Without the forced re-lookup this waits on hyperswarm's ~10-min topic refresh and times out.
+  await waitFor(async () => (await db.get('catalog/api-chan')).value.isLive === false || null, 120000, 'stranded isLive:false lands after the panel returns (no broadcaster restart)')
+  await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/api-chan', undefined, token)).body
+    return x.registerError == null ? x : null
+  }, 15000, 'registerError clears once the queue drains')
+  log('P: panel restarted under a new swarm identity → stranded ops self-heal via forced topic re-lookup ✓')
+
+  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced, PanelLink self-heals a panel restart)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

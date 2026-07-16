@@ -654,6 +654,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a Menu round-trip (screenshot-driven; tune-to-100% blocked by a VPS feed
   live-edge stall that day — P2P connected at 1 peer, indicator honestly stayed <100).
 
+### Fix: PanelLink self-heals a panel restart — forced topic re-lookup while ops are stranded (verified)
+- **The incident (2026-07-16 VPS):** panel + broadcaster restarted together (`docker
+  compose up -d --build`); every channel sat at `registered:false` / `lastError:null`
+  for 15+ minutes until a manual broadcaster restart. Root cause: the panel's swarm
+  identity is ephemeral (`new Hyperswarm()`), so a restarted panel re-announces the
+  registration topic under a brand-new keypair — and hyperswarm re-queries a
+  client-mode topic only every ~10 min, leaving the broadcaster holding a dead
+  pre-restart peer record with queued ops and no delivery attempts.
+- **Fix (`broadcaster/src/panel-link.js`):** while ops are pending with no panel
+  socket, the link forces `discovery.refresh({client:true})` — a fresh DHT topic
+  query — on a 5 s → 60 s backoff, standing down the moment a connection lands. No
+  panel changes; a restarted panel is typically re-found in well under a minute.
+- **Status stops lying by omission:** once the link has been down ≥10 s with
+  undelivered state, `registerError` reads `no panel connection for Ns` (any
+  underlying delivery error appended) instead of `null` — surfaces in the existing
+  control-UI badge untouched. New `PanelLink.health()` exposes
+  `{enabled, connected, disconnectedForMs, pendingOps}`.
+- **Tests:** new `test:panel-link` unit suite (no network: late-connection delivery,
+  latest-state-wins across an outage, the no-connection message lifecycle, re-lookup
+  backoff + stand-down); `test:broadcaster-api` adds **Test P** — the panel swarm is
+  destroyed and re-announced under a NEW identity with a stop op stranded meanwhile;
+  the stranded `isLive:false` must land with no broadcaster restart.
+- KB: `docs/kb/operator.md` gains the symptom→cause→fix entry (older builds:
+  restart the broadcaster after a panel restart if `registered` stays false).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

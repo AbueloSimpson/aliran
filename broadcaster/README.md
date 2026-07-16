@@ -118,6 +118,10 @@ node ../tools/e2e-stream-test.mjs                   # PASS = end-to-end P2P veri
 - [x] Ingest/transcode/logs surfaced in the control API + UI: `GET /api/capabilities`,
       `GET /api/channels/:id/logs`, status `state` + `ingest.pushUrl`, kind/transcode
       forms + logs dialog + state badges — verified `npm run test:broadcaster-api` + live browser
+- [x] Panel link survives a panel restart under a new swarm identity: stranded
+      registrations force fresh topic lookups (5 s → 60 s backoff) and status reports
+      `no panel connection for Ns` instead of a silent `registered:false` — verified
+      `npm run test:panel-link` + `test:broadcaster-api` (Test P)
 - [ ] Optional peer allowlist check before replicating
 
 See [`../docs/content-management.md`](../docs/content-management.md).

@@ -24,6 +24,17 @@ import { panelClient, registerWithPanel } from './register.js'
 const HEARTBEAT_MS = 5 * 60 * 1000 // idempotent re-assert of running streams
 const RETRY_MS = 2000 // after a delivery error, before the queue retries
 
+// A restarted panel announces the topic under a BRAND-NEW swarm identity (its Hyperswarm
+// keypair is ephemeral), and hyperswarm re-queries a client-mode topic only every ~10 min —
+// so a lookup that resolved just before/during a panel restart strands queued ops behind a
+// dead peer record (2026-07-16 VPS incident: 15+ min of registered:false, lastError:null,
+// fixed only by restarting the broadcaster). While ops are pending with no socket we force
+// discovery.refresh() ourselves on this backoff schedule.
+export const RELOOKUP_MIN_MS = 5 * 1000
+export const RELOOKUP_MAX_MS = 60 * 1000
+// How long without a socket before status names the cause instead of a silent null.
+export const NO_LINK_REPORT_MS = 10 * 1000
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 export class PanelLink {
@@ -39,6 +50,10 @@ export class PanelLink {
     this._retryTimer = null
     this._heartbeat = null
     this._closed = false
+    this._discovery = null // PeerDiscoverySession from swarm.join — .refresh() re-queries the topic
+    this._relookupTimer = null
+    this._relookupDelay = RELOOKUP_MIN_MS
+    this._disconnectedSince = null // timestamp while we hold no live socket; null when connected
   }
 
   // Join the panel's DHT topic (client-mode). Non-blocking: connections arrive later and
@@ -48,18 +63,32 @@ export class PanelLink {
     const bootstrap = this.config.bootstrap && this.config.bootstrap.length ? this.config.bootstrap : undefined
     const swarm = new Hyperswarm({ bootstrap })
     this.swarm = swarm
-    swarm.on('connection', (socket) => {
-      // ONE ProtomuxRPC per socket, reused for every (serialized) register cycle — the
-      // panel replicates its store over the same muxed stream but we never answer that
-      // channel; only the register RPC matters here (same as the old per-channel swarm).
-      this._sockets.set(socket, panelClient(socket))
-      socket.on('error', () => {})
-      socket.on('close', () => this._sockets.delete(socket))
-      this._process()
-    })
-    swarm.join(crypto.hash(b4a.from(this.config.panelPubKey, 'hex')), { client: true, server: false })
+    swarm.on('connection', (socket) => this._onConnection(socket))
+    this._discovery = swarm.join(crypto.hash(b4a.from(this.config.panelPubKey, 'hex')), { client: true, server: false })
+    this._disconnectedSince = Date.now() // disconnected until the first connection lands
     this._heartbeat = setInterval(() => this._reassert(), HEARTBEAT_MS)
     if (this._heartbeat.unref) this._heartbeat.unref()
+    this._process()
+  }
+
+  // ONE ProtomuxRPC per socket, reused for every (serialized) register cycle — the
+  // panel replicates its store over the same muxed stream but we never answer that
+  // channel; only the register RPC matters here (same as the old per-channel swarm).
+  // `client` is injectable so unit tests can hand a late connection to the queue.
+  _onConnection (socket, client = panelClient(socket)) {
+    this._sockets.set(socket, client)
+    socket.on('error', () => {})
+    socket.on('close', () => {
+      this._sockets.delete(socket)
+      if (this._sockets.size === 0 && !this._closed) {
+        this._disconnectedSince = Date.now()
+        this._relookupDelay = RELOOKUP_MIN_MS
+        if (this._nextPending()) this._armRelookup()
+      }
+    })
+    this._disconnectedSince = null
+    this._relookupDelay = RELOOKUP_MIN_MS
+    if (this._relookupTimer) { clearTimeout(this._relookupTimer); this._relookupTimer = null }
     this._process()
   }
 
@@ -108,7 +137,37 @@ export class PanelLink {
 
   lastError (streamId) {
     const st = this._streams.get(streamId)
-    return st ? st.lastError : null
+    if (!st) return null
+    // Undelivered state with no panel socket: name the actual blocker. A stale delivery
+    // error from the dead socket (or a silent null — the VPS incident's face) would send
+    // the operator hunting in the wrong place.
+    if (st.deliveredSeq < st.seq) {
+      const down = this._downForMs()
+      if (down >= NO_LINK_REPORT_MS) {
+        return `no panel connection for ${Math.round(down / 1000)}s` +
+          (st.lastError ? ` (last error: ${st.lastError})` : '')
+      }
+    }
+    return st.lastError
+  }
+
+  // Milliseconds we've been without a live panel socket (0 when connected/disabled/closed).
+  _downForMs () {
+    if (!this.enabled || this._closed || this._disconnectedSince == null) return 0
+    if (this._pickSocket()) return 0
+    return Date.now() - this._disconnectedSince
+  }
+
+  // Link-level health for status/ops surfaces and tests.
+  health () {
+    let pendingOps = 0
+    for (const st of this._streams.values()) if (st.deliveredSeq < st.seq) pendingOps++
+    return {
+      enabled: this.enabled,
+      connected: !!this._pickSocket(),
+      disconnectedForMs: this._downForMs(),
+      pendingOps
+    }
   }
 
   _pickSocket () {
@@ -137,7 +196,7 @@ export class PanelLink {
         const pending = this._nextPending()
         if (!pending) break
         const picked = this._pickSocket()
-        if (!picked) break // no live connection — resume when one (re)connects
+        if (!picked) { this._armRelookup(); break } // no live connection — resume when one (re)connects; nudge discovery meanwhile
         const { st } = pending
         const sentSeq = st.seq
         const payload = st.payload
@@ -164,6 +223,25 @@ export class PanelLink {
     if (this._retryTimer.unref) this._retryTimer.unref()
   }
 
+  _armRelookup () {
+    if (this._relookupTimer || this._closed || !this._discovery) return
+    this._relookupTimer = setTimeout(() => { this._relookupTimer = null; this._relookup() }, this._relookupDelay)
+    if (this._relookupTimer.unref) this._relookupTimer.unref()
+  }
+
+  // Ops are stranded (pending, no socket): force a fresh DHT query for the panel topic so
+  // a re-announced panel (new swarm identity after a restart) is found NOW, not at
+  // hyperswarm's own ~10-min topic refresh. Keeps nudging with backoff until a connection
+  // arrives (_onConnection stands it down) or the queue empties.
+  _relookup () {
+    if (this._closed || !this._discovery) return
+    if (this._pickSocket()) return // connected — the queue drains on its own
+    if (!this._nextPending()) return // nothing stranded — _process re-arms on demand
+    try { this._discovery.refresh({ client: true, server: false }).catch(() => {}) } catch {}
+    this._relookupDelay = Math.min(this._relookupDelay * 2, RELOOKUP_MAX_MS)
+    this._armRelookup()
+  }
+
   // Heartbeat: idempotently re-assert running streams (isLive:true). Idle streams are left
   // alone — their last delivered isLive:false stands. Cheap insurance against a missed edge.
   _reassert () {
@@ -178,7 +256,9 @@ export class PanelLink {
   async close () {
     this._closed = true
     if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null }
+    if (this._relookupTimer) { clearTimeout(this._relookupTimer); this._relookupTimer = null }
     if (this._heartbeat) { clearInterval(this._heartbeat); this._heartbeat = null }
+    this._discovery = null
     if (this.swarm) { try { await this.swarm.destroy() } catch {} this.swarm = null }
     this._sockets.clear()
   }

@@ -31,6 +31,7 @@
     "test:sdk": "node tools/e2e-sdk-test.mjs",
     "test:admin-api": "node tools/e2e-admin-api-test.mjs",
     "test:broadcaster-api": "node tools/e2e-broadcaster-api-test.mjs",
+    "test:panel-link": "node tools/panel-link-test.mjs",
     "bench:scale": "node --expose-gc tools/scale-bench.mjs"
   },
   "keywords": [

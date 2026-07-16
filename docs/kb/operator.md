@@ -52,6 +52,24 @@ Long-running dev panel/broadcaster processes wedge silently:
 - Clients that were connected when the panel bounced may need an app restart to shed
   stale swarm state (see the login-stall entry in [playback](playback.md)).
 
+## Every channel shows `registered:false` after a panel restart
+
+- **Symptom:** the panel and broadcaster restarted around the same time (e.g. `docker
+  compose up -d --build`, host reboot); streams keep playing, but every channel sits
+  at `registered:false` and the panel catalog stops tracking liveness. Current builds
+  say why — `registerError: "no panel connection for Ns"`; older builds showed a
+  silent `registerError: null`.
+- **Cause:** the panel's swarm identity is ephemeral — a restarted panel announces
+  the registration topic under a brand-new keypair. A broadcaster that resolved the
+  topic just before (or during) the restart holds a dead peer record, and hyperswarm
+  re-queries a client-mode topic only every ~10 minutes on its own.
+- **Fix:** none needed on current builds. While registrations are stranded with no
+  panel socket, the broadcaster forces fresh topic lookups (5 s → 60 s backoff) and
+  re-registers as soon as the new announce lands — typically well under a minute.
+  If `registered` stays false for several minutes anyway (or you run a pre-hardening
+  build), restart the broadcaster. Either way playback is unaffected: running feeds
+  keep streaming; only catalog liveness/registration lags.
+
 ## Identifying which process is which
 
 The panel and broadcaster both run as `node src/index.js` — the command line alone
