@@ -20,9 +20,13 @@ CONTROL_ENABLED=1 node src/index.js     # control API at http://127.0.0.1:3310
 ```
 
 Opening that address in a browser loads the **control UI** (`control-ui/`, plain
-HTML/JS, no build step): sign in to add/edit channels, start/stop them, and watch
-live status (ffmpeg health, peers, panel registration, playlist). Channel art is a
-panel admin operation — upload it in the panel dashboard, not here.
+HTML/JS, no build step): sign in to add/edit channels — ingest kind (push kinds the
+host ffmpeg can't do are hidden) and per-channel transcode (unusable encoders
+disabled, probe error as tooltip) — start/stop them, copy a push channel's **push
+URL** off its card, read the ffmpeg **log ring** (live dialog; last lines inline on
+an unhealthy card), and watch live status with honest state badges (ON AIR / WAITING
+FOR PUBLISHER / RETRYING). Set `PUBLIC_HOST` so push URLs show your real hostname.
+Channel art is a panel admin operation — upload it in the panel dashboard, not here.
 
 With the control API enabled, the env-configured channel starts only if `STREAM_ID`
 is explicitly set; it keeps the legacy `DATA_DIR`-root store, so existing feed
@@ -111,7 +115,9 @@ node ../tools/e2e-stream-test.mjs                   # PASS = end-to-end P2P veri
       channels **auto-resume** after a broadcaster restart (persisted desired state),
       **`isLive:false` on stop** via one shared panel link (boot catch-up heals stale-live),
       and a per-channel ffmpeg **log ring** — verified `npm run test:broadcaster-api`
-- [ ] Surface ingest/transcode/logs (incl. the log ring) in the control API + UI (S15c);
-      optional peer allowlist check before replicating
+- [x] Ingest/transcode/logs surfaced in the control API + UI: `GET /api/capabilities`,
+      `GET /api/channels/:id/logs`, status `state` + `ingest.pushUrl`, kind/transcode
+      forms + logs dialog + state badges — verified `npm run test:broadcaster-api` + live browser
+- [ ] Optional peer allowlist check before replicating
 
 See [`../docs/content-management.md`](../docs/content-management.md).

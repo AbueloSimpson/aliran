@@ -519,8 +519,26 @@ class Channel {
   // is the playlist actually in the drive (the end-to-end "it flows" signal).
   async status () {
     const run = this.run
+    // Top-level operator state (S15c) — the one-word answer to "how is this channel":
+    //   stopped | starting | up | waiting-input | backoff
+    // 'waiting-input' = push listener up, no publisher yet (normal); 'backoff' = the
+    // watchdog is nursing a dying/stalled source (see watchdog.lastExit/backoffMs).
+    const wd = run ? run.watchdog.state : null
+    const state = !run ? 'stopped'
+      : wd === 'live' ? 'up'
+      : wd === 'waiting' ? 'waiting-input'
+      : (wd === 'restarting' || wd === 'exited' || wd === 'stalled') ? 'backoff'
+      : 'starting'
     const out = {
       ...this.meta,
+      state,
+      // Operator-facing push ingest info (display only — listeners bind 0.0.0.0).
+      // pushUrl uses PUBLIC_HOST when set, '<this-host>' otherwise.
+      ingest: isPushInput(this.meta.input) ? {
+        kind: this.meta.input.kind,
+        port: this.meta.input.port,
+        pushUrl: pushUrl(this.meta.input, this.manager.config.publicHost)
+      } : null,
       // While running, report the LIVE key (meta.feedKey is nulled on a source change and
       // only re-resolved on the next start — see _rotateFeedIfSourceChanged).
       feedKey: run ? run.feedKey : this.meta.feedKey,

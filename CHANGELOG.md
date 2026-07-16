@@ -611,7 +611,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `test:assets` extended: validation matrix + the SDK display transform (https
   passthrough, drive path → localhost). `test:sdk` regression-clean.
 
+### Feat: broadcaster control API + UI for ingest/transcode/logs (verified live)
+- **API:** `GET /api/capabilities` (the S15a ffmpeg probe: protocols + deep-verified
+  encoders); `GET /api/channels/:id/logs?lines=N` → `{lines:[{t,line}], running,
+  restarts, state}` (the S15b log ring, ≤400 lines); channel status gains a top-level
+  **`state`** (`stopped · starting · up · waiting-input · backoff`) and, for push
+  channels, **`ingest.pushUrl`** (rtmp/srt/udp URL built from `PUBLIC_HOST`).
+- **Control UI:** add-form ingest-kind selector that hides push protocols the host
+  ffmpeg lacks; copy-paste **push URL** on push-channel cards; Edit dialog with
+  kind-dependent ingest fields (port/streamKey/passphrase/latency/timeout) and the
+  full transcode form (encoder select from capabilities — unverified encoders
+  disabled with the probe error as tooltip — resolution/fps/bitrates/preset, hidden
+  for `copy`); per-channel **Logs** dialog refreshing every 2 s + the last stderr
+  lines inline on an unhealthy card; honest state badges (**ON AIR** / **WAITING FOR
+  PUBLISHER** / **RETRYING (exit N)**); "SRT + passphrase = authenticated push" hint.
+- `test:broadcaster-api` adds **Test O** (capabilities auth+shape, state + ingest.pushUrl,
+  logs API incl. `lines=` cap and 404, `waiting-input` on an idle listener, UI statics).
+  Verified in a live browser session: UI-created RTMP channel → WAITING FOR PUBLISHER →
+  local ffmpeg push → ON AIR → logs dialog streaming → stop → panel catalog `isLive:false`.
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- Broadcaster ingest/transcode/logs (incl. the log ring) surfaced in the control API + UI (S15c).
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

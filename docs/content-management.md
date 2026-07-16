@@ -44,6 +44,16 @@ Art fields (`poster`, `backdrop`, `logo`) accept **two forms** — hybrid art:
 An empty string clears an art field. The two forms mix freely per stream and per kind
 (e.g. P2P poster + remote backdrop).
 
+## Channel ingest & transcode
+
+How a channel's media gets IN (test / file / pull URL / RTMP / SRT / UDP-TS push)
+and how it's encoded (copy passthrough, x264, GPU) is **broadcaster** configuration —
+manage it in the broadcaster control dashboard (kind + transcode under Edit, push URL
+on the card, ffmpeg logs behind the Logs button). See the
+[operator guide](operator-guide.md#e-broadcaster-input) and
+[reference](reference.md#broadcaster-control-api--ui-control_enabled1). The panel
+only learns the resulting feed identity through the register RPC.
+
 ## Live vs VOD
 
 - **Live** (default): rolling HLS window in a Hyperdrive.

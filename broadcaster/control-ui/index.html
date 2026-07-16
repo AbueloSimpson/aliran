@@ -40,11 +40,14 @@
       <input id="nc-id" placeholder="id (e.g. news-24)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" maxlength="64">
       <input id="nc-title" placeholder="Title">
       <input id="nc-category" placeholder="Category">
-      <input id="nc-input" placeholder="input: test · URL · file path">
+      <select id="nc-kind" title="ingest type (push kinds get a copy-paste push URL on the card)"></select>
+      <input id="nc-source" placeholder="source URL">
       <button class="btn primary">Add</button>
     </form>
-    <p class="hint muted">Channel art (poster / backdrop / logo) is a <b>panel</b> operation — upload it in the
-    panel admin dashboard. The broadcaster's register call carries metadata only, never art.</p>
+    <p class="hint muted"><b>SRT with a passphrase is the authenticated push</b> — an RTMP stream key is only
+    obscurity; firewall your ingest ports. Push details (port / stream key / passphrase) and per-channel
+    transcode live under Edit. Channel art (poster / backdrop / logo) is a <b>panel</b> operation — upload it
+    in the panel admin dashboard.</p>
     <div id="channels-list" class="cards"></div>
   </main>
 </div>

@@ -8,13 +8,15 @@
 //
 //   POST   /api/login                    {username,password} → {token,expiresAt}
 //   GET    /api/status
-//   GET    /api/channels                 list + live status (ffmpeg/peers/registered)
-//   POST   /api/channels                 {id,title?,description?,category?,input?,hlsTime?,hlsListSize?}
+//   GET    /api/capabilities             ffmpeg probe: protocols + deep-verified encoders
+//   GET    /api/channels                 list + live status (state/ffmpeg/peers/registered/ingest)
+//   POST   /api/channels                 {id,title?,description?,category?,input?,transcode?,buffer?,hlsTime?,hlsListSize?}
 //   GET    /api/channels/:id
-//   PATCH  /api/channels/:id             meta/input changes (applied on next start)
+//   PATCH  /api/channels/:id             meta/input/transcode changes (applied on next start)
 //   DELETE /api/channels/:id             remove from registry (must be stopped; data kept)
 //   POST   /api/channels/:id/start
 //   POST   /api/channels/:id/stop
+//   GET    /api/channels/:id/logs?lines=N  ffmpeg stderr ring → {lines,running,restarts,state}
 //   GET    /api/admins
 //   POST   /api/admins                   {username,password}
 //   DELETE /api/admins/:name
@@ -87,6 +89,12 @@ export function startControlServer (ctx, opts = {}) {
       return sendJson(res, 200, await ctx.manager.statusSummary())
     }
 
+    // What the host ffmpeg can actually do (probed once per process, cached). The UI
+    // hides unavailable push protocols and disables unverified encoders off this.
+    if (r1 === 'capabilities' && req.method === 'GET' && seg.length === 2) {
+      return sendJson(res, 200, await ctx.manager.capabilities())
+    }
+
     if (r1 === 'admins') {
       if (seg.length === 2) {
         if (req.method === 'GET') return sendJson(res, 200, listAdmins(ctx))
@@ -117,6 +125,14 @@ export function startControlServer (ctx, opts = {}) {
       if (seg.length === 4 && req.method === 'POST') {
         if (r3 === 'start') return sendJson(res, 200, await ctx.manager.start(r2))
         if (r3 === 'stop') return sendJson(res, 200, await ctx.manager.stop(r2))
+      }
+      // The per-channel ffmpeg stderr ring (S15b) — why a source won't play. Survives
+      // watchdog respawns (restart markers); cleared on an operator start.
+      if (seg.length === 4 && r3 === 'logs' && req.method === 'GET') {
+        const raw = parseInt(url.searchParams.get('lines'), 10)
+        const lines = ctx.manager.logs(r2, Number.isInteger(raw) && raw > 0 ? Math.min(raw, 400) : undefined)
+        const st = await ctx.manager.get(r2)
+        return sendJson(res, 200, { lines, running: st.running, restarts: st.watchdog ? st.watchdog.restarts : 0, state: st.state })
       }
     }
 

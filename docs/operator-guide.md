@@ -119,12 +119,28 @@ port 3310). Both bind `127.0.0.1` and speak plain HTTP — **never expose them r
 
 ## E. Broadcaster input
 
-`INPUT` in `broadcaster/.env` (or per-channel via the control dashboard) currently
-supports: `test` (built-in test pattern), a **file path** (looped), or a **pull
-URL** (`rtsp://`, `http(s)://` HLS, etc.). Push ingest — RTMP for OBS, SRT with
-passphrase, MPEG-TS over UDP — plus per-channel transcode/GPU settings are the next
-roadmap items (see [ROADMAP.md](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md));
-they will require opening their listen ports in the firewall.
+Each channel has a typed input — set it per-channel in the **control dashboard**
+(the ingest selector only offers what the host ffmpeg supports) or via `INPUT` in
+`broadcaster/.env` for the env channel:
+
+- **Pull**: `test` (built-in pattern), a **file path** (looped), or a **pull URL**
+  (`rtsp://`, `http(s)://` HLS, `rtmp://`, `srt://`, `udp://`).
+- **Push** (your encoder connects IN): **RTMP** (OBS et al.), **SRT** (a passphrase
+  is enforced by the SRT handshake — the authenticated push; RTMP stream keys are
+  only obscurity), or raw **MPEG-TS over UDP**. Ports are unique per channel,
+  auto-allocated from `INGEST_PORT_BASE`–`INGEST_PORT_MAX` (5000–5999) when omitted.
+  Set `PUBLIC_HOST` in `broadcaster/.env` so the dashboard's copy-paste **push URL**
+  carries your real hostname, **open the listen port in the firewall** (below), and
+  point your encoder at the URL on the channel card. An idle push channel shows
+  **WAITING FOR PUBLISHER** — that's normal; it flips **ON AIR** when the encoder
+  connects. In OBS set the keyframe interval to `HLS_TIME` seconds (2 by default),
+  especially with `copy`.
+
+Per-channel **transcode** (Edit dialog): `copy` passthrough (cheapest), `libx264`,
+or GPU encoders (`h264_nvenc`/`h264_qsv`/`h264_vaapi`/`h264_amf`) — unusable ones are
+disabled with the probe error shown; there is no silent fallback. When a source
+misbehaves, the channel card's **Logs** dialog shows the live ffmpeg stderr ring —
+the last line is usually the diagnosis.
 
 ## F. Point the client at your panel
 
@@ -139,7 +155,7 @@ Nothing else is needed — clients reach the panel through the DHT, not an IP/do
 | P2P (DHT, replication, viewers) | outbound only | UDP, any |
 | Dashboards via Caddy | inbound | 80 + 443 TCP |
 | Dashboards via SSH tunnel | inbound | 22 TCP only |
-| Push ingest (when it lands) | inbound | the channel's listen port, restricted: `ufw allow from <encoder-ip> to any port <port>` |
+| Push ingest (RTMP = TCP; SRT/UDP-TS = UDP) | inbound | the channel's listen port, restricted: `ufw allow from <encoder-ip> to any port <port>` |
 
 `RELAY_ONLY=1` on the panel hides the origin IP behind DHT relays (slower, more
 private).

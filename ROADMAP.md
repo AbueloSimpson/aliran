@@ -119,10 +119,16 @@ auto-authorizes, browses live TV under overlay panels, and plays live P2P on pho
   **auto-resume** after a broadcaster restart (persisted desired state), `isLive:false`
   pushed to the catalog on stop/shutdown via one shared panel link (with a boot catch-up
   that heals stale-live entries), and a per-channel ffmpeg **log ring**. Verified by
-  `test:broadcaster-api` (Tests M/N). The log ring gets its control-UI surface with the
-  S15c ingest UI.
-- ⬜ **Hybrid artwork**: P2P assets drive stays the default; `https://` art URLs pass
-  through for CDN/web hosting
+  `test:broadcaster-api` (Tests M/N).
+- ✅ **Ingest/transcode/logs in the control API + UI**: `GET /api/capabilities`,
+  per-channel logs endpoint, status `state` + copy-paste push URLs; UI ingest-kind
+  selector (unavailable protocols hidden), transcode form (unverified encoders
+  disabled with the probe error), 2 s-refreshing logs dialog, honest state badges
+  (ON AIR / WAITING FOR PUBLISHER / RETRYING). Verified by `test:broadcaster-api`
+  Test O + a live browser RTMP-push session.
+- ✅ **Hybrid artwork**: P2P assets drive stays the default; `https://` art URLs pass
+  through to clients unchanged (validated panel-side, https required); dashboard
+  "url" button beside upload. Verified by `test:assets`.
 - ✅ **Android app GUI redesign** to the reference organization (phone + TV, one
   codebase): splash/auto-auth → menu hub → live-TV overlay browsing, plus the
   previously missing channel-detail and search screens; the GUI is white-label-able

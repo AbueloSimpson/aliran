@@ -73,10 +73,14 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 Served by the broadcaster process (default `127.0.0.1:3310`; put TLS in front if
 exposed). Opening the address in a browser loads the **control UI**
 (`broadcaster/control-ui/`, plain HTML/JS): sign in with a control admin to add/edit
-channels, start/stop them, and watch live status (ffmpeg health, peer count, panel
-registration, playlist presence). Channel art is a panel admin operation (the
-register RPC carries no art) — upload it in the panel dashboard. The UI consumes
-only the API below.
+channels (ingest kind — push kinds the host ffmpeg lacks are hidden — plus per-channel
+transcode with unusable encoders disabled and the probe error as tooltip), start/stop
+them, copy the **push URL** for push channels straight off the card, read the ffmpeg
+**log ring** (2 s-refreshing dialog; the last lines also appear inline on an unhealthy
+card), and watch live status. State badges: **ON AIR** / **WAITING FOR PUBLISHER**
+(push listener idle — normal) / **RETRYING (exit N)** (watchdog backoff). Channel art
+is a panel admin operation (the register RPC carries no art) — upload it in the panel
+dashboard. The UI consumes only the API below.
 Channels are runtime start/stoppable; each has its own persisted feed
 identity (feedKey + encryption key). Admins are created with
 `node src/control-cli.js add-admin <name>` (Argon2id verifiers in the local
@@ -90,11 +94,13 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
 |----------|-------------|
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
 | `GET /api/status` | Channels, running count, panel configured |
-| `GET/POST /api/channels` | List (+ live status) / add (`{id,title,category,input,…}`) |
-| `GET /api/channels/:id` | Status: running, ffmpegUp, peers, registered, playlist |
-| `PATCH /api/channels/:id` | Edit meta/input (applies on next start) |
+| `GET /api/capabilities` | ffmpeg probe: input protocols + deep-verified encoders (`{listed,verified,error?}`) |
+| `GET/POST /api/channels` | List (+ live status) / add (`{id,title,category,input,transcode,buffer,…}`) |
+| `GET /api/channels/:id` | Status: `state` (`stopped·starting·up·waiting-input·backoff`), running, ffmpegUp, peers, registered, playlist, watchdog, `ingest.pushUrl` (push kinds; uses `PUBLIC_HOST`) |
+| `PATCH /api/channels/:id` | Edit meta/input/transcode (applies on next start; a SOURCE change rotates the feed identity) |
 | `DELETE /api/channels/:id` | Remove from the registry (must be stopped; data kept) |
 | `POST /api/channels/:id/start` · `…/stop` | Spawn / tear down the pipeline |
+| `GET /api/channels/:id/logs?lines=N` | ffmpeg stderr ring → `{lines:[{t,line}], running, restarts, state}` (≤400; cleared on operator start, survives watchdog respawns) |
 | `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage control admin accounts |
 | `POST /api/admins/:name/password` | Rotate an admin password (revokes their sessions) |
 

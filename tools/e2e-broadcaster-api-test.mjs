@@ -500,7 +500,54 @@ try {
   await mgrB.close()
   log('N: desiredRunning persists → auto-resume on restart; boot catch-up heals stale-live; operator stop → idle ✓')
 
-  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false)')
+  // ===== Test O: S15c control surface — capabilities, logs API, state + ingest.pushUrl =====
+  r = await api('GET', '/api/capabilities', undefined, token)
+  assert.strictEqual(r.status, 200, 'capabilities 200')
+  assert.strictEqual(r.body.ffmpeg, true, 'probe found ffmpeg')
+  assert.strictEqual(typeof r.body.protocols.udp, 'boolean', 'protocol matrix present')
+  assert.ok(r.body.encoders.libx264 && typeof r.body.encoders.libx264.verified === 'boolean', 'encoder matrix present')
+  assert.strictEqual((await api('GET', '/api/capabilities')).status, 401, 'capabilities requires auth')
+
+  // status carries the top-level state + operator-facing push ingest info
+  s = (await api('GET', '/api/channels/push-chan', undefined, token)).body
+  assert.strictEqual(s.state, 'stopped', 'stopped channel state')
+  assert.ok(s.ingest && s.ingest.kind === 'rtmp' && s.ingest.port === rtmpPort, 'ingest block on a push channel')
+  assert.strictEqual(s.ingest.pushUrl, `rtmp://<this-host>:${rtmpPort}/live/${streamKey}`, 'pushUrl built (no PUBLIC_HOST configured)')
+  s = (await api('GET', '/api/channels/api-chan', undefined, token)).body
+  assert.strictEqual(s.ingest, null, 'no ingest block on a non-push channel')
+
+  // an idle push listener is honestly 'waiting-input', not broken
+  assert.strictEqual((await api('POST', '/api/channels/push-chan/start', undefined, token)).status, 200, 'restart push listener')
+  await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/push-chan', undefined, token)).body
+    return x.state === 'waiting-input' ? x : null
+  }, 30000, 'push listener state → waiting-input')
+
+  // the log ring reaches the API, lines=N caps it, unknown channel 404s
+  assert.strictEqual((await api('POST', '/api/channels/api-chan/start', undefined, token)).status, 200, 'start api-chan for logs')
+  const lg = await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/api-chan/logs?lines=5', undefined, token)).body
+    return x.lines && x.lines.length > 0 ? x : null
+  }, 60000, 'log ring to reach the API')
+  assert.ok(lg.lines.length <= 5, 'lines=N respected')
+  assert.ok(lg.lines.every((e) => typeof e.t === 'number' && typeof e.line === 'string'), 'log entries are {t,line}')
+  assert.strictEqual(lg.running, true, 'logs response carries running')
+  assert.strictEqual(typeof lg.restarts, 'number', 'logs response carries restarts')
+  assert.ok(['starting', 'up', 'backoff'].includes(lg.state), 'logs response carries state')
+  assert.strictEqual((await api('GET', '/api/channels/nope/logs', undefined, token)).status, 404, 'logs of unknown channel 404')
+  assert.strictEqual((await api('POST', '/api/channels/api-chan/stop', undefined, token)).status, 200, 'stop api-chan')
+  assert.strictEqual((await api('POST', '/api/channels/push-chan/stop', undefined, token)).status, 200, 'stop push-chan')
+
+  // the shipped UI carries the S15c surfaces (static asserts, Test H style)
+  const uiJs = await (await fetch(base + '/app.js')).text()
+  assert.ok(uiJs.includes('/api/capabilities'), 'UI fetches the capability probe')
+  assert.ok(uiJs.includes('logs?lines='), 'UI has the logs fetch')
+  assert.ok(uiJs.includes('WAITING FOR PUBLISHER'), 'UI has the push state badge')
+  const uiHtml = await (await fetch(base + '/')).text()
+  assert.ok(uiHtml.includes('nc-kind'), 'UI add form has the input-kind selector')
+  log('O: capabilities endpoint; status state+ingest.pushUrl; logs API (cap, 404); waiting-input; UI statics ✓')
+
+  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
