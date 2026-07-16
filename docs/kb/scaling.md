@@ -96,6 +96,19 @@ max_channels ≈ min(
 For **transcoding** deployments, recompute the CPU term and it dominates: the 8-core server that
 does ~125 copy channels does only **~8–12 x264 SD** channels.
 
+!!! success "Measured on the reference box (1 vCPU / 1 GB / 2 GB swap)"
+    A real load test with live pull sources (copy passthrough, `disk` mode): **15 channels ran
+    cleanly** (all live, ~377 MB broadcaster, load ~1.9); **~18–20 tipped into swap-thrash** (load
+    climbed past 8, the box went sluggish — no OOM kill, but unusably slow). So the table's ~14 is
+    a *safe* number — the real ceiling was a bit higher because ffmpeg's shared libraries make the
+    **marginal** RAM cost ~25–30 MB/channel, not the ~40 MB a single process suggests. On a
+    RAM-bound box the wall is **RAM → swap-thrash**, not CPU or IOPS (disk writes stayed ~modest).
+
+> **Counter-intuitive but important:** on a **RAM-constrained** box, `FEED_BUFFER=ram` is the
+> *wrong* lever — it moves the whole feed store *into* RAM, so you hit the RAM wall **sooner**.
+> The scale profile (ram + tmpfs) is for boxes that are **IOPS-bound with RAM to spare** (spinning
+> disk / SD card, many channels). On a small RAM-bound VPS, keep `FEED_BUFFER=disk`.
+
 > **Past ~one box's worth, scale horizontally.** 200 channels isn't a single-node story in any
 > storage mode — it's also 200 ffmpeg processes and 200 DHT topics. Shard channels across N
 > broadcaster nodes (each registers with the same panel); the panel catalog already aggregates
