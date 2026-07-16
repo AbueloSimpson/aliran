@@ -197,6 +197,10 @@ export function LiveScreen ({ route }: Props) {
           onSourceChanged={({ source: s }) => setSource(s)}
           onPeers={setPeers}
           onBuffering={(b) => { if (!b) setSwitching(false) }} // first frame ready ends the tune
+          // Live-edge freeze self-heal: the live window slid past the playhead (no error
+          // event exists for that) and AliranVideo is remounting onto a fresh playlist
+          // load — surface it like a tune instead of a silently frozen frame.
+          onStall={() => { console.log('[live] stall resync', playingIdRef.current); setSwitching(true) }}
           onError={(msg) => { setError(msg); setSwitching(false) }}
         />
       )}

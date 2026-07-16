@@ -32,9 +32,14 @@ backend.start(bundleBase64, {
 - **`<AliranVideo>`** — chrome-free video surface: plays the ACTIVE source URL,
   auto-retries while the P2P live edge replicates, switches sources on
   `fallback` / `source-changed`, and remounts on `feed-changed` (the broadcaster
-  rotated the watched channel's feed — reload to flush the stale playlist). Overlays
+  rotated the watched channel's feed — reload to flush the stale playlist). It also
+  self-heals a **frozen live edge**: live HLS windows are short, so a network blip
+  longer than the window slides it past the playhead with *no* error event — once the
+  playhead sits still for `stallTimeoutMs` (default 12 s) while playing, the component
+  remounts onto a fresh playlist load at the live edge and fires `onStall` (re-show
+  your tuning indicator until `onBuffering(false)`). Overlays
   (badges, peer counts, spinners) belong to
-  the host app via the callbacks — see `client/src/screens/PlayerScreen.tsx` for a
+  the host app via the callbacks — see `client/src/screens/LiveScreen.tsx` for a
   complete example (the Aliran app dogfoods this package).
 
 Requirements: peers `react-native-bare-kit` (min SDK 29) and `react-native-video`;
