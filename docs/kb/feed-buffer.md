@@ -106,6 +106,13 @@ Switching from `ram` → `disk` mints one new stable `feedKey` on the next start
 single cold discovery), after which the identity is fixed. The encryption key is
 untouched, so grants stay valid.
 
+!!! tip "Running many channels? IOPS, not space, is the wall"
+    Buffer mode above is about *one* feed's storage. When you run **many** channels the constant
+    per-segment write churn becomes **disk-IOPS-bound** — the reason traditional streaming uses a
+    ramdisk. Turn on the **scale profile** (`HLS_WORK_DIR` on tmpfs + `FEED_BUFFER=ram`) and see
+    [Scaling & capacity planning](scaling.md) for per-channel RAM/CPU/IOPS numbers and a hardware
+    sizing table.
+
 ## Sizing the segment window (`HLS_TIME` / `HLS_LIST_SIZE`)
 
 The window is `HLS_LIST_SIZE` segments of `HLS_TIME` seconds each. Defaults: **`2` s ×

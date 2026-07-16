@@ -362,7 +362,12 @@ class Channel {
     swarm.join(drive.discoveryKey, { server: true, client: false })
     await swarm.flush()
 
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-hls-'))
+    // ffmpeg's live-window scratch. Defaults to the OS temp dir; HLS_WORK_DIR (config.workDir)
+    // can point it at a tmpfs so the per-segment write churn never hits disk — the scale
+    // profile for high channel density (see docs/kb/scaling.md).
+    const workDir = config.workDir || os.tmpdir()
+    fs.mkdirSync(workDir, { recursive: true })
+    const outDir = fs.mkdtempSync(path.join(workDir, 'aliran-hls-'))
     const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500 })
     const now = Date.now()
     const run = {

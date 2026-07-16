@@ -146,13 +146,22 @@ private).
 
 ## Sizing
 
-Verified on a 1 vCPU / 1 GB VPS: two concurrent test channels encode fine (load ≈1.5).
+Verified on a 1 vCPU / 1 GB VPS: two concurrent **copy** (passthrough) channels run at ~1.6%
+CPU each in a 165 MB container. What sets the ceiling depends on the encoder:
+
+- **`copy` channels (pull + re-mux, the common case):** **RAM-bound**, ~40 MB/channel — a 1 GB
+  box does ~14, a 4 GB box ~60. CPU is negligible.
+- **Transcoding channels (libx264 etc.):** **CPU-bound** — budget ~0.5–1 core per SD channel
+  (a test-pattern source *encodes*, so "~two per vCPU" applies to those, not to `copy`).
+
 On boxes with ≤2 GB RAM, add swap and lower the login KDF memory in `panel/.env` —
-`ARGON2_MEM_KIB=65536` (64 MiB per login instead of the 256 MiB default; the
-parameters are stored per user record, so changing them later only affects new
-enrollments/password rotations). Each running channel costs one ffmpeg encode —
-budget roughly one vCPU per two test-pattern channels until per-channel transcode
-controls land.
+`ARGON2_MEM_KIB=65536` (64 MiB per login instead of the 256 MiB default; the parameters are
+stored per user record, so changing them later only affects new enrollments/password rotations).
+
+**Running many channels, or on a Pi / SD-card host?** The wall becomes **disk IOPS**, not space
+— enable the scale profile (`HLS_WORK_DIR` on tmpfs + `FEED_BUFFER=ram`) and see
+[Scaling & capacity planning](kb/scaling.md) for the per-channel numbers, a hardware table, the
+`tools/scale-bench.mjs` measurement tool, and the arm64 Raspberry Pi build.
 
 ## Operations
 

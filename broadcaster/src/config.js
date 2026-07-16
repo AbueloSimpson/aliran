@@ -1,5 +1,6 @@
 // Broadcaster config (env-driven). Mirrors panel/src/config.js style.
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
@@ -51,6 +52,12 @@ export const config = {
   // for hosts that must keep the disk byte-flat. Both stay window-bounded via reclaim.
   // See docs/kb/feed-buffer.md.
   feedBuffer: process.env.FEED_BUFFER === 'ram' ? 'ram' : 'disk',
+  // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
+  // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR
+  // at a tmpfs mount to keep the per-segment write churn off disk — essential at high
+  // channel density (see docs/kb/scaling.md). Pair with FEED_BUFFER=ram to take the
+  // Hypercore off disk too = zero segment IOPS on disk (the "scale profile").
+  workDir: process.env.HLS_WORK_DIR || os.tmpdir(),
   protection: process.env.PROTECTION || 'self',
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean),

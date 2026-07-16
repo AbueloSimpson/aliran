@@ -37,8 +37,19 @@ services:
     env_file: ./broadcaster/.env
     environment:
       DATA_DIR: /data
+      # --- Scale profile (high channel density) — see docs/kb/scaling.md ---
+      # Keep the constant per-segment write churn off the disk. Uncomment BOTH lines
+      # here and the `tmpfs:` mount below. HLS_WORK_DIR moves ffmpeg's scratch to RAM;
+      # FEED_BUFFER=ram moves the Hypercore to RAM too (zero segment IOPS on disk, at
+      # the cost of a fresh feedKey per restart — viewers auto-follow via the catalog).
+      # HLS_WORK_DIR: /hlstmp
+      # FEED_BUFFER: ram
     volumes:
       - broadcaster-data:/data
+    # tmpfs for the ffmpeg HLS scratch (scale profile). Size it for your channel count:
+    # ~ (HLS_LIST_SIZE + 2) x segment_size x channels — 512m fits dozens of SD copy channels.
+    # tmpfs:
+    #   - /hlstmp:size=512m
 
 volumes:
   panel-data:
