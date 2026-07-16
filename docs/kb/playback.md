@@ -52,14 +52,29 @@ In likelihood order:
   the device holds a **stale DHT record** (the broadcaster restarted since the last
   lookup: its feed swarms are ephemeral identities, and hyperswarm re-queries a topic
   only every ~10 min — the same failure PanelLink self-heals on the broadcaster side).
-- **Fix (shipped) — tune self-heal:** while a tune is incomplete the engine forces
+- **Fix (shipped) — tune self-heal:** while a tune is incomplete (the playlist is not
+  **advancing** — merely existing is not enough, see the wedge below) the engine forces
   fresh DHT lookups on a 5 s → 60 s backoff; at 30 s it evicts the cached feed open and
-  re-opens fresh once (`feed:retune` breadcrumb); if that also expires it surfaces a
-  friendly `tune timeout` error instead of spinning forever — zap to the channel again
-  to retry. Pre-fix builds could sit on the spinner **indefinitely** (S22, 2026-07-16:
-  a zap stuck at "90 %" for 10+ min against a healthy VPS; only an app restart — a
-  fresh swarm — cleared it, because the cached dead open poisoned every retry). The
+  re-opens fresh once (`feed:retune` breadcrumb); at 60 s it **destroys the swarm
+  connections serving the feed** and dials fresh (`feed:reconnect`); if that also
+  expires it surfaces a friendly `tune timeout` error instead of spinning forever —
+  zap to the channel again to retry (worst case ≤ 90 s to the error at defaults).
+  Pre-fix builds could sit on the spinner **indefinitely** (S22, 2026-07-16: a zap
+  stuck at "90 %" for 10+ min against a healthy VPS; only an app restart — a fresh
+  swarm — cleared it, because the cached dead open poisoned every retry). The
   `test:sdk` tune section guards the whole cycle.
+- **Persistent spinner with peers connected (`1 peer` showing):** the **wedged
+  connection** class — a network flap (Wi-Fi degrade, radio cycle) can leave the
+  hyperswarm/UDX connection alive at transport level while replication over it moves
+  **zero bytes**. Peer counts look healthy on BOTH ends, no error fires, and because
+  hyperswarm keeps one connection per peer across all topics, a retune faithfully
+  reuses the same dead pipe — with prewarm, one wedged connection to the broadcaster
+  starves **every** channel at once (S22, 2026-07-16: 15+ min stuck at "90 %" with
+  "P2P — 1 peer" while a fresh client played the same feed in 10 s). **Fix (shipped):**
+  the tune watchdog requires the playlist to *advance* (a stale pre-flap playlist in
+  the replica no longer counts as tuned) and tears the wedged connections down on its
+  second expiry (`feed:reconnect`) so the swarm dials fresh; `test:sdk`'s
+  wedged-connection section reproduces the exact signature with a paused socket.
 - With the **hybrid CDN↔P2P** policy configured, this case instead triggers a
   `fallback` to the CDN URL (and auto-returns later) — see the
   [player SDK README](https://github.com/AbueloSimpson/aliran/tree/main/sdk).
@@ -75,6 +90,12 @@ In likelihood order:
   the position sits still for 12 s (`stallTimeoutMs`) while not paused, it remounts
   onto a fresh playlist load at the live edge (the same thing the manual zap did) and
   fires `onStall` — the app re-shows the tuning pill until the first frame lands.
+- **If the resync remount itself never plays** within another window, the freeze is
+  not a slid live window but a **wedged connection** (see the tune section above): the
+  stall ladder escalates to `backend.reconnect()`, which tears down the engine's
+  connections serving the feed and dials fresh; the engine's re-armed tune watchdog
+  then drives the outcome — playback resumes, or a friendly error instead of a
+  silently frozen frame.
 - **Widen the margin (operators):** deepening the live window (`HLS_LIST_SIZE`
   12–16) gives clients more room to recover from blips — the same lever as the
   rebuffer cushion in [sizing the segment window](feed-buffer.md#sizing-the-segment-window-hls_time--hls_list_size).

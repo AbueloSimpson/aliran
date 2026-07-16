@@ -709,6 +709,41 @@ Two client-side recovery gaps observed on the S22 against a healthy VPS (2026-07
   with the cache evicted, and a plain re-zap must open fresh and play once a
   broadcaster appears (no app restart). KB: both symptoms in `docs/kb/playback.md`.
 
+### Fix: wedged swarm connections are torn down — the self-heal the tune watchdog couldn't reach
+On-device verification of the tune self-heal (same S22, same day, 2026-07-16) found a
+wedge class it does NOT recover: after a Wi-Fi degrade + off/on cycle, the hyperswarm/
+UDX connection to the broadcaster survived at **transport level** while hypercore
+replication over it moved **zero bytes** — "P2P — 1 peer" on the phone, `peers=1` on
+all 10 feed swarms at the broadcaster, worklet heartbeats healthy, a fresh client
+played the same feed in 10 s… and a tune sat at "90 %" for 15+ minutes with **no
+error**. Two compounding causes, both fixed in `sdk/player.js`:
+
+- **The watchdog stood down on a STALE playlist.** "Tuned" was "the playlist exists in
+  the replica" — but on a warm/prewarmed feed the pre-flap playlist is already there,
+  so the watchdog quit on its first tick: no re-lookups, no retune, and the friendly
+  error could never fire. "Tuned" now means the playlist **advances** (a live playlist
+  rewrites every segment, so a healthy feed passes within seconds).
+- **Evict + retune reused the wedged pipe.** Hyperswarm keeps ONE connection per peer
+  across all topics, so a fresh open rides the same dead socket — and with prewarm the
+  broadcaster is usually the only peer, so one wedged connection starves EVERY channel
+  at once. The watchdog now escalates: retune at `tune.timeoutMs`, then **destroy the
+  connections serving the feed** at the 2nd expiry (`feed:reconnect` breadcrumb —
+  topics stay joined, the swarm dials fresh, corestore re-replicates automatically),
+  and only then the friendly error — worst case **≤ 3× `timeoutMs`** (90 s at
+  defaults) instead of never. No connected peer to tear down → error at 2× as before.
+- **Belt-and-suspenders in the app path:** `AliranPlayer.reconnectActiveFeed()` (new
+  public API) exposes the same teardown + re-armed watchdog; the worklet maps it to a
+  new `{type:'reconnect'}` IPC message and `AliranBackend.reconnect()`. `<AliranVideo>`'s
+  stall ladder escalates to it when a stall **resync remount fails to play** within
+  another `stallTimeoutMs` window — a mid-watch wedge now tears the transport down
+  instead of remounting onto the same dead replica forever.
+- **Tests:** `test:sdk` gains a wedged-connection scenario — the viewer's socket to a
+  dedicated seeder is **paused** (probe-verified in-process stand-in for SIGSTOPping a
+  seeder: connection stays open, 1 peer attached, live edge frozen — the exact prod
+  signature), then a re-zap must produce `feed:retune` → `feed:reconnect` → the wedged
+  socket destroyed → the live edge **resumes** with no friendly error and no app
+  restart. KB: `docs/kb/playback.md` updated.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
