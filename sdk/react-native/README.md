@@ -27,8 +27,9 @@ backend.start(bundleBase64, {
 
 - **`AliranBackend`** — boots the worklet from a [bare-pack](../../docs/client-build.md)
   bundle (base64 or bytes) and speaks the engine's IPC protocol: `login()`, `play()`,
-  `playRaw()`, `onMessage()`, with `streams` / `port` / `url` / `source` cached for
-  screens that mount after the one-shot replies.
+  `playRaw()`, `reconnect()` (tear down the active feed's swarm connections and dial
+  fresh — the wedged-transport escalation), `onMessage()`, with `streams` / `port` /
+  `url` / `source` cached for screens that mount after the one-shot replies.
 - **`<AliranVideo>`** — chrome-free video surface: plays the ACTIVE source URL,
   auto-retries while the P2P live edge replicates, switches sources on
   `fallback` / `source-changed`, and remounts on `feed-changed` (the broadcaster
@@ -37,7 +38,10 @@ backend.start(bundleBase64, {
   longer than the window slides it past the playhead with *no* error event — once the
   playhead sits still for `stallTimeoutMs` (default 12 s) while playing, the component
   remounts onto a fresh playlist load at the live edge and fires `onStall` (re-show
-  your tuning indicator until `onBuffering(false)`). Overlays
+  your tuning indicator until `onBuffering(false)`). If a resync mount then fails to
+  play within another window, the ladder escalates to `backend.reconnect()` — the
+  network flap left the engine's peer connection transport-alive but replication-dead,
+  and only a fresh dial (not a remount) recovers that. Overlays
   (badges, peer counts, spinners) belong to
   the host app via the callbacks — see `client/src/screens/LiveScreen.tsx` for a
   complete example (the Aliran app dogfoods this package).

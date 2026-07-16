@@ -19,6 +19,11 @@ const RETRY_MS = 2500
 // stays healthy (S22 2026-07-16). Once a mount has actually played, a playhead that
 // stops advancing for this long (while not paused) forces a remount: a fresh playlist
 // load rejoins at the live edge — exactly what a manual zap-away/zap-back did.
+// ESCALATION: if the remount itself brings no playback within another window, the
+// engine's swarm connection is likely wedged — transport-alive but replication-dead
+// (a network flap can leave it that way; the same S22 day, 15+ min stuck with
+// "1 peer" showing) — so the ladder calls backend.reconnect() to tear it down and
+// dial fresh before each further remount.
 const STALL_MS = 12000
 
 export interface AliranVideoProps {
@@ -40,8 +45,9 @@ export interface AliranVideoProps {
   onBuffering?: (buffering: boolean) => void
   onError?: (message: string) => void
   /** A frozen live edge was detected and the player is resyncing (remount onto a fresh
-   *  playlist load at the live edge). Hosts typically re-show their tuning indicator
-   *  until onBuffering(false)/onReadyForDisplay. */
+   *  playlist load at the live edge; consecutive failed resyncs additionally tear down
+   *  the engine's wedged peer connection via backend.reconnect()). Hosts typically
+   *  re-show their tuning indicator until onBuffering(false)/onReadyForDisplay. */
   onStall?: () => void
   /** How long the playhead may sit still (while playing) before a resync; 0 disables.
    *  Default 12000 — under the smallest deployed live window (8×2 s). */
@@ -65,6 +71,9 @@ export function AliranVideo ({
   // its own recovery (error-retry remounts + the engine's tune watchdog), and a dead
   // feed must not hot-loop remounts.
   const progress = useRef({ time: -1, at: Date.now(), played: false })
+  // Consecutive stall resyncs with no playback in between: 1 = plain remount, ≥2 =
+  // the remount didn't restore playback, escalate to a transport teardown.
+  const resyncs = useRef(0)
 
   useEffect(() => {
     const off = backend.onMessage((m: BackendMessage) => {
@@ -103,20 +112,31 @@ export function AliranVideo ({
     progress.current = { time: -1, at: Date.now(), played: false }
   }, [url, attempt])
 
+  // A zap or source switch starts a fresh tune — the escalation ladder resets with it.
+  useEffect(() => { resyncs.current = 0 }, [streamId, url])
+
   // Stall watchdog: playing but the playhead has not moved for stallTimeoutMs → the
   // live window slid past the playhead (no error event exists for this) → remount.
+  // If a resync mount then FAILS to play within another window, a remount alone can't
+  // help — the engine's peer connection is wedged (transport-alive, replication-dead):
+  // tear it down via backend.reconnect() so the swarm dials fresh, and let the engine's
+  // re-armed tune watchdog drive the outcome (playback resumes, or a friendly error).
   useEffect(() => {
     if (!stallTimeoutMs) return
     const timer = setInterval(() => {
       const p = progress.current
       if (paused) { p.at = Date.now(); return } // a paused playhead is not a stall
-      if (!p.played || Date.now() - p.at < stallTimeoutMs) return
+      if (p.played) resyncs.current = 0 // motion since the last resync — the ladder resets
+      else if (resyncs.current === 0) return // never played: the tune phase owns recovery
+      if (Date.now() - p.at < stallTimeoutMs) return
       progress.current = { time: -1, at: Date.now(), played: false }
+      resyncs.current++
       cb.current.onStall?.()
+      if (resyncs.current >= 2) backend.reconnect()
       setAttempt((a) => a + 1) // remount = fresh playlist load at the live edge
     }, 1000)
     return () => clearInterval(timer)
-  }, [paused, stallTimeoutMs])
+  }, [backend, paused, stallTimeoutMs])
 
   if (!url) return null
 
