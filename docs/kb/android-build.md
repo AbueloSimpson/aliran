@@ -75,3 +75,63 @@ Windows. Start Metro **after** the build finishes.
   (see [playback](playback.md#posters-and-video-silently-fail-to-load-blank-tiles-no-error-anywhere)).
 - `run-as` doesn't work on release builds (not debuggable) — verify via on-screen
   state and IPC logs, not the filesystem.
+
+## Device floor: Android 10+ — the Bare runtime needs ELF TLS
+
+- **Symptom:** installing on an Android 9 device fails with
+  `INSTALL_FAILED_OLDER_SDK … Requires newer sdk version #29`.
+- **Why it is NOT an overridable pin:** `libbare-kit.so` carries a **GLOBAL**
+  undefined import of `__tls_get_addr@LIBC_Q` — native ELF thread-local storage,
+  added to Android's libc in **Android 10 (API 29)**. On Android 9 the dynamic
+  linker cannot resolve it, so the whole P2P engine fails to load. Lowering
+  `minSdkVersion` + `tools:overrideLibrary` would only move the failure from
+  install time to a `dlopen` crash.
+- **How to verify a floor like this yourself** (works for any native dep): dump the
+  undefined dynamic symbols with the NDK's readelf and look for versioned libc
+  symbols newer than your target —
+  `llvm-readelf --dyn-syms libfoo.so | grep -E "LIBC_(Q|R|S|T|U)"`
+  (`LIBC_Q`=29, `R`=30, …). Zero hits = the manifest pin is conservative and may be
+  overridable; a GLOBAL hit = hard floor.
+- **Fire TV consequence:** Fire OS 7 devices (Android 9 — every 2018–2021 stick,
+  incl. Fire TV Stick 4K Max 1st gen) **cannot run the client**. Fire OS 8 devices
+  (Android 11 — 2023 4K/4K Max, Cube 3rd gen, Omni/4-Series TVs) work. Most sticks
+  are **32-bit** (`armeabi-v7a` only) — probe with
+  `adb shell getprop ro.product.cpu.abilist` and build with
+  `-PreactNativeArchitectures=armeabi-v7a` (bare-kit ships armv7 prebuilds).
+
+## Debug builds on a physical device: point Metro over the LAN, skip `adb reverse`
+
+- **Symptom:** debug build red-screens "Unable to load script" / "Could not connect
+  to development server" even though `adb reverse tcp:8081 tcp:8081` succeeded.
+- **Cause:** the reverse tunnel rides the adb transport; on a flaky link (wireless
+  adb, USB that suspends) it dies in the seconds between app cold-start and the
+  bundle fetch — you lose the race every time.
+- **Fix — serve Metro over the LAN, no tunnel:**
+  1. Debug builds ship a debug-only `src/debug/res/xml/network_security_config.xml`
+     permitting cleartext (release keeps loopback-only) — the main config would
+     block a LAN Metro with `CLEARTEXT communication … not permitted`.
+  2. Point the app at your machine (debug builds are debuggable, so `run-as` works):
+     write `<string name="debug_http_host">YOUR_PC_IP:8081</string>` into the app's
+     default shared prefs via
+     `adb shell run-as <appId> sh -c 'printf … > shared_prefs/<appId>_preferences.xml'`.
+  3. Sanity-check reachability from the device first:
+     `adb shell curl -s -m4 http://YOUR_PC_IP:8081/status` → expect HTTP 200.
+- **Gotcha:** debug builds do **not** log `console.log` to logcat — `ReactNativeJS`
+  is empty (output goes to Metro/DevTools). Use screenshots and on-screen state for
+  verification; release builds still log to logcat.
+
+## Installing a big APK over a flaky adb link
+
+- Streamed `adb install` can die mid-push or return blank exit-255 on some devices
+  (seen on Samsung); large pushes also silently TRUNCATE — `adb push` may print
+  "1 file pushed" while the on-device file is short. Always verify with
+  `adb shell stat -c %s`.
+- The reliable recipe: build **single-ABI** first
+  (`-PreactNativeArchitectures=arm64-v8a` — a universal RN debug APK ~425 MB drops
+  to ~100-130 MB), then `split -b 20m app.apk chunk_`, push each chunk with a
+  size-verify + retry loop, reassemble on-device
+  (`cat /data/local/tmp/chunk_* > /data/local/tmp/x.apk`), verify the total, and
+  `adb shell pm install -r /data/local/tmp/x.apk`.
+- A blank exit-255 from `pm install` on a full, valid APK is often the link dropping
+  before adb reads the status — the install may have SUCCEEDED; check
+  `adb shell pm path <appId>` before retrying.

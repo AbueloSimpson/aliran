@@ -160,7 +160,17 @@ following only the docs.
 ## Future / exploratory
 
 - ⬜ iOS / Apple TV client (FairPlay + HLS)
-- ⬜ Web client (Bare/WebRTC bridge)
+- ⬜ **Web player via an HTTP gateway** — a hosted page that plays the service in any
+  browser. Browsers cannot join the Hyperswarm DHT (no UDP), so the honest design is
+  a **gateway node** that runs the P2P engine server-side (the existing player SDK,
+  headless) and re-serves each feed as plain HLS over HTTPS to `hls.js` in the page,
+  with viewer auth via a panel HTTP endpoint. Trade-off to state up front: gateway
+  viewers don't re-seed — for them the gateway is a mini-CDN, so it re-centralizes
+  bandwidth for exactly that audience. Big synergy: the same gateway unlocks
+  **legacy devices below the Android 10 Bare floor** (e.g. Fire OS 7 sticks — see
+  [client build](docs/client-build.md)) as CDN-only clients of their own service.
+  True in-browser P2P (WebRTC/WebTransport swarm bridge) stays a separate research
+  item on top of this.
 - ⬜ Chat / interactivity alongside live streams
 - ⬜ Multi-broadcaster / multi-admin (Autobase) catalogs
 - ⬜ Adaptive bitrate ladders; low-latency HLS/LL-DASH
