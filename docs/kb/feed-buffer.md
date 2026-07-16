@@ -133,9 +133,18 @@ buffer-mode lever above).
   - **Small swarm (a few viewers):** `8` (≈16 s) is plenty.
   - **Large swarm (many concurrent viewers):** `12`–`16` — deeper overlap means a
     joiner can pull from more peers and ride out a peer dropping.
+  - **Client blip-recovery margin (same lever):** the window is also how long a
+    viewer's network may hiccup before the live edge slides past their player and the
+    picture freezes. The app self-heals that (the `<AliranVideo>` stall resync — see
+    [playback](playback.md#video-freezes-while-everything-looks-healthy-clock-ticks-peers-connected)),
+    but a deeper window prevents the freeze instead of recovering from it: at `8×2 s`
+    any ~16 s Wi-Fi blip freezes mobile viewers; `12`–`16` (24–32 s) rides most of
+    them out. Cost is a proportionally larger per-channel window store — small since
+    the reclaim fix.
 
 **Recommended starting point:** `HLS_TIME=2`, `HLS_LIST_SIZE=8`, `FEED_BUFFER=disk`.
-Bump `HLS_LIST_SIZE` as the audience grows.
+Bump `HLS_LIST_SIZE` to `12`+ as the audience grows **or if viewers are on flaky
+networks (mobile/Wi-Fi)** — the 2026-07-16 S22 freeze happened at `8×2 s`.
 
 > **Note — keyframe alignment with `copy`:** the encoder must emit a keyframe every
 > `HLS_TIME` seconds (e.g. OBS "keyframe interval") or segments won't cut cleanly.
