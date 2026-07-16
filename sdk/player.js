@@ -33,9 +33,10 @@
 //                        just reloads the player to flush the stale playlist/segments.
 //
 // Tune self-heal (p2p-only): pass `tune` { timeoutMs, relookupMinMs, relookupMaxMs } to
-// bound a tune. While the active feed's playlist has not landed, the engine forces DHT
-// re-lookups on a backoff, retunes once at timeoutMs (evict + fresh open), then emits a
-// friendly 'error'. See normalizeTune() and _startTuneWatchdog().
+// bound a tune. While the active feed's playlist is not ADVANCING, the engine forces
+// DHT re-lookups on a backoff, retunes once at timeoutMs (evict + fresh open), tears
+// down wedged peer connections at 2× (destroy + fresh dial, 'feed:reconnect'), then
+// emits a friendly 'error' by ≤3×. See normalizeTune() and _startTuneWatchdog().
 //
 // Hybrid CDN<->P2P (S10b): pass `hybrid` config to choose the active source per play.
 // The SDK never decodes video — it exposes the CURRENT source URL + health signals and
@@ -96,15 +97,20 @@ function normalizeHybrid (h) {
   return cfg
 }
 
-// Tune self-heal (p2p-only mode; the S22 2026-07-16 stuck-at-90% incident): a first
-// tune to a cold feed whose DHT records are stale (the broadcaster restarted since the
-// last lookup — its feed-seeding swarms are ephemeral identities, and hyperswarm
-// re-queries a client topic only every ~10 min) finds no peer, so the playlist never
-// lands and the viewer spins forever. timeoutMs bounds one tune attempt: on the first
-// expiry the cached open is EVICTED and re-opened fresh (one automatic retry); on the
-// second a friendly 'error' surfaces to the host. relookup(Min|Max)Ms pace forced
-// discovery.refresh() calls while a tune is incomplete — the same self-heal as the
-// broadcaster's PanelLink (broadcaster/src/panel-link.js).
+// Tune self-heal (p2p-only mode; the S22 2026-07-16 stuck-at-90% incidents): a tune
+// can spin forever for two reasons. (1) Cold feed, stale DHT record: the broadcaster
+// restarted since the last lookup (its feed-seeding swarms are ephemeral identities,
+// and hyperswarm re-queries a client topic only every ~10 min), no peer is found, the
+// playlist never lands. (2) WEDGED connection: a network flap leaves the hyperswarm/
+// UDX connection alive at transport level while hypercore replication over it moves
+// zero bytes — peers look connected, the stale playlist is already in the replica,
+// nothing ever advances. timeoutMs bounds one tune attempt: on the first expiry the
+// cached open is EVICTED and re-opened fresh; on the second, connections serving the
+// feed are DESTROYED so the swarm dials fresh (the retune alone can't help — hyperswarm
+// shares one connection per peer, so a fresh open reuses the wedged pipe); only then a
+// friendly 'error' surfaces to the host (≤3× timeoutMs total). relookup(Min|Max)Ms
+// pace forced discovery.refresh() calls while a tune is incomplete — the same
+// self-heal as the broadcaster's PanelLink (broadcaster/src/panel-link.js).
 function normalizeTune (t) {
   const cfg = { timeoutMs: 30000, relookupMinMs: 5000, relookupMaxMs: 60000, ...t }
   for (const k of ['timeoutMs', 'relookupMinMs', 'relookupMaxMs']) {
@@ -438,17 +444,29 @@ export class AliranPlayer extends Emitter {
   // mirroring the broadcaster's PanelLink hardening:
   //   - while the tune is incomplete, force discovery.refresh() on a relookup backoff;
   //   - at tune.timeoutMs, evict the cached open and re-open fresh ONCE ('feed:retune');
-  //   - if the retune also expires, evict and emit a friendly 'error' for the host UI.
-  // Stands down when the playlist lands (the host player takes it from there), on the
-  // next resolve()/stop(), or when the active play moves off P2P. Hybrid mode needs
-  // none of this: _waitP2PReady already bounds the tune and falls back to CDN.
+  //   - at the 2nd expiry, DESTROY the connections serving the feed so the swarm dials
+  //     fresh ('feed:reconnect') — the wedged-connection class (see _teardownFeedPeers);
+  //   - if that also expires (or no peer was connected to tear down), evict and emit a
+  //     friendly 'error' for the host UI — worst case ≤ 3× tune.timeoutMs end to end.
+  // "Tuned" means the playlist ADVANCES, not merely exists: after a network flap the
+  // STALE playlist of a warm/prewarmed feed is already in the local replica, so an
+  // existence probe stood the watchdog down on its first tick and the wedge above
+  // spun for 15+ min with zero relookups, no retune and no error (the second S22
+  // 2026-07-16 incident). A live playlist rewrites every segment, so on a healthy
+  // feed the first advance lands within seconds and the watchdog stands down (the
+  // host player takes it from there); it also stands down on the next resolve()/
+  // stop(), or when the active play moves off P2P. Hybrid mode needs none of this:
+  // _waitP2PReady already bounds the tune and falls back to CDN.
   _startTuneWatchdog () {
     this._clearTuneTimer()
     const a = this._active
     if (!a || a.source !== 'p2p' || this._hybrid.mode !== 'p2p-only') return
     const cfg = this._tune
-    let started = Date.now()
+    const t0 = Date.now()
+    let started = t0
     let retuned = false
+    let reconnected = false
+    let initialSig // first probed signature (possibly a stale playlist, possibly null)
     let relookupDelay = cfg.relookupMinMs
     let nextRelookup = started + relookupDelay
     let busy = false
@@ -458,7 +476,9 @@ export class AliranPlayer extends Emitter {
       try {
         if (this._tuneTimer !== timer) { clearInterval(timer); return } // superseded by a newer tune
         if (!this._active || this._active !== a || a.source !== 'p2p') { this._stopTuneTimer(timer); return }
-        if (await this._boundedSig(900) !== null) { this._stopTuneTimer(timer); return } // playlist landed — tuned
+        const sig = await this._boundedSig(900)
+        if (initialSig === undefined) initialSig = sig
+        else if (sig !== null && sig !== initialSig) { this._stopTuneTimer(timer); return } // playlist advanced — tuned
         if (this._active !== a) return // zapped away during the probe
         const now = Date.now()
         if (now >= nextRelookup) {
@@ -478,15 +498,68 @@ export class AliranPlayer extends Emitter {
           this._retuneActive(a).catch(() => {})
           return
         }
+        if (!reconnected) {
+          reconnected = true
+          // A retune that changed nothing while peers ARE connected is the wedged-
+          // connection class: the pipe is alive at transport level but replication
+          // over it is dead, and the fresh open reused it (hyperswarm shares one
+          // connection per peer). Destroy those connections and let the swarm dial
+          // fresh — topics stay joined, corestore re-replicates on the new socket.
+          if (this._teardownFeedPeers() > 0) {
+            started = now
+            relookupDelay = cfg.relookupMinMs
+            nextRelookup = now + relookupDelay
+            this.emit('status', { state: 'feed:reconnect' })
+            return
+          }
+          // No peer connected to tear down (truly unreachable) — fail now, not at 3×.
+        }
         this._stopTuneTimer(timer)
         const keys = this._entitled.get(a.streamId)
         if (keys && keys.encryptionKey) this._evictFeed(a.feedKey + ':' + keys.encryptionKey)
-        this.emit('error', new Error(`tune timeout: no video from '${a.streamId}' after ${Math.round(cfg.timeoutMs * 2 / 1000)}s — the channel may be unreachable right now, switch to it again to retry`))
+        this.emit('error', new Error(`tune timeout: no video from '${a.streamId}' after ${Math.round((now - t0) / 1000)}s — the channel may be unreachable right now, switch to it again to retry`))
       } finally {
         busy = false
       }
     }, Math.min(1000, cfg.timeoutMs))
     this._tuneTimer = timer
+  }
+
+  // Destroy every swarm connection currently serving the ACTIVE feed (dedup'd — one
+  // socket usually carries all channels of a peer) and return how many were torn down.
+  // This is the recovery for the 2026-07-16 wedge class: a mobile network flap can
+  // leave the hyperswarm/UDX connection transport-alive but replication-dead, and
+  // because hyperswarm keeps ONE connection per peer across all topics, every
+  // evict+retune faithfully reuses the same dead pipe — with prewarm, one wedged
+  // broadcaster connection starves every channel at once (the broadcaster is usually
+  // the only peer). peer.stream is the raw swarm socket protomux rides on; destroying
+  // it makes hyperswarm redial (the topic stays joined) and corestore re-replicates
+  // everything on the fresh connection automatically.
+  _teardownFeedPeers () {
+    const drive = this._feedDrive
+    if (!drive || !drive.core || !this._swarm) return 0
+    const seen = new Set()
+    for (const peer of [...drive.core.peers]) {
+      const stream = peer && peer.stream
+      if (!stream || seen.has(stream)) continue
+      seen.add(stream)
+      try { stream.destroy() } catch {}
+    }
+    return seen.size
+  }
+
+  // Public escalation hook for hosts (the <AliranVideo> stall ladder): when a remount/
+  // resync did not restore playback, tear down the active feed's connections and dial
+  // fresh, then re-arm the tune watchdog (unless one is already mid-cycle — its ladder
+  // must keep counting toward the friendly error, not restart) so the recovery is
+  // tracked to either "playlist advances" or the friendly 'error'. Safe no-op without
+  // an active P2P play.
+  reconnectActiveFeed () {
+    const n = this._teardownFeedPeers()
+    try { const r = this._feedDiscovery && this._feedDiscovery.refresh(); if (r && r.catch) r.catch(() => {}) } catch {}
+    if (n > 0) this.emit('status', { state: 'feed:reconnect' })
+    if (!this._tuneTimer) this._startTuneWatchdog()
+    return n
   }
 
   // Stop THIS watchdog without killing a newer one that may have replaced it while an

@@ -19,6 +19,11 @@
 // tune.timeoutMs ('feed:retune' + cached open EVICTED + fresh open), then surface a
 // friendly 'error' instead of spinning forever; once a broadcaster appears, a plain
 // re-resolve must open FRESH and play — no app restart (the poison-pill regression).
+// Then the WEDGED-CONNECTION self-heal (the 2nd S22 2026-07-16 incident): a paused
+// socket leaves the connection transport-ALIVE but replication-DEAD ("1 peer", frozen
+// live edge, no error) — a re-zap must retune, then DESTROY the wedged connection
+// ('feed:reconnect') so the swarm dials fresh, and playback must resume with no
+// friendly error and no app restart.
 // Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -66,7 +71,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -93,6 +98,16 @@ try {
   const feedStore3 = new Corestore(dirs.feed3); await feedStore3.ready(); cleanups.push(() => feedStore3.close())
   const feed3 = new Hyperdrive(feedStore3.namespace('feed'), { encryptionKey: encKey3 }); await feed3.ready()
 
+  // Fourth encrypted feed for the wedged-connection case — seeded from the start by a
+  // DEDICATED swarm so the test can identify (and wedge) exactly that connection.
+  const encKey4 = hcrypto.randomBytes(32)
+  const feedStore4 = new Corestore(dirs.feed4); await feedStore4.ready(); cleanups.push(() => feedStore4.close())
+  const feed4 = new Hyperdrive(feedStore4.namespace('feed'), { encryptionKey: encKey4 }); await feed4.ready()
+  const feedSwarm4 = new Hyperswarm(); cleanups.push(() => feedSwarm4.destroy())
+  feedSwarm4.on('connection', s => feed4.replicate(s))
+  feedSwarm4.join(feed4.discoveryKey, { server: true, client: false }); await feedSwarm4.flush()
+  const stopMirror4 = mirrorDirToDrive(dirs.out, feed4, { interval: 400 }); cleanups.push(() => stopMirror4())
+
   // ===== Panel: keys, enroll alice + stream + grant, serve RPC =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
@@ -110,12 +125,13 @@ try {
     encPriv: wrap(wk, kp.secretKey),
     authPub: b4a.toString(auth.publicKey, 'hex'),
     authPrivEnc: wrap(wk, auth.secretKey),
-    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3) },
+    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3), sports: sealTo(kp.publicKey, encKey4) },
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
   await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live' })
   await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live', order: 1, featured: true })
   await db.put('catalog/shopping', { title: 'Shopping', category: ['shopping'], type: 'live', protection: 'self', feedKey: b4a.toString(feed3.key, 'hex'), isLive: true, poster: null, status: 'live' })
+  await db.put('catalog/sports', { title: 'Sports', category: ['sports'], type: 'live', protection: 'self', feedKey: b4a.toString(feed4.key, 'hex'), isLive: true, poster: null, status: 'live' })
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
@@ -147,7 +163,7 @@ try {
     if (Date.now() > deadline) throw new Error('timeout: SDK login')
     try {
       const s = await player.login('alice', PASSWORD)
-      if (s.length >= 3) streams = s // all three catalog records replicated
+      if (s.length >= 4) streams = s // all four catalog records replicated
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
     }
@@ -294,7 +310,7 @@ try {
     if (Date.now() > deadline2) throw new Error('timeout: hybrid SDK login')
     try {
       const s = await player2.login('alice', PASSWORD)
-      if (s.length >= 3) streams2 = s
+      if (s.length >= 4) streams2 = s
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
     }
@@ -305,7 +321,7 @@ try {
   // With prewarm:true, both entitled feeds ('news' + 'movies') are opened+joined in the
   // background at login, so the first zap to either is a cache hit — no cold feed:open.
   await player2.prewarm() // idempotent; deterministically wait out the background warm
-  if (player2._feeds.size !== 3) throw new Error('prewarm should open all three entitled feeds; got ' + player2._feeds.size)
+  if (player2._feeds.size !== 4) throw new Error('prewarm should open all four entitled feeds; got ' + player2._feeds.size)
   log('prewarm: opened ' + player2._feeds.size + ' entitled feeds at login (warm first-zap)')
 
   // 'movies' is entitled but nobody seeds it -> tiny readyTimeout forces CDN fallback.
@@ -362,7 +378,7 @@ try {
     if (Date.now() > deadline3) throw new Error('timeout: tune SDK login')
     try {
       const s = await player3.login('alice', PASSWORD)
-      if (s.length >= 3) streams3 = s
+      if (s.length >= 4) streams3 = s
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
     }
@@ -407,10 +423,82 @@ try {
   log('tune: post-seed re-zap opened fresh and plays (' + shopSegs + ' segs) — the dead open no longer poisons retries')
   await player3.stop()
 
+  // ===== Wedged-connection self-heal (the 2nd S22 2026-07-16 incident) =====
+  // A network flap can leave the hyperswarm/UDX connection transport-ALIVE but
+  // replication-DEAD: the peer stays connected on every topic ("P2P — 1 peer"), the
+  // stale playlist already sits in the local replica, and an evict+retune reuses the
+  // same wedged pipe (hyperswarm keeps one connection per peer) — pre-fix the viewer
+  // spun for 15+ min with NO error; only an app restart (fresh swarm identity)
+  // recovered. Simulate the wedge from the viewer's side by PAUSING its socket to the
+  // seeder (probe-verified: the connection stays open, drive.core.peers stays 1, zero
+  // bytes move — the exact prod signature; the in-process stand-in for SIGSTOPping a
+  // seeder process, which Windows lacks). Then re-zap: the tune watchdog must see a
+  // playlist that EXISTS but never ADVANCES, retune at timeoutMs, DESTROY the wedged
+  // connection at 2× ('feed:reconnect'), and the fresh dial must resume the live edge
+  // with NO friendly error and NO app restart.
+  const ev4 = { status: [], errors: [] }
+  const player4 = createPlayer({
+    panelPubKey,
+    storeDir: dirs.cli4,
+    tune: { timeoutMs: 9000, relookupMinMs: 1000, relookupMaxMs: 9000 }
+  })
+  player4.on('status', (s) => ev4.status.push(s.state))
+  player4.on('error', (e) => ev4.errors.push(String((e && e.message) || e)))
+  cleanups.push(() => player4.stop())
+
+  await player4.connect()
+  let streams4 = null
+  const deadline4 = Date.now() + 60000
+  while (!streams4) {
+    if (Date.now() > deadline4) throw new Error('timeout: wedge SDK login')
+    try {
+      const s = await player4.login('alice', PASSWORD)
+      if (s.length >= 4) streams4 = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streams4) await sleep(1500)
+  }
+
+  const r4 = await resolveWithin(player4, 'sports', 20000)
+  const basePl = await waitFor(async () => { const r = await httpGet(r4.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') ? r.body.toString() : null }, 40000, 'sports playback over P2P (pre-wedge)')
+  await waitFor(async () => { const r = await httpGet(r4.port, '/index.m3u8'); const b = r.body.toString(); return r.status === 200 && b !== basePl ? b : null }, 20000, 'sports live edge advances (pre-wedge health)')
+
+  // WEDGE: pause the viewer's socket to the sports seeder. No announcements or blocks
+  // arrive anymore, but the transport (and the replication peer) stays attached.
+  const wedgedSock = [...player4._swarm.connections].find(s => b4a.equals(s.remotePublicKey, feedSwarm4.keyPair.publicKey))
+  if (!wedgedSock) throw new Error('wedge: no connection to the sports seeder found')
+  wedgedSock.pause()
+  await sleep(1500) // let in-flight buffered data drain so the frozen check is honest
+  const frozenPl = (await httpGet(r4.port, '/index.m3u8')).body.toString()
+  await sleep(4000) // 2× the segment cadence — a healthy feed would have advanced
+  const stillPl = (await httpGet(r4.port, '/index.m3u8')).body.toString()
+  if (stillPl !== frozenPl) throw new Error('wedge: expected the live edge to freeze under the paused connection')
+  if (wedgedSock.destroyed) throw new Error('wedge: the paused connection must stay transport-alive')
+  if (player4._feedDrive.core.peers.length < 1) throw new Error('wedge: the peer must still look connected (the prod "1 peer" signature)')
+  log('wedge: live edge frozen, connection alive, ' + player4._feedDrive.core.peers.length + ' peer attached — the S22 signature reproduced')
+
+  // The viewer re-zaps into the wedge (exactly what the phone did after the blip).
+  const statusMark = ev4.status.length
+  await resolveWithin(player4, 'sports', 20000)
+  await waitFor(async () => ev4.status.slice(statusMark).includes('feed:retune'), 25000, "wedge cycle 1: 'feed:retune' (evict + fresh open still rides the wedged pipe)")
+  await waitFor(async () => ev4.status.slice(statusMark).includes('feed:reconnect'), 25000, "wedge cycle 2: 'feed:reconnect' (wedged connection destroyed, fresh dial)")
+  await waitFor(async () => wedgedSock.destroyed, 5000, 'the wedged socket is actually destroyed')
+  const healedPl = await waitFor(async () => {
+    const r = await httpGet(r4.port, '/index.m3u8')
+    const b = r.body.toString()
+    return r.status === 200 && b.includes('.ts') && b !== frozenPl ? b : null
+  }, 30000, 'live edge resumes after the fresh dial (no app restart)')
+  if (ev4.errors.some(m => /tune timeout/i.test(m))) throw new Error('wedge: the teardown should recover BEFORE the friendly error fires: ' + JSON.stringify(ev4.errors))
+  const wedgeHealed = !!healedPl
+  const healedSegs = healedPl.split('\n').filter(l => l.trim().endsWith('.ts')).length
+  log('wedge: retune → reconnect (teardown) → fresh dial resumed the live edge (' + healedSegs + ' segs) — no error, no app restart')
+  await player4.stop()
+
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
-    !ev2.status.includes('feed:open') && tuned && relookups >= 1)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal verified)' : 'FAIL ❌')
+    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

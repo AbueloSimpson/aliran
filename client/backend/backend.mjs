@@ -22,6 +22,9 @@
 //        { type:'prefs-get' }         -> { type:'prefs', creds, favorites }
 //        { type:'creds-save', username, password } | { type:'creds-clear' }
 //        { type:'favorites-set', favorites: [streamId] }   (each replies with 'prefs')
+//        { type:'reconnect' }         -> tear down the active feed's swarm connections
+//                                        and dial fresh (wedged-transport escalation
+//                                        from <AliranVideo>'s stall ladder)
 //   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
 //                                        live whenever the panel edits the catalog —
 //                                        same shape; the Home screen re-renders on it)
@@ -142,6 +145,12 @@ IPC.on('data', (data) => {
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       writePrefs({ ...readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
       sendPrefs()
+    } else if (msg.type === 'reconnect') {
+      // Wedged-transport escalation from the app's stall ladder: destroy the active
+      // feed's connections so the swarm dials fresh. 'feed:reconnect' status + the
+      // tune watchdog's outcome (playback resumes, or a friendly error) relay via the
+      // existing event listeners.
+      if (player) { try { player.reconnectActiveFeed() } catch (err) { fail(err) } }
     } else if (msg.feedKey && msg.encryptionKey) {
       ensurePlayer().serveFeed(msg.feedKey, msg.encryptionKey).then((port) => send({ type: 'port', port })).catch(fail)
     } else if (msg.username) {

@@ -34,9 +34,10 @@ export interface HybridConfig {
 }
 
 // Tune self-heal knobs (p2p-only mode; see sdk/player.js). timeoutMs bounds one tune
-// attempt: first expiry evicts the cached feed open and retries once, the second
-// surfaces a friendly {type:'error'}. relookup(Min|Max)Ms pace forced DHT re-lookups
-// while a tune is incomplete. Defaults: 30 s / 5 s → 60 s.
+// attempt: the first expiry evicts the cached feed open and retries once, the second
+// tears down wedged peer connections (transport-alive but replication-dead) and dials
+// fresh, and only then a friendly {type:'error'} surfaces. relookup(Min|Max)Ms pace
+// forced DHT re-lookups while a tune is incomplete. Defaults: 30 s / 5 s → error ≤ 90 s.
 export interface TuneConfig {
   timeoutMs?: number
   relookupMinMs?: number
@@ -129,6 +130,10 @@ export class AliranBackend {
   play (streamId: string) { this.send({ streamId }) }
   /** Dev direct-play by raw keys (no login). */
   playRaw (feedKey: string, encryptionKey: string) { this.send({ feedKey, encryptionKey }) }
+  /** Tear down the active feed's swarm connections and dial fresh (wedged-transport
+   *  escalation — see AliranVideo's stall ladder). The engine re-arms its tune
+   *  watchdog, so the outcome is either playback resuming or a friendly error. */
+  reconnect () { this.send({ type: 'reconnect' }) }
 
   /** Ask the worklet for saved credentials + favorites; answers as {type:'prefs'}. */
   requestPrefs () { this.send({ type: 'prefs-get' }) }
