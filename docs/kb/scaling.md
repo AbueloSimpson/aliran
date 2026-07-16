@@ -128,6 +128,31 @@ It reports per-channel node RAM, ffmpeg RAM (Linux), CPU, the **allocated** on-d
 (sparse-aware — meaningful on Linux/ext4), and a RAM-bound ceiling for several budgets. Run it at
 a couple of `--channels` values and read the *marginal* cost between them.
 
+## Recovering an overloaded broadcaster
+
+If you push past the wall and the box goes into **swap-thrash** (load ≫ cores, everything
+crawls, SSH sluggish), don't try to fix it channel-by-channel through the API — under thrash
+each `stop` waits on the panel flush and takes seconds. Shed load decisively:
+
+```bash
+# 1. force the broadcaster down (SIGKILL after 5 s) — instant RAM/CPU relief
+docker stop -t 5 aliran-broadcaster-1
+# 2. keep only the channels you want; drop the rest from the registry
+V=/var/lib/docker/volumes/aliran_broadcaster-data/_data
+python3 -c "import json;d=json.load(open('$V/channels.json'));\
+json.dump({i:v for i,v in d.items() if i in ('ch1','ch2')},open('$V/channels.json','w'),indent=2)"
+# 3. bring it back — only the kept channels auto-resume
+docker start aliran-broadcaster-1
+```
+
+!!! danger "Auto-resume can turn one OOM into a boot loop"
+    Every started channel persists `desiredRunning:true`. If the box hard-OOMs, Docker restarts
+    the broadcaster and it **auto-resumes them all at once** — and simultaneous starts spike
+    higher than steady state, so a box that was stable *running* N channels can fail to *boot*
+    them. Stay a couple of channels below the measured ceiling, and shed the registry (step 2)
+    before restarting a box that's already at the edge. A `MAX_CHANNELS` start guardrail on the
+    broadcaster is a sensible future addition.
+
 ## Raspberry Pi broadcaster (experimental)
 
 A Pi is a good low-power edge broadcaster for **copy** channels. The scale profile isn't optional
