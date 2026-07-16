@@ -11,9 +11,11 @@
 // (app.bundle.js is a build artifact, gitignored; regenerate it as part of the app build.)
 //
 // IPC (line-delimited JSON) with React Native:
-//   in : { panelPubKey, hybrid? }     -> connect to panel; optional hybrid CDN<->P2P
+//   in : { panelPubKey, hybrid?, prewarm?, tune? }
+//                                     -> connect to panel; optional hybrid CDN<->P2P
 //                                        config (cdnUrl as a '{streamId}' template
-//                                        string — JSON-safe; see sdk/player.js)
+//                                        string — JSON-safe), feed prewarm count, and
+//                                        tune self-heal knobs (see sdk/player.js)
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
 //        { streamId }                 -> play an entitled stream -> { port, url, source }
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
@@ -100,9 +102,9 @@ function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
 
 let player = null
 
-function ensurePlayer (hybrid, prewarm) {
+function ensurePlayer (hybrid, prewarm, tune) {
   if (player) return player
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune })
   player.on('ready', () => send({ type: 'ready' }))
   player.on('streams', (streams) => send({ type: 'streams', streams }))
   player.on('status', (status) => send({ type: 'status', ...status }))
@@ -111,6 +113,9 @@ function ensurePlayer (hybrid, prewarm) {
   player.on('fallback', (e) => send({ type: 'fallback', ...e }))
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
+  // Background engine failures with no caller to throw to — most importantly the tune
+  // watchdog's timeout. Dropping these left the app spinning forever on a dead tune.
+  player.on('error', (err) => send({ type: 'error', message: String((err && err.message) || err) }))
   return player
 }
 
@@ -146,7 +151,7 @@ IPC.on('data', (data) => {
     } else if (msg.streamId) {
       ensurePlayer().resolve(msg.streamId).then(({ port, url, source }) => send({ type: 'port', port, url, source })).catch(fail)
     } else if (msg.panelPubKey) {
-      ensurePlayer(msg.hybrid, msg.prewarm).connect(msg.panelPubKey).catch(fail)
+      ensurePlayer(msg.hybrid, msg.prewarm, msg.tune).connect(msg.panelPubKey).catch(fail)
     }
   }
 })

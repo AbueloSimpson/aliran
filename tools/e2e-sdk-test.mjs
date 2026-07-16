@@ -14,6 +14,11 @@
 // readyTimeoutMs must fall back to a local "CDN" HLS server ('fallback', source cdn);
 // once a broadcaster starts seeding the feed, the SDK must auto-return
 // ('source-changed', source p2p) and serve the playlist from the local P2P server.
+// Then the TUNE SELF-HEAL (p2p-only; the S22 stuck-at-90% zap): resolving an entitled
+// stream NOBODY seeds must force DHT re-lookups while tuning, retune once at
+// tune.timeoutMs ('feed:retune' + cached open EVICTED + fresh open), then surface a
+// friendly 'error' instead of spinning forever; once a broadcaster appears, a plain
+// re-resolve must open FRESH and play — no app restart (the poison-pill regression).
 // Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -61,7 +66,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -82,6 +87,12 @@ try {
   const feedStore2 = new Corestore(dirs.feed2); await feedStore2.ready(); cleanups.push(() => feedStore2.close())
   const feed2 = new Hyperdrive(feedStore2.namespace('feed'), { encryptionKey: encKey2 }); await feed2.ready()
 
+  // Third encrypted feed for the tune self-heal case — cataloged as live but nobody
+  // seeds it until the very end (the cold/unreachable-feed zap).
+  const encKey3 = hcrypto.randomBytes(32)
+  const feedStore3 = new Corestore(dirs.feed3); await feedStore3.ready(); cleanups.push(() => feedStore3.close())
+  const feed3 = new Hyperdrive(feedStore3.namespace('feed'), { encryptionKey: encKey3 }); await feed3.ready()
+
   // ===== Panel: keys, enroll alice + stream + grant, serve RPC =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
@@ -99,11 +110,12 @@ try {
     encPriv: wrap(wk, kp.secretKey),
     authPub: b4a.toString(auth.publicKey, 'hex'),
     authPrivEnc: wrap(wk, auth.secretKey),
-    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2) },
+    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3) },
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
   await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live' })
   await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live', order: 1, featured: true })
+  await db.put('catalog/shopping', { title: 'Shopping', category: ['shopping'], type: 'live', protection: 'self', feedKey: b4a.toString(feed3.key, 'hex'), isLive: true, poster: null, status: 'live' })
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
@@ -135,7 +147,7 @@ try {
     if (Date.now() > deadline) throw new Error('timeout: SDK login')
     try {
       const s = await player.login('alice', PASSWORD)
-      if (s.length >= 2) streams = s // both catalog records replicated
+      if (s.length >= 3) streams = s // all three catalog records replicated
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
     }
@@ -282,7 +294,7 @@ try {
     if (Date.now() > deadline2) throw new Error('timeout: hybrid SDK login')
     try {
       const s = await player2.login('alice', PASSWORD)
-      if (s.length >= 2) streams2 = s
+      if (s.length >= 3) streams2 = s
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
     }
@@ -293,7 +305,7 @@ try {
   // With prewarm:true, both entitled feeds ('news' + 'movies') are opened+joined in the
   // background at login, so the first zap to either is a cache hit — no cold feed:open.
   await player2.prewarm() // idempotent; deterministically wait out the background warm
-  if (player2._feeds.size !== 2) throw new Error('prewarm should open both entitled feeds; got ' + player2._feeds.size)
+  if (player2._feeds.size !== 3) throw new Error('prewarm should open all three entitled feeds; got ' + player2._feeds.size)
   log('prewarm: opened ' + player2._feeds.size + ' entitled feeds at login (warm first-zap)')
 
   // 'movies' is entitled but nobody seeds it -> tiny readyTimeout forces CDN fallback.
@@ -325,10 +337,80 @@ try {
   log('prewarm: served feeds were all warm (feed:ready, no feed:open)')
   await player2.stop()
 
+  // ===== Tune self-heal (p2p-only): timeout → retune → friendly error → clean retry =====
+  // 'shopping' is entitled and cataloged as live but NOBODY seeds it — the S22
+  // stuck-at-90% zap (cold feed / stale DHT record; 2026-07-16). With a tiny tune
+  // config the SDK must: force DHT re-lookups while the tune is incomplete, retune
+  // ONCE at tune.timeoutMs ('feed:retune' breadcrumb — cached open EVICTED + fresh
+  // open), then surface a friendly 'error' instead of spinning forever. The eviction
+  // is the poison-pill regression: pre-fix, the single-flight cache handed every
+  // retry the same dead open until an app restart.
+  const ev3 = { status: [], errors: [] }
+  const player3 = createPlayer({
+    panelPubKey,
+    storeDir: dirs.cli3,
+    tune: { timeoutMs: 4000, relookupMinMs: 1000, relookupMaxMs: 4000 }
+  })
+  player3.on('status', (s) => ev3.status.push(s.state))
+  player3.on('error', (e) => ev3.errors.push(String((e && e.message) || e)))
+  cleanups.push(() => player3.stop())
+
+  await player3.connect()
+  let streams3 = null
+  const deadline3 = Date.now() + 60000
+  while (!streams3) {
+    if (Date.now() > deadline3) throw new Error('timeout: tune SDK login')
+    try {
+      const s = await player3.login('alice', PASSWORD)
+      if (s.length >= 3) streams3 = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streams3) await sleep(1500)
+  }
+
+  const shopKeyHex = b4a.toString(feed3.key, 'hex')
+  const shopCacheKey = shopKeyHex + ':' + b4a.toString(encKey3, 'hex')
+  const r3 = await resolveWithin(player3, 'shopping', 20000) // the OPEN is local — must return promptly even unseeded
+  if (r3.feedKey !== shopKeyHex) throw new Error('tune: resolve() feedKey mismatch')
+  // Count the forced DHT re-lookups (the PanelLink-style self-heal) while tuning.
+  let relookups = 0
+  const disc3 = player3._feedDiscovery
+  const origRefresh = disc3.refresh.bind(disc3)
+  disc3.refresh = (...args) => { relookups++; return origRefresh(...args) }
+
+  const tuneErr = await waitFor(async () => ev3.errors.find(m => /tune timeout/i.test(m)), 30000, "friendly 'error' after the tune timed out (incl. one retune)")
+  if (!/shopping/.test(tuneErr)) throw new Error('tune: the error should name the stream: ' + tuneErr)
+  if (!ev3.status.includes('feed:retune')) throw new Error("tune: expected a 'feed:retune' breadcrumb (evict + fresh open) before the error")
+  if (relookups < 1) throw new Error('tune: expected forced discovery re-lookups while tuning, got ' + relookups)
+  if (player3._feeds.has(shopCacheKey)) throw new Error('tune: the dead open must be EVICTED from the feed cache')
+  log('tune: unseeded zap → ' + relookups + ' forced re-lookup(s) → feed:retune → friendly error, cache evicted ("' + tuneErr.slice(0, 60) + '…")')
+
+  // The broadcaster for 'shopping' finally starts. The app path after the error is a
+  // plain re-zap: it must do a FRESH open (no app restart) and play. Emulate the
+  // viewer: if another tune window expires before the public-DHT lookup + replication
+  // catch up, re-zap again — each attempt must be a fresh open, never the dead one.
+  const feedSwarm3 = new Hyperswarm(); cleanups.push(() => feedSwarm3.destroy())
+  feedSwarm3.on('connection', s => feed3.replicate(s))
+  feedSwarm3.join(feed3.discoveryKey, { server: true, client: false }); await feedSwarm3.flush()
+  const stopMirror3 = mirrorDirToDrive(dirs.out, feed3, { interval: 400 }); cleanups.push(() => stopMirror3())
+  let errSeen = ev3.errors.length
+  const r3b = await resolveWithin(player3, 'shopping', 20000)
+  if (r3b.port !== r3.port) throw new Error('tune: localhost port must stay stable across the retry')
+  const shopPlaylist = await waitFor(async () => {
+    if (ev3.errors.length > errSeen) { errSeen = ev3.errors.length; await resolveWithin(player3, 'shopping', 20000) } // viewer re-zaps
+    const r = await httpGet(r3.port, '/index.m3u8')
+    return r.status === 200 && r.body.includes('.ts') ? r.body.toString() : null
+  }, 60000, 'post-seed re-zap serves the playlist (fresh open after eviction — no app restart)')
+  const shopSegs = shopPlaylist.split('\n').filter(l => l.trim().endsWith('.ts')).length
+  const tuned = !!shopPlaylist
+  log('tune: post-seed re-zap opened fresh and plays (' + shopSegs + ' segs) — the dead open no longer poisons retries')
+  await player3.stop()
+
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
-    !ev2.status.includes('feed:open'))
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return verified)' : 'FAIL ❌')
+    !ev2.status.includes('feed:open') && tuned && relookups >= 1)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

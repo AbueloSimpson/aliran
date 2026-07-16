@@ -33,6 +33,16 @@ export interface HybridConfig {
   probeIntervalMs?: number
 }
 
+// Tune self-heal knobs (p2p-only mode; see sdk/player.js). timeoutMs bounds one tune
+// attempt: first expiry evicts the cached feed open and retries once, the second
+// surfaces a friendly {type:'error'}. relookup(Min|Max)Ms pace forced DHT re-lookups
+// while a tune is incomplete. Defaults: 30 s / 5 s → 60 s.
+export interface TuneConfig {
+  timeoutMs?: number
+  relookupMinMs?: number
+  relookupMaxMs?: number
+}
+
 export interface SavedCredentials { username: string; password: string }
 
 export type BackendMessage =
@@ -60,6 +70,9 @@ export interface StartOptions {
    * warms the connection, not a full download.
    */
   prewarm?: boolean | number
+  /** Tune self-heal knobs (timeout → evict + one retry → friendly error; forced DHT
+   *  re-lookups while tuning). Omit for the engine defaults. */
+  tune?: TuneConfig
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
 }
@@ -102,7 +115,7 @@ export class AliranBackend {
     this.worklet.start('/app.bundle', bytes as any)
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
-    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm })
+    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune })
     const queued = this.pending; this.pending = []
     for (const m of queued) this.send(m)
   }

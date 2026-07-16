@@ -20,7 +20,7 @@
 //   'streams' (list)     display catalog (no keys inside): after a successful login,
 //                        and re-emitted live whenever the panel edits the catalog
 //                        (title/isLive/art/... — no polling, no re-login)
-//   'status'  ({state})  breadcrumbs: 'feed:open' | 'feed:ready'
+//   'status'  ({state})  breadcrumbs: 'feed:open' | 'feed:ready' | 'feed:retune'
 //   'peers'   (count)    feed-health ticker while a stream is being served
 //   'recovered' (err)    a corrupt store was purged and the operation retried
 //   'error'   (err)      background failures that have no caller to throw to
@@ -31,6 +31,11 @@
 //                        the SDK re-resolved and swapped the served feed WITHOUT a new
 //                        resolve() call. url is the unchanged localhost URL — the host
 //                        just reloads the player to flush the stale playlist/segments.
+//
+// Tune self-heal (p2p-only): pass `tune` { timeoutMs, relookupMinMs, relookupMaxMs } to
+// bound a tune. While the active feed's playlist has not landed, the engine forces DHT
+// re-lookups on a backoff, retunes once at timeoutMs (evict + fresh open), then emits a
+// friendly 'error'. See normalizeTune() and _startTuneWatchdog().
 //
 // Hybrid CDN<->P2P (S10b): pass `hybrid` config to choose the active source per play.
 // The SDK never decodes video — it exposes the CURRENT source URL + health signals and
@@ -91,6 +96,23 @@ function normalizeHybrid (h) {
   return cfg
 }
 
+// Tune self-heal (p2p-only mode; the S22 2026-07-16 stuck-at-90% incident): a first
+// tune to a cold feed whose DHT records are stale (the broadcaster restarted since the
+// last lookup — its feed-seeding swarms are ephemeral identities, and hyperswarm
+// re-queries a client topic only every ~10 min) finds no peer, so the playlist never
+// lands and the viewer spins forever. timeoutMs bounds one tune attempt: on the first
+// expiry the cached open is EVICTED and re-opened fresh (one automatic retry); on the
+// second a friendly 'error' surfaces to the host. relookup(Min|Max)Ms pace forced
+// discovery.refresh() calls while a tune is incomplete — the same self-heal as the
+// broadcaster's PanelLink (broadcaster/src/panel-link.js).
+function normalizeTune (t) {
+  const cfg = { timeoutMs: 30000, relookupMinMs: 5000, relookupMaxMs: 60000, ...t }
+  for (const k of ['timeoutMs', 'relookupMinMs', 'relookupMaxMs']) {
+    if (!(Number(cfg[k]) > 0)) throw new Error('tune.' + k + ' must be a positive number of milliseconds')
+  }
+  return cfg
+}
+
 // prewarm: after login, open+join entitled feeds in the background so the FIRST zap to
 // a channel is warm (the cold DHT discovery + handshake are paid upfront, off the play
 // path). false (default) = off; true = all entitled feeds; a positive integer = cap to
@@ -104,14 +126,16 @@ function normalizePrewarm (v) {
 }
 
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._hybrid = normalizeHybrid(hybrid)
     this._prewarmN = normalizePrewarm(prewarm)
+    this._tune = normalizeTune(tune)
     this._active = null // current play state: { streamId, feedKey, localUrl, cdnUrl, source, lastSig, lastAdvance }
     this._watchTimer = null // P2P stall watchdog (while source === 'p2p')
     this._probeTimer = null // P2P recovery probe (while source === 'cdn')
+    this._tuneTimer = null // tune watchdog (p2p-only, while the active feed's playlist has not landed)
     this._panelKey = panelPubKey || null
     this._storeDir = storeDir
     this._http = http
@@ -203,6 +227,7 @@ export class AliranPlayer extends Emitter {
     }
     const cfg = this._hybrid
     this._clearHybridTimers()
+    this._clearTuneTimer() // zapping away ends the previous channel's tune watchdog
 
     if (cfg.mode === 'cdn-only') {
       const url = cfg.cdnUrl(streamId)
@@ -214,6 +239,7 @@ export class AliranPlayer extends Emitter {
     const localUrl = `http://127.0.0.1:${port}/index.m3u8`
     if (cfg.mode === 'p2p-only') {
       this._active = { streamId, feedKey, localUrl, cdnUrl: null, source: 'p2p', lastSig: null, lastAdvance: Date.now() }
+      this._startTuneWatchdog()
       return { url: localUrl, source: 'p2p', localUrl, port, feedKey }
     }
 
@@ -256,7 +282,17 @@ export class AliranPlayer extends Emitter {
     // feed:open marks a COLD open (nothing cached yet). A prewarmed / recently-served
     // feed skips it — the host player sees only feed:ready, i.e. an instant switch.
     if (!this._feeds.has(feedKeyHex + ':' + encKeyHex)) this.emit('status', { state: 'feed:open' })
-    const feed = await this._openFeed(feedKeyHex, encKeyHex)
+    // Bounded open: a wedged open (one that never settles) would otherwise hang
+    // resolve() forever AND — through the single-flight cache — poison every retry of
+    // this channel until the host restarts. On expiry the cached promise is evicted
+    // (so the next attempt re-opens fresh) and the open retries ONCE; a second expiry
+    // surfaces to the caller.
+    let feed = await this._openFeedWithin(feedKeyHex, encKeyHex, this._tune.timeoutMs)
+    if (!feed) {
+      this.emit('status', { state: 'feed:retune' })
+      feed = await this._openFeedWithin(feedKeyHex, encKeyHex, this._tune.timeoutMs)
+    }
+    if (!feed) throw new Error(`tune timeout: the feed did not open within ${Math.round(this._tune.timeoutMs * 2 / 1000)}s — try again`)
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
     this.emit('status', { state: 'feed:ready' })
@@ -296,13 +332,51 @@ export class AliranPlayer extends Emitter {
     return feed
   }
 
+  // _openFeed bounded by a timeout: null on expiry, after evicting the cached promise
+  // so the NEXT attempt re-opens fresh instead of awaiting the same wedged open.
+  async _openFeedWithin (feedKeyHex, encKeyHex, ms) {
+    let timer
+    const expiry = new Promise((resolve) => { timer = setTimeout(() => resolve(null), ms) })
+    try {
+      const feed = await Promise.race([this._openFeed(feedKeyHex, encKeyHex), expiry])
+      if (!feed) this._evictFeed(feedKeyHex + ':' + encKeyHex)
+      return feed
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // Drop a cached open — possibly still PENDING — so the next attempt re-opens fresh,
+  // and close the orphaned drive whenever the old open settles. Fire-and-forget:
+  // awaiting a wedged open here would recreate the very hang being recovered from.
+  // (Until the orphan settles and closes, a fresh open of the SAME feed blocks on the
+  // shared store namespace — that block is bounded by the caller's own timeout.)
+  _evictFeed (cacheKey) {
+    const feed = this._feeds.get(cacheKey)
+    if (!feed) return
+    this._feeds.delete(cacheKey)
+    Promise.resolve(feed).then((f) => {
+      if (!f || !f.drive) return
+      if (this._feedDrive === f.drive) { this._feedDrive = null; this._feedDiscovery = null }
+      f.drive.close().catch(() => {})
+    }).catch(() => {})
+  }
+
   // Current feedKey for a stream: follow the replicated catalog (a broadcaster restart
   // publishes a fresh key in RAM-buffer mode), falling back to the login-time value.
+  // Bounded: on a sparse bee the get() can await blocks from the panel peer, and a dead
+  // panel socket would otherwise hang resolve() forever — fall back to the cached key.
   async _currentFeedKey (streamId, fallback) {
+    let timer
     try {
-      const node = this._panelBee && await this._panelBee.get('catalog/' + streamId)
+      const node = this._panelBee && await Promise.race([
+        this._panelBee.get('catalog/' + streamId),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), 5000) })
+      ])
       if (node && node.value && node.value.feedKey) return node.value.feedKey
-    } catch { /* replicated catalog momentarily unreadable — use the cached key */ }
+    } catch { /* replicated catalog momentarily unreadable — use the cached key */ } finally {
+      clearTimeout(timer)
+    }
     return fallback
   }
 
@@ -320,6 +394,7 @@ export class AliranPlayer extends Emitter {
   // the app process.
   async stop () {
     this._clearHybridTimers()
+    this._clearTuneTimer()
     this._active = null
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const server = this._server; this._server = null
@@ -344,6 +419,123 @@ export class AliranPlayer extends Emitter {
     const feedProms = [...this._feeds.values()]
     this._feeds.clear()
     for (const p of feedProms) Promise.resolve(p).then((f) => f && f.drive && f.drive.close()).catch(() => {})
+  }
+
+  // --- tune watchdog (p2p-only mode) ---
+
+  _clearTuneTimer () {
+    if (this._tuneTimer) { clearInterval(this._tuneTimer); this._tuneTimer = null }
+  }
+
+  // resolve() returns as soon as the feed is OPEN; the playlist then replicates in the
+  // background while the host player polls the localhost URL. Nothing bounded that
+  // replication: a cold feed whose DHT records are stale (the broadcaster restarted
+  // since the last lookup; hyperswarm re-queries a client topic only every ~10 min)
+  // never finds a peer, the playlist never lands, and the single-flight open cache
+  // faithfully hands every retry the same dead open — the viewer spins forever
+  // (2026-07-16 S22 incident: a zap sat at "90%" for 10+ min against a healthy VPS;
+  // an app restart — fresh swarm, fresh lookup — fixed it). Self-heal instead,
+  // mirroring the broadcaster's PanelLink hardening:
+  //   - while the tune is incomplete, force discovery.refresh() on a relookup backoff;
+  //   - at tune.timeoutMs, evict the cached open and re-open fresh ONCE ('feed:retune');
+  //   - if the retune also expires, evict and emit a friendly 'error' for the host UI.
+  // Stands down when the playlist lands (the host player takes it from there), on the
+  // next resolve()/stop(), or when the active play moves off P2P. Hybrid mode needs
+  // none of this: _waitP2PReady already bounds the tune and falls back to CDN.
+  _startTuneWatchdog () {
+    this._clearTuneTimer()
+    const a = this._active
+    if (!a || a.source !== 'p2p' || this._hybrid.mode !== 'p2p-only') return
+    const cfg = this._tune
+    let started = Date.now()
+    let retuned = false
+    let relookupDelay = cfg.relookupMinMs
+    let nextRelookup = started + relookupDelay
+    let busy = false
+    const timer = setInterval(async () => {
+      if (busy) return
+      busy = true
+      try {
+        if (this._tuneTimer !== timer) { clearInterval(timer); return } // superseded by a newer tune
+        if (!this._active || this._active !== a || a.source !== 'p2p') { this._stopTuneTimer(timer); return }
+        if (await this._boundedSig(900) !== null) { this._stopTuneTimer(timer); return } // playlist landed — tuned
+        if (this._active !== a) return // zapped away during the probe
+        const now = Date.now()
+        if (now >= nextRelookup) {
+          // Fresh DHT query for the feed topic — a broadcaster re-announced under a new
+          // swarm identity is found NOW, not at hyperswarm's ~10-min periodic refresh.
+          try { const r = this._feedDiscovery && this._feedDiscovery.refresh(); if (r && r.catch) r.catch(() => {}) } catch {}
+          relookupDelay = Math.min(relookupDelay * 2, cfg.relookupMaxMs)
+          nextRelookup = now + relookupDelay
+        }
+        if (now - started < cfg.timeoutMs) return
+        if (!retuned) {
+          retuned = true
+          started = now
+          relookupDelay = cfg.relookupMinMs
+          nextRelookup = now + relookupDelay
+          this.emit('status', { state: 'feed:retune' })
+          this._retuneActive(a).catch(() => {})
+          return
+        }
+        this._stopTuneTimer(timer)
+        const keys = this._entitled.get(a.streamId)
+        if (keys && keys.encryptionKey) this._evictFeed(a.feedKey + ':' + keys.encryptionKey)
+        this.emit('error', new Error(`tune timeout: no video from '${a.streamId}' after ${Math.round(cfg.timeoutMs * 2 / 1000)}s — the channel may be unreachable right now, switch to it again to retry`))
+      } finally {
+        busy = false
+      }
+    }, Math.min(1000, cfg.timeoutMs))
+    this._tuneTimer = timer
+  }
+
+  // Stop THIS watchdog without killing a newer one that may have replaced it while an
+  // async tick was in flight.
+  _stopTuneTimer (timer) {
+    clearInterval(timer)
+    if (this._tuneTimer === timer) this._tuneTimer = null
+  }
+
+  // _playlistSig bounded: while a peer is flapping, a sparse metadata read CAN block
+  // (the bee knows blocks exist that it cannot fetch) — treat a slow probe as "not
+  // landed yet" instead of parking the watchdog on the await.
+  async _boundedSig (ms) {
+    let timer
+    try {
+      return await Promise.race([
+        this._playlistSig(),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), ms) })
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // Evict + close the active tune's cached feed, then open it FRESH — a new Hyperdrive
+  // plus a fresh swarm lookup. The stale drive must be fully closed before the new
+  // ready(): two open drives on one store namespace deadlock (the single-flight cache
+  // exists for exactly that). If the old open is itself wedged (never settles), this
+  // parks on the await and the watchdog's second expiry surfaces the error instead.
+  async _retuneActive (a) {
+    const keys = this._entitled.get(a.streamId)
+    if (!keys || !keys.encryptionKey) return
+    const cacheKey = a.feedKey + ':' + keys.encryptionKey
+    const pending = this._feeds.get(cacheKey)
+    this._feeds.delete(cacheKey)
+    try {
+      const f = await pending
+      if (f && f.drive) {
+        if (this._feedDrive === f.drive) { this._feedDrive = null; this._feedDiscovery = null }
+        await f.drive.close()
+      }
+    } catch {}
+    if (this._active !== a) return // zapped away while closing — that resolve owns the serving slot now
+    const feed = await this._openFeed(a.feedKey, keys.encryptionKey)
+    if (this._active !== a) return
+    this._feedDrive = feed.drive
+    this._feedDiscovery = feed.discovery
+    a.lastSig = null
+    a.lastAdvance = Date.now()
   }
 
   // --- hybrid internals ---
@@ -514,7 +706,16 @@ export class AliranPlayer extends Emitter {
     const feedKey = await this._currentFeedKey(a.streamId, a.feedKey)
     if (!feedKey || feedKey === a.feedKey) return
     let feed
-    try { feed = await this._openFeed(feedKey, keys.encryptionKey) } catch { return }
+    let timer
+    try {
+      // Bounded: a wedged open must not park the catalog watcher forever — leave
+      // a.feedKey untouched and let the next catalog tick retry.
+      feed = await Promise.race([
+        this._openFeed(feedKey, keys.encryptionKey),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), this._tune.timeoutMs) })
+      ])
+    } catch { return } finally { clearTimeout(timer) }
+    if (!feed) return
     // A zap during the open moved _active on; leave _feedDrive to that resolve()'s serveFeed
     // (don't clobber it back to this now-stale channel's feed).
     if (this._active !== a) return
@@ -527,6 +728,9 @@ export class AliranPlayer extends Emitter {
     // On CDN under hybrid the recovery probe now tracks the NEW feed and will emit
     // 'source-changed' when it flips back; only tell the host to reload when P2P is live.
     if (a.source === 'p2p') this.emit('feed-changed', { streamId: a.streamId, feedKey, url: a.localUrl })
+    // The rotated feed may itself be cold/unreachable — same self-heal as a fresh tune
+    // (no-op outside p2p-only mode; hybrid's own watchdog/probe already track it).
+    this._startTuneWatchdog()
   }
 
   // Any open of on-disk replica state can fail with a corruption error if a previous
