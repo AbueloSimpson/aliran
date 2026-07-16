@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG-ONLY override of the main network security config (resource merging: the
+     debug variant's file replaces main/res/xml/network_security_config.xml). Debug
+     builds fetch the JS bundle from Metro on the dev machine over plain HTTP
+     (http://<dev-machine-LAN-IP>:8081), which the main config's loopback-only
+     cleartext whitelist blocks — adb-reverse tunnels are too flaky on the dev phone
+     (see aliran dev-phone lore). Permitting cleartext broadly here mirrors the stock
+     RN debug template (usesCleartextTraffic=true); RELEASE keeps the strict
+     loopback-only config. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

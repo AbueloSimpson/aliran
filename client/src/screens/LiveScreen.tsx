@@ -1,33 +1,40 @@
 // Live TV — ONE fullscreen video surface with overlay panels (the reorganization at
 // the heart of the redesign; replaces the old Home→Player navigation for live).
 //
-//   base   : fullscreen <AliranVideo> — playback NEVER stops while browsing. Fullscreen
-//            is CLEAN: no status chrome, no LIVE/peer/source diagnostics (those live in
-//            Settings). A tap/OK surfaces the bottom OSD (channel identity) which fades.
+//   base   : fullscreen <AliranVideo> — playback NEVER stops while browsing. Over it a
+//            persistent bottom menu (NowPlayingBar) carries the channel identity + touch
+//            controls (Channels / Info / Favorite) whenever a channel is open and the
+//            left menu is gone. A top-right ChannelChangeIndicator shows tuning progress
+//            (spinner + 0→100%) while a zap/select replicates the new feed.
 //   overlay1: CategoryRail + ChannelListPanel — the "left menu" browse & zap surface;
-//            selecting a row switches the stream AND collapses to fullscreen (the zap
-//            OSD confirms the channel for a moment). It has no manual close control —
-//            it auto-hides after inactivity (any touch/focus inside bumps the timer).
-//   overlay2: ChannelInfoPanel — channel detail (long-press a row); honest
+//            selecting a row switches the stream AND collapses to fullscreen. It has no
+//            manual close control — it auto-hides after inactivity (any touch/focus
+//            inside bumps the timer), and BACK collapses it to fullscreen.
+//   overlay2: ChannelInfoPanel — channel detail (Info button / long-press a row); honest
 //            "No program information" placeholder where an EPG lands later (D2)
 //
-// Navigation: from fullscreen BACK opens the left menu; tap/OK peeks the bottom OSD.
-// From the left menu BACK exits to Menu; from channel detail BACK returns to the list.
+// Navigation: fullscreen TAP/OK opens the left menu; BACK from the left menu collapses
+// back to fullscreen; BACK from fullscreen exits to Menu; BACK from channel detail
+// returns to the list. Re-entering Live RESUMES the last channel watched this session
+// (lastStreamId) instead of snapping back to the hero.
 // TV: D-pad up/down while fullscreen zaps prev/next across the whole curated channel
 // order (the numbers' order). Zap rides the FOCUS ENGINE (invisible focus strips
 // above/below the select-catcher band) — react-native-tvos on Android does not dispatch
 // HWEvents to useTVEventHandler while a view holds focus, so key handling must be
-// focus-based (the S7 lesson).
+// focus-based (the S7 lesson). The bottom menu's touch buttons are phone-only so they
+// stay out of that focus path.
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, Image, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView } from 'react-native'
+import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranVideo } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
-import { channelNumbers, groupByCategory, pickHero, formatChannelNumber, sortByCuration } from '../catalog'
+import { channelNumbers, groupByCategory, pickHero, sortByCuration } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
+import { ChannelChangeIndicator } from '../components/ChannelChangeIndicator'
+import { NowPlayingBar } from '../components/NowPlayingBar'
 import { SectionLoading } from '../components/SectionLoading'
 import { theme } from '../theme'
 
@@ -37,32 +44,37 @@ type Overlay = 'none' | 'list' | 'info'
 // On phone TVFocusGuideView is just a View; on TV autoFocus restores focus memory (S7).
 const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGuideView
 
-const OSD_MS = 2500
 // The left menu (browse overlay) has no manual close control — it auto-hides this long
 // after the last interaction, fading back to clean fullscreen video.
 const MENU_IDLE_MS = 6000
 
-// 24h HH:MM wall clock for the OSD (manual format — no Intl dependency under Hermes).
+// Last channel watched THIS session. Module-level so it survives leaving Live for the
+// Menu and coming back (the native stack unmounts the screen in between): re-entering
+// Live resumes it instead of the hero pick — "the channel control returns to where you
+// left it". In-memory only (per the request: on the trip out to the menu, not restart).
+let lastStreamId: string | null = null
+
+// 24h HH:MM wall clock for the bottom menu (manual format — no Intl under Hermes).
 function clockText (d: Date) {
   const h = d.getHours(); const m = d.getMinutes()
   return `${h < 10 ? '0' + h : h}:${m < 10 ? '0' + m : m}`
 }
 
-// BACK from the left menu falls through to the navigator's default (pop → Menu), so this
-// screen never needs the navigation prop directly.
 export function LiveScreen ({ route }: Props) {
   const [streams, setStreams] = useState<Stream[]>(backend.streams)
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
-  const [playingId, setPlayingId] = useState<string | null>(() => route.params?.streamId ?? pickHero(backend.streams)?.id ?? null)
-  const [overlay, setOverlay] = useState<Overlay>(route.params?.streamId ? 'none' : 'list')
+  const [playingId, setPlayingId] = useState<string | null>(() => route.params?.streamId ?? lastStreamId ?? pickHero(backend.streams)?.id ?? null)
+  const [overlay, setOverlay] = useState<Overlay>((route.params?.streamId || lastStreamId) ? 'none' : 'list')
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
   const [category, setCategory] = useState<string | null>(null)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [osd, setOsd] = useState<Stream | null>(null)
+  // True from the moment a zap/select (or a fresh entry) starts until the new feed's
+  // first frame is ready — drives the top-right tuning indicator. Set on channel change;
+  // cleared by AliranVideo.onBuffering(false)/onReadyForDisplay (or on a hard error).
+  const [switching, setSwitching] = useState(false)
   const [now, setNow] = useState(() => new Date())
-  const osdTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const overlayRef = useRef(overlay); overlayRef.current = overlay
@@ -82,9 +94,17 @@ export function LiveScreen ({ route }: Props) {
     })
   }, [])
 
-  useEffect(() => () => { if (osdTimer.current) clearTimeout(osdTimer.current); clearMenuIdle() }, [])
+  useEffect(() => clearMenuIdle, [])
 
-  // Wall clock for the OSD — tick twice a minute so the minute never lags far behind.
+  // Entering Live (a fresh mount) always re-tunes the current feed — surface the tuning
+  // indicator until the first frame lands, same as a zap. No-op on a cold entry with no
+  // channel yet (the streams effect below arms it when it picks the initial channel).
+  useEffect(() => { if (playingIdRef.current) setSwitching(true) }, [])
+
+  // Remember the channel across a trip out to the Menu (see lastStreamId).
+  useEffect(() => { if (playingId) lastStreamId = playingId }, [playingId])
+
+  // Wall clock for the bottom menu — tick twice a minute so the minute never lags far behind.
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 30000)
     return () => clearInterval(t)
@@ -106,9 +126,10 @@ export function LiveScreen ({ route }: Props) {
   const list = activeCategory ? groups[activeCategory] : []
   const playing = streams.find(s => s.id === playingId) ?? null
 
-  // First streams push after a cold navigation: start the hero channel.
+  // First streams push after a cold navigation: start the hero channel (and arm the
+  // tuning indicator, since the video is about to mount and replicate the feed).
   useEffect(() => {
-    if (!playingId && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
+    if (!playingId && streams.length) { setPlayingId(pickHero(streams)?.id ?? streams[0].id); setSwitching(true) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
@@ -117,15 +138,9 @@ export function LiveScreen ({ route }: Props) {
       setPlayingId(s.id)
       setPeers(null)
       setError(null)
-      showOsd(s)
+      setSwitching(true) // begin the top-right tuning indicator; cleared when the feed is ready
     }
     if (collapse) setOverlay('none')
-  }
-
-  function showOsd (s: Stream) {
-    setOsd(s)
-    if (osdTimer.current) clearTimeout(osdTimer.current)
-    osdTimer.current = setTimeout(() => setOsd(null), OSD_MS)
   }
 
   function clearMenuIdle () { if (menuIdle.current) { clearTimeout(menuIdle.current); menuIdle.current = null } }
@@ -156,13 +171,13 @@ export function LiveScreen ({ route }: Props) {
     requestAnimationFrame(() => (catcherRef.current as any)?.requestTVFocus?.())
   }
 
-  // BACK: channel detail → list; the left menu exits to Menu; fullscreen opens the
-  // left menu (tap/OK peeks the bottom OSD instead — see the catcher below).
+  // BACK: channel detail → list; the left menu → fullscreen (collapse, hiding it);
+  // fullscreen → default (pop to Menu). Fullscreen is OPENED via a tap/OK on the catcher.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (overlayRef.current === 'info') { setOverlay('list'); return true }
-      if (overlayRef.current === 'list') return false // left menu: default = back to Menu
-      setOverlay('list'); return true // fullscreen: open the left menu
+      if (overlayRef.current === 'list') { setOverlay('none'); return true } // hide the left menu
+      return false // fullscreen: default back = exit to Menu
     })
     return () => sub.remove()
   }, [])
@@ -181,26 +196,39 @@ export function LiveScreen ({ route }: Props) {
           onFallback={() => setSource('cdn')}
           onSourceChanged={({ source: s }) => setSource(s)}
           onPeers={setPeers}
-          onError={setError}
+          onBuffering={(b) => { if (!b) setSwitching(false) }} // first frame ready ends the tune
+          onError={(msg) => { setError(msg); setSwitching(false) }}
         />
       )}
 
-      {/* Tap/select catcher: fullscreen -> peek the bottom OSD (channel identity), which
-          fades on its own. BACK opens the left menu. On TV it is a middle band so the zap
-          strips sit strictly above/below it in the focus engine's geometry. */}
+      {/* Fullscreen surface: TAP/OK opens the left menu (BACK exits to Menu). On TV the
+          catcher is a middle band so the zap strips sit strictly above/below it in the
+          focus engine's geometry. The bottom menu renders on top of the catcher so its
+          buttons catch their own taps while the rest of the surface opens the left menu. */}
       {overlay === 'none' && (
         <>
           <Pressable
             ref={catcherRef}
             style={Platform.isTV ? styles.catcherTV : StyleSheet.absoluteFill}
             hasTVPreferredFocus
-            onPress={() => { if (playing) showOsd(playing) }}
+            onPress={() => setOverlay('list')}
           />
           {Platform.isTV && (
             <>
               <Pressable style={styles.zapUp} onFocus={() => bounceZap(1)} />
               <Pressable style={styles.zapDown} onFocus={() => bounceZap(-1)} />
             </>
+          )}
+          {playing && (
+            <NowPlayingBar
+              stream={playing}
+              number={numbers.get(playing.id)}
+              clock={clockText(now)}
+              favorite={favorites.includes(playing.id)}
+              onChannels={() => setOverlay('list')}
+              onInfo={() => { setInfoStream(playing); setOverlay('info') }}
+              onToggleFavorite={() => backend.toggleFavorite(playing.id)}
+            />
           )}
         </>
       )}
@@ -209,21 +237,6 @@ export function LiveScreen ({ route }: Props) {
         <View style={styles.center} pointerEvents="none">
           <Text style={styles.errorTitle}>Playback failed</Text>
           <Text style={styles.dim}>{error}</Text>
-        </View>
-      )}
-
-      {/* Bottom OSD: derived number + name, auto-hides. Shown on zap and on a
-          fullscreen tap/OK — no LIVE/peer/source chrome (kept in Settings). */}
-      {osd && overlay === 'none' && (
-        <View style={styles.osd} pointerEvents="none">
-          {!!osd.logo && <Image source={{ uri: osd.logo }} style={styles.osdLogo} resizeMode="contain" />}
-          <Text style={styles.osdNumber}>{formatChannelNumber(numbers.get(osd.id))}</Text>
-          <View style={styles.osdMain}>
-            <Text style={styles.osdTitle} numberOfLines={1}>{osd.title}</Text>
-            {!!osd.description && <Text style={styles.osdDesc} numberOfLines={1}>{osd.description}</Text>}
-          </View>
-          <View style={styles.osdDivider} />
-          <Text style={styles.osdClock}>{clockText(now)}</Text>
         </View>
       )}
 
@@ -263,6 +276,10 @@ export function LiveScreen ({ route }: Props) {
         </View>
       )}
 
+      {/* Top-right tuning indicator — self-hides when not switching; pointerEvents none so
+          it never intercepts a tap meant for the video/bottom menu. */}
+      <ChannelChangeIndicator active={switching} number={playing ? numbers.get(playing.id) : undefined} title={playing?.title} />
+
     </View>
   )
 }
@@ -278,18 +295,5 @@ const styles = StyleSheet.create({
   listPane: { width: theme.isTV ? '38%' : '52%' },
   infoPane: { flex: 1, backgroundColor: theme.colors.overlay, borderTopRightRadius: 12, borderBottomRightRadius: 12 },
   dim: { color: theme.colors.textDim, fontSize: theme.type.caption },
-  errorTitle: { color: theme.colors.text, fontSize: theme.type.title, fontWeight: '700' },
-  osd: {
-    position: 'absolute', left: theme.safeX, bottom: theme.safeY + theme.spacing(1.5),
-    flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.25),
-    backgroundColor: theme.colors.overlayStrong, borderRadius: 12,
-    paddingHorizontal: theme.spacing(1.5), paddingVertical: theme.spacing(0.75), maxWidth: '80%'
-  },
-  osdLogo: { width: theme.isTV ? 60 : 44, height: theme.isTV ? 34 : 24, borderRadius: 4 },
-  osdNumber: { color: theme.colors.accent, fontSize: theme.type.title, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  osdMain: { flexShrink: 1 },
-  osdTitle: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '800' },
-  osdDesc: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 2 },
-  osdDivider: { width: 1, height: 24, backgroundColor: theme.colors.textDim, opacity: 0.3 },
-  osdClock: { color: theme.colors.text, fontSize: theme.type.title, fontWeight: '700', fontVariant: ['tabular-nums'] }
+  errorTitle: { color: theme.colors.text, fontSize: theme.type.title, fontWeight: '700' }
 })

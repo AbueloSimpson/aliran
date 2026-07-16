@@ -630,6 +630,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified in a live browser session: UI-created RTMP channel → WAITING FOR PUBLISHER →
   local ffmpeg push → ON AIR → logs dialog streaming → stop → panel catalog `isLive:false`.
 
+### Feat: live-TV UX — tuning indicator, resume, touch nav, bottom control bar (verified on S22)
+- **Channel-change indicator** (`client/src/components/ChannelChangeIndicator.tsx`):
+  top-right pill with spinner + channel number/title + a 0→100% progress bar while a
+  zap/select (or a fresh entry) tunes. The % is an optimistic ease toward ~90 that
+  snaps to 100 on the player's real first-frame signal (`onBuffering(false)` /
+  `onReadyForDisplay`) — live HLS has no honest mid-switch %, so only "done" is real.
+- **Resume last channel**: leaving Live for the Menu and re-entering resumes the last
+  watched channel fullscreen (session-scoped `lastStreamId`; explicit picks from
+  Favorites/Search still win; cold boot falls back to the hero + browse list).
+- **Touch navigation**: fullscreen tap/OK now OPENS the left browse menu; BACK from the
+  menu collapses to fullscreen (was: exit); BACK from fullscreen exits to Menu; BACK
+  from channel detail returns to the list. The 6 s browse auto-hide is unchanged.
+- **Persistent bottom menu** (`client/src/components/NowPlayingBar.tsx`): replaces the
+  fading OSD in fullscreen — channel number/logo/name/LIVE + wall clock, plus phone-only
+  ☰ Channels / ⓘ Info / ★ Favorite buttons (`box-none` so stray taps still reach the
+  open-menu catcher; TV keeps the identity-only bar clear of the D-pad zap focus path).
+- Debug builds: `android/app/src/debug/res/xml/network_security_config.xml` permits
+  cleartext (stock RN debug posture) so Metro over LAN works on-device; release keeps
+  the strict loopback-only config.
+- Verified on the S22 over wireless adb: entry tune 84%→90%, zap 001→002 relabels the
+  pill and bar, Channels/Info buttons, menu-open/hide/back chain, and resume-on-002
+  after a Menu round-trip (screenshot-driven; tune-to-100% blocked by a VPS feed
+  live-edge stall that day — P2P connected at 1 peer, indicator honestly stayed <100).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
