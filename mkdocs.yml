@@ -48,6 +48,7 @@ nav:
       - Playback & client runtime: kb/playback.md
       - P2P feed buffer & tuning: kb/feed-buffer.md
       - Scaling & capacity planning: kb/scaling.md
+      - Source compatibility (pull ingest): kb/source-compatibility.md
       - Operating panel & broadcaster: kb/operator.md
       - Android & RN builds: kb/android-build.md
       - Bare worklet & bundling: kb/bare-worklet.md
