@@ -39,9 +39,9 @@ assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'rtmp://origin/app/key' })
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'srt://origin:9000' }), ['-i', 'srt://origin:9000'])
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'udp://239.0.0.1:1234' }), ['-i', 'udp://239.0.0.1:1234'])
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'https://cdn/live/master.m3u8' }),
-  ['-i', 'https://cdn/live/master.m3u8'], 'live HLS: no -re')
+  ['-allowed_extensions', 'ALL', '-i', 'https://cdn/live/master.m3u8'], 'live HLS: no -re, SSAI-tolerant')
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'https://cdn/live/MASTER.M3U8?token=x' }),
-  ['-i', 'https://cdn/live/MASTER.M3U8?token=x'])
+  ['-allowed_extensions', 'ALL', '-i', 'https://cdn/live/MASTER.M3U8?token=x'])
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'https://cdn/vod/movie.mp4' }),
   ['-re', '-i', 'https://cdn/vod/movie.mp4'], 'http VOD: -re')
 assert.deepStrictEqual(upgradeInputString('test'), { kind: 'test' })

@@ -68,7 +68,13 @@ export function inputArgs (input) {
       if (scheme === 'http' || scheme === 'https') {
         // A .m3u8 URL is a live playlist (the demuxer waits for new segments);
         // anything else over http(s) is a VOD file that needs realtime pacing.
-        return /\.m3u8($|\?)/i.test(t.url) ? ['-i', t.url] : ['-re', '-i', t.url]
+        // -allowed_extensions ALL lets the HLS demuxer accept SSAI / ad-beacon segment URLs
+        // that don't end in .ts (Amagi/DistroTV and many FAST channels) — without it ffmpeg
+        // rejects the playlist ("not in allowed_segment_extensions"). It only RELAXES a filter,
+        // so it's harmless for plain .ts feeds, and the operator already trusts the pull URL.
+        return /\.m3u8($|\?)/i.test(t.url)
+          ? ['-allowed_extensions', 'ALL', '-i', t.url]
+          : ['-re', '-i', t.url]
       }
       return ['-i', t.url] // rtmp(s)/srt/udp pulls
     }
