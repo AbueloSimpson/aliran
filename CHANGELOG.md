@@ -567,9 +567,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that ignores `controls={false}`; the patch keeps it hidden so `AliranVideo` stays
   chrome-free (its own overlays own all badges).
 
+### Feat: broadcaster reliability — auto-resume, isLive:false on stop, ffmpeg log ring (verified)
+- Completes S15b (the ffmpeg **watchdog** and feed-rotation landed earlier in `6e38b90`).
+- **Auto-resume on boot.** A started channel now persists its desired state
+  (`desiredRunning` in `channels.json`); `ChannelManager.init()` reconciles the registry on
+  boot and restarts channels that were running — no more "the broadcaster rebooted and the
+  channels are dead." The env/legacy channel stays under `index.js`'s explicit,
+  `STREAM_ID`-gated start (so it is never double-started).
+- **`isLive:false` on stop — zero panel changes.** The per-channel panel Hyperswarms are
+  replaced by ONE manager-owned **`PanelLink`** (`broadcaster/src/panel-link.js`) with a
+  per-stream, latest-state-wins op queue. `start()` enqueues the live register; `stop()`
+  enqueues `{streamId, feedKey, isLive:false}` and waits ≤5 s for it to land (the S1 catalog
+  live-push flips watching clients instantly); a graceful shutdown does the same for running
+  channels while keeping them marked for auto-resume. Register cycles are **serialized** —
+  the panel keeps one challenge per socket, so interleaved hello→register pairs on a shared
+  socket would fail. A **boot catch-up** re-asserts `isLive:false` for every non-resumed
+  channel, healing a catalog left stale-LIVE by an unclean crash; a 5-min heartbeat
+  idempotently re-asserts running streams. `status.registered`/`registerError` now come from
+  the link's per-stream op state (shape unchanged).
+- **Per-channel ffmpeg log ring** (`hls.js` `onLine` → a 400-line `{t,line}` ring on the
+  Channel): the raw stderr diagnostics for "why won't this source play." It survives ffmpeg
+  respawns (a watchdog restart appends a marker line) and clears on an operator start. The
+  control-API/UI surface for it lands with S15c.
+- `test:broadcaster-api` adds **Test M** (log ring populated; watchdog respawns a killed
+  ffmpeg with a restart marker; stop flips the panel catalog to `isLive:false`) and **Test N**
+  (a second `ChannelManager` over the same dataDir auto-resumes a `desiredRunning` channel and
+  catches up a stale-live entry to idle). `test:core`/`test:register`/`test:sdk` regression-clean.
+
 ### To do (see ROADMAP.md and per-package READMEs)
-- Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
-  and ingest/transcode/logs surfaced in the control API + UI.
+- Broadcaster ingest/transcode/logs (incl. the log ring) surfaced in the control API + UI (S15c).
 - Hybrid artwork (https URLs alongside the P2P assets drive).
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

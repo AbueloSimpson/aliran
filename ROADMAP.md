@@ -114,9 +114,13 @@ auto-authorizes, browses live TV under overlay panels, and plays live P2P on pho
   following restarts via the catalog without re-login. Verified by `test:retention` +
   `test:broadcaster-api` (RAM session-core contract **and** disk stable-identity F3).
   Tuning rationale in `docs/kb/feed-buffer.md`.
-- ⬜ **Broadcaster reliability**: ffmpeg watchdog (auto-restart with backoff,
-  re-listen after publisher disconnect), per-channel log capture in the control UI,
-  `isLive:false` pushed to the catalog on stop/crash
+- ✅ **Broadcaster reliability**: ffmpeg watchdog (auto-restart with backoff,
+  re-listen after a publisher disconnect, restart of a stalled live edge), channels
+  **auto-resume** after a broadcaster restart (persisted desired state), `isLive:false`
+  pushed to the catalog on stop/shutdown via one shared panel link (with a boot catch-up
+  that heals stale-live entries), and a per-channel ffmpeg **log ring**. Verified by
+  `test:broadcaster-api` (Tests M/N). The log ring gets its control-UI surface with the
+  S15c ingest UI.
 - ⬜ **Hybrid artwork**: P2P assets drive stays the default; `https://` art URLs pass
   through for CDN/web hosting
 - ✅ **Android app GUI redesign** to the reference organization (phone + TV, one

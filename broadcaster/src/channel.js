@@ -34,7 +34,7 @@ import path from 'path'
 import os from 'os'
 import { startFfmpeg, mirrorDirToDrive, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
-import { panelClient, registerWithPanel } from './register.js'
+import { PanelLink } from './panel-link.js'
 
 export class ControlError extends Error {
   constructor (code, message) { super(message); this.code = code }
@@ -259,6 +259,11 @@ const WD = {
   backoffResetMs: 60000 // sustained health this long → backoff decays back to the base
 }
 
+// S15b log ring: the last N ffmpeg stderr lines per channel, for diagnosing why a source
+// won't play. It lives on the Channel (not the run) so it survives ffmpeg respawns; an
+// operator start() clears it, a watchdog respawn only appends a restart marker.
+const LOG_RING_MAX = 400
+
 // Deep-equal for typed input objects — flat, primitive-valued (see normalizeInput). Used
 // to decide whether a PATCH actually changed a channel's SOURCE (→ rotate the feed).
 function inputsEqual (a, b) {
@@ -283,8 +288,20 @@ function liveEdgeSig (outDir) {
 class Channel {
   constructor (manager, meta) {
     this.manager = manager
-    this.meta = meta // { id, title, description, category[], input, hls, protection, feedKey, legacy }
+    this.meta = meta // { id, title, description, category[], input, hls, protection, feedKey, legacy, desiredRunning }
     this.run = null // runtime state while started
+    this.logRing = [] // S15b: last LOG_RING_MAX ffmpeg stderr lines {t,line}; survives respawns
+  }
+
+  // Append an ffmpeg stderr line (or an internal restart marker) to the ring.
+  _log (line) {
+    this.logRing.push({ t: Date.now(), line: typeof line === 'string' ? line : String(line) })
+    if (this.logRing.length > LOG_RING_MAX) this.logRing.splice(0, this.logRing.length - LOG_RING_MAX)
+  }
+
+  // Newest-last log lines (at most `lines`, default the whole ring).
+  logs (lines = LOG_RING_MAX) {
+    return lines >= this.logRing.length ? this.logRing.slice() : this.logRing.slice(-lines)
   }
 
   get storeDir () {
@@ -327,6 +344,7 @@ class Channel {
     // Refuse cleanly BEFORE any resources spin up: unavailable encoder/protocol
     // (capability probe) and unbindable push ports are operator errors, not crashes.
     await this.manager.assertStartable(this.meta)
+    this.logRing.length = 0 // fresh diagnostics for this operator-initiated run
     const encryptionKey = loadOrCreateEncryptionKey(this.storeDir) // persisted — grants seal it
     const buffer = this.meta.buffer || config.feedBuffer || 'disk'
     // 'disk' (default): persistent core with a stable feedKey/DHT topic across restarts.
@@ -351,7 +369,6 @@ class Channel {
       store,
       drive,
       swarm,
-      panelSwarm: null,
       stopMirror,
       outDir,
       feedKey: feedKeyHex,
@@ -359,8 +376,6 @@ class Channel {
       startedAt: now,
       ff: null,
       ffmpegExit: null,
-      registered: false,
-      registerError: null,
       // S15b watchdog: keeps ffmpeg alive across source hiccups (crash, empty/off-air
       // source, publisher disconnect) and restarts a stalled live edge. See _startWatchdog.
       watchdog: {
@@ -386,31 +401,9 @@ class Channel {
     this._spawnFfmpeg(run)
     this._startWatchdog(run)
 
-    // Auto-register with the panel (publisher-key auth, unchanged from v0.2).
-    if (config.panelPubKey && config.publisherKey) {
-      const panelSwarm = new Hyperswarm({ bootstrap })
-      run.panelSwarm = panelSwarm
-      panelSwarm.on('connection', async (socket) => {
-        if (run.registered) return
-        try {
-          const { call } = panelClient(socket)
-          await registerWithPanel(call, config.publisherKey, {
-            streamId: this.meta.id,
-            feedKey: feedKeyHex,
-            encryptionKey: run.encryptionKey,
-            title: this.meta.title || this.meta.id,
-            description: this.meta.description || '',
-            category: this.meta.category || [],
-            protection: this.meta.protection || 'self',
-            isLive: true
-          })
-          run.registered = true
-          run.registerError = null
-        } catch (err) { run.registerError = err.message }
-      })
-      panelSwarm.join(crypto.hash(b4a.from(config.panelPubKey, 'hex')), { client: true, server: false })
-    }
-
+    // Panel registration is now the manager's job: manager.start() enqueues the live
+    // register through the ONE manager-owned PanelLink (see panel-link.js). This returns
+    // the identity the manager needs to build that op.
     return { feedKey: feedKeyHex, encryptionKey: run.encryptionKey }
   }
 
@@ -424,6 +417,7 @@ class Channel {
       hls: this.meta.hls,
       vaapiDevice: config.vaapiDevice
     }, run.outDir, {
+      onLine: (line) => this._log(line), // → the per-channel log ring
       onExit: (code) => {
         if (run.ff !== proc) return // superseded process — ignore its exit
         run.ffmpegExit = code ?? -1
@@ -488,6 +482,7 @@ class Channel {
       wd.lastRestartAt = Date.now()
       wd.lastAdvanceAt = Date.now() // fresh grace window before stall detection re-arms
       wd.lastSig = null
+      this._log(`--- watchdog: ffmpeg restart #${wd.restarts} (prev exit ${wd.lastExit}, backoff ${wd.backoffMs}ms) ---`)
       this._spawnFfmpeg(run)
       wd.backoffMs = Math.min(wd.backoffMs * 2, WD.backoffMaxMs)
     }, wd.backoffMs)
@@ -511,7 +506,6 @@ class Channel {
       run.ff.once('exit', () => { clearTimeout(t); resolve() })
     })
     try { await run.swarm.destroy() } catch {}
-    if (run.panelSwarm) { try { await run.panelSwarm.destroy() } catch {} }
     try { await run.store.close() } catch {}
     try { fs.rmSync(run.outDir, { recursive: true, force: true }) } catch {}
   }
@@ -529,8 +523,10 @@ class Channel {
       ffmpegUp: !!run && run.ffmpegExit === null && !!run.ff && run.ff.exitCode === null,
       ffmpegExit: run ? run.ffmpegExit : null,
       peers: run ? run.swarm.connections.size : 0,
-      registered: run ? run.registered : false,
-      registerError: run ? run.registerError : null,
+      // Registration state now lives on the manager-owned PanelLink (per-stream op state),
+      // not the run — so the shape is unchanged but stop() can honestly report "not live".
+      registered: this.manager.panelLink.isRegistered(this.meta.id),
+      registerError: this.manager.panelLink.lastError(this.meta.id),
       startedAt: run ? run.startedAt : null,
       // S15b watchdog surface: is ffmpeg being kept alive, and how hard.
       watchdog: run ? {
@@ -558,6 +554,8 @@ export class ChannelManager {
     this.config = config
     this.channels = new Map()
     this._caps = null
+    // ONE panel connection for every channel's registration (S15b) — see panel-link.js.
+    this.panelLink = new PanelLink(config)
   }
 
   registryPath () { return path.join(this.config.dataDir, 'channels.json') }
@@ -585,8 +583,45 @@ export class ChannelManager {
     }
     if (upgraded) this._save()
     this.capabilities().catch(() => {}) // warm the ffmpeg probe in the background
+    this.panelLink.connect() // one panel connection for all channel registrations
+    await this._reconcile() // auto-resume desired-running channels; heal stale-live catalog
     return this
   }
+
+  // Boot reconciliation (S15b). For every persisted channel:
+  //  - desiredRunning → auto-start it (it re-registers isLive:true). The env/legacy channel
+  //    is skipped here — index.js starts it explicitly (STREAM_ID-gated), so we never
+  //    double-start it.
+  //  - otherwise → enqueue isLive:false so a catalog entry left LIVE by an unclean crash is
+  //    healed. Idempotent: a catalog that's already idle just gets rewritten idle.
+  async _reconcile () {
+    for (const ch of this.channels.values()) {
+      if (ch.meta.legacy) continue
+      if (ch.meta.desiredRunning) {
+        try { await this.start(ch.meta.id) } catch (err) { ch.meta.resumeError = err.message }
+      } else {
+        this.panelLink.setDesired(ch.meta.id, { streamId: ch.meta.id, feedKey: ch.meta.feedKey ?? null, isLive: false })
+      }
+    }
+  }
+
+  // The full live-registration op for a running channel (matches the pre-S15b register
+  // payload). encryptionKey is included so the panel (re)stores the private secret.
+  _livePayload (ch, info) {
+    return {
+      streamId: ch.meta.id,
+      feedKey: info.feedKey,
+      encryptionKey: info.encryptionKey,
+      title: ch.meta.title || ch.meta.id,
+      description: ch.meta.description || '',
+      category: ch.meta.category || [],
+      protection: ch.meta.protection || 'self',
+      isLive: true
+    }
+  }
+
+  // Newest-last ffmpeg log lines for a channel (S15b log ring; the S15c control API exposes it).
+  logs (id, lines) { return this._get(id).logs(lines) }
 
   // One ffmpeg capability probe per process, shared by every start().
   capabilities () {
@@ -693,6 +728,7 @@ export class ChannelManager {
       feedKey: null,
       feedGen: 0, // bumped whenever the source changes → rotates the disk feed identity
       legacy: false,
+      desiredRunning: false, // S15b: persisted desired state → auto-resume on boot
       createdAt: Date.now()
     }
     const ch = new Channel(this, meta)
@@ -772,13 +808,24 @@ export class ChannelManager {
   async start (id) {
     const ch = this._get(id)
     const info = await ch.start()
+    ch.meta.desiredRunning = true // persist desired state → auto-resume on next boot
     this._save() // feedKey may have just been learned
+    // Register through the ONE panel link (isLive:true). Non-blocking, like the old async
+    // per-channel register — status.registered flips once the op lands.
+    this.panelLink.setDesired(id, this._livePayload(ch, info))
     return { id, ...info }
   }
 
   async stop (id) {
     const ch = this._get(id)
+    const feedKey = ch.run ? ch.run.feedKey : ch.meta.feedKey
     await ch.stop()
+    ch.meta.desiredRunning = false // operator stop → do NOT auto-resume
+    this._save()
+    // Flip the catalog to isLive:false and wait ≤5 s for it to land (the S1 catalog
+    // live-push then tells clients instantly). Proceed even if the panel is unreachable.
+    const seq = this.panelLink.setDesired(id, { streamId: id, feedKey: feedKey ?? null, isLive: false })
+    await this.panelLink.flush(id, seq, 5000)
     return { id, running: false }
   }
 
@@ -799,9 +846,17 @@ export class ChannelManager {
     }
   }
 
+  // Graceful shutdown. Tear down every running pipeline and, since the broadcaster is going
+  // down, flip its catalog entry to isLive:false — but LEAVE desiredRunning=true so the
+  // channel auto-resumes on the next boot. Then close the panel link.
   async close () {
     for (const ch of this.channels.values()) {
-      if (ch.run) { try { await ch.stop() } catch {} }
+      if (!ch.run) continue
+      const feedKey = ch.run.feedKey
+      try { await ch.stop() } catch {}
+      this.panelLink.setDesired(ch.meta.id, { streamId: ch.meta.id, feedKey: feedKey ?? null, isLive: false })
     }
+    try { await this.panelLink.flushAll(5000) } catch {}
+    await this.panelLink.close()
   }
 }

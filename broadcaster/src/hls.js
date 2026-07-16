@@ -159,12 +159,44 @@ export function ffmpegArgs (spec, outDir) {
   ]
 }
 
-// Spawn ffmpeg. Returns the child process. ffmpeg must be on PATH.
-export function startFfmpeg (spec, outDir, { onExit } = {}) {
+// Split a byte stream into text lines and hand each to `onLine`. ffmpeg terminates real log
+// lines (banner, stream info, warnings, errors) with \n but rewrites its periodic progress
+// stats in place with a bare \r; we split on \r?\n so the diagnostics land as clean lines and
+// a long progress rewrite that never sees a newline is flushed once it passes the length cap
+// (embedded bare CRs are flattened) — bounded memory, no per-frame progress spam in the ring.
+function lineSplitter (onLine, maxLen = 500) {
+  let pending = ''
+  const emit = (raw) => {
+    const line = raw.replace(/\r/g, ' ').trimEnd()
+    if (line) onLine(line.length > maxLen ? line.slice(0, maxLen) : line)
+  }
+  return {
+    push (chunk) {
+      pending += chunk.toString('utf8')
+      let m
+      while ((m = pending.match(/\r?\n/))) {
+        emit(pending.slice(0, m.index))
+        pending = pending.slice(m.index + m[0].length)
+      }
+      if (pending.length > maxLen) { emit(pending); pending = '' }
+    },
+    end () { if (pending) { emit(pending); pending = '' } }
+  }
+}
+
+// Spawn ffmpeg. Returns the child process. ffmpeg must be on PATH. `onLine` (S15b) receives
+// each stderr log line for the per-channel log ring; without it stderr is just drained.
+export function startFfmpeg (spec, outDir, { onExit, onLine } = {}) {
   fs.mkdirSync(outDir, { recursive: true })
   const args = ffmpegArgs(spec, outDir)
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] })
-  proc.stderr.on('data', () => {}) // ffmpeg is chatty on stderr; S15b turns this into a log ring
+  if (onLine) {
+    const split = lineSplitter(onLine)
+    proc.stderr.on('data', (chunk) => split.push(chunk))
+    proc.stderr.on('end', () => split.end())
+  } else {
+    proc.stderr.on('data', () => {}) // drain so ffmpeg never blocks on a full stderr pipe
+  }
   proc.on('exit', (code) => { if (onExit) onExit(code) })
   proc.on('error', (err) => {
     if (err.code === 'ENOENT') console.error('ffmpeg not found on PATH. Install it and retry.')

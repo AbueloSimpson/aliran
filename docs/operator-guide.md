@@ -98,9 +98,12 @@ node src/admin-cli.js grant alice news
 Set `ADMIN_ENABLED=1` (panel, port 3210) and `CONTROL_ENABLED=1` (broadcaster,
 port 3310). Both bind `127.0.0.1` and speak plain HTTP — **never expose them raw.**
 
-> Note (current behavior): after a broadcaster restart, channels stay stopped until
-> you press Start again (dashboard or API). Auto-resume + a crash watchdog are on the
-> roadmap.
+> Note: a channel you have **started** auto-resumes after a broadcaster restart (its
+> desired state is persisted), and a crash **watchdog** keeps its ffmpeg alive across
+> source hiccups. Stopping a channel flips its catalog entry to `isLive:false` so viewers
+> stop seeing it as live. The one-time exception is the **first** boot after upgrading to
+> this build: channels created before the upgrade have no persisted desired state yet, so
+> press Start once (dashboard or API) — from then on they resume on their own.
 
 - **With a domain:** install Caddy and use
   [deploy/Caddyfile.example](https://github.com/AbueloSimpson/aliran/blob/main/deploy/Caddyfile.example)

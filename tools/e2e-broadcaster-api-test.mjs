@@ -7,7 +7,10 @@
 // a fresh viewer replicates and ffprobe-validates → STOP it clean → restart works →
 // the control UI (S12b) is served traversal-proof. S15a adds: typed input validation,
 // an RTMP push round-trip (a second local ffmpeg is the OBS stand-in), a UDP-TS push,
-// and the capability/port gates returning clean 400s. Exits 0 on PASS.
+// and the capability/port gates returning clean 400s. S15b adds: the ffmpeg log ring,
+// watchdog auto-restart of a killed ffmpeg, the panel catalog flipping isLive:false on
+// stop (via the one shared PanelLink), and auto-resume + stale-live catch-up across a
+// simulated broadcaster restart (a 2nd ChannelManager over the same dataDir). Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
@@ -44,6 +47,7 @@ const ADMIN_PASSWORD = 'op-secret-password'
 const dirs = {
   panel: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-panel-')),
   bc: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc-')),
+  bc2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc2-')), // S15b: "restart" a broadcaster over the same dataDir
   viewer: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view-')),
   viewer2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view2-'))
 }
@@ -291,13 +295,16 @@ try {
   log('F2: control admins list/create/rotate/delete with token revocation ✓')
 
   // ===== Test G: lockout =====
-  // Send a full threshold (5) of bad attempts back-to-back so the test doesn't
-  // depend on earlier tests' attempts still being inside the 60 s throttle window.
+  // Throttle is keyed on (username | ip). Use a username no other test touches so the
+  // count starts fresh here — otherwise this races the 60 s window against how long the
+  // earlier tests took (the shared PanelLink registers fast enough that op's earlier
+  // attempts can still be in-window). The lock is enforced BEFORE credential checks, so
+  // it's creds-independent by construction: threshold (5) attempts pass, the next locks.
   for (let i = 0; i < 5; i++) {
-    assert.strictEqual((await api('POST', '/api/login', { username: 'op', password: 'wrong-' + i })).status, 401, 'still 401 pre-lockout')
+    assert.strictEqual((await api('POST', '/api/login', { username: 'lockme', password: 'wrong-' + i })).status, 401, 'still 401 pre-lockout')
   }
-  const locked = await api('POST', '/api/login', { username: 'op', password: ADMIN_PASSWORD })
-  assert.strictEqual(locked.status, 429, 'locked after threshold (even valid creds)')
+  const locked = await api('POST', '/api/login', { username: 'lockme', password: 'wrong-final' })
+  assert.strictEqual(locked.status, 429, 'locked after threshold (creds no longer even checked)')
   log('G: login lockout after threshold ✓')
 
   // ===== Test H: control UI static files (S12b; mirrors the panel's Test G) =====
@@ -424,7 +431,76 @@ try {
   }
   log('L: capability gate (encoder + protocol) and port pre-flight → clean 400s ✓')
 
-  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart)')
+  // ===== Test M: log ring + watchdog auto-restart + isLive:false on stop (S15b) =====
+  r = await api('POST', '/api/channels', { id: 'live-chan', title: 'Live Chan', category: 'demo', input: 'test', buffer: 'disk' }, token)
+  assert.strictEqual(r.status, 201, 'add live-chan: ' + JSON.stringify(r.body))
+  assert.strictEqual((await api('POST', '/api/channels/live-chan/start', undefined, token)).status, 200, 'start live-chan')
+  await waitFor(async () => {
+    const s = (await api('GET', '/api/channels/live-chan', undefined, token)).body
+    return s.running && s.ffmpegUp && s.playlist && s.registered ? s : null
+  }, 90000, 'live-chan running + registered via the shared panel link')
+  assert.strictEqual((await db.get('catalog/live-chan')).value.isLive, true, 'catalog isLive:true while running')
+
+  // (1) the per-channel log ring captured ffmpeg's stderr as {t,line}
+  const liveLogs = manager.logs('live-chan')
+  assert.ok(Array.isArray(liveLogs) && liveLogs.length > 0, 'log ring captured ffmpeg stderr lines')
+  assert.ok(liveLogs.every((e) => typeof e.t === 'number' && typeof e.line === 'string'), 'log entries are {t,line}')
+
+  // (2) the watchdog respawns a killed ffmpeg and records a restart marker in the ring
+  const liveCh = manager.channels.get('live-chan')
+  const restarts0 = liveCh.run.watchdog.restarts
+  try { liveCh.run.ff.kill('SIGKILL') } catch {}
+  await waitFor(async () => {
+    const s = (await api('GET', '/api/channels/live-chan', undefined, token)).body
+    return s.running && s.watchdog && s.watchdog.restarts > restarts0 ? s : null
+  }, 60000, 'watchdog to respawn the killed ffmpeg (restarts++)')
+  assert.ok(manager.logs('live-chan').some((e) => /watchdog: ffmpeg restart/.test(e.line)), 'restart marker written to the log ring')
+
+  // (3) STOP flips the catalog to isLive:false through the PanelLink; status stops claiming registered
+  assert.strictEqual((await api('POST', '/api/channels/live-chan/stop', undefined, token)).status, 200, 'stop live-chan')
+  const idleCat = await waitFor(async () => {
+    const v = (await db.get('catalog/live-chan')).value
+    return v && v.isLive === false ? v : null
+  }, 10000, 'panel catalog to flip isLive:false on stop')
+  assert.strictEqual(idleCat.status, 'idle', 'catalog status → idle on stop')
+  assert.strictEqual((await api('GET', '/api/channels/live-chan', undefined, token)).body.registered, false, 'status.registered false after stop')
+  assert.strictEqual((await api('DELETE', '/api/channels/live-chan', undefined, token)).status, 200, 'cleanup live-chan')
+  log('M: ffmpeg log ring + watchdog auto-restart (marker) + stop flips catalog isLive:false ✓')
+
+  // ===== Test N: auto-resume across a broadcaster restart + boot catch-up (S15b) =====
+  // A fresh ChannelManager over the SAME dataDir is exactly what a broadcaster process
+  // restart looks like: channels.json (desiredRunning) is all that carries across.
+  const readReg = (dir) => JSON.parse(fs.readFileSync(path.join(dir, 'channels.json'), 'utf8'))
+  const bc2Config = { ...bcConfig, dataDir: dirs.bc2 }
+  const mgrA = new ChannelManager(bc2Config); await mgrA.init()
+  // resume-me: started → desiredRunning:true persisted → MUST auto-resume after the "restart".
+  await mgrA.add('resume-me', { title: 'Resume Me', input: 'test', buffer: 'disk' })
+  await mgrA.start('resume-me')
+  await waitFor(() => mgrA.panelLink.isRegistered('resume-me') || null, 60000, 'resume-me to register with the panel')
+  assert.strictEqual((await db.get('catalog/resume-me')).value.isLive, true, 'resume-me live before the restart')
+  assert.strictEqual(readReg(dirs.bc2)['resume-me'].desiredRunning, true, 'desiredRunning:true persisted to channels.json')
+  // heal-me: exists but NOT running (desiredRunning:false). Seed a STALE isLive:true catalog
+  // entry (as an unclean crash would leave behind) → boot catch-up must flip it to idle.
+  await mgrA.add('heal-me', { title: 'Heal Me', input: 'test', buffer: 'disk' })
+  const healFeedKey = await mgrA.channels.get('heal-me').resolveFeedKey()
+  await db.put('catalog/heal-me', { title: 'Heal Me', description: '', category: [], type: 'live', protection: 'self', feedKey: healFeedKey, isLive: true, poster: null, backdrop: null, logo: null, order: null, featured: false, status: 'live' })
+  assert.strictEqual(readReg(dirs.bc2)['heal-me'].desiredRunning, false, 'heal-me desiredRunning:false persisted')
+  await mgrA.close() // the broadcaster process "goes down"
+
+  // "restart": a brand-new manager over the same dataDir
+  const mgrB = new ChannelManager(bc2Config); await mgrB.init()
+  assert.ok(mgrB.channels.get('resume-me').run, 'resume-me is running after the restart (auto-resume)')
+  await waitFor(async () => (await db.get('catalog/resume-me')).value.isLive === true || null, 60000, 'resume-me re-registers isLive:true on boot')
+  // heal-me was NOT resumed → boot catch-up healed its stale-live catalog entry
+  await waitFor(async () => (await db.get('catalog/heal-me')).value.isLive === false || null, 10000, 'boot catch-up flips stale heal-me to isLive:false')
+  assert.ok(!mgrB.channels.get('heal-me').run, 'heal-me stays stopped (desiredRunning:false)')
+  // an operator stop on the resumed channel flips it idle too
+  await mgrB.stop('resume-me')
+  assert.strictEqual((await db.get('catalog/resume-me')).value.isLive, false, 'operator stop flips resume-me idle')
+  await mgrB.close()
+  log('N: desiredRunning persists → auto-resume on restart; boot catch-up heals stale-live; operator stop → idle ✓')
+
+  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
