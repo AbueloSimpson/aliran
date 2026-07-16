@@ -89,7 +89,9 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.background },
   scrim: { backgroundColor: theme.colors.overlay, opacity: 0.55 },
   bar: { position: 'absolute', top: theme.safeY + theme.spacing(1), left: 0, right: 0, flexGrow: 0 },
-  barContent: { paddingHorizontal: theme.safeX, gap: theme.spacing(1.5) },
+  // flexGrow lets the row fill the viewport so justifyContent can center the items;
+  // if the sections ever overflow the width it falls back to a normal scrollable row.
+  barContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: theme.safeX, gap: theme.spacing(1.5) },
   entry: {
     alignItems: 'center', justifyContent: 'center',
     minWidth: theme.isTV ? 132 : 92,

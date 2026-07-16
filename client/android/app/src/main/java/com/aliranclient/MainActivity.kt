@@ -1,6 +1,11 @@
 package com.aliranclient
 
+import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -24,6 +29,33 @@ class MainActivity : ReactActivity() {
    */
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(null)
+    enableImmersive()
+  }
+
+  /** Re-hide the bars after a transient reveal (edge swipe) or a dialog/keyboard. */
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    if (hasFocus) enableImmersive()
+  }
+
+  /**
+   * Sticky-immersive, edge-to-edge chrome so live video fills the whole screen (this is a
+   * 10-foot / TV-style app): BOTH system bars are HIDDEN so nothing distracts from playback —
+   * the status bar (clock/battery) AND the navigation buttons (back/home/recents) fade away.
+   * A swipe in from an edge reveals them transiently to use, then they auto re-hide; the back
+   * gesture still works throughout. onWindowFocusChanged re-applies after a reveal/dialog.
+   */
+  private fun enableImmersive() {
+    WindowCompat.setDecorFitsSystemWindows(window, false)
+    window.statusBarColor = Color.TRANSPARENT
+    window.navigationBarColor = Color.TRANSPARENT
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      window.isNavigationBarContrastEnforced = false
+    }
+    WindowInsetsControllerCompat(window, window.decorView).apply {
+      hide(WindowInsetsCompat.Type.systemBars())
+      systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
   }
 
   /**

@@ -15,18 +15,19 @@ export interface ChannelRowProps {
   playing?: boolean
   favorite?: boolean
   hasTVPreferredFocus?: boolean
+  onFocus?: () => void
   onPress: () => void
   onLongPress?: () => void
 }
 
-export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, onPress, onLongPress }: ChannelRowProps) {
+export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, onFocus, onPress, onLongPress }: ChannelRowProps) {
   const [focused, setFocused] = useState(false)
   const dimmed = stream.isLive === false
   return (
     <Pressable
       style={[styles.row, playing && styles.rowPlaying, focused && styles.rowFocused]}
       hasTVPreferredFocus={hasTVPreferredFocus}
-      onFocus={() => setFocused(true)}
+      onFocus={() => { setFocused(true); onFocus?.() }}
       onBlur={() => setFocused(false)}
       onPress={onPress}
       onLongPress={onLongPress}

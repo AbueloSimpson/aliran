@@ -549,6 +549,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_feedDrive` to the rotated feed, and serves its playlist on the same port, all with no
   `resolve()` call. The client half needs an APK rebuild to verify on-device.
 
+### Live-TV playback polish — immersive, whole-picture fit, cleaner OSD (verified on S22)
+- **Landscape lock** (`AndroidManifest` `screenOrientation=sensorLandscape`) and the Menu
+  hub's option bar centered — the TV-style UI no longer renders squeezed into portrait.
+- **Sticky-immersive chrome** (`MainActivity`): both system bars are hidden so nothing
+  distracts from playback; a swipe in from an edge reveals them transiently, then they
+  re-hide. Edge-to-edge, transparent bar colors, re-applied on window-focus changes.
+- **`LiveScreen` IA rework**: fullscreen is clean — no LIVE/peer/source/buffering chrome
+  (diagnostics stay in Settings). A tap/OK peeks a bottom OSD that auto-fades; BACK opens
+  the "left menu" (category rail + channel list), which lost its manual close control and
+  now auto-hides after inactivity; BACK from the left menu exits to the hub. `AliranVideo`
+  uses `resizeMode="contain"` so the whole 16:9 picture and channel bugs stay visible.
+- **Enriched OSD**: channel logo (when present) + derived number + title + a live wall
+  clock, separated by a divider; no fake HD/now-next until real EPG data exists.
+- **Patch react-native-video 6.19.2** (`patches/react-native-video+6.19.2.patch`, wired via
+  `patch-package` `postinstall`): its `ExoPlayerView` hard-codes a top-left red "LIVE" badge
+  that ignores `controls={false}`; the patch keeps it hidden so `AliranVideo` stays
+  chrome-free (its own overlays own all badges).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster reliability (watchdog, auto-resume, log ring, isLive:false on stop)
   and ingest/transcode/logs surfaced in the control API + UI.

@@ -10,19 +10,21 @@ export interface CategoryRailProps {
   categories: string[]
   selected: string
   onSelect: (category: string) => void
+  /** Fired on user interaction (item focus / press / scroll) to defer the auto-hide timer. */
+  onActivity?: () => void
 }
 
-export function CategoryRail ({ categories, selected, onSelect }: CategoryRailProps) {
+export function CategoryRail ({ categories, selected, onSelect, onActivity }: CategoryRailProps) {
   return (
-    <ScrollView style={styles.rail} showsVerticalScrollIndicator={false}>
+    <ScrollView style={styles.rail} showsVerticalScrollIndicator={false} onScrollBeginDrag={onActivity}>
       {categories.map((c) => (
-        <RailItem key={c} label={c} active={c === selected} onSelect={() => onSelect(c)} />
+        <RailItem key={c} label={c} active={c === selected} onSelect={() => onSelect(c)} onActivity={onActivity} />
       ))}
     </ScrollView>
   )
 }
 
-function RailItem ({ label, active, onSelect }: { label: string; active: boolean; onSelect: () => void }) {
+function RailItem ({ label, active, onSelect, onActivity }: { label: string; active: boolean; onSelect: () => void; onActivity?: () => void }) {
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
@@ -30,9 +32,9 @@ function RailItem ({ label, active, onSelect }: { label: string; active: boolean
       // Focus-selects is the TV D-pad behavior ONLY. On phone, Android's touch-mode
       // focus lands on a rail item right after a tap elsewhere in the rail and would
       // instantly revert the tapped selection.
-      onFocus={() => { setFocused(true); if (Platform.isTV) onSelect() }}
+      onFocus={() => { setFocused(true); onActivity?.(); if (Platform.isTV) onSelect() }}
       onBlur={() => setFocused(false)}
-      onPress={onSelect}
+      onPress={() => { onActivity?.(); onSelect() }}
     >
       <Text style={[styles.label, (active || focused) && styles.labelActive]} numberOfLines={1}>
         {label.toUpperCase()}

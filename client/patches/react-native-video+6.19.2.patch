@@ -1,0 +1,17 @@
+diff --git a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt
+index bb945fe..c9fb333 100644
+--- a/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt
++++ b/node_modules/react-native-video/android/src/main/java/com/brentvatne/exoplayer/ExoPlayerView.kt
+@@ -214,8 +214,10 @@ class ExoPlayerView @JvmOverloads constructor(context: Context, attrs: Attribute
+         val isLive = player.isCurrentMediaItemLive
+         val seekable = player.isCurrentMediaItemSeekable
+ 
+-        // Show/hide badge
+-        liveBadge.visibility = if (isLive) View.VISIBLE else View.GONE
++        // Aliran: react-native-video adds its own hardcoded top-left "LIVE" badge for live
++        // streams regardless of controls={false}. AliranVideo is chrome-free by design (the
++        // host app owns all overlays/badges), so keep this player badge hidden.
++        liveBadge.visibility = View.GONE
+ 
+         // Disable/enable scrubbing based on seekable
+         val timeBar = playerView.findViewById<DefaultTimeBar?>(androidx.media3.ui.R.id.exo_progress)
