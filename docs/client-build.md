@@ -4,6 +4,26 @@ The client is a **React Native** app using **`react-native-tvos`** so one codeba
 targets phone/tablet and Android TV. It embeds **Bare** via `react-native-bare-kit`
 and will **not** run in Expo Go — it needs a real native build.
 
+## Device requirements — Android 10+ is a hard floor
+
+`react-native-bare-kit`'s Bare runtime is built with native ELF TLS
+(`__tls_get_addr`, added to Android's libc in **Android 10 / API 29**), so the
+dynamic linker on Android 9 and older **cannot load the P2P engine at all** —
+minSdk 29 is a real floor, not a conservative pin (verified: the loader needs
+`__tls_get_addr@LIBC_Q`, a hard GLOBAL import in `libbare-kit.so`).
+
+Consequences for TV hardware:
+
+- **Fire TV**: Fire OS 8 devices work (Android 11 — Fire TV Stick 4K / 4K Max
+  **2nd gen, 2023**, Fire TV Cube 3rd gen, Omni/4-Series TVs). **Fire OS 7 devices
+  do not** (Android 9 — every 2018–2021 stick, including the 4K Max 1st gen).
+- Most Fire TV sticks expose a **32-bit userland** (`armeabi-v7a` only — check with
+  `adb shell getprop ro.product.cpu.abilist`): build with
+  `gradlew :app:assembleRelease -PreactNativeArchitectures=armeabi-v7a`
+  (bare-kit ships armv7 prebuilds). Sideload over network adb
+  (`adb connect <tv-ip>:5555`); the manifest already declares
+  `LEANBACK_LAUNCHER` + a TV banner, so the app appears in the TV launcher.
+
 ## Prerequisites (the main hurdle)
 
 Install in order:
