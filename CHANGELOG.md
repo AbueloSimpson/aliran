@@ -594,8 +594,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a second `ChannelManager` over the same dataDir auto-resumes a `desiredRunning` channel and
   catches up a stale-live entry to idle). `test:core`/`test:register`/`test:sdk` regression-clean.
 
+### Feat: hybrid art — https URLs alongside the P2P assets drive (verified)
+- Catalog art fields (`poster`/`backdrop`/`logo`) now accept an absolute **`https://`
+  URL** in addition to the `assets/…` drive path. The SDK's URL transforms
+  (`_display`→`_artUrl` and `assetUrl`) pass absolute URLs through **unchanged** —
+  previously an https poster was mangled into `http://127.0.0.1:<port>/https://…` and
+  404'd. Viewers fetch remote art directly from the operator's web host; uploaded art
+  keeps replicating P2P. The two forms mix freely per stream and per kind.
+- Panel `setMeta` now **validates** art fields (was: any string): `assets/…` path or
+  `https://` URL, ≤1024 chars, no line breaks; empty string clears. **https is
+  required** for remote art — Android blocks cleartext off-loopback, so `http://`
+  would fail silently on devices.
+- Dashboard: each art slot gains a **"url" button** (set/clear a remote URL beside the
+  upload); remote art renders directly in the card, drive paths keep the
+  authed-fetch→blob path.
+- `test:assets` extended: validation matrix + the SDK display transform (https
+  passthrough, drive path → localhost). `test:sdk` regression-clean.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - Broadcaster ingest/transcode/logs (incl. the log ring) surfaced in the control API + UI (S15c).
-- Hybrid artwork (https URLs alongside the P2P assets drive).
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

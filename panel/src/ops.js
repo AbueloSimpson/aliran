@@ -253,12 +253,30 @@ export async function addStream (ctx, id, opts = {}) {
   return { id, catalog, encryptionKey: encKeyHex } // encryptionKey returned ONCE, for the broadcaster
 }
 
-const META_FIELDS = ['title', 'description', 'feedKey', 'poster', 'backdrop', 'logo', 'status']
+const META_FIELDS = ['title', 'description', 'feedKey', 'status']
+
+// Art fields are typed (hybrid art): an 'assets/…' drive path (P2P, written by
+// uploadArt) OR an absolute https:// URL served by the operator's own web host.
+// https is REQUIRED for remote art — Android blocks cleartext off-loopback, so an
+// http:// poster would render on some clients and silently fail on others.
+// Empty string clears the field.
+function normArt (v, kind) {
+  const s = String(v).trim()
+  if (s === '') return null
+  if (s.length > 1024) bad(kind + ' must be at most 1024 characters')
+  if (/[\r\n]/.test(s)) bad(kind + ' must not contain line breaks')
+  if (/^assets\//.test(s)) return s
+  if (/^https:\/\/./i.test(s)) return s
+  bad(kind + " must be an 'assets/…' drive path or an https:// URL")
+}
 
 export async function setMeta (ctx, id, fields = {}) {
   const c = await requireStream(ctx, id)
   for (const f of META_FIELDS) {
     if (fields[f] != null) c[f] = String(fields[f])
+  }
+  for (const kind of ART_KINDS) {
+    if (fields[kind] != null) c[kind] = normArt(fields[kind], kind)
   }
   if (fields.category != null) c.category = normCategory(fields.category)
   if (fields.isLive != null) c.isLive = normBool(fields.isLive)

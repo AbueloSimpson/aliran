@@ -205,9 +205,12 @@ function renderStreams () {
     for (const kind of ['poster', 'backdrop', 'logo']) {
       const slot = document.createElement('div')
       slot.className = 'art-slot'
-      slot.innerHTML = `<div class="art-thumb">${s[kind] ? '' : '—'}</div><button class="btn small" data-kind="${kind}">${kind}</button>`
+      slot.innerHTML = `<div class="art-thumb">${s[kind] ? '' : '—'}</div>
+        <button class="btn small" data-act="upload">${kind}</button>
+        <button class="btn small" data-act="url" title="use a remote https:// image URL instead of an upload">url</button>`
       if (s[kind]) loadArt(slot.querySelector('.art-thumb'), s[kind])
-      slot.querySelector('button').addEventListener('click', () => uploadArt(s.id, kind))
+      slot.querySelector('[data-act=upload]').addEventListener('click', () => uploadArt(s.id, kind))
+      slot.querySelector('[data-act=url]').addEventListener('click', () => setArtUrl(s, kind))
       artRow.appendChild(slot)
     }
     card.querySelector('[data-act=edit]').addEventListener('click', () => editMeta(s))
@@ -246,16 +249,19 @@ function renderAdmins () {
   }
 }
 
-// Fetch art with the auth token and render a blob URL (plain <img src> can't carry
-// the Authorization header).
-async function loadArt (el, assetPath) {
+// Render an art reference: remote https URLs go straight into <img src> (hybrid art —
+// the browser fetches them like any viewer would); drive paths are fetched with the
+// auth token and rendered as a blob URL (plain <img src> can't carry the
+// Authorization header).
+async function loadArt (el, ref) {
   try {
-    let url = artCache.get(assetPath)
+    if (/^https?:\/\//i.test(ref)) { el.innerHTML = `<img src="${esc(ref)}" alt="">`; return }
+    let url = artCache.get(ref)
     if (!url) {
-      const res = await fetch('/api/' + assetPath, { headers: { authorization: 'Bearer ' + token } })
+      const res = await fetch('/api/' + ref, { headers: { authorization: 'Bearer ' + token } })
       if (!res.ok) return
       url = URL.createObjectURL(await res.blob())
-      artCache.set(assetPath, url)
+      artCache.set(ref, url)
     }
     el.innerHTML = `<img src="${url}" alt="">`
   } catch {}
@@ -563,6 +569,23 @@ $('#art-file').addEventListener('change', async (e) => {
     if (stale) { URL.revokeObjectURL(stale); artCache.delete(r[kind]) }
   }, `${kind} uploaded for "${id}"`)
 })
+
+// Hybrid art: point the field at an operator-hosted https image instead of an upload.
+// Clients render remote URLs directly (no P2P replication); https is required —
+// Android blocks cleartext off-loopback, so the panel rejects http://.
+async function setArtUrl (s, kind) {
+  const cur = /^https?:\/\//i.test(s[kind] || '') ? s[kind] : ''
+  const v = await dialog(`Remote ${kind} URL — ${s.id}`, [
+    { name: 'url', label: 'https:// image URL (leave empty to clear)', value: cur, placeholder: 'https://cdn.example.com/poster.jpg' }
+  ], {
+    okLabel: 'Save',
+    body: '<p class="muted">Viewers fetch remote art directly from this URL; uploaded art replicates peer-to-peer instead. https:// only.</p>'
+  })
+  if (!v) return
+  const url = v.url.trim()
+  act(() => api('PATCH', `/api/streams/${s.id}`, { [kind]: url }),
+    url ? `${kind} URL set for "${s.id}"` : `${kind} cleared for "${s.id}"`)
+}
 
 // ---------------------------------------------------------------- observability
 

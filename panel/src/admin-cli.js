@@ -252,6 +252,7 @@ function usage () {
   grant <u> <streamId>                  Entitle a user to a stream
   revoke <u> <streamId>                 Remove an entitlement
   set-meta <id> [--title --feed --live --order <n|null> --featured [true|false] --poster ...]
+                                        (art fields take an 'assets/…' path or an https:// URL; '' clears)
   set-max-devices <u> <n>               Concurrent device limit
   list-devices <u>                      Show a user's enrolled devices
   logout-device <u> <deviceId>          Drop one device enrollment (no tokenVersion bump)

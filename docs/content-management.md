@@ -28,8 +28,21 @@ a key rotation — and re-adding the id mints a fresh key.
 
 ## Assets (posters/backdrops/logos)
 
-Stored in a **panel-seeded assets Hyperdrive**, replicated by clients and served from
-the app's localhost server (`/assets/<hash>`). Content-addressed → automatic cache-bust.
+Art fields (`poster`, `backdrop`, `logo`) accept **two forms** — hybrid art:
+
+- **P2P (default):** upload via `admin-cli upload-art` / `POST /api/streams/:id/art/:kind`
+  (or the dashboard's per-kind upload button). Stored in a **panel-seeded assets
+  Hyperdrive**, replicated by clients and served from the app's localhost server
+  (`/assets/…`). Content-addressed → automatic cache-bust. No web host needed.
+- **Remote URL passthrough:** set the field to an absolute **`https://` URL**
+  (`set-meta` / `PATCH /api/streams/:id` / the dashboard's "url" button). The SDK
+  passes it through to clients **unchanged** — viewers fetch it directly from your web
+  host or CDN, nothing replicates P2P. **https is required**: Android blocks cleartext
+  HTTP off-loopback, so an `http://` poster would fail silently on devices — the panel
+  rejects it. Cache-busting is on you (version the URL when the image changes).
+
+An empty string clears an art field. The two forms mix freely per stream and per kind
+(e.g. P2P poster + remote backdrop).
 
 ## Live vs VOD
 

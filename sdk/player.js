@@ -63,6 +63,12 @@ class Emitter {
   }
 }
 
+// Hybrid art: catalog art fields may be absolute http(s) URLs instead of assets-drive
+// paths — those pass through the URL transforms untouched. (The panel only ACCEPTS
+// https:// — Android blocks cleartext off-loopback — but the guard covers http too so
+// a hand-edited record degrades to a fetch error, not a mangled localhost URL.)
+const ABSOLUTE_URL_RE = /^https?:\/\//i
+
 // Hybrid defaults: p2p-only keeps the pre-hybrid behavior exactly (the app worklet
 // runs with this). cdnUrl may be a function (streamId => url) or a template string
 // containing '{streamId}'.
@@ -300,10 +306,13 @@ export class AliranPlayer extends Emitter {
     return fallback
   }
 
-  // Catalog art fields hold drive paths like 'assets/<id>/poster.png'; turn them into
-  // URLs on the local server (undefined until login has started it).
+  // Catalog art fields hold drive paths like 'assets/<id>/poster.png' (turned into
+  // URLs on the local server — undefined until login has started it) OR absolute
+  // http(s) URLs (hybrid art: pass through untouched for the host to fetch directly).
   assetUrl (p) {
-    if (!p || !this._server) return undefined
+    if (!p) return undefined
+    if (ABSOLUTE_URL_RE.test(p)) return String(p)
+    if (!this._server) return undefined
     return `http://127.0.0.1:${this._server.address().port}/${String(p).replace(/^\//, '')}`
   }
 
@@ -584,8 +593,12 @@ export class AliranPlayer extends Emitter {
     }
   }
 
+  // Drive paths map to the localhost server; absolute http(s) URLs pass through
+  // unchanged (hybrid art — without the guard an https poster would be mangled into
+  // 'http://127.0.0.1:<port>/https://…' and 404).
   _artUrl (port, p) {
     if (!p) return undefined
+    if (ABSOLUTE_URL_RE.test(p)) return p
     return `http://127.0.0.1:${port}/${p.replace(/^\//, '')}`
   }
 

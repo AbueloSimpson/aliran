@@ -12,6 +12,8 @@ import b4a from 'b4a'
 import { driveHandler } from './lib/serve-drive.js'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
+import { setMeta } from '../panel/src/ops.js'
+import { AliranPlayer } from '../sdk/player.js'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 async function waitFor (fn, ms, label) { const t = Date.now(); while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v } catch {} await sleep(300) } throw new Error('timeout: ' + label) }
@@ -59,7 +61,33 @@ try {
   assert.ok(b4a.equals(r.body, art), 'poster bytes must match after P2P replication')
   assert.strictEqual(r.headers['content-type'], 'image/png', 'content-type')
 
-  log('\nRESULT: PASS ✅  (assets uploaded → replicated P2P → served on localhost, bytes match)')
+  // ===== S17 hybrid art: https passthrough =====
+  // Panel side: setMeta accepts assets/ drive paths and https:// URLs, nothing else.
+  const ctx = { db, assets, dataDir: dirs.panel }
+  const HTTPS_ART = 'https://cdn.example.com/art/backdrop.jpg'
+  await setMeta(ctx, 'news', { backdrop: HTTPS_ART, logo: 'assets/news/logo.png' })
+  let cat = (await db.get('catalog/news')).value
+  assert.strictEqual(cat.backdrop, HTTPS_ART, 'setMeta stores the https URL untouched')
+  assert.strictEqual(cat.logo, 'assets/news/logo.png', 'setMeta still accepts drive paths')
+  for (const junk of ['http://cdn.example.com/p.jpg', 'javascript:alert(1)', '../../etc/passwd', 'https://', 'https://x\ny']) {
+    await assert.rejects(async () => setMeta(ctx, 'news', { poster: junk }), /assets|https|line breaks/, 'setMeta must reject: ' + JSON.stringify(junk))
+  }
+  await setMeta(ctx, 'news', { logo: '' })
+  cat = (await db.get('catalog/news')).value
+  assert.strictEqual(cat.logo, null, 'empty string clears an art field')
+  log('panel: art validation OK (https accepted, http/junk rejected, empty clears)')
+
+  // SDK side: the display transform passes absolute URLs through UNCHANGED while
+  // drive paths keep mapping to the localhost art server.
+  const player = new AliranPlayer({ http, fs })
+  const disp = player._display(port, 'news', cat)
+  assert.strictEqual(disp.poster, `http://127.0.0.1:${port}/assets/news/poster.png`, 'drive-path poster maps to localhost')
+  assert.strictEqual(disp.backdrop, HTTPS_ART, 'https backdrop reaches the display list unchanged')
+  assert.strictEqual(player.assetUrl(HTTPS_ART), HTTPS_ART, 'assetUrl passes https through even before login starts the server')
+  assert.strictEqual(player.assetUrl('assets/news/poster.png'), undefined, 'assetUrl still needs the server for drive paths')
+  log('sdk: display transform OK (https passthrough, drive path -> localhost)')
+
+  log('\nRESULT: PASS ✅  (assets uploaded → replicated P2P → served on localhost, bytes match; hybrid https art passes through)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
