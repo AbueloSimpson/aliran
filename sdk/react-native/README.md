@@ -11,7 +11,10 @@ import bundleBase64 from './backend/app.bundle.js' // your bare-pack'd engine bu
 const backend = new AliranBackend()
 backend.start(bundleBase64, {
   panelPubKey: SERVICE.panelPubKey,
-  hybrid: { mode: 'hybrid', cdnUrl: 'https://cdn.example.com/{streamId}/index.m3u8' }
+  hybrid: { mode: 'hybrid', cdnUrl: 'https://cdn.example.com/{streamId}/index.m3u8' },
+  prewarm: 12,       // warm the first N channels' feeds at login (fast first zap)
+  zapPrefetch: false // keep CH+/CH- neighbors' newest segment warm while playing —
+                     // OFF by default: costs standing bandwidth (see sdk/README.md)
 })
 // after backend.login(user, pass) resolves entitlements ('streams' message):
 <AliranVideo
@@ -41,8 +44,10 @@ backend.start(bundleBase64, {
   your tuning indicator until `onBuffering(false)`). If a resync mount then fails to
   play within another window, the ladder escalates to `backend.reconnect()` — the
   network flap left the engine's peer connection transport-alive but replication-dead,
-  and only a fresh dial (not a remount) recovers that. Overlays
-  (badges, peer counts, spinners) belong to
+  and only a fresh dial (not a remount) recovers that. Zap-tuned start buffer:
+  ExoPlayer begins playback at ~1 s buffered (vs its ~2.5 s default) — override via
+  the `bufferConfig` prop (merged over the defaults) if your feeds need more headroom.
+  Overlays (badges, peer counts, spinners) belong to
   the host app via the callbacks — see `client/src/screens/LiveScreen.tsx` for a
   complete example (the Aliran app dogfoods this package).
 
