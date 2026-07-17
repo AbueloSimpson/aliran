@@ -24,6 +24,11 @@
 // live edge, no error) — a re-zap must retune, then DESTROY the wedged connection
 // ('feed:reconnect') so the swarm dials fresh, and playback must resume with no
 // friendly error and no app restart.
+// Then the METADATA-ADVANCING-BUT-UNSERVABLE feed (the 2026-07-17 acceptance wedge):
+// a broadcaster that rewrites the playlist while its blob bytes are reclaimed before
+// any viewer can fetch them advances the metadata signature with ZERO servable bytes —
+// the watchdog must NOT stand down on the advance alone; it must walk its full ladder
+// (retune → connection teardown → friendly error) instead of spinning silently.
 // Then ZAP PREFETCH (zapPrefetch option): playing a stream must warm the curated-order
 // neighbors — their newest segment fully replicated locally without ever being served
 // over HTTP, following the catalog's CURRENT (rotated) feedKey.
@@ -74,7 +79,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cliZ: tmp('e2es-cliZ-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cliZ: tmp('e2es-cliZ-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -111,6 +116,12 @@ try {
   feedSwarm4.join(feed4.discoveryKey, { server: true, client: false }); await feedSwarm4.flush()
   const stopMirror4 = mirrorDirToDrive(dirs.out, feed4, { interval: 400 }); cleanups.push(() => stopMirror4())
 
+  // Fifth encrypted feed for the metadata-advancing-but-unservable case — created and
+  // cataloged now, seeded (pathologically) only in its own scenario below.
+  const encKey5 = hcrypto.randomBytes(32)
+  const feedStore5 = new Corestore(dirs.feed5); await feedStore5.ready(); cleanups.push(() => feedStore5.close())
+  const feed5 = new Hyperdrive(feedStore5.namespace('feed'), { encryptionKey: encKey5 }); await feed5.ready()
+
   // ===== Panel: keys, enroll alice + stream + grant, serve RPC =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
@@ -128,13 +139,14 @@ try {
     encPriv: wrap(wk, kp.secretKey),
     authPub: b4a.toString(auth.publicKey, 'hex'),
     authPrivEnc: wrap(wk, auth.secretKey),
-    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3), sports: sealTo(kp.publicKey, encKey4) },
+    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3), sports: sealTo(kp.publicKey, encKey4), radio: sealTo(kp.publicKey, encKey5) },
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
   await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live' })
   await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live', order: 1, featured: true })
   await db.put('catalog/shopping', { title: 'Shopping', category: ['shopping'], type: 'live', protection: 'self', feedKey: b4a.toString(feed3.key, 'hex'), isLive: true, poster: null, status: 'live' })
   await db.put('catalog/sports', { title: 'Sports', category: ['sports'], type: 'live', protection: 'self', feedKey: b4a.toString(feed4.key, 'hex'), isLive: true, poster: null, status: 'live' })
+  await db.put('catalog/radio', { title: 'Radio', category: ['radio'], type: 'live', protection: 'self', feedKey: b4a.toString(feed5.key, 'hex'), isLive: true, poster: null, status: 'live' })
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
@@ -324,7 +336,7 @@ try {
   // With prewarm:true, both entitled feeds ('news' + 'movies') are opened+joined in the
   // background at login, so the first zap to either is a cache hit — no cold feed:open.
   await player2.prewarm() // idempotent; deterministically wait out the background warm
-  if (player2._feeds.size !== 4) throw new Error('prewarm should open all four entitled feeds; got ' + player2._feeds.size)
+  if (player2._feeds.size !== 5) throw new Error('prewarm should open all five entitled feeds; got ' + player2._feeds.size)
   log('prewarm: opened ' + player2._feeds.size + ' entitled feeds at login (warm first-zap)')
 
   // 'movies' is entitled but nobody seeds it -> tiny readyTimeout forces CDN fallback.
@@ -498,6 +510,73 @@ try {
   log('wedge: retune → reconnect (teardown) → fresh dial resumed the live edge (' + healedSegs + ' segs) — no error, no app restart')
   await player4.stop()
 
+  // ===== Metadata-advancing but UNSERVABLE feed (the 2026-07-17 acceptance wedge) =====
+  // The playlist SIGNATURE is metadata (the entry's bee seq); media bytes ride the
+  // blobs core. A broadcaster that keeps rewriting the playlist while its blob bytes
+  // are reclaimed before any viewer can fetch them advances the signature forever with
+  // ZERO servable bytes — the advance-only watchdog stood down on the first tick and
+  // its whole ladder (retune → teardown → friendly error) never ran. Simulate that
+  // broadcaster exactly: put a fresh playlist every 500 ms and clear its blob blocks
+  // immediately (the per-rotation reclaim in broadcaster/src/hls.js, made permanent).
+  // The viewer must now KEEP the watchdog armed (content probe fails), walk the ladder
+  // ('feed:retune', then 'feed:reconnect' — a peer IS attached), and surface the
+  // friendly error instead of spinning silently forever.
+  const feedSwarm5 = new Hyperswarm(); cleanups.push(() => feedSwarm5.destroy())
+  feedSwarm5.on('connection', s => feed5.replicate(s))
+  feedSwarm5.join(feed5.discoveryKey, { server: true, client: false }); await feedSwarm5.flush()
+  const blobs5 = await feed5.getBlobs()
+  let radioSeq = 0
+  let radioBusy = false
+  const radioTimer = setInterval(async () => {
+    if (radioBusy) return
+    radioBusy = true
+    try {
+      radioSeq++
+      await feed5.put('/index.m3u8', b4a.from(`#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:${radioSeq}\n#EXTINF:2,\nseg${radioSeq}.ts\n`))
+      const cur = await feed5.entry('/index.m3u8')
+      const cb = cur && cur.value.blob
+      if (cb && cb.blockLength > 0) await blobs5.core.clear(cb.blockOffset, cb.blockOffset + cb.blockLength)
+    } catch { /* teardown race at cleanup — fine */ } finally { radioBusy = false }
+  }, 500)
+  cleanups.push(() => clearInterval(radioTimer))
+
+  const ev5 = { status: [], errors: [] }
+  const player5 = createPlayer({
+    panelPubKey,
+    storeDir: dirs.cli5,
+    tune: { timeoutMs: 4000, relookupMinMs: 1000, relookupMaxMs: 4000 }
+  })
+  player5.on('status', (s) => ev5.status.push(s.state))
+  player5.on('error', (e) => ev5.errors.push(String((e && e.message) || e)))
+  cleanups.push(() => player5.stop())
+
+  await player5.connect()
+  let streams5 = null
+  const deadline5 = Date.now() + 60000
+  while (!streams5) {
+    if (Date.now() > deadline5) throw new Error('timeout: unservable-feed SDK login')
+    try {
+      const s = await player5.login('alice', PASSWORD)
+      if (s.length >= 4) streams5 = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streams5) await sleep(1500)
+  }
+
+  await resolveWithin(player5, 'radio', 20000)
+  // Prove the scenario is what it claims: the metadata signature ADVANCES (the very
+  // signal that used to stand the watchdog down) while zero content is servable.
+  const sigA = await waitFor(() => player5._playlistSig(), 20000, 'unservable: playlist metadata lands')
+  await waitFor(async () => { const s = await player5._playlistSig(); return s !== null && s !== sigA }, 15000, 'unservable: metadata signature advances')
+  const unservableErr = await waitFor(async () => ev5.errors.find(m => /tune timeout/i.test(m)), 30000, "unservable: friendly 'error' despite an advancing playlist signature (advance-only stand-down regression)")
+  if (!/radio/.test(unservableErr)) throw new Error('unservable: the error should name the stream: ' + unservableErr)
+  if (!ev5.status.includes('feed:retune')) throw new Error("unservable: expected 'feed:retune' before the error")
+  if (!ev5.status.includes('feed:reconnect')) throw new Error("unservable: expected 'feed:reconnect' (a peer IS attached — teardown must run) before the error")
+  const unservableProven = !!unservableErr
+  log('unservable: metadata advanced, zero bytes servable → retune → reconnect → friendly error ("' + unservableErr.slice(0, 60) + '…") — the watchdog no longer stands down on metadata alone')
+  await player5.stop()
+
   // ===== zapPrefetch: the adjacent channel's newest segment replicates while watching =====
   // With zapPrefetch on, playing a stream must keep the curated-order NEIGHBORS' newest
   // segment warm in the local replica — without those feeds ever being served over HTTP.
@@ -541,8 +620,8 @@ try {
 
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
-    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && zapWarmed)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + adjacent-channel zap prefetch verified)' : 'FAIL ❌')
+    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && zapWarmed)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation + adjacent-channel zap prefetch verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

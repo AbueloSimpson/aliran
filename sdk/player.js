@@ -33,10 +33,12 @@
 //                        just reloads the player to flush the stale playlist/segments.
 //
 // Tune self-heal (p2p-only): pass `tune` { timeoutMs, relookupMinMs, relookupMaxMs } to
-// bound a tune. While the active feed's playlist is not ADVANCING, the engine forces
-// DHT re-lookups on a backoff, retunes once at timeoutMs (evict + fresh open), tears
-// down wedged peer connections at 2× (destroy + fresh dial, 'feed:reconnect'), then
-// emits a friendly 'error' by ≤3×. See normalizeTune() and _startTuneWatchdog().
+// bound a tune. While the active feed's playlist is not ADVANCING-and-SERVABLE
+// (metadata seq moves AND the playlist content is fetchable — see _playlistServable),
+// the engine forces DHT re-lookups on a backoff, retunes once at timeoutMs (evict +
+// fresh open), tears down wedged peer connections at 2× (destroy + fresh dial,
+// 'feed:reconnect'), then emits a friendly 'error' by ≤3×. See normalizeTune() and
+// _startTuneWatchdog().
 //
 // Zap latency: serving is handled by the shared progressive core (serve.js) —
 // availability wait + block-progressive bodies + live-edge read-ahead. `prewarm`
@@ -105,13 +107,17 @@ function normalizeHybrid (h) {
 }
 
 // Tune self-heal (p2p-only mode; the S22 2026-07-16 stuck-at-90% incidents): a tune
-// can spin forever for two reasons. (1) Cold feed, stale DHT record: the broadcaster
+// can spin forever for three reasons. (1) Cold feed, stale DHT record: the broadcaster
 // restarted since the last lookup (its feed-seeding swarms are ephemeral identities,
 // and hyperswarm re-queries a client topic only every ~10 min), no peer is found, the
 // playlist never lands. (2) WEDGED connection: a network flap leaves the hyperswarm/
 // UDX connection alive at transport level while hypercore replication over it moves
 // zero bytes — peers look connected, the stale playlist is already in the replica,
-// nothing ever advances. timeoutMs bounds one tune attempt: on the first expiry the
+// nothing ever advances. (3) METADATA-ONLY replication (the 2026-07-17 acceptance
+// wedge): the playlist's bee seq keeps advancing while the blob bytes behind it never
+// become fetchable — the metadata and blobs cores are separate channels with separate
+// failure modes, so "the playlist advances" alone does NOT mean a single media byte is
+// servable. timeoutMs bounds one tune attempt: on the first expiry the
 // cached open is EVICTED and re-opened fresh; on the second, connections serving the
 // feed are DESTROYED so the swarm dials fresh (the retune alone can't help — hyperswarm
 // shares one connection per peer, so a fresh open reuses the wedged pipe); only then a
@@ -580,11 +586,18 @@ export class AliranPlayer extends Emitter {
   //     fresh ('feed:reconnect') — the wedged-connection class (see _teardownFeedPeers);
   //   - if that also expires (or no peer was connected to tear down), evict and emit a
   //     friendly 'error' for the host UI — worst case ≤ 3× tune.timeoutMs end to end.
-  // "Tuned" means the playlist ADVANCES, not merely exists: after a network flap the
-  // STALE playlist of a warm/prewarmed feed is already in the local replica, so an
-  // existence probe stood the watchdog down on its first tick and the wedge above
-  // spun for 15+ min with zero relookups, no retune and no error (the second S22
-  // 2026-07-16 incident). A live playlist rewrites every segment, so on a healthy
+  // "Tuned" means the playlist ADVANCES **and its content is SERVABLE**, not merely
+  // that it exists: after a network flap the STALE playlist of a warm/prewarmed feed
+  // is already in the local replica, so an existence probe stood the watchdog down on
+  // its first tick and the wedge above spun for 15+ min with zero relookups, no
+  // retune and no error (the second S22 2026-07-16 incident). And advance ALONE is
+  // not enough either: the signature is metadata (the playlist entry's bee seq) while
+  // media bytes ride the blobs core — a feed whose metadata replicates while its
+  // blobs starve advances the signature with zero playable bytes, so the watchdog
+  // stood down and its ladder (retune → teardown → friendly error) never ran for
+  // exactly the wedge class it was built for (2026-07-17 acceptance). The stand-down
+  // check therefore also demand-reads the CURRENT playlist content (bounded; see
+  // _playlistServable). A live playlist rewrites every segment, so on a healthy
   // feed the first advance lands within seconds and the watchdog stands down (the
   // host player takes it from there); it also stands down on the next resolve()/
   // stop(), or when the active play moves off P2P. Hybrid mode needs none of this:
@@ -610,7 +623,15 @@ export class AliranPlayer extends Emitter {
         if (!this._active || this._active !== a || a.source !== 'p2p') { this._stopTuneTimer(timer); return }
         const sig = await this._boundedSig(900)
         if (initialSig === undefined) initialSig = sig
-        else if (sig !== null && sig !== initialSig) { this._stopTuneTimer(timer); return } // playlist advanced — tuned
+        // Tuned = the playlist ADVANCED **and its content is actually fetchable**. The
+        // signature lives on the metadata core, media bytes on the blobs core, and the
+        // two can diverge: a feed whose metadata replicates while zero blob bytes are
+        // servable kept the old advance-only check standing down on a viewer that
+        // could not play a single byte (the 2026-07-17 acceptance wedge). The content
+        // probe re-resolves to the NEWEST version on every call, so it is never pinned
+        // to a blob the broadcaster already reclaimed — on a healthy feed it hits the
+        // replica the serving layer has already pulled and passes instantly.
+        else if (sig !== null && sig !== initialSig && (await this._playlistServable(2000))) { this._stopTuneTimer(timer); return }
         if (this._active !== a) return // zapped away during the probe
         const now = Date.now()
         if (now >= nextRelookup) {
@@ -699,6 +720,32 @@ export class AliranPlayer extends Emitter {
   _stopTuneTimer (timer) {
     clearInterval(timer)
     if (this._tuneTimer === timer) this._tuneTimer = null
+  }
+
+  // Blob-layer half of "tuned": bounded read of the CURRENT playlist's CONTENT.
+  // drive.get re-resolves the newest version each call and demand-fetches its blob,
+  // so this proves the bytes a player needs are actually arriving — true iff the
+  // content lands within the bound AND references at least one media URI (a
+  // header-only playlist is not playable yet). On a healthy feed the blob is
+  // usually already local (the serving layer pulled it for the host player), so
+  // the probe is a cache hit; only a genuinely starved blob channel keeps failing,
+  // which is exactly when the watchdog must stay armed so its ladder (retune →
+  // connection teardown → friendly error) can run.
+  async _playlistServable (ms) {
+    let timer
+    try {
+      const drive = this._feedDrive
+      if (!drive) return false
+      const buf = await Promise.race([
+        drive.get('/index.m3u8'),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), ms) })
+      ])
+      return !!buf && playlistUris(b4a.toString(buf)).length > 0
+    } catch {
+      return false
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   // _playlistSig bounded: while a peer is flapping, a sparse metadata read CAN block

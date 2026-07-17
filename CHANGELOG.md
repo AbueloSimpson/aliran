@@ -1016,6 +1016,39 @@ the response never flushes headers and never ends; a client with no read timeout
   10–22 s to play — none near the 90 s deadline and no fresh-resolve retry needed
   (before the fix, a wedged channel sat ~97 s = deadline + external retry).
 
+### Fix: the tune watchdog no longer stands down on metadata alone — "tuned" now requires servable bytes
+Companion to the stalled-read fix above, closing the other half of the 2026-07-17
+wedge: the tune watchdog's "tuned" verdict was **"the playlist signature advances"**,
+but that signature is the playlist entry's bee seq — **metadata-core** state — while
+the bytes a player needs ride the **blobs core**. The two are separate replication
+channels with separate failure modes, so a feed whose metadata replicates while zero
+blob bytes are fetchable (broadcaster reclaim outpacing a lagging viewer, or a
+starved/wedged blob channel) advanced the signature and stood the watchdog down on
+its first tick — after which **nothing at the SDK level ever escalated or surfaced an
+error** for a tune that never became playable: no re-lookups, no retune, no
+connection teardown, no friendly error, exactly the ladder built for this situation.
+The live instrumentation showed all three wedged channels with `watchdog=off` within
+seconds while zero media bytes were served for 90 s.
+
+- `sdk/player.js`: the stand-down check now also demand-reads the CURRENT playlist
+  **content** (new `_playlistServable` — bounded `drive.get`, must yield bytes that
+  reference at least one media URI). It re-resolves to the newest version on every
+  call, so it is never pinned to a reclaimed blob; on a healthy feed the blob is
+  already local (the serving layer pulled it for the host player) and the probe is a
+  cache hit. While content stays unfetchable the watchdog stays armed and walks its
+  existing ladder — retune at `timeoutMs`, connection teardown at 2× (the right
+  medicine for a wedged blob channel), friendly error by ≤3×.
+- **Tests:** `npm run test:sdk` gains the metadata-advancing-but-unservable scenario —
+  a pathological seeder rewrites the playlist every 500 ms and clears its blob blocks
+  immediately (the broadcaster's per-rotation reclaim, made permanent); the viewer
+  must keep the watchdog armed despite the advancing signature, produce
+  `feed:retune` → `feed:reconnect`, and surface the friendly error instead of
+  spinning silently. Proven both ways: the scenario fails on the previous advance-only
+  code (no error ever fires) and passes with the content check.
+- Known limitation (noted, not fixed): hybrid mode's stall watchdog / recovery probe
+  still judge P2P health by signature advance alone — same conflation, out of scope
+  here (hybrid is not in production use).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
