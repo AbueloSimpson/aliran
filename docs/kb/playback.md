@@ -89,7 +89,8 @@ In likelihood order:
 - **Fix (shipped):** `<AliranVideo>` watches the playhead; once a mount has played and
   the position sits still for 12 s (`stallTimeoutMs`) while not paused, it remounts
   onto a fresh playlist load at the live edge (the same thing the manual zap did) and
-  fires `onStall` — the app re-shows the tuning pill until the first frame lands.
+  fires `onStall` plus an `onTune` `start` — the app's tuning pill restarts and stays
+  until the resync mount's first real playback (`onTune` `playing`).
 - **If the resync remount itself never plays** within another window, the freeze is
   not a slid live window but a **wedged connection** (see the tune section above): the
   stall ladder escalates to `backend.reconnect()`, which tears down the engine's

@@ -50,7 +50,11 @@ export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[] }
   | { type: 'login-error'; message: string }
-  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn' }
+  // streamId names the stream this play() reply is for (absent on dev direct-play and
+  // on worklet bundles older than the field) — <AliranVideo> uses it to tell "the served
+  // channel just CHANGED under the shared localhost URL" (remount) from a re-resolve of
+  // the channel already playing (keep the mount).
+  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn'; streamId?: string }
   | { type: 'status'; peers?: number; state?: string; message?: string }
   | { type: 'error'; message: string }
   | { type: 'fallback'; streamId: string; url: string; reason: 'timeout' | 'stall' }
@@ -89,6 +93,10 @@ export class AliranBackend {
   port: number | null = null
   url: string | null = null
   source: 'p2p' | 'cdn' | null = null
+  // The stream the engine last confirmed serving (from the 'port' reply). ONE localhost
+  // URL serves whatever feed is active, so this — not the URL — is what identifies the
+  // channel behind the player. Survives screen unmounts (module-singleton backend).
+  activeStreamId: string | null = null
   // Device-local prefs mirrored from the worklet (see client/backend/backend.mjs):
   // saved "remember me" credentials + favorite stream ids. `prefsLoaded` flips on the
   // first {type:'prefs'} reply — request with requestPrefs().
@@ -172,6 +180,7 @@ export class AliranBackend {
           this.port = msg.port ?? null
           this.url = msg.url ?? (msg.port ? `http://127.0.0.1:${msg.port}/index.m3u8` : null)
           this.source = msg.source ?? (this.url ? 'p2p' : null)
+          if (msg.streamId) this.activeStreamId = msg.streamId
         }
         if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn' }
         if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source }

@@ -28,7 +28,11 @@
 //   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
 //                                        live whenever the panel edits the catalog —
 //                                        same shape; the Home screen re-renders on it)
-//        { type:'port', port, url, source }   (url = ACTIVE source under hybrid)
+//        { type:'port', port, url, source, streamId }   (url = ACTIVE source under
+//                                        hybrid; streamId echoes the play() request so
+//                                        the client can tell WHICH channel the shared
+//                                        localhost URL now serves — no streamId on the
+//                                        dev direct-play reply)
 //        { type:'status', state|peers } | { type:'login-error'|'error', message }
 //        { type:'fallback', streamId, url, reason } | { type:'source-changed', streamId, source, url }
 //        { type:'feed-changed', streamId, feedKey, url }   (active stream's feedKey rotated)
@@ -158,7 +162,7 @@ IPC.on('data', (data) => {
       // transient 'not connected to panel' while the swarm dials) surface here.
       ensurePlayer().login(msg.username, msg.password).catch((e) => send({ type: 'login-error', message: String((e && e.message) || e) }))
     } else if (msg.streamId) {
-      ensurePlayer().resolve(msg.streamId).then(({ port, url, source }) => send({ type: 'port', port, url, source })).catch(fail)
+      ensurePlayer().resolve(msg.streamId).then(({ port, url, source }) => send({ type: 'port', port, url, source, streamId: msg.streamId })).catch(fail)
     } else if (msg.panelPubKey) {
       ensurePlayer(msg.hybrid, msg.prewarm, msg.tune).connect(msg.panelPubKey).catch(fail)
     }

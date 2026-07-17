@@ -796,6 +796,50 @@ the Argon2 grind in that flow runs client-side. Ported one-to-one from
   the test fail (2 status samples in 6 s, max **3.7 s**, zero rejections).
   `test:admin-api` A–N green.
 
+### Fix: tuning pill lifecycle — tune-scoped completion, honest self-heal labels, slower ramp
+On-device (S22, release of `aa556f6`, 2026-07-16 evening): OAN Plus visibly PLAYING
+while the pill still said "Tuning 009 — 90%", the stale state bleeding into the next
+zap (pill flashes and dies while the new channel is still tuning), and a slow feed
+(hsn: 113 s time-to-play even from a PC) parking at 90% for a minute with no state
+change. Root cause: ONE localhost URL serves every P2P channel, so the pill's old
+completion signals (`onBuffering(false)`/`onReadyForDisplay`) also fire for the
+PREVIOUS channel — which keeps playing under the same URL until the engine flips the
+served feed — and the self-heal remounts (`ff05881`) / transport teardowns (`2a5e396`)
+re-created `<Video>` mid-switch, orphaning whichever signal the pill was waiting on.
+- **`<AliranVideo>` now owns the switch as a TUNE** (`onTune` lifecycle: `start` /
+  `retune` / `reconnect` / `playing`, monotonic tune id): `playing` fires on the FIRST
+  real playback of the CURRENT tune — the engine must have confirmed the URL serves
+  this stream (`port` reply, see below) AND the current mount produced
+  progress/first-frame. Completion is mount-scoped (`epoch` shadow of the remount
+  counter), so events still held by an outgoing mount are inert, and a mid-tune
+  remount simply re-arms the same tune on the fresh mount. A stall resync starts a
+  fresh tune id (`onStall` is now log-grade); the engine's `feed:retune`/
+  `feed:reconnect` breadcrumbs relay as phases and RE-ARM completion; the friendly
+  tune-timeout `error` ends the tune for the host's error UI.
+- **The `port` IPC reply now echoes `streamId`** (worklet `backend.mjs` — bundle regen
+  required; `AliranBackend.activeStreamId` caches it), so the binding can tell "the
+  shared URL just switched channels" (remount to flush the old playlist/buffer —
+  zaps no longer depend on ExoPlayer stumbling into the swap via a playlist error)
+  from "re-confirmed the channel already playing" (keep the mount; re-entering Live
+  stays seamless). Pre-`streamId` bundles degrade to remount-on-every-port.
+- **`LiveScreen` drives the pill SOLELY from `onTune`** (no more scattered
+  `setSwitching` sites), keyed by tune id so a tune that starts while the previous
+  pill is up replaces it atomically at 0%; `ChannelChangeIndicator` grows honest
+  phase labels (Tuning / Retuning / Reconnecting — the % hides mid-self-heal instead
+  of freezing at 90) and a two-regime ramp (quick attack to ~45%, then a slow crawl
+  toward ~85 budgeted ~30 s) so slow-starting feeds don't sit pinned at 90%.
+- **Tests:** client jest gains `AliranVideoTune.test.tsx` (stale-mount events can't
+  complete or kill a tune; the port reply remounts on a channel switch and not on a
+  re-entry; self-heal relabels + re-arms; the friendly error ends the tune; a stall
+  resync restarts the tune and completes on the resync mount) and
+  `ChannelChangeIndicator.test.tsx` (ramp pacing, phase labels, snap-to-100 + hide);
+  `jest.config.js` maps module resolution for the symlinked SDK sources.
+- **Error-screen retry honored:** the friendly tune-timeout says "switch to it again
+  to retry", but re-selecting the SAME channel was a `play()` no-op — the only way out
+  was a trip through the Menu (found live during a real broadcaster outage, S22
+  2026-07-16). Re-selecting the erroring channel now clears the error, remounting
+  `<AliranVideo>` into a fresh tune.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
