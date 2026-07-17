@@ -18,9 +18,9 @@ backend.start(bundleBase64, {
   backend={backend}
   streamId="news"
   onPeers={(n) => setPeers(n)}
+  onTune={(e) => setTuning(e.phase === 'playing' ? null : e)} // drive your tuning UI from this
   onFallback={({ reason }) => console.log('now on CDN:', reason)}
   onSourceChanged={({ source }) => console.log('back on', source)}
-  onBuffering={setBuffering}
   onError={setError}
 />
 ```
@@ -37,12 +37,19 @@ backend.start(bundleBase64, {
   self-heals a **frozen live edge**: live HLS windows are short, so a network blip
   longer than the window slides it past the playhead with *no* error event — once the
   playhead sits still for `stallTimeoutMs` (default 12 s) while playing, the component
-  remounts onto a fresh playlist load at the live edge and fires `onStall` (re-show
-  your tuning indicator until `onBuffering(false)`). If a resync mount then fails to
-  play within another window, the ladder escalates to `backend.reconnect()` — the
-  network flap left the engine's peer connection transport-alive but replication-dead,
-  and only a fresh dial (not a remount) recovers that. Overlays
-  (badges, peer counts, spinners) belong to
+  remounts onto a fresh playlist load at the live edge and fires `onStall`. If a
+  resync mount then fails to play within another window, the ladder escalates to
+  `backend.reconnect()` — the network flap left the engine's peer connection
+  transport-alive but replication-dead, and only a fresh dial (not a remount)
+  recovers that. Drive your **tuning indicator from `onTune`**, not from raw player
+  events: ONE localhost URL serves every P2P channel, so after a zap the *previous*
+  channel keeps playing (and emitting `onProgress`/`onBuffer`) under the same URL
+  until the engine flips the served feed. `onTune` reports each switch as a tune
+  (monotonic `id`): `start` (arm/reset the indicator), `retune` / `reconnect` (the
+  engine is self-healing — say "reconnecting", don't freeze a fake percentage),
+  `playing` (the FIRST real playback of *this* tune — dismiss; edge-proof against
+  mid-tune remounts and the old channel's events). The friendly tune-timeout arrives
+  via `onError` and ends the tune. Overlays (badges, peer counts, spinners) belong to
   the host app via the callbacks — see `client/src/screens/LiveScreen.tsx` for a
   complete example (the Aliran app dogfoods this package).
 
