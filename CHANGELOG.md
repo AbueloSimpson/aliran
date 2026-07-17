@@ -769,8 +769,32 @@ each swap-thrashed verify ground for minutes back-to-back. Fixed in
   streams, asserting `/api/status` stays fast throughout (25 ms max observed; the
   pre-fix sync path measured **6.3 s blocked** and zero rejections), the concurrent
   bulk 503s immediately, the channel rides it out, and the timeout path self-heals.
-  KB: `docs/kb/operator.md`. Note: the panel's admin login (`panel/src/ops.js
-  verifyAdmin`) still uses the sync path — same fix pending there.
+  KB: `docs/kb/operator.md`. Note: the panel's admin login shared the defect —
+  ported in the next entry.
+
+### Fix: the panel admin login gets the same hardening — Argon2id off the event loop
+The panel's `POST /api/login` had the identical defect the broadcaster was just
+fixed for: `panel/src/ops.js verifyAdmin` ran the synchronous memory-hard verify on
+the main thread. On the panel the blast radius is worse — its event loop also
+drives catalog/assets replication and the viewer login RPC, so a login flood (or a
+few attempts on a swapping host) would freeze every fresh app login in the fleet,
+not just the dashboard. The user-login OPRF path (`panel/src/rpc.js`) was audited
+clean: server-side it does `evaluate` (ristretto255) + Ed25519 `authVerify` only —
+the Argon2 grind in that flow runs client-side. Ported one-to-one from
+`broadcaster/src/control-auth.js`:
+
+- **Worker-thread verify** (`ops.js makeAdminVerifier` + new
+  `panel/src/admin-verify-worker.js`), **single-flight** with an immediate `503`,
+  and **`loginVerifyTimeoutMs`** (default 30 s) with worker terminate + respawn —
+  same semantics as the broadcaster; equal work for unknown admin names preserved.
+- **Regression test** `npm run test:panel-login-flood`
+  (`tools/e2e-panel-login-flood-test.mjs`): floods the panel `/api/login` at
+  incident-scale cost (256 MiB × 6) with a real Hyperswarm viewer plane connected
+  BEFORE the flood — `/api/status` stayed ≤31 ms throughout, a viewer OPRF login
+  issued MID-flood completed in 43 ms, the concurrent bulk 503s immediately, and
+  the timeout path self-heals. Proven both ways: re-inlining the sync verify makes
+  the test fail (2 status samples in 6 s, max **3.7 s**, zero rejections).
+  `test:admin-api` A–N green.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).

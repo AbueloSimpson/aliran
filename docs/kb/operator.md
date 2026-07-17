@@ -89,6 +89,14 @@ Long-running dev panel/broadcaster processes wedge silently:
   stay responsive throughout (regression: `npm run test:login-flood`). On a pre-fix
   build: restart the broadcaster container and keep the control port firewalled to
   localhost/TLS-proxy only (its default binding).
+- **Panel too:** the panel's admin login (the dashboard's `POST /api/login`) shared
+  the defect, with a worse blast radius — the panel event loop also drives catalog
+  replication and the viewer login RPC, so a pre-fix panel under login flood
+  freezes every fresh app login in the fleet. Same fix, same semantics
+  (`panel/src/ops.js makeAdminVerifier`; regression:
+  `npm run test:panel-login-flood`). On a pre-fix build: restart the panel
+  container. The viewer OPRF login path itself never had the problem (its Argon2
+  grind runs on the client).
 - **Ops note:** repeated `503` on login means verifies are being rejected or timing
   out — on a small host that's your swap-pressure alarm; check RAM before blaming
   auth. Lower `ARGON2_MEM_KIB` for boxes this tight (it guards a localhost-only
