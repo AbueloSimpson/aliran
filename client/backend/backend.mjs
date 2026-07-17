@@ -11,24 +11,30 @@
 // (app.bundle.js is a build artifact, gitignored; regenerate it as part of the app build.)
 //
 // IPC (line-delimited JSON) with React Native:
-//   in : { panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch?, swarm? }
+//   in : { panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch?, swarm?, uploadPolicy? }
 //                                     -> connect to panel; optional hybrid CDN<->P2P
 //                                        config (cdnUrl as a '{streamId}' template
 //                                        string — JSON-safe), feed prewarm count,
 //                                        tune self-heal knobs, adjacent-channel
 //                                        zap prefetch (OFF by default — standing
-//                                        bandwidth; see sdk/player.js), and swarm
+//                                        bandwidth; see sdk/player.js), swarm
 //                                        tuning ({ maxPeers } — seed nodes only,
-//                                        viewers omit it)
+//                                        viewers omit it), and uploadPolicy
+//                                        ('reseed' default | 'client-only' = never
+//                                        announce, ~zero viewer-to-viewer upload)
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
 //        { streamId }                 -> play an entitled stream -> { port, url, source }
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
-//        { type:'prefs-get' }         -> { type:'prefs', creds, favorites }
+//        { type:'prefs-get' }         -> { type:'prefs', creds, favorites, smoothZapping }
 //        { type:'creds-save', username, password } | { type:'creds-clear' }
 //        { type:'favorites-set', favorites: [streamId] }   (each replies with 'prefs')
 //        { type:'reconnect' }         -> tear down the active feed's swarm connections
 //                                        and dial fresh (wedged-transport escalation
 //                                        from <AliranVideo>'s stall ladder)
+//        { type:'zap-prefetch-set', zapPrefetch }  -> runtime "Smooth zapping" toggle:
+//                                        boolean or config object, applied mid-play
+//        { type:'net-info', expensive }            -> host network profile (NetInfo):
+//                                        expensive=true suspends zap prefetch
 //   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
 //                                        live whenever the panel edits the catalog —
 //                                        same shape; the Home screen re-renders on it)
@@ -40,7 +46,10 @@
 //        { type:'status', state|peers } | { type:'login-error'|'error', message }
 //        { type:'fallback', streamId, url, reason } | { type:'source-changed', streamId, source, url }
 //        { type:'feed-changed', streamId, feedKey, url }   (active stream's feedKey rotated)
-//        { type:'prefs', creds: {username,password}|null, favorites: [streamId] }
+//        { type:'zap-prefetch', enabled }          (echo of a runtime toggle) |
+//        { type:'zap-prefetch', state:'suspended'|'resumed', reason? }   (adaptive gate)
+//        { type:'prefs', creds: {username,password}|null, favorites: [streamId],
+//          smoothZapping: true|false|null }   (null = user never set the toggle)
 //
 // Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
 // the app-private files dir, the stated tradeoff; sign-out clears them) + favorites
@@ -96,10 +105,13 @@ function readPrefs () {
     const p = JSON.parse(b4a.toString(fs.readFileSync(prefsPath())))
     return {
       creds: p && p.creds && typeof p.creds.username === 'string' && typeof p.creds.password === 'string' ? p.creds : null,
-      favorites: Array.isArray(p && p.favorites) ? p.favorites.filter((x) => typeof x === 'string') : []
+      favorites: Array.isArray(p && p.favorites) ? p.favorites.filter((x) => typeof x === 'string') : [],
+      // "Smooth zapping" toggle: null = the user never chose (boot uses the app's
+      // compiled default), true/false = their persisted choice wins.
+      smoothZapping: typeof (p && p.smoothZapping) === 'boolean' ? p.smoothZapping : null
     }
   } catch {
-    return { creds: null, favorites: [] }
+    return { creds: null, favorites: [], smoothZapping: null }
   }
 }
 
@@ -113,9 +125,9 @@ function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
 
 let player = null
 
-function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm) {
+function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy) {
   if (player) return player
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy })
   player.on('ready', () => send({ type: 'ready' }))
   player.on('streams', (streams) => send({ type: 'streams', streams }))
   player.on('status', (status) => send({ type: 'status', ...status }))
@@ -124,6 +136,7 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm) {
   player.on('fallback', (e) => send({ type: 'fallback', ...e }))
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
+  player.on('zap-prefetch', (e) => send({ type: 'zap-prefetch', ...e }))
   // Background engine failures with no caller to throw to — most importantly the tune
   // watchdog's timeout. Dropping these left the app spinning forever on a dead tune.
   player.on('error', (err) => send({ type: 'error', message: String((err && err.message) || err) }))
@@ -159,6 +172,14 @@ IPC.on('data', (data) => {
       // tune watchdog's outcome (playback resumes, or a friendly error) relay via the
       // existing event listeners.
       if (player) { try { player.reconnectActiveFeed() } catch (err) { fail(err) } }
+    } else if (msg.type === 'zap-prefetch-set') {
+      // Runtime "Smooth zapping" toggle: persist the choice (it survives restarts and
+      // overrides the compiled default at the next boot) and apply it mid-play.
+      writePrefs({ ...readPrefs(), smoothZapping: !!msg.zapPrefetch })
+      if (player) { try { player.setZapPrefetch(msg.zapPrefetch) } catch (err) { fail(err) } }
+      sendPrefs()
+    } else if (msg.type === 'net-info') {
+      if (player) { try { player.setNetworkProfile({ expensive: !!msg.expensive }) } catch (err) { fail(err) } }
     } else if (msg.feedKey && msg.encryptionKey) {
       ensurePlayer().serveFeed(msg.feedKey, msg.encryptionKey).then((port) => send({ type: 'port', port })).catch(fail)
     } else if (msg.username) {
@@ -168,7 +189,11 @@ IPC.on('data', (data) => {
     } else if (msg.streamId) {
       ensurePlayer().resolve(msg.streamId).then(({ port, url, source }) => send({ type: 'port', port, url, source, streamId: msg.streamId })).catch(fail)
     } else if (msg.panelPubKey) {
-      ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, msg.zapPrefetch, msg.swarm).connect(msg.panelPubKey).catch(fail)
+      // The persisted "Smooth zapping" choice (if the user ever set it) wins over the
+      // app's compiled zapPrefetch default; true means the SDK's adaptive defaults.
+      const saved = readPrefs().smoothZapping
+      const zap = saved == null ? msg.zapPrefetch : saved
+      ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy).connect(msg.panelPubKey).catch(fail)
     }
   }
 })

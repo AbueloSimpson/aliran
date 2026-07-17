@@ -13,9 +13,13 @@ export type { Stream, BackendMessage } from '@aliran/react-native'
 const PREWARM_CHANNELS = 12
 
 // Adjacent-channel zap prefetch (keep the next/previous channels' newest segment
-// replicated while watching, so CH+/CH- starts from warm bytes). OFF: unlike prewarm
-// it costs standing bandwidth ≈ the neighbors' bitrate for as long as a channel
-// plays. Flip to true (or { neighbors, intervalMs }) to enable — see sdk/player.js.
+// replicated while watching, so CH+/CH- starts from warm bytes). This is only the
+// COMPILED DEFAULT for first boot: the Settings "Smooth zapping" toggle persists the
+// user's choice in the worklet prefs, which overrides this value on every boot and
+// switches the engine live via backend.setZapPrefetch(). OFF by default — unlike
+// prewarm it costs standing bandwidth ≈ the neighbors' bitrate while a channel
+// plays (the engine's adaptive gate suspends it on metered networks, stalls, or a
+// thin pipe — see sdk/player.js).
 const ZAP_PREFETCH: boolean = false
 
 class Backend extends AliranBackend {

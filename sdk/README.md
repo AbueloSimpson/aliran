@@ -93,8 +93,45 @@ warm-up options stack on top:
 - `zapPrefetch` — while a stream plays, keep the **newest segment** of the
   next/previous channels in curated zap order replicated locally, so CH+/CH− starts
   from warm bytes. **Off by default — costs standing bandwidth** (≈ each neighbor's
-  full bitrate while playing). `true` = `{ neighbors: 1, intervalMs: 3000 }`, or pass
-  the object to tune.
+  full bitrate while playing). `true` = the adaptive defaults below, or pass an
+  object to tune `{ neighbors, intervalMs, directional, stallMs, resumeMs,
+  minHeadroom }`.
+
+### Smooth zapping (S21): runtime toggle + adaptive gate
+
+`zapPrefetch` is designed to be a **user-facing choice** (the app surfaces it as
+"Smooth zapping — uses more data"):
+
+- **Runtime switch** — `player.setZapPrefetch(true | false | cfg)` applies mid-play:
+  OFF stops the warm loop and drops every standing download instantly; ON re-arms
+  against the active stream. Echoed as a `'zap-prefetch'` `{enabled}` event.
+- **Adaptive gate** — prefetch must never compete with playback or surprise someone
+  on a paid connection, so the engine suspends the warm loop (dropping its
+  downloads, keeping the tick alive to observe recovery) whenever:
+  - the host reports a **metered/expensive network** via
+    `player.setNetworkProfile({ expensive })` (lifts the moment it is cheap again);
+  - the **active playlist stops advancing** for `stallMs` (default 12 s — the
+    viewer's own stream is starving); resumes after `resumeMs` (default 60 s) of
+    clean advance;
+  - neighbor segments download **slower than `minHeadroom`× realtime** (default 3×,
+    two thin samples in a row) — the pipe has no room for a second stream.
+  Suspensions/resumes surface as `'zap-prefetch'` `{state:'suspended',reason}` /
+  `{state:'resumed'}` events (`reason: 'metered' | 'stall' | 'thin'`).
+- **Directional** (`directional: true`, the default) — once the viewer's surf
+  direction is known (an adjacent-channel move), only that side is warmed, halving
+  the standing cost for the common CH+/CH+/CH+ pattern; a menu jump resets to both
+  sides. The channel just left stays warm in the feed cache regardless.
+
+## Upload policy
+
+`createPlayer({ uploadPolicy: 'reseed' | 'client-only' })` — `'reseed'` (default)
+joins feed/assets topics announced (`server: true`): blocks this viewer replicated
+are served back to other viewers on request (opportunistic, demand-driven upload
+that strengthens the swarm). `'client-only'` joins **unannounced** (`server:
+false`): the peer is not discoverable on those topics, so other viewers can never
+dial it — practically **zero viewer-to-viewer upload** by construction, at the
+swarm-wide cost of one fewer re-seeder. Boot-time option. See
+`docs/kb/viewer-bandwidth.md` for measured numbers.
 
 ## Swarm tuning (seed nodes)
 

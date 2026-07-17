@@ -35,6 +35,14 @@
 // Then ZAP PREFETCH (zapPrefetch option): playing a stream must warm the curated-order
 // neighbors — their newest segment fully replicated locally without ever being served
 // over HTTP, following the catalog's CURRENT (rotated) feedKey.
+// Then SMOOTH ZAPPING (S21) on the same player: the runtime toggle
+// (setZapPrefetch OFF↔ON mid-play, ranges dropped then re-warmed), the adaptive gate
+// (metered network suspends immediately and lifts when cheap; an ACTIVE-stream stall
+// suspends and a clean advance run resumes), and DIRECTIONAL prefetch (an adjacent
+// up-zap warms only the up side; directional:false restores both). Then uploadPolicy:
+// a 'client-only' viewer still plays but joins feed topics server:false (never
+// announced ⇒ not discoverable ⇒ no viewer-to-viewer serving), while the default
+// 'reseed' viewer's feed topic is joined server:true.
 // Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -82,7 +90,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), cliU: tmp('e2es-cliU-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -707,13 +715,96 @@ try {
     return s.path
   }, 30000, "zap-prefetch: neighbor 'news' newest segment replicated")
   log("zapPrefetch: playing movies warmed neighbor news' newest segment (" + warmedSeg + ') — fully local, never served over HTTP')
-  await playerZ.stop()
   const zapWarmed = !!warmedSeg
+
+  // ===== S21 smooth zapping: runtime toggle + adaptive gate + directional (same player) =====
+  // This is exactly what the app's Settings switch drives (setZapPrefetch /
+  // setNetworkProfile) — asserted MID-PLAY, no restart anywhere.
+  const zapEvents = []
+  playerZ.on('zap-prefetch', (e) => zapEvents.push(e))
+
+  // Live OFF mid-play: the warm loop dies and every standing range is dropped.
+  playerZ.setZapPrefetch(false)
+  if (!zapEvents.some(e => e.enabled === false)) throw new Error('setZapPrefetch(false) must echo {enabled:false}')
+  if (playerZ._zapTimer || playerZ._zapRanges.size) throw new Error('OFF mid-play must stop the warm loop and drop the ranges')
+  // Live ON mid-play: the loop re-arms against the ACTIVE stream and re-warms.
+  playerZ.setZapPrefetch({ neighbors: 1, intervalMs: 700 })
+  if (!zapEvents.some(e => e.enabled === true)) throw new Error('setZapPrefetch(cfg) must echo {enabled:true}')
+  await waitFor(() => playerZ._zapRanges.has('news'), 25000, 'ON mid-play re-warms the neighbor')
+  log('smooth-zap: live OFF↔ON switch mid-play (ranges dropped, then re-warmed)')
+
+  // Metered network: suspend immediately (ranges gone), lift as soon as it is cheap.
+  playerZ.setNetworkProfile({ expensive: true })
+  if (!zapEvents.some(e => e.state === 'suspended' && e.reason === 'metered')) throw new Error('an expensive network must suspend prefetch')
+  if (playerZ._zapRanges.size) throw new Error('the metered suspension must drop the warm ranges')
+  playerZ.setNetworkProfile({ expensive: false })
+  await waitFor(() => zapEvents.some(e => e.state === 'resumed'), 15000, "metered lift emits 'resumed'")
+  await waitFor(() => playerZ._zapRanges.has('news'), 25000, 'post-metered re-warm')
+  const meteredGated = true
+  log('smooth-zap: metered suspend + immediate lift')
+
+  // Directional: movies -> news is an adjacent UP move, so only the up side is warmed;
+  // the seeded down-side neighbor (movies) must stay cold until directional is off.
+  await resolveWithin(playerZ, 'news', 20000)
+  if (playerZ._zapDir !== 1) throw new Error('an adjacent up-zap must set direction +1, got ' + playerZ._zapDir)
+  await sleep(2500) // several warm ticks under the directional config
+  if (playerZ._zapRanges.has('movies')) throw new Error('directional prefetch warmed the down-side neighbor')
+  if (playerZ._zapRanges.has('news')) throw new Error('the active channel must never be in the warm set')
+  playerZ.setZapPrefetch({ neighbors: 1, intervalMs: 700, directional: false, stallMs: 4000, resumeMs: 3000 })
+  await waitFor(() => playerZ._zapRanges.has('movies'), 25000, 'directional:false warms both sides (movies)')
+  const directionalProven = true
+  log('smooth-zap: directional up-zap warms only the up side; directional:false restores both')
+
+  // Stall gate: freeze the ACTIVE (rotated news) mirror — the playlist stops advancing,
+  // so prefetch must stand down rather than compete; feeding the mirror again must
+  // resume after a clean run (test-tuned stallMs/resumeMs above).
+  stopMirrorRot()
+  await waitFor(() => zapEvents.some(e => e.state === 'suspended' && e.reason === 'stall'), 30000, 'an active-stream stall suspends prefetch')
+  if (playerZ._zapRanges.size) throw new Error('the stall suspension must drop the warm ranges')
+  const resumesBeforeRefeed = zapEvents.filter(e => e.state === 'resumed').length
+  const stopMirrorRot2 = mirrorDirToDrive(dirs.out, feedRot, { interval: 400 }); cleanups.push(() => stopMirrorRot2())
+  await waitFor(() => zapEvents.filter(e => e.state === 'resumed').length > resumesBeforeRefeed, 45000, 'a clean advance run lifts the stall suspension')
+  await waitFor(() => playerZ._zapRanges.has('movies'), 25000, 'post-stall re-warm')
+  const stallGated = true
+  log('smooth-zap: active-stream stall suspends prefetch; a clean run resumes it')
+
+  // Default uploadPolicy really announces (the re-seeding 'client-only' turns off).
+  const feedZr = await playerZ._feeds.get(rotKeyHex + ':' + b4a.toString(encKey, 'hex'))
+  if (!feedZr || feedZr.discovery.isServer !== true || feedZr.discovery.isClient !== true) throw new Error("default uploadPolicy must join feed topics server:true (re-seed)")
+  await playerZ.stop()
+
+  // ===== uploadPolicy 'client-only': plays fine, but never announces on feed topics =====
+  // server:false is the hyperswarm mechanism behind "serves nothing to other viewers":
+  // an unannounced peer is not discoverable on the topic, so a probing viewer can never
+  // dial it — practically zero viewer-to-viewer upload by construction.
+  const playerU = createPlayer({ panelPubKey, storeDir: dirs.cliU, uploadPolicy: 'client-only' })
+  cleanups.push(() => playerU.stop())
+  await playerU.connect()
+  let streamsU = null
+  const deadlineU = Date.now() + 60000
+  while (!streamsU) {
+    if (Date.now() > deadlineU) throw new Error('timeout: client-only SDK login')
+    try {
+      const s = await playerU.login('alice', PASSWORD)
+      if (s.length >= 4) streamsU = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streamsU) await sleep(1500)
+  }
+  const rU = await resolveWithin(playerU, 'news', 20000)
+  await waitFor(async () => { const r = await httpGet(rU.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 40000, 'client-only viewer still plays over P2P')
+  const feedU = await playerU._feeds.get(rotKeyHex + ':' + b4a.toString(encKey, 'hex'))
+  if (!feedU || feedU.discovery.isServer !== false || feedU.discovery.isClient !== true) throw new Error('client-only must join feed topics server:false')
+  await playerU.stop()
+  const clientOnlyProven = true
+  log("uploadPolicy: 'client-only' played news but joined its topic UNANNOUNCED (server:false); the default player announced (server:true)")
 
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
-    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch verified)' : 'FAIL ❌')
+    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
+    meteredGated && directionalProven && stallGated && clientOnlyProven)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

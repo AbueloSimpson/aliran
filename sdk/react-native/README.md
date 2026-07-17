@@ -16,7 +16,16 @@ backend.start(bundleBase64, {
   zapPrefetch: false // keep CH+/CH- neighbors' newest segment warm while playing —
                      // OFF by default: costs standing bandwidth (see sdk/README.md)
   // swarm: { maxPeers: 256 } — seed-node hosts only; viewers keep the default (64)
+  // uploadPolicy: 'client-only' — never announce on feed topics: ~zero
+  //                viewer-to-viewer upload (default 'reseed' serves blocks back)
 })
+
+// "Smooth zapping" is a runtime, user-facing choice — wire it to a Settings switch
+// and feed the network profile so the engine can suspend it on metered connections:
+backend.setZapPrefetch(true)             // ON mid-play (echoed as {type:'zap-prefetch'})
+backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnectionExpensive
+// The engine also auto-suspends while the ACTIVE stream stalls or the pipe shows no
+// headroom, and resumes by itself — listen for {type:'zap-prefetch', state, reason}.
 // after backend.login(user, pass) resolves entitlements ('streams' message):
 <AliranVideo
   backend={backend}

@@ -1080,6 +1080,44 @@ the fallback already spent.
   positive path (a genuinely seeded feed still auto-returns to P2P through the new
   servable gate).
 
+### Smooth zapping — user toggle over adaptive zapPrefetch + viewer-bandwidth docs (S21, verified)
+- **The zapPrefetch that shipped OFF in the zap-latency pass is now a product
+  feature**: a "Smooth zapping — uses more data" switch in the app's Settings
+  (default OFF, persisted beside the other device prefs, applied live mid-play and
+  at every boot), backed by an engine that spends bandwidth only when it is safe to.
+- **SDK (`sdk/player.js`)**: `setZapPrefetch()` runtime switch (re-arms/clears the
+  warm loop mid-play) + an **adaptive gate** that suspends prefetch — dropping every
+  standing download while a cheap tick watches for recovery — when (a) the host
+  reports a **metered/expensive network** (`setNetworkProfile`, lifts immediately
+  when cheap), (b) the **active playlist stops advancing** for `stallMs` (12 s
+  default; resumes after `resumeMs` = 60 s of clean advance — prefetch never
+  competes with playback), or (c) neighbor segments download **slower than
+  `minHeadroom`× realtime** (3× default, two thin samples — the pipe can't carry a
+  second stream). **Directional prefetch** (default on): once the viewer's surf
+  direction is known, only that side is warmed — half the standing cost for the
+  common CH+ CH+ CH+ pattern; menu jumps reset to both sides. Lifecycle is
+  observable via new `'zap-prefetch'` events.
+- **`uploadPolicy: 'reseed' | 'client-only'`** (boot option): `client-only` joins
+  feed/assets topics **unannounced** (`server: false`) — not discoverable, so
+  practically zero viewer-to-viewer upload by construction; documented trade-off is
+  one fewer re-seeder in the swarm.
+- **Worklet/IPC + RN binding**: `zap-prefetch-set` (persists the choice + applies
+  live) and `net-info` messages; `AliranBackend.setZapPrefetch()` /
+  `.setNetworkProfile()`; prefs reply carries `smoothZapping`; the boot handler
+  applies the persisted choice over the compiled default. App wires NetInfo's
+  `isConnectionExpensive` down automatically (new `@react-native-community/netinfo`
+  dep, defensively optional so stale builds don't crash).
+- **Docs**: new `docs/kb/viewer-bandwidth.md` with the measured numbers (idle
+  prewarm ≈ 5–6 KB/s per 10-channel lineup; watching ≈ bitrate ~2–3 Mbps; smooth
+  zapping ≈ +1 neighbor bitrate, halved by directional; upload = opportunistic
+  re-seeding; battery notes), SDK/RN README sections.
+- **Tests**: `test:sdk` extends the live harness with the runtime OFF↔ON switch
+  mid-play, metered suspend/lift, directional warm-set assertions, the stall
+  suspend + clean-run resume (mirror frozen and re-fed), and `client-only` playing
+  while joined `server:false` (default player asserted `server:true`) — full suite
+  PASS; client jest grows a SmoothZappingToggle suite (10/10 with the existing
+  suites), `tsc` clean; worklet bundle re-packs.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

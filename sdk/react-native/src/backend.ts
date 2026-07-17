@@ -48,10 +48,21 @@ export interface TuneConfig {
 // stream plays, keep the newest segment of the next/previous channels in curated
 // zap order replicated locally so a CH+/CH- zap starts from warm bytes. OFF by
 // default — unlike prewarm this costs STANDING BANDWIDTH (≈ each warmed neighbor's
-// bitrate while playing). true = { neighbors: 1, intervalMs: 3000 }.
+// bitrate while playing). Runtime-switchable via setZapPrefetch() (the "Smooth
+// zapping" toggle) and ADAPTIVE: the engine suspends the warm loop on a metered
+// network (setNetworkProfile), while the active stream stalls, or when the pipe
+// shows no headroom — and reports it via {type:'zap-prefetch'} messages.
 export interface ZapPrefetchConfig {
   neighbors?: number
   intervalMs?: number
+  /** Warm only the side of the viewer's last zap once known (default true). */
+  directional?: boolean
+  /** Suspend when the ACTIVE playlist stops advancing this long (default 12000). */
+  stallMs?: number
+  /** Clean-advance run required before a stall/thin suspension lifts (default 60000). */
+  resumeMs?: number
+  /** Required download speed vs realtime for neighbor segments (default 3). */
+  minHeadroom?: number
 }
 
 // Tuning for the engine's single Hyperswarm (see sdk/player.js normalizeSwarmOpts).
@@ -81,7 +92,14 @@ export type BackendMessage =
   // RAM restart); the engine re-resolved and swapped the served feed. url is the unchanged
   // localhost URL — remount the player to flush the stale playlist. See sdk/player.js.
   | { type: 'feed-changed'; streamId: string; feedKey: string; url: string }
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[] }
+  // Smooth-zapping lifecycle: {enabled} echoes a runtime toggle; {state} reports the
+  // adaptive gate pausing/resuming the neighbor warm loop (reason 'metered' = host
+  // said the network is expensive, 'stall' = the active stream is starving,
+  // 'thin' = neighbor downloads show the pipe has no headroom).
+  | { type: 'zap-prefetch'; enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }
+  // smoothZapping: the persisted "Smooth zapping" choice — null/absent when the user
+  // never set the toggle (the app's compiled default applies at boot).
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null }
 
 export interface StartOptions {
   panelPubKey: string
@@ -102,6 +120,10 @@ export interface StartOptions {
   /** Raise the engine swarm's connection budget (seed nodes / repeater-style hosts
    *  only — viewers keep the hyperswarm default; see SwarmConfig). */
   swarm?: SwarmConfig
+  /** 'reseed' (default): replicated blocks are served back to other viewers on
+   *  request. 'client-only': never announce on feed/assets topics — practically zero
+   *  viewer-to-viewer upload, at the cost of one fewer re-seeder in the swarm. */
+  uploadPolicy?: 'reseed' | 'client-only'
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
 }
@@ -126,6 +148,8 @@ export class AliranBackend {
   // first {type:'prefs'} reply — request with requestPrefs().
   creds: SavedCredentials | null = null
   favorites: string[] = []
+  /** Persisted "Smooth zapping" choice; null until the user first sets the toggle. */
+  smoothZapping: boolean | null = null
   prefsLoaded = false
 
   private worklet = new Worklet()
@@ -148,7 +172,7 @@ export class AliranBackend {
     this.worklet.start('/app.bundle', bytes as any)
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
-    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch, swarm: opts.swarm })
+    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch, swarm: opts.swarm, uploadPolicy: opts.uploadPolicy })
     const queued = this.pending; this.pending = []
     for (const m of queued) this.send(m)
   }
@@ -166,6 +190,14 @@ export class AliranBackend {
    *  escalation — see AliranVideo's stall ladder). The engine re-arms its tune
    *  watchdog, so the outcome is either playback resuming or a friendly error. */
   reconnect () { this.send({ type: 'reconnect' }) }
+
+  /** Runtime "Smooth zapping" toggle: enable/disable (or reconfigure) adjacent-channel
+   *  prefetch mid-play. Echoed back as {type:'zap-prefetch', enabled}. At boot, pass
+   *  the persisted preference via StartOptions.zapPrefetch instead. */
+  setZapPrefetch (v: boolean | ZapPrefetchConfig) { this.send({ type: 'zap-prefetch-set', zapPrefetch: v }) }
+  /** Host network profile (feed RN NetInfo changes down): expensive=true suspends
+   *  zap prefetch immediately; false lifts the suspension on the next tick. */
+  setNetworkProfile (expensive: boolean) { this.send({ type: 'net-info', expensive }) }
 
   /** Ask the worklet for saved credentials + favorites; answers as {type:'prefs'}. */
   requestPrefs () { this.send({ type: 'prefs-get' }) }
@@ -198,7 +230,7 @@ export class AliranBackend {
         const msg = JSON.parse(line) as BackendMessage
         // Never log the raw 'prefs' line — it can carry the saved password.
         if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.prefsLoaded = true }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.prefsLoaded = true }
         if (msg.type === 'streams') this.streams = msg.streams
         if (msg.type === 'port') {
           this.port = msg.port ?? null

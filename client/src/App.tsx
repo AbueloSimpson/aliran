@@ -37,6 +37,12 @@ export type RootStackParamList = {
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
 
+// Feed connection-cost changes to the engine so "Smooth zapping" auto-suspends on
+// metered networks (cellular / metered hotspots). Optional native module: a build
+// without it (or a stale APK) just never reports an expensive network.
+let NetInfo: { addEventListener: (fn: (s: any) => void) => () => void } | null = null
+try { NetInfo = require('@react-native-community/netinfo').default } catch { NetInfo = null }
+
 export default function App () {
   const [ready, setReady] = useState(false)
 
@@ -46,7 +52,11 @@ export default function App () {
       if (m.type === 'ready') setReady(true)
     })
     backend.boot(service.panelPubKey, service.hybrid)
-    return off
+    let offNet: (() => void) | undefined
+    try {
+      offNet = NetInfo?.addEventListener((s) => backend.setNetworkProfile(!!s?.details?.isConnectionExpensive))
+    } catch { /* native module absent (stale APK / jest) — expensive-network gate just stays off */ }
+    return () => { off(); if (offNet) offNet() }
   }, [])
 
   return (

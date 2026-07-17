@@ -31,6 +31,10 @@
 //                        the SDK re-resolved and swapped the served feed WITHOUT a new
 //                        resolve() call. url is the unchanged localhost URL — the host
 //                        just reloads the player to flush the stale playlist/segments.
+//   'zap-prefetch' ({enabled} | {state,reason})  smooth-zapping lifecycle: {enabled}
+//                        echoes setZapPrefetch(); {state:'suspended',reason} /
+//                        {state:'resumed'} when the adaptive gate pauses/resumes the
+//                        neighbor warm loop (reason 'metered'|'stall'|'thin').
 //
 // Tune self-heal (p2p-only): pass `tune` { timeoutMs, relookupMinMs, relookupMaxMs } to
 // bound a tune. While the active feed's playlist is not ADVANCING-and-SERVABLE
@@ -44,7 +48,13 @@
 // availability wait + block-progressive bodies + live-edge read-ahead. `prewarm`
 // (below) makes first zaps warm; `zapPrefetch` (OFF by default — standing
 // bandwidth) additionally keeps the adjacent channels' newest segment replicated
-// while watching, see normalizeZapPrefetch().
+// while watching, see normalizeZapPrefetch(). It is runtime-switchable
+// (setZapPrefetch — the app's "Smooth zapping" toggle) and ADAPTIVE: an internal
+// gate suspends the warm loop on a metered network (setNetworkProfile), while the
+// ACTIVE stream stalls, or when a neighbor download shows the pipe has no headroom
+// — prefetch must never compete with playback. `uploadPolicy: 'client-only'` joins
+// feed/assets topics without announcing (server:false), for constrained viewers
+// that should not re-seed to others.
 //
 // Hybrid CDN<->P2P (S10b): pass `hybrid` config to choose the active source per play.
 // The SDK never decodes video — it exposes the CURRENT source URL + health signals and
@@ -151,13 +161,50 @@ function normalizePrewarm (v) {
 // zap starts from warm bytes instead of a cold demand-paged fetch. OFF by default —
 // unlike prewarm (connections only, ~free), this costs STANDING BANDWIDTH roughly
 // equal to each warmed neighbor's bitrate for as long as a stream is playing.
-// true = { neighbors: 1, intervalMs: 3000 }; an object overrides those knobs.
+// true = defaults below; an object overrides them:
+//   neighbors    1      how many channels each side of the active one to warm
+//   intervalMs   3000   warm-loop tick
+//   directional  true   once the viewer's zap DIRECTION is known (an adjacent-channel
+//                       move), warm only that side — halves the cost for the common
+//                       channel-surfing pattern; a menu jump resets to both sides
+//   stallMs      12000  gate: active playlist silent this long = playback is starving
+//                       -> suspend (3 live segment periods; never compete with playback)
+//   resumeMs     60000  gate: how long the active playlist must advance cleanly before
+//                       a stall/thin suspension lifts
+//   minHeadroom  3      gate: a neighbor segment must download at >= minHeadroom x
+//                       realtime, else the pipe is too thin to share -> suspend
 function normalizeZapPrefetch (v) {
   if (v === false || v == null) return null
-  const cfg = { neighbors: 1, intervalMs: 3000, ...(v === true ? {} : v) }
+  const cfg = { neighbors: 1, intervalMs: 3000, directional: true, stallMs: 12000, resumeMs: 60000, minHeadroom: 3, ...(v === true ? {} : v) }
   if (!Number.isInteger(cfg.neighbors) || cfg.neighbors < 1) throw new Error('zapPrefetch.neighbors must be a positive integer')
   if (!(Number(cfg.intervalMs) > 0)) throw new Error('zapPrefetch.intervalMs must be a positive number of milliseconds')
+  cfg.directional = cfg.directional !== false
+  if (!(Number(cfg.stallMs) > 0)) throw new Error('zapPrefetch.stallMs must be a positive number of milliseconds')
+  if (!(Number(cfg.resumeMs) >= 0)) throw new Error('zapPrefetch.resumeMs must be a non-negative number of milliseconds')
+  if (!(Number(cfg.minHeadroom) > 0)) throw new Error('zapPrefetch.minHeadroom must be a positive number')
   return cfg
+}
+
+// uploadPolicy: whether this viewer re-seeds what it replicates. 'reseed' (default)
+// joins feed/assets topics server:true — replicated blocks are served back to other
+// viewers on request (opportunistic, demand-driven upload). 'client-only' joins
+// server:false: the peer never announces on those topics, so other viewers cannot
+// discover it — practically zero viewer-to-viewer upload, at the swarm-wide cost of
+// one fewer re-seeder. Boot-time only (join mode is fixed when a topic is joined).
+function normalizeUploadPolicy (v) {
+  if (v == null) return 'reseed'
+  if (v !== 'reseed' && v !== 'client-only') throw new Error("uploadPolicy must be 'reseed' or 'client-only'")
+  return v
+}
+
+// Duration (ms) of a live playlist's NEWEST segment — the realtime baseline for the
+// prefetch headroom probe. EXTINF lines pair 1:1 with URIs, so the last one belongs
+// to the segment _warmNeighbor downloads; falls back to the Aliran default 4 s.
+function lastSegmentDurationMs (text) {
+  let d = null
+  const re = /#EXTINF:([\d.]+)/g
+  for (let m; (m = re.exec(text));) d = Number(m[1])
+  return d > 0 ? d * 1000 : 4000
 }
 
 // swarm: tuning for the ONE Hyperswarm the engine runs (panel + every feed share it).
@@ -180,7 +227,7 @@ function normalizeSwarmOpts (v) {
 }
 
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch, swarm } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._hybrid = normalizeHybrid(hybrid)
@@ -188,8 +235,12 @@ export class AliranPlayer extends Emitter {
     this._tune = normalizeTune(tune)
     this._zapPrefetch = normalizeZapPrefetch(zapPrefetch)
     this._swarmOpts = normalizeSwarmOpts(swarm)
+    this._uploadPolicy = normalizeUploadPolicy(uploadPolicy)
     this._zapTimer = null // adjacent-channel warm loop (only when zapPrefetch is on)
     this._zapRanges = new Map() // streamId -> { path, range } — newest warmed segment per neighbor
+    this._zapGate = null // adaptive-gate state while the warm loop runs (see _zapTick)
+    this._zapDir = 0 // last observed zap direction: 1 up, -1 down, 0 unknown -> warm both sides
+    this._netExpensive = false // host-reported metered/expensive network (setNetworkProfile)
     this._active = null // current play state: { streamId, feedKey, localUrl, cdnUrl, source, lastSig, lastAdvance }
     this._watchTimer = null // P2P stall watchdog (while source === 'p2p')
     this._probeTimer = null // P2P recovery probe (while source === 'cdn')
@@ -270,38 +321,120 @@ export class AliranPlayer extends Emitter {
 
   _clearZapPrefetch () {
     if (this._zapTimer) { clearInterval(this._zapTimer); this._zapTimer = null }
+    this._dropZapRanges()
+    this._zapGate = null
+  }
+
+  // Drop every standing warm range — the bandwidth-spending half of prefetch —
+  // without stopping the loop. A gate suspension calls this so neighbor bytes stop
+  // flowing immediately while the tick stays alive to observe recovery.
+  _dropZapRanges () {
     for (const { range } of this._zapRanges.values()) { if (range) { try { range.destroy() } catch {} } }
     this._zapRanges.clear()
+  }
+
+  // Runtime switch for the app's "Smooth zapping" toggle: swap the config and re-arm
+  // (or clear) the warm loop mid-play. Safe with no active play — the next resolve()
+  // picks the new setting up.
+  setZapPrefetch (v) {
+    this._zapPrefetch = normalizeZapPrefetch(v)
+    if (this._zapPrefetch && this._active) this._startZapPrefetch()
+    else this._clearZapPrefetch()
+    this.emit('zap-prefetch', { enabled: !!this._zapPrefetch })
+  }
+
+  // Host-supplied network profile (RN NetInfo etc.). On a metered/expensive network
+  // the gate suspends prefetch immediately; prewarm connections stay (those are
+  // ~free) — only the standing segment replication stops. Lifts as soon as the host
+  // reports the network cheap again (no clean-run wait: it is not a health signal).
+  setNetworkProfile ({ expensive } = {}) {
+    this._netExpensive = !!expensive
+    if (this._netExpensive && this._zapTimer) this._suspendZap('metered')
+  }
+
+  _suspendZap (reason) {
+    const g = this._zapGate
+    if (!g) return
+    g.cleanSince = null
+    if (g.suspended) { g.reason = reason; return } // already paused — just track why
+    g.suspended = true
+    g.reason = reason
+    this._dropZapRanges()
+    this.emit('zap-prefetch', { state: 'suspended', reason })
   }
 
   // While a stream plays, keep the NEWEST segment of the curated-order neighbors
   // replicated so a zap to them starts warm. Re-armed on every resolve() (the
   // neighbor set moves with the active channel), cleared on stop(). Best-effort:
   // a failed warm just retries on the next tick.
+  //
+  // ADAPTIVE: prefetch must never compete with the playing stream or surprise a
+  // viewer on a paid connection, so every tick runs the gate first (see _zapTick):
+  //   'metered' — host reported an expensive network (setNetworkProfile);
+  //   'stall'   — the ACTIVE playlist stopped advancing for stallMs;
+  //   'thin'    — neighbor segments download at < minHeadroom × realtime (headroom
+  //               probe in _warmNeighbor), so the pipe cannot carry a second stream.
+  // stall/thin hold until the active playlist advances cleanly for resumeMs;
+  // metered lifts the moment the network is cheap again.
   _startZapPrefetch () {
     this._clearZapPrefetch()
     const cfg = this._zapPrefetch
     if (!cfg || this._hybrid.mode === 'cdn-only') return
     const a = this._active
     if (!a) return
+    const now = Date.now()
+    this._zapGate = { suspended: false, reason: null, lastSig: null, lastAdvance: now, cleanSince: now, thinStreak: 0 }
     let busy = false
     const timer = setInterval(() => {
       if (busy || this._zapTimer !== timer || this._active !== a) return
       busy = true
-      this._warmNeighbors(a).catch(() => {}).then(() => { busy = false })
+      this._zapTick(a).catch(() => {}).then(() => { busy = false })
     }, cfg.intervalMs)
     this._zapTimer = timer
-    this._warmNeighbors(a).catch(() => {}) // first warm now, not one interval late
+    this._zapTick(a).catch(() => {}) // first tick now, not one interval late
+  }
+
+  async _zapTick (a) {
+    const cfg = this._zapPrefetch
+    const g = this._zapGate
+    if (!cfg || !g || this._active !== a) return
+    if (this._netExpensive) { this._suspendZap('metered'); return }
+    // Active-stream health: a live playlist rewrites every few seconds, so its
+    // signature advancing is the SDK-side proof the viewer's own stream is fed.
+    const now = Date.now()
+    const sig = await this._boundedSig(900)
+    if (sig !== null && sig !== g.lastSig) {
+      g.lastSig = sig
+      g.lastAdvance = now
+      if (!g.cleanSince) g.cleanSince = now
+    } else if (now - g.lastAdvance > cfg.stallMs) {
+      this._suspendZap('stall')
+      return
+    }
+    if (g.suspended) {
+      // 'metered' was handled above, so a suspension here is stall/thin: require a
+      // clean advance run of resumeMs before spending bandwidth again.
+      if (g.reason !== 'metered' && (!g.cleanSince || now - g.cleanSince < cfg.resumeMs)) return
+      g.suspended = false
+      g.reason = null
+      g.thinStreak = 0
+      this.emit('zap-prefetch', { state: 'resumed' })
+    }
+    await this._warmNeighbors(a)
   }
 
   async _warmNeighbors (a) {
+    const cfg = this._zapPrefetch
     const ids = this._curatedIds()
     const i = ids.indexOf(a.streamId)
     if (i < 0 || ids.length < 2) return
+    // Directional: once the viewer's surf direction is known, warm only that side
+    // (the channel they came FROM is still warm in the feed cache anyway).
+    const dir = cfg.directional ? this._zapDir : 0
     const wanted = new Set()
-    for (let k = 1; k <= this._zapPrefetch.neighbors; k++) {
-      wanted.add(ids[(i + k) % ids.length])
-      wanted.add(ids[(i - k + ids.length) % ids.length])
+    for (let k = 1; k <= cfg.neighbors; k++) {
+      if (dir >= 0) wanted.add(ids[(i + k) % ids.length])
+      if (dir <= 0) wanted.add(ids[(i - k + ids.length) % ids.length])
     }
     wanted.delete(a.streamId)
     // Drop warm state for channels that are no longer neighbors (we zapped away).
@@ -330,7 +463,8 @@ export class AliranPlayer extends Emitter {
       new Promise((resolve) => { timer = setTimeout(() => resolve(null), 2500) })
     ]).catch(() => null).finally(() => clearTimeout(timer))
     if (!buf) return
-    const uris = playlistUris(b4a.toString(buf))
+    const text = b4a.toString(buf)
+    const uris = playlistUris(text)
     const path = uris[uris.length - 1]
     if (!path) return
     const prev = this._zapRanges.get(id)
@@ -344,7 +478,24 @@ export class AliranPlayer extends Emitter {
     const range = blobs.core.download({ start: blob.blockOffset, end: blob.blockOffset + blob.blockLength })
     const cur = this._zapRanges.get(id)
     if (cur && cur.path === path) cur.range = range
-    else { try { range.destroy() } catch {} }
+    else { try { range.destroy() } catch {}; return }
+    // Headroom probe: time the segment's arrival. One segment plays for durMs, so
+    // downloading it slower than durMs/minHeadroom means the pipe cannot carry a
+    // second stream comfortably — two thin samples in a row suspend prefetch via
+    // the gate. An already-local blob completes instantly and resets the streak;
+    // a destroyed range (suspension, zap-away) rejects and is ignored.
+    const durMs = lastSegmentDurationMs(text)
+    const t0 = Date.now()
+    range.done().then(() => {
+      const g = this._zapGate
+      const cfg = this._zapPrefetch
+      if (!g || !cfg || this._zapRanges.get(id) !== cur) return
+      if (Date.now() - t0 > durMs / cfg.minHeadroom) {
+        if (++g.thinStreak >= 2) this._suspendZap('thin')
+      } else {
+        g.thinStreak = 0
+      }
+    }).catch(() => {})
   }
 
   // Last display list from a successful login.
@@ -367,6 +518,17 @@ export class AliranPlayer extends Emitter {
     // surface that honestly instead of leaking a key-length error from hypercore.
     if (this._hybrid.mode !== 'cdn-only' && (!feedKey || !keys.encryptionKey)) {
       throw new Error('channel is not broadcasting right now')
+    }
+    // Which way is the viewer surfing? An adjacent-channel move sets the prefetch
+    // direction (directional zapPrefetch warms only that side); a non-adjacent jump
+    // (menu pick) resets to both-sided. Tracked before _active moves on.
+    const prevId = this._active && this._active.streamId
+    if (prevId && prevId !== streamId) {
+      const ids = this._curatedIds()
+      const from = ids.indexOf(prevId)
+      const to = ids.indexOf(streamId)
+      const d = from >= 0 && to >= 0 ? (to - from + ids.length) % ids.length : 0
+      this._zapDir = d === 1 ? 1 : d === ids.length - 1 ? -1 : 0
     }
     const cfg = this._hybrid
     this._clearHybridTimers()
@@ -468,7 +630,8 @@ export class AliranPlayer extends Emitter {
           await d.ready()
           return d
         })
-        const discovery = this._swarm.join(drive.discoveryKey, { server: true, client: true }) // pull + re-seed
+        // pull always; announce (re-seed to other viewers) only under 'reseed' policy
+        const discovery = this._swarm.join(drive.discoveryKey, { server: this._uploadPolicy !== 'client-only', client: true })
         return { drive, discovery }
       })()
       this._feeds.set(cacheKey, feed)
@@ -542,6 +705,7 @@ export class AliranPlayer extends Emitter {
     this._clearTuneTimer()
     this._clearZapPrefetch()
     this._active = null
+    this._zapDir = 0
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const server = this._server; this._server = null
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
@@ -1117,7 +1281,7 @@ export class AliranPlayer extends Emitter {
     if (!meta || !meta.value.key) return
     this._assetsDrive = new Hyperdrive(this._store.namespace('assets-replica'), b4a.from(meta.value.key, 'hex'))
     await this._assetsDrive.ready()
-    this._swarm.join(this._assetsDrive.discoveryKey, { client: true, server: true })
+    this._swarm.join(this._assetsDrive.discoveryKey, { client: true, server: this._uploadPolicy !== 'client-only' })
   }
 
   // One persistent localhost server for the whole session: /assets/* is served from
