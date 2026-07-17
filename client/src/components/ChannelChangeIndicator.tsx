@@ -3,12 +3,16 @@
 // the P2P join / live-edge replicate looked like a freeze. Now the corner shows a
 // spinner + a percentage that climbs 0->100%.
 //
-// The percentage is an OPTIMISTIC ramp (eases toward ~90% over a couple of seconds) that
-// SNAPS to 100% the instant the new feed is actually ready (active -> false, driven by
-// AliranVideo's onBuffering/onReadyForDisplay). Live HLS exposes no honest mid-switch
-// buffer percentage, so the number is a progress affordance whose ONLY hard-truthful
-// point is the end: 100% == first frame ready. Purely presentational — pointerEvents
-// none, so it never intercepts a tap meant for the video.
+// The percentage is an OPTIMISTIC ramp (a quick attack to ~45%, then a slow crawl
+// toward ~85% budgeted for slow-starting feeds) that SNAPS to 100% the instant the new
+// feed is actually ready (active -> false, driven by <AliranVideo>'s onTune 'playing').
+// Live HLS exposes no honest mid-switch buffer percentage, so the number is a progress
+// affordance whose ONLY hard-truthful point is the end: 100% == first real playback of
+// THIS tune. While the SDK self-heals (onTune 'retune'/'reconnect') the label switches
+// to Retuning/Reconnecting and the percentage hides — a frozen "90%" over a reconnect
+// cycle read as a hang (S22 2026-07-16). The host resets the whole pill per tune by
+// keying it on the tune id. Purely presentational — pointerEvents none, so it never
+// intercepts a tap meant for the video.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native'
 import { formatChannelNumber } from '../catalog'
@@ -17,14 +21,25 @@ import { theme } from '../theme'
 const TICK_MS = 140
 const HOLD_MS = 450 // keep the completed bar up briefly so 100% is actually seen
 
+/** Mirrors <AliranVideo>'s tune phases: a plain tune vs the engine's self-heal cycle. */
+export type ChannelChangePhase = 'tuning' | 'retune' | 'reconnect'
+
+const LABELS: Record<ChannelChangePhase, string> = {
+  tuning: 'Tuning',
+  retune: 'Retuning',
+  reconnect: 'Reconnecting'
+}
+
 export interface ChannelChangeIndicatorProps {
-  /** True from the moment a switch starts until the new feed's first frame is ready. */
+  /** True from the moment a switch starts until the new feed's first real playback. */
   active: boolean
+  /** What the switch is doing right now (default 'tuning'); does not reset progress. */
+  phase?: ChannelChangePhase
   number?: number
   title?: string
 }
 
-export function ChannelChangeIndicator ({ active, number, title }: ChannelChangeIndicatorProps) {
+export function ChannelChangeIndicator ({ active, phase = 'tuning', number, title }: ChannelChangeIndicatorProps) {
   const [progress, setProgress] = useState(0)
   const [visible, setVisible] = useState(false)
   const shown = useRef(false)
@@ -39,8 +54,11 @@ export function ChannelChangeIndicator ({ active, number, title }: ChannelChange
       setVisible(true)
       setProgress(8)
       stopRamp()
-      // Ease toward 90% and never quite reach it — the real "done" comes from active->false.
-      ramp.current = setInterval(() => setProgress(p => p + (90 - p) * 0.18), TICK_MS)
+      // Two-regime ease and never quite done — the real "done" comes from active->false.
+      // Quick attack so a normal zap visibly moves (~45% in about a second), then a slow
+      // crawl budgeted for slow-starting feeds (~80% at 30 s, asymptote 85) instead of
+      // parking at 90% within seconds and sitting there for a minute.
+      ramp.current = setInterval(() => setProgress(p => p + (85 - p) * (p < 45 ? 0.09 : 0.012)), TICK_MS)
     } else if (shown.current) {
       stopRamp()
       setProgress(100)
@@ -56,12 +74,14 @@ export function ChannelChangeIndicator ({ active, number, title }: ChannelChange
 
   if (!visible) return null
   const pct = Math.min(100, Math.round(progress))
+  // Mid self-heal the percentage is meaningless — the label carries the state instead.
+  const showPct = phase === 'tuning' || !active
   return (
     <View style={styles.wrap} pointerEvents="none">
       <View style={styles.row}>
         <ActivityIndicator size="small" color={theme.colors.accent} />
-        <Text style={styles.label}>Tuning {formatChannelNumber(number)}</Text>
-        <Text style={styles.pct}>{pct}%</Text>
+        <Text style={styles.label}>{LABELS[phase]} {formatChannelNumber(number)}</Text>
+        {showPct && <Text style={styles.pct}>{pct}%</Text>}
       </View>
       {!!title && <Text style={styles.title} numberOfLines={1}>{title}</Text>}
       <View style={styles.track}><View style={[styles.fill, { width: `${pct}%` }]} /></View>

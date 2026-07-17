@@ -26,14 +26,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { AliranVideo } from '@aliran/react-native'
+import { AliranVideo, type TuneEvent } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
 import { channelNumbers, groupByCategory, pickHero, sortByCuration } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
-import { ChannelChangeIndicator } from '../components/ChannelChangeIndicator'
+import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/ChannelChangeIndicator'
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { SectionLoading } from '../components/SectionLoading'
 import { theme } from '../theme'
@@ -70,10 +70,12 @@ export function LiveScreen ({ route }: Props) {
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
-  // True from the moment a zap/select (or a fresh entry) starts until the new feed's
-  // first frame is ready — drives the top-right tuning indicator. Set on channel change;
-  // cleared by AliranVideo.onBuffering(false)/onReadyForDisplay (or on a hard error).
-  const [switching, setSwitching] = useState(false)
+  // The top-right tuning indicator, driven SOLELY by <AliranVideo>'s onTune lifecycle
+  // (single source of truth — the SDK knows when a tune starts, self-heals, and truly
+  // plays; raw player events also fire for the PREVIOUS channel, which stuck/killed the
+  // pill on the S22). id keys the pill so every tune replaces it atomically at 0%;
+  // active flips false on 'playing' (snap to 100% + hold); null = no pill (error UI).
+  const [tuneUI, setTuneUI] = useState<{ id: number; phase: ChannelChangePhase; active: boolean } | null>(null)
   const [now, setNow] = useState(() => new Date())
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -95,11 +97,6 @@ export function LiveScreen ({ route }: Props) {
   }, [])
 
   useEffect(() => clearMenuIdle, [])
-
-  // Entering Live (a fresh mount) always re-tunes the current feed — surface the tuning
-  // indicator until the first frame lands, same as a zap. No-op on a cold entry with no
-  // channel yet (the streams effect below arms it when it picks the initial channel).
-  useEffect(() => { if (playingIdRef.current) setSwitching(true) }, [])
 
   // Remember the channel across a trip out to the Menu (see lastStreamId).
   useEffect(() => { if (playingId) lastStreamId = playingId }, [playingId])
@@ -126,10 +123,10 @@ export function LiveScreen ({ route }: Props) {
   const list = activeCategory ? groups[activeCategory] : []
   const playing = streams.find(s => s.id === playingId) ?? null
 
-  // First streams push after a cold navigation: start the hero channel (and arm the
-  // tuning indicator, since the video is about to mount and replicate the feed).
+  // First streams push after a cold navigation: start the hero channel (the tuning
+  // indicator arms itself — mounting <AliranVideo> fires onTune 'start').
   useEffect(() => {
-    if (!playingId && streams.length) { setPlayingId(pickHero(streams)?.id ?? streams[0].id); setSwitching(true) }
+    if (!playingId && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
@@ -138,9 +135,19 @@ export function LiveScreen ({ route }: Props) {
       setPlayingId(s.id)
       setPeers(null)
       setError(null)
-      setSwitching(true) // begin the top-right tuning indicator; cleared when the feed is ready
+      // The tuning indicator follows via onTune 'start' (the streamId prop change).
     }
     if (collapse) setOverlay('none')
+  }
+
+  // Tune lifecycle → tuning pill. 'start' shows a FRESH pill (the id keys the component,
+  // so a tune that begins while the previous pill is still up replaces it atomically at
+  // 0% — no inherited progress); 'retune'/'reconnect' relabel it while the SDK
+  // self-heals; 'playing' — the first real playback of the CURRENT tune, edge-proof
+  // against mid-tune remounts — completes it (snap to 100%, brief hold, hide).
+  function onTune (e: TuneEvent) {
+    if (e.phase === 'playing') setTuneUI(t => (t && t.id === e.id ? { ...t, active: false } : t))
+    else setTuneUI({ id: e.id, phase: e.phase === 'start' ? 'tuning' : e.phase, active: true })
   }
 
   function clearMenuIdle () { if (menuIdle.current) { clearTimeout(menuIdle.current); menuIdle.current = null } }
@@ -196,12 +203,10 @@ export function LiveScreen ({ route }: Props) {
           onFallback={() => setSource('cdn')}
           onSourceChanged={({ source: s }) => setSource(s)}
           onPeers={setPeers}
-          onBuffering={(b) => { if (!b) setSwitching(false) }} // first frame ready ends the tune
-          // Live-edge freeze self-heal: the live window slid past the playhead (no error
-          // event exists for that) and AliranVideo is remounting onto a fresh playlist
-          // load — surface it like a tune instead of a silently frozen frame.
-          onStall={() => { console.log('[live] stall resync', playingIdRef.current); setSwitching(true) }}
-          onError={(msg) => { setError(msg); setSwitching(false) }}
+          onTune={onTune}
+          // Live-edge freeze self-heal (log only — onTune 'start' re-arms the pill).
+          onStall={() => console.log('[live] stall resync', playingIdRef.current)}
+          onError={(msg) => { setError(msg); setTuneUI(null) }} // pill hands off to the error UI
         />
       )}
 
@@ -280,9 +285,17 @@ export function LiveScreen ({ route }: Props) {
         </View>
       )}
 
-      {/* Top-right tuning indicator — self-hides when not switching; pointerEvents none so
-          it never intercepts a tap meant for the video/bottom menu. */}
-      <ChannelChangeIndicator active={switching} number={playing ? numbers.get(playing.id) : undefined} title={playing?.title} />
+      {/* Top-right tuning indicator — keyed by tune id so every tune starts a fresh pill;
+          pointerEvents none so it never intercepts a tap meant for the video/bottom menu. */}
+      {tuneUI && (
+        <ChannelChangeIndicator
+          key={tuneUI.id}
+          active={tuneUI.active}
+          phase={tuneUI.phase}
+          number={playing ? numbers.get(playing.id) : undefined}
+          title={playing?.title}
+        />
+      )}
 
     </View>
   )
