@@ -70,6 +70,30 @@ Long-running dev panel/broadcaster processes wedge silently:
   build), restart the broadcaster. Either way playback is unaffected: running feeds
   keep streaming; only catalog liveness/registration lags.
 
+## Control API dead + all viewers frozen after a few login attempts
+
+- **Symptom (pre-fix builds):** a handful of `POST /api/login` attempts against the
+  broadcaster control API — wrong passwords included — and the whole broadcaster
+  stops: control API times out, swarm replication stalls (every viewer freezes into
+  the tune-timeout error), and it never recovers on its own. Observed in production
+  2026-07-16 on a 1 GB host deep in swap: 4-5 attempts = 25+ minutes dead, container
+  restart required.
+- **Cause:** Argon2id password verification is memory-hard (64 MiB per verify at the
+  default cost) and ran synchronously on the node event loop. The login throttle
+  counts attempts per window but doesn't stop them queueing, so each verify blocked
+  the loop back-to-back — and on a swap-thrashing box one verify grinds for minutes.
+- **Fix:** none needed on current builds. Verification runs in a worker thread,
+  strictly one at a time: a concurrent login is rejected `503` immediately, and a
+  verify that outlives its budget (`loginVerifyTimeoutMs`, default 30 s) fails `503`
+  with the worker terminated and respawned. Media and the rest of the control API
+  stay responsive throughout (regression: `npm run test:login-flood`). On a pre-fix
+  build: restart the broadcaster container and keep the control port firewalled to
+  localhost/TLS-proxy only (its default binding).
+- **Ops note:** repeated `503` on login means verifies are being rejected or timing
+  out — on a small host that's your swap-pressure alarm; check RAM before blaming
+  auth. Lower `ARGON2_MEM_KIB` for boxes this tight (it guards a localhost-only
+  admin API; existing admins keep their recorded cost until the password is rotated).
+
 ## Identifying which process is which
 
 The panel and broadcaster both run as `node src/index.js` — the command line alone

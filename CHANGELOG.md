@@ -744,6 +744,34 @@ error**. Two compounding causes, both fixed in `sdk/player.js`:
   socket destroyed → the live edge **resumes** with no friendly error and no app
   restart. KB: `docs/kb/playback.md` updated.
 
+### Fix: a login flood can no longer freeze the broadcaster — Argon2id off the event loop
+Production incident (2026-07-16 ~20:30, 1 GB VPS ~800 MB into swap): 4-5 `POST
+/api/login` attempts against the broadcaster control API blocked the node event loop
+for **25+ minutes** — control API dead (HTTP timeouts), swarm replication stalled
+(every viewer froze into the friendly tune-timeout error), no self-recovery; the
+container had to be restarted. Argon2id verification is memory-hard (64 MiB per
+verify at the default cost) and ran **synchronously on the main thread**; the login
+throttle counts a fixed window (10/15 min) but doesn't stop attempts queueing, so
+each swap-thrashed verify ground for minutes back-to-back. Fixed in
+`broadcaster/src/control-auth.js` + `control-server.js`:
+
+- **Worker-thread verify** (`makeAdminVerifier` + new `control-verify-worker.js`):
+  the grind runs off the loop — media, replication, and the rest of the control API
+  keep answering regardless of Argon2 cost or swap pressure. Unknown usernames still
+  cost equal work (timing doesn't confirm admin names).
+- **Single-flight with immediate rejection:** one verify in flight, ever; a
+  concurrent login gets **`503` now** instead of queueing behind the grind.
+- **Verify timeout** (`loginVerifyTimeoutMs`, default 30 s): a verify that outlives
+  it fails `503` and its worker is terminated + respawned — a thrashing box keeps
+  serving media even while logins are temporarily impossible.
+- **Regression test** `npm run test:login-flood` (`tools/e2e-login-flood-test.mjs`):
+  floods `/api/login` at incident-scale cost (256 MiB × 6 passes) while a channel
+  streams, asserting `/api/status` stays fast throughout (25 ms max observed; the
+  pre-fix sync path measured **6.3 s blocked** and zero rejections), the concurrent
+  bulk 503s immediately, the channel rides it out, and the timeout path self-heals.
+  KB: `docs/kb/operator.md`. Note: the panel's admin login (`panel/src/ops.js
+  verifyAdmin`) still uses the sync path — same fix pending there.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
