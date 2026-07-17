@@ -744,6 +744,44 @@ error**. Two compounding causes, both fixed in `sdk/player.js`:
   socket destroyed → the live edge **resumes** with no friendly error and no app
   restart. KB: `docs/kb/playback.md` updated.
 
+### Zap latency: shared progressive serving core + availability wait + start-buffer tuning + optional zap prefetch
+Real-world zaps against the VPS ran ~3–5 s (and slow-starting pull feeds took 60–113 s
+to first play) while LAN zaps were sub-second. Profiling the serve path showed the
+byte pipeline was **already block-progressive** (hyperdrive `createReadStream` resolves
+64 KB blocks as they replicate — first HTTP byte lands while a 1 MB segment's tail is
+still in flight); the real costs were the **404 → 2.5 s player-retry quantization**
+while the playlist/first segments replicate, ExoPlayer's **~2.5 s start buffer**, and
+**demand-paged segment replication** serialized against the player's sequential fetch
+pattern. Four changes (`sdk/serve.js` is new — one serving core for the SDK engine,
+the Bare worklet, and the desktop tools via `tools/lib/serve-drive.js`):
+
+- **Availability wait:** a media path not yet in the replica is now *held* (polling,
+  bounded at 6 s — under ExoPlayer's 8 s read timeout) and served the moment its entry
+  lands, instead of 404ing into the player's 2.5 s retry remount. A genuinely missing
+  path still 404s after the bound; poster/art misses (`/assets/*`) 404 immediately.
+- **Live-edge read-ahead:** serving a playlist fire-and-forgets a *parallel* blob
+  download of its newest 3 segments, overlapping replication with the player's
+  sequential requests (and sidestepping per-block round-trips on the read path).
+  Superseded downloads are destroyed so rotated-out segments can't strand a range.
+- **Start-buffer tuning (`<AliranVideo>`):** ExoPlayer now starts at **1 s** buffered
+  (`bufferForPlaybackMs`, was ~2.5 s; 1.5 s after a rebuffer) — every segment starts on
+  a keyframe, and the stall-resync → transport-teardown self-heal ladder is the net
+  for the slightly higher rebuffer risk. Hosts override via the new `bufferConfig`
+  prop (merged over the defaults, delivered as `source.bufferConfig`).
+- **Adjacent-channel zap prefetch (`zapPrefetch`, OFF by default):** while a stream
+  plays, keep the *newest segment* of the next/previous channels in curated zap order
+  replicated locally, so CH+/CH− starts from warm bytes. Unlike `prewarm` (connections
+  only, ~free) this costs **standing bandwidth** ≈ each warmed neighbor's bitrate;
+  `true` = `{ neighbors: 1, intervalMs: 3000 }`. Plumbed through the worklet IPC and
+  the RN binding (`StartOptions.zapPrefetch`); the app keeps it off.
+- **Tests:** new `npm run test:serve` (`tools/serve-progressive-test.mjs`) — a
+  deterministic byte-budget replication gate proves first bytes serve **while the
+  blob tail is provably unreplicated**, the availability wait turns a pre-replication
+  GET into a 200 (and misses still 404), Range math is exact (206/416), and a playlist
+  GET read-aheads its newest segments with no segment request. `test:sdk`,
+  `test:stream`, `test:retention` all green. KB: zap-latency lore in
+  `docs/kb/playback.md` + `docs/kb/feed-buffer.md`.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.
