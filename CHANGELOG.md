@@ -949,6 +949,26 @@ Groundwork for the keyless repeater appliance (regional super-peers that mirror
   dashboard-managed fleets; locality pinning (panel-published repeater addresses
   as preferred peers).
 
+### Fix: remote acceptance always ends with a verdict — per-channel deadline + fresh-resolve retry (verified live)
+- `tools/acceptance-remote.mjs` could hang forever on ONE wedged tune: the localhost
+  progressive server holds playlist/segment requests until content exists, and the
+  poll loop's clock only ticked *between* polls (the segment fetch had no bound at
+  all). Observed twice against the live VPS: 5/6 channels validated in ~15 s, then
+  the run sat 25+ minutes on the last one.
+- Every per-channel check now runs under a hard deadline (`--deadline`, default
+  `min(90, --timeout)` s). On expiry it retries ONCE with a fresh `resolve()` —
+  which re-reads the catalog feedKey and re-arms the SDK tune self-heal — then
+  reports a per-channel FAIL. `connect()` is bounded too (60 s), and a wedged
+  `player.stop()` can no longer hang teardown. Output format and exit codes are
+  unchanged (0 iff every expected-live channel validates).
+- Each channel's ffprobe sample now lands in its own temp dir (all concurrent
+  checks previously wrote `probe.ts` to whichever temp dir was created last).
+- Verified against the live VPS: `--deadline 1` forces expiry → retry → per-channel
+  FAIL, exit 1, no hang; a default run then hit the real wedge on 3/6 first tunes
+  and the fresh-resolve retry recovered ALL three in ~7 s → 6/6 PASS, exit 0.
+  A wedge that a fresh resolve clears immediately is more evidence for the
+  wedged-connection-reuse theory from the S20 rollout notes.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

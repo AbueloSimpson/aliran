@@ -7,11 +7,19 @@
 // double as N concurrent simulated viewers.
 //
 //   node tools/acceptance-remote.mjs --panel <panelPubKeyHex> --user demo --pass '…' \
-//        [--streams ch1,ch2] [--expect-live ch1] [--expect-off ch2] [--timeout 120]
+//        [--streams ch1,ch2] [--expect-live ch1] [--expect-off ch2] [--timeout 120] [--deadline 90]
 //
 // Env fallbacks: PANEL_PUBKEY, ALIRAN_USER, ALIRAN_PASS.
 // Defaults: every stream the login returns; per-stream playback timeout 120 s.
 // Exit 0 iff every checked stream PASSes (and every --expect-* assertion holds).
+//
+// Every per-channel check runs under a hard deadline (--deadline, default
+// min(90, timeout) s): the localhost progressive server HOLDS requests until content
+// is available, so a wedged tune would otherwise park an httpGet — and with it the
+// whole run — forever (waitFor's clock only ticks between polls). On expiry the
+// check retries ONCE with a fresh resolve() (which re-reads the catalog feedKey and
+// re-arms the SDK tune self-heal), then reports a per-channel FAIL: the run always
+// ends with a verdict.
 //
 // Login retries while the DHT dials are local-only failures (no panel RPC is sent
 // before the socket exists), so the panel's login throttle sees ~1 real attempt per
@@ -30,6 +38,20 @@ async function waitFor (fn, ms, label) {
   const t = Date.now()
   while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v } catch {} await sleep(400) }
   throw new Error('timeout: ' + label)
+}
+// Hard bound on a promise that may never settle (held progressive-server requests).
+// The loser keeps running in the background; Promise.race keeps its rejection
+// handled, so it can't surface later as an unhandled-rejection crash.
+function withDeadline (promise, ms, label) {
+  let timer
+  const expiry = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const e = new Error(`deadline: no playable media within ${Math.round(ms / 1000)} s (${label})`)
+      e.isDeadline = true
+      reject(e)
+    }, ms)
+  })
+  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer))
 }
 function httpGet (port, p) {
   return new Promise((resolve, reject) => {
@@ -58,12 +80,13 @@ const panelPubKey = opts.panel || process.env.PANEL_PUBKEY
 const username = opts.user || process.env.ALIRAN_USER
 const password = opts.pass || process.env.ALIRAN_PASS
 const timeoutS = Number(opts.timeout || 120)
+const deadlineS = Number(opts.deadline || Math.min(90, timeoutS))
 const wantStreams = opts.streams ? String(opts.streams).split(',').map(s => s.trim()).filter(Boolean) : null
 const expectLive = opts['expect-live'] ? String(opts['expect-live']).split(',').map(s => s.trim()).filter(Boolean) : []
 const expectOff = opts['expect-off'] ? String(opts['expect-off']).split(',').map(s => s.trim()).filter(Boolean) : []
 
 if (!panelPubKey || !username || !password) {
-  console.error('usage: node tools/acceptance-remote.mjs --panel <panelPubKeyHex> --user <u> --pass <p> [--streams a,b] [--expect-live a] [--expect-off b] [--timeout 120]')
+  console.error('usage: node tools/acceptance-remote.mjs --panel <panelPubKeyHex> --user <u> --pass <p> [--streams a,b] [--expect-live a] [--expect-off b] [--timeout 120] [--deadline 90]')
   process.exit(2)
 }
 
@@ -71,7 +94,8 @@ const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
 const tempDirs = []
 const players = []
 async function cleanup () {
-  for (const p of players.reverse()) { try { await p.stop() } catch {} }
+  // A wedged player must not hang teardown either — bound each stop.
+  for (const p of players.reverse()) { try { await Promise.race([p.stop(), sleep(10000)]) } catch {} }
   for (const d of tempDirs) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
 }
 
@@ -83,12 +107,12 @@ async function connectAndLogin (label) {
   const peers = { max: 0 }
   player.on('peers', (n) => { peers.max = Math.max(peers.max, n) })
   player.on('error', () => {})
-  await player.connect()
+  await withDeadline(player.connect(), 60000, 'connect ' + label)
   const deadline = Date.now() + 90000
   while (true) {
     try {
       const streams = await player.login(username, password)
-      return { player, streams, peers }
+      return { player, streams, peers, dir }
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
       if (Date.now() > deadline) throw new Error('timeout: login via DHT (' + label + ')')
@@ -97,29 +121,44 @@ async function connectAndLogin (label) {
   }
 }
 
+// One playback attempt: resolve (fresh each call — re-reads the catalog feedKey and
+// re-arms the SDK tune watchdog), then playlist → segment → ffprobe. Any step may
+// block on a held progressive-server request; the caller bounds the whole attempt.
+async function playbackAttempt (player, dir, id) {
+  const { localUrl, port } = await player.resolve(id)
+  const playlist = await waitFor(async () => {
+    const r = await httpGet(port, '/index.m3u8')
+    return r.status === 200 && r.body.toString().includes('.ts') ? r.body.toString() : null
+  }, timeoutS * 1000, 'playlist for ' + id)
+  const segs = playlist.split('\n').filter(l => l.trim().endsWith('.ts'))
+  const seg = await httpGet(port, '/' + segs[segs.length - 1].trim())
+  if (seg.status !== 200 || seg.body.length === 0) throw new Error('segment fetch failed (' + seg.status + ')')
+  const segPath = path.join(dir, 'probe.ts')
+  fs.writeFileSync(segPath, seg.body)
+  const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', segPath], { encoding: 'utf8' })
+  const codecs = (probe.stdout || '').trim().split(/\r?\n/).filter(Boolean)
+  if (!codecs.includes('video')) throw new Error('ffprobe found no video stream (' + JSON.stringify(codecs) + ')')
+  return { localUrl, seg, codecs }
+}
+
 async function checkStream (id) {
   const t0 = Date.now()
   const res = { id, ok: false, ms: null, segBytes: 0, peers: 0, error: null }
   try {
-    const { player, peers } = await connectAndLogin(id)
-    const { localUrl, port } = await player.resolve(id)
-    const playlist = await waitFor(async () => {
-      const r = await httpGet(port, '/index.m3u8')
-      return r.status === 200 && r.body.toString().includes('.ts') ? r.body.toString() : null
-    }, timeoutS * 1000, 'playlist for ' + id)
-    const segs = playlist.split('\n').filter(l => l.trim().endsWith('.ts'))
-    const seg = await httpGet(port, '/' + segs[segs.length - 1].trim())
-    if (seg.status !== 200 || seg.body.length === 0) throw new Error('segment fetch failed (' + seg.status + ')')
-    const segPath = path.join(tempDirs[tempDirs.length - 1], 'probe.ts')
-    fs.writeFileSync(segPath, seg.body)
-    const probe = spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', segPath], { encoding: 'utf8' })
-    const codecs = (probe.stdout || '').trim().split(/\r?\n/).filter(Boolean)
-    if (!codecs.includes('video')) throw new Error('ffprobe found no video stream (' + JSON.stringify(codecs) + ')')
+    const { player, peers, dir } = await connectAndLogin(id)
+    let out
+    try {
+      out = await withDeadline(playbackAttempt(player, dir, id), deadlineS * 1000, id)
+    } catch (e) {
+      if (!e.isDeadline) throw e
+      log(`  … ${id}: ${e.message} — retrying once with a fresh resolve()`)
+      out = await withDeadline(playbackAttempt(player, dir, id), deadlineS * 1000, id + ' retry')
+    }
     res.ok = true
     res.ms = Date.now() - t0
-    res.segBytes = seg.body.length
+    res.segBytes = out.seg.body.length
     res.peers = peers.max
-    log(`  ✓ ${id}: playlist+segment+ffprobe OK in ${res.ms} ms via ${localUrl} (${seg.body.length} bytes, codecs ${codecs.join('+')})`)
+    log(`  ✓ ${id}: playlist+segment+ffprobe OK in ${res.ms} ms via ${out.localUrl} (${out.seg.body.length} bytes, codecs ${out.codecs.join('+')})`)
   } catch (e) {
     res.error = String(e.message || e)
     log(`  ✗ ${id}: ${res.error}`)
