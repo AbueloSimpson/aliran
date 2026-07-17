@@ -136,6 +136,13 @@ export function LiveScreen ({ route }: Props) {
       setPeers(null)
       setError(null)
       // The tuning indicator follows via onTune 'start' (the streamId prop change).
+    } else if (error) {
+      // The friendly tune-timeout says "switch to it again to retry" — honor re-selecting
+      // the SAME channel: clearing the error remounts <AliranVideo>, which starts a fresh
+      // tune (mount → play() → onTune 'start'). Without this the retry was a no-op and
+      // the only way out was a trip through the Menu (found live 2026-07-16, broadcaster
+      // outage on the VPS).
+      setError(null)
     }
     if (collapse) setOverlay('none')
   }

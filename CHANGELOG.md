@@ -782,6 +782,11 @@ re-created `<Video>` mid-switch, orphaning whichever signal the pill was waiting
   resync restarts the tune and completes on the resync mount) and
   `ChannelChangeIndicator.test.tsx` (ramp pacing, phase labels, snap-to-100 + hide);
   `jest.config.js` maps module resolution for the symlinked SDK sources.
+- **Error-screen retry honored:** the friendly tune-timeout says "switch to it again
+  to retry", but re-selecting the SAME channel was a `play()` no-op — the only way out
+  was a trip through the Menu (found live during a real broadcaster outage, S22
+  2026-07-16). Re-selecting the erroring channel now clears the error, remounting
+  `<AliranVideo>` into a fresh tune.
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
