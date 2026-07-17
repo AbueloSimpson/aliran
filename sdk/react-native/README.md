@@ -15,6 +15,7 @@ backend.start(bundleBase64, {
   prewarm: 12,       // warm the first N channels' feeds at login (fast first zap)
   zapPrefetch: false // keep CH+/CH- neighbors' newest segment warm while playing —
                      // OFF by default: costs standing bandwidth (see sdk/README.md)
+  // swarm: { maxPeers: 256 } — seed-node hosts only; viewers keep the default (64)
 })
 // after backend.login(user, pass) resolves entitlements ('streams' message):
 <AliranVideo

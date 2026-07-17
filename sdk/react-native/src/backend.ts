@@ -54,6 +54,14 @@ export interface ZapPrefetchConfig {
   intervalMs?: number
 }
 
+// Tuning for the engine's single Hyperswarm (see sdk/player.js normalizeSwarmOpts).
+// maxPeers raises hyperswarm's total-connection budget (lib default 64) — for
+// SDK-based seed nodes / repeater-style hosts that hold big fan-out. Ordinary
+// viewers should omit it.
+export interface SwarmConfig {
+  maxPeers?: number
+}
+
 export interface SavedCredentials { username: string; password: string }
 
 export type BackendMessage =
@@ -91,6 +99,9 @@ export interface StartOptions {
   /** Keep adjacent channels' newest segment warm while playing so CH+/CH- zaps start
    *  fast. OFF by default — costs standing bandwidth (see ZapPrefetchConfig). */
   zapPrefetch?: boolean | ZapPrefetchConfig
+  /** Raise the engine swarm's connection budget (seed nodes / repeater-style hosts
+   *  only — viewers keep the hyperswarm default; see SwarmConfig). */
+  swarm?: SwarmConfig
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
 }
@@ -137,7 +148,7 @@ export class AliranBackend {
     this.worklet.start('/app.bundle', bytes as any)
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
-    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch })
+    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch, swarm: opts.swarm })
     const queued = this.pending; this.pending = []
     for (const m of queued) this.send(m)
   }

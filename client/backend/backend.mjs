@@ -11,13 +11,15 @@
 // (app.bundle.js is a build artifact, gitignored; regenerate it as part of the app build.)
 //
 // IPC (line-delimited JSON) with React Native:
-//   in : { panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch? }
+//   in : { panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch?, swarm? }
 //                                     -> connect to panel; optional hybrid CDN<->P2P
 //                                        config (cdnUrl as a '{streamId}' template
 //                                        string — JSON-safe), feed prewarm count,
-//                                        tune self-heal knobs, and adjacent-channel
+//                                        tune self-heal knobs, adjacent-channel
 //                                        zap prefetch (OFF by default — standing
-//                                        bandwidth; see sdk/player.js)
+//                                        bandwidth; see sdk/player.js), and swarm
+//                                        tuning ({ maxPeers } — seed nodes only,
+//                                        viewers omit it)
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
 //        { streamId }                 -> play an entitled stream -> { port, url, source }
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
@@ -111,9 +113,9 @@ function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
 
 let player = null
 
-function ensurePlayer (hybrid, prewarm, tune, zapPrefetch) {
+function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm) {
   if (player) return player
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm })
   player.on('ready', () => send({ type: 'ready' }))
   player.on('streams', (streams) => send({ type: 'streams', streams }))
   player.on('status', (status) => send({ type: 'status', ...status }))
@@ -166,7 +168,7 @@ IPC.on('data', (data) => {
     } else if (msg.streamId) {
       ensurePlayer().resolve(msg.streamId).then(({ port, url, source }) => send({ type: 'port', port, url, source, streamId: msg.streamId })).catch(fail)
     } else if (msg.panelPubKey) {
-      ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, msg.zapPrefetch).connect(msg.panelPubKey).catch(fail)
+      ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, msg.zapPrefetch, msg.swarm).connect(msg.panelPubKey).catch(fail)
     }
   }
 })

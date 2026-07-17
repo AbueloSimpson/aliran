@@ -19,6 +19,7 @@ import { makeThrottle, attachLoginRpc } from './rpc.js'
 import { startAdminServer } from './admin-server.js'
 import { loadAdmins } from './ops.js'
 import { makeRing } from './activity.js'
+import { makeBlobsKeyEnricher } from './blobs-key.js'
 
 export async function startPanel () {
   const keys = openKeys(config.dataDir)
@@ -35,15 +36,20 @@ export async function startPanel () {
 
   const sessionTtlMs = config.sessionTtlDays * 86400000
   const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
+  // blobsKey catalog enrichment (S20a): register nudges it; it opens each feed drive
+  // with the panel-stored encryptionKey (async, off the RPC path) and publishes the
+  // blobs-core key so keyless repeaters (S20) can mirror ciphertext.
+  const enrich = makeBlobsKeyEnricher({ store, swarm, db, dataDir: config.dataDir })
   swarm.on('connection', (socket) => {
     store.replicate(socket) // clients replicate the signed account/catalog DB
-    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity })
+    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, enrich })
   })
 
   const topic = hcrypto.hash(keys.signing.publicKey)
   swarm.join(topic, { server: true, client: false })
   await swarm.flush()
   console.log('Panel announced on the DHT. Serving login + catalog replication…')
+  enrich.sweep().catch(() => {}) // heal pre-upgrade records / registers missed while down
 
   // Admin HTTP API (in-process — the Corestore is single-writer, so it can't run
   // as a separate process next to the panel). Opt-in via ADMIN_ENABLED=1.
@@ -61,9 +67,9 @@ export async function startPanel () {
     console.log(`Admin dashboard + API on http://${admin.host}:${admin.port}`)
   }
 
-  const shutdown = async () => { if (admin) await admin.close(); await swarm.destroy(); await store.close(); process.exit(0) }
+  const shutdown = async () => { if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys, admin }
+  return { swarm, store, db, keys, admin, enrich }
 }
 
 // Run directly (not when imported by a test).

@@ -159,6 +159,12 @@ following only the docs.
 
 ## Future / exploratory
 
+- ⬜ **Repeater appliance** — a keyless regional super-peer (the Open-Connect analog):
+  a hosted box (operator- or ISP-run) that mirrors chosen channels' **encrypted**
+  feeds and absorbs viewer fan-out, holding no keys and unable to watch what it
+  serves. Groundwork already shipped: per-channel `SWARM_MAX_PEERS` (broadcaster),
+  `swarm.maxPeers` (player SDK), and the panel-published catalog `blobsKey` that
+  keyless ciphertext mirroring needs.
 - ⬜ iOS / Apple TV client (FairPlay + HLS)
 - ⬜ **Web player via an HTTP gateway** — a hosted page that plays the service in any
   browser. Browsers cannot join the Hyperswarm DHT (no UDP), so the honest design is

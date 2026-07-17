@@ -242,6 +242,7 @@ export async function addStream (ctx, id, opts = {}) {
     type: 'live',
     protection: 'self',
     feedKey: opts.feedKey || null,
+    blobsKey: null, // filled asynchronously by the enricher once a feed is live (S20a)
     isLive: false,
     poster: null,
     backdrop: null,
@@ -273,9 +274,13 @@ function normArt (v, kind) {
 
 export async function setMeta (ctx, id, fields = {}) {
   const c = await requireStream(ctx, id)
+  const prevFeedKey = c.feedKey
   for (const f of META_FIELDS) {
     if (fields[f] != null) c[f] = String(fields[f])
   }
+  // blobsKey belongs to the feedKey beside it — an admin feedKey edit invalidates it
+  // (the enricher re-fills it on the next register/sweep of the real feed).
+  if (fields.feedKey != null && c.feedKey !== prevFeedKey) c.blobsKey = null
   for (const kind of ART_KINDS) {
     if (fields[kind] != null) c[kind] = normArt(fields[kind], kind)
   }

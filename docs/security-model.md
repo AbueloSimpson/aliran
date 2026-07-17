@@ -18,9 +18,14 @@ A **single-writer, panel-signed Hyperbee**. Clients replicate it read-only and p
 panel public key, so records are provably authentic. Namespaces:
 
 - `catalog/<streamId>` → OTT metadata `{ title, description, category[], type,
-  protection, allowedRegions?, isLive, poster, backdrop, logo, feedKey, drm?, status }`
+  protection, allowedRegions?, isLive, poster, backdrop, logo, feedKey, blobsKey,
+  drm?, status }`
   — **note:** the stream's content encryption key is **not** in the catalog. It is held
   in a panel-private, non-replicated secrets file and delivered per-user (below).
+  `blobsKey` (the feed drive's blobs-core key, published by the panel for keyless
+  repeater nodes) is deliberately public: knowing it lets a peer **replicate the
+  encrypted video blocks**, nothing more — every block is ciphertext under the
+  stream key, which still only travels sealed per-user through a grant.
 - `user/<username>` → `{ salt, verifier, argon, pub, encPriv,
   wrapped:{ [streamId]: sealedStreamKey }, devices[], tokenVersion, maxDevices, status }`
 

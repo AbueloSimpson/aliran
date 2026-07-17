@@ -152,14 +152,25 @@ function normalizeZapPrefetch (v) {
   return cfg
 }
 
+// swarm: tuning for the ONE Hyperswarm the engine runs (panel + every feed share it).
+// maxPeers = hyperswarm's total-connection budget (lib default 64). Ordinary viewers
+// should omit it; SDK-based seed nodes and the repeater appliance (S20) raise it into
+// the hundreds so they can hold big fan-out.
+function normalizeSwarmOpts (v) {
+  if (v == null || v.maxPeers == null) return null
+  if (!Number.isInteger(v.maxPeers) || v.maxPeers < 1) throw new Error('swarm.maxPeers must be a positive integer')
+  return { maxPeers: v.maxPeers }
+}
+
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch, swarm } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._hybrid = normalizeHybrid(hybrid)
     this._prewarmN = normalizePrewarm(prewarm)
     this._tune = normalizeTune(tune)
     this._zapPrefetch = normalizeZapPrefetch(zapPrefetch)
+    this._swarmOpts = normalizeSwarmOpts(swarm)
     this._zapTimer = null // adjacent-channel warm loop (only when zapPrefetch is on)
     this._zapRanges = new Map() // streamId -> { path, range } — newest warmed segment per neighbor
     this._active = null // current play state: { streamId, feedKey, localUrl, cdnUrl, source, lastSig, lastAdvance }
@@ -805,7 +816,7 @@ export class AliranPlayer extends Emitter {
     if (this._store) return
     this._store = new Corestore(this._storeDir)
     await this._store.ready()
-    this._swarm = new Hyperswarm()
+    this._swarm = new Hyperswarm(this._swarmOpts ?? {})
     // The first connection after connect() is the panel (we join only its topic
     // first); wire the RPC there. Later feed connections are ignored for RPC (call is
     // already set). If the panel socket drops, clear `call` so the next reconnect

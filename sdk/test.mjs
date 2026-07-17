@@ -65,6 +65,27 @@ function ok (name) { n++; console.log('  ok ', name) }
   ok('hybrid config validation (mode/start/cdnUrl); source() null before resolve')
 }
 
+// --- swarm option (S20a): validation + plumbing into the ONE Hyperswarm ---
+{
+  assert.throws(() => createPlayer({ swarm: { maxPeers: 0 } }), /swarm\.maxPeers/)
+  assert.throws(() => createPlayer({ swarm: { maxPeers: 1.5 } }), /swarm\.maxPeers/)
+  assert.throws(() => createPlayer({ swarm: { maxPeers: 'lots' } }), /swarm\.maxPeers/)
+  createPlayer({ swarm: {} }) // maxPeers omitted = default, valid
+  const os = await import('os'); const fs = await import('fs'); const path = await import('path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-swarm-'))
+  const p = createPlayer({ storeDir: dir, swarm: { maxPeers: 300 } })
+  const q = createPlayer({ storeDir: dir + '-b' })
+  try {
+    await p._ensureStore(); await q._ensureStore() // no join/announce — offline-safe
+    assert.strictEqual(p._swarm.maxPeers, 300, 'maxPeers reaches the Hyperswarm instance')
+    assert.strictEqual(q._swarm.maxPeers, 64, 'omitted = hyperswarm default untouched')
+  } finally {
+    await p.stop(); await q.stop()
+    for (const d of [dir, dir + '-b']) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
+  }
+  ok('swarm.maxPeers validated + plumbed into Hyperswarm (default preserved)')
+}
+
 // --- event emitter basics (on/off/once, no throw on unhandled error) ---
 {
   const p = createPlayer({})

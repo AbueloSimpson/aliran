@@ -1,5 +1,9 @@
 // End-to-end v0.2 test: broadcaster auto-registers a feed with the panel, then a granted
-// user logs in and recovers the registered key. No ffmpeg needed. Exits 0 on PASS.
+// user logs in and recovers the registered key. S20a adds the blobsKey enrichment round
+// trip: the panel opens the announced feed drive with its stored encryptionKey and
+// publishes the blobs-core key in the catalog (async), clears + re-enriches it across a
+// feedKey rotation, and preserves it across a same-key re-register. No ffmpeg needed.
+// Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
@@ -17,6 +21,7 @@ import { panelClient as pubRpc, registerWithPanel } from '../broadcaster/src/reg
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore, loadSecrets } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
+import { makeBlobsKeyEnricher } from '../panel/src/blobs-key.js'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 async function waitFor (fn, ms, label) { const t = Date.now(); while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v } catch {} await sleep(300) } throw new Error('timeout: ' + label) }
@@ -35,14 +40,28 @@ try {
   const throttle = makeThrottle(1000, 60)
   const topic = hcrypto.hash(keys.signing.publicKey)
   const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
-  panelSwarm.on('connection', (s) => { panelStore.replicate(s); attachLoginRpc(s, { keys, difficulty: DIFFICULTY, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000 }) })
+  // S20a blobsKey enrichment: register nudges it; it opens the feed drive with the
+  // panel-stored encryptionKey (client-mode join on the panel's own swarm) and writes
+  // the blobs-core key into the public record.
+  const enrich = makeBlobsKeyEnricher({ store: panelStore, swarm: panelSwarm, db, dataDir: dirs.panel })
+  cleanups.push(() => enrich.close())
+  panelSwarm.on('connection', (s) => { panelStore.replicate(s); attachLoginRpc(s, { keys, difficulty: DIFFICULTY, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000, enrich }) })
   panelSwarm.join(topic, { server: true, client: false }); await panelSwarm.flush()
 
   // ===== Broadcaster feed + auto-register =====
   const encKey = hcrypto.randomBytes(32)
   const feedStore = new Corestore(dirs.feed); await feedStore.ready(); cleanups.push(() => feedStore.close())
   const feed = new Hyperdrive(feedStore.namespace('feed'), { encryptionKey: encKey }); await feed.ready()
+  // The drive header (block 0, which carries the blobs-core key) only exists once
+  // something is written — a live feed always has content, so mirror that here.
+  await feed.put('/index.m3u8', b4a.from('#EXTM3U'))
   const feedKeyHex = b4a.toString(feed.key, 'hex'); const encKeyHex = b4a.toString(encKey, 'hex')
+
+  // Announce the feed itself (what a running broadcaster channel does) so the panel's
+  // enricher can replicate the drive header over the DHT.
+  const feedSwarm = new Hyperswarm(); cleanups.push(() => feedSwarm.destroy())
+  feedSwarm.on('connection', (s) => feedStore.replicate(s))
+  feedSwarm.join(feed.discoveryKey, { server: true, client: false }); await feedSwarm.flush()
 
   const bSwarm = new Hyperswarm(); cleanups.push(() => bSwarm.destroy())
   let pcall = null
@@ -61,7 +80,43 @@ try {
   assert.strictEqual(cat.encryptionKey, undefined, 'catalog must NOT contain encryptionKey')
   assert.strictEqual(cat.isLive, true, 'catalog isLive')
   assert.strictEqual(loadSecrets(dirs.panel).news, encKeyHex, 'panel-private secret stored')
+  // Enrichment is ASYNC — the register reply above must not have waited on the drive
+  // open (the header replicates over the DHT, seconds away at best).
+  assert.strictEqual(cat.blobsKey ?? null, null, 'register replies before enrichment (never blocks on the drive open)')
   log('panel: catalog written (no encKey); encryption key stored privately ✓')
+
+  // ===== S20a: blobsKey catalog enrichment (Option B — the repeater enabler) =====
+  // The panel must publish the feed's REAL blobs-core key (named core, key only inside
+  // the encrypted bee header — not publicly derivable) shortly after registration.
+  const realBlobsKey = b4a.toString((await feed.getBlobs()).core.key, 'hex')
+  const enriched = await waitFor(async () => (await db.get('catalog/news'))?.value?.blobsKey, 90000, 'blobsKey enrichment')
+  assert.strictEqual(enriched, realBlobsKey, "catalog blobsKey equals the drive's real blobs-core key")
+  assert.notStrictEqual(enriched, feedKeyHex, 'blobsKey is a distinct core key, not the feedKey')
+  log('panel: catalog enriched with the real blobsKey (async, zero broadcaster changes) ✓')
+
+  // A same-feedKey re-register (the broadcaster heartbeat) must PRESERVE the blobsKey…
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'news', feedKey: feedKeyHex, encryptionKey: encKeyHex, isLive: true
+  })
+  assert.strictEqual((await db.get('catalog/news')).value.blobsKey, realBlobsKey, 'same-feedKey re-register preserves blobsKey')
+
+  // …and a feedKey ROTATION (broadcaster source change / RAM restart) must clear it
+  // immediately and re-enrich against the NEW drive.
+  const feed2 = new Hyperdrive(feedStore.namespace('feed2'), { encryptionKey: encKey }); await feed2.ready()
+  await feed2.put('/index.m3u8', b4a.from('#EXTM3U')) // header exists once content does
+  const feedKey2Hex = b4a.toString(feed2.key, 'hex')
+  feedSwarm.join(feed2.discoveryKey, { server: true, client: false }); await feedSwarm.flush()
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'news', feedKey: feedKey2Hex, encryptionKey: encKeyHex, isLive: true
+  })
+  const rotated = (await db.get('catalog/news')).value
+  assert.strictEqual(rotated.feedKey, feedKey2Hex, 'rotation: catalog follows the new feedKey')
+  assert.strictEqual(rotated.blobsKey ?? null, null, 'rotation: stale blobsKey cleared with the register itself')
+  const realBlobsKey2 = b4a.toString((await feed2.getBlobs()).core.key, 'hex')
+  const enriched2 = await waitFor(async () => (await db.get('catalog/news'))?.value?.blobsKey, 90000, 'blobsKey re-enrichment after rotation')
+  assert.strictEqual(enriched2, realBlobsKey2, "re-enriched blobsKey equals the NEW drive's blobs-core key")
+  assert.notStrictEqual(enriched2, realBlobsKey, 'rotation produced a different blobs core')
+  log('panel: feedKey rotation cleared + re-enriched blobsKey ✓')
 
   // ===== Unauthorized publisher is rejected =====
   let unauth = false
@@ -97,7 +152,7 @@ try {
   assert.strictEqual(streams[0]?.encryptionKey, encKeyHex, 'logged-in user recovers the registered encryption key')
   log('client: login recovered the broadcaster-registered key ✓')
 
-  log('\nRESULT: PASS ✅  (auto-register → private secret → grant → login recovers key; unauthorized rejected)')
+  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; unauthorized rejected)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

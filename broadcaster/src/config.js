@@ -59,6 +59,13 @@ export const config = {
   // Hypercore off disk too = zero segment IOPS on disk (the "scale profile").
   workDir: process.env.HLS_WORK_DIR || os.tmpdir(),
   protection: process.env.PROTECTION || 'self',
+  // Optional per-channel swarm connection budget (S20a). Every channel owns its OWN
+  // Hyperswarm, so this caps EACH channel's fan-out separately (hyperswarm's default of
+  // 64 is also per channel). Raise it on a big origin box; lower it to push fan-out onto
+  // repeater/seed nodes (S20). Unset = hyperswarm default, no accept gate. If set, leave
+  // headroom for non-viewer peers (repeaters, the panel's blobsKey probe) — they take a
+  // slot like any viewer.
+  swarmMaxPeers: int(process.env.SWARM_MAX_PEERS, 0) || null,
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean),
   control: {

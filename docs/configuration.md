@@ -38,6 +38,7 @@ Copy each component's `.env.example` to `.env`.
 | `HLS_TIME` | `2` | Segment duration (seconds); shorter = faster time-to-first-frame |
 | `HLS_LIST_SIZE` | `8` | Rolling playlist window (segments); deepen to 12–16 for large swarms |
 | `FEED_BUFFER` | `disk` | `disk` (stable feed identity, warm DHT topic — faster joins) or `ram` (byte-flat disk, cold discovery each restart). See [KB](kb/feed-buffer.md) |
+| `SWARM_MAX_PEERS` | *(unset)* | Optional **per-channel** swarm connection budget (each channel runs its own swarm; hyperswarm's own default is 64, also per channel). Connections beyond the budget are dropped at accept time. Leave headroom for non-viewer peers (repeaters, the panel's blobsKey probe) |
 | `PROTECTION` | `self` | `self` (encrypted Hyperdrive) or `drm` (CENC via packager) |
 | `CONTROL_ENABLED` | `false` | Serve the channel control HTTP API |
 | `CONTROL_HOST` | `127.0.0.1` | Control API bind address (use TLS in front if not loopback) |

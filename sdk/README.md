@@ -96,6 +96,13 @@ warm-up options stack on top:
   full bitrate while playing). `true` = `{ neighbors: 1, intervalMs: 3000 }`, or pass
   the object to tune.
 
+## Swarm tuning (seed nodes)
+
+`createPlayer({ swarm: { maxPeers } })` raises the total-connection budget of the
+engine's single Hyperswarm (lib default 64 — plenty for a viewer). Ordinary viewers
+should omit it; SDK-based **seed nodes** and the repeater appliance raise it into the
+hundreds so they can hold big fan-out while re-seeding.
+
 The on-disk store is a **disposable replica cache**: corruption (e.g. a crash mid-write →
 `OPLOG_CORRUPT`) is detected, the store is purged and the operation retried once —
 in-memory entitlements survive, everything re-replicates from peers (`recover.js`,

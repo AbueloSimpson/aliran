@@ -89,6 +89,15 @@ dir) — user grants seal it, so restarts never invalidate access.
 See [`../docs/kb/feed-buffer.md`](../docs/kb/feed-buffer.md) for the P2P tuning
 rationale (why disk wins for time-to-play, and how to size the segment window).
 
+## Per-channel swarm budget (`SWARM_MAX_PEERS`)
+
+Every channel owns its **own Hyperswarm**, so connection budgets apply per channel —
+hyperswarm's default is 64 peers per channel. `SWARM_MAX_PEERS` makes the budget an
+explicit operator knob: connections beyond it are dropped at accept time (a refused
+viewer's player self-heals onto other peers). Raise it on a big origin box; lower it
+to push fan-out onto repeater/seed nodes. If set low, leave headroom for non-viewer
+peers — repeaters and the panel's blobsKey probe take a slot like any viewer.
+
 ## Test it (no Android needed)
 
 ```bash

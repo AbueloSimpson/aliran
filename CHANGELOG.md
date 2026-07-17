@@ -878,6 +878,38 @@ the Bare worklet, and the desktop tools via `tools/lib/serve-drive.js`):
   `test:stream`, `test:retention` all green. KB: zap-latency lore in
   `docs/kb/playback.md` + `docs/kb/feed-buffer.md`.
 
+### Scale knobs: per-channel swarm budgets + panel-published blobsKey (the repeater enabler)
+Groundwork for the keyless repeater appliance (regional super-peers that mirror
+**ciphertext only** — the Open-Connect analog):
+
+- **`SWARM_MAX_PEERS` (broadcaster):** every channel owns its own Hyperswarm, so
+  connection budgets are **per channel** (the hyperswarm default of 64 always was).
+  The env makes it an operator knob, enforced at accept time on the server-only
+  channel swarms (hyperswarm 4.x only budgets outgoing dials): connections beyond
+  the budget are dropped before replication starts; the refused viewer's tune
+  self-heal finds other peers. Default unchanged when unset.
+- **`createPlayer({ swarm: { maxPeers } })` (SDK):** raises the engine's single
+  Hyperswarm connection budget for SDK-based seed nodes / the repeater; viewers
+  keep the default. Threaded through the worklet IPC and the RN binding
+  (`StartOptions.swarm`).
+- **`blobsKey` catalog enrichment (panel, "Option B"):** the feed drive's blobs core
+  is a *named* core whose key rides inside the **encrypted** drive header — not
+  derivable from the public `feedKey`. The panel (which already stores every
+  stream's encryption key from register) now opens each registered feed
+  asynchronously, reads the blobs-core key from the header, and publishes it in the
+  catalog record as `blobsKey` (`panel/src/blobs-key.js`): retried with backoff,
+  never blocking the register RPC reply, cleared + re-enriched when a register
+  rotates the `feedKey`, swept on panel boot for pre-upgrade records. Publishing it
+  is safe — it only enables **encrypted-block** replication; watching still needs a
+  per-user sealed grant key. Zero broadcaster changes.
+- **Tests:** `test:register` now proves the enrichment round trip against a real
+  announced drive (async blobsKey == the drive's real blobs-core key; rotation
+  clears + re-enriches; same-key re-register preserves), `test:broadcaster-api`
+  asserts enrichment against a live channel (Test D) and across the F4
+  source-change rotation, and its new **Test Q** proves the per-channel budget
+  (maxPeers=2 → a 3rd concurrent viewer on that one channel is refused while a
+  second channel still accepts). SDK unit tests cover the `swarm` option plumbing.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

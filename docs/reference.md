@@ -130,6 +130,7 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
   "backdrop": "assets/<hash>.jpg",
   "logo": "assets/<hash>.png",
   "feedKey": "<hex>",
+  "blobsKey": "<hex>",         // the feed drive's blobs-core key (or null) — see below
   "drm": null,                 // or { scheme, licenseServerRef }
   "status": "live"
 }
@@ -138,6 +139,16 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
 > The stream's content **encryption key is not in the catalog**. It is kept in a
 > panel-private, non-replicated secrets file (`DATA_DIR/secrets/streams.json`) and
 > delivered per-user via `user.wrapped[streamId]`.
+
+> **`blobsKey`** (S20a): the feed drive's blobs-core key, published so keyless
+> repeater/seed nodes can mirror the **encrypted** video blocks (the blobs core is a
+> named core whose key lives inside the drive's encrypted header, so it is not
+> derivable from `feedKey` alone). The panel fills it **asynchronously** after a
+> register: it opens the drive with its stored encryption key, reads the header, and
+> writes the key back (`panel/src/blobs-key.js`) — the register RPC never waits on
+> this. It is cleared and re-filled whenever a register rotates `feedKey`. Publishing
+> it is safe: it only enables ciphertext replication; watching still requires a
+> per-user sealed grant key.
 
 ### User record (`user/<username>`)
 ```jsonc

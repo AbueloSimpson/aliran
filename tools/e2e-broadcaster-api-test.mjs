@@ -27,6 +27,7 @@ import { spawn, spawnSync } from 'child_process'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore, loadSecrets } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
+import { makeBlobsKeyEnricher } from '../panel/src/blobs-key.js'
 import { ChannelManager } from '../broadcaster/src/channel.js'
 import { addAdmin } from '../broadcaster/src/control-auth.js'
 import { startControlServer } from '../broadcaster/src/control-server.js'
@@ -51,7 +52,12 @@ const dirs = {
   bc: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc-')),
   bc2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc2-')), // S15b: "restart" a broadcaster over the same dataDir
   viewer: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view-')),
-  viewer2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view2-'))
+  viewer2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view2-')),
+  bc3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc3-')), // S20a: SWARM_MAX_PEERS cap test
+  capV1: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-capv1-')),
+  capV2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-capv2-')),
+  capV3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-capv3-')),
+  capB1: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-capb1-'))
 }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
@@ -82,7 +88,10 @@ try {
   const { store: panelStore, db } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
   const throttle = makeThrottle(1000, 60)
   const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
-  panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: 8, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000 }) })
+  // S20a blobsKey enrichment, wired exactly like panel/src/index.js does it.
+  const enrich = makeBlobsKeyEnricher({ store: panelStore, swarm: panelSwarm, db, dataDir: dirs.panel })
+  cleanups.push(() => enrich.close())
+  panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: 8, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000, enrich }) })
   panelSwarm.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false }); await panelSwarm.flush()
   log('panel: announced (register RPC live)')
 
@@ -163,7 +172,12 @@ try {
   assert.strictEqual(cat.title, 'API Channel')
   assert.strictEqual(cat.isLive, true)
   assert.strictEqual(loadSecrets(dirs.panel)['api-chan'], encryptionKey, 'panel stored the encryption key privately')
-  log('D: panel catalog + private secret written by the register RPC ✓')
+  // S20a: shortly after the register the panel opens the drive with its stored
+  // encryptionKey and publishes the REAL blobs-core key (the repeater enabler).
+  const realBlobsKey = b4a.toString((await manager.channels.get('api-chan').run.drive.getBlobs()).core.key, 'hex')
+  const gotBlobsKey = await waitFor(async () => (await db.get('catalog/api-chan'))?.value?.blobsKey, 90000, 'blobsKey enrichment of api-chan')
+  assert.strictEqual(gotBlobsKey, realBlobsKey, "catalog blobsKey equals the running drive's real blobs-core key")
+  log('D: panel catalog + private secret written by the register RPC; blobsKey enriched async ✓')
 
   // ===== Test E: a fresh viewer replicates and ffprobe-validates the feed =====
   // (helper — reused by the S15a RTMP push case in Test J)
@@ -256,13 +270,25 @@ try {
   assert.match(rotKey1 || '', /^[0-9a-f]{64}$/, 'disk feed key known before start')
   r = await api('POST', '/api/channels/rotate-chan/start', undefined, token)
   assert.strictEqual(r.body.feedKey, rotKey1, 'first start uses the pre-resolved disk key')
+  // S20a: let the register land and the panel enrich blobsKey for the FIRST identity,
+  // so the rotation below can prove re-enrichment against a NEW one.
+  const rotBlobs1 = await waitFor(async () => {
+    const rec = (await db.get('catalog/rotate-chan'))?.value
+    return rec && rec.feedKey === rotKey1 ? rec.blobsKey : null
+  }, 90000, 'blobsKey enrichment of rotate-chan (pre-rotation)')
+  assert.strictEqual(rotBlobs1, b4a.toString((await manager.channels.get('rotate-chan').run.drive.getBlobs()).core.key, 'hex'), 'pre-rotation blobsKey is the real one')
   assert.strictEqual((await api('POST', '/api/channels/rotate-chan/stop', undefined, token)).status, 200, 'stop rotate-chan')
   // a PATCH that does NOT change the source must not churn the feed identity
   r = await api('PATCH', '/api/channels/rotate-chan', { input: 'test', description: 'same source' }, token)
   assert.strictEqual(r.body.feedKey, rotKey1, 'same-source PATCH keeps the feedKey (no gratuitous rotation)')
   assert.strictEqual(manager.channels.get('rotate-chan').meta.feedGen ?? 0, 0, 'feedGen unchanged when the source is unchanged')
-  // now CHANGE the source (test → a file input): the identity must rotate
-  r = await api('PATCH', '/api/channels/rotate-chan', { input: { kind: 'file', path: '/tmp/rotate-other.ts' } }, token)
+  // now CHANGE the source (test → a REAL file input — the rotated feed must also
+  // produce content, or the S20a re-enrichment below would have no header to read):
+  // the identity must rotate
+  const rotateSrc = path.join(os.tmpdir(), `e2eb-rotate-src-${Date.now()}.ts`)
+  spawnSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=30', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100', '-t', '6', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-shortest', '-f', 'mpegts', rotateSrc])
+  cleanups.push(() => { try { fs.rmSync(rotateSrc) } catch {} })
+  r = await api('PATCH', '/api/channels/rotate-chan', { input: { kind: 'file', path: rotateSrc } }, token)
   assert.strictEqual(r.status, 200, 'patch input to a new source: ' + JSON.stringify(r.body))
   assert.strictEqual(r.body.feedKey, null, 'feed identity forgotten pending the next start (rotation)')
   assert.strictEqual(manager.channels.get('rotate-chan').meta.feedGen, 1, 'feedGen bumped on a real source change')
@@ -272,9 +298,17 @@ try {
   assert.match(rotKey2, /^[0-9a-f]{64}$/, 'rotated feed key minted at start')
   assert.notStrictEqual(rotKey2, rotKey1, 'disk source change ROTATED the feedKey (clients drop the stale replica)')
   assert.strictEqual(manager.channels.get('rotate-chan').encryptionKeyHex(), rotEncKey, 'encryption key stable across the rotation (grants survive)')
+  // S20a: the rotation register cleared the stale blobsKey and the panel re-enriched
+  // against the NEW drive — the repeater keeps mirroring across source changes.
+  const rotBlobs2 = await waitFor(async () => {
+    const rec = (await db.get('catalog/rotate-chan'))?.value
+    return rec && rec.feedKey === rotKey2 ? rec.blobsKey : null
+  }, 90000, 'blobsKey re-enrichment of rotate-chan (post-rotation)')
+  assert.notStrictEqual(rotBlobs2, rotBlobs1, 'rotation produced a different blobs core')
+  assert.strictEqual(rotBlobs2, b4a.toString((await manager.channels.get('rotate-chan').run.drive.getBlobs()).core.key, 'hex'), "post-rotation blobsKey equals the NEW drive's real blobs-core key")
   assert.strictEqual((await api('POST', '/api/channels/rotate-chan/stop', undefined, token)).status, 200, 'stop rotate-chan again')
   assert.strictEqual((await api('DELETE', '/api/channels/rotate-chan', undefined, token)).status, 200, 'cleanup rotate-chan')
-  log('F4: disk source change rotates the feedKey (stale-replica fix); same-source PATCH does not; grants survive ✓')
+  log('F4: disk source change rotates the feedKey (stale-replica fix); same-source PATCH does not; grants survive; blobsKey cleared + re-enriched ✓')
 
   // ===== Test F2: admins management (S16a — parity with the panel admin API) =====
   r = await api('GET', '/api/admins', undefined, token)
@@ -581,7 +615,60 @@ try {
   }, 15000, 'registerError clears once the queue drains')
   log('P: panel restarted under a new swarm identity → stranded ops self-heal via forced topic re-lookup ✓')
 
-  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced, PanelLink self-heals a panel restart)')
+  // ===== Test Q: SWARM_MAX_PEERS — per-channel connection budget (S20a) =====
+  // Every channel owns its own Hyperswarm, so the budget applies PER CHANNEL (the lib
+  // default 64 does too). hyperswarm 4.x only budgets outgoing dials and channel swarms
+  // are server-only, so the broadcaster enforces the cap at accept time: with
+  // maxPeers=2, a 3rd concurrent viewer on ONE channel is refused while a SECOND
+  // channel (its own swarm, its own budget) still accepts.
+  const bc3Config = {
+    dataDir: dirs.bc3,
+    bootstrap: [],
+    hls: { time: 2, listSize: 6 },
+    feedBuffer: 'ram',
+    argon2: { memKiB: 8192, time: 1 },
+    swarmMaxPeers: 2 // the knob under test (env SWARM_MAX_PEERS → config.swarmMaxPeers)
+  }
+  const mgrQ = new ChannelManager(bc3Config); await mgrQ.init(); cleanups.push(() => mgrQ.close())
+  const capAEnc = (await mgrQ.add('cap-a', { input: 'test', buffer: 'ram' })).encryptionKey
+  const capBEnc = (await mgrQ.add('cap-b', { input: 'test', buffer: 'ram' })).encryptionKey
+  const capAKey = (await mgrQ.start('cap-a')).feedKey
+  const capBKey = (await mgrQ.start('cap-b')).feedKey
+  assert.strictEqual(mgrQ.channels.get('cap-a').run.swarm.maxPeers, 2, 'knob reaches the per-channel Hyperswarm')
+  await waitFor(async () => (await mgrQ.get('cap-a')).playlist && (await mgrQ.get('cap-b')).playlist, 90000, 'cap channels producing')
+
+  const capViewer = async (feedKeyHex, encKeyHex, dir) => {
+    const store = new Corestore(dir); await store.ready(); cleanups.push(() => store.close())
+    const replica = new Hyperdrive(store, b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
+    await replica.ready()
+    const vswarm = new Hyperswarm(); cleanups.push(() => vswarm.destroy())
+    vswarm.on('connection', (s) => replica.replicate(s))
+    vswarm.join(replica.discoveryKey, { server: false, client: true })
+    return { replica, swarm: vswarm }
+  }
+  // Bounded playlist read: non-null buf = this viewer really replicates the feed.
+  const gotPlaylist = (v) => Promise.race([v.replica.get('/index.m3u8').catch(() => null), sleep(4000).then(() => null)])
+
+  const v1 = await capViewer(capAKey, capAEnc, dirs.capV1)
+  const v2 = await capViewer(capAKey, capAEnc, dirs.capV2)
+  await waitFor(() => gotPlaylist(v1), 90000, 'viewer 1 replicates cap-a (inside the budget)')
+  await waitFor(() => gotPlaylist(v2), 90000, 'viewer 2 replicates cap-a (budget now FULL)')
+
+  // 3rd viewer on the capped channel + 1st viewer on the other channel, concurrently.
+  const v3 = await capViewer(capAKey, capAEnc, dirs.capV3)
+  const vB = await capViewer(capBKey, capBEnc, dirs.capB1)
+  const v3Started = Date.now()
+  await waitFor(() => gotPlaylist(vB), 90000, 'cap-b viewer replicates (second channel has its OWN budget)')
+  // Give v3 at least as long as vB needed (plus a floor) before calling the refusal.
+  await sleep(Math.max(0, 15000 - (Date.now() - v3Started)))
+  assert.strictEqual(await gotPlaylist(v3), null, '3rd concurrent viewer on the capped channel gets NO data')
+  assert.strictEqual(v3.swarm.connections.size, 0, "3rd viewer's connection was dropped at accept time")
+  assert.ok(mgrQ.channels.get('cap-a').run.swarm.connections.size <= 2, 'cap-a swarm never exceeds its budget')
+  assert.ok((await gotPlaylist(v1)) && (await gotPlaylist(v2)), 'the two in-budget viewers are unaffected')
+  await mgrQ.stop('cap-a'); await mgrQ.stop('cap-b')
+  log('Q: SWARM_MAX_PEERS=2 → 3rd viewer refused on that ONE channel, 2nd channel unaffected (per-channel budgets) ✓')
+
+  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced, PanelLink self-heals a panel restart, S20a: blobsKey enrichment + per-channel SWARM_MAX_PEERS)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

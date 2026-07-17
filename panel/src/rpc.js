@@ -23,8 +23,9 @@ export function makeThrottle (threshold, windowSec) {
 // Attach `hello` + `login` + `session` responders to a connection. `throttle` is shared
 // across connections. `keys` = { oprf, signing }; `db` is the signed account Hyperbee;
 // `sessionTtlMs` is the token lifetime; `devicePolicy` is 'evict' (default) or 'reject';
-// `activity` is an optional ring (src/activity.js) fed for the observability feed.
-export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null }) {
+// `activity` is an optional ring (src/activity.js) fed for the observability feed;
+// `enrich` is the optional blobsKey enricher (src/blobs-key.js) nudged by register.
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, enrich = null }) {
   const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
@@ -109,13 +110,18 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       const secrets = loadSecrets(dataDir); secrets[streamId] = encryptionKey; saveSecrets(dataDir, secrets)
     }
     const existing = (await db.get('catalog/' + streamId))?.value || {}
+    const feedKey = payload.feedKey ?? existing.feedKey ?? null
     await db.put('catalog/' + streamId, {
       title: payload.title ?? existing.title ?? streamId,
       description: payload.description ?? existing.description ?? '',
       category: payload.category ?? existing.category ?? [],
       type: 'live',
       protection: payload.protection ?? existing.protection ?? 'self',
-      feedKey: payload.feedKey ?? existing.feedKey ?? null,
+      feedKey,
+      // blobsKey rides beside the feedKey it belongs to: preserved while the feedKey is
+      // unchanged, cleared on rotation. The enricher (src/blobs-key.js) refills it
+      // ASYNCHRONOUSLY — a register reply never waits on a drive open.
+      blobsKey: (feedKey && feedKey === existing.feedKey ? existing.blobsKey : null) ?? null,
       isLive: payload.isLive !== false,
       poster: existing.poster ?? null, backdrop: existing.backdrop ?? null, logo: existing.logo ?? null,
       // curation is admin-owned — a re-register must never erase it
@@ -124,6 +130,7 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       status: payload.status ?? (payload.isLive !== false ? 'live' : 'idle')
     })
     if (activity) activity.record('register', { streamId, isLive: payload.isLive !== false })
+    if (enrich && feedKey) enrich.enqueue(streamId)
     return json({ ok: true })
   })
 

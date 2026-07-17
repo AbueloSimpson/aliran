@@ -357,8 +357,16 @@ class Channel {
     this.meta.feedKey = feedKeyHex
 
     const bootstrap = config.bootstrap.length ? config.bootstrap : undefined
-    const swarm = new Hyperswarm({ bootstrap })
-    swarm.on('connection', (socket) => drive.replicate(socket))
+    // SWARM_MAX_PEERS (S20a): optional per-channel connection budget. hyperswarm 4.x
+    // only applies maxPeers to OUTGOING dials and this swarm is server-only, so the cap
+    // is also enforced at accept time — a connection beyond the budget is dropped before
+    // replication starts (the peer's own retry/self-heal covers the refusal).
+    const maxPeers = config.swarmMaxPeers || 0
+    const swarm = new Hyperswarm(maxPeers ? { bootstrap, maxPeers } : { bootstrap })
+    swarm.on('connection', (socket) => {
+      if (maxPeers && swarm.connections.size > maxPeers) { socket.destroy(); return }
+      drive.replicate(socket)
+    })
     swarm.join(drive.discoveryKey, { server: true, client: false })
     await swarm.flush()
 
