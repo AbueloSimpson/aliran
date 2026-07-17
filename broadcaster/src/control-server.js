@@ -3,7 +3,10 @@
 //
 // Auth: POST /api/login against DATA_DIR/secrets/admins.json (control-cli add-admin)
 // → session token signed with the broadcaster-local control keypair. Every other
-// /api route requires `Authorization: Bearer <token>`. Login is rate-limited.
+// /api route requires `Authorization: Bearer <token>`. Login is rate-limited AND
+// single-flight: the Argon2id verify runs in a worker thread (never on the event
+// loop — a login flood must not stall media/replication), one verify at a time,
+// concurrent attempts get an immediate 503.
 // Binding: 127.0.0.1 by default; put TLS in front if you expose it.
 //
 //   POST   /api/login                    {username,password} → {token,expiresAt}
@@ -30,19 +33,20 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
 import { ControlError } from './channel.js'
-import { makeThrottle, controlKeys, verifyAdmin, adminTokenLive, addAdmin, removeAdmin, listAdmins, setAdminPassword } from './control-auth.js'
+import { makeThrottle, controlKeys, makeAdminVerifier, adminTokenLive, addAdmin, removeAdmin, listAdmins, setAdminPassword } from './control-auth.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
 
 // ctx = { config, manager, dataDir }.
-// opts = { host, port, sessionTtlMs, lockout: { threshold, seconds } }.
+// opts = { host, port, sessionTtlMs, lockout: { threshold, seconds }, loginVerifyTimeoutMs }.
 // Resolves to { server, host, port, close } once listening (port 0 → ephemeral).
 export function startControlServer (ctx, opts = {}) {
   const host = opts.host || '127.0.0.1'
   const sessionTtlMs = opts.sessionTtlMs || 12 * 3600000
   const lockout = opts.lockout || { threshold: 10, seconds: 900 }
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
+  const loginVerifier = makeAdminVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
   const keys = controlKeys(ctx.dataDir)
 
   const server = http.createServer((req, res) => {
@@ -71,7 +75,8 @@ export function startControlServer (ctx, opts = {}) {
       const ip = req.socket.remoteAddress || 'unknown'
       const t = throttle((body.username || '') + '|' + ip)
       if (t.locked) return sendJson(res, 429, { error: 'locked', retryAfter: t.retryAfter })
-      const admin = verifyAdmin(ctx, body.username, body.password)
+      // Worker-thread verify; throws 503 immediately if one is already in flight.
+      const admin = await loginVerifier.verify(body.username, body.password)
       if (!admin) return sendJson(res, 401, { error: 'invalid credentials' })
       const now = Date.now()
       const payload = { role: 'admin', adminId: admin.name, issuedAt: now, expiresAt: now + sessionTtlMs, tokenVersion: admin.tokenVersion }
@@ -148,7 +153,7 @@ export function startControlServer (ctx, opts = {}) {
         server,
         host,
         port,
-        close: () => new Promise((r) => server.close(r))
+        close: () => { loginVerifier.close(); return new Promise((r) => server.close(r)) }
       })
     })
   })
