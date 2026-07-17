@@ -45,8 +45,12 @@ In likelihood order:
 
 ## Player shows black + spinner right after opening a channel
 
-- **Normal for a few seconds:** the playlist 404s until the live edge replicates from
-  peers; the player auto-retries every 2.5 s.
+- **Normal for a few seconds:** the live edge is replicating from peers. The media
+  server *holds* a request for a not-yet-replicated playlist/segment (bounded at 6 s,
+  under ExoPlayer's 8 s read timeout) and serves it the moment it lands — so the
+  usual cost is the actual replication time, not a 404 → 2.5 s retry-remount cycle.
+  Only a path still missing after the bound 404s, and the player's 2.5 s auto-retry
+  remains as the fallback ladder behind that.
 - **Persistent spinner with `0 peers`:** no seeder is *found* — the broadcaster is
   down, its ffmpeg ingest died while the process kept "seeding" a frozen playlist, or
   the device holds a **stale DHT record** (the broadcaster restarted since the last
@@ -111,6 +115,20 @@ In likelihood order:
 - **Each channel is a separate P2P feed/DHT topic,** so the *first* zap to a channel
   can't be instant like cable — it joins that feed's topic and pulls its first
   segments. Subsequent visits are near-instant because the SDK keeps opened feeds warm.
+- **What a zap costs since the 2026-07-16 latency pass** (all shipped, covered by
+  `test:serve` + `test:sdk`):
+  1. Segment bytes stream to the player **as blocks replicate** (block-progressive
+     bodies — decode starts on the first 64 KB, every segment opens on a keyframe);
+  2. requests for a not-yet-replicated playlist/segment are **held and served on
+     arrival** (bounded), killing the old 404 → 2.5 s retry quantization;
+  3. serving a playlist **read-aheads its newest 3 segments in parallel**, so
+     replication overlaps the player's sequential fetches;
+  4. ExoPlayer starts at **~1 s buffered** instead of ~2.5 s (`<AliranVideo>`
+     `bufferConfig` defaults — the stall-resync/self-heal ladder covers the slightly
+     higher rebuffer risk);
+  5. optional [`zapPrefetch`](feed-buffer.md#zap-prefetch-keep-the-neighbors-live-edge-warm-optional)
+     keeps the adjacent channels' newest segment warm (off by default — standing
+     bandwidth).
 - **Fixed: flipping *back* to a channel used to hang.** `resolve()` opened a duplicate
   Hyperdrive on the same store namespace and deadlocked. `sdk/player.js serveFeed` now
   reuses the cached feed per `feedKey`; update to a build that includes it (the

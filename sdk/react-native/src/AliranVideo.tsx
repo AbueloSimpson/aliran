@@ -26,10 +26,18 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native'
-import Video from 'react-native-video'
+import Video, { type BufferConfig } from 'react-native-video'
 import { AliranBackend, type BackendMessage } from './backend'
 
 const RETRY_MS = 2500
+// Start-buffer tuning (zap latency): ExoPlayer's DefaultLoadControl waits for
+// ~2.5 s of media before starting playback — on a 2 s-segment live feed that is
+// most of the perceived zap time once bytes flow. 1 s is enough to start (every
+// segment begins on a keyframe), and the slightly higher rebuffer risk is covered
+// by the self-heal ladder below (stall resync → transport teardown). After a
+// rebuffer, ask for a bit more headroom before resuming. Hosts override via the
+// bufferConfig prop (merged over these defaults).
+const BUFFER_CONFIG = { bufferForPlaybackMs: 1000, bufferForPlaybackAfterRebufferMs: 1500 }
 // Live-edge freeze self-heal: a live HLS window can be tiny (16 s on the reference
 // deploy), so a network blip longer than the window slides it past the playhead —
 // react-native-video fires NO error, the picture just freezes while everything else
@@ -85,6 +93,9 @@ export interface AliranVideoProps {
   /** How long the playhead may sit still (while playing) before a resync; 0 disables.
    *  Default 12000 — under the smallest deployed live window (8×2 s). */
   stallTimeoutMs?: number
+  /** ExoPlayer load-control overrides, merged over the zap-tuned defaults
+   *  (bufferForPlaybackMs 1000 / bufferForPlaybackAfterRebufferMs 1500). */
+  bufferConfig?: BufferConfig
   /** Extra props spread onto the underlying <Video>. */
   videoProps?: Record<string, unknown>
 }
@@ -92,7 +103,7 @@ export interface AliranVideoProps {
 export function AliranVideo ({
   backend, streamId, autoPlay = true, style, controls = true, paused,
   resizeMode = 'contain', onSource, onFallback, onSourceChanged, onFeedChanged, onPeers,
-  onBuffering, onError, onStall, onTune, stallTimeoutMs = STALL_MS, videoProps
+  onBuffering, onError, onStall, onTune, stallTimeoutMs = STALL_MS, bufferConfig, videoProps
 }: AliranVideoProps) {
   const [url, setUrl] = useState<string | null>(backend.url)
   const [attempt, setAttempt] = useState(0) // remounts <Video>; trails epoch (see remount)
@@ -243,7 +254,7 @@ export function AliranVideo ({
   return (
     <Video
       key={url + ':' + attempt}
-      source={{ uri: url }}
+      source={{ uri: url, bufferConfig: { ...BUFFER_CONFIG, ...bufferConfig } }}
       style={style ?? StyleSheet.absoluteFill}
       controls={controls}
       paused={paused}

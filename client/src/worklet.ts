@@ -12,6 +12,12 @@ export type { Stream, BackendMessage } from '@aliran/react-native'
 // typical zapping range; bounded so a big catalog doesn't open too many topics at once.
 const PREWARM_CHANNELS = 12
 
+// Adjacent-channel zap prefetch (keep the next/previous channels' newest segment
+// replicated while watching, so CH+/CH- starts from warm bytes). OFF: unlike prewarm
+// it costs standing bandwidth ≈ the neighbors' bitrate for as long as a channel
+// plays. Flip to true (or { neighbors, intervalMs }) to enable — see sdk/player.js.
+const ZAP_PREFETCH: boolean = false
+
 class Backend extends AliranBackend {
   boot (panelPubKey: string, hybrid?: HybridConfig) {
     // debug: every backend message hits `adb logcat -s ReactNativeJS` — this
@@ -19,7 +25,7 @@ class Backend extends AliranBackend {
     // prewarm: open the first N channels' feeds right after login so the FIRST zap to a
     // channel is warm (not just re-zaps). Capped so a large lineup doesn't join hundreds
     // of DHT topics at once; a bounded TV lineup warms fully.
-    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, debug: true })
+    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, debug: true })
   }
 }
 

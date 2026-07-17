@@ -157,7 +157,7 @@ networks (mobile/Wi-Fi)** — the 2026-07-16 S22 freeze happened at `8×2 s`.
 | Fresh client store, first ever connect | 30–90 s (cold DHT + cold replica) |
 | Returning viewer, **`disk`** broadcaster (warm topic) | ~10 s |
 | Returning viewer after a **`ram`** broadcaster restart | 40–55 s (cold DHT again) |
-| After the playlist appears | a few seconds of `404`s while the live edge replicates |
+| After the playlist appears | a few seconds while the live edge replicates (the server *holds* requests until the content lands — no 404 churn — and streams segment bytes as blocks arrive) |
 
 `1 peer` in broadcaster status means the broadcaster only; each extra viewer is an
 extra seeder. See also the latency notes in
@@ -215,3 +215,39 @@ It's **bandwidth-cheap**: replication is sparse, so pre-warm warms the *connecti
 a full download — segments only transfer when a feed is actually served. Pre-warmed feeds
 share the same single-flight cache as played feeds, so a play that races the warm reuses
 the one open (never a second Hyperdrive on the same namespace).
+
+### How segment bytes reach the player (progressive serving)
+
+The localhost media server (shared core `sdk/serve.js`, used by the SDK engine, the
+Android worklet, and the desktop tools) is tuned for zap latency:
+
+- **Block-progressive bodies:** a segment response streams 64 KB hypercore blocks to
+  the player *as they replicate* — ExoPlayer starts parsing the first block while the
+  tail is still in flight (every segment starts on a keyframe, so decode can begin
+  from the first bytes). `test:serve` proves first-byte-before-full-blob with a gated
+  replication pipe.
+- **Availability wait:** a playlist/segment that hasn't replicated yet is *held*
+  (bounded at 6 s) and served the moment it lands, instead of 404ing the player into
+  its 2.5 s retry remount.
+- **Live-edge read-ahead:** each playlist request kicks off a *parallel* background
+  download of the newest 3 segments, so replication overlaps the player's strictly
+  sequential fetch pattern instead of being demand-paged segment by segment.
+
+### Zap prefetch: keep the neighbors' live edge warm (optional)
+
+`zapPrefetch` (SDK option / RN `start()` option; **off by default**) goes one step past
+pre-warm: while a channel plays, the SDK keeps the **newest segment** of the
+next/previous channels in curated zap order replicated locally (following each
+neighbor's *current* catalog `feedKey`), so a CH+/CH− zap starts from warm bytes —
+typically shaving the target's first-segment fetch off the switch entirely.
+
+- `true` — one neighbor each way, refreshed every 3 s (`{ neighbors: 1, intervalMs: 3000 }`).
+- `{ neighbors, intervalMs }` — widen the warm ring / change the cadence.
+
+**The cost is standing bandwidth, which is why it's off by default:** a live feed
+rotates a new segment every `HLS_TIME` seconds, so keeping a neighbor's newest segment
+warm downloads ≈ that channel's full bitrate for as long as you're watching — ~2×
+your playing channel's bandwidth with `neighbors: 1` (one ahead + one behind). Enable
+it for lean-back TV profiles where zap feel beats data budgets; leave it off for
+metered/mobile viewers. Covered by the `test:sdk` zap-prefetch section (a neighbor's
+newest segment must be fully local without ever being served over HTTP).

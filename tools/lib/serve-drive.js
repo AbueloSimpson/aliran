@@ -1,85 +1,23 @@
 // HTTP handler that serves files from a Hyperdrive with Range support.
 //
-// Shared reference implementation for the localhost media server. This Node version
-// powers the desktop viewer (tools/viewer.js); the client's Bare worklet mirrors it
-// with bare-http1 (same request/response shape).
+// Thin wrapper over the SDK's shared progressive serving core (sdk/serve.js) —
+// one implementation for the desktop viewer (tools/viewer.js), the e2e harnesses,
+// and the client's Bare worklet (via sdk/player.js). The core adds the zap-latency
+// behaviors: block-progressive bodies (bytes stream as they replicate), a bounded
+// availability wait before 404ing a not-yet-replicated media path, and live-edge
+// read-ahead when a playlist is served. See sdk/serve.js for the full story.
 
-const TYPES = {
-  '.m3u8': 'application/vnd.apple.mpegurl',
-  '.ts': 'video/mp2t',
-  '.m4s': 'video/iso.segment',
-  '.mp4': 'video/mp4',
-  '.m4a': 'audio/mp4',
-  '.aac': 'audio/aac',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.webp': 'image/webp'
-}
-
-function contentType (p) {
-  const i = p.lastIndexOf('.')
-  return (i >= 0 && TYPES[p.slice(i).toLowerCase()]) || 'application/octet-stream'
-}
+import { createDriveHandler } from '../../sdk/serve.js'
 
 // Returns an (req, res) handler bound to `drive`. Optionally maps a URL prefix (e.g.
-// '/assets') to a second drive via `mounts`.
-export function driveHandler (drive, { mounts = {} } = {}) {
-  return async function handler (req, res) {
-    try {
-      let urlPath = decodeURIComponent((req.url || '/').split('?')[0])
-      if (urlPath === '/') urlPath = '/index.m3u8'
-
-      // Resolve which drive serves this path (mount prefixes take precedence).
-      let target = drive
-      for (const [prefix, d] of Object.entries(mounts)) {
-        if (urlPath.startsWith(prefix)) { target = d; urlPath = urlPath.slice(prefix.length) || '/'; break }
-      }
-
-      const entry = await target.entry(urlPath)
-      if (!entry || !entry.value.blob) { res.writeHead(404); return res.end('not found') }
-
-      const size = entry.value.blob.byteLength
-      const range = req.headers.range
-      const headers = {
-        'Content-Type': contentType(urlPath),
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-cache'
-      }
-
-      if (range) {
-        const m = /bytes=(\d*)-(\d*)/.exec(range)
-        let start = m && m[1] ? parseInt(m[1], 10) : 0
-        let end = m && m[2] ? parseInt(m[2], 10) : size - 1
-        if (isNaN(start) || isNaN(end) || start > end || end >= size) {
-          res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end()
-        }
-        const wanted = end - start + 1
-        headers['Content-Range'] = `bytes ${start}-${end}/${size}`
-        headers['Content-Length'] = String(wanted)
-        res.writeHead(206, headers)
-        if (req.method === 'HEAD') return res.end()
-        // Stream from `start` and emit exactly `wanted` bytes, regardless of the
-        // underlying createReadStream end-offset semantics.
-        const rs = target.createReadStream(urlPath, { start })
-        let sent = 0
-        rs.on('data', (chunk) => {
-          if (sent >= wanted) return
-          const out = sent + chunk.length > wanted ? chunk.subarray(0, wanted - sent) : chunk
-          sent += out.length
-          res.write(out)
-          if (sent >= wanted) { res.end(); rs.destroy() }
-        })
-        rs.on('end', () => { if (sent < wanted) res.end() })
-        rs.on('error', () => { try { res.destroy() } catch {} })
-      } else {
-        headers['Content-Length'] = String(size)
-        res.writeHead(200, headers)
-        if (req.method === 'HEAD') return res.end()
-        target.createReadStream(urlPath).pipe(res)
-      }
-    } catch (err) {
-      res.writeHead(500); res.end('server error: ' + (err && err.message))
+// '/assets') to a second drive via `mounts` (mounted paths are ancillary content —
+// a miss 404s immediately instead of holding the request open). Extra opts
+// (waitMs, pollMs, readAhead) pass through to the serving core.
+export function driveHandler (drive, { mounts = {}, ...opts } = {}) {
+  return createDriveHandler((urlPath) => {
+    for (const [prefix, d] of Object.entries(mounts)) {
+      if (urlPath.startsWith(prefix)) return { drive: d, path: urlPath.slice(prefix.length) || '/', media: false }
     }
-  }
+    return { drive, path: urlPath, media: true }
+  }, opts)
 }

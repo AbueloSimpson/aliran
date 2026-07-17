@@ -78,6 +78,24 @@ broadcaster that comes up later is found quickly — and after two consecutive
 advancing probes playback is handed back to P2P. With `mode: 'p2p-only'` (the
 default, used by the app worklet) behavior is exactly the pre-hybrid engine.
 
+## Zap latency
+
+The localhost server (`serve.js`, shared with the desktop tools) is tuned for fast
+channel switching: segment bodies stream **block-progressively** (bytes reach the
+player as they replicate — no waiting for the full blob), a not-yet-replicated
+playlist/segment request is **held briefly and served on arrival** instead of 404ing,
+and each playlist request **read-aheads the newest segments in parallel**. Two
+warm-up options stack on top:
+
+- `prewarm` — open entitled feeds' DHT topics right after login so the *first* zap is
+  warm. `false` (default) | `true` (all) | integer cap (lowest curated order first).
+  Bandwidth-cheap: warms connections, not downloads.
+- `zapPrefetch` — while a stream plays, keep the **newest segment** of the
+  next/previous channels in curated zap order replicated locally, so CH+/CH− starts
+  from warm bytes. **Off by default — costs standing bandwidth** (≈ each neighbor's
+  full bitrate while playing). `true` = `{ neighbors: 1, intervalMs: 3000 }`, or pass
+  the object to tune.
+
 The on-disk store is a **disposable replica cache**: corruption (e.g. a crash mid-write →
 `OPLOG_CORRUPT`) is detected, the store is purged and the operation retried once —
 in-memory entitlements survive, everything re-replicates from peers (`recover.js`,
@@ -92,6 +110,8 @@ verified by `npm run test:corrupt`).
 - `index.js` — Node entry (wires `node:http`/`node:fs`; exports `createPlayer`)
 - `login.js` — OPRF login protocol (canonical home; `client/backend/login.mjs` re-exports)
 - `recover.js` — store-corruption recovery (canonical home)
+- `serve.js` — progressive media-serving core (availability wait, Range, read-ahead;
+  also behind `tools/lib/serve-drive.js`)
 
 The app's worklet (`client/backend/backend.mjs`) is a thin IPC shell over `player.js`.
 
@@ -100,6 +120,8 @@ The app's worklet (`client/backend/backend.mjs`) is a thin IPC shell over `playe
 - `npm test` (from `sdk/`) — fast unit tests, no network.
 - `npm run test:sdk` (repo root) — headless e2e: real panel + broadcaster, SDK
   login → resolve → ffprobe-validated HLS over P2P. Needs ffmpeg/ffprobe on PATH.
+- `npm run test:serve` (repo root) — deterministic serving-core test: progressive
+  first-byte-before-full-blob, availability wait, Range math, playlist read-ahead.
 
 For React Native apps, see **[`@aliran/react-native`](react-native/README.md)** — a
 drop-in `<AliranVideo>` component + worklet host built on this engine.

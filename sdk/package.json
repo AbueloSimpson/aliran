@@ -9,7 +9,8 @@
     ".": "./index.js",
     "./player.js": "./player.js",
     "./login.js": "./login.js",
-    "./recover.js": "./recover.js"
+    "./recover.js": "./recover.js",
+    "./serve.js": "./serve.js"
   },
   "scripts": {
     "test": "node test.mjs"
