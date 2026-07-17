@@ -209,7 +209,48 @@ log('D: playlist read-ahead (newest segments downloaded without being requested)
   assert(await covered('/ra2.ts'), 'second-newest segment replicated by read-ahead')
 }
 
-log('\nRESULT: PASS ✅  progressive serving, availability wait, ranges, read-ahead')
+log('E: stalled read on a reclaimed blob aborts within the idle bound (never hangs)')
+{
+  // The wedge (proven on the live VPS, 2026-07-17): a replica lagging the live edge
+  // resolves a media path to a version whose blob the broadcaster already reclaimed,
+  // so no peer can serve the blocks. Reproduce it deterministically — put a segment,
+  // let its ENTRY replicate, then CLEAR the blocks at the writer (the per-rotation
+  // reclaim in broadcaster/src/hls.js). A GET now commits to a blob no peer holds:
+  // without the idle-abort the response never flushes headers and never ends.
+  const server2 = http.createServer(driveHandler(reader, { waitMs: 1500, pollMs: 60, readIdleMs: 1500 }))
+  await new Promise((resolve) => server2.listen(0, '127.0.0.1', resolve))
+  const port2 = server2.address().port
+
+  await writer.put('/gone.ts', SMALL)
+  await waitFor(() => reader.entry('/gone.ts'), 10000, 'entry for /gone.ts')
+  const gb = (await reader.entry('/gone.ts')).value.blob
+  const rblobs = await reader.getBlobs()
+  assert(!(await rblobs.core.has(gb.blockOffset)), 'reader does not yet hold the /gone.ts blob (precondition)')
+  const wblobs = await writer.getBlobs()
+  await wblobs.core.clear(gb.blockOffset, gb.blockOffset + gb.blockLength) // no peer can serve it now
+
+  const t0 = Date.now()
+  const outcome = await new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: port2, path: '/gone.ts', agent: false }, (res) => {
+      let n = 0
+      res.on('data', (c) => { n += c.length })
+      res.on('end', () => resolve({ kind: 'ended', status: res.statusCode, bytes: n }))
+      res.on('aborted', () => resolve({ kind: 'aborted' }))
+    })
+    req.on('error', () => resolve({ kind: 'error' }))
+    setTimeout(() => resolve({ kind: 'hung' }), 8000) // far above readIdleMs — a real hang fails loudly
+  })
+  const dt = Date.now() - t0
+  assert(outcome.kind !== 'hung', 'a read committed to an unfetchable blob did NOT hang forever')
+  assert(outcome.kind !== 'ended', 'the stalled read did not falsely complete with a body')
+  assert(dt >= 1200 && dt < 5000, `stalled read aborted within the idle bound (${dt} ms, readIdleMs 1500)`)
+
+  const ok = await httpGet(port2, '/late.ts')
+  assert(ok.status === 200 && ok.body.equals(SMALL), 'a fresh, available path still serves after the abort (server healthy)')
+  server2.close()
+}
+
+log('\nRESULT: PASS ✅  progressive serving, availability wait, ranges, read-ahead, stalled-read abort')
 server.close()
 await writer.close(); await reader.close()
 await storeW.close(); await storeR.close()

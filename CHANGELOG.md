@@ -969,6 +969,53 @@ Groundwork for the keyless repeater appliance (regional super-peers that mirror
   A wedge that a fresh resolve clears immediately is more evidence for the
   wedged-connection-reuse theory from the S20 rollout notes.
 
+### Fix: the wedge behind that acceptance hang — a media read committed to a reclaimed blob never ends (fixed in the SDK serving core)
+The acceptance deadline+retry above treated the symptom; instrumenting the live VPS
+found the real cause, and it is **not** wedged-connection reuse. The feed is an
+EPHEMERAL rolling buffer: `broadcaster/src/hls.js` (`mirrorDirToDrive`) frees the
+PREVIOUS `/index.m3u8` blob the instant it writes the next (~every 2 s), so each
+playlist version's blob is fetchable for only about one segment. A viewer replica
+that lags the live edge by a rotation resolves the path to a version whose blob has
+ALREADY been reclaimed everywhere — `createReadStream` then waits FOREVER for blocks
+no peer holds. Node buffers the 200 response headers until the first body byte, so
+the response never flushes headers and never ends; a client with no read timeout
+(the acceptance harness's `httpGet`) hangs indefinitely.
+
+- **Proven on the live VPS (2026-07-17):** a single held `/index.m3u8` request stuck
+  44 s+ (`never completed`, no response headers) while FRESH reads issued every
+  second returned 200 in 2–60 ms — the *current* live version's blob is always
+  present; only the committed-to old version is gone. So one HTTP request dies while
+  the feed is perfectly healthy, and the harness's unbounded `httpGet` never retries.
+- **The tune watchdog cannot see this.** Its health signal is the playlist's METADATA
+  signature (`drive.entry().seq`), which advances normally as versions replicate — so
+  it stands down ("playlist advanced — tuned") and, even if it stayed armed, its
+  remedies (evict / retune / teardown) would not restore a blob the broadcaster
+  reclaimed. This is a read-path stall, not a discovery or connection fault: the
+  watchdog is the wrong layer, which is why the earlier wedged-connection-reuse theory
+  didn't fit (a fresh resolve clears it because a fresh READ re-resolves to the live
+  version, not because a new connection is dialed).
+- **Fix in `sdk/serve.js`** (the shared progressive core behind the SDK request
+  handler, the Bare worklet, and the desktop tools): a media read that yields NO bytes
+  for `readIdleMs` (default 6 s, under ExoPlayer's 8 s read timeout) is aborted, so the
+  client re-requests and re-resolves to the current live version whose blob still
+  exists. The idle clock arms before the first byte (a read that never yields one must
+  abort too) and RESETS on every block, so a slow-but-advancing progressive read is
+  untouched. In the acceptance harness the abort turns the infinite `httpGet` hang into
+  an error its existing `waitFor` loop retries in ~6 s (the external deadline+retry is
+  now a rarely-hit backstop); on-device it drives react-native-video's retry sooner and
+  cleaner than its own read timeout, so a stuck tuning pill clears instead of parking.
+- **Tests:** `npm run test:serve` gains case E — put a segment, replicate its ENTRY,
+  then CLEAR its blocks at the writer (the broadcaster's per-rotation reclaim), and a
+  GET committed to that blob must ABORT within the idle bound instead of hanging;
+  cases A–D (progressive body, availability wait, ranges, read-ahead) are unchanged.
+  `npm run test:sdk` (tune self-heal + wedged-connection teardown + hybrid + prewarm +
+  zap-prefetch) stays green.
+- **Verified live:** the same held request that stuck forever now aborts at ~7 s
+  (`readIdleMs` + startup) while fresh reads keep serving in ms; two full
+  `tools/acceptance-remote.mjs` runs against the VPS passed 6/6 with every channel
+  10–22 s to play — none near the 90 s deadline and no fresh-resolve retry needed
+  (before the fix, a wedged channel sat ~97 s = deadline + external retry).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

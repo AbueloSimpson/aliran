@@ -32,6 +32,21 @@
 //   Superseded downloads (segments that rotated out of the newest set) are
 //   destroyed so a cleared blob can't strand a range forever.
 //
+//   STALLED-READ ABORT — the feed is an EPHEMERAL rolling buffer: the broadcaster
+//   frees the previous /index.m3u8 blob the instant it writes the next one
+//   (broadcaster/src/hls.js mirrorDirToDrive), so each playlist version's blob is
+//   fetchable for only ~one segment. A replica that lags the live edge by a
+//   rotation resolves the path to a version whose blob has ALREADY been reclaimed
+//   everywhere — createReadStream then waits FOREVER for blocks no peer holds. The
+//   response never flushes headers (Node holds them until the first body byte) and
+//   never ends: a client with no read timeout (or the acceptance harness) hangs
+//   indefinitely, and the tune watchdog can't see it (the METADATA replicates fine,
+//   so its playlist signature keeps advancing — proven wedge, 2026-07-17 VPS
+//   acceptance). A media read that yields NO bytes for `readIdleMs` is therefore
+//   aborted, so the client re-requests and re-resolves to the current live version
+//   whose blob still exists. Only a fully stalled read trips it — progressive reads
+//   reset the idle clock on every block, so a slow-but-advancing fetch is untouched.
+//
 // Every wait is bounded and every stream tolerates client aborts — the player
 // aborts in-flight requests routinely, and an unhandled stream error SIGABRTs
 // the Bare worklet (the whole app process).
@@ -55,8 +70,11 @@ export function contentType (p) {
 }
 
 // Defaults: waitMs under ExoPlayer's 8 s read timeout; pollMs ≈ one segment write;
-// readAhead covers the 2–3 segments a player fetches before first frame.
-const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3 }
+// readAhead covers the 2–3 segments a player fetches before first frame. readIdleMs
+// (stalled-read abort) sits under ExoPlayer's 8 s read timeout too so OUR clean abort
+// drives the retry — a read that yields zero bytes for this long is stuck on a blob
+// the broadcaster reclaimed, not merely slow.
+const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3, readIdleMs: 6000 }
 
 // Parse segment/media URIs out of an HLS playlist body (everything that isn't a
 // tag or blank), normalized to absolute drive paths. Tiny by design — enough for
@@ -142,19 +160,30 @@ async function waitEntry (drive, path, waitMs, pollMs) {
 // tolerance, emitting exactly `wanted` bytes from stream start (createReadStream
 // end-offset semantics differ across versions — cap explicitly). Works for both
 // node:http and bare-http1 responses (streamx-compatible write/drain).
-function pump (rs, res, wanted) {
+//
+// idleMs (0 = off): abort the response if no blob byte flows for that long. A read
+// that yields zero bytes indefinitely is committed to a reclaimed blob (see the
+// STALLED-READ ABORT note in the header) — without this it never flushes headers or
+// ends. The clock arms before the first byte (a read that never yields one must
+// abort too) and resets on every chunk, so a slow-but-progressing read is untouched.
+function pump (rs, res, wanted, idleMs = 0) {
   let sent = 0
   let done = false
+  let idle = null
+  const clearIdle = () => { if (idle) { clearTimeout(idle); idle = null } }
+  const armIdle = () => { if (!idleMs) return; clearIdle(); idle = setTimeout(() => finish(true), idleMs) }
   const finish = (abort) => {
     if (done) return
     done = true
+    clearIdle()
     try { rs.destroy() } catch {}
     if (abort) { try { res.destroy() } catch {} } else { try { res.end() } catch {} }
   }
   res.on('error', () => finish(true))
-  res.on('close', () => { if (!done) { done = true; try { rs.destroy() } catch {} } })
+  res.on('close', () => { if (!done) { done = true; clearIdle(); try { rs.destroy() } catch {} } })
   rs.on('data', (chunk) => {
     if (done) return
+    armIdle() // progress resets the idle clock; only a fully stalled read trips it
     const out = sent + chunk.length > wanted ? chunk.subarray(0, wanted - sent) : chunk
     sent += out.length
     let ok = true
@@ -167,6 +196,7 @@ function pump (rs, res, wanted) {
   })
   rs.on('end', () => finish(false))
   rs.on('error', () => finish(true))
+  armIdle() // a read that never yields a byte (reclaimed blob) must abort, not hang
 }
 
 // Build an async (req, res) handler.
@@ -216,7 +246,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
         const wanted = end - start + 1
         res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
         if (req.method === 'HEAD') return res.end()
-        pump(drive.createReadStream(p, { start }), res, wanted)
+        pump(drive.createReadStream(p, { start }), res, wanted, media ? cfg.readIdleMs : 0)
       } else {
         res.writeHead(200, { ...headers, 'Content-Length': String(size) })
         if (req.method === 'HEAD') return res.end()
@@ -234,7 +264,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
           rs.on('end', fire)
           rs.on('close', fire)
         }
-        pump(rs, res, size)
+        pump(rs, res, size, media ? cfg.readIdleMs : 0)
       }
     } catch (err) {
       if (opts.onError) { try { opts.onError(err) } catch {} }
