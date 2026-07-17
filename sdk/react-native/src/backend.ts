@@ -44,6 +44,16 @@ export interface TuneConfig {
   relookupMaxMs?: number
 }
 
+// Adjacent-channel zap prefetch (see sdk/player.js normalizeZapPrefetch): while a
+// stream plays, keep the newest segment of the next/previous channels in curated
+// zap order replicated locally so a CH+/CH- zap starts from warm bytes. OFF by
+// default — unlike prewarm this costs STANDING BANDWIDTH (≈ each warmed neighbor's
+// bitrate while playing). true = { neighbors: 1, intervalMs: 3000 }.
+export interface ZapPrefetchConfig {
+  neighbors?: number
+  intervalMs?: number
+}
+
 export interface SavedCredentials { username: string; password: string }
 
 export type BackendMessage =
@@ -74,6 +84,9 @@ export interface StartOptions {
   /** Tune self-heal knobs (timeout → evict + one retry → friendly error; forced DHT
    *  re-lookups while tuning). Omit for the engine defaults. */
   tune?: TuneConfig
+  /** Keep adjacent channels' newest segment warm while playing so CH+/CH- zaps start
+   *  fast. OFF by default — costs standing bandwidth (see ZapPrefetchConfig). */
+  zapPrefetch?: boolean | ZapPrefetchConfig
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
 }
@@ -116,7 +129,7 @@ export class AliranBackend {
     this.worklet.start('/app.bundle', bytes as any)
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
-    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune })
+    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch })
     const queued = this.pending; this.pending = []
     for (const m of queued) this.send(m)
   }

@@ -38,6 +38,12 @@
 // down wedged peer connections at 2× (destroy + fresh dial, 'feed:reconnect'), then
 // emits a friendly 'error' by ≤3×. See normalizeTune() and _startTuneWatchdog().
 //
+// Zap latency: serving is handled by the shared progressive core (serve.js) —
+// availability wait + block-progressive bodies + live-edge read-ahead. `prewarm`
+// (below) makes first zaps warm; `zapPrefetch` (OFF by default — standing
+// bandwidth) additionally keeps the adjacent channels' newest segment replicated
+// while watching, see normalizeZapPrefetch().
+//
 // Hybrid CDN<->P2P (S10b): pass `hybrid` config to choose the active source per play.
 // The SDK never decodes video — it exposes the CURRENT source URL + health signals and
 // keeps replicating the P2P feed in the background while on CDN so it can auto-return.
@@ -53,6 +59,7 @@ import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { panelClient, login as oprfLogin } from './login.js'
 import { isCorruptionError, withRecovery } from './recover.js'
+import { createDriveHandler, playlistUris } from './serve.js'
 
 // Minimal emitter: unlike node:events it exists in both runtimes and never throws on
 // an unhandled 'error' event (SDK errors surface to callers as rejections instead).
@@ -131,13 +138,30 @@ function normalizePrewarm (v) {
   return n
 }
 
+// zapPrefetch: while a stream plays, keep the NEWEST segment of the adjacent
+// channels (next/previous in curated zap order) replicated locally, so a CH+/CH-
+// zap starts from warm bytes instead of a cold demand-paged fetch. OFF by default —
+// unlike prewarm (connections only, ~free), this costs STANDING BANDWIDTH roughly
+// equal to each warmed neighbor's bitrate for as long as a stream is playing.
+// true = { neighbors: 1, intervalMs: 3000 }; an object overrides those knobs.
+function normalizeZapPrefetch (v) {
+  if (v === false || v == null) return null
+  const cfg = { neighbors: 1, intervalMs: 3000, ...(v === true ? {} : v) }
+  if (!Number.isInteger(cfg.neighbors) || cfg.neighbors < 1) throw new Error('zapPrefetch.neighbors must be a positive integer')
+  if (!(Number(cfg.intervalMs) > 0)) throw new Error('zapPrefetch.intervalMs must be a positive number of milliseconds')
+  return cfg
+}
+
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._hybrid = normalizeHybrid(hybrid)
     this._prewarmN = normalizePrewarm(prewarm)
     this._tune = normalizeTune(tune)
+    this._zapPrefetch = normalizeZapPrefetch(zapPrefetch)
+    this._zapTimer = null // adjacent-channel warm loop (only when zapPrefetch is on)
+    this._zapRanges = new Map() // streamId -> { path, range } — newest warmed segment per neighbor
     this._active = null // current play state: { streamId, feedKey, localUrl, cdnUrl, source, lastSig, lastAdvance }
     this._watchTimer = null // P2P stall watchdog (while source === 'p2p')
     this._probeTimer = null // P2P recovery probe (while source === 'cdn')
@@ -196,10 +220,7 @@ export class AliranPlayer extends Emitter {
     if (!n || this._hybrid.mode === 'cdn-only' || !this._entitled.size) return
     // Warm lowest curated order first (viewers start at ch1 and zap up); fall back to
     // login order for uncurated streams.
-    const rank = new Map(this._streams.map((s, i) => [s.id, (s.order ?? 1e9) * 1e6 + i]))
-    const ids = [...this._entitled.keys()]
-      .sort((a, b) => (rank.get(a) ?? 1e15) - (rank.get(b) ?? 1e15))
-      .slice(0, n === Infinity ? undefined : n)
+    const ids = this._curatedIds().slice(0, n === Infinity ? undefined : n)
     await Promise.all(ids.map(async (id) => {
       try {
         const k = this._entitled.get(id)
@@ -208,6 +229,94 @@ export class AliranPlayer extends Emitter {
         if (feedKey) await this._openFeed(feedKey, k.encryptionKey)
       } catch { /* prewarm is best-effort; a real play will retry */ }
     }))
+  }
+
+  // Entitled stream ids in curated zap order (lowest `order` first, login order as
+  // the tie-break) — the order the app's CH+/CH- zap walks.
+  _curatedIds () {
+    const rank = new Map(this._streams.map((s, i) => [s.id, (s.order ?? 1e9) * 1e6 + i]))
+    return [...this._entitled.keys()].sort((a, b) => (rank.get(a) ?? 1e15) - (rank.get(b) ?? 1e15))
+  }
+
+  // --- adjacent-channel prefetch (zapPrefetch option; OFF by default) ---
+
+  _clearZapPrefetch () {
+    if (this._zapTimer) { clearInterval(this._zapTimer); this._zapTimer = null }
+    for (const { range } of this._zapRanges.values()) { if (range) { try { range.destroy() } catch {} } }
+    this._zapRanges.clear()
+  }
+
+  // While a stream plays, keep the NEWEST segment of the curated-order neighbors
+  // replicated so a zap to them starts warm. Re-armed on every resolve() (the
+  // neighbor set moves with the active channel), cleared on stop(). Best-effort:
+  // a failed warm just retries on the next tick.
+  _startZapPrefetch () {
+    this._clearZapPrefetch()
+    const cfg = this._zapPrefetch
+    if (!cfg || this._hybrid.mode === 'cdn-only') return
+    const a = this._active
+    if (!a) return
+    let busy = false
+    const timer = setInterval(() => {
+      if (busy || this._zapTimer !== timer || this._active !== a) return
+      busy = true
+      this._warmNeighbors(a).catch(() => {}).then(() => { busy = false })
+    }, cfg.intervalMs)
+    this._zapTimer = timer
+    this._warmNeighbors(a).catch(() => {}) // first warm now, not one interval late
+  }
+
+  async _warmNeighbors (a) {
+    const ids = this._curatedIds()
+    const i = ids.indexOf(a.streamId)
+    if (i < 0 || ids.length < 2) return
+    const wanted = new Set()
+    for (let k = 1; k <= this._zapPrefetch.neighbors; k++) {
+      wanted.add(ids[(i + k) % ids.length])
+      wanted.add(ids[(i - k + ids.length) % ids.length])
+    }
+    wanted.delete(a.streamId)
+    // Drop warm state for channels that are no longer neighbors (we zapped away).
+    for (const [id, s] of this._zapRanges) {
+      if (!wanted.has(id)) {
+        if (s.range) { try { s.range.destroy() } catch {} }
+        this._zapRanges.delete(id)
+      }
+    }
+    await Promise.all([...wanted].map((id) => this._warmNeighbor(id).catch(() => {})))
+  }
+
+  // Pull one neighbor's playlist and start a parallel download of its newest
+  // segment's blob. Every await is bounded or cached; the drive open reuses the
+  // single-flight feed cache (a later zap to this channel shares the same drive).
+  async _warmNeighbor (id) {
+    const keys = this._entitled.get(id)
+    if (!keys || !keys.encryptionKey) return
+    const feedKey = await this._currentFeedKey(id, keys.feedKey)
+    if (!feedKey) return
+    const feed = await this._openFeedWithin(feedKey, keys.encryptionKey, this._tune.timeoutMs)
+    if (!feed) return
+    let timer
+    const buf = await Promise.race([
+      feed.drive.get('/index.m3u8'),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), 2500) })
+    ]).catch(() => null).finally(() => clearTimeout(timer))
+    if (!buf) return
+    const uris = playlistUris(b4a.toString(buf))
+    const path = uris[uris.length - 1]
+    if (!path) return
+    const prev = this._zapRanges.get(id)
+    if (prev && prev.path === path) return // newest segment unchanged — already warm(ing)
+    if (prev && prev.range) { try { prev.range.destroy() } catch {} }
+    this._zapRanges.set(id, { path, range: null })
+    const entry = await feed.drive.entry(path)
+    const blob = entry && entry.value && entry.value.blob
+    if (!blob || !(blob.blockLength > 0)) return
+    const blobs = await feed.drive.getBlobs()
+    const range = blobs.core.download({ start: blob.blockOffset, end: blob.blockOffset + blob.blockLength })
+    const cur = this._zapRanges.get(id)
+    if (cur && cur.path === path) cur.range = range
+    else { try { range.destroy() } catch {} }
   }
 
   // Last display list from a successful login.
@@ -246,6 +355,7 @@ export class AliranPlayer extends Emitter {
     if (cfg.mode === 'p2p-only') {
       this._active = { streamId, feedKey, localUrl, cdnUrl: null, source: 'p2p', lastSig: null, lastAdvance: Date.now() }
       this._startTuneWatchdog()
+      this._startZapPrefetch()
       return { url: localUrl, source: 'p2p', localUrl, port, feedKey }
     }
 
@@ -263,6 +373,7 @@ export class AliranPlayer extends Emitter {
       this._startRecoveryProbe()
     }
     const url = this._active.source === 'p2p' ? localUrl : this._active.cdnUrl
+    this._startZapPrefetch() // warms P2P neighbors regardless of the active source
     return { url, source: this._active.source, localUrl, port, feedKey }
   }
 
@@ -401,6 +512,7 @@ export class AliranPlayer extends Emitter {
   async stop () {
     this._clearHybridTimers()
     this._clearTuneTimer()
+    this._clearZapPrefetch()
     this._active = null
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const server = this._server; this._server = null
@@ -825,6 +937,7 @@ export class AliranPlayer extends Emitter {
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} } // corrupt bees may refuse; bee close below retries
+    this._zapRanges.clear() // warm ranges die with their (closing) cores; the prefetch loop re-warms on the fresh store
     this._closeFeeds() // drop every cached feed on the dead store (fire-and-forget; see _closeFeeds)
     const closing = [this._assetsDrive, this._panelBee, this._store]
     this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
@@ -913,54 +1026,23 @@ export class AliranPlayer extends Emitter {
     return this._server.address().port
   }
 
-  // Range-capable Hyperdrive request handler for HLS players (and poster art).
+  // Request handler for HLS players (and poster art): the shared progressive
+  // serving core (sdk/serve.js) — availability wait, block-progressive bodies with
+  // Range support, live-edge read-ahead, abort tolerance (a player aborts requests
+  // routinely, and an unhandled stream error SIGABRTs the Bare worklet). Targets
+  // resolve PER REQUEST so a retune/rotation swaps the served feed live.
   _requestHandler () {
-    const TYPES = { '.m3u8': 'application/vnd.apple.mpegurl', '.ts': 'video/mp2t', '.m4s': 'video/iso.segment', '.mp4': 'video/mp4', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
-    const ctype = (p) => { const i = p.lastIndexOf('.'); return (i >= 0 && TYPES[p.slice(i).toLowerCase()]) || 'application/octet-stream' }
-    return async (req, res) => {
-      try {
-        let p = decodeURIComponent((req.url || '/').split('?')[0]); if (p === '/') p = '/index.m3u8'
-        // /assets/* is served from the panel's assets drive (posters/art).
-        let target = this._feedDrive
-        if (p.startsWith('/assets/') && this._assetsDrive) { target = this._assetsDrive; p = p.slice('/assets'.length) }
-        if (!target) { res.writeHead(404); return res.end('not found') }
-        const entry = await target.entry(p)
-        if (!entry || !entry.value.blob) { res.writeHead(404); return res.end('not found') }
-        const size = entry.value.blob.byteLength
-        const range = req.headers.range
-        const headers = { 'Content-Type': ctype(p), 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' }
-        if (range) {
-          const m = /bytes=(\d*)-(\d*)/.exec(range)
-          const start = m && m[1] ? parseInt(m[1], 10) : 0
-          const end = m && m[2] ? parseInt(m[2], 10) : size - 1
-          if (isNaN(start) || isNaN(end) || start > end || end >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end() }
-          const wanted = end - start + 1
-          res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
-          const rs = target.createReadStream(p, { start })
-          // The player aborts in-flight requests routinely (source switch, seek,
-          // teardown) — writing into the closed response must not become an unhandled
-          // stream error (it SIGABRTs the Bare worklet).
-          const abort = () => { try { rs.destroy() } catch {} }
-          res.on('error', abort)
-          res.on('close', abort)
-          let sent = 0
-          rs.on('data', (chunk) => { if (sent >= wanted) return; const out = sent + chunk.length > wanted ? chunk.subarray(0, wanted - sent) : chunk; sent += out.length; try { res.write(out) } catch { abort(); return } if (sent >= wanted) { try { res.end() } catch {} rs.destroy() } })
-          rs.on('end', () => { if (sent < wanted) { try { res.end() } catch {} } })
-          rs.on('error', () => { try { res.destroy() } catch {} })
-        } else {
-          res.writeHead(200, { ...headers, 'Content-Length': String(size) })
-          const rs = target.createReadStream(p)
-          res.on('error', () => { try { rs.destroy() } catch {} })
-          res.on('close', () => { try { rs.destroy() } catch {} })
-          rs.on('error', () => { try { res.destroy() } catch {} })
-          rs.pipe(res, () => {}) // callback swallows abort errors under streamx (Bare); ignored by Node
-        }
-      } catch (err) {
-        // Corruption can also surface at read time (the blobs core opens lazily): heal
-        // in the background; the host player's retry re-opens the feed on the fresh store.
-        if (isCorruptionError(err)) this._purge().catch(() => {})
-        res.writeHead(500); res.end('server error: ' + (err && err.message))
+    return createDriveHandler((p) => {
+      // /assets/* is served from the panel's assets drive (posters/art) — a genuine
+      // miss must 404 immediately (media: false), not hold the request open.
+      if (p.startsWith('/assets/') && this._assetsDrive) {
+        return { drive: this._assetsDrive, path: p.slice('/assets'.length), media: false }
       }
-    }
+      return this._feedDrive ? { drive: this._feedDrive, path: p, media: true } : null
+    }, {
+      // Corruption can also surface at read time (the blobs core opens lazily): heal
+      // in the background; the host player's retry re-opens the feed on the fresh store.
+      onError: (err) => { if (isCorruptionError(err)) this._purge().catch(() => {}) }
+    })
   }
 }

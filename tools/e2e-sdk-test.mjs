@@ -24,6 +24,9 @@
 // live edge, no error) — a re-zap must retune, then DESTROY the wedged connection
 // ('feed:reconnect') so the swarm dials fresh, and playback must resume with no
 // friendly error and no app restart.
+// Then ZAP PREFETCH (zapPrefetch option): playing a stream must warm the curated-order
+// neighbors — their newest segment fully replicated locally without ever being served
+// over HTTP, following the catalog's CURRENT (rotated) feedKey.
 // Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -71,7 +74,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cliZ: tmp('e2es-cliZ-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -495,10 +498,51 @@ try {
   log('wedge: retune → reconnect (teardown) → fresh dial resumed the live edge (' + healedSegs + ' segs) — no error, no app restart')
   await player4.stop()
 
+  // ===== zapPrefetch: the adjacent channel's newest segment replicates while watching =====
+  // With zapPrefetch on, playing a stream must keep the curated-order NEIGHBORS' newest
+  // segment warm in the local replica — without those feeds ever being served over HTTP.
+  // Curated order here is [movies(order 1), news(order 5), shopping, sports], so playing
+  // 'movies' must warm 'news' — which by now lives on the ROTATED feed (rotKeyHex),
+  // proving the prefetch also follows the catalog's current feedKey.
+  const playerZ = createPlayer({ panelPubKey, storeDir: dirs.cliZ, zapPrefetch: { neighbors: 1, intervalMs: 700 } })
+  cleanups.push(() => playerZ.stop())
+  await playerZ.connect()
+  let streamsZ = null
+  const deadlineZ = Date.now() + 60000
+  while (!streamsZ) {
+    if (Date.now() > deadlineZ) throw new Error('timeout: zap-prefetch SDK login')
+    try {
+      const s = await playerZ.login('alice', PASSWORD)
+      if (s.length >= 4) streamsZ = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streamsZ) await sleep(1500)
+  }
+  const rZ = await resolveWithin(playerZ, 'movies', 20000)
+  await waitFor(async () => { const r = await httpGet(rZ.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 40000, 'movies playback (zap-prefetch baseline)')
+  const warmedSeg = await waitFor(async () => {
+    const s = playerZ._zapRanges.get('news')
+    if (!s || !s.path) return null
+    const feedZ = await playerZ._feeds.get(rotKeyHex + ':' + b4a.toString(encKey, 'hex'))
+    if (!feedZ) return null
+    const entryZ = await feedZ.drive.entry(s.path)
+    const bZ = entryZ && entryZ.value.blob
+    if (!bZ || !(bZ.blockLength > 0)) return null
+    const blobsZ = await feedZ.drive.getBlobs()
+    for (let i = bZ.blockOffset; i < bZ.blockOffset + bZ.blockLength; i++) {
+      if (!(await blobsZ.core.has(i))) return null
+    }
+    return s.path
+  }, 30000, "zap-prefetch: neighbor 'news' newest segment replicated")
+  log("zapPrefetch: playing movies warmed neighbor news' newest segment (" + warmedSeg + ') — fully local, never served over HTTP')
+  await playerZ.stop()
+  const zapWarmed = !!warmedSeg
+
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
-    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown verified)' : 'FAIL ❌')
+    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && zapWarmed)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + adjacent-channel zap prefetch verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
