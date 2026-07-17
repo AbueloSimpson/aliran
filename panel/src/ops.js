@@ -10,10 +10,11 @@
 
 import fs from 'fs'
 import path from 'path'
+import { Worker } from 'worker_threads'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import {
-  evaluateFull, randomSalt, deriveVerifier, verify, wrapKeyFrom, wrap,
+  evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
   userKeyPair, sealTo, authKeyPair
 } from '@aliran/core'
 import { argonOpts, loadSecrets, saveSecrets } from './store.js'
@@ -375,6 +376,9 @@ export async function statusSummary (ctx) {
 // Panel-private (DATA_DIR/secrets/admins.json, mode 0600) — NEVER in the replicated
 // DB: the Hyperbee is public, and admin verifiers must not be exposed to offline
 // brute-force. Passwords are Argon2id-hashed with the deployment's cost settings.
+// Login verification runs in a worker thread, single-flight (makeAdminVerifier) —
+// a login flood must never block the event loop (2026-07-16 broadcaster incident;
+// same pattern as broadcaster/src/control-auth.js).
 
 function adminsPath (dataDir) { return path.join(dataDir, 'secrets', 'admins.json') }
 
@@ -452,16 +456,97 @@ const DUMMY_ADMIN = {
   verifier: '00'.repeat(32)
 }
 
-// Returns the admin record on success, null on any failure.
-export function verifyAdmin (ctx, name, password) {
-  if (typeof name !== 'string' || typeof password !== 'string') return null
-  const admins = loadAdmins(ctx.dataDir)
-  const a = admins[name]
-  const rec = a || DUMMY_ADMIN
-  const argon = rec.argon || argonOpts(ctx.config)
-  const ok = verify(b4a.from(password), b4a.from(rec.salt, 'hex'), b4a.from(rec.verifier, 'hex'), argon)
-  if (!a || !ok || a.status !== 'active') return null
-  return { name, tokenVersion: a.tokenVersion || 1 }
+// 503 for "can't verify right now" (busy / timed out / worker died) — admin-server's
+// generic err.httpStatus path turns it into the HTTP response.
+function unavailable (message) {
+  const e = new Error(message)
+  e.httpStatus = 503
+  return e
+}
+
+// Admin login verification for the admin server. The Argon2id grind runs in a
+// dedicated worker thread so it can NEVER block the event loop — on the main thread
+// a single verify is a synchronous memory-hard pass (memKiB per call), and on a
+// swapping small host that pass takes minutes: the 2026-07-16 broadcaster incident
+// had 4-5 queued /api/login verifies starve the control API AND swarm replication
+// for 25+ minutes; the panel's login route had the identical defect. Policy on top
+// of the worker (ported from broadcaster/src/control-auth.js):
+//
+//   - single-flight: one verify in flight, ever. A concurrent login is rejected
+//     immediately with 503 instead of queueing behind the grind.
+//   - timeout: a verify that outlives timeoutMs gets its worker terminated (a fresh
+//     one spawns for the next attempt) and the login fails 503 — a thrashing box
+//     keeps replicating the catalog and answering viewer logins even if admin
+//     logins are temporarily impossible.
+//   - unknown names still cost the same work as real ones (DUMMY_ADMIN), so login
+//     timing does not confirm admin usernames.
+export function makeAdminVerifier (ctx, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 30000
+  let worker = null
+  let inflight = null // { id, worker, settle } — the one verify we're waiting on
+  let seq = 0
+
+  function spawnWorker () {
+    const w = new Worker(new URL('./admin-verify-worker.js', import.meta.url))
+    w.unref() // must not hold the process open; close() still terminates it
+    w.on('message', (m) => {
+      if (inflight && inflight.id === m.id) { const f = inflight; inflight = null; f.settle(null, m.ok) }
+    })
+    const gone = () => {
+      if (worker === w) worker = null
+      if (inflight && inflight.worker === w) { const f = inflight; inflight = null; f.settle(unavailable('login verification unavailable (worker died)')) }
+    }
+    w.on('error', gone)
+    w.on('exit', gone)
+    return w
+  }
+
+  function dispatch (job) {
+    return new Promise((resolve, reject) => {
+      if (!worker) worker = spawnWorker()
+      const w = worker
+      const id = ++seq
+      const timer = setTimeout(() => {
+        if (!inflight || inflight.id !== id) return
+        inflight = null
+        if (worker === w) worker = null
+        try { w.terminate() } catch {}
+        reject(unavailable(`login verification timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      if (timer.unref) timer.unref()
+      inflight = {
+        id,
+        worker: w,
+        settle: (err, ok) => { clearTimeout(timer); err ? reject(err) : resolve(ok) }
+      }
+      w.postMessage({ id, ...job })
+    })
+  }
+
+  return {
+    get busy () { return !!inflight },
+
+    // Resolves { name, tokenVersion } on success, null on bad credentials; throws
+    // httpStatus 503 when busy / timed out / the worker died.
+    async verify (name, password) {
+      if (typeof name !== 'string' || typeof password !== 'string') return null
+      if (inflight) throw unavailable('a login verification is already in flight — retry shortly')
+      const admins = loadAdmins(ctx.dataDir)
+      const a = admins[name]
+      const rec = a || DUMMY_ADMIN
+      const argon = rec.argon || argonOpts(ctx.config)
+      const ok = await dispatch({ password, saltHex: rec.salt, verifierHex: rec.verifier, argon })
+      if (!a || !ok || a.status !== 'active') return null
+      return { name, tokenVersion: a.tokenVersion || 1 }
+    },
+
+    close () {
+      const w = worker
+      worker = null
+      if (inflight) { const f = inflight; inflight = null; f.settle(unavailable('admin server closing')) }
+      if (w) { try { w.terminate() } catch {} }
+    }
+  }
 }
 
 // Token-refresh check used on every authed request: the admin must still exist, be

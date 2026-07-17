@@ -4,10 +4,13 @@
 // single-writer, so a separate admin process would ELOCKED against the running panel.
 //
 // Auth: POST /api/login {username,password} → verified against the panel-private
-// admins file (Argon2id, ops.verifyAdmin) → a panel-signed session token
-// (core/token.js, payload {role:'admin', adminId, tokenVersion, expiresAt}). Every
-// other /api route requires `Authorization: Bearer <token>`; revocation = bump the
-// admin's tokenVersion. Login attempts share the fixed-window throttle from rpc.js.
+// admins file (Argon2id, ops.makeAdminVerifier — the verify runs in a worker
+// thread, never on the event loop: a login flood must not stall the login RPC or
+// catalog replication; one verify at a time, concurrent attempts get an immediate
+// 503) → a panel-signed session token (core/token.js, payload {role:'admin',
+// adminId, tokenVersion, expiresAt}). Every other /api route requires
+// `Authorization: Bearer <token>`; revocation = bump the admin's tokenVersion.
+// Login attempts share the fixed-window throttle from rpc.js.
 //
 // Binding: 127.0.0.1 by default. If you bind 0.0.0.0 on a VPS, put TLS in front
 // (reverse proxy) — the API itself speaks plain HTTP.
@@ -63,13 +66,14 @@ const CONTENT_EXT = {
 
 // ctx = { config, keys, db, assets, dataDir, swarm?, activity? } (open panel store;
 // swarm + activity ring are optional — observability degrades gracefully without them).
-// opts = { host, port, sessionTtlMs, lockout: { threshold, seconds } }.
+// opts = { host, port, sessionTtlMs, lockout: { threshold, seconds }, loginVerifyTimeoutMs }.
 // Resolves to { server, host, port, close } once listening (port 0 → ephemeral).
 export function startAdminServer (ctx, opts = {}) {
   const host = opts.host || '127.0.0.1'
   const sessionTtlMs = opts.sessionTtlMs || 12 * 3600000
   const lockout = opts.lockout || { threshold: 10, seconds: 900 }
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
+  const loginVerifier = ops.makeAdminVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
@@ -98,7 +102,8 @@ export function startAdminServer (ctx, opts = {}) {
       const ip = req.socket.remoteAddress || 'unknown'
       const t = throttle((body.username || '') + '|' + ip)
       if (t.locked) return sendJson(res, 429, { error: 'locked', retryAfter: t.retryAfter })
-      const admin = ops.verifyAdmin(ctx, body.username, body.password)
+      // Worker-thread verify; throws 503 immediately if one is already in flight.
+      const admin = await loginVerifier.verify(body.username, body.password)
       if (!admin) return sendJson(res, 401, { error: 'invalid credentials' })
       const now = Date.now()
       const payload = { role: 'admin', adminId: admin.name, issuedAt: now, expiresAt: now + sessionTtlMs, tokenVersion: admin.tokenVersion }
@@ -250,7 +255,7 @@ export function startAdminServer (ctx, opts = {}) {
         server,
         host,
         port,
-        close: () => new Promise((r) => server.close(r))
+        close: () => { loginVerifier.close(); return new Promise((r) => server.close(r)) }
       })
     })
   })

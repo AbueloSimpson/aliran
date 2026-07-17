@@ -32,6 +32,7 @@
     "test:admin-api": "node tools/e2e-admin-api-test.mjs",
     "test:broadcaster-api": "node tools/e2e-broadcaster-api-test.mjs",
     "test:login-flood": "node tools/e2e-login-flood-test.mjs",
+    "test:panel-login-flood": "node tools/e2e-panel-login-flood-test.mjs",
     "test:panel-link": "node tools/panel-link-test.mjs",
     "bench:scale": "node --expose-gc tools/scale-bench.mjs"
   },
