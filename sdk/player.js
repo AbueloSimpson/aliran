@@ -50,8 +50,10 @@
 // The SDK never decodes video — it exposes the CURRENT source URL + health signals and
 // keeps replicating the P2P feed in the background while on CDN so it can auto-return.
 // Health is playlist-based: the feed is "ready" when /index.m3u8 exists in the replica,
-// and "advancing" when its content changes between probes (live edge moving). Playback
-// stalls the host player would see show up here as a non-advancing playlist.
+// and "healthy" when its signature advances between probes (live edge moving) AND the
+// advanced playlist's content is fetchable (_playlistServable — same metadata-vs-blobs
+// split as the tune watchdog). Playback stalls the host player would see show up here
+// as a non-advancing or unservable playlist.
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
@@ -722,7 +724,8 @@ export class AliranPlayer extends Emitter {
     if (this._tuneTimer === timer) this._tuneTimer = null
   }
 
-  // Blob-layer half of "tuned": bounded read of the CURRENT playlist's CONTENT.
+  // Blob-layer half of "tuned"/"healthy" (tune watchdog + hybrid stall/recovery
+  // probes): bounded read of the CURRENT playlist's CONTENT.
   // drive.get re-resolves the newest version each call and demand-fetches its blob,
   // so this proves the bytes a player needs are actually arriving — true iff the
   // content lands within the bound AND references at least one media URI (a
@@ -824,44 +827,79 @@ export class AliranPlayer extends Emitter {
 
   // While on P2P: fall back to CDN if the playlist stops advancing for too long
   // (covers both peer loss and a stalled live edge — what the host player would
-  // experience as rebuffering).
+  // experience as rebuffering). "Advancing" alone is not health: the signature is
+  // metadata-core state while the bytes a player needs ride the blobs core (the same
+  // conflation the tune watchdog had — see _playlistServable), so a feed whose
+  // metadata replicates with zero fetchable blob bytes looked healthy here and the
+  // fallback never fired while the viewer rebuffered forever. An advance only resets
+  // the stall clock when the advanced playlist's CONTENT is servable. busy-guarded:
+  // the bounded content read can outlast the tick interval.
   _startStallWatchdog () {
     const cfg = this._hybrid
     const a = this._active
     a.lastAdvance = Date.now()
+    let busy = false
     this._watchTimer = setInterval(async () => {
-      if (!this._active || this._active !== a || a.source !== 'p2p') return
-      const sig = await this._playlistSig()
-      if (sig !== null && sig !== a.lastSig) { a.lastSig = sig; a.lastAdvance = Date.now(); return }
-      if (Date.now() - a.lastAdvance > cfg.rebufferMsToFallback) {
-        a.source = 'cdn'
-        this._clearHybridTimers()
-        this.emit('fallback', { streamId: a.streamId, url: a.cdnUrl, reason: 'stall' })
-        this._startRecoveryProbe()
+      if (busy) return
+      busy = true
+      try {
+        if (!this._active || this._active !== a || a.source !== 'p2p') return
+        const sig = await this._boundedSig(900)
+        if (sig !== null && sig !== a.lastSig) {
+          a.lastSig = sig
+          if (await this._playlistServable(2000)) { a.lastAdvance = Date.now(); return }
+        }
+        if (this._active !== a || a.source !== 'p2p') return // zapped away during the probes
+        if (Date.now() - a.lastAdvance > cfg.rebufferMsToFallback) {
+          a.source = 'cdn'
+          this._clearHybridTimers()
+          this.emit('fallback', { streamId: a.streamId, url: a.cdnUrl, reason: 'stall' })
+          this._startRecoveryProbe()
+        }
+      } finally {
+        busy = false
       }
     }, Math.min(cfg.probeIntervalMs, 1000))
   }
 
   // While on CDN: the feed keeps replicating in the background; once the playlist
-  // ADVANCES across two consecutive probes (healthy for ~probeIntervalMs), switch the
-  // active source back to P2P and tell the host.
+  // ADVANCES-and-SERVES across two consecutive probes (healthy for ~probeIntervalMs),
+  // switch the active source back to P2P and tell the host. Every streak step must
+  // prove servable CONTENT, not just a moving signature: flipping back to a
+  // metadata-advancing feed whose blob bytes are unfetchable would strand the viewer
+  // on an unplayable P2P source with the fallback already spent (and the stricter
+  // verdict only makes flips LESS eager, so the ≥2-streak anti-flap holds).
+  // busy-guarded like the stall watchdog.
   _startRecoveryProbe () {
     const cfg = this._hybrid
     const a = this._active
     let healthyStreak = 0
+    let busy = false
     this._probeTimer = setInterval(async () => {
-      if (!this._active || this._active !== a || a.source !== 'cdn') return
-      // Re-run the DHT lookup for the feed topic: a broadcaster that came up AFTER we
-      // joined is otherwise only found on hyperswarm's slow periodic refresh.
-      try { const r = this._feedDiscovery && this._feedDiscovery.refresh(); if (r && r.catch) r.catch(() => {}) } catch {}
-      const sig = await this._playlistSig()
-      if (sig !== null && sig !== a.lastSig) { a.lastSig = sig; healthyStreak++ } else if (sig === null) { healthyStreak = 0 }
-      if (healthyStreak >= 2) {
-        a.source = 'p2p'
-        a.lastAdvance = Date.now()
-        this._clearHybridTimers()
-        this.emit('source-changed', { streamId: a.streamId, source: 'p2p', url: a.localUrl })
-        this._startStallWatchdog()
+      if (busy) return
+      busy = true
+      try {
+        if (!this._active || this._active !== a || a.source !== 'cdn') return
+        // Re-run the DHT lookup for the feed topic: a broadcaster that came up AFTER we
+        // joined is otherwise only found on hyperswarm's slow periodic refresh.
+        try { const r = this._feedDiscovery && this._feedDiscovery.refresh(); if (r && r.catch) r.catch(() => {}) } catch {}
+        const sig = await this._boundedSig(900)
+        if (sig !== null && sig !== a.lastSig) {
+          a.lastSig = sig
+          healthyStreak = (await this._playlistServable(2000)) ? healthyStreak + 1 : 0
+        } else if (sig === null) {
+          healthyStreak = 0
+        }
+        if (this._active !== a || a.source !== 'cdn') return // zapped away during the probes
+        if (healthyStreak >= 2) {
+          a.source = 'p2p'
+          a.lastAdvance = Date.now()
+          this._clearHybridTimers()
+          this.emit('source-changed', { streamId: a.streamId, source: 'p2p', url: a.localUrl })
+          this._startStallWatchdog()
+        }
+      } finally {
+        busy = false
       }
     }, cfg.probeIntervalMs)
   }

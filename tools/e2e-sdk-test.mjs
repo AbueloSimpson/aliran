@@ -29,6 +29,9 @@
 // any viewer can fetch them advances the metadata signature with ZERO servable bytes —
 // the watchdog must NOT stand down on the advance alone; it must walk its full ladder
 // (retune → connection teardown → friendly error) instead of spinning silently.
+// Then the SAME pathological feed under HYBRID: the stall watchdog must fall back to
+// CDN ('fallback' reason 'stall') despite the advancing signature, and the recovery
+// probe must NOT flip the CDN viewer back to the unservable P2P source.
 // Then ZAP PREFETCH (zapPrefetch option): playing a stream must warm the curated-order
 // neighbors — their newest segment fully replicated locally without ever being served
 // over HTTP, following the catalog's CURRENT (rotated) feedKey.
@@ -79,7 +82,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cliZ: tmp('e2es-cliZ-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -122,6 +125,12 @@ try {
   const feedStore5 = new Corestore(dirs.feed5); await feedStore5.ready(); cleanups.push(() => feedStore5.close())
   const feed5 = new Hyperdrive(feedStore5.namespace('feed'), { encryptionKey: encKey5 }); await feed5.ready()
 
+  // Sixth encrypted feed for the HYBRID unservable case — same pathological seeding
+  // as the fifth, judged by the hybrid stall/recovery probes instead of the tune ladder.
+  const encKey6 = hcrypto.randomBytes(32)
+  const feedStore6 = new Corestore(dirs.feed6); await feedStore6.ready(); cleanups.push(() => feedStore6.close())
+  const feed6 = new Hyperdrive(feedStore6.namespace('feed'), { encryptionKey: encKey6 }); await feed6.ready()
+
   // ===== Panel: keys, enroll alice + stream + grant, serve RPC =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
@@ -139,7 +148,7 @@ try {
     encPriv: wrap(wk, kp.secretKey),
     authPub: b4a.toString(auth.publicKey, 'hex'),
     authPrivEnc: wrap(wk, auth.secretKey),
-    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3), sports: sealTo(kp.publicKey, encKey4), radio: sealTo(kp.publicKey, encKey5) },
+    wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3), sports: sealTo(kp.publicKey, encKey4), radio: sealTo(kp.publicKey, encKey5), talk: sealTo(kp.publicKey, encKey6) },
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
   await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live' })
@@ -147,6 +156,7 @@ try {
   await db.put('catalog/shopping', { title: 'Shopping', category: ['shopping'], type: 'live', protection: 'self', feedKey: b4a.toString(feed3.key, 'hex'), isLive: true, poster: null, status: 'live' })
   await db.put('catalog/sports', { title: 'Sports', category: ['sports'], type: 'live', protection: 'self', feedKey: b4a.toString(feed4.key, 'hex'), isLive: true, poster: null, status: 'live' })
   await db.put('catalog/radio', { title: 'Radio', category: ['radio'], type: 'live', protection: 'self', feedKey: b4a.toString(feed5.key, 'hex'), isLive: true, poster: null, status: 'live' })
+  await db.put('catalog/talk', { title: 'Talk', category: ['talk'], type: 'live', protection: 'self', feedKey: b4a.toString(feed6.key, 'hex'), isLive: true, poster: null, status: 'live' })
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
@@ -325,7 +335,7 @@ try {
     if (Date.now() > deadline2) throw new Error('timeout: hybrid SDK login')
     try {
       const s = await player2.login('alice', PASSWORD)
-      if (s.length >= 4) streams2 = s
+      if (s.length >= 6) streams2 = s // the prewarm-count assert below needs the FULL lineup entitled at login
     } catch (e) {
       if (!/not connected|unknown user/i.test(String(e.message))) throw e
     }
@@ -336,7 +346,7 @@ try {
   // With prewarm:true, both entitled feeds ('news' + 'movies') are opened+joined in the
   // background at login, so the first zap to either is a cache hit — no cold feed:open.
   await player2.prewarm() // idempotent; deterministically wait out the background warm
-  if (player2._feeds.size !== 5) throw new Error('prewarm should open all five entitled feeds; got ' + player2._feeds.size)
+  if (player2._feeds.size !== 6) throw new Error('prewarm should open all six entitled feeds; got ' + player2._feeds.size)
   log('prewarm: opened ' + player2._feeds.size + ' entitled feeds at login (warm first-zap)')
 
   // 'movies' is entitled but nobody seeds it -> tiny readyTimeout forces CDN fallback.
@@ -577,6 +587,88 @@ try {
   log('unservable: metadata advanced, zero bytes servable → retune → reconnect → friendly error ("' + unservableErr.slice(0, 60) + '…") — the watchdog no longer stands down on metadata alone')
   await player5.stop()
 
+  // ===== HYBRID vs the metadata-advancing-but-unservable feed =====
+  // Hybrid's stall watchdog and recovery probe judged P2P health by the playlist
+  // SIGNATURE alone — the same metadata/blob conflation just proven above for the
+  // tune watchdog. Against the pathological seeder the advance-only stall watchdog
+  // never fired the CDN fallback (the viewer rebuffered on P2P with a "moving" live
+  // edge and zero bytes), and the advance-only recovery probe would flip a CDN viewer
+  // BACK to the unplayable feed and strand it there (fallback already spent). Both
+  // now gate "healthy" on servable content: starting on P2P against the pathological
+  // feed must produce 'fallback' (reason 'stall'), and while the feed stays
+  // unservable the viewer must STAY on CDN — no 'source-changed' back to p2p.
+  const feedSwarm6 = new Hyperswarm(); cleanups.push(() => feedSwarm6.destroy())
+  feedSwarm6.on('connection', s => feed6.replicate(s))
+  feedSwarm6.join(feed6.discoveryKey, { server: true, client: false }); await feedSwarm6.flush()
+  const blobs6 = await feed6.getBlobs()
+  let talkSeq = 0
+  let talkBusy = false
+  const talkTimer = setInterval(async () => {
+    if (talkBusy) return
+    talkBusy = true
+    try {
+      talkSeq++
+      await feed6.put('/index.m3u8', b4a.from(`#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:${talkSeq}\n#EXTINF:2,\nseg${talkSeq}.ts\n`))
+      const cur = await feed6.entry('/index.m3u8')
+      const cb = cur && cur.value.blob
+      if (cb && cb.blockLength > 0) await blobs6.core.clear(cb.blockOffset, cb.blockOffset + cb.blockLength)
+    } catch { /* teardown race at cleanup — fine */ } finally { talkBusy = false }
+  }, 500)
+  cleanups.push(() => clearInterval(talkTimer))
+
+  const ev6 = { fallback: [], sourceChanged: [] }
+  const player6 = createPlayer({
+    panelPubKey,
+    storeDir: dirs.cli6,
+    prewarm: true, // warm 'talk' at login so the P2P start below is deterministic
+    hybrid: { mode: 'hybrid', cdnUrl: () => cdnUrl, readyTimeoutMs: 4000, probeIntervalMs: 700, rebufferMsToFallback: 4000 }
+  })
+  player6.on('fallback', (e) => ev6.fallback.push(e))
+  player6.on('source-changed', (e) => ev6.sourceChanged.push(e))
+  cleanups.push(() => player6.stop())
+
+  await player6.connect()
+  let streams6 = null
+  const deadline6 = Date.now() + 60000
+  while (!streams6) {
+    if (Date.now() > deadline6) throw new Error('timeout: hybrid-unservable SDK login')
+    try {
+      const s = await player6.login('alice', PASSWORD)
+      if (s.length >= 6) streams6 = s // 'talk' must be entitled before the play below
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streams6) await sleep(1500)
+  }
+
+  // Deterministic P2P start: wait until the prewarmed replica holds the playlist
+  // METADATA (the pathological seeder replicates it fine — only the bytes are gone),
+  // so resolve()'s readiness check passes and hybrid picks p2p, exercising the stall
+  // watchdog rather than the readyTimeout fallback.
+  await player6.prewarm()
+  const talkCacheKey = b4a.toString(feed6.key, 'hex') + ':' + b4a.toString(encKey6, 'hex')
+  await waitFor(async () => {
+    const f = await player6._feeds.get(talkCacheKey)
+    return f && await f.drive.entry('/index.m3u8')
+  }, 30000, 'hybrid-unservable: playlist metadata prewarmed')
+  const r6 = await resolveWithin(player6, 'talk', 20000)
+  if (r6.source !== 'p2p') throw new Error('hybrid-unservable: expected to start on p2p (metadata is present), got ' + r6.source)
+
+  // The signature keeps advancing while zero bytes are servable — the advance-only
+  // stall watchdog never fell back (the regression); the servable-gated one must.
+  const fb6 = await waitFor(async () => ev6.fallback.find(e => e.streamId === 'talk' && e.reason === 'stall'), 30000, "hybrid-unservable: 'fallback' (reason stall) despite the advancing metadata signature")
+  if (fb6.url !== cdnUrl) throw new Error('hybrid-unservable: fallback should carry the CDN url, got ' + fb6.url)
+  if (player6.source().source !== 'cdn') throw new Error('hybrid-unservable: source() should report cdn after the stall fallback')
+  // On CDN the recovery probe watches the SAME advancing-but-unservable feed — it
+  // must NOT return to P2P (pre-fix it flipped within ~2 probes: ~1.4 s). Watch for
+  // 8 s ≈ 11 probe intervals.
+  await sleep(8000)
+  if (ev6.sourceChanged.some(e => e.source === 'p2p')) throw new Error('hybrid-unservable: the recovery probe flipped back to an unservable P2P feed')
+  if (player6.source().source !== 'cdn') throw new Error('hybrid-unservable: the viewer must STAY on cdn while the feed is unservable')
+  const hybridUnservableProven = ev6.fallback.length >= 1
+  log('hybrid-unservable: stall fallback fired despite the advancing signature; no flip-back while unservable — hybrid health now requires servable bytes')
+  await player6.stop()
+
   // ===== zapPrefetch: the adjacent channel's newest segment replicates while watching =====
   // With zapPrefetch on, playing a stream must keep the curated-order NEIGHBORS' newest
   // segment warm in the local replica — without those feeds ever being served over HTTP.
@@ -620,8 +712,8 @@ try {
 
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
-    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && zapWarmed)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation + adjacent-channel zap prefetch verified)' : 'FAIL ❌')
+    !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

@@ -1047,7 +1047,38 @@ seconds while zero media bytes were served for 90 s.
   code (no error ever fires) and passes with the content check.
 - Known limitation (noted, not fixed): hybrid mode's stall watchdog / recovery probe
   still judge P2P health by signature advance alone — same conflation, out of scope
-  here (hybrid is not in production use).
+  here (hybrid is not in production use). **Closed by the next entry.**
+
+### Fix: hybrid stall/recovery probes require servable bytes — no CDN-fallback miss, no flip-back to an unplayable feed
+Closes the known limitation above: hybrid mode's two background probes judged P2P
+health by the playlist **signature** alone (the entry's bee seq — metadata-core
+state), the same metadata/blobs conflation just fixed in the tune watchdog. Against
+a feed whose metadata replicates while its blob bytes are unfetchable (broadcaster
+reclaim outpacing the viewer, or a starved/wedged blob channel) that meant two
+failure modes: the **stall watchdog** saw an "advancing" playlist and never fired
+the CDN fallback (the viewer rebuffered on P2P forever), and the **recovery probe**
+could flip a CDN viewer back to the unplayable P2P source and strand it there with
+the fallback already spent.
+
+- `sdk/player.js`: both probes now gate their healthy verdict on
+  `_playlistServable` (the bounded content read introduced for the tune watchdog)
+  **in addition to** signature advance. The stall watchdog only resets its stall
+  clock when the advanced playlist's content is fetchable; the recovery probe's
+  `healthyStreak` only counts probes whose advance is servable (unservable resets
+  the streak). The ≥2-streak anti-flap semantics are unchanged — the stricter
+  verdict only makes flips back to P2P *less* eager, so no new CDN↔P2P flapping
+  surface. Both probe loops are busy-guarded (the bounded content read can outlast
+  the tick interval) and re-check the active play after their awaits.
+- **Tests:** `npm run test:sdk` gains the hybrid half of the pathological-seeder
+  scenario — the same rewrite-every-500 ms/clear-blobs-immediately feed, played in
+  hybrid mode from a prewarmed replica (so the play deterministically starts on
+  P2P): the stall watchdog must emit `fallback` (reason `stall`) despite the
+  advancing signature, and over an 8 s observation window on CDN the recovery probe
+  must never emit `source-changed` back to p2p. Proven both ways: on the advance-only
+  code the fallback never fires (the run times out at the new scenario); with the
+  servable gate the full suite passes. The existing hybrid scenario keeps proving the
+  positive path (a genuinely seeded feed still auto-returns to P2P through the new
+  servable gate).
 
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
