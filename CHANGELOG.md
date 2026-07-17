@@ -910,6 +910,45 @@ Groundwork for the keyless repeater appliance (regional super-peers that mirror
   (maxPeers=2 → a 3rd concurrent viewer on that one channel is refused while a
   second channel still accepts). SDK unit tests cover the `swarm` option plumbing.
 
+### Repeater appliance — keyless regional super-peer (`repeater/`, S20)
+- **New first-class component `repeater/`** — the Open-Connect analog for the
+  swarm: a standalone hosted app (operator- or ISP-run) that mirrors chosen
+  channels' live windows and serves them to viewers, moving fan-out **off the
+  origin broadcaster** (whose per-channel egress drops to ~one stream per
+  repeater). Hypercore request hotswapping prefers fast/low-RTT holders, so an
+  on-net repeater wins its region with **zero client changes**.
+- **Keyless by construction**: config is the panel's *public* key + channel
+  selection (`all` / streamId list / `category:` filter) + retention + maxPeers.
+  No account, no grants; it never opens a Hyperdrive — it mirrors both drive
+  cores RAW at the corestore level (db core by the catalog `feedKey`, blobs core
+  by the panel-published `blobsKey`) and stores/serves **ciphertext only**. Its
+  package depends on no drive/crypto library at all.
+- **Blind block mirror, O(window) storage**: live-downloads the TAIL of both
+  cores (`download({ start: length, end: -1 })`), keeps the drive-header block a
+  cold viewer needs, and a time-based sweep clears blocks older than
+  `RETENTION_SECONDS` (which may be *deeper* than the origin's HLS window — a
+  regional blip-recovery buffer). The download range is re-armed from each new
+  watermark so cleared blocks are never re-fetched. feedKey rotations re-target
+  the mirror through the public catalog watch, unattended, and PURGE the old
+  feed's blocks from disk.
+- **Deploy pack** (S13 pattern): `repeater/Dockerfile`,
+  `deploy/docker-compose.repeater.yml` (standalone box),
+  `deploy/systemd/aliran-repeater.service`, `.env.example`, README; new operator
+  page `docs/repeater.md` (ISP-hosting model, sizing = pure I/O, security story).
+- **SDK**: `createPlayer({ swarm: { bootstrap } })` — custom DHT bootstrap nodes
+  for local testnets / private DHTs (used by the new test to drive real viewers).
+- **Tests**: new `npm run test:repeater` — origin + panel (with real blobsKey
+  enrichment) + repeater + SDK viewers on a **local DHT testnet**: viewer plays
+  entirely off the repeater while the origin's only egress is the repeater (byte
+  counters both sides); origin killed mid-play → warm AND cold viewers keep
+  playing the buffered window; rotation re-points unattended + old cores purged;
+  retention stays bounded and cleared blocks stay cleared; the box's store,
+  config and status scanned for the encryption key + known plaintext → zero hits.
+- **Follow-up (noted, not built)**: panel-assigned repeaters
+  (`repeaters/<repeaterPubKey>` records watched from the panel bee) for
+  dashboard-managed fleets; locality pinning (panel-published repeater addresses
+  as preferred peers).
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

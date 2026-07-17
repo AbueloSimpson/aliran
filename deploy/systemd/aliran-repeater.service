@@ -1,0 +1,31 @@
+# Aliran repeater — bare-metal systemd unit (alternative to Docker Compose).
+# Pure I/O appliance: no ffmpeg needed, no keys on the box.
+#   sudo cp deploy/systemd/aliran-repeater.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aliran-repeater
+# Configure via /opt/aliran/repeater/.env (see repeater/.env.example). Set
+# DATA_DIR to a path inside ReadWritePaths below (default: /opt/aliran/repeater/data).
+
+[Unit]
+Description=Aliran repeater (keyless ciphertext mirror — regional super-peer)
+Documentation=https://abuelosimpson.github.io/aliran/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aliran
+Group=aliran
+WorkingDirectory=/opt/aliran/repeater
+EnvironmentFile=-/opt/aliran/repeater/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+# Hardening — writes only inside its data dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/aliran/repeater/data
+
+[Install]
+WantedBy=multi-user.target

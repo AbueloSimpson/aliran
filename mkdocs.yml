@@ -38,6 +38,7 @@ nav:
   - Architecture: architecture.md
   - Security model: security-model.md
   - Operator guide: operator-guide.md
+  - Repeater appliance: repeater.md
   - Configuration: configuration.md
   - Content management: content-management.md
   - Client build: client-build.md

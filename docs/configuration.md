@@ -47,6 +47,20 @@ Copy each component's `.env.example` to `.env`.
 | `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | `10` / `900` | Control login lockout |
 | `ARGON2_MEM_KIB` / `ARGON2_TIME` | `65536` / `2` | Argon2id cost for control-admin passwords |
 
+## Repeater (`repeater/.env`)
+
+The keyless regional super-peer — see the [repeater appliance page](repeater.md).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PANEL_PUBKEY` | — (required) | The panel whose public catalog names the channels |
+| `CHANNELS` | `all` | `all`, `ch1,ch2`, or `category:news[,sports]` |
+| `RETENTION_SECONDS` | `300` | Live window kept per channel (may exceed the origin's HLS window) |
+| `SWARM_MAX_PEERS` | `256` | Connection budget (a repeater exists to absorb fan-out) |
+| `DATA_DIR` | `./data` | Ciphertext block store (disposable cache) |
+| `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
+| `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes |
+
 ## Client
 
 Build-time config (`client/config`) or runtime **service descriptor**:

@@ -155,11 +155,20 @@ function normalizeZapPrefetch (v) {
 // swarm: tuning for the ONE Hyperswarm the engine runs (panel + every feed share it).
 // maxPeers = hyperswarm's total-connection budget (lib default 64). Ordinary viewers
 // should omit it; SDK-based seed nodes and the repeater appliance (S20) raise it into
-// the hundreds so they can hold big fan-out.
+// the hundreds so they can hold big fan-out. bootstrap = custom DHT bootstrap nodes
+// (local testnets / private DHTs) — omit for the public DHT.
 function normalizeSwarmOpts (v) {
-  if (v == null || v.maxPeers == null) return null
-  if (!Number.isInteger(v.maxPeers) || v.maxPeers < 1) throw new Error('swarm.maxPeers must be a positive integer')
-  return { maxPeers: v.maxPeers }
+  if (v == null) return null
+  const out = {}
+  if (v.maxPeers != null) {
+    if (!Number.isInteger(v.maxPeers) || v.maxPeers < 1) throw new Error('swarm.maxPeers must be a positive integer')
+    out.maxPeers = v.maxPeers
+  }
+  if (v.bootstrap != null) {
+    if (!Array.isArray(v.bootstrap)) throw new Error('swarm.bootstrap must be an array of DHT bootstrap nodes')
+    out.bootstrap = v.bootstrap
+  }
+  return Object.keys(out).length ? out : null
 }
 
 export class AliranPlayer extends Emitter {

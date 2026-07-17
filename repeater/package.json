@@ -1,0 +1,20 @@
+{
+  "name": "@aliran/repeater",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Aliran repeater appliance — keyless regional super-peer that mirrors and serves encrypted channel feeds (ciphertext only)",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "b4a": "^1.6.6",
+    "corestore": "^6.18.0",
+    "hyperbee": "^2.20.0",
+    "hypercore-crypto": "^3.4.0",
+    "hyperswarm": "^4.8.0"
+  },
+  "comment": "Deliberately NO hyperdrive and NO @aliran/core: the repeater never opens a drive (opening one takes an encryptionKey) and never touches crypto beyond topic hashing. It is a blind block mirror — everything it stores and serves is ciphertext."
+}

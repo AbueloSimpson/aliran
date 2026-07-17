@@ -103,6 +103,10 @@ engine's single Hyperswarm (lib default 64 — plenty for a viewer). Ordinary vi
 should omit it; SDK-based **seed nodes** and the repeater appliance raise it into the
 hundreds so they can hold big fan-out while re-seeding.
 
+`swarm: { bootstrap: [{ host, port }, …] }` points the engine at custom DHT
+bootstrap nodes — for local DHT testnets (`hyperdht/testnet.js`, used by
+`test:repeater`) or private-DHT deployments. Omit it for the public DHT.
+
 The on-disk store is a **disposable replica cache**: corruption (e.g. a crash mid-write →
 `OPLOG_CORRUPT`) is detected, the store is purged and the operation retried once —
 in-memory entitlements survive, everything re-replicates from peers (`recover.js`,

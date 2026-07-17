@@ -70,7 +70,9 @@ function ok (name) { n++; console.log('  ok ', name) }
   assert.throws(() => createPlayer({ swarm: { maxPeers: 0 } }), /swarm\.maxPeers/)
   assert.throws(() => createPlayer({ swarm: { maxPeers: 1.5 } }), /swarm\.maxPeers/)
   assert.throws(() => createPlayer({ swarm: { maxPeers: 'lots' } }), /swarm\.maxPeers/)
-  createPlayer({ swarm: {} }) // maxPeers omitted = default, valid
+  assert.throws(() => createPlayer({ swarm: { bootstrap: 'not-a-list' } }), /swarm\.bootstrap/)
+  createPlayer({ swarm: {} }) // maxPeers/bootstrap omitted = defaults, valid
+  createPlayer({ swarm: { bootstrap: [{ host: '127.0.0.1', port: 49737 }] } }) // testnet form, valid
   const os = await import('os'); const fs = await import('fs'); const path = await import('path')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-swarm-'))
   const p = createPlayer({ storeDir: dir, swarm: { maxPeers: 300 } })
@@ -83,7 +85,7 @@ function ok (name) { n++; console.log('  ok ', name) }
     await p.stop(); await q.stop()
     for (const d of [dir, dir + '-b']) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
   }
-  ok('swarm.maxPeers validated + plumbed into Hyperswarm (default preserved)')
+  ok('swarm.maxPeers/bootstrap validated + plumbed into Hyperswarm (default preserved)')
 }
 
 // --- event emitter basics (on/off/once, no throw on unhandled error) ---

@@ -1,0 +1,26 @@
+# Aliran repeater — standalone compose for a repeater box (typically NOT the
+# panel/broadcaster host: the whole point is a separate high-bandwidth machine,
+# e.g. an ISP-hosted appliance).
+#
+#   git clone https://github.com/AbueloSimpson/aliran /opt/aliran && cd /opt/aliran
+#   cp repeater/.env.example repeater/.env   # set PANEL_PUBKEY (+ CHANNELS etc.)
+#   docker compose -f deploy/docker-compose.repeater.yml up -d --build
+#
+# network_mode: host (Linux-only) for the same reason as the main compose file:
+# Hyperswarm hole-punching degrades behind bridge NAT. No inbound ports required.
+services:
+  repeater:
+    build:
+      context: ..
+      dockerfile: repeater/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    env_file: ../repeater/.env
+    environment:
+      # Data must live on the volume in a container (environment wins over env_file).
+      DATA_DIR: /data
+    volumes:
+      - repeater-data:/data
+
+volumes:
+  repeater-data:
