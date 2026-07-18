@@ -18,6 +18,8 @@ src/theme.ts             brandable theme; phone vs TV sizing
 src/screens/             LoginScreen, HomeScreen, PlayerScreen
 backend/backend.mjs      Bare worklet: OPRF login + Hyperdrive replica + localhost server
 config/service.example.json  copy to service.json and set your panel public key
+brands/                  white-label brand dirs -> branded APKs via tools/brand.mjs
+                         (ships the fictional "sunburst" example; docs/white-label.md)
 ```
 
 ## Get started

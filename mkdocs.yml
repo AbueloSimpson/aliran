@@ -42,6 +42,7 @@ nav:
   - Configuration: configuration.md
   - Content management: content-management.md
   - Client build: client-build.md
+  - White-label branding: white-label.md
   - User management: user-management.md
   - Reference: reference.md
   - Development log: devlog.md

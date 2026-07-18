@@ -4,7 +4,7 @@
 // BEHIND this screen — login is the exception path, not the default. Falls through to
 // LoginScreen when there are no saved credentials or auth genuinely fails.
 import React, { useEffect, useRef, useState } from 'react'
-import { View, Text, ActivityIndicator, StyleSheet } from 'react-native'
+import { View, Text, Image, ActivityIndicator, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend } from '../worklet'
@@ -78,7 +78,11 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
         <Text style={styles.status}>{status === 'Connecting' ? 'Connecting' : 'Authorizing device'}</Text>
         <ActivityIndicator size="small" color={theme.colors.primary} />
       </View>
-      <Text style={styles.wordmark}>{service.name}</Text>
+      {service.branding?.logo
+        // Baked splash logo (white-label §8): an Android drawable name (brand builds,
+        // shown before any network) or an https URL. Falls back to the name wordmark.
+        ? <Image source={{ uri: service.branding.logo }} style={styles.logo} resizeMode="contain" />
+        : <Text style={styles.wordmark}>{service.name}</Text>}
     </View>
   )
 }
@@ -87,5 +91,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.brandSurface, alignItems: 'center', justifyContent: 'center' },
   corner: { position: 'absolute', top: theme.safeY + 8, right: theme.safeX, flexDirection: 'row', alignItems: 'center', gap: 8 },
   status: { color: theme.colors.brandText, opacity: 0.65, fontSize: theme.type.caption },
-  wordmark: { color: theme.colors.brandText, fontSize: theme.type.display + 10, fontWeight: '800', letterSpacing: 1 }
+  wordmark: { color: theme.colors.brandText, fontSize: theme.type.display + 10, fontWeight: '800', letterSpacing: 1 },
+  logo: { width: '70%', height: '30%' }
 })

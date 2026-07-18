@@ -98,9 +98,12 @@ Splash (boot + auto-auth: "Authorizing device…")
 - **White-label contract:** screens/components contain **no** brand names, colors, or
   section lists. Everything flows from `config/service.json` (the service descriptor)
   through `theme.ts makeTheme()` — swap the descriptor, ship a different brand.
-  Channel numbers are derived from the panel's curation (`order`, then title) — never
-  stored. No EPG data exists yet, so the channel-detail panel shows an honest
-  "No program information" placeholder instead of a fake guide.
+  Per-brand APK **packaging** (own applicationId, launcher icon, splash logo,
+  wallpaper, theme — brands co-install) is `tools/brand.mjs`; see
+  [White-label branding](white-label.md). Channel numbers are derived from the
+  panel's curation (`order`, then title) — never stored. No EPG data exists yet, so
+  the channel-detail panel shows an honest "No program information" placeholder
+  instead of a fake guide.
 
 ## Configure the panel key
 

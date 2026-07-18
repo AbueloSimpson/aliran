@@ -1,0 +1,25 @@
+{
+  "//": "Sunburst TV — the FICTIONAL example brand that ships with the repo. It exists to demo and test white-label packaging (tools/brand.mjs); real operator brand dirs live OUTSIDE the repo and follow the same layout. panelPubKey stays a placeholder here: point it at your panel (or build with --dev to borrow the local gitignored dev config). Brand descriptors must never carry credentials — tools/brand.mjs rejects a dev block.",
+  "panelPubKey": "REPLACE_WITH_OPERATOR_PANEL_PUBLIC_KEY_HEX",
+  "name": "Sunburst TV",
+  "branding": {
+    "colors": {
+      "primary": "#F59E0B",
+      "background": "#170F08",
+      "surface": "#241709",
+      "accent": "#FBBF24",
+      "text": "#FDF3E3",
+      "textDim": "#C4A985",
+      "live": "#F43F5E",
+      "focus": "#FBBF24",
+      "onPrimary": "#201204",
+      "videoBackground": "#000000",
+      "overlay": "rgba(23, 15, 8, 0.82)",
+      "overlayStrong": "rgba(15, 9, 4, 0.94)",
+      "focusFill": "#FDF3E3",
+      "focusFillText": "#170F08",
+      "brandSurface": "#FFF7E8",
+      "brandText": "#3A2606"
+    }
+  }
+}

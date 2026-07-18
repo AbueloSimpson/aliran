@@ -138,8 +138,13 @@ auto-authorizes, browses live TV under overlay panels, and plays live P2P on pho
 - ✅ **Android app GUI redesign** to the reference organization (phone + TV, one
   codebase): splash/auto-auth → menu hub → live-TV overlay browsing, plus the
   previously missing channel-detail and search screens; the GUI is white-label-able
-  (descriptor-driven theme + sections — per-brand APK packaging is its own upcoming
-  segment)
+  (descriptor-driven theme + sections)
+- ✅ **White-label brand packaging**: a brand dir (`client/brands/<id>/` —
+  descriptor + launcher icon / splash logo / wallpaper / TV banner; credentials
+  rejected) builds through `tools/brand.mjs` into a branded, co-installable APK
+  (`applicationId com.aliranclient.<id>`) via a property-gated gradle product
+  flavor; the default no-flavor build is untouched. Fictional `sunburst` example
+  brand in-repo; operator guide: `docs/white-label.md`.
 - ⬜ Panel **HA / threshold OPRF** across replicas; documented backup & key-rotation runbooks
 - ⬜ Hardening pass + **independent security review** of the crypto paths
 - ⬜ Config validation, structured logging, health/metrics endpoints

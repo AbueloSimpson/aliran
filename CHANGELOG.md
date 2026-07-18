@@ -109,7 +109,12 @@ Android phone + Android TV).
   with OSD, "Smooth zapping" toggle (persisted, applied live), store-corruption
   recovery, strict loopback-only cleartext.
 - **White-label**: service-descriptor branding + `makeTheme` — zero hardcoded brand
-  strings or colors in screens.
+  strings or colors in screens — plus per-brand APK packaging: a brand dir
+  (`client/brands/<id>/` — descriptor, launcher icon, splash logo, wallpaper, TV
+  banner; credentials rejected) builds through `tools/brand.mjs` into a
+  co-installable APK (`applicationId com.aliranclient.<id>`) via a property-gated
+  gradle flavor; the default no-flavor build is untouched. Ships the fictional
+  `sunburst` example brand; operator guide: [docs/white-label.md](docs/white-label.md).
 
 **Repeater (`repeater/`)**
 - Keyless regional super-peer (Open-Connect model): mirrors chosen channels' live
@@ -143,7 +148,6 @@ Android phone + Android TV).
   orphan-pin disk reclaim; remote acceptance always ends with a verdict.
 
 ### To do (see [ROADMAP.md](ROADMAP.md) and per-package READMEs)
-- White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - GPU transcode pack — a separately-packaged bare-metal deploy pack (NVIDIA
   drivers + NVENC; VAAPI/QSV variants) for hardware-encode hosts.
 - Optional (v1.x): multi-DRM, geo-locking, VOD; panel HA replica set.
