@@ -116,6 +116,23 @@ does ~125 copy channels does only **~8–12 x264 SD** channels.
     a *short-term* ceiling and size a long-running deployment **a few channels below it** (≈8–10
     here): multi-hour RSS growth, not the fresh-start footprint, sets the real limit.
 
+!!! note "ffmpeg itself creeps on some upstreams — bounded by `FFMPEG_MAX_RSS_MB`"
+    The node processes aren't the only slow growers. On certain live-HLS pulls (typically
+    SSAI/ad-inserted feeds, whose TS PID churn makes libavformat allocate streams it never
+    frees) a long-running **ffmpeg** accumulates demuxer state: observed on the reference box,
+    one pull ffmpeg at ~100+ MB (much of it in swap) after days, vs the 13–30 MB RSS a fresh
+    one uses — a steady ~20 MB/h swap creep while both node processes stayed flat. No hls
+    demuxer input flag bounds this (`-live_start_index`, `-http_persistent`,
+    `-m3u8_hold_counters` control start position, connection reuse and reload budgets — not
+    state retention), so the watchdog reads each pull ffmpeg's `VmRSS+VmSwap` from `/proc` on
+    its tick and past `FFMPEG_MAX_RSS_MB` (default 150) recycles it like a stalled edge: same
+    backoff, **no feed rotation**, the usual sub-window blip. Watch it with the per-process
+    swap survey on the box —
+    `for p in /proc/[0-9]*/status; do awk '/^Name|^VmRSS|^VmSwap/{printf "%s ", $2} END{print ""}' $p; done | sort -k3 -n`
+    — alongside the long-run soak log (`/root/aliran-mem-soak.log` on the reference box);
+    `status.watchdog.memMb` / `memRecycles` expose the same numbers per channel over the
+    control API.
+
 > **Counter-intuitive but important:** on a **RAM-constrained** box, `FEED_BUFFER=ram` is the
 > *wrong* lever — it moves the whole feed store *into* RAM, so you hit the RAM wall **sooner**.
 > The scale profile (ram + tmpfs) is for boxes that are **IOPS-bound with RAM to spare** (spinning

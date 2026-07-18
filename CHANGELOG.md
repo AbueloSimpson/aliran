@@ -59,6 +59,8 @@ Android phone + Android TV).
   DHT topic) or `ram` (byte-flat disk; fresh session feedKey per start — grants
   survive, the catalog follows).
 - Reliability: ffmpeg watchdog with exponential backoff + stalled-live-edge restart;
+  **memory-cap recycle** of a running pull ffmpeg (`FFMPEG_MAX_RSS_MB` — bounds the slow
+  demuxer-state accumulation some live-HLS upstreams cause; no feed rotation);
   **feed rotation on source change**; **auto-resume on boot** (`desiredRunning`);
   `isLive:false` on stop via one manager-owned, self-healing **PanelLink** (serialized
   registers, boot catch-up, heartbeat, forced DHT re-lookup after a panel restart);

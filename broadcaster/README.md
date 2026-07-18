@@ -120,7 +120,9 @@ node ../tools/e2e-stream-test.mjs                   # PASS = end-to-end P2P veri
       (`CONTROL_ENABLED=1`) — verified `npm run test:broadcaster-api`
 - [x] Web control UI (`control-ui/`) served by the control server — login, channel
       add/edit/start/stop, live status (ffmpeg/peers/registered/playlist)
-- [x] Reliability: ffmpeg **watchdog** (auto-restart with backoff / stalled-edge restart),
+- [x] Reliability: ffmpeg **watchdog** (auto-restart with backoff / stalled-edge restart,
+      **memory-cap recycle** of a bloating pull via `FFMPEG_MAX_RSS_MB` — some live-HLS
+      upstreams accumulate demuxer state no input flag bounds),
       channels **auto-resume** after a broadcaster restart (persisted desired state),
       **`isLive:false` on stop** via one shared panel link (boot catch-up heals stale-live),
       and a per-channel ffmpeg **log ring** — verified `npm run test:broadcaster-api`

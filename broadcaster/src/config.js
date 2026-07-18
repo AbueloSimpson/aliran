@@ -57,6 +57,13 @@ export const config = {
   // per entry, one entry per append) — the long-uptime RSS leak. 8192 entries ≈ 10-15 MB
   // ceiling and is plenty of working set for 15+ channels; raise it only on a big box.
   feedCacheMax: int(process.env.FEED_CACHE_MAX, 8192),
+  // Recycle a channel's RUNNING ffmpeg once its memory (VmRSS+VmSwap from /proc) crosses
+  // this cap (MB). Long-running live-HLS pulls slowly accumulate demuxer state on some
+  // upstreams (SSAI ad insertion; observed ~100+ MB after days vs the 13–30 MB a fresh one
+  // uses) and no ffmpeg input flag bounds it — the S15b watchdog treats the cap like a
+  // stalled edge: same backoff/marker machinery, no feed rotation, sub-window viewer blip.
+  // 0 disables. Linux-only (/proc); harmlessly inert elsewhere.
+  ffmpegMaxRssMb: int(process.env.FFMPEG_MAX_RSS_MB, 150),
   // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
   // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR
   // at a tmpfs mount to keep the per-segment write churn off disk — essential at high

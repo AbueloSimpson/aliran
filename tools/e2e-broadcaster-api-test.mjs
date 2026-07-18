@@ -54,6 +54,8 @@ const dirs = {
   viewer: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view-')),
   viewer2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view2-')),
   bc3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc3-')), // S20a: SWARM_MAX_PEERS cap test
+  bcR: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bcr-')), // FFMPEG_MAX_RSS_MB recycle test
+  procR: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-proc-')), // fake /proc for the recycle test
   capV1: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-capv1-')),
   capV2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-capv2-')),
   capV3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-capv3-')),
@@ -668,7 +670,61 @@ try {
   await mgrQ.stop('cap-a'); await mgrQ.stop('cap-b')
   log('Q: SWARM_MAX_PEERS=2 → 3rd viewer refused on that ONE channel, 2nd channel unaffected (per-channel budgets) ✓')
 
-  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced, PanelLink self-heals a panel restart, S20a: blobsKey enrichment + per-channel SWARM_MAX_PEERS)')
+  // ===== Test R: FFMPEG_MAX_RSS_MB — the watchdog recycles a bloated pull ffmpeg =====
+  // Long-running live-HLS pulls slowly accumulate demuxer state on some upstreams (SSAI ad
+  // churn) and no input flag bounds it, so the watchdog reads VmRSS+VmSwap from
+  // <procDir>/<pid>/status on its tick and past the cap recycles the process like a stalled
+  // edge (same backoff, restart marker, no feed rotation). procDir is injectable, so this
+  // runs on any OS: an over-cap fake status file must get the REAL ffmpeg killed + respawned,
+  // and an under-cap one must not.
+  const bcRConfig = {
+    dataDir: dirs.bcR,
+    bootstrap: [],
+    hls: { time: 2, listSize: 6 },
+    feedBuffer: 'ram',
+    argon2: { memKiB: 8192, time: 1 },
+    ffmpegMaxRssMb: 64, // the knob under test (env FFMPEG_MAX_RSS_MB → config.ffmpegMaxRssMb)
+    procDir: dirs.procR // fake /proc so the sample is deterministic (and Windows-runnable)
+  }
+  const mgrR = new ChannelManager(bcRConfig); await mgrR.init(); cleanups.push(() => mgrR.close())
+  await mgrR.add('mem-chan', { input: 'test', buffer: 'ram' })
+  await mgrR.start('mem-chan')
+  const memCh = mgrR.channels.get('mem-chan')
+  await waitFor(async () => { const x = await mgrR.get('mem-chan'); return x.ffmpegUp && x.playlist ? x : null }, 90000, 'mem-chan producing')
+  const memPid = memCh.run.ff.pid
+  const memRestarts0 = memCh.run.watchdog.restarts
+  const writeStatus = (rssKb, swapKb) => {
+    fs.mkdirSync(path.join(dirs.procR, String(memPid)), { recursive: true })
+    fs.writeFileSync(path.join(dirs.procR, String(memPid), 'status'), `Name:\tffmpeg\nVmRSS:\t   ${rssKb} kB\nVmSwap:\t   ${swapKb} kB\n`)
+  }
+  // under the cap: sampled (VmRSS+VmSwap) but NOT recycled
+  writeStatus(20480, 1024) // 21 MB < 64 MB
+  await waitFor(() => typeof memCh.run.watchdog.memMb === 'number' || null, 30000, 'watchdog samples the fake /proc status')
+  assert.ok(Math.abs(memCh.run.watchdog.memMb - 21) < 0.01, 'memMb = VmRSS+VmSwap in MB (got ' + memCh.run.watchdog.memMb + ')')
+  assert.strictEqual(memCh.run.watchdog.memRecycles, 0, 'under the cap → no recycle')
+  assert.strictEqual(memCh.run.ff.pid, memPid, 'under the cap → ffmpeg untouched')
+  // over the cap: recycled through the stall/exit machinery
+  writeStatus(102400, 12288) // 112 MB > 64 MB
+  const sR = await waitFor(async () => {
+    const x = await mgrR.get('mem-chan')
+    return x.watchdog && x.watchdog.restarts > memRestarts0 ? x : null
+  }, 60000, 'watchdog to recycle the over-cap ffmpeg (restarts++)')
+  assert.ok(sR.watchdog.memRecycles >= 1, 'memRecycles counted in status')
+  assert.ok(mgrR.logs('mem-chan').some((e) => /watchdog: ffmpeg memory .* FFMPEG_MAX_RSS_MB .* recycling/.test(e.line)), 'memory-recycle marker in the log ring')
+  assert.ok(mgrR.logs('mem-chan').some((e) => /watchdog: ffmpeg restart #/.test(e.line)), 'respawn used the standard restart marker/backoff path')
+  await waitFor(async () => {
+    const x = await mgrR.get('mem-chan')
+    return x.ffmpegUp && x.watchdog.state === 'live' && memCh.run.ff.pid !== memPid ? x : null
+  }, 60000, 'fresh ffmpeg (new pid) live again after the recycle')
+  // the fresh pid has no fake status file → memMb null again, and no further recycles
+  const memRecyclesAfter = memCh.run.watchdog.memRecycles
+  await sleep(9000) // > 2 watchdog ticks
+  assert.strictEqual(memCh.run.watchdog.memRecycles, memRecyclesAfter, 'no recycle churn once memory is back under the cap')
+  assert.strictEqual((await mgrR.get('mem-chan')).ffmpegUp, true, 'channel still producing')
+  await mgrR.stop('mem-chan')
+  log('R: FFMPEG_MAX_RSS_MB → over-cap ffmpeg recycled (marker + backoff path, feed identity kept), under-cap untouched ✓')
+
+  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced, PanelLink self-heals a panel restart, S20a: blobsKey enrichment + per-channel SWARM_MAX_PEERS, FFMPEG_MAX_RSS_MB memory recycle)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

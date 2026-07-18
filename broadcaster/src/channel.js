@@ -285,6 +285,20 @@ function liveEdgeSig (outDir) {
   } catch { return null }
 }
 
+// Memory footprint of a live process: VmRSS+VmSwap in MB, from <procDir>/<pid>/status.
+// Swap counts on purpose — on a small box the leaked demuxer state is exactly what gets
+// paged out, so resident-only would under-read the processes we're hunting. Returns null
+// when unreadable (non-Linux host, or the process already exited) — the memory cap simply
+// doesn't apply then. procDir is injectable so tests can fake a /proc on any OS.
+function procMemMb (pid, procDir = '/proc') {
+  try {
+    const text = fs.readFileSync(path.join(procDir, String(pid), 'status'), 'utf8')
+    let kb = null
+    for (const m of text.matchAll(/^Vm(?:RSS|Swap):\s*(\d+)\s*kB/gm)) kb = (kb ?? 0) + Number(m[1])
+    return kb === null ? null : kb / 1024
+  } catch { return null }
+}
+
 // One channel's live pipeline. Created stopped; start()/stop() any number of times.
 class Channel {
   constructor (manager, meta) {
@@ -407,6 +421,8 @@ class Channel {
         lastAdvanceAt: now,
         lastSig: null,
         everAdvanced: false,
+        memMb: null, // last VmRSS+VmSwap sample of the live ffmpeg (Linux; null elsewhere)
+        memRecycles: 0, // times the memory cap forced a recycle (see FFMPEG_MAX_RSS_MB)
         state: 'starting'
       }
     }
@@ -445,12 +461,19 @@ class Channel {
     run.ffmpegExit = null
   }
 
-  // Watchdog loop (S15b). Two failure modes, both bounded by exponential backoff:
+  // Watchdog loop (S15b). Three failure modes, all bounded by exponential backoff:
   //  - ffmpeg EXITED (crash, source ended/off-air, publisher disconnected) → respawn.
   //  - live edge STALLED (index.m3u8 stopped advancing) on a pull-style source → kill it,
   //    which routes into the same exit→respawn path. Push listeners (rtmp/srt/udp) idle
   //    legitimately while awaiting a publisher, so they respawn only on a real exit and are
   //    never "stall"-cycled (that would drop the listen socket out from under a reconnect).
+  //  - memory OVER CAP (FFMPEG_MAX_RSS_MB) on a pull-style source → same kill→respawn path.
+  //    The live-HLS demuxer retains playlist/segment/stream state on some upstreams (SSAI ad
+  //    insertion churns TS PIDs, and libavformat never frees an AVStream), so a long-running
+  //    pull slowly accumulates RSS+swap that only a process restart returns. No hls-demuxer
+  //    input flag bounds that state (-live_start_index / -http_persistent / -m3u8_hold_counters
+  //    control start position / connection reuse / reload budgets, not retention), so the
+  //    bound lives here. A respawn is the usual sub-window blip — no feed rotation.
   _startWatchdog (run) {
     const wd = run.watchdog
     const check = () => {
@@ -476,6 +499,19 @@ class Channel {
           try { run.ff.kill('SIGKILL') } catch {} // exit path respawns it with backoff
         } else if (isPush && !wd.everAdvanced) {
           wd.state = 'waiting' // listener up, no publisher yet — normal
+        }
+        // Memory cap (independent of the edge checks above — a leaking pull is usually
+        // still advancing). Push listeners are exempt: a kill would drop the publisher's
+        // connection, and the accumulation is a pull-demuxer behavior anyway.
+        const capMb = this.manager.config.ffmpegMaxRssMb || 0
+        if (capMb > 0 && !isPush) {
+          const memMb = procMemMb(run.ff.pid, this.manager.config.procDir)
+          wd.memMb = memMb
+          if (memMb !== null && memMb > capMb) {
+            wd.memRecycles++
+            this._log(`--- watchdog: ffmpeg memory ${memMb.toFixed(1)} MB > FFMPEG_MAX_RSS_MB ${capMb} — recycling ---`)
+            try { run.ff.kill('SIGKILL') } catch {} // exit path respawns it with backoff
+          }
         }
       }
       if (!wd.stopped && this.run === run) wd.timer = setTimeout(check, WD.checkIntervalMs)
@@ -568,7 +604,9 @@ class Channel {
         restarts: run.watchdog.restarts,
         stalls: run.watchdog.stalls,
         lastExit: run.watchdog.lastExit,
-        backoffMs: run.watchdog.backoffMs
+        backoffMs: run.watchdog.backoffMs,
+        memMb: run.watchdog.memMb,
+        memRecycles: run.watchdog.memRecycles
       } : null,
       playlist: false,
       driveVersion: null
