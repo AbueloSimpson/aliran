@@ -208,12 +208,49 @@ async function scenarioDiskOrphanAndRestart () {
   fs.rmSync(storeDir, { recursive: true, force: true })
 }
 
+// --- Scenario C: bee metadata caches bounded by the shared global budget ----------------
+// The drive's Hyperbee caches decoded nodes + keys per append seq. Unbounded, that is
+// ~1.5 KB of heap retained per metadata append FOREVER (the long-uptime RSS leak). The
+// broadcaster passes ONE bounded Rache as the corestore globalCache (channel.js); this
+// guards the wiring contract: the budget must survive corestore.namespace() and the bee
+// must link its caches into it (a corestore/hyperbee upgrade silently dropping that link
+// would silently bring the leak back).
+async function scenarioBeeCacheBounded () {
+  const { default: Rache } = await import('rache')
+  const MAX = 256
+  const globalCache = new Rache({ maxSize: MAX })
+  const store = new Corestore(RAM, { globalCache })
+  const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey: crypto.randomBytes(32) })
+  await drive.ready()
+
+  // Churn far more appends than the budget: rolling put/del like the mirror produces.
+  for (let i = 0; i < 300; i++) {
+    await drive.put(`/seg${i}.ts`, seg(i))
+    await drive.put('/index.m3u8', playlist([`seg${i}.ts`]))
+    if (i >= 5) await drive.del(`/seg${i - 5}.ts`)
+  }
+  const bee = drive.db
+  assert.ok(bee._nodeCache && bee._keyCache, 'bee has its node/key caches')
+  assert.ok(bee.core.length > MAX * 2, `appends (${bee.core.length}) far exceed the budget (${MAX})`)
+  assert.ok(bee._nodeCache.keys.globalSize <= MAX,
+    `bee caches share the bounded global budget (globalSize ${bee._nodeCache.keys.globalSize} <= ${MAX})`)
+  assert.ok(bee._nodeCache.keys.globalSize > 0, 'the budget is actually in use (caches are linked, not disabled)')
+  const entry = await drive.entry('/index.m3u8')
+  assert.ok(entry, 'drive still reads fine with evicted cache entries')
+  log(`  ok  bee caches bounded: globalSize ${bee._nodeCache.keys.globalSize} <= ${MAX} after ${bee.core.length} appends`)
+
+  await drive.close()
+  await store.close()
+}
+
 try {
   log('scenario A — RAM, clean rotation')
   await scenarioRamCleanRotation()
   log('scenario B — disk, stuck orphan + restart')
   await scenarioDiskOrphanAndRestart()
-  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog)')
+  log('scenario C — bee metadata caches bounded (globalCache budget)')
+  await scenarioBeeCacheBounded()
+  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded)')
   process.exit(0)
 } catch (err) {
   console.error('ERROR:', err.stack || err.message)

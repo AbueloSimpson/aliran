@@ -75,6 +75,22 @@ deliberate access-control boundary.
     channels, budget for this slow creep or rotate the feed periodically — viewers follow a
     `feedKey` change automatically (next section).
 
+    **Where the creep lands depends on the buffer mode.** In `disk` mode it is disk bytes
+    (the OS page cache absorbs the reads — node RSS stays flat). In `ram` mode those same
+    append-only files are process memory, so node RSS itself creeps (order ~10 MB/h for a
+    6-channel box at a 4 s window) and only a restart (which IS a feed rotation in `ram`
+    mode) resets it. On a small-RAM host running `ram` buffers 24/7, plan a periodic
+    restart/rotation — or use `disk` mode, which keeps RSS flat for free.
+
+!!! note "Fixed: unbounded per-feed metadata caches (the fast RSS leak)"
+    Before the fix, each feed's Hyperbee kept two internal caches (decoded btree nodes +
+    keys) keyed by the ever-growing append seq — ~1.5 KB of heap retained **per metadata
+    append, forever** (~24 MB/h at 6 channels, either buffer mode; this is what re-filled
+    a 1 GB box within hours). All channels' cores now share one bounded global cache
+    budget (`FEED_CACHE_MAX`, default 8192 entries ≈ 10–15 MB ceiling). Verified by a
+    6-channel soak: heap flat after the budget fills. `tools/mem-soak.mjs` reproduces and
+    measures both this and the slow creep above.
+
 ### Why `ram` is *slower* to join, not faster
 
 > **Symptom:** time-to-play from a fresh client store is ~40–55 s (vs ~10 s expected),

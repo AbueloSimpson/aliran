@@ -23,6 +23,7 @@
 
 import Corestore from 'corestore'
 import RAM from 'random-access-memory'
+import Rache from 'rache'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
@@ -329,7 +330,7 @@ class Channel {
     // channel runs — each start() mints one and registers it with the panel. Disk
     // feeds (the default) resolve a stable, deterministic key here before first start.
     if ((this.meta.buffer || this.manager.config.feedBuffer || 'disk') === 'ram') return null
-    const store = new Corestore(this.storeDir)
+    const store = new Corestore(this.storeDir, { globalCache: this.manager.feedCache })
     await store.ready()
     const drive = new Hyperdrive(store.namespace(this.feedNamespace()), { encryptionKey: loadOrCreateEncryptionKey(this.storeDir) })
     await drive.ready()
@@ -349,7 +350,9 @@ class Channel {
     const buffer = this.meta.buffer || config.feedBuffer || 'disk'
     // 'disk' (default): persistent core with a stable feedKey/DHT topic across restarts.
     // 'ram': ephemeral session core — fresh keypair, data only ever in memory.
-    const store = buffer === 'ram' ? new Corestore(RAM) : new Corestore(this.storeDir)
+    const store = buffer === 'ram'
+      ? new Corestore(RAM, { globalCache: this.manager.feedCache })
+      : new Corestore(this.storeDir, { globalCache: this.manager.feedCache })
     await store.ready()
     const drive = new Hyperdrive(store.namespace(this.feedNamespace()), { encryptionKey })
     await drive.ready()
@@ -585,6 +588,12 @@ export class ChannelManager {
     this.config = config
     this.channels = new Map()
     this._caps = null
+    // ONE bounded cache budget shared by every channel's cores. Without it each feed's
+    // Hyperbee grows two per-instance caches (decoded nodes + keys) keyed by the
+    // ever-increasing seq — ~1.5 KB retained per metadata append, forever (the prod
+    // RSS leak: ~24 MB/h at 6 channels). Rache gives all bees one global entry budget
+    // with random eviction; a re-read of an evicted node is a cheap RAM/disk hit.
+    this.feedCache = new Rache({ maxSize: config.feedCacheMax || 8192 })
     // ONE panel connection for every channel's registration (S15b) — see panel-link.js.
     this.panelLink = new PanelLink(config)
   }

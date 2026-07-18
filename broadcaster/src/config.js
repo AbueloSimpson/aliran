@@ -52,6 +52,11 @@ export const config = {
   // for hosts that must keep the disk byte-flat. Both stay window-bounded via reclaim.
   // See docs/kb/feed-buffer.md.
   feedBuffer: process.env.FEED_BUFFER === 'ram' ? 'ram' : 'disk',
+  // Global entry budget for the per-feed Hyperbee caches (decoded nodes + keys), shared
+  // across ALL channels' cores. Unbounded, these grow with every metadata append (~1.5 KB
+  // per entry, one entry per append) — the long-uptime RSS leak. 8192 entries ≈ 10-15 MB
+  // ceiling and is plenty of working set for 15+ channels; raise it only on a big box.
+  feedCacheMax: int(process.env.FEED_CACHE_MAX, 8192),
   // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
   // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR
   // at a tmpfs mount to keep the per-segment write churn off disk — essential at high
