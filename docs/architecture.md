@@ -1,6 +1,6 @@
 # Architecture
 
-Aliran has **three peer-to-peer components**. Transport, discovery, and replication
+Aliran has **four peer-to-peer components**. Transport, discovery, and replication
 are fully serverless (Hyperswarm DHT); the panel is the *logical* authority for
 accounts + catalog, and is the only online dependency (for new logins only).
 
@@ -12,6 +12,7 @@ flowchart LR
   OBS -->|ingest| B[broadcaster<br/>Linux, headless]
   B -->|encrypted feed<br/>Hyperdrive| SW((Hyperswarm DHT))
   B -->|register stream| P[panel<br/>accounts + catalog + OPRF]
+  R[repeater<br/>keyless super-peer] <-->|mirror + serve<br/>ciphertext| SW
   P <-->|login / catalog / entitlement| C1[client APK]
   P <-->|login / catalog / entitlement| C2[client APK]
   SW <-->|replicate + re-seed| C1
@@ -33,11 +34,20 @@ Inside Bare: Hyperswarm + Hyperdrive replica + a **localhost HTTP server** with 
 support. `react-native-video` plays `http://127.0.0.1:<port>/index.m3u8`. The client
 **both downloads and re-seeds** — distribution scales with viewers.
 
-### Panel (Linux/desktop, HA)
+### Panel (Linux/desktop)
 A single-writer, **panel-signed** Hyperbee holding the **account DB** and **stream
 catalog**, plus an **assets Hyperdrive** (posters/art). Serves an **OPRF login** RPC
-(brute-force choke point) and issues session/entitlement tokens. Runs as a replica set
-(threshold OPRF) for availability.
+(brute-force choke point) and issues session/entitlement tokens. Today a deployment
+runs one panel node — viewers only need it online for *new* logins; an HA replica
+set (threshold OPRF) is on the roadmap.
+
+### Repeater (Linux, optional)
+A **keyless** regional super-peer ([repeater.md](repeater.md)) — the Open-Connect
+analog. Configured with only the panel's *public* key and a channel selection, it
+mirrors chosen channels' live windows **raw at the block level** (the catalog's
+`feedKey` + panel-published `blobsKey`) and serves that **ciphertext** to viewers,
+absorbing fan-out so the origin broadcaster's per-channel egress drops to roughly
+one stream per repeater. It holds no grants and cannot watch what it serves.
 
 ## Key data flows
 
@@ -48,6 +58,9 @@ catalog**, plus an **assets Hyperdrive** (posters/art). Serves an **OPRF login**
 - **Stream join:** client takes `feedKey` from the catalog and the `encryptionKey` it
   unsealed at login (not from the catalog) → joins the feed swarm
   → replicates (decrypting) → serves locally → plays.
+- **Redirect channels:** a catalog entry can instead carry `{redirect: true, url}` —
+  the client plays the operator's https HLS URL **directly** (no feed, no swarm
+  join). See [content-management.md](content-management.md).
 - **DRM (optional):** encrypted CENC bytes flow P2P; the license request goes to the
   DRM vendor with a panel-issued entitlement JWT.
 
@@ -86,7 +99,7 @@ sequenceDiagram
   B->>B: start localhost HTTP server (Range) over decrypting drive
   B-->>U: { port }
   U->>V: source = http://127.0.0.1:port/index.m3u8
-  V->>B: GET /index.m3u8, /segN.m4s (Range)
+  V->>B: GET /index.m3u8, /segN.ts (Range)
   B-->>V: decrypted HLS bytes → live playback
 ```
 

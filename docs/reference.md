@@ -60,8 +60,8 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `POST /api/users/:u/status` `{status}` | `active` \| `disabled` |
 | `POST /api/users/:u/logout-all` · `POST /api/users/:u/max-devices` | Session/device controls |
 | `POST /api/users/:u/grants` `{streamId}` · `DELETE /api/users/:u/grants/:id` | Grant / revoke |
-| `GET/POST /api/streams` | List / add (`add-stream` fields + `order`/`featured`; returns the encryption key once) |
-| `PATCH /api/streams/:id` | Update catalog metadata (incl. `order` 0–9999 \| null, `featured` bool) |
+| `GET/POST /api/streams` | List / add (`add-stream` fields + `order`/`featured` + `url` — an https `url` creates a **redirect channel**; returns the encryption key once) |
+| `PATCH /api/streams/:id` | Update catalog metadata (incl. `order` 0–9999 \| null, `featured` bool, `url` — https sets / empty string clears the redirect class) |
 | `DELETE /api/streams/:id` | **Full purge** — catalog + private key + grants + art (see the deletion caveat above) |
 | `POST /api/streams/:id/art/:kind` | Upload poster/backdrop/logo (raw image body) |
 | `GET /api/assets/:id/:file` | Art bytes from the assets drive (for previews) |
@@ -106,10 +106,14 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
 
 ## Panel RPC (over Hyperswarm)
 
-- `login(blindedPassword, username, pow)` → OPRF evaluation (throttled; never returns
-  account secrets).
-- `refresh(deviceToken)` → new session token (sliding window; device-key auth).
-- `entitlement(username, streamId, sessionToken)` → signed JWT for DRM/geo (when enabled).
+- `hello` → proof-of-work challenge + difficulty (pre-login).
+- `login(username, blinded, powNonce)` → blinded OPRF evaluation (throttled; the
+  panel never sees the password or the result).
+- `session(username, deviceId, signature, …)` → device enrollment + panel-signed
+  session token (enforces `maxDevices`, evicts oldest; revocation via `tokenVersion`).
+- `register(payload, sig)` → a broadcaster publishes/updates a catalog record
+  (publisher-key Ed25519 auth; the encryption key is stored panel-private, never in
+  the catalog).
 
 ## Schemas
 
@@ -131,10 +135,19 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
   "logo": "assets/<hash>.png",
   "feedKey": "<hex>",
   "blobsKey": "<hex>",         // the feed drive's blobs-core key (or null) — see below
+  "redirect": false,           // redirect channel class — see below
+  "url": null,                 // redirect channels: https HLS the client plays directly
   "drm": null,                 // or { scheme, licenseServerRef }
   "status": "live"
 }
 ```
+
+> **Redirect channels** (S23): a record with `{redirect: true, url: "https://…"}` is a
+> different *class* of entry — viewers play the operator's URL **directly** instead of
+> a P2P feed (`feedKey` stays `null`; the panel rejects mixing the two). Set or clear
+> it via the `url` field on `POST`/`PATCH /api/streams` or the dashboard's "Redirect
+> URL" input (the CLI does not expose it); a broadcaster re-register never erases the
+> class. Details: [content-management.md](content-management.md).
 
 > The stream's content **encryption key is not in the catalog**. It is kept in a
 > panel-private, non-replicated secrets file (`DATA_DIR/secrets/streams.json`) and

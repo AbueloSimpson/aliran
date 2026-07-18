@@ -44,6 +44,7 @@ nav:
   - Client build: client-build.md
   - User management: user-management.md
   - Reference: reference.md
+  - Development log: devlog.md
   - Knowledge base:
       - Overview: kb/index.md
       - Playback & client runtime: kb/playback.md

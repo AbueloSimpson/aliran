@@ -93,6 +93,11 @@ node src/admin-cli.js upload-art news poster ./art/news-poster.jpg
 node src/admin-cli.js grant alice news
 ```
 
+A **redirect channel** — plays an operator CDN/HLS URL directly, no broadcaster or
+P2P feed behind it — is one field: dashboard → Add stream → "Redirect URL", or
+`POST /api/streams {"id":"promo","url":"https://cdn.example.com/promo/index.m3u8"}`.
+See [content-management.md](content-management.md).
+
 ## D. The dashboards (admin + broadcaster control)
 
 Set `ADMIN_ENABLED=1` (panel, port 3210) and `CONTROL_ENABLED=1` (broadcaster,

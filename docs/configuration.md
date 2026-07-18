@@ -32,9 +32,12 @@ Copy each component's `.env.example` to `.env`.
 |-----|---------|-------------|
 | `DATA_DIR` | `./data` | Corestore + drive keys |
 | `PANEL_PUBKEY` | *(required)* | Panel to register the stream with |
-| `STREAM_ID` | `default` | Catalog id for this stream |
-| `INPUT` | *(required)* | `rtmp` (OBS listener), or an `rtsp://`/`http…m3u8`/file path |
+| `PUBLISHER_KEY` | *(required)* | Publisher secret from the panel's `init` — signs `register` RPCs |
+| `STREAM_ID` | *(optional)* | Catalog id for the legacy env-configured channel (multi-channel setups add channels via the control API/UI instead) |
+| `INPUT` | *(with `STREAM_ID`)* | `test`, a file path, a pull URL (`rtsp://`/`rtmp://`/`srt://`/`http…m3u8`), or a push listener: `rtmp` / `srt` / `udp` (typed objects via the control API) |
 | `RTMP_PORT` | `1935` | If `INPUT=rtmp`, port for OBS to push to |
+| `PUBLIC_HOST` | *(empty)* | Hostname shown in operator-facing push URLs (`rtmp://<PUBLIC_HOST>:<port>/…`) |
+| `INGEST_PORT_BASE` / `INGEST_PORT_MAX` | `5000` / `5999` | Auto-allocation range for push-ingest ports (validated unique across channels) |
 | `HLS_TIME` | `2` | Segment duration (seconds); shorter = faster time-to-first-frame |
 | `HLS_LIST_SIZE` | `8` | Rolling playlist window (segments); deepen to 12–16 for large swarms |
 | `FEED_BUFFER` | `disk` | `disk` (stable feed identity, warm DHT topic — faster joins) or `ram` (byte-flat disk, cold discovery each restart). See [KB](kb/feed-buffer.md) |
@@ -69,6 +72,7 @@ Build-time config (`client/config`) or runtime **service descriptor**:
 |-----|-------------|
 | `panelPubKey` | The operator's panel public key (pins trust + locates it) |
 | `name` / `branding` | App name, logo, color palette |
+| `hybrid` | Optional global CDN-failover config (dev/test harnesses; production channels that should play a CDN link use per-channel **redirect** catalog entries instead — see [content-management.md](content-management.md)) |
 | `bootstrap` | Optional custom DHT bootstrap nodes |
 
 > Secrets (`DRM_API_KEY`, keys in `DATA_DIR`) must never be committed. See `.gitignore`.

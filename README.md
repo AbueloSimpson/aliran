@@ -8,15 +8,18 @@ open-source, **peer-to-peer OTT streaming platform** built on the
 re-seed each other, so there are **no central media servers** and near-zero
 bandwidth cost.
 
-> **Status: early / in development.** The peer-to-peer core works and is verified on
-> desktop — live streaming over P2P (`npm run test:stream`) and brute-force-resistant
-> username/password login (`npm run test:login`) both pass end to end. The Android app
-> and the OTT UI are not built yet. See the [Roadmap](ROADMAP.md) for exactly what's
-> done vs. planned, and each package's `README.md` for details.
+> **Status: pre-1.0, actively developed — and running for real.** The full pipeline is
+> verified end to end on live infrastructure: panel + broadcaster deployed on a 1 GB
+> VPS via the provided Docker pack, channels ingested from real sources, and the
+> Android app (phone + TV) logging in and playing live P2P video **over the public
+> DHT** — plus web admin dashboards for both server components and a remote
+> acceptance harness that proves a deployment from anywhere. See the
+> [Roadmap](ROADMAP.md) for what's done vs. planned, [CHANGELOG.md](CHANGELOG.md)
+> for the shipped-feature summary, and each package's `README.md` for details.
 
 ## What it is
 
-Three cooperating peer-to-peer components (all serverless in transport — they find
+Four cooperating peer-to-peer components (all serverless in transport — they find
 each other over the Hyperswarm DHT by public key):
 
 | Component | Runs on | Role |
@@ -43,7 +46,7 @@ each other over the Hyperswarm DHT by public key):
 - **Self-hostable & brandable** — every operator generates their own keys and config; nothing is hardcoded to a single deployment.
 - **Security by secrets, not obscurity** — public code, per-deployment keys. See [`docs/security-model.md`](docs/security-model.md).
 
-## Quickstart (once implemented)
+## Quickstart
 
 ```bash
 # 1. Panel (origin of truth)
@@ -59,13 +62,23 @@ node src/index.js                     # ingest -> encrypted Hyperdrive -> swarm
 # 3. Client (Android app) — see client/README.md for the native build
 ```
 
+Or run the whole server stack with Docker Compose / systemd — see the
+[operator guide](docs/operator-guide.md).
+
 ## Features
 
 - Live P2P streaming (HLS-over-Hyperdrive), viewers re-seed each other
 - Phone **and** Android TV from one codebase
 - Username/password login validated against a **panel-signed** P2P database
 - Brute-force resistance (OPRF + throttling), device limits, long-TTL sessions
-- OTT-style GUI: hero, rails, LIVE badges, D-pad navigation on TV
+- OTT-style GUI: splash auto-auth, menu hub, fullscreen live TV with overlay browsing,
+  favorites/search, D-pad navigation on TV — white-label themable
+- Web admin dashboards: panel (users, streams, grants, art, curation) and broadcaster
+  (channels, push/pull ingest, transcode incl. GPU, ffmpeg logs)
+- **Redirect channels**: catalog entries that play an operator's CDN/HLS URL
+  directly — no P2P feed behind them
+- Self-healing playback: tune watchdog, wedged-connection teardown, live-edge stall
+  resync — plus optional keyless **repeater** super-peers to absorb fan-out
 - **Optional** modules: commercial multi-DRM (BuyDRM/KeyOS, EZDRM, Axinom…), geo-locking, VOD
 
 ## Documentation
