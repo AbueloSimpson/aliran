@@ -127,6 +127,12 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       // curation is admin-owned — a re-register must never erase it
       order: existing.order ?? null,
       featured: existing.featured ?? false,
+      // the redirect class (S23) is admin-owned too: preserved verbatim. (If a
+      // broadcaster registers onto a redirect id the record ends up with both a
+      // feedKey and a url; viewers keep playing the url — redirect wins — until an
+      // admin resolves the clash.)
+      redirect: existing.redirect ?? false,
+      url: existing.url ?? null,
       status: payload.status ?? (payload.isLive !== false ? 'live' : 'idle')
     })
     if (activity) activity.record('register', { streamId, isLive: payload.isLive !== false })

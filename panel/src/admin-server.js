@@ -31,8 +31,9 @@
 //   POST   /api/users/:u/grants              {streamId}
 //   DELETE /api/users/:u/grants/:streamId
 //   GET    /api/streams
-//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?}
-//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,...}
+//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?,url?}
+//                                            url (https) makes it a REDIRECT channel: viewers play the url, no P2P feed
+//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,url?,...}
 //   DELETE /api/streams/:id                  FULL purge (catalog+secret+grants+art)
 //   POST   /api/streams/:id/art/:kind        raw image body (content-type → extension)
 //   GET    /api/assets/:id/:file             art bytes from the assets drive (authed)

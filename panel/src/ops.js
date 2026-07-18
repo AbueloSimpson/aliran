@@ -231,6 +231,9 @@ export async function addStream (ctx, id, opts = {}) {
   checkName(id, 'stream id')
   if (await ctx.db.get('catalog/' + id)) exists(`stream "${id}" already exists (use set-meta to edit)`)
   if (opts.key != null && !/^[0-9a-f]{64}$/i.test(opts.key)) bad('key must be 32 bytes hex')
+  const url = opts.url != null ? normRedirectUrl(opts.url) : null
+  if (opts.redirect != null && normBool(opts.redirect) !== !!url) bad("redirect must match url — pass an https 'url' to create a redirect channel")
+  if (url && opts.feedKey) bad('a redirect channel cannot have a feedKey — it plays the url instead of a P2P feed')
   const secrets = loadSecrets(ctx.dataDir)
   const encKeyHex = opts.key || b4a.toString(crypto.randomBytes(32), 'hex')
   secrets[id] = encKeyHex
@@ -243,13 +246,17 @@ export async function addStream (ctx, id, opts = {}) {
     protection: 'self',
     feedKey: opts.feedKey || null,
     blobsKey: null, // filled asynchronously by the enricher once a feed is live (S20a)
-    isLive: false,
+    // Redirect channels (S23) play `url` instead of a P2P feed. No broadcaster
+    // heartbeat will ever flip their liveness, so they start live/on by default.
+    redirect: !!url,
+    url,
+    isLive: !!url,
     poster: null,
     backdrop: null,
     logo: null,
     order: opts.order != null ? normOrder(opts.order) : null,
     featured: normBool(opts.featured),
-    status: opts.feedKey ? 'live' : 'idle'
+    status: opts.feedKey || url ? 'live' : 'idle'
   }
   await ctx.db.put('catalog/' + id, catalog)
   return { id, catalog, encryptionKey: encKeyHex } // encryptionKey returned ONCE, for the broadcaster
@@ -272,6 +279,20 @@ function normArt (v, kind) {
   bad(kind + " must be an 'assets/…' drive path or an https:// URL")
 }
 
+// A redirect channel's playback URL: an absolute https:// URL delivered to viewers
+// INSTEAD of a P2P feed (the channel has no broadcaster). https is REQUIRED for the
+// same reason as remote art; deliberately NO file-extension requirement — tokenized
+// CDN URLs carry query strings. Empty string clears (the entry stops being a
+// redirect channel).
+function normRedirectUrl (v) {
+  const s = String(v).trim()
+  if (s === '') return null
+  if (s.length > 2048) bad('url must be at most 2048 characters')
+  if (/[\r\n]/.test(s)) bad('url must not contain line breaks')
+  if (!/^https:\/\/./i.test(s)) bad('url must be an https:// URL')
+  return s
+}
+
 export async function setMeta (ctx, id, fields = {}) {
   const c = await requireStream(ctx, id)
   const prevFeedKey = c.feedKey
@@ -288,6 +309,24 @@ export async function setMeta (ctx, id, fields = {}) {
   if (fields.isLive != null) c.isLive = normBool(fields.isLive)
   if (fields.order !== undefined) c.order = normOrder(fields.order) // null clears
   if (fields.featured != null) c.featured = normBool(fields.featured)
+  // Redirect channels (S23): `url` drives the pair atomically — a non-empty https URL
+  // makes the entry a redirect channel (liveness defaults on, unless set explicitly in
+  // the same request); an empty string clears both (liveness defaults off — a feedless
+  // non-redirect entry has nothing to play). A bare `redirect` field is only accepted
+  // when consistent, so the two can never disagree in the record.
+  if (fields.url !== undefined || fields.redirect !== undefined) {
+    const url = fields.url !== undefined ? normRedirectUrl(fields.url) : (c.url ?? null)
+    if (fields.redirect != null && normBool(fields.redirect) !== !!url) {
+      bad("redirect must match url — set an https 'url' to make a redirect channel, an empty one to clear")
+    }
+    c.redirect = !!url
+    c.url = url
+    if (fields.url !== undefined) {
+      if (fields.isLive == null) c.isLive = !!url
+      if (fields.status == null) c.status = url ? 'live' : 'idle'
+    }
+  }
+  if (c.redirect && c.feedKey) bad('a redirect channel cannot have a feedKey — clear the url or the feedKey first')
   await ctx.db.put('catalog/' + id, c)
   return { id, catalog: c }
 }

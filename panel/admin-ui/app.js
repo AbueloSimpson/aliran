@@ -184,11 +184,14 @@ function renderStreams () {
           <h3>${esc(s.title)}</h3>
           <span class="mono muted">${esc(s.id)}</span>
           <span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>
+          ${s.redirect ? '<span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢ REDIRECT</span>' : ''}
           ${s.featured ? '<span class="badge featured">★ FEATURED</span>' : ''}
           ${(s.category || []).map((c) => `<span class="chip">${esc(c)}</span>`).join('')}
         </div>
         <p class="stream-desc">${esc(s.description) || '<i>no description</i>'}</p>
-        <div class="mono muted">feed: ${s.feedKey ? esc(s.feedKey.slice(0, 16)) + '…' : '(not set)'}</div>
+        <div class="mono muted">${s.redirect
+          ? `url: ${esc(s.url || '')}`
+          : `feed: ${s.feedKey ? esc(s.feedKey.slice(0, 16)) + '…' : '(not set)'}`}</div>
         <div class="art-row"></div>
         <div class="stream-foot">
           <button class="btn small" data-act="edit">Edit metadata</button>
@@ -498,7 +501,8 @@ $('#add-stream-form').addEventListener('submit', async (e) => {
     id: $('#ns-id').value.trim(),
     title: $('#ns-title').value.trim() || undefined,
     category: $('#ns-category').value.trim() || undefined,
-    feedKey: $('#ns-feed').value.trim() || undefined
+    feedKey: $('#ns-feed').value.trim() || undefined,
+    url: $('#ns-url').value.trim() || undefined // makes it a redirect channel (S23)
   }
   try {
     const r = await api('POST', '/api/streams', body)
@@ -519,6 +523,7 @@ async function editMeta (s) {
     { name: 'description', label: 'Description', type: 'textarea', value: s.description },
     { name: 'category', label: 'Category (comma-separated)', value: (s.category || []).join(', ') },
     { name: 'feedKey', label: 'Feed key (hex)', value: s.feedKey || '', placeholder: 'set when the broadcaster registers' },
+    { name: 'url', label: 'Redirect URL (https:// — plays this instead of a P2P feed; empty = none)', value: s.url || '', placeholder: 'https://cdn.example.com/ch/index.m3u8' },
     { name: 'status', label: 'Status', type: 'select', options: ['idle', 'live', 'offline'], value: s.status },
     { name: 'isLive', label: 'Live now', type: 'checkbox', value: s.isLive }
   ])
@@ -528,7 +533,8 @@ async function editMeta (s) {
     description: v.description,
     category: v.category.split(',').map((x) => x.trim()).filter(Boolean),
     status: v.status,
-    isLive: v.isLive
+    isLive: v.isLive,
+    url: v.url.trim() // always sent: empty clears the redirect (explicit status/isLive above win over defaulting)
   }
   if (v.feedKey.trim()) body.feedKey = v.feedKey.trim()
   act(() => api('PATCH', `/api/streams/${s.id}`, body), `metadata updated for "${s.id}"`)
