@@ -16,6 +16,7 @@ Copy each component's `.env.example` to `.env`.
 | `POW_DIFFICULTY` | `16` | Login proof-of-work difficulty (bits) |
 | `LOCKOUT_THRESHOLD` | `10` | Failed attempts before lockout |
 | `LOCKOUT_SECONDS` | `900` | Lockout duration |
+| `LEGACY_PUBLISHER` | `1` | Accept unnamed registrations signed with the shared `init` publisher key. Set `0` once every broadcaster site is enrolled (`add-publisher`) so only named, scoped identities can register |
 | `ADMIN_ENABLED` | `false` | Serve the admin HTTP API from the panel process |
 | `ADMIN_HOST` | `127.0.0.1` | Admin API bind address (use TLS in front if not loopback) |
 | `ADMIN_PORT` | `3210` | Admin API port |
@@ -32,7 +33,8 @@ Copy each component's `.env.example` to `.env`.
 |-----|---------|-------------|
 | `DATA_DIR` | `./data` | Corestore + drive keys |
 | `PANEL_PUBKEY` | *(required)* | Panel to register the stream with |
-| `PUBLISHER_KEY` | *(required)* | Publisher secret from the panel's `init` — signs `register` RPCs |
+| `PUBLISHER_KEY` | *(required)* | Publisher secret — signs `register` RPCs. Per-site key from the panel's `add-publisher` (recommended for multi-broadcaster), or the shared legacy key from `init` |
+| `PUBLISHER_NAME` | *(empty)* | Enrolled publisher identity matching `PUBLISHER_KEY`. When set, registrations verify against this site's own key and are limited to its admin-assigned channel scopes; the catalog gets `origin:<name>` attribution. Empty = legacy shared-key path |
 | `STREAM_ID` | *(optional)* | Catalog id for the legacy env-configured channel (multi-channel setups add channels via the control API/UI instead) |
 | `INPUT` | *(with `STREAM_ID`)* | `test`, a file path, a pull URL (`rtsp://`/`rtmp://`/`srt://`/`http…m3u8`), or a push listener: `rtmp` / `srt` / `udp` (typed objects via the control API) |
 | `RTMP_PORT` | `1935` | If `INPUT=rtmp`, port for OBS to push to |

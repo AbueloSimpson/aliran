@@ -22,6 +22,7 @@ import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore, loadSecrets } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { makeBlobsKeyEnricher } from '../panel/src/blobs-key.js'
+import { addPublisher, setPublisherStatus, setPublisherScopes, loadPublishers } from '../panel/src/ops.js'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 async function waitFor (fn, ms, label) { const t = Date.now(); while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v } catch {} await sleep(300) } throw new Error('timeout: ' + label) }
@@ -45,7 +46,10 @@ try {
   // the blobs-core key into the public record.
   const enrich = makeBlobsKeyEnricher({ store: panelStore, swarm: panelSwarm, db, dataDir: dirs.panel })
   cleanups.push(() => enrich.close())
-  panelSwarm.on('connection', (s) => { panelStore.replicate(s); attachLoginRpc(s, { keys, difficulty: DIFFICULTY, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000, enrich }) })
+  // legacyOn is read at CONNECTION time — flipped to false later to prove the
+  // LEGACY_PUBLISHER=0 cutover on a fresh connection (S26).
+  let legacyOn = true
+  panelSwarm.on('connection', (s) => { panelStore.replicate(s); attachLoginRpc(s, { keys, difficulty: DIFFICULTY, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000, enrich, legacyPublisher: legacyOn }) })
   panelSwarm.join(topic, { server: true, client: false }); await panelSwarm.flush()
 
   // ===== Broadcaster feed + auto-register =====
@@ -127,6 +131,75 @@ try {
   assert.ok(!(await db.get('catalog/evil')), 'unauthorized stream must not be written')
   log('panel: unauthorized publisher rejected ✓')
 
+  // ===== S26: enrolled publishers — per-site keys + admin-assigned channel scopes =====
+  const pctx = { dataDir: dirs.panel }
+  const east = addPublisher(pctx, 'east', { scopes: 'scoped-*' })
+  assert.match(east.secretKey, /^[0-9a-f]{128}$/, 'enrollment returns the site secret once')
+  assert.ok(!JSON.stringify(loadPublishers(dirs.panel)).includes(east.secretKey), 'registry stores ONLY the public key')
+
+  // In-scope named register: verified against the ENROLLED key, origin stamped.
+  await registerWithPanel(pcall, east.secretKey, {
+    publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, encryptionKey: encKeyHex, title: 'Scoped', isLive: true
+  })
+  const scoped = (await db.get('catalog/scoped-1')).value
+  assert.strictEqual(scoped.origin, 'east', 'catalog record carries origin:<name>')
+  assert.strictEqual(loadSecrets(dirs.panel)['scoped-1'], encKeyHex, 'named register stores the private secret')
+  log('panel: named publisher registered in-scope; origin stamped ✓')
+
+  // Out-of-scope streamId: rejected BEFORE any write (catalog + secrets + isLive all
+  // sit behind the same responder, so this one gate covers them all).
+  const rejectCode = async (secret, payload) => {
+    try { await registerWithPanel(pcall, secret, payload); return null } catch (e) { return e.message }
+  }
+  let code = await rejectCode(east.secretKey, { publisher: 'east', streamId: 'other-1', feedKey: feedKey2Hex, encryptionKey: encKeyHex, isLive: true })
+  assert.match(code, /out-of-scope/, 'out-of-scope streamId rejected')
+  assert.ok(!(await db.get('catalog/other-1')), 'out-of-scope wrote no catalog record')
+  assert.strictEqual(loadSecrets(dirs.panel)['other-1'], undefined, 'out-of-scope wrote no secret')
+
+  // A named entry still verifies the signature — the right name with the wrong key fails.
+  code = await rejectCode(b4a.toString(authKeyPair().secretKey, 'hex'), { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: true })
+  assert.match(code, /unauthorized/, 'named publisher with a wrong key rejected')
+
+  // Unknown name.
+  code = await rejectCode(east.secretKey, { publisher: 'nobody', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: true })
+  assert.match(code, /unknown-publisher/, 'unknown publisher name rejected')
+
+  // Revoke = status flip (no global re-key); re-activate re-accepts the SAME key.
+  setPublisherStatus(pctx, 'east', 'revoked')
+  code = await rejectCode(east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: false })
+  assert.match(code, /revoked/, 'revoked publisher rejected')
+  assert.strictEqual((await db.get('catalog/scoped-1')).value.isLive, true, 'revoked register did not flip isLive')
+  setPublisherStatus(pctx, 'east', 'active')
+  await registerWithPanel(pcall, east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: false })
+  assert.strictEqual((await db.get('catalog/scoped-1')).value.isLive, false, 're-activated publisher registers again')
+  log('panel: out-of-scope / wrong-key / unknown / revoked all rejected before any write ✓')
+
+  // Scope edits are live: the registry is re-read on every register.
+  setPublisherScopes(pctx, 'east', ['scoped-*', 'other-*'])
+  await registerWithPanel(pcall, east.secretKey, { publisher: 'east', streamId: 'other-1', feedKey: feedKey2Hex, encryptionKey: encKeyHex, isLive: true })
+  assert.strictEqual((await db.get('catalog/other-1')).value.origin, 'east', 'widened scope applies with no restart')
+
+  // Legacy fallback: the unnamed registers earlier in this file all verified against
+  // keys/publisher.json — assert they stay unattributed.
+  assert.strictEqual((await db.get('catalog/news')).value.origin ?? null, null, 'legacy register leaves origin null')
+
+  // LEGACY_PUBLISHER=0: a fresh connection (responder attached with legacy off)
+  // rejects unnamed payloads but keeps accepting enrolled ones.
+  legacyOn = false
+  const b2Swarm = new Hyperswarm(); cleanups.push(() => b2Swarm.destroy())
+  let pcall2 = null
+  b2Swarm.on('connection', (s) => { if (!pcall2) pcall2 = pubRpc(s).call })
+  b2Swarm.join(topic, { client: true, server: false })
+  await waitFor(async () => pcall2, 30000, 'legacy-off broadcaster→panel connection')
+  let legacyOffCode = null
+  try {
+    await registerWithPanel(pcall2, b4a.toString(keys.publisher.secretKey, 'hex'), { streamId: 'news', feedKey: feedKey2Hex, isLive: true })
+  } catch (e) { legacyOffCode = e.message }
+  assert.match(legacyOffCode, /unknown-publisher/, 'legacy disabled: unnamed payload rejected even with the right shared key')
+  await registerWithPanel(pcall2, east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: true })
+  assert.strictEqual((await db.get('catalog/scoped-1')).value.isLive, true, 'named registration unaffected by the legacy cutover')
+  log('panel: LEGACY_PUBLISHER=0 rejects unnamed payloads; enrolled sites unaffected ✓')
+
   // ===== Grant + login recovers the registered key =====
   const rwd = evaluateFull(keys.oprf, PASSWORD)
   const salt = randomSalt(); const kp = userKeyPair(); const auth = authKeyPair(); const wk = wrapKeyFrom(rwd)
@@ -152,7 +225,7 @@ try {
   assert.strictEqual(streams[0]?.encryptionKey, encKeyHex, 'logged-in user recovers the registered encryption key')
   log('client: login recovered the broadcaster-registered key ✓')
 
-  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; unauthorized rejected)')
+  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

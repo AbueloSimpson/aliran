@@ -41,6 +41,11 @@
 //   POST   /api/admins                       {username,password}
 //   DELETE /api/admins/:name
 //   POST   /api/admins/:name/password        {password} (bumps tokenVersion → re-login)
+//   GET    /api/publishers                   enrolled broadcaster identities (S26)
+//   POST   /api/publishers                   {name,scopes?} → keypair; secretKey returned ONCE
+//   DELETE /api/publishers/:name             hard delete (prefer revoke — keeps the audit trail)
+//   POST   /api/publishers/:name/status      {status:'active'|'revoked'}
+//   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
 //
 // Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
 // directory, GET only — see serveStatic for the traversal guard).
@@ -148,6 +153,35 @@ export function startAdminServer (ctx, opts = {}) {
       if (seg.length === 4 && r3 === 'password' && req.method === 'POST') {
         const out = ops.setAdminPassword(ctx, r2, (await readJson(req)).password)
         act('admin-password', { target: r2 })
+        return sendJson(res, 200, out)
+      }
+    }
+
+    // Enrolled broadcaster identities (S26). POST returns the secret key ONCE —
+    // it goes in that site's broadcaster .env and is never stored panel-side.
+    if (r1 === 'publishers') {
+      if (seg.length === 2) {
+        if (req.method === 'GET') return sendJson(res, 200, ops.listPublishers(ctx))
+        if (req.method === 'POST') {
+          const b = await readJson(req)
+          const out = ops.addPublisher(ctx, b.name, { scopes: b.scopes })
+          act('publisher-create', { publisher: b.name, scopes: out.scopes.join(',') })
+          return sendJson(res, 201, out)
+        }
+      }
+      if (seg.length === 3 && req.method === 'DELETE') {
+        const out = ops.removePublisher(ctx, r2)
+        act('publisher-remove', { publisher: r2 })
+        return sendJson(res, 200, out)
+      }
+      if (seg.length === 4 && r3 === 'status' && req.method === 'POST') {
+        const out = ops.setPublisherStatus(ctx, r2, (await readJson(req)).status)
+        act('publisher-status', { publisher: r2, status: out.status })
+        return sendJson(res, 200, out)
+      }
+      if (seg.length === 4 && r3 === 'scopes' && req.method === 'POST') {
+        const out = ops.setPublisherScopes(ctx, r2, (await readJson(req)).scopes)
+        act('publisher-scopes', { publisher: r2, scopes: out.scopes.join(',') })
         return sendJson(res, 200, out)
       }
     }

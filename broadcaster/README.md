@@ -115,7 +115,9 @@ node ../tools/e2e-stream-test.mjs                   # PASS = end-to-end P2P veri
 - [x] Verified end-to-end (ffmpeg → P2P → localhost → ffprobe) via `tools/e2e-stream-test.mjs`
 - [ ] `PROTECTION=drm` path via a multi-DRM packager (CENC/CMAF, CPIX keys) — v1.x
 - [x] Auto-register stream + metadata with the panel over an authenticated RPC
-      (set `PANEL_PUBKEY` + `PUBLISHER_KEY` from `admin-cli init`) — verified `test:register`
+      (set `PANEL_PUBKEY` + `PUBLISHER_KEY`; multi-broadcaster sites add
+      `PUBLISHER_NAME` from the panel's `add-publisher` for a per-site key limited
+      to admin-assigned channel scopes + `origin` attribution) — verified `test:register`
 - [x] Multi-channel: runtime start/stop via `ChannelManager` + authed control API
       (`CONTROL_ENABLED=1`) — verified `npm run test:broadcaster-api`
 - [x] Web control UI (`control-ui/`) served by the control server — login, channel

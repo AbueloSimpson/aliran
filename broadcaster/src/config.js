@@ -23,6 +23,11 @@ export const config = {
   dataDir: process.env.DATA_DIR || './data',
   panelPubKey: process.env.PANEL_PUBKEY || null,
   publisherKey: process.env.PUBLISHER_KEY || null,
+  // Enrolled publisher identity (S26). When set, every register payload carries
+  // `publisher:<name>` and the panel verifies it against THAT enrollment's key +
+  // channel scopes (`admin-cli add-publisher` prints the matching PUBLISHER_KEY).
+  // Unset = legacy shared publisher key from `admin-cli init` (implicit scope *).
+  publisherName: process.env.PUBLISHER_NAME || null,
   streamId: process.env.STREAM_ID || 'default',
   title: process.env.TITLE || null,
   category: process.env.CATEGORY || null,

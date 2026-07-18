@@ -108,6 +108,22 @@ P2P feed behind it — is one field: dashboard → Add stream → "Redirect URL"
 `POST /api/streams {"id":"promo","url":"https://cdn.example.com/promo/index.m3u8"}`.
 See [content-management.md](content-management.md).
 
+**Running more than one broadcaster?** Don't share the `init` publisher key across
+sites — enroll each one (dashboard → Publishers, or the CLI; file-based, panel can
+stay running):
+
+```bash
+node src/admin-cli.js add-publisher east --scopes "east-*,espn2"
+```
+
+Put the printed `PUBLISHER_NAME` + `PUBLISHER_KEY` pair in **that site's**
+broadcaster `.env` (the secret is shown once) and restart it. Each site's key now
+only registers the channel ids its scopes match, the catalog shows which site owns
+each channel (`origin` chip), and revoking a site — lost box, leaked `.env`,
+offboarding — is one click instead of re-keying everyone. Once every site is
+enrolled, set `LEGACY_PUBLISHER=0` on the panel to retire the shared key. Details:
+[security-model.md](security-model.md).
+
 ## D. The dashboards (admin + broadcaster control)
 
 Set `ADMIN_ENABLED=1` (panel, port 3210) and `CONTROL_ENABLED=1` (broadcaster,

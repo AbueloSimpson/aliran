@@ -43,6 +43,17 @@ Android phone + Android TV).
   mutually exclusive), and broadcaster re-registers never erase it.
 - **`blobsKey` enrichment**: the panel opens each registered feed and publishes its
   blobs-core key so keyless repeaters/seed nodes can mirror ciphertext.
+- **Per-publisher keys + channel scopes**: each broadcaster site can be enrolled
+  with its **own** registration keypair and admin-assigned streamId-glob scopes
+  (`add-publisher` CLI, `/api/publishers`, dashboard Publishers tab; registry in the
+  panel-private `secrets/publishers.json`, public keys only). Named registrations
+  verify against that site's key and are scope-checked **before any write**
+  (rejects: `unknown-publisher` / `revoked` / `out-of-scope`, surfaced in the
+  broadcaster control UI), and stamp `origin:<name>` on the catalog record +
+  activity feed. Revocation is a per-site status flip; scope edits apply on the
+  site's next register. Legacy shared-key registrations keep working until
+  `LEGACY_PUBLISHER=0`. Broadcaster side: set `PUBLISHER_NAME` beside the enrolled
+  `PUBLISHER_KEY`.
 
 **Broadcaster (`broadcaster/`)**
 - Multi-channel `ChannelManager`: each channel is ingest → ffmpeg → **encrypted

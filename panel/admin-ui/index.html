@@ -38,6 +38,7 @@
     <button class="tab active" data-tab="streams">Streams</button>
     <button class="tab" data-tab="users">Users</button>
     <button class="tab" data-tab="admins">Admins</button>
+    <button class="tab" data-tab="publishers">Publishers</button>
     <button class="tab" data-tab="overview">Overview</button>
   </nav>
 
@@ -95,6 +96,28 @@
       </div>
       <p class="muted footnote">Admin accounts live in the panel-private <span class="mono">secrets/admins.json</span>.
         If you ever lock yourself out, recover from the box with <span class="mono">admin-cli add-admin</span>.</p>
+    </section>
+
+    <section id="publishers-section" hidden>
+      <form id="add-publisher-form" class="card row-form">
+        <strong>Enroll publisher</strong>
+        <input id="np-name" placeholder="site name (e.g. east)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+        <input id="np-scopes" placeholder="channel scopes: streamId globs, comma-separated (e.g. east-*,espn2)">
+        <button class="btn primary">Enroll</button>
+      </form>
+      <div class="card table-card">
+        <table id="publishers-table">
+          <thead><tr>
+            <th>Publisher</th><th>Status</th><th>Channel scopes</th><th>Key</th><th>Added</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted footnote">Each broadcaster site gets its <b>own</b> registration key, valid only for the channel ids
+        its scopes match — a leaked key can no longer touch other sites' channels, and revoking one site is a status flip
+        here instead of re-keying everyone. The secret is shown <b>once</b> at enrollment; put it in that site's
+        broadcaster <span class="mono">.env</span> as <span class="mono">PUBLISHER_KEY</span> together with
+        <span class="mono">PUBLISHER_NAME</span>. Registry lives in the panel-private <span class="mono">secrets/publishers.json</span>.</p>
     </section>
 
     <section id="overview-section" hidden>

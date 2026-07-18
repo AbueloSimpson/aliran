@@ -4,6 +4,7 @@ import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { evaluate, powVerify, authVerify, signToken } from '@aliran/core'
 import { loadSecrets, saveSecrets } from './store.js'
+import { loadPublishers, scopeMatch } from './ops.js'
 
 const json = (o) => b4a.from(JSON.stringify(o))
 
@@ -24,8 +25,11 @@ export function makeThrottle (threshold, windowSec) {
 // across connections. `keys` = { oprf, signing }; `db` is the signed account Hyperbee;
 // `sessionTtlMs` is the token lifetime; `devicePolicy` is 'evict' (default) or 'reject';
 // `activity` is an optional ring (src/activity.js) fed for the observability feed;
-// `enrich` is the optional blobsKey enricher (src/blobs-key.js) nudged by register.
-export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, enrich = null }) {
+// `enrich` is the optional blobsKey enricher (src/blobs-key.js) nudged by register;
+// `legacyPublisher` (default true) keeps accepting UNNAMED register payloads signed
+// with the shared keys/publisher.json key — set false (LEGACY_PUBLISHER=0) once every
+// broadcaster is enrolled as a named publisher (S26).
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, enrich = null, legacyPublisher = true }) {
   const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
@@ -91,19 +95,47 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     return json({ token, expiresAt, tokenVersion: user.tokenVersion })
   })
 
-  // Broadcaster registers a stream. Authenticated with the publisher key (Ed25519):
-  // the broadcaster signs hash(challenge || payload). The panel writes the PUBLIC catalog
-  // record (no encryptionKey) and stores the encryption key in its private secrets file.
+  // Broadcaster registers a stream. Authenticated with a publisher key (Ed25519):
+  // the broadcaster signs hash(challenge || payload). A payload carrying
+  // `publisher:<name>` verifies against THAT enrolled entry's public key
+  // (secrets/publishers.json, re-read per register) and its streamId must match the
+  // entry's admin-assigned scopes BEFORE any write — the one gate covers the catalog
+  // record, the private secrets file and isLive, since this responder writes all
+  // three. An unnamed payload falls back to the legacy shared publisher key at
+  // implicit scope `*` while `legacyPublisher` is on. The panel then writes the
+  // PUBLIC catalog record (no encryptionKey, origin stamped for named publishers)
+  // and stores the encryption key in its private secrets file.
   rpc.respond('register', async (reqBuf) => {
-    if (!db || !keys || !keys.publisher || !dataDir) return json({ error: 'registration unavailable' })
+    if (!db || !dataDir) return json({ error: 'registration unavailable' })
     let req
     try { req = JSON.parse(b4a.toString(reqBuf)) } catch { return json({ error: 'bad request' }) }
     const { payload, sig } = req || {}
     const chal = challenge
     challenge = hcrypto.randomBytes(16) // one-shot
     if (!payload || !payload.streamId || !sig) return json({ error: 'bad request' })
+
+    // Resolve the verifying identity. Reject codes (unknown-publisher | revoked |
+    // out-of-scope) surface verbatim through the broadcaster's registerError.
+    let origin = null // stamped on the catalog record + activity for named publishers
+    let verifyKey = null
+    let scopes = null // null = unscoped (legacy implicit `*`)
+    if (payload.publisher !== undefined) {
+      const name = payload.publisher
+      const publishers = loadPublishers(dataDir)
+      const entry = typeof name === 'string' && Object.prototype.hasOwnProperty.call(publishers, name) ? publishers[name] : null
+      if (!entry || !entry.publicKey) return json({ error: 'unknown-publisher' })
+      if ((entry.status || 'active') !== 'active') return json({ error: 'revoked' })
+      verifyKey = b4a.from(entry.publicKey, 'hex')
+      scopes = entry.scopes || []
+      origin = name
+    } else {
+      // Legacy shared-key path (pre-S26 broadcasters, no `publisher` in the payload).
+      if (!legacyPublisher || !keys || !keys.publisher) return json({ error: 'unknown-publisher' })
+      verifyKey = keys.publisher.publicKey
+    }
     const msg = hcrypto.hash(b4a.concat([chal, b4a.from(JSON.stringify(payload))]))
-    if (!authVerify(keys.publisher.publicKey, msg, b4a.from(sig, 'hex'))) return json({ error: 'unauthorized' })
+    if (!authVerify(verifyKey, msg, b4a.from(sig, 'hex'))) return json({ error: 'unauthorized' })
+    if (scopes !== null && !scopeMatch(scopes, payload.streamId)) return json({ error: 'out-of-scope' })
 
     const { streamId, encryptionKey } = payload
     if (encryptionKey) {
@@ -133,9 +165,14 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       // admin resolves the clash.)
       redirect: existing.redirect ?? false,
       url: existing.url ?? null,
+      // Attribution (S26): which enrolled publisher made THIS write. Deliberately
+      // not preserved from the previous record — a legacy (unnamed) register is
+      // genuinely unattributed, and an audit field must never guess. Clients
+      // ignore unknown catalog fields.
+      origin,
       status: payload.status ?? (payload.isLive !== false ? 'live' : 'idle')
     })
-    if (activity) activity.record('register', { streamId, isLive: payload.isLive !== false })
+    if (activity) activity.record('register', { streamId, isLive: payload.isLive !== false, ...(origin ? { origin } : {}) })
     if (enrich && feedKey) enrich.enqueue(streamId)
     return json({ ok: true })
   })

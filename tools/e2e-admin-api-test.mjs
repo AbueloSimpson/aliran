@@ -479,7 +479,84 @@ try {
   r = await api('DELETE', '/api/streams/redirect-3', undefined, { token }); assert.strictEqual(r.status, 200)
   log('O: redirect class — url⇒redirect+live defaults, https/size/class validation, explicit-wins, clear, register-preserve, purge ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, device revoke + sessionLive, observability — all land in the signed DB; viewer login works end-to-end)')
+  // ===== Test P: enrolled publishers — per-site keys + channel scopes (S26) =====
+  r = await api('POST', '/api/publishers', { name: 'east', scopes: ['east-*'] }, { token })
+  assert.strictEqual(r.status, 201, 'enroll publisher: ' + JSON.stringify(r.body))
+  assert.match(r.body.secretKey, /^[0-9a-f]{128}$/, 'enrollment returns the secret key once')
+  assert.match(r.body.publicKey, /^[0-9a-f]{64}$/, 'and the public key')
+  assert.deepStrictEqual(r.body.scopes, ['east-*'])
+  const eastSecret = r.body.secretKey
+  r = await api('POST', '/api/publishers', { name: 'east' }, { token })
+  assert.strictEqual(r.status, 409, 'duplicate publisher must be 409')
+  r = await api('POST', '/api/publishers', { name: '.bad' }, { token })
+  assert.strictEqual(r.status, 400, 'invalid publisher name rejected')
+  r = await api('POST', '/api/publishers', { name: 'west', scopes: ['bad scope'] }, { token })
+  assert.strictEqual(r.status, 400, 'invalid scope glob rejected')
+  r = await api('GET', '/api/publishers', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  const eastRow = r.body.find((p) => p.name === 'east')
+  assert.ok(eastRow && eastRow.status === 'active' && eastRow.scopes.includes('east-*'), 'publisher list shows the enrollment')
+  assert.strictEqual(JSON.stringify(r.body).includes(eastSecret), false, 'list must never contain a secret (none is stored)')
+
+  // The enrolled key registers in-scope over the real swarm; origin lands in the
+  // catalog and the activity feed.
+  const eastFeed = b4a.toString(hcrypto.randomBytes(32), 'hex')
+  const eastEnc = b4a.toString(hcrypto.randomBytes(32), 'hex')
+  await registerWithPanel(pcall, eastSecret, { publisher: 'east', streamId: 'east-1', feedKey: eastFeed, encryptionKey: eastEnc, title: 'East One', isLive: true })
+  let catP = (await db.get('catalog/east-1')).value
+  assert.strictEqual(catP.origin, 'east', 'catalog record stamped origin:east')
+  assert.strictEqual(catP.title, 'East One')
+  assert.strictEqual(loadSecrets(dirs.panel)['east-1'], eastEnc, 'named register stored the private secret')
+  let regErr = null
+  try { await registerWithPanel(pcall, eastSecret, { publisher: 'east', streamId: 'west-1', feedKey: eastFeed, isLive: true }) } catch (e) { regErr = e.message }
+  assert.match(regErr, /out-of-scope/, 'streamId outside the scopes rejected')
+  assert.strictEqual(await db.get('catalog/west-1'), null, 'out-of-scope wrote nothing')
+
+  // Scope edit via the API applies to the very next register (file-based registry).
+  r = await api('POST', '/api/publishers/east/scopes', { scopes: ['east-*', 'west-*'] }, { token })
+  assert.strictEqual(r.status, 200)
+  assert.deepStrictEqual(r.body.scopes, ['east-*', 'west-*'])
+  await registerWithPanel(pcall, eastSecret, { publisher: 'east', streamId: 'west-1', feedKey: eastFeed, isLive: true })
+  assert.strictEqual((await db.get('catalog/west-1')).value.origin, 'east', 'widened scope live immediately')
+
+  // Revoke via the API: same key now bounces; invalid status rejected.
+  r = await api('POST', '/api/publishers/east/status', { status: 'nope' }, { token })
+  assert.strictEqual(r.status, 400, 'invalid status rejected')
+  r = await api('POST', '/api/publishers/east/status', { status: 'revoked' }, { token })
+  assert.strictEqual(r.status, 200)
+  regErr = null
+  try { await registerWithPanel(pcall, eastSecret, { publisher: 'east', streamId: 'east-1', feedKey: eastFeed, isLive: false }) } catch (e) { regErr = e.message }
+  assert.match(regErr, /revoked/, 'revoked publisher rejected')
+  assert.strictEqual((await db.get('catalog/east-1')).value.isLive, true, 'revoked register flipped nothing')
+
+  // Hard delete: unknown-publisher from then on; 404 on repeat.
+  r = await api('DELETE', '/api/publishers/east', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  r = await api('DELETE', '/api/publishers/east', undefined, { token })
+  assert.strictEqual(r.status, 404, 'double delete is 404')
+  regErr = null
+  try { await registerWithPanel(pcall, eastSecret, { publisher: 'east', streamId: 'east-1', feedKey: eastFeed, isLive: true }) } catch (e) { regErr = e.message }
+  assert.match(regErr, /unknown-publisher/, 'removed publisher is unknown')
+
+  // Activity feed carries the audit trail; the dashboard ships the publishers card.
+  r = await api('GET', '/api/observability', undefined, { token })
+  const kindsP = new Set(r.body.activity.map((e) => e.type + (e.op ? ':' + e.op : '')))
+  assert.ok(kindsP.has('admin:publisher-create'), 'publisher enrollments recorded')
+  assert.ok(kindsP.has('admin:publisher-status'), 'publisher revokes recorded')
+  assert.ok(r.body.activity.some((e) => e.type === 'register' && e.origin === 'east'), 'register activity attributes origin')
+  const homeHtmlP = await (await fetch(base + '/')).text()
+  for (const marker of ['data-tab="publishers"', 'add-publisher-form', 'publishers-table']) {
+    assert.ok(homeHtmlP.includes(marker), `dashboard carries the publishers card: ${marker}`)
+  }
+  const appJsP = await (await fetch(base + '/app.js')).text()
+  for (const marker of ['api/publishers', 'renderPublishers', 'PUBLISHER_NAME']) {
+    assert.ok(appJsP.includes(marker), `app.js wires the publisher flows: ${marker}`)
+  }
+  r = await api('DELETE', '/api/streams/east-1', undefined, { token }); assert.strictEqual(r.status, 200)
+  r = await api('DELETE', '/api/streams/west-1', undefined, { token }); assert.strictEqual(r.status, 200)
+  log('P: publishers — enroll/list (secret once), scoped register + origin stamp, live scope edit, revoke, delete, activity + UI ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability — all land in the signed DB; viewer login works end-to-end)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

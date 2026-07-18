@@ -20,6 +20,10 @@
 | `list` | List users and streams |
 | `add-admin <name>` / `remove-admin <name>` | Manage admin accounts for the HTTP admin API |
 | `set-admin-password <name>` / `list-admins` | Rotate an admin password (revokes their sessions) / list admins |
+| `add-publisher <name> [--scopes "east-*,espn2"]` | Enroll a broadcaster site: per-site keypair (secret printed **once** → that site's `PUBLISHER_KEY`/`PUBLISHER_NAME`) + streamId-glob channel scopes |
+| `list-publishers` / `remove-publisher <name>` | List enrollments / hard-delete one (revoking keeps the audit trail) |
+| `set-publisher-scopes <name> <globs>` | Replace a site's channel scopes (comma-separated; live from its next register) |
+| `set-publisher-status <name> <active\|revoked>` | Revoke / re-accept a site's key (status flip — no re-keying of other sites) |
 
 > **Stream deletion caveat:** the purge removes everything the panel can remove, but a
 > client that already unsealed the stream key may have it cached — full revocation of
@@ -36,7 +40,10 @@ plain HTML/JS): sign in with an admin account to manage users (create, prefix
 devices — including per-device revoke ✕ —, limits) and streams (add — the encryption
 key is shown once —, metadata, **curation**: order + featured hero hint, art upload
 with preview, **permanent purge** behind a type-the-id confirmation), plus an
-**Admins** tab (add/remove/rotate passwords — rotating your own signs you out) and an
+**Admins** tab (add/remove/rotate passwords — rotating your own signs you out), a
+**Publishers** tab (enroll broadcaster sites with their own keys + channel scopes,
+edit scopes live, revoke/re-activate, remove — the site secret is shown once at
+enrollment) and an
 **Overview** tab (uptime/memory/peers/storage chips + the live activity feed, polled
 every 10 s while open). Destructive flows state their caveats inline (key-rotation
 for purge, offline-token validity for user delete, cooperative semantics for device
@@ -67,6 +74,9 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `GET /api/assets/:id/:file` | Art bytes from the assets drive (for previews) |
 | `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage admin accounts |
 | `POST /api/admins/:name/password` | Rotate an admin password (bumps tokenVersion → their sessions die) |
+| `GET/POST /api/publishers` · `DELETE /api/publishers/:name` | Enrolled broadcaster identities: list / enroll (`{name, scopes?}` — returns the site `secretKey` **once**) / hard-delete |
+| `POST /api/publishers/:name/status` `{status}` | `active` \| `revoked` — a revoked site's registrations bounce until re-activated |
+| `POST /api/publishers/:name/scopes` `{scopes}` | Replace the site's streamId-glob scopes (applies from its next register) |
 
 ## Broadcaster control API + UI (`CONTROL_ENABLED=1`)
 
@@ -87,8 +97,10 @@ identity (feedKey + encryption key). Admins are created with
 `DATA_DIR/secrets/admins.json`); login returns a session token signed with a
 broadcaster-local keypair, and attempts are rate-limited. Starting a channel spawns
 its ffmpeg pipeline, seeds the encrypted feed, and auto-registers with the panel
-(publisher-key auth — unchanged). The env-configured channel (`STREAM_ID`) keeps the
-legacy `DATA_DIR`-root store, so existing feed identities are preserved.
+(publisher-key auth; with `PUBLISHER_NAME` set the payload carries the enrolled
+identity and is subject to that site's channel scopes). The env-configured channel
+(`STREAM_ID`) keeps the legacy `DATA_DIR`-root store, so existing feed identities
+are preserved.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -112,8 +124,15 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
 - `session(username, deviceId, signature, …)` → device enrollment + panel-signed
   session token (enforces `maxDevices`, evicts oldest; revocation via `tokenVersion`).
 - `register(payload, sig)` → a broadcaster publishes/updates a catalog record
-  (publisher-key Ed25519 auth; the encryption key is stored panel-private, never in
-  the catalog).
+  (Ed25519 auth; the encryption key is stored panel-private, never in the catalog).
+  A payload carrying `publisher: "<name>"` verifies against that **enrolled** site's
+  own public key (`add-publisher`) and its `streamId` must match the site's channel
+  scopes **before anything is written** — rejects are `unknown-publisher` /
+  `revoked` / `out-of-scope` (or `unauthorized` for a bad signature) and surface
+  verbatim as the channel's `registerError` in the broadcaster control UI. Accepted
+  named registers stamp `origin: "<name>"` on the record. A payload **without**
+  `publisher` verifies against the legacy shared key from `init` (implicit scope
+  `*`) while `LEGACY_PUBLISHER=1` (the default); set `0` after enrolling every site.
 
 ## Schemas
 
@@ -137,6 +156,7 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
   "blobsKey": "<hex>",         // the feed drive's blobs-core key (or null) — see below
   "redirect": false,           // redirect channel class — see below
   "url": null,                 // redirect channels: https HLS the client plays directly
+  "origin": null,              // enrolled publisher that made the LAST register (audit), or null
   "drm": null,                 // or { scheme, licenseServerRef }
   "status": "live"
 }
@@ -152,6 +172,13 @@ legacy `DATA_DIR`-root store, so existing feed identities are preserved.
 > The stream's content **encryption key is not in the catalog**. It is kept in a
 > panel-private, non-replicated secrets file (`DATA_DIR/secrets/streams.json`) and
 > delivered per-user via `user.wrapped[streamId]`.
+
+> **`origin`**: which enrolled publisher's key signed the record's most recent
+> register — the audit trail behind the origin chip in the panel dashboard. A legacy
+> (shared-key) register writes `null`: attribution never guesses. Clients ignore the
+> field. Publisher enrollments themselves live panel-private in
+> `DATA_DIR/secrets/publishers.json` (public keys + scopes only — the site keeps its
+> secret); see [security-model.md](security-model.md).
 
 > **`blobsKey`** (S20a): the feed drive's blobs-core key, published so keyless
 > repeater/seed nodes can mirror the **encrypted** video blocks (the blobs core is a

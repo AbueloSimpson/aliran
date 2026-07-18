@@ -42,7 +42,7 @@ export async function startPanel () {
   const enrich = makeBlobsKeyEnricher({ store, swarm, db, dataDir: config.dataDir })
   swarm.on('connection', (socket) => {
     store.replicate(socket) // clients replicate the signed account/catalog DB
-    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, enrich })
+    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, enrich, legacyPublisher: config.legacyPublisher })
   })
 
   const topic = hcrypto.hash(keys.signing.publicKey)

@@ -10,6 +10,9 @@ never on code obscurity.
   pinned/configured in the client. Every record is verifiable and tamper-evident.
 - **OPRF secret key** — the brute-force choke point (see below). Critical asset.
 - **Per-stream content encryption key** — confidentiality of the feed.
+- **Publisher keys** — authorize broadcasters to write catalog records over the
+  register RPC. Per-site enrolled keys with channel scopes (below); the panel stores
+  only their public halves.
 - **User passwords** — never stored; only Argon2id verifiers + OPRF-bound wrap keys.
 
 ## Account database
@@ -68,6 +71,43 @@ panel public key, so records are provably authentic. Namespaces:
   **new/expired logins require a panel node**. Long TTL configured.
 - **maxDevices** enforced at the panel (single-writer serializes count+add); eviction
   bumps a device's `tokenVersion`. Enforcement latency = session TTL.
+
+## Broadcaster registration: per-publisher keys & channel scopes
+
+The `register` RPC is reachable by anyone on the DHT; an Ed25519 signature over
+`hash(challenge || payload)` is what authorizes a catalog write. Two identity models:
+
+- **Enrolled publishers (recommended for more than one broadcaster).** Each
+  broadcaster site is enrolled with `add-publisher <name> --scopes …`: the panel
+  mints the site an **own keypair** (secret shown once, goes in that site's
+  `PUBLISHER_KEY` + `PUBLISHER_NAME`) and records only the public key plus
+  admin-assigned **channel scopes** (streamId globs, e.g. `east-*`) in the
+  panel-private `DATA_DIR/secrets/publishers.json` (0600, never replicated — same
+  handling as admin credentials). A named register is verified against **that
+  site's** key and its `streamId` is scope-checked **before any write** — the same
+  gate covers the catalog record, the private stream-secret store and `isLive`,
+  because one responder writes all three. Accepted writes are stamped
+  `origin:<name>` in the (public) catalog record and the activity feed — real
+  attribution per site. **Containment:** a key stolen from one downlink site can
+  only touch that site's channel ids — it cannot re-point, black out or rewrite the
+  rest of the lineup (the classic broadcast-intrusion move). **Revocation** is a
+  per-site status flip (`revoked`) — no re-keying of every other site — and scope
+  edits apply from the site's next register (the registry file is re-read each
+  time). Safe failover falls out of scoping: re-scope a dead site's channels to the
+  standby box, and when the dead box comes back its stale re-asserts bounce with
+  `out-of-scope` instead of fighting the standby for the feedKey.
+- **Legacy shared key.** `init` also mints one shared publisher keypair; payloads
+  without a `publisher` name verify against it at implicit scope `*`. Fine for a
+  single-broadcaster deployment; with several sites it is a shared secret with
+  none of the properties above (any holder can rewrite any channel, unattributed,
+  and revocation means re-keying everyone). Set `LEGACY_PUBLISHER=0` on the panel
+  once every site is enrolled to close this path.
+
+**What scoping does NOT give you:** content integrity. A rogue operator at a site
+that *legitimately* carries a channel can still feed bad content into its own
+encoder input — scopes give containment, attribution and one-click revocation, not
+a review of the pixels. Multi-writer (Autobase) catalogs remain the roadmap answer
+for multi-admin trust.
 
 ## Discovery, firewall, IP
 

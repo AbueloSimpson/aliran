@@ -32,6 +32,10 @@ export const config = {
   },
   maxDevicesDefault: int(process.env.MAX_DEVICES_DEFAULT, 2),
   sessionTtlDays: int(process.env.SESSION_TTL_DAYS, 30),
+  // Accept UNNAMED register payloads signed with the shared keys/publisher.json key
+  // (pre-S26 broadcasters). Set LEGACY_PUBLISHER=0 once every broadcaster is enrolled
+  // as a named publisher (add-publisher) and carries PUBLISHER_NAME.
+  legacyPublisher: bool(process.env.LEGACY_PUBLISHER, true),
   pow: { difficulty: int(process.env.POW_DIFFICULTY, 16) },
   lockout: {
     threshold: int(process.env.LOCKOUT_THRESHOLD, 10),

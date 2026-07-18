@@ -14,6 +14,7 @@ let usersNext = null // cursor for the next page (null = no more)
 let userPrefix = ''
 let streams = []
 let admins = []
+let publishers = []
 let obsTimer = null // 10 s observability poll, runs only while the Overview tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
 
@@ -75,7 +76,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'admins', 'overview']
+const TAB_NAMES = ['streams', 'users', 'admins', 'publishers', 'overview']
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
@@ -88,9 +89,10 @@ for (const tab of document.querySelectorAll('.tab')) {
 // ---------------------------------------------------------------- refresh + render
 
 async function refresh () {
-  const [status, s, a] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins')])
+  const [status, s, a, p] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers')])
   streams = s
   admins = a
+  publishers = p
   $('#status-chips').innerHTML =
     `<span class="chip"><b>${status.users}</b> users</span>` +
     `<span class="chip"><b>${status.streams}</b> streams</span>` +
@@ -99,6 +101,7 @@ async function refresh () {
     `<span class="chip mono" title="panel public key">${esc(status.panelKey.slice(0, 12))}…</span>`
   renderStreams()
   renderAdmins()
+  renderPublishers()
   await loadUsers(true) // back to page 1, keeping the current search prefix
   if (!$('#overview-section').hidden) await loadObservability().catch(() => {})
 }
@@ -185,6 +188,7 @@ function renderStreams () {
           <span class="mono muted">${esc(s.id)}</span>
           <span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>
           ${s.redirect ? '<span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢ REDIRECT</span>' : ''}
+          ${s.origin ? `<span class="chip" title="registered by enrolled publisher &quot;${esc(s.origin)}&quot; (last register)">⇡ ${esc(s.origin)}</span>` : ''}
           ${s.featured ? '<span class="badge featured">★ FEATURED</span>' : ''}
           ${(s.category || []).map((c) => `<span class="chip">${esc(c)}</span>`).join('')}
         </div>
@@ -230,6 +234,36 @@ function renderStreams () {
     list.appendChild(card)
   }
   if (streams.length === 0) list.innerHTML = '<div class="card muted">No streams yet — add one above.</div>'
+}
+
+// Enrolled broadcaster identities (S26): per-site keys + channel scopes.
+function renderPublishers () {
+  const tbody = $('#publishers-table tbody')
+  tbody.innerHTML = ''
+  for (const p of publishers) {
+    const revoked = p.status !== 'active'
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td><b>${esc(p.name)}</b></td>
+      <td><span class="badge ${revoked ? 'disabled' : 'active'}">${esc(p.status)}</span></td>
+      <td class="scopes">${p.scopes.length
+        ? p.scopes.map((s) => `<span class="chip mono">${esc(s)}</span>`).join(' ')
+        : '<span class="muted" title="no scopes — this publisher cannot register anything yet">—</span>'}</td>
+      <td class="mono muted" title="${esc(p.publicKey)}">${esc((p.publicKey || '').slice(0, 12))}…</td>
+      <td class="muted">${p.addedAt ? new Date(p.addedAt).toLocaleString() : '—'}</td>
+      <td><div class="row-actions">
+        <button class="btn small" data-act="scopes">scopes</button>
+        <button class="btn small ${revoked ? '' : 'danger'}" data-act="toggle">${revoked ? 'activate' : 'revoke'}</button>
+        <button class="btn small danger" data-act="remove">remove</button>
+      </div></td>`
+    tr.querySelector('[data-act=scopes]').addEventListener('click', () => editPublisherScopes(p))
+    tr.querySelector('[data-act=toggle]').addEventListener('click', () => togglePublisher(p))
+    tr.querySelector('[data-act=remove]').addEventListener('click', () => removePublisherEntry(p.name))
+    tbody.appendChild(tr)
+  }
+  if (publishers.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">no publishers enrolled — broadcasters are using the shared legacy key. Enroll each site above to give it its own scoped key.</td></tr>'
+  }
 }
 
 function renderAdmins () {
@@ -491,6 +525,67 @@ async function removeAdminAccount (name) {
       await refresh()
     }
   } catch (err) { toast(err.message, true) }
+}
+
+// ---------------------------------------------------------------- publisher actions
+
+$('#add-publisher-form').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const name = $('#np-name').value.trim()
+  const scopes = $('#np-scopes').value.split(',').map((s) => s.trim()).filter(Boolean)
+  try {
+    const p = await api('POST', '/api/publishers', { name, scopes })
+    e.target.reset()
+    await refresh()
+    await dialog(`Publisher "${p.name}" enrolled`, [], {
+      okLabel: 'Done',
+      body: `<p>Put BOTH lines in <b>that site's</b> broadcaster <span class="mono">.env</span>, then restart it.
+             <b>The secret is shown only once</b> — the panel keeps just the public key:</p>
+             <div class="keybox mono">PUBLISHER_NAME=${esc(p.name)}<br>PUBLISHER_KEY=${esc(p.secretKey)}</div>
+             <p class="muted">Scopes: ${p.scopes.length ? esc(p.scopes.join(', ')) : 'none — the site cannot register anything until you add some'}.
+             Registrations outside the scopes are rejected with <span class="mono">out-of-scope</span>.</p>`
+    })
+  } catch (err) { toast(err.message, true) }
+})
+
+async function editPublisherScopes (p) {
+  const v = await dialog(`Channel scopes — ${p.name}`, [
+    { name: 'scopes', label: 'streamId globs, comma-separated (* matches any run; * alone = every channel)', value: p.scopes.join(', '), placeholder: 'east-*,espn2' }
+  ], {
+    okLabel: 'Save',
+    body: '<p class="muted">The site can only register / take live / update channel ids matching a scope. Applies from its next registration (including the 5-minute heartbeat).</p>'
+  })
+  if (!v) return
+  const scopes = v.scopes.split(',').map((s) => s.trim()).filter(Boolean)
+  act(() => api('POST', `/api/publishers/${p.name}/scopes`, { scopes }),
+    scopes.length ? `scopes for "${p.name}" = ${scopes.join(', ')}` : `all scopes removed from "${p.name}" — it cannot register anything`)
+}
+
+async function togglePublisher (p) {
+  const revoked = p.status !== 'active'
+  if (!revoked) {
+    const v = await dialog(`Revoke publisher ${p.name}?`, [], {
+      okLabel: 'Revoke', danger: true,
+      body: `<p class="warn-text">Every registration signed with "${esc(p.name)}"'s key is rejected from now on —
+             its running channels stop being re-asserted (they keep their last catalog state until an admin edits it).</p>
+             <p class="muted">Reversible: activate the entry again to re-accept the same key. The site's encoder/box is untouched.</p>`
+    })
+    if (!v) return
+  }
+  act(() => api('POST', `/api/publishers/${p.name}/status`, { status: revoked ? 'active' : 'revoked' }),
+    `publisher "${p.name}" is now ${revoked ? 'active' : 'revoked'}`)
+}
+
+async function removePublisherEntry (name) {
+  const v = await dialog(`Remove publisher ${name}?`, [], {
+    okLabel: 'Remove', danger: true,
+    body: `<p class="warn-text">Hard-deletes the enrollment — its key stops working immediately
+           (<span class="mono">unknown-publisher</span>).</p>
+           <p class="muted">Prefer <b>revoke</b>: it keeps the name and enrollment date for the audit trail.
+           Re-enrolling "${esc(name)}" later mints a fresh keypair.</p>`
+  })
+  if (!v) return
+  act(() => api('DELETE', `/api/publishers/${name}`), `removed publisher "${name}"`)
 }
 
 // ---------------------------------------------------------------- stream actions

@@ -678,15 +678,25 @@ export class ChannelManager {
       if (ch.meta.desiredRunning) {
         try { await this.start(ch.meta.id) } catch (err) { ch.meta.resumeError = err.message }
       } else {
-        this.panelLink.setDesired(ch.meta.id, { streamId: ch.meta.id, feedKey: ch.meta.feedKey ?? null, isLive: false })
+        this.panelLink.setDesired(ch.meta.id, this._regPayload({ streamId: ch.meta.id, feedKey: ch.meta.feedKey ?? null, isLive: false }))
       }
     }
+  }
+
+  // Wrap a register op with this broadcaster's enrolled identity (S26). With
+  // PUBLISHER_NAME set the panel verifies the payload against that enrollment's own
+  // key + channel scopes and stamps `origin:<name>` on the catalog record; without
+  // it the payload stays unnamed (legacy shared-key path). Every payload the manager
+  // hands to the PanelLink goes through here — the link itself passes them through
+  // untouched.
+  _regPayload (fields) {
+    return this.config.publisherName ? { publisher: this.config.publisherName, ...fields } : fields
   }
 
   // The full live-registration op for a running channel (matches the pre-S15b register
   // payload). encryptionKey is included so the panel (re)stores the private secret.
   _livePayload (ch, info) {
-    return {
+    return this._regPayload({
       streamId: ch.meta.id,
       feedKey: info.feedKey,
       encryptionKey: info.encryptionKey,
@@ -695,7 +705,7 @@ export class ChannelManager {
       category: ch.meta.category || [],
       protection: ch.meta.protection || 'self',
       isLive: true
-    }
+    })
   }
 
   // Newest-last ffmpeg log lines for a channel (S15b log ring; the S15c control API exposes it).
@@ -902,7 +912,7 @@ export class ChannelManager {
     this._save()
     // Flip the catalog to isLive:false and wait ≤5 s for it to land (the S1 catalog
     // live-push then tells clients instantly). Proceed even if the panel is unreachable.
-    const seq = this.panelLink.setDesired(id, { streamId: id, feedKey: feedKey ?? null, isLive: false })
+    const seq = this.panelLink.setDesired(id, this._regPayload({ streamId: id, feedKey: feedKey ?? null, isLive: false }))
     await this.panelLink.flush(id, seq, 5000)
     return { id, running: false }
   }
@@ -932,7 +942,7 @@ export class ChannelManager {
       if (!ch.run) continue
       const feedKey = ch.run.feedKey
       try { await ch.stop() } catch {}
-      this.panelLink.setDesired(ch.meta.id, { streamId: ch.meta.id, feedKey: feedKey ?? null, isLive: false })
+      this.panelLink.setDesired(ch.meta.id, this._regPayload({ streamId: ch.meta.id, feedKey: feedKey ?? null, isLive: false }))
     }
     try { await this.panelLink.flushAll(5000) } catch {}
     await this.panelLink.close()

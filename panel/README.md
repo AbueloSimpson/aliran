@@ -26,11 +26,11 @@ ADMIN_ENABLED=1 node src/index.js      # dashboard at http://127.0.0.1:3210
 
 ```
 src/config.js        env-driven config
-src/keys.js          panel signing + OPRF + publisher keys (init/load); in DATA_DIR/keys
+src/keys.js          panel signing + OPRF + legacy publisher keys (init/load); in DATA_DIR/keys
 src/store.js         signed Hyperbee (accounts+catalog) + assets drive + private secrets
 src/rpc.js           login RPC: PoW + throttle + OPRF eval + sessions + register
 src/ops.js           shared admin operations (single implementation for CLI + API)
-src/admin-cli.js     admin commands (users, streams, devices, art, admins)
+src/admin-cli.js     admin commands (users, streams, devices, art, admins, publishers)
 src/admin-server.js  authed admin HTTP+JSON API + static dashboard (ADMIN_ENABLED=1)
 src/index.js         panel node: DB + assets + DHT announce + replication + RPC + admin API
 admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
@@ -44,6 +44,10 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
 - [x] Session token signing + `tokenVersion` revocation + device-limit enforcement
 - [x] Assets Hyperdrive + `upload-art`
 - [x] Broadcaster auto-registration (publisher-signed `register` RPC)
+- [x] Per-publisher keys + channel scopes: enrolled per-site keypairs
+      (`add-publisher`, `/api/publishers`, dashboard Publishers tab), streamId-glob
+      scope check before any write, `origin` attribution, per-site revoke;
+      legacy shared key accepted until `LEGACY_PUBLISHER=0` (`npm run test:register`)
 - [x] Admin HTTP API over shared ops + web dashboard (`npm run test:admin-api`)
 - [x] Admin completeness: admins CRUD + password rotation, stream purge / user delete,
       user prefix-search + cursor paging, observability (`/api/observability` + activity

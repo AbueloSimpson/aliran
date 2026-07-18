@@ -98,13 +98,13 @@ following only the docs.
   units, capability-probe verification recipe; optionally a Docker variant via
   nvidia-container-toolkit. Today GPU encoders work on the bare-metal path with
   vendor drivers installed; this packages it as a first-class, tested offering
-- ⬜ **Per-publisher registration keys + channel scopes**: multiple broadcasters can
-  already feed one catalog, but they share a single publisher key — one leaked `.env`
-  can rewrite any channel in the lineup, unattributed. This enrolls each broadcaster
-  (e.g. each carrier downlink site) with its own keypair and admin-assigned channel-id
-  scopes: signature checked against that site's key, writes limited to its channels,
-  `origin` attribution in the catalog, one-click revocation. Migration-safe — legacy
-  shared-key registrations keep working until the operator disables them
+- ✅ **Per-publisher registration keys + channel scopes**: each broadcaster site
+  (e.g. each carrier downlink location) is enrolled with its own keypair and
+  admin-assigned channel-id scopes (`add-publisher` / the dashboard's Publishers
+  tab) — signatures verified against that site's key, writes limited to its scoped
+  channels, `origin` attribution in the catalog + activity feed, one-click
+  revoke/re-activate. Migration-safe: legacy shared-key registrations keep working
+  until the operator sets `LEGACY_PUBLISHER=0`
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
 - ⬜ Concurrency limits, HDCP/output protection, rental windows, blackout dates
 

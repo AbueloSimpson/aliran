@@ -90,6 +90,42 @@ async function main () {
     return
   }
 
+  // Publisher enrollment (S26) touches only the private publishers file — like the
+  // admin commands it needs no store (no ELOCKED while the panel is running).
+  if (cmd === 'add-publisher') {
+    const name = pos[0]; if (!name) return usage()
+    const p = ops.addPublisher({ config, keys, dataDir: config.dataDir }, name, { scopes: str(opts.scopes) })
+    console.log(`Enrolled publisher "${name}" (scopes: ${p.scopes.length ? p.scopes.join(', ') : '(none — add some or it cannot register anything)'}).`)
+    console.log('Put BOTH lines in THAT site\'s broadcaster .env — the secret is shown ONCE, the panel keeps only the public key:')
+    console.log('  PUBLISHER_NAME=' + name)
+    console.log('  PUBLISHER_KEY=' + p.secretKey)
+    return
+  }
+  if (cmd === 'list-publishers') {
+    for (const p of ops.listPublishers({ config, keys, dataDir: config.dataDir })) {
+      console.log(p.name, '->', JSON.stringify({ status: p.status, scopes: p.scopes, publicKey: p.publicKey.slice(0, 16) + '…', addedAt: p.addedAt }))
+    }
+    return
+  }
+  if (cmd === 'set-publisher-scopes') {
+    const [name, scopes] = pos; if (!name || scopes == null) return usage()
+    const p = ops.setPublisherScopes({ config, keys, dataDir: config.dataDir }, name, scopes)
+    console.log(`Scopes for publisher "${name}" = ${p.scopes.length ? p.scopes.join(', ') : '(none)'} (applies from its next registration).`)
+    return
+  }
+  if (cmd === 'set-publisher-status') {
+    const [name, status] = pos; if (!name || !status) return usage()
+    ops.setPublisherStatus({ config, keys, dataDir: config.dataDir }, name, status)
+    console.log(`Publisher "${name}" is now ${status}.` + (status === 'revoked' ? ' Its registrations are rejected until re-activated.' : ''))
+    return
+  }
+  if (cmd === 'remove-publisher') {
+    const name = pos[0]; if (!name) return usage()
+    ops.removePublisher({ config, keys, dataDir: config.dataDir }, name)
+    console.log(`Removed publisher "${name}". (Revoking instead keeps the audit trail.)`)
+    return
+  }
+
   const { store, db, assets } = await openStore(config.dataDir, keys)
   const ctx = { config, keys, db, assets, dataDir: config.dataDir }
   const done = async () => { await store.close() }
@@ -262,6 +298,12 @@ function usage () {
   remove-admin <name>                   Delete an admin account
   set-admin-password <name> [--password <pw>]   Rotate an admin password (revokes their sessions)
   list-admins                           List admin accounts
+  add-publisher <name> [--scopes "east-*,espn2"]   Enroll a broadcaster site: per-site keypair
+                                        (secret printed ONCE) + streamId-glob channel scopes
+  list-publishers                       List enrolled publishers
+  set-publisher-scopes <name> <globs>   Replace a publisher's channel scopes (comma-separated)
+  set-publisher-status <name> <active|revoked>   Revoke/re-activate a publisher's key
+  remove-publisher <name>               Hard-delete a publisher (revoke keeps the audit trail)
 `)
 }
 

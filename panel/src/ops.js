@@ -493,6 +493,130 @@ export function setAdminPassword (ctx, name, password) {
   return { name, tokenVersion: a.tokenVersion }
 }
 
+// ---------------------------------------------------------------- publishers
+// Enrolled broadcaster identities (S26). Panel-private registry
+// (DATA_DIR/secrets/publishers.json, mode 0600, same pattern as admins.json) —
+// NEVER in the replicated DB. Each entry is one broadcaster site:
+//   { name: { publicKey, scopes: ['east-*','espn2'], status: 'active'|'revoked', addedAt } }
+// The keypair is generated PANEL-side; only the PUBLIC key is stored — the secret
+// is returned exactly once by addPublisher for that site's broadcaster .env
+// (PUBLISHER_KEY + PUBLISHER_NAME). The register responder (rpc.js) re-reads the
+// file per registration (file-based like admins), verifies the payload signature
+// against THAT entry's key, and rejects streamIds outside the entry's scopes —
+// one site's leaked key can no longer touch another site's channels, and a
+// revoke is a status flip here instead of a global re-key of every site.
+
+function publishersPath (dataDir) { return path.join(dataDir, 'secrets', 'publishers.json') }
+
+export function loadPublishers (dataDir) {
+  const p = publishersPath(dataDir)
+  if (!fs.existsSync(p)) return {}
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
+}
+
+function savePublishers (dataDir, publishers) {
+  const p = publishersPath(dataDir)
+  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.writeFileSync(p, JSON.stringify(publishers, null, 2), { mode: 0o600 })
+}
+
+// Scopes are streamId globs: stream-id characters plus `*` (matches any run,
+// including empty). `*` alone = everything. Accepts an array or a comma string.
+const SCOPE_RE = /^[A-Za-z0-9_.*-]{1,64}$/
+export function normScopes (scopes) {
+  const list = Array.isArray(scopes) ? scopes : scopes == null ? [] : String(scopes).split(',')
+  const out = []
+  for (const raw of list) {
+    const s = String(raw).trim()
+    if (s === '') continue
+    if (!SCOPE_RE.test(s)) bad(`invalid scope "${s}" (allowed: letters, digits, _ . - and * wildcards; max 64)`)
+    if (!out.includes(s)) out.push(s)
+  }
+  if (out.length > 64) bad('at most 64 scopes per publisher')
+  return out
+}
+
+// True when streamId matches ANY of the scope globs.
+export function scopeMatch (scopes, streamId) {
+  if (!Array.isArray(scopes) || typeof streamId !== 'string') return false
+  for (const s of scopes) {
+    if (typeof s !== 'string') continue
+    const re = new RegExp('^' + s.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$')
+    if (re.test(streamId)) return true
+  }
+  return false
+}
+
+// Enroll a broadcaster site. Generates the Ed25519 keypair panel-side and returns
+// the secret ONCE (same UX as `init`/add-stream) — it is never stored here.
+export function addPublisher (ctx, name, opts = {}) {
+  checkName(name, 'publisher name')
+  const scopes = normScopes(opts.scopes)
+  const publishers = loadPublishers(ctx.dataDir)
+  if (Object.prototype.hasOwnProperty.call(publishers, name)) exists(`publisher "${name}" already exists`)
+  const kp = authKeyPair()
+  publishers[name] = {
+    publicKey: b4a.toString(kp.publicKey, 'hex'),
+    scopes,
+    status: 'active',
+    addedAt: Date.now()
+  }
+  savePublishers(ctx.dataDir, publishers)
+  return {
+    name,
+    scopes,
+    status: 'active',
+    publicKey: publishers[name].publicKey,
+    secretKey: b4a.toString(kp.secretKey, 'hex') // returned ONCE, for that site's .env
+  }
+}
+
+// Public-safe listing: never any secret (none is stored), but the public key is
+// harmless and useful for cross-checking a site's .env.
+export function listPublishers (ctx) {
+  return Object.entries(loadPublishers(ctx.dataDir)).map(([name, p]) => ({
+    name,
+    scopes: p.scopes || [],
+    status: p.status || 'active',
+    publicKey: p.publicKey,
+    addedAt: p.addedAt || null
+  }))
+}
+
+// Revoke (or re-activate) a site. A revoked entry keeps its name/key/scopes for
+// the audit trail; its registrations are rejected with `revoked` until re-activated.
+export function setPublisherStatus (ctx, name, status) {
+  if (status !== 'active' && status !== 'revoked') bad('status must be active|revoked')
+  const publishers = loadPublishers(ctx.dataDir)
+  const p = Object.prototype.hasOwnProperty.call(publishers, name) ? publishers[name] : null
+  if (!p) notFound(`no such publisher: ${name}`)
+  p.status = status
+  savePublishers(ctx.dataDir, publishers)
+  return { name, status, scopes: p.scopes || [] }
+}
+
+// Replace a site's channel scopes. Takes effect on its NEXT registration —
+// including the 5-minute heartbeat re-assert of an already-running channel.
+export function setPublisherScopes (ctx, name, scopes) {
+  const next = normScopes(scopes)
+  const publishers = loadPublishers(ctx.dataDir)
+  const p = Object.prototype.hasOwnProperty.call(publishers, name) ? publishers[name] : null
+  if (!p) notFound(`no such publisher: ${name}`)
+  p.scopes = next
+  savePublishers(ctx.dataDir, publishers)
+  return { name, status: p.status || 'active', scopes: next }
+}
+
+// Hard delete (prefer revoke — it keeps the audit trail). Future registrations
+// reject with `unknown-publisher`.
+export function removePublisher (ctx, name) {
+  const publishers = loadPublishers(ctx.dataDir)
+  if (!Object.prototype.hasOwnProperty.call(publishers, name)) notFound(`no such publisher: ${name}`)
+  delete publishers[name]
+  savePublishers(ctx.dataDir, publishers)
+  return { name, removed: true }
+}
+
 // A dummy record keeps the Argon2 work (and thus response time) the same whether or
 // not the admin name exists, so login timing does not confirm admin usernames.
 const DUMMY_ADMIN = {
