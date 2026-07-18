@@ -60,6 +60,8 @@ export async function login (call, db, username, password, { deviceId, deviceLab
         order: cat.value.order,
         featured: cat.value.featured,
         feedKey: cat.value.feedKey,
+        redirect: cat.value.redirect === true, // S23 redirect channel: viewers play `url`, no P2P feed
+        url: cat.value.url ?? null,
         encryptionKey: b4a.toString(enc, 'hex')
       })
     }

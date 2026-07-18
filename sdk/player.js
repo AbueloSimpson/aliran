@@ -64,6 +64,11 @@
 // advanced playlist's content is fetchable (_playlistServable — same metadata-vs-blobs
 // split as the tune watchdog). Playback stalls the host player would see show up here
 // as a non-advancing or unservable playlist.
+//
+// Redirect channels (S23): a catalog entry may instead carry {redirect:true, url} — an
+// operator-set https URL that viewers play DIRECTLY (resolve() returns it with
+// source:'cdn' and no port). No feed, no swarm join, no self-heal machinery: there is
+// no replica to heal, so remote-URL playback and its errors belong to the host player.
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
@@ -382,7 +387,7 @@ export class AliranPlayer extends Emitter {
     const cfg = this._zapPrefetch
     if (!cfg || this._hybrid.mode === 'cdn-only') return
     const a = this._active
-    if (!a) return
+    if (!a || !a.feedKey) return // redirect channel active (S23): no local playlist for the gate to watch
     const now = Date.now()
     this._zapGate = { suspended: false, reason: null, lastSig: null, lastAdvance: now, cleanSince: now, thinStreak: 0 }
     let busy = false
@@ -505,6 +510,8 @@ export class AliranPlayer extends Emitter {
   // Start (or reuse) the localhost server for an entitled stream and return where to
   // point the host's video player. `url`/`source` reflect the ACTIVE source under the
   // hybrid policy (p2p-only: always the localhost URL — pre-hybrid shape unchanged).
+  // Redirect channels (S23) return their operator-set https URL with source 'cdn'
+  // and no localhost involvement at all.
   async resolve (streamId) {
     const keys = this._entitled.get(streamId)
     if (!keys) throw new Error('not entitled to ' + streamId)
@@ -514,7 +521,20 @@ export class AliranPlayer extends Emitter {
     // feedKey (falling back to the login-time value) so viewers survive broadcaster
     // restarts without re-login. A re-KEYED stream (new encryption key) still needs
     // a fresh login — that one is a deliberate access-control boundary.
-    const feedKey = await this._currentFeedKey(streamId, keys.feedKey)
+    const chan = await this._currentChannel(streamId, keys)
+    // Redirect channels (S23): the record carries an operator-set https URL viewers
+    // play INSTEAD of a P2P feed — no feed open, no swarm join, no watchdogs (there
+    // is no replica to heal; remote-URL errors belong to the host player). The live
+    // catalog read above means an admin URL edit reaches viewers on their next tune,
+    // without a re-login.
+    if (chan.redirect && chan.url) {
+      this._clearHybridTimers()
+      this._clearTuneTimer()
+      this._clearZapPrefetch() // no neighbor warming while off P2P — the gate needs an active playlist
+      this._active = { streamId, feedKey: null, localUrl: null, cdnUrl: chan.url, source: 'cdn', lastSig: null, lastAdvance: 0 }
+      return { url: chan.url, source: 'cdn', localUrl: undefined, port: undefined, feedKey: null }
+    }
+    const feedKey = chan.feedKey
     // A catalog entry can exist before any broadcaster feeds it (feedKey null) —
     // surface that honestly instead of leaking a key-length error from hypercore.
     if (this._hybrid.mode !== 'cdn-only' && (!feedKey || !keys.encryptionKey)) {
@@ -671,22 +691,39 @@ export class AliranPlayer extends Emitter {
     }).catch(() => {})
   }
 
-  // Current feedKey for a stream: follow the replicated catalog (a broadcaster restart
-  // publishes a fresh key in RAM-buffer mode), falling back to the login-time value.
-  // Bounded: on a sparse bee the get() can await blocks from the panel peer, and a dead
-  // panel socket would otherwise hang resolve() forever — fall back to the cached key.
-  async _currentFeedKey (streamId, fallback) {
+  // Current catalog view of a stream, bounded and fallback-safe. feedKey: follow the
+  // replicated catalog (a broadcaster restart publishes a fresh key in RAM-buffer
+  // mode), falling back to the login-time value — a readable record with feedKey null
+  // (off-air) also falls back, never a spurious rotation. redirect/url (S23): the
+  // LIVE record is authoritative when readable (an admin set/edit/clear applies on
+  // the next tune); only a failed/timed-out read falls back to the login snapshot.
+  // Bounded: on a sparse bee the get() can await blocks from the panel peer, and a
+  // dead panel socket would otherwise hang resolve() forever.
+  async _currentChannel (streamId, fallback = {}) {
     let timer
     try {
       const node = this._panelBee && await Promise.race([
         this._panelBee.get('catalog/' + streamId),
         new Promise((resolve) => { timer = setTimeout(() => resolve(null), 5000) })
       ])
-      if (node && node.value && node.value.feedKey) return node.value.feedKey
-    } catch { /* replicated catalog momentarily unreadable — use the cached key */ } finally {
+      if (node && node.value) {
+        const v = node.value
+        return {
+          feedKey: v.feedKey || fallback.feedKey || null,
+          redirect: !!(v.redirect && v.url),
+          url: v.url || null
+        }
+      }
+    } catch { /* replicated catalog momentarily unreadable — use the cached values */ } finally {
       clearTimeout(timer)
     }
-    return fallback
+    return { feedKey: fallback.feedKey || null, redirect: !!(fallback.redirect && fallback.url), url: fallback.url || null }
+  }
+
+  // feedKey-only shim for the callers that never care about the redirect class
+  // (prewarm / neighbor warm / active-feed rotation).
+  async _currentFeedKey (streamId, fallback) {
+    return (await this._currentChannel(streamId, { feedKey: fallback })).feedKey
   }
 
   // Catalog art fields hold drive paths like 'assets/<id>/poster.png' (turned into
@@ -1162,6 +1199,7 @@ export class AliranPlayer extends Emitter {
   async _maybeReresolveActiveFeed () {
     const a = this._active
     if (!a || this._hybrid.mode === 'cdn-only') return // cdn-only never serves the P2P feed
+    if (!a.feedKey) return // redirect channel (S23): nothing served locally, nothing to rotate
     const keys = this._entitled.get(a.streamId)
     if (!keys || !keys.encryptionKey) return
     // Fallback = the key we're already serving, so a momentarily unreadable catalog (or a
@@ -1238,7 +1276,7 @@ export class AliranPlayer extends Emitter {
     const port = await this._ensureServer() // posters must be loadable before anything plays
     this._entitled.clear()
     return streams.map((s) => {
-      this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey })
+      this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null })
       return this._display(port, s.id, s)
     })
   }

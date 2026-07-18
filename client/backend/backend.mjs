@@ -24,6 +24,9 @@
 //                                        announce, ~zero viewer-to-viewer upload)
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
 //        { streamId }                 -> play an entitled stream -> { port, url, source }
+//                                        (redirect channels, S23: url is the remote
+//                                        https URL, source 'cdn', port undefined —
+//                                        the player plays it directly, no localhost)
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
 //        { type:'prefs-get' }         -> { type:'prefs', creds, favorites, smoothZapping }
 //        { type:'creds-save', username, password } | { type:'creds-clear' }
