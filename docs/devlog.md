@@ -1214,3 +1214,39 @@ the fallback already spent.
   with `+1`. (Fun catch during the demo: the provider feed lists Avatar LAST —
   it was appended after the alphabetical bulk, which is exactly the kind of feed
   drift the ownership/diff machinery shrugs at.)
+
+### Program guide (EPG) — fetched on demand from the same provider JSON (S27, verified)
+- **The answer to "how does EPG work remotely with the same JSON?":** the schedule
+  never enters the catalog (append-only replicated bee — a day of programs per
+  category would grow every client's store forever). Since S27 every imported channel
+  carries `epgUrl` (the same feed URL) + `epgId` (its id inside the feed); now the APP
+  fetches that JSON over https on demand and renders the guide client-side.
+- **SDK** (`sdk/player.js` `_display`, `sdk/login.js`, `sdk/react-native` `Stream`):
+  `epgUrl`/`epgId` pass through the display list on both the login and live-push paths
+  — public https, exposed like the art URLs (unlike `url`/`redirect`, which stay
+  engine-internal). Worklet bundle regenerated (gitignored/local); `test:sdk` asserts
+  the pointers reach the display list and that a channel without them doesn't grow them.
+- **Client** `src/epg.ts` (`EpgService`): one fetch per feed URL, ETag-revalidated,
+  size/timeout-guarded, indexed by `channels[].id`; `getNowNext(url,id)` selects the
+  current program (start≤now<stop) + the next few from the cached, start-sorted list.
+  Refetch only when the cached schedule no longer covers `now` (or it ages out), min-
+  interval throttled, concurrent callers coalesced, failures degrade to an empty guide
+  (never throws). A whole category costs ONE fetch (all its channels share the URL).
+- **Info panel** (`ChannelInfoPanel`): the old honest placeholder slot now shows a live
+  **Now** row (title + local HH:MM–HH:MM + elapsed bar) and an **Up next** list, on a
+  30 s refresh so it rolls over while open; channels with no/failed EPG keep "No program
+  information" — never fabricated. `useEpg` hook cleans up its interval on unmount.
+- **Any channel, not just imports** (`panel/src/ops.js`): `setMeta`/`addStream` accept
+  `epgUrl` (https, empty clears) + `epgId`, exposed on `set-meta --epg-url/--epg-id`,
+  `PATCH /api/streams`, and the dashboard Edit dialog — point a P2P channel at a
+  compatible JSON and the same guide lights up.
+- **Cost/trust:** a handful of ~tens-of-KB fetches per active viewer per day (mostly
+  304s), zero panel storage / replication / VPS bandwidth; same public-https stance as
+  art and redirect URLs (the device fetches the provider host directly).
+- **Verification:** client jest +2 suites (7 EpgService cases: parse/now-next, per-URL
+  cache, ETag 304 keeps data, coverage-expiry refetch, empty/failure degrade, coalesce;
+  3 ChannelInfoPanel cases: now+next render, no-EPG placeholder + no fetch, empty→
+  placeholder) → 20/20 client tests, `tsc` clean; `test:sdk` FULL PASS with the new
+  passthrough assertions; `test:sources` grows an A0 case (EPG set/clear on a manual
+  channel via setMeta + http rejection) → A0–J. On-device install deferred (phone off
+  wireless adb).

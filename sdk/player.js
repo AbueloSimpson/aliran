@@ -1295,7 +1295,12 @@ export class AliranPlayer extends Emitter {
       featured: cat.featured,
       poster: this._artUrl(port, cat.poster),
       backdrop: this._artUrl(port, cat.backdrop),
-      logo: this._artUrl(port, cat.logo)
+      logo: this._artUrl(port, cat.logo),
+      // EPG pointers (S27): public https feed URL + this channel's id inside it, so
+      // the app can fetch the schedule on demand. Safe to expose like the art URLs
+      // (unlike url/redirect, which stay engine-internal — see the display test).
+      epgUrl: cat.epgUrl ?? undefined,
+      epgId: cat.epgId ?? undefined
     }
   }
 

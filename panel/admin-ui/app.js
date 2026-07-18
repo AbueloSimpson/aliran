@@ -739,6 +739,8 @@ async function editMeta (s) {
     { name: 'category', label: 'Category (comma-separated)', value: (s.category || []).join(', ') },
     { name: 'feedKey', label: 'Feed key (hex)', value: s.feedKey || '', placeholder: 'set when the broadcaster registers' },
     { name: 'url', label: 'Redirect URL (https:// — plays this instead of a P2P feed; empty = none)', value: s.url || '', placeholder: 'https://cdn.example.com/ch/index.m3u8' },
+    { name: 'epgUrl', label: 'EPG feed URL (https:// program guide the app fetches; empty = none)', value: s.epgUrl || '', placeholder: 'https://provider.example/anime.json' },
+    { name: 'epgId', label: 'EPG channel id (this channel\'s id inside that feed)', value: s.epgId || '', placeholder: 'plutotv.es.629a06…' },
     { name: 'status', label: 'Status', type: 'select', options: ['idle', 'live', 'offline'], value: s.status },
     { name: 'isLive', label: 'Live now', type: 'checkbox', value: s.isLive }
   ])
@@ -749,7 +751,9 @@ async function editMeta (s) {
     category: v.category.split(',').map((x) => x.trim()).filter(Boolean),
     status: v.status,
     isLive: v.isLive,
-    url: v.url.trim() // always sent: empty clears the redirect (explicit status/isLive above win over defaulting)
+    url: v.url.trim(), // always sent: empty clears the redirect (explicit status/isLive above win over defaulting)
+    epgUrl: v.epgUrl.trim(), // always sent: empty clears the program-guide pointer
+    epgId: v.epgId.trim()
   }
   if (v.feedKey.trim()) body.feedKey = v.feedKey.trim()
   act(() => api('PATCH', `/api/streams/${s.id}`, body), `metadata updated for "${s.id}"`)

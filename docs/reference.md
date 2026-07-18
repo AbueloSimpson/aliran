@@ -11,7 +11,7 @@
 | `grant <u> <stream>` / `revoke <u> <stream>` | Entitle / un-entitle a user for a stream |
 | `add-stream <id> [--title --category --feed --key]` | Register a stream + gen encryption key |
 | `delete-stream <id>` | **Full purge**: catalog + private key + every grant + art (see caveat below) |
-| `set-meta <id> [--order <n\|null> --featured …]` | Update catalog metadata (incl. curation) |
+| `set-meta <id> [--order <n\|null> --featured … --epg-url <https> --epg-id <id>]` | Update catalog metadata (incl. curation; `--epg-url`/`--epg-id` attach a program guide, `''` clears) |
 | `upload-art <id> <poster\|backdrop\|logo> <file>` | Add art to the assets drive |
 | `set-max-devices <u> <n>` | Concurrent device limit |
 | `list-devices <u>` | Show a user's enrolled devices |
@@ -75,7 +75,7 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `POST /api/users/:u/logout-all` · `POST /api/users/:u/max-devices` | Session/device controls |
 | `POST /api/users/:u/grants` `{streamId}` · `DELETE /api/users/:u/grants/:id` | Grant / revoke |
 | `GET/POST /api/streams` | List / add (`add-stream` fields + `order`/`featured` + `url` — an https `url` creates a **redirect channel**; returns the encryption key once) |
-| `PATCH /api/streams/:id` | Update catalog metadata (incl. `order` 0–9999 \| null, `featured` bool, `url` — https sets / empty string clears the redirect class) |
+| `PATCH /api/streams/:id` | Update catalog metadata (incl. `order` 0–9999 \| null, `featured` bool, `url` — https sets / empty clears the redirect class, `epgUrl`/`epgId` — https program-guide pointers the app fetches, empty clears) |
 | `DELETE /api/streams/:id` | **Full purge** — catalog + private key + grants + art (see the deletion caveat above) |
 | `POST /api/streams/:id/art/:kind` | Upload poster/backdrop/logo (raw image body) |
 | `GET /api/assets/:id/:file` | Art bytes from the assets drive (for previews) |

@@ -165,7 +165,7 @@ try {
     wrapped: { news: sealTo(kp.publicKey, encKey), movies: sealTo(kp.publicKey, encKey2), shopping: sealTo(kp.publicKey, encKey3), sports: sealTo(kp.publicKey, encKey4), radio: sealTo(kp.publicKey, encKey5), talk: sealTo(kp.publicKey, encKey6) },
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
-  await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live' })
+  await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live', epgUrl: 'https://epg.example.com/news.json', epgId: 'news-24' })
   await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live', order: 1, featured: true })
   await db.put('catalog/shopping', { title: 'Shopping', category: ['shopping'], type: 'live', protection: 'self', feedKey: b4a.toString(feed3.key, 'hex'), isLive: true, poster: null, status: 'live' })
   await db.put('catalog/sports', { title: 'Sports', category: ['sports'], type: 'live', protection: 'self', feedKey: b4a.toString(feed4.key, 'hex'), isLive: true, poster: null, status: 'live' })
@@ -214,9 +214,12 @@ try {
   const disp = streams.find(x => x.id === 'news')
   if (disp.encryptionKey || disp.feedKey) throw new Error('display list leaked stream keys')
   if (disp.title !== 'News 24' || disp.isLive !== true) throw new Error('display metadata wrong')
+  // EPG pointers (S27) pass through the display list (public https, like art URLs).
+  if (disp.epgUrl !== 'https://epg.example.com/news.json' || disp.epgId !== 'news-24') throw new Error('EPG pointers missing from login display list: ' + JSON.stringify({ epgUrl: disp.epgUrl, epgId: disp.epgId }))
   // Curation passthrough (S16c): order/featured reach the display list untouched.
   const dispMovies = streams.find(x => x.id === 'movies')
   if (dispMovies.order !== 1 || dispMovies.featured !== true) throw new Error('curation fields missing from login display list: ' + JSON.stringify({ order: dispMovies.order, featured: dispMovies.featured }))
+  if (dispMovies.epgUrl !== undefined || dispMovies.epgId !== undefined) throw new Error('a channel with no EPG must not grow epg pointers')
   if (disp.order != null || disp.featured) throw new Error('uncurated stream must not grow curation values')
 
   // wrong password must be rejected (and must not clobber the entitled session)

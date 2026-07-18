@@ -20,6 +20,11 @@ export interface Stream {
   order?: number | null
   /** Panel curation hint: featured stream (hero / menu wallpaper pick). */
   featured?: boolean
+  /** EPG feed URL (S27): a public https JSON of channels+schedules the app fetches
+   *  on demand for this channel's program guide. Set on source-imported channels. */
+  epgUrl?: string
+  /** This channel's id INSIDE the epgUrl feed (matches feed `channels[].id`). */
+  epgId?: string
 }
 
 // JSON-safe hybrid CDN<->P2P config, passed through to the engine (sdk/player.js).

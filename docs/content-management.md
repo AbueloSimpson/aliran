@@ -132,12 +132,27 @@ and ownership is explicit — imported records carry `source: <name>`, and a syn
 only create/update/delete records stamped with **its** name. A colliding id that
 belongs to a manual channel or another source is skipped and reported as a conflict.
 
-**EPG:** provider feeds often carry a full-day schedule per channel. It is deliberately
-**not** imported into the catalog — the replicated Hyperbee is append-only, so a day of
-schedule per category would grow every client's store forever. Instead each imported
-record carries `epgUrl`/`epgId` pointers back to the feed, so a client can fetch the
-schedule over https on demand (planned client feature; same public-https stance as
-remote art and redirect URLs).
+**EPG (program guide):** provider feeds often carry a schedule per channel (an `epg`
+array of `{title, start, stop}` with ISO times). It is deliberately **not** imported
+into the catalog — the replicated Hyperbee is append-only, so a day of schedule per
+category would grow every client's store forever. Instead each imported record carries
+two pointers, `epgUrl` (the same feed URL) and `epgId` (the channel's id inside it),
+and **the app fetches the guide directly over https, on demand**:
+
+- Opening a channel's **Info panel** shows a live **Now / Up next** guide (current
+  program with an elapsed bar, then the next few) built from the feed. Channels with
+  no EPG keep an honest "No program information" placeholder — never fabricated data.
+- **One fetch serves a whole category** — every channel in a source shares the URL, so
+  the client caches per-URL and revalidates with ETag (a refresh that finds nothing new
+  is a 304). Cost is a handful of ~tens-of-KB fetches per active viewer per day; **zero
+  panel storage, zero replication, zero VPS bandwidth**. Playback never depends on it —
+  an unreachable or malformed feed just yields the placeholder.
+- Same public-https trust stance as remote art and redirect URLs: the viewer's device
+  fetches the JSON from the provider's host directly.
+
+This works for **any** channel, not just imported ones: set `epgUrl` + `epgId` on a P2P
+channel (via `set-meta`/`PATCH /api/streams`) pointing at a compatible JSON, and the
+same guide lights up. Leave them unset for the placeholder.
 
 ## Channel ingest & transcode
 

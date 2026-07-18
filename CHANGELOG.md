@@ -70,6 +70,15 @@ Android phone + Android TV).
   source (dashboard channels-dialog checkboxes / `--exclude`): an excluded channel
   is purged and skipped on every sync — exclusion changes reset the ETag so a 304
   can never mask them — and re-checking re-imports and re-grants it.
+- **Program guide (EPG) — fetched on demand, never in the catalog**: imported (and
+  any manually tagged) channels carry `epgUrl`/`epgId` pointers, and the app fetches
+  the provider JSON over https to render a live **Now / Up next** guide in the Info
+  panel (elapsed bar + upcoming programs). One ETag-revalidated fetch serves a whole
+  category; the schedule never touches the replicated bee (no per-client growth) and
+  playback never depends on it. Set `epgUrl`/`epgId` on any P2P channel (`set-meta`
+  / `PATCH /api/streams` / dashboard Edit) to light up the same guide; leave unset
+  for an honest "No program information" placeholder. SDK exposes the pointers on the
+  display list (like art URLs); the schedule data stays client-side.
 
 **Broadcaster (`broadcaster/`)**
 - Multi-channel `ChannelManager`: each channel is ingest → ffmpeg → **encrypted

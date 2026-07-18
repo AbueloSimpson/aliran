@@ -1,14 +1,41 @@
 // Channel-detail overlay (the reference's program-info panel, and the ROADMAP's
 // missing channel-detail screen): art, number + title, category chips, LIVE state,
 // synopsis (catalog description), live source stats (P2P/CDN + peers — data the
-// reference app doesn't even have), favorite toggle, Watch button. Where a program
-// guide would sit, an honest "No program information" placeholder (D2 — no fake EPG);
-// the layout slot is where an EPG lands later.
-import React, { useState } from 'react'
+// reference app doesn't even have), favorite toggle, Watch button. The program-guide
+// slot shows a live now/next guide for source-imported channels (S27: fetched on
+// demand from the provider's epgUrl over https — see src/epg.ts), and falls back to
+// an honest "No program information" placeholder for channels without an EPG (D2 — no
+// fake data).
+import React, { useState, useEffect } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber } from '../catalog'
+import { epg, type NowNext, type EpgProgram } from '../epg'
 import { theme } from '../theme'
+
+// Local wall-clock HH:MM (no Intl dependency — Hermes' Intl is uneven on Android).
+function hhmm (ms: number): string {
+  const d = new Date(ms)
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+}
+
+// Fetch this channel's now/next on open and refresh on a slow tick so the current
+// program rolls over and the progress bar advances while the panel stays open. The
+// fetch is cached per feed URL (src/epg.ts), so the tick is nearly free.
+function useEpg (epgUrl?: string, epgId?: string): { data: NowNext | null; loaded: boolean } {
+  const [data, setData] = useState<NowNext | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => {
+    let alive = true
+    setData(null); setLoaded(false)
+    if (!epgUrl || !epgId) { setLoaded(true); return }
+    const run = () => epg.getNowNext(epgUrl, epgId).then((d) => { if (alive) { setData(d); setLoaded(true) } })
+    run()
+    const timer = setInterval(run, 30000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [epgUrl, epgId])
+  return { data, loaded }
+}
 
 export interface ChannelInfoPanelProps {
   stream: Stream
@@ -52,17 +79,60 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
         </View>
       )}
 
-      {/* EPG slot: honest placeholder until program data exists (D2). */}
-      <View style={styles.epgSlot}>
-        <Text style={styles.epgTitle}>PROGRAM GUIDE</Text>
-        <Text style={styles.epgEmpty}>No program information</Text>
-      </View>
+      {/* EPG slot: live now/next for channels that carry a guide (S27), else an
+          honest placeholder (D2 — no fake data). */}
+      <EpgGuide stream={stream} />
 
       <View style={styles.actions}>
         <ActionButton label={playing ? 'Watching' : 'Watch'} primary onPress={onWatch} hasTVPreferredFocus />
         <ActionButton label={favorite ? '★ Remove favorite' : '☆ Add favorite'} onPress={onToggleFavorite} />
       </View>
     </ScrollView>
+  )
+}
+
+// The program-guide slot. Renders "Now" (with an elapsed bar) + a short "Up next"
+// list when the channel has a guide and it resolved to a current/upcoming program;
+// otherwise the honest placeholder. Never blocks on the fetch — it shows the
+// placeholder until data arrives, and keeps it if the feed is empty/unreachable.
+function EpgGuide ({ stream }: { stream: Stream }) {
+  const { data, loaded } = useEpg(stream.epgUrl, stream.epgId)
+  const has = !!(data && (data.now || data.next.length))
+  return (
+    <View style={styles.epgSlot}>
+      <Text style={styles.epgTitle}>PROGRAM GUIDE</Text>
+      {!has
+        ? <Text style={styles.epgEmpty}>{stream.epgUrl && !loaded ? 'Loading guide…' : 'No program information'}</Text>
+        : (
+          <>
+            {data!.now && <NowRow program={data!.now} />}
+            {data!.next.length > 0 && (
+              <View style={styles.epgNext}>
+                <Text style={styles.epgNextLabel}>UP NEXT</Text>
+                {data!.next.map((p) => (
+                  <View key={p.start} style={styles.epgNextRow}>
+                    <Text style={styles.epgNextTime}>{hhmm(p.start)}</Text>
+                    <Text style={styles.epgNextTitle} numberOfLines={1}>{p.title}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </>
+          )}
+    </View>
+  )
+}
+
+function NowRow ({ program }: { program: EpgProgram }) {
+  const pct = Math.max(0, Math.min(1, (Date.now() - program.start) / (program.stop - program.start)))
+  return (
+    <View style={styles.epgNow}>
+      <View style={styles.epgNowHead}>
+        <Text style={styles.epgNowTitle} numberOfLines={2}>{program.title}</Text>
+        <Text style={styles.epgNowTime}>{hhmm(program.start)}–{hhmm(program.stop)}</Text>
+      </View>
+      <View style={styles.epgBarTrack}><View style={[styles.epgBarFill, { width: `${Math.round(pct * 100)}%` }]} /></View>
+    </View>
   )
 }
 
@@ -102,6 +172,17 @@ const styles = StyleSheet.create({
   epgSlot: { marginTop: theme.spacing(2), padding: theme.spacing(1.5), borderRadius: 8, backgroundColor: theme.colors.overlayStrong },
   epgTitle: { color: theme.colors.textDim, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 2 },
   epgEmpty: { color: theme.colors.textDim, fontSize: theme.type.body, marginTop: 6, fontStyle: 'italic' },
+  epgNow: { marginTop: 8 },
+  epgNowHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 },
+  epgNowTitle: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', flexShrink: 1 },
+  epgNowTime: { color: theme.colors.textDim, fontSize: theme.type.caption, fontVariant: ['tabular-nums'] },
+  epgBarTrack: { height: 4, borderRadius: 2, backgroundColor: theme.colors.surface, marginTop: 6, overflow: 'hidden' },
+  epgBarFill: { height: 4, borderRadius: 2, backgroundColor: theme.colors.accent },
+  epgNext: { marginTop: 10, gap: 4 },
+  epgNextLabel: { color: theme.colors.textDim, fontSize: theme.type.caption - 1, fontWeight: '800', letterSpacing: 1 },
+  epgNextRow: { flexDirection: 'row', gap: 10 },
+  epgNextTime: { color: theme.colors.textDim, fontSize: theme.type.caption, fontVariant: ['tabular-nums'], minWidth: 42 },
+  epgNextTitle: { color: theme.colors.text, fontSize: theme.type.caption, flexShrink: 1 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: theme.spacing(2) },
   button: { backgroundColor: theme.colors.surface, borderRadius: 8, paddingHorizontal: 18, paddingVertical: 10, borderWidth: theme.focusRing, borderColor: 'transparent' },
   buttonPrimary: { backgroundColor: theme.colors.primary },

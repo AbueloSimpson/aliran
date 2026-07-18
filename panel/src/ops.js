@@ -256,6 +256,8 @@ export async function addStream (ctx, id, opts = {}) {
     logo: null,
     order: opts.order != null ? normOrder(opts.order) : null,
     featured: normBool(opts.featured),
+    epgUrl: opts.epgUrl != null ? normEpgUrl(opts.epgUrl) : null, // S27 program-guide pointers (optional)
+    epgId: opts.epgId != null ? normEpgId(opts.epgId) : null,
     status: opts.feedKey || url ? 'live' : 'idle'
   }
   await ctx.db.put('catalog/' + id, catalog)
@@ -293,6 +295,28 @@ export function normRedirectUrl (v) {
   return s
 }
 
+// EPG feed URL: a public https JSON of channels+schedules the CLIENT fetches (never
+// the panel), so https is required for the same Android-cleartext reason as art.
+// Empty clears.
+function normEpgUrl (v) {
+  const s = String(v ?? '').trim()
+  if (s === '') return null
+  if (s.length > 2048) bad('epgUrl must be at most 2048 characters')
+  if (/[\r\n]/.test(s)) bad('epgUrl must not contain line breaks')
+  if (!/^https:\/\/./i.test(s)) bad('epgUrl must be an https:// URL')
+  return s
+}
+
+// This channel's id inside the epgUrl feed (matches a feed `channels[].id`). A free
+// string — the feed's id space is the provider's, not our stream-id charset. Empty clears.
+function normEpgId (v) {
+  const s = String(v ?? '').trim()
+  if (s === '') return null
+  if (s.length > 128) bad('epgId must be at most 128 characters')
+  if (/[\r\n]/.test(s)) bad('epgId must not contain line breaks')
+  return s
+}
+
 export async function setMeta (ctx, id, fields = {}) {
   const c = await requireStream(ctx, id)
   const prevFeedKey = c.feedKey
@@ -309,6 +333,13 @@ export async function setMeta (ctx, id, fields = {}) {
   if (fields.isLive != null) c.isLive = normBool(fields.isLive)
   if (fields.order !== undefined) c.order = normOrder(fields.order) // null clears
   if (fields.featured != null) c.featured = normBool(fields.featured)
+  // EPG pointers (S27): a public https feed URL + this channel's id inside it. The app
+  // fetches the guide on demand; the schedule never enters the catalog. Works on ANY
+  // channel (P2P or redirect) — sources set these automatically on imported channels.
+  // Empty string clears. epgUrl without epgId (or vice versa) yields no guide, so both
+  // matter; we validate independently and let the client require both.
+  if (fields.epgUrl !== undefined) c.epgUrl = normEpgUrl(fields.epgUrl)
+  if (fields.epgId !== undefined) c.epgId = normEpgId(fields.epgId)
   // Redirect channels (S23): `url` drives the pair atomically — a non-empty https URL
   // makes the entry a redirect channel (liveness defaults on, unless set explicitly in
   // the same request); an empty string clears both (liveness defaults off — a feedless

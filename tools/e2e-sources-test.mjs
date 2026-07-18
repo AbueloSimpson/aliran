@@ -88,6 +88,22 @@ try {
   await api('POST', '/api/users', { username: 'bob', password: 'bob-secret-1' }, token)
   await ops.addStream(ctx, 'anime.manual', { title: 'Hands Off', url: 'https://example.com/manual.m3u8' })
 
+  // ===== Test A0: EPG pointers on a MANUAL (non-source) channel via setMeta =====
+  // Proves the program-guide fields work on any channel, not just imported ones.
+  let m = await api('PATCH', '/api/streams/anime.manual', { epgUrl: 'https://guide.example/tv.json', epgId: 'hands-off' }, token)
+  assert.strictEqual(m.status, 200, 'set epg on a manual channel: ' + JSON.stringify(m.body))
+  let mc = (await db.get('catalog/anime.manual')).value
+  assert.strictEqual(mc.epgUrl, 'https://guide.example/tv.json')
+  assert.strictEqual(mc.epgId, 'hands-off')
+  m = await api('PATCH', '/api/streams/anime.manual', { epgUrl: 'http://insecure.example/tv.json' }, token)
+  assert.strictEqual(m.status, 400, 'http epgUrl must be rejected')
+  m = await api('PATCH', '/api/streams/anime.manual', { epgUrl: '', epgId: '' }, token)
+  assert.strictEqual(m.status, 200)
+  mc = (await db.get('catalog/anime.manual')).value
+  assert.strictEqual(mc.epgUrl, null, 'empty epgUrl clears')
+  assert.strictEqual(mc.epgId, null, 'empty epgId clears')
+  log('A0: EPG pointers set/clear on a manual channel via setMeta; http epgUrl rejected ✓')
+
   // ===== Test A: add-source validation =====
   let r = await api('POST', '/api/sources', { name: 'anime', url: 'http://not-loopback.example/feed.json', category: 'Anime' }, token)
   assert.strictEqual(r.status, 400, 'non-loopback http feed url must be rejected: ' + JSON.stringify(r.body))

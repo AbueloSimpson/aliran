@@ -271,7 +271,9 @@ async function main () {
         category: str(opts.category),
         isLive: opts.live != null ? opts.live : undefined,
         order: opts.order != null ? String(opts.order) : undefined, // ops validates (0-9999 | 'null')
-        featured: opts.featured != null ? opts.featured : undefined
+        featured: opts.featured != null ? opts.featured : undefined,
+        epgUrl: opts['epg-url'] != null ? str(opts['epg-url']) || '' : undefined, // '' clears
+        epgId: opts['epg-id'] != null ? str(opts['epg-id']) || '' : undefined
       })
       console.log(`Updated metadata for "${id}".`)
       break
@@ -356,6 +358,7 @@ function usage () {
   revoke <u> <streamId>                 Remove an entitlement
   set-meta <id> [--title --feed --live --order <n|null> --featured [true|false] --poster ...]
                                         (art fields take an 'assets/…' path or an https:// URL; '' clears)
+                [--epg-url https://…/guide.json --epg-id <id-in-that-feed>]  Attach a program guide ('' clears)
   set-max-devices <u> <n>               Concurrent device limit
   list-devices <u>                      Show a user's enrolled devices
   logout-device <u> <deviceId>          Drop one device enrollment (no tokenVersion bump)

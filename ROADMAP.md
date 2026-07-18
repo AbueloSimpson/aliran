@@ -110,9 +110,12 @@ following only the docs.
   channels** — validated as pure data, ownership-stamped so a feed can only touch
   its own namespace, removed-from-feed = removed-from-catalog, auto-granted to
   every user (reconciled each sync + at user creation), managed via
-  `add-source`/`/api/sources`/the dashboard Sources tab; EPG deliberately kept out
-  of the replicated catalog (per-record `epgUrl`/`epgId` pointers for on-demand
-  client fetch instead)
+  `add-source`/`/api/sources`/the dashboard Sources tab; individual channels
+  deselectable per source
+- ✅ **Program guide (EPG)**: kept out of the replicated catalog — `epgUrl`/`epgId`
+  pointers drive an on-demand https client fetch that renders a live Now/Up-next guide
+  in the Info panel (one ETag-revalidated fetch per category, works on any channel;
+  no per-client store growth, no fabricated data)
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
 - ⬜ Concurrency limits, HDCP/output protection, rental windows, blackout dates
 
