@@ -142,4 +142,6 @@ Android phone + Android TV).
 
 ### To do (see [ROADMAP.md](ROADMAP.md) and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
+- GPU transcode pack — a separately-packaged bare-metal deploy pack (NVIDIA
+  drivers + NVENC; VAAPI/QSV variants) for hardware-encode hosts.
 - Optional (v1.x): multi-DRM, geo-locking, VOD; panel HA replica set.

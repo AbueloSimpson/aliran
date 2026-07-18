@@ -2,12 +2,12 @@
 
 Run your own Aliran service. Everything is configuration — no code changes needed.
 
-Two supported deployments, same result:
-
-- **Docker Compose (recommended):** one command, images bundle Node + ffmpeg,
-  auto-restart built in.
-- **Bare metal + systemd:** plain Node processes under systemd; easier to poke at
-  with standard tools.
+**The supported deployment is Docker Compose.** The images pin the two things that
+actually break deployments — the ffmpeg build (SRT + encoder availability) and the
+Node version — and the compose file pre-solves host networking, data volumes, and
+auto-restart. It is also the path that is continuously exercised in production and
+by CI. A bare-metal + systemd alternative exists for environments that cannot run
+Docker or that need direct GPU access (section B, advanced — less exercised).
 
 Networking headline: **the P2P layer needs no inbound ports.** Clients find the
 panel by its public key over the DHT (outbound UDP hole-punching), and viewers
@@ -54,7 +54,17 @@ must use a bridge network (e.g. rootless Docker), drop `network_mode: host`, add
 Data lives in the named volumes `panel-data` / `broadcaster-data` (`DATA_DIR=/data`
 inside the containers).
 
-## B. Bare metal + systemd
+## B. Alternative: bare metal + systemd (advanced)
+
+> **Use Docker (section A) unless you have a reason not to.** This path exists for
+> environments where Docker is unavailable/disallowed, and for hosts that need
+> **direct GPU access** for hardware transcode (NVENC/VAAPI/QSV need vendor drivers
+> on the host; the stock compose file does no GPU device passthrough). It is the
+> less-exercised path — the Docker route is what production and CI run — and a
+> dedicated, separately-packaged **GPU transcode pack** (bare metal + NVIDIA driver
+> stack) is planned; see the [Roadmap](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md).
+> You also inherit your distro's ffmpeg — verify protocols/encoders with the
+> dashboard's capability probe before relying on SRT or a GPU encoder.
 
 ```bash
 sudo apt-get install -y nodejs npm ffmpeg     # or NodeSource for Node 24
@@ -143,7 +153,10 @@ Each channel has a typed input — set it per-channel in the **control dashboard
 
 Per-channel **transcode** (Edit dialog): `copy` passthrough (cheapest), `libx264`,
 or GPU encoders (`h264_nvenc`/`h264_qsv`/`h264_vaapi`/`h264_amf`) — unusable ones are
-disabled with the probe error shown; there is no silent fallback. When a source
+disabled with the probe error shown; there is no silent fallback. **GPU encoders
+need vendor drivers on the host and, under Docker, GPU device passthrough that the
+stock compose file does not wire up** — today that effectively means the bare-metal
+path (section B); a dedicated GPU transcode pack is planned (Roadmap). When a source
 misbehaves, the channel card's **Logs** dialog shows the live ffmpeg stderr ring —
 the last line is usually the diagnosis.
 

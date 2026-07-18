@@ -156,6 +156,11 @@ following only the docs.
 - ⬜ **Commercial DRM**: CENC/CMAF packaging + BuyDRM/KeyOS, EZDRM, Axinom… via CPIX;
   panel-issued entitlement JWTs; Widevine on Android/TV
 - ⬜ **Geo-locking**: MaxMind GeoIP at entitlement time + vendor license geo policy
+- ⬜ **GPU transcode pack** (separate package): a dedicated bare-metal deploy pack for
+  hardware-encode hosts — NVIDIA driver + NVENC setup (VAAPI/QSV variants), systemd
+  units, capability-probe verification recipe; optionally a Docker variant via
+  nvidia-container-toolkit. Today GPU encoders work on the bare-metal path with
+  vendor drivers installed; this packages it as a first-class, tested offering
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
 - ⬜ Concurrency limits, HDCP/output protection, rental windows, blackout dates
 

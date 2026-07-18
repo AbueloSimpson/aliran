@@ -62,7 +62,8 @@ node src/index.js                     # ingest -> encrypted Hyperdrive -> swarm
 # 3. Client (Android app) — see client/README.md for the native build
 ```
 
-Or run the whole server stack with Docker Compose / systemd — see the
+For a real deployment, run the server stack with **Docker Compose** (the supported
+path — pinned ffmpeg/Node, auto-restart, host networking pre-configured) — see the
 [operator guide](docs/operator-guide.md).
 
 ## Features
