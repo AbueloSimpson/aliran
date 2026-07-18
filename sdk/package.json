@@ -23,7 +23,8 @@
     "hypercore-crypto": "^3.4.2",
     "hyperdrive": "^11.13.0",
     "hyperswarm": "^4.8.0",
-    "protomux-rpc": "^1.5.0"
+    "protomux-rpc": "^1.5.0",
+    "rache": "^1.0.0"
   },
   "comment": "Runtime-agnostic: player.js takes injected { http, fs } so it runs in Node (index.js wires node builtins) and in the Bare worklet (client/backend/backend.mjs wires bare-http1/bare-fs). Keep dependency ranges in sync with client/backend/package.json — the Android bundle resolves this same graph."
 }

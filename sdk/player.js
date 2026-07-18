@@ -67,6 +67,7 @@
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
+import Rache from 'rache'
 import Hyperbee from 'hyperbee'
 import Hyperdrive from 'hyperdrive'
 import hcrypto from 'hypercore-crypto'
@@ -1072,7 +1073,15 @@ export class AliranPlayer extends Emitter {
 
   async _ensureStore () {
     if (this._store) return
-    this._store = new Corestore(this._storeDir)
+    // ONE bounded cache budget shared by every bee this store opens (panel catalog +
+    // each feed's metadata bee — feeds/assets are namespaced off this store, so the
+    // budget flows to all of them). Without it each hyperbee keeps per-instance caches
+    // keyed by the ever-growing seq — ~1.5 KB of heap retained per replicated append,
+    // forever: a viewer replicates ~2700 appends/h per watched channel, so a long TV
+    // session leaks ~4 MB/h (same leak the broadcaster fixed in channel.js). Rache
+    // evicts randomly; a re-read of an evicted node is a cheap replica-store hit.
+    // Recreated per store (not per player) so a corruption purge drops it with the store.
+    this._store = new Corestore(this._storeDir, { globalCache: new Rache({ maxSize: 4096 }) })
     await this._store.ready()
     this._swarm = new Hyperswarm(this._swarmOpts ?? {})
     // The first connection after connect() is the panel (we join only its topic

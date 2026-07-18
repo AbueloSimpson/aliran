@@ -88,6 +88,27 @@ function ok (name) { n++; console.log('  ok ', name) }
   ok('swarm.maxPeers/bootstrap validated + plumbed into Hyperswarm (default preserved)')
 }
 
+// --- bounded bee cache budget: the store must carry ONE bounded globalCache ---
+// Without it every hyperbee the store opens (panel catalog + each feed's metadata bee)
+// keeps per-instance caches that retain ~1.5 KB of heap per replicated append forever
+// (~4 MB/h per watched channel). retention-test scenario C proves the eviction
+// mechanics; this guards the SDK wiring so an upgrade can't silently drop the option.
+{
+  const os = await import('os'); const fs = await import('fs'); const path = await import('path')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-beecache-'))
+  const p = createPlayer({ storeDir: dir })
+  try {
+    await p._ensureStore() // no join/announce — offline-safe
+    assert.ok(p._store.globalCache, 'store carries a globalCache for hyperbee to link into')
+    assert.strictEqual(p._store.globalCache.maxSize, 4096, 'bounded to a few thousand entries')
+    assert.strictEqual(p._store.globalCache.globalSize, 0, 'budget starts empty')
+  } finally {
+    await p.stop()
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
+  ok('store carries the bounded bee cache budget (globalCache maxSize 4096)')
+}
+
 // --- event emitter basics (on/off/once, no throw on unhandled error) ---
 {
   const p = createPlayer({})

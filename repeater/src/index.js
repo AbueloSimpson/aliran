@@ -45,6 +45,7 @@
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
+import Rache from 'rache'
 import Hyperbee from 'hyperbee'
 import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
@@ -110,7 +111,11 @@ export class Repeater {
   }
 
   async start () {
-    this._store = new Corestore(this.config.dataDir)
+    // Bounded bee cache budget, same wiring as the broadcaster/SDK (an unbudgeted
+    // hyperbee retains ~1.5 KB of heap per replicated append forever). Only the panel
+    // catalog bee opens on this store — channel cores are mirrored raw — so the append
+    // rate is low; this keeps every corestore in the system on the same contract.
+    this._store = new Corestore(this.config.dataDir, { globalCache: new Rache({ maxSize: 4096 }) })
     await this._store.ready()
     const maxPeers = this.config.swarmMaxPeers
     const swarmOpts = { maxPeers }

@@ -203,6 +203,17 @@ try {
   assert.ok(ch1Status().cores.db.length > 0, 'db tail follows appends')
   log('repeater: ch1 mirrored (db+blobs tails live), ch2 correctly ignored ✓')
 
+  // Bounded bee cache budget (uniformity with broadcaster/SDK): the panel catalog bee
+  // must link its per-instance caches into the store's ONE bounded globalCache, else
+  // they retain ~1.5 KB of heap per replicated catalog append forever. Linked caches
+  // read the SAME shared array, so the two synchronous globalSize reads must agree.
+  const beeCache = repeater._store.globalCache
+  assert.ok(beeCache && beeCache.maxSize > 0, 'repeater store carries a bounded globalCache')
+  assert.strictEqual(repeater._bee._nodeCache.keys.globalSize, beeCache.globalSize, 'panel bee caches linked into the shared budget')
+  assert.ok(beeCache.globalSize > 0, 'the budget is actually in use (caches linked, not disabled)')
+  assert.ok(beeCache.globalSize <= beeCache.maxSize, 'bee cache stays within its bound')
+  log('repeater: panel bee caches share the bounded global budget (globalSize ' + beeCache.globalSize + ' <= ' + beeCache.maxSize + ') ✓')
+
   // ===== (1) viewer plays ENTIRELY off the repeater; origin egress = repeater only =====
   const repeaterPub = repeater.status().swarm.publicKey
   lockdownPub = repeaterPub

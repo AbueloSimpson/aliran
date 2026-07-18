@@ -260,6 +260,21 @@ try {
   const zapSegs = zapPlaylist.split('\n').filter(l => l.trim().endsWith('.ts')).length
   log('sdk: zap news→movies→news OK — re-resolve reused the warm feed, no hang (' + zapSegs + ' segs live)')
 
+  // ===== Bee metadata caches bounded (the long-uptime client heap leak) =====
+  // Every bee opened on the player's store (panel catalog + each feed's metadata bee)
+  // must link into the ONE bounded globalCache — otherwise a viewer retains ~1.5 KB of
+  // heap per replicated append forever (~4 MB/h per watched channel). retention-test
+  // scenario C proves the eviction mechanics; this guards the SDK wiring against a
+  // corestore/hyperbee upgrade silently dropping the link. Both globalSize getters read
+  // the SAME shared array when linked (and the reads below are synchronous).
+  const beeCache = player._store.globalCache
+  if (!beeCache) throw new Error('player store has no globalCache — per-bee caches are unbounded again')
+  const feedBeeKeys = player._feedDrive.db._nodeCache.keys
+  if (feedBeeKeys.globalSize !== beeCache.globalSize) throw new Error('feed bee caches are not linked into the shared budget')
+  if (!(beeCache.globalSize > 0)) throw new Error('shared bee cache budget unused — caches silently unlinked?')
+  if (beeCache.globalSize > beeCache.maxSize) throw new Error(`bee cache exceeded its bound (${beeCache.globalSize} > ${beeCache.maxSize})`)
+  log('sdk: bee caches share the bounded global budget (globalSize ' + beeCache.globalSize + ' <= ' + beeCache.maxSize + ')')
+
   // ===== Catalog live-push (S1) =====
   // The panel edits a catalog record while the client is connected. The SDK watches
   // the replicated catalog/ range and must re-emit 'streams' with the update — login()
