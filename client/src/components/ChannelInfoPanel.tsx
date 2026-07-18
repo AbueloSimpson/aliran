@@ -10,8 +10,7 @@ import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber } from '../catalog'
-import { type EpgProgram } from '../epg'
-import { useEpg } from '../useEpg'
+import { useEpg, type EpgProgram } from '@aliran/react-native'
 import { theme } from '../theme'
 
 // Local wall-clock HH:MM (no Intl dependency — Hermes' Intl is uneven on Android).

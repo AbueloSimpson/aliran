@@ -2,7 +2,7 @@
 // read now/next locally against an injected clock. All network is a fake fetch so
 // the test is deterministic and offline.
 
-import { EpgService } from '../src/epg'
+import { EpgService } from '@aliran/react-native'
 
 const HOUR = 3600_000
 const BASE = Date.parse('2026-07-18T18:00:00.000Z')

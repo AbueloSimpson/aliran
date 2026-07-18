@@ -14,8 +14,9 @@
 // reported as conflicts).
 //
 // Sync policy (operator decisions, 2026-07-18):
-//   - feed wins on the fields it maps (title/description/url/logo/order/category);
-//     curation fields it does not map (featured, isLive overrides) stay untouched.
+//   - feed wins on the fields it maps (title/url/logo/order/category); operator-owned
+//     fields it does not overwrite — featured, isLive overrides, and the DESCRIPTION
+//     (seeded once on import, then an admin's synopsis sticks) — stay untouched.
 //   - an entry missing from the feed is REMOVED (full deleteStream purge).
 //   - autoGrant: every user gets every imported channel — reconciled on EVERY
 //     sync (even 304s), so users created between syncs converge; user creation
@@ -46,7 +47,6 @@ const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k)
 const normBool = (v) => v === true || /^(1|true|yes)$/i.test(String(v))
 
 const TITLE_MAX = 200
-const PROVIDER_MAX = 100
 const SKIP_REPORT_MAX = 20
 const EXCLUDE_MAX = 1000
 
@@ -297,7 +297,10 @@ function mapFeed (source, feed, { maxChannels }) {
     let logo = null
     if (ch.logo != null) { try { logo = normArt(ch.logo, 'logo') } catch { logo = null } }
     const title = String(ch.name ?? '').trim().slice(0, TITLE_MAX) || rawId
-    const description = ch.provider ? 'via ' + String(ch.provider).trim().slice(0, PROVIDER_MAX) : ''
+    // description is OPERATOR-owned (see applyFeed): seed it from a feed-provided
+    // description on first import (most feeds have none → empty), then never overwrite
+    // it, so an admin can write a real channel synopsis that sticks across syncs.
+    const description = typeof ch.description === 'string' ? ch.description.trim().slice(0, TITLE_MAX) : ''
     entries.set(id, {
       title,
       description,
@@ -386,7 +389,8 @@ async function applyFeed (ctx, name, mapped) {
     const next = {
       ...cur,
       title: m.title,
-      description: m.description,
+      // description intentionally NOT set here — it is operator-owned (seeded once on
+      // create above); an admin's edited synopsis survives every sync.
       category: m.category,
       redirect: true,
       url: m.url,
@@ -452,10 +456,10 @@ export async function grantSourcesToUser (ctx, username) {
 
 // ---------------------------------------------------------------- sync
 
-const inflight = new Map() // `${dataDir}\0${name}` -> Promise (single-flight; a concurrent request joins the running sync)
+const inflight = new Map() // `${dataDir}\n${name}` -> Promise (single-flight; a concurrent request joins the running sync)
 
 export function syncSource (ctx, name) {
-  const key = ctx.dataDir + ' ' + name
+  const key = ctx.dataDir + '\n' + name // \n can't appear in a path or a NAME_RE name, so the pair is unambiguous
   const running = inflight.get(key)
   if (running) return running
   const p = doSync(ctx, name).finally(() => inflight.delete(key))

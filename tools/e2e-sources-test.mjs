@@ -123,7 +123,7 @@ try {
   feeds['/anime.json'] = {
     name: 'Anime ES',
     channels: [
-      { id: 'conan', number: 1001175, name: 'Detective Conan', logo: 'https://img.example/conan.png', url: 'https://cdn.example/conan.m3u8', categories: ['Anime'], provider: 'plutotv', epg: [{ title: 'ep1' }] },
+      { id: 'conan', number: 1001175, name: 'Detective Conan', description: 'The great detective', logo: 'https://img.example/conan.png', url: 'https://cdn.example/conan.m3u8', categories: ['Anime'], provider: 'plutotv', epg: [{ title: 'ep1' }] },
       { id: 'naruto', name: 'Naruto', logo: 'http://insecure.example/naruto.png', url: 'https://cdn.example/naruto.m3u8' },
       { id: 'one-piece', name: 'One Piece', url: 'https://cdn.example/op.m3u8' },
       { id: 'manual', name: 'Imposter', url: 'https://cdn.example/imposter.m3u8' },
@@ -141,7 +141,8 @@ try {
 
   const conan = (await db.get('catalog/anime.conan')).value
   assert.strictEqual(conan.title, 'Detective Conan')
-  assert.strictEqual(conan.description, 'via plutotv')
+  assert.strictEqual(conan.description, 'The great detective', 'description seeded from the feed field on create')
+  assert.strictEqual((await db.get('catalog/anime.naruto')).value.description, '', 'no feed description -> empty (no more "via provider")')
   assert.deepStrictEqual(conan.category, ['Anime'], 'category = source label (not the feed\'s)')
   assert.strictEqual(conan.redirect, true)
   assert.strictEqual(conan.url, 'https://cdn.example/conan.m3u8')
@@ -190,7 +191,7 @@ try {
   log('C: idempotent — ETag 304 and same-content 200 both leave the bee untouched (version ' + v1 + ') ✓')
 
   // ===== Test D: mutation — update/remove/add; curation survives; feed wins on mapped fields =====
-  await api('PATCH', '/api/streams/anime.conan', { featured: true }, token) // operator curation on an UNMAPPED field
+  await api('PATCH', '/api/streams/anime.conan', { featured: true, description: 'Teen detective in a shrunk body' }, token) // operator-owned fields
   feeds['/anime.json'] = {
     channels: [
       { id: 'conan', name: 'Detective Conan HD', logo: 'https://img.example/conan.png', url: 'https://cdn.example/conan.m3u8', provider: 'plutotv' },
@@ -214,6 +215,7 @@ try {
   const conan2 = (await db.get('catalog/anime.conan')).value
   assert.strictEqual(conan2.title, 'Detective Conan HD', 'feed wins on mapped fields')
   assert.strictEqual(conan2.featured, true, 'operator curation on unmapped fields survives the sync')
+  assert.strictEqual(conan2.description, 'Teen detective in a shrunk body', 'operator-edited description survives the sync (not feed-managed)')
   assert.strictEqual((await db.get('catalog/anime.naruto')).value.url, 'https://cdn.example/naruto-v2.m3u8')
   log('D: mutation — ~2 updated, -1 removed (grants+secret purged), +1 added, curation survives ✓')
 

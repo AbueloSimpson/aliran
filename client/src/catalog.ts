@@ -24,12 +24,16 @@ export function pickHero (streams: Stream[]): Stream | undefined {
 }
 
 // Group into category rails/groups (a stream in N categories appears in N groups),
-// each group curation-sorted. Groups keep first-seen order of the curated whole.
+// each group curation-sorted. 'All' is a real everything-rail pinned FIRST (every
+// channel, so P2P and CDN mix there regardless of genre); the genre categories
+// follow in first-seen (curated) order. Uncategorized channels live only in 'All'.
 export function groupByCategory (streams: Stream[]): Record<string, Stream[]> {
-  const out: Record<string, Stream[]> = {}
-  for (const s of sortByCuration(streams)) {
-    const cats = s.category?.length ? s.category : ['All']
-    for (const c of cats) (out[c] ??= []).push(s)
+  const sorted = sortByCuration(streams)
+  const out: Record<string, Stream[]> = { All: sorted }
+  for (const s of sorted) {
+    for (const c of s.category ?? []) {
+      if (c && c !== 'All') (out[c] ??= []).push(s)
+    }
   }
   return out
 }

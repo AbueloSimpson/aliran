@@ -13,7 +13,7 @@ import React from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber } from '../catalog'
-import { useEpg } from '../useEpg'
+import { useEpg } from '@aliran/react-native'
 import { theme } from '../theme'
 
 export interface NowPlayingBarProps {

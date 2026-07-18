@@ -1,8 +1,9 @@
-// Remote EPG (S27): the program guide for a source-imported channel lives in the
-// SAME provider JSON the panel pulls — the catalog never carries schedule data (it
-// would grow the replicated bee forever). Each imported Stream carries pointers:
-// `epgUrl` (the public https feed) + `epgId` (its id inside that feed). The app
-// fetches the feed on demand, indexes channels[].id, and reads now/next locally.
+// Remote EPG (S27) — part of the @aliran/react-native SDK surface, so any app on the
+// SDK gets the program-guide data layer for free (only the visuals stay app-specific).
+// The guide for a channel lives in the SAME provider JSON the panel's catalog points
+// at via each Stream's `epgUrl`/`epgId` (the catalog never carries schedule data — it
+// would grow the replicated bee forever). This service fetches that feed on demand,
+// indexes channels[].id, and reads now/next locally.
 //
 // Trust/cost: exactly the stance of remote art and redirect URLs — a public https
 // fetch the viewer's device makes directly. ONE fetch covers a whole category (all

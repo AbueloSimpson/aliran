@@ -1,7 +1,7 @@
-// Shared EPG hook: fetch a channel's now/next on open and refresh on a slow tick so
-// the current program rolls over (and any progress bar advances) while the view stays
-// open. The fetch is cached per feed URL (src/epg.ts), so the tick is nearly free.
-// Used by both the Info panel (Now/Up-next guide) and the bottom bar (now-playing).
+// Shared EPG hook (@aliran/react-native): fetch a channel's now/next on open and
+// refresh on a slow tick so the current program rolls over (and any progress bar
+// advances) while the view stays open. The fetch is cached per feed URL (./epg), so
+// the tick is nearly free. Any app on the SDK can render its own guide from this.
 import { useState, useEffect } from 'react'
 import { epg, type NowNext } from './epg'
 

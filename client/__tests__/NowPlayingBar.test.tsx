@@ -6,7 +6,7 @@ import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
 import { Text } from 'react-native'
 import { NowPlayingBar } from '../src/components/NowPlayingBar'
-import { epg } from '../src/epg'
+import { epg } from '@aliran/react-native'
 import type { Stream } from '../src/worklet'
 
 function texts (tree: RendererInstance): string {
