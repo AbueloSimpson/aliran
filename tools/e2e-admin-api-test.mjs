@@ -403,7 +403,83 @@ try {
   assert.ok(kinds.has('register'), 'broadcaster registers recorded')
   log('N: observability shape + activity ring (admin/session/register events) ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, device revoke + sessionLive, observability — all land in the signed DB; viewer login works end-to-end)')
+  // ===== Test O: redirect channels (S23) — a CDN-link class in the catalog =====
+  // Create: url implies redirect:true and live-by-default (no broadcaster heartbeat
+  // will ever flip a redirect channel's liveness).
+  r = await api('POST', '/api/streams', { id: 'redirect-1', title: 'Redirect One', url: 'https://cdn.example.com/r1/index.m3u8?tok=abc' }, { token })
+  assert.strictEqual(r.status, 201, 'add redirect stream: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.catalog.redirect, true, 'url implies redirect:true')
+  assert.strictEqual(r.body.catalog.url, 'https://cdn.example.com/r1/index.m3u8?tok=abc', 'url stored verbatim (query string kept)')
+  assert.strictEqual(r.body.catalog.feedKey, null)
+  assert.strictEqual(r.body.catalog.isLive, true, 'redirect channels default live')
+  assert.strictEqual(r.body.catalog.status, 'live')
+
+  // Validation: https-only, size/linebreak caps, class exclusivity — and a rejected
+  // create must leave nothing behind (no record, no minted secret).
+  r = await api('POST', '/api/streams', { id: 'redirect-bad', url: 'http://cdn.example.com/x.m3u8' }, { token })
+  assert.strictEqual(r.status, 400, 'http:// url must be rejected')
+  r = await api('POST', '/api/streams', { id: 'redirect-bad', url: 'https://cdn.example.com/' + 'a'.repeat(2048) }, { token })
+  assert.strictEqual(r.status, 400, 'oversize url must be rejected')
+  r = await api('POST', '/api/streams', { id: 'redirect-bad', url: 'https://cdn.example.com/a\nb' }, { token })
+  assert.strictEqual(r.status, 400, 'linebreak url must be rejected')
+  r = await api('POST', '/api/streams', { id: 'redirect-bad', url: 'https://cdn.example.com/x.m3u8', feedKey: b4a.toString(hcrypto.randomBytes(32), 'hex') }, { token })
+  assert.strictEqual(r.status, 400, 'url + feedKey must be rejected (different class)')
+  r = await api('POST', '/api/streams', { id: 'redirect-bad', redirect: true }, { token })
+  assert.strictEqual(r.status, 400, 'redirect:true without url must be rejected')
+  assert.strictEqual(await db.get('catalog/redirect-bad'), null, 'no partial record from rejected creates')
+  assert.strictEqual(loadSecrets(dirs.panel)['redirect-bad'], undefined, 'no minted secret from rejected creates')
+
+  // PATCH: url onto an existing plain entry makes it a redirect. Liveness defaults
+  // fire only when isLive/status are absent from the SAME request; explicit wins;
+  // an empty url clears the class (and defaults liveness back off).
+  r = await api('POST', '/api/streams', { id: 'redirect-2', title: 'Plain' }, { token })
+  assert.strictEqual(r.status, 201)
+  assert.strictEqual(r.body.catalog.isLive, false, 'plain feedless entry stays idle')
+  r = await api('PATCH', '/api/streams/redirect-2', { url: 'https://cdn.example.com/r2.m3u8' }, { token })
+  assert.strictEqual(r.status, 200)
+  let catR = (await db.get('catalog/redirect-2')).value
+  assert.strictEqual(catR.redirect, true)
+  assert.strictEqual(catR.isLive, true, 'PATCH url defaults isLive true')
+  assert.strictEqual(catR.status, 'live')
+  r = await api('PATCH', '/api/streams/redirect-2', { url: 'https://cdn.example.com/r2b.m3u8', isLive: false, status: 'offline' }, { token })
+  assert.strictEqual(r.status, 200)
+  catR = (await db.get('catalog/redirect-2')).value
+  assert.strictEqual(catR.url, 'https://cdn.example.com/r2b.m3u8')
+  assert.strictEqual(catR.isLive, false, 'explicit isLive wins over the redirect default')
+  assert.strictEqual(catR.status, 'offline', 'explicit status wins')
+  r = await api('PATCH', '/api/streams/redirect-2', { url: '' }, { token })
+  assert.strictEqual(r.status, 200)
+  catR = (await db.get('catalog/redirect-2')).value
+  assert.strictEqual(catR.redirect, false, 'empty url clears the class')
+  assert.strictEqual(catR.url, null)
+  assert.strictEqual(catR.isLive, false, 'cleared redirect defaults back to idle')
+  assert.strictEqual(catR.status, 'idle')
+  r = await api('PATCH', '/api/streams/redirect-2', { redirect: true }, { token })
+  assert.strictEqual(r.status, 400, 'redirect:true with no url must be rejected on PATCH too')
+
+  // Class exclusivity holds on PATCH: a feed-backed entry cannot become a redirect.
+  r = await api('POST', '/api/streams', { id: 'redirect-3', feedKey: b4a.toString(hcrypto.randomBytes(32), 'hex') }, { token })
+  assert.strictEqual(r.status, 201)
+  r = await api('PATCH', '/api/streams/redirect-3', { url: 'https://cdn.example.com/r3.m3u8' }, { token })
+  assert.strictEqual(r.status, 400, 'url on a feed-backed entry must be rejected')
+
+  // A broadcaster re-register must NOT clobber the redirect class (same rule as curation).
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'redirect-1', feedKey: b4a.toString(hcrypto.randomBytes(32), 'hex'), title: 'Registered Over', isLive: true
+  })
+  catR = (await db.get('catalog/redirect-1')).value
+  assert.strictEqual(catR.redirect, true, 'register preserves redirect')
+  assert.strictEqual(catR.url, 'https://cdn.example.com/r1/index.m3u8?tok=abc', 'register preserves url')
+
+  // Purge works on redirect entries like any other stream.
+  r = await api('DELETE', '/api/streams/redirect-1', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(await db.get('catalog/redirect-1'), null)
+  r = await api('DELETE', '/api/streams/redirect-2', undefined, { token }); assert.strictEqual(r.status, 200)
+  r = await api('DELETE', '/api/streams/redirect-3', undefined, { token }); assert.strictEqual(r.status, 200)
+  log('O: redirect class — url⇒redirect+live defaults, https/size/class validation, explicit-wins, clear, register-preserve, purge ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, device revoke + sessionLive, observability — all land in the signed DB; viewer login works end-to-end)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

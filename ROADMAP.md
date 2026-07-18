@@ -80,6 +80,10 @@ auto-authorizes, browses live TV under overlay panels, and plays live P2P on pho
   worklet (e2e-tested via `test:sdk`; the worklet is a thin shell over it), hybrid
   CDN↔P2P failover/auto-return, and the `@aliran/react-native` `<AliranVideo>`
   binding — dogfooded by the app on the TV emulator (P2P + observable CDN fallback)
+- ✅ **Redirect channels (S23)**: a CDN-link channel class in the catalog
+  (`redirect: true` + https `url` set in the admin panel) — viewers play the URL
+  directly instead of a P2P feed; P2P channels untouched, url edits reach viewers on
+  their next tune (`test:sdk` redirect scenario + `test:admin-api` Test O)
 - ✅ **Deploy pack**: working Docker images + Compose (host networking for the DHT),
   systemd units, Caddy TLS recipe for the dashboards, firewall guidance — and a CI
   job that builds the images on every push

@@ -78,6 +78,18 @@ broadcaster that comes up later is found quickly — and after two consecutive
 advancing probes playback is handed back to P2P. With `mode: 'p2p-only'` (the
 default, used by the app worklet) behavior is exactly the pre-hybrid engine.
 
+## Redirect channels (S23)
+
+A catalog entry can be a **redirect channel** instead of a P2P feed: the admin panel
+stores `{ redirect: true, url: 'https://…' }` on the record, and `resolve()` returns
+that URL verbatim with `source: 'cdn'` and **no `port`** — no feed open, no swarm
+join, no watchdogs. The host player fetches the URL directly (any HLS the platform
+player supports); its errors are the host's to surface, exactly like the CDN side of
+hybrid mode. Because the URL rides the replicated catalog, an admin edit reaches
+viewers on their **next tune** — no re-login. Entitlement is unchanged (the channel
+appears only for granted users), and no `hybrid` config is needed: redirect entries
+play their URL under any mode, while channels without one behave exactly as before.
+
 ## Zap latency
 
 The localhost server (`serve.js`, shared with the desktop tools) is tuned for fast

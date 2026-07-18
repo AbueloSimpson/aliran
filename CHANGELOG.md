@@ -1118,6 +1118,33 @@ the fallback already spent.
   PASS; client jest grows a SmoothZappingToggle suite (10/10 with the existing
   suites), `tsc` clean; worklet bundle re-packs.
 
+### Redirect channels — a CDN-link channel class in the catalog (S23, verified)
+- **New channel class**: a catalog record can carry `{ redirect: true, url: 'https://…' }`
+  — viewers play the operator's URL **directly** instead of a P2P feed. P2P channels
+  are untouched (no CDN backup, no hybrid config needed anywhere).
+- **Panel**: `url` (https-only, ≤2048 chars, tokenized query strings verbatim, no
+  extension requirement) drives the pair atomically — non-empty ⇒ `redirect: true` +
+  live-by-default (explicit `isLive`/`status` in the same request win), empty ⇒
+  clears; a redirect entry can never also hold a `feedKey`; a broadcaster re-register
+  never erases the class (same admin-owned rule as curation/art). Admin API/UI:
+  "Redirect URL" field on Add stream + Edit metadata, ⇢ REDIRECT badge + url line on
+  the stream card.
+- **SDK**: `resolve()` gains the redirect branch — returns `{ url, source: 'cdn',
+  port: undefined }`, opens no feed, joins no swarm, arms no watchdogs; the bounded
+  live catalog read now carries `redirect`/`url`, so an admin url edit reaches
+  viewers on their **next tune** (no re-login); zap-prefetch / feed-rotation paths
+  skip feedless tunes; the display list stays metadata-only (no url). The client app
+  needs **zero code changes** — the URL flows through the existing `port` IPC reply
+  and remote https playback was already proven by the hybrid path; worklet bundle
+  re-packed.
+- **Tools**: `acceptance-remote` probes redirect channels with a direct https fetch
+  (PASS = HTTP 200 + `#EXTM3U`; segment/ffprobe skipped — tokenized CDNs may sign
+  per-URI); `test:sdk` grows a redirect scenario (verbatim URL passthrough incl.
+  query string, next-tune url edit, feedless non-redirect still throws, p2p↔redirect
+  zap arms/clears the tune watchdog, hybrid machinery untouched); `test:admin-api`
+  Test O covers validation, defaulting, class exclusivity, register-preserve and
+  purge. Docs: `docs/content-management.md` + SDK README sections.
+
 ### To do (see ROADMAP.md and per-package READMEs)
 - White-label brand packaging (per-brand APKs via gradle flavors + `tools/brand.mjs`).
 - Optional (v1.x): multi-DRM, geo-locking, VOD.

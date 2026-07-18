@@ -125,7 +125,20 @@ async function connectAndLogin (label) {
 // re-arms the SDK tune watchdog), then playlist → segment → ffprobe. Any step may
 // block on a held progressive-server request; the caller bounds the whole attempt.
 async function playbackAttempt (player, dir, id) {
-  const { localUrl, port } = await player.resolve(id)
+  const { url, source, localUrl, port } = await player.resolve(id)
+  // Redirect channels (S23): no localhost server — the viewer plays the operator's
+  // https URL directly, so PASS = that URL answers with an HLS playlist. Segment +
+  // ffprobe are skipped on purpose: tokenized CDNs may sign per-URI, and the CDN's
+  // delivery is not ours to certify — the contract proven here is "the catalog
+  // handed the viewer a working link".
+  if (port === undefined) {
+    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(timeoutS * 1000) })
+    const body = await res.text()
+    if (res.status !== 200 || !body.includes('#EXTM3U')) {
+      throw new Error(`redirect url did not serve HLS (HTTP ${res.status}) — ${url}`)
+    }
+    return { localUrl: 'CDN ' + url, seg: { body: Buffer.from(body) }, codecs: [source] }
+  }
   const playlist = await waitFor(async () => {
     const r = await httpGet(port, '/index.m3u8')
     return r.status === 200 && r.body.toString().includes('.ts') ? r.body.toString() : null

@@ -43,6 +43,12 @@
 // a 'client-only' viewer still plays but joins feed topics server:false (never
 // announced ⇒ not discoverable ⇒ no viewer-to-viewer serving), while the default
 // 'reseed' viewer's feed topic is joined server:true.
+// Then REDIRECT channels (S23): a catalog entry {redirect:true, url} is a different
+// CLASS — viewers play the operator's https URL directly. resolve() must return it
+// VERBATIM (source 'cdn', no port, no feed open, no watchdog), a url edit must reach
+// the very next tune (live catalog read, no re-login), a feedless NON-redirect entry
+// must still throw 'not broadcasting', and zapping p2p↔redirect must arm/clear the
+// tune watchdog cleanly with the hybrid machinery untouched.
 // Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -90,7 +96,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), cliU: tmp('e2es-cliU-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), cliU: tmp('e2es-cliU-'), cliC: tmp('e2es-cliC-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -815,11 +821,97 @@ try {
   const clientOnlyProven = true
   log("uploadPolicy: 'client-only' played news but joined its topic UNANNOUNCED (server:false); the default player announced (server:true)")
 
+  // ===== S23 redirect channels: catalog {redirect:true, url} plays the URL, no P2P =====
+  // A redirect channel is a different CLASS of catalog entry: no broadcaster, no feed —
+  // the record carries an operator-set https URL and resolve() hands it to the host
+  // verbatim (source 'cdn', no port) with the P2P machinery fully dormant. Run under
+  // the app's DEFAULT p2p-only mode (no hybrid config) — the production shape. A fresh
+  // user keeps every count gate above untouched.
+  const kpC = userKeyPair()
+  const authC = authKeyPair()
+  const saltC = randomSalt()
+  await db.put('user/cdnuser', {
+    salt: b4a.toString(saltC, 'hex'),
+    verifier: b4a.toString(deriveVerifier(rwd, saltC, ARGON2_DEFAULT), 'hex'),
+    argon: ARGON2_DEFAULT,
+    pub: b4a.toString(kpC.publicKey, 'hex'),
+    encPriv: wrap(wk, kpC.secretKey),
+    authPub: b4a.toString(authC.publicKey, 'hex'),
+    authPrivEnc: wrap(wk, authC.secretKey),
+    // promo/void secrets are minted like any stream's but never used for playback
+    wrapped: { news: sealTo(kpC.publicKey, encKey), promo: sealTo(kpC.publicKey, hcrypto.randomBytes(32)), void: sealTo(kpC.publicKey, hcrypto.randomBytes(32)) },
+    devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
+  })
+  // Query string must survive verbatim (tokenized-CDN shape); the stub ignores it.
+  const promoUrl = `http://127.0.0.1:${cdnPort}/index.m3u8?src=promo`
+  await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl, isLive: true, status: 'live' })
+  await db.put('catalog/void', { title: 'Void', category: ['misc'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, isLive: false, status: 'idle' })
+
+  const evC = { fallback: 0, sourceChanged: 0, status: [] }
+  const playerC = createPlayer({ panelPubKey, storeDir: dirs.cliC }) // default p2p-only — NO hybrid config anywhere
+  playerC.on('fallback', () => { evC.fallback++ })
+  playerC.on('source-changed', () => { evC.sourceChanged++ })
+  playerC.on('status', (s) => evC.status.push(s.state))
+  cleanups.push(() => playerC.stop())
+  await playerC.connect()
+  let streamsC = null
+  const deadlineC = Date.now() + 60000
+  while (!streamsC) {
+    if (Date.now() > deadlineC) throw new Error('timeout: redirect SDK login')
+    try {
+      const s = await playerC.login('cdnuser', PASSWORD)
+      if (s.length >= 3) streamsC = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streamsC) await sleep(1500)
+  }
+  const dispPromo = streamsC.find(s => s.id === 'promo')
+  if (!dispPromo || dispPromo.isLive !== true) throw new Error('redirect channel missing from the display list or not live')
+  if (dispPromo.url !== undefined || dispPromo.redirect !== undefined || dispPromo.encryptionKey || dispPromo.feedKey) throw new Error('display list must stay metadata-only (leaked url/redirect/keys)')
+
+  // (a) resolve() hands the operator URL over verbatim — no feed, no watchdogs.
+  const rP = await resolveWithin(playerC, 'promo', 20000)
+  if (rP.url !== promoUrl) throw new Error('redirect resolve must return the catalog url verbatim, got ' + rP.url)
+  if (rP.source !== 'cdn' || rP.port !== undefined || rP.localUrl !== undefined || rP.feedKey !== null) throw new Error('redirect resolve shape wrong: ' + JSON.stringify(rP))
+  if (evC.status.includes('feed:open')) throw new Error('a redirect tune must not open any feed')
+  if (playerC._tuneTimer) throw new Error('a redirect tune must not arm the tune watchdog')
+  const srcP = playerC.source()
+  if (!srcP || srcP.source !== 'cdn' || srcP.url !== promoUrl) throw new Error('source() must report the redirect URL: ' + JSON.stringify(srcP))
+  const gotP = await httpGet(cdnPort, '/index.m3u8?src=promo')
+  if (gotP.status !== 200 || !gotP.body.toString().includes('#EXTM3U')) throw new Error('the redirect URL itself must serve HLS (stub sanity)')
+  log('redirect: promo resolved to the operator URL verbatim (source cdn, no port, no feed, no watchdog)')
+
+  // (b) admin edits the url in the catalog → the NEXT tune returns the new one (live
+  // catalog read at resolve() — no re-login, no push round-trip required).
+  const promoUrl2 = `http://127.0.0.1:${cdnPort}/index.m3u8?src=promo2`
+  await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl2, isLive: true, status: 'live' })
+  await waitFor(async () => (await resolveWithin(playerC, 'promo', 20000)).url === promoUrl2, 40000, 'a re-tune returns the EDITED redirect url')
+  log('redirect: url edit reached the viewer on the next tune (no re-login)')
+
+  // (c) a feedless entry WITHOUT the redirect class still fails honestly.
+  let voidRejected = false
+  try { await playerC.resolve('void') } catch (e) { voidRejected = /not broadcasting/.test(String(e.message)) }
+  if (!voidRejected) throw new Error("a feedless non-redirect entry must still throw 'not broadcasting'")
+
+  // (d) zap across classes: p2p news (tune watchdog armed) ↔ redirect promo (cleared).
+  const rN = await resolveWithin(playerC, 'news', 20000)
+  if (rN.source !== 'p2p' || !rN.port) throw new Error('news must still tune over P2P for the redirect-user')
+  if (!playerC._tuneTimer) throw new Error('the p2p tune must arm the tune watchdog')
+  await waitFor(async () => { const r = await httpGet(rN.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 40000, 'p2p playback beside redirect channels')
+  const rP2 = await resolveWithin(playerC, 'promo', 20000)
+  if (rP2.url !== promoUrl2) throw new Error('zap back to the redirect must return the (edited) url')
+  if (playerC._tuneTimer) throw new Error('zapping p2p→redirect must clear the p2p tune watchdog')
+  if (evC.fallback !== 0 || evC.sourceChanged !== 0) throw new Error('redirect playback must not touch the hybrid machinery (fallback/source-changed fired)')
+  await playerC.stop()
+  const redirectProven = true
+  log('redirect: zap p2p↔redirect clean — watchdog armed on news, cleared on promo; hybrid machinery untouched')
+
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
-    meteredGated && directionalProven && stallGated && clientOnlyProven)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy verified)' : 'FAIL ❌')
+    meteredGated && directionalProven && stallGated && clientOnlyProven && redirectProven)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + S23 redirect channels verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
