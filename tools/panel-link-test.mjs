@@ -7,6 +7,9 @@
 //     connection for Ns") instead of a silent null, and clears it on delivery
 //  3. while ops are stranded the link force-refreshes the topic lookup with backoff,
 //     and stands down the moment a connection lands
+//  5. a TERMINAL policy reject (S26 unknown-publisher/revoked/out-of-scope) is
+//     delivered-with-error, not retried — one mis-scoped channel must not
+//     head-of-line-block the rest of the lineup (observed on the S26 VPS migration)
 // Exits 0 on PASS.
 import assert from 'assert'
 import { EventEmitter } from 'events'
@@ -125,7 +128,40 @@ try {
   await off.close()
   log('4: seed-only (no panel) link is inert ✓')
 
-  log('\nRESULT: PASS ✅  (PanelLink queue survives late/lost connections; stranded ops force topic re-lookups; status names a dead link)')
+  // ===== 5: a terminal policy reject is delivered-with-error, never a retry storm =====
+  // The live S26 migration scenario: a dormant channel's boot catch-up is out-of-scope
+  // for the enrolled publisher and sits FIRST in the queue; the running channel's
+  // register is queued behind it and must still land.
+  const link3 = new PanelLink(config)
+  const scopedPanel = (() => {
+    const registered = []
+    let challenge = b4a.toString(hcrypto.randomBytes(32), 'hex')
+    const call = async (method, payload) => {
+      if (method === 'hello') return { challenge }
+      if (method === 'register') {
+        challenge = b4a.toString(hcrypto.randomBytes(32), 'hex')
+        if (payload.payload.streamId === 'dormant') return { error: 'out-of-scope' }
+        registered.push(payload.payload)
+        return { ok: true }
+      }
+      throw new Error('unexpected RPC method: ' + method)
+    }
+    return { call, registered }
+  })()
+  const seqBad = link3.setDesired('dormant', { streamId: 'dormant', feedKey: null, isLive: false })
+  const seqGood = link3.setDesired('live1', { streamId: 'live1', feedKey: null, isLive: true })
+  link3._onConnection(new FakeSocket(), { rpc: null, call: scopedPanel.call })
+  assert.ok(await link3.flush('live1', seqGood, 2000), 'op queued BEHIND the reject still delivers')
+  assert.ok(await link3.flush('dormant', seqBad, 100), 'terminal reject counts as delivered (stop() must not hang on it)')
+  assert.match(link3.lastError('dormant'), /out-of-scope/, 'the reject stays visible as the register error')
+  assert.strictEqual(link3.isRegistered('dormant'), false, 'rejected op is not registered-live')
+  assert.strictEqual(link3.isRegistered('live1'), true, 'in-scope op registered')
+  assert.strictEqual(scopedPanel.registered.length, 1, 'only the in-scope payload reached the panel writes')
+  assert.strictEqual(link3.health().pendingOps, 0, 'queue fully drained — nothing stuck behind the reject')
+  await link3.close()
+  log('5: terminal out-of-scope reject delivered-with-error; queue drains past it ✓')
+
+  log('\nRESULT: PASS ✅  (PanelLink queue survives late/lost connections; stranded ops force topic re-lookups; status names a dead link; terminal policy rejects never head-of-line block)')
   process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

@@ -24,6 +24,18 @@ import { panelClient, registerWithPanel } from './register.js'
 const HEARTBEAT_MS = 5 * 60 * 1000 // idempotent re-assert of running streams
 const RETRY_MS = 2000 // after a delivery error, before the queue retries
 
+// Terminal policy rejects (S26 per-publisher enrollment): the panel refused this
+// exact payload by POLICY — unknown/revoked publisher name or a streamId outside
+// the site's scopes. Retrying the same payload can never succeed, and the 2 s
+// transient-retry loop would head-of-line-block every other stream's ops behind
+// it (observed live: one out-of-scope boot catch-up starved a whole lineup's
+// registrations). These ops are marked delivered-with-error instead: the error
+// surfaces via lastError()/registerError, and the 5-min heartbeat re-asserts
+// RUNNING streams, so an admin-side fix (scope edit / re-activate) heals within
+// a heartbeat, no broadcaster restart. `unauthorized` (bad key) stays on the
+// transient path — its pre-S26 retry semantics are unchanged.
+export const TERMINAL_REJECT_RE = /\b(unknown-publisher|revoked|out-of-scope)\b/
+
 // A restarted panel announces the topic under a BRAND-NEW swarm identity (its Hyperswarm
 // keypair is ephemeral), and hyperswarm re-queries a client-mode topic only every ~10 min —
 // so a lookup that resolved just before/during a panel restart strands queued ops behind a
@@ -207,6 +219,13 @@ export class PanelLink {
           st.lastError = null
         } catch (err) {
           st.lastError = err && err.message ? err.message : String(err)
+          if (TERMINAL_REJECT_RE.test(st.lastError)) {
+            // Policy reject: done with THIS state (error kept for status); the
+            // queue moves on so one mis-scoped channel can't starve the rest.
+            st.deliveredSeq = Math.max(st.deliveredSeq, sentSeq)
+            st.live = false
+            continue
+          }
           if (picked.socket.destroyed) this._sockets.delete(picked.socket)
           this._scheduleRetry() // don't hot-loop; retry shortly (or on the next connection)
           break
