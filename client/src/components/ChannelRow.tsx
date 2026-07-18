@@ -1,12 +1,13 @@
 // One channel row (the reference's LISTA DE CANALES row): derived channel number,
-// title, now-playing line (catalog description — the only "now playing" text until an
-// EPG exists, D2), LIVE badge, favorite star, channel logo thumb on the right edge.
-// Focus grammar: focused row = light fill (focusFill tokens); the playing channel
-// keeps an accent edge bar. Press = play/select; long-press = channel info.
+// title, now-playing line (the current EPG program when the channel has a guide — S27 —
+// else the catalog description), LIVE badge, favorite star, channel logo thumb on the
+// right edge. Focus grammar: focused row = light fill (focusFill tokens); the playing
+// channel keeps an accent edge bar. Press = play/select; long-press = channel info.
 import React, { useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber } from '../catalog'
+import { useEpg } from '../useEpg'
 import { theme } from '../theme'
 
 export interface ChannelRowProps {
@@ -23,6 +24,11 @@ export interface ChannelRowProps {
 export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, onFocus, onPress, onLongPress }: ChannelRowProps) {
   const [focused, setFocused] = useState(false)
   const dimmed = stream.isLive === false
+  // Now-playing line: the airing EPG program (S27) when the channel has a guide, else
+  // the catalog synopsis. The feed is shared per category, so all its rows resolve from
+  // one cached fetch (src/epg.ts); guide-less channels never fetch.
+  const { data } = useEpg(stream.epgUrl, stream.epgId)
+  const nowText = data?.now?.title || stream.description
   return (
     <Pressable
       style={[styles.row, playing && styles.rowPlaying, focused && styles.rowFocused]}
@@ -39,8 +45,8 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
           {stream.isLive && <Text style={styles.live}>LIVE</Text>}
           {favorite && <Text style={[styles.star, focused && styles.textOnFill]}>★</Text>}
         </View>
-        {!!stream.description && (
-          <Text style={[styles.nowPlaying, focused && styles.textDimOnFill]} numberOfLines={1}>{stream.description}</Text>
+        {!!nowText && (
+          <Text style={[styles.nowPlaying, focused && styles.textDimOnFill]} numberOfLines={1}>{nowText}</Text>
         )}
       </View>
       {stream.logo
