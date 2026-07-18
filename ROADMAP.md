@@ -4,153 +4,83 @@ Aliran is a self-hostable, peer-to-peer OTT streaming platform on the Holepunch/
 stack. This roadmap describes the path from scaffold to a production-ready 1.0 and
 beyond. It is a living document — dates are directional, not commitments.
 
+Shipped work is kept to one line per feature here; the detailed history (what, why,
+and how it was verified) lives in [`CHANGELOG.md`](CHANGELOG.md) and the
+[development log](docs/devlog.md).
+
 Legend: ✅ done · 🚧 in progress · ⬜ planned
 
 ---
 
-## v0.1 — Alpha: "It streams" (foundations)
+## v0.1 — Alpha: "It streams" ✅
 
-Goal: a single operator can run a panel + broadcaster and watch a **live, unencrypted**
-stream on an Android phone. Proves the P2P transport end to end.
+Goal: prove the P2P transport end to end.
 
-- ✅ Repository scaffold (panel / broadcaster / client), docs, license, CI-less baseline
-- ✅ Config loaders, panel key generation (`admin-cli init`)
-- ✅ Broadcaster: ffmpeg → live HLS → **encrypted** Hyperdrive → Hyperswarm seeding
-- ✅ Localhost Range media server over a Hyperdrive replica (`tools/lib/serve-drive.js`);
-  ported into the client Bare worklet (`client/backend/backend.mjs`)
-- ✅ Desktop P2P viewer + **automated end-to-end test** (`tools/e2e-stream-test.mjs`):
-  fresh peer discovers the feed over the DHT, replicates, serves locally, ffprobe
-  confirms valid H.264/AAC — **the transport is proven**
-- 🚧 Client app: minimal player screen via `react-native-video` (code in place; needs a
-  native Android build to run — see docs/client-build.md)
-- ⬜ First successful **phone** playback over the DHT (blocked only on the Android toolchain)
+- ✅ Repository scaffold (panel / broadcaster / client / core / tools), config loaders, key generation
+- ✅ Broadcaster: ffmpeg → live HLS → encrypted Hyperdrive → Hyperswarm seeding
+- ✅ Localhost Range media server over a Hyperdrive replica (desktop viewer + the client worklet)
+- ✅ Automated e2e transport proof: a fresh peer discovers the feed over the DHT, replicates, and plays
 
-**Exit criteria:** watch a live P2P stream; a second peer re-seeds to a third.
-**Status:** ✅ verified on desktop (`node tools/e2e-stream-test.mjs` → PASS). The Android
-app reuses the same, already-tested backend logic; only the native build remains.
+**Exit criteria met:** a live P2P stream plays; peers re-seed each other.
 
 ---
 
-## v0.2 — Beta: "It's secure and browsable"
+## v0.2 — Beta: "It's secure and browsable" ✅
 
 Goal: accounts, encryption, and an OTT UI.
 
-- ✅ Panel: single-writer **signed** account/catalog Hyperbee (`panel/src/store.js`)
-- ✅ **Encrypted** feeds (per-stream `encryptionKey`) + per-user key sealing
-  (grant-after-enrollment via X25519 seal; private key sealed under the password)
-- ✅ **OPRF login** + Argon2id verifiers + proof-of-work + per-(user,peer) throttling
-  (`@aliran/core`, `panel/src/rpc.js`, `client/backend/login.mjs`)
-- ✅ Verified end-to-end on desktop (`npm run test:login`): login → entitlement →
-  P2P playback, wrong password rejected, recovered key matches
-- ✅ Sessions + device limits + `tokenVersion` revocation: per-user Ed25519 auth key
-  proves login; panel issues a signed session token; `maxDevices` enforced (evict
-  oldest); revocation via `tokenVersion`. Verified (`npm run test:session`).
-  Device-sealing into Android Keystore comes with the app build.
-- ✅ Broadcaster ↔ panel auto-registration: publisher key at `init`; broadcaster signs
-  a `register` RPC; panel writes the public catalog record and stores the encryption key
-  privately. Verified (`npm run test:register`).
-- ✅ Assets Hyperdrive (posters/art): panel seeds it, key advertised in the signed DB
-  (`meta/assetsKey`), `admin-cli upload-art`, client serves `/assets/*` over localhost.
-  Verified (`npm run test:assets`).
-- ✅ Catalog `bee.watch()` live push to the UI: the player SDK watches the replicated
-  `catalog/` range and re-emits `streams` with fresh display metadata on every edit
-  (no polling, no re-login; verified in `npm run test:sdk`)
-- ✅ OTT GUI (redesigned to the reference IA): splash auto-auth ("remember me" saved
-  device-local; login is the exception path), menu hub over the featured stream's
-  wallpaper, **Live TV as one fullscreen surface with browse/detail overlay panels**
-  (category rail, numbered channel list, channel-detail panel with an honest no-EPG
-  placeholder; playback never stops while browsing; D-pad zap), favorites
-  (device-local), search, settings — all on-device; **white-label**: every color and
-  brand string flows from the service descriptor via `makeTheme()`
-- ✅ Android **TV** target (leanback + D-pad focus) from the same APK: focus rings +
-  rail focus memory (`TVFocusGuideView`), verified remote-only on an Android TV
-  emulator (login → browse → live P2P playback → back)
+- ✅ Single-writer **signed** account/catalog Hyperbee; **encrypted** feeds; per-user key
+  sealing (X25519 grants, private key sealed under the password)
+- ✅ **OPRF login** + Argon2id verifiers + proof-of-work + throttling; sessions, device
+  limits, and `tokenVersion` revocation
+- ✅ Broadcaster ↔ panel auto-registration (publisher-key-signed `register` RPC)
+- ✅ Assets Hyperdrive for posters/art; live catalog push to the UI (no polling)
+- ✅ OTT GUI on phone **and** Android TV from one codebase: splash auto-auth → menu hub →
+  fullscreen live TV with browse/detail overlays, favorites, search, settings —
+  fully **white-label** (descriptor-driven theme and branding)
 
-**Exit criteria:** username/password login validated against the P2P DB; browse a
-branded catalog on phone and TV; unauthorized users can't decrypt.
-**Status:** **done end-to-end** — security core verified on desktop; the app
-auto-authorizes, browses live TV under overlay panels, and plays live P2P on phone
-**and** TV emulators; catalog edits push live.
+**Exit criteria met:** login validated against the P2P DB; browse a branded catalog on
+phone and TV; unauthorized users can't decrypt.
 
 ---
 
 ## v1.0 — Production: "Operators can run a real service"
 
-- ✅ **Player SDK track**: `@aliran/player-sdk` headless engine extracted from the app
-  worklet (e2e-tested via `test:sdk`; the worklet is a thin shell over it) and the
-  `@aliran/react-native` `<AliranVideo>` binding — dogfooded by the app. (An early
-  hybrid CDN↔P2P failover engine from this track is now internal test-harness
-  infrastructure only — **redirect channels** are the product CDN path, and P2P
-  channels have no CDN failover by design)
-- ✅ **Redirect channels (S23)**: a CDN-link channel class in the catalog
-  (`redirect: true` + https `url` set in the admin panel) — viewers play the URL
-  directly instead of a P2P feed; P2P channels untouched, url edits reach viewers on
-  their next tune (`test:sdk` redirect scenario + `test:admin-api` Test O)
-- ✅ **Deploy pack**: working Docker images + Compose (host networking for the DHT),
-  systemd units, Caddy TLS recipe for the dashboards, firewall guidance — and a CI
-  job that builds the images on every push
-- ✅ **Verified on a real VPS over the internet**: `tools/acceptance-remote.mjs`
-  (headless SDK login → resolve → ffprobe from another machine) passed for two
-  concurrent streams against a fresh 1 vCPU/1 GB VPS, and the Android app logged
-  in and played live P2P against the VPS panel — no localhost anywhere
-- ✅ **Complete admin surface (ops + API + CLI)**: admins CRUD + password rotation
-  (panel **and** broadcaster control API), stream delete = full purge / user delete,
-  user prefix-search + cursor pagination, `GET /api/observability` (uptime, memory,
-  swarm peers, storage, last-200 activity ring), typed catalog curation
-  (`order`/`featured`, preserved across broadcaster re-register), cooperative
-  per-device revoke + SDK `sessionLive` online check — verified by the extended
-  `test:admin-api` / `test:broadcaster-api`
-- ✅ **Admin dashboard UI for the above**: Admins tab (incl. self-rotation with
-  sign-out), typed-confirmation stream purge + user delete flows, user search +
-  cursor “Load more”, Overview tab (health chips + 10 s-polled activity feed),
-  inline curation controls (order/featured + ★ badge), per-device revoke ✕ —
-  verified by a live browser session ending in a real P2P viewer login
-- ✅ **Broadcaster ingest expansion**: push ingest — RTMP (OBS), SRT with passphrase
-  (authenticated), MPEG-TS over UDP — plus correct HLS/RTSP pull; typed per-channel
-  input config with auto port allocation and an ffmpeg capability probe (verified:
-  RTMP + UDP-TS push round-trips to a P2P viewer in `test:broadcaster-api`)
-- ✅ **Per-channel transcode controls incl. GPU**: resolution/fps/bitrate/preset,
-  encoder selection (x264, NVENC, QSV, VAAPI, AMF, passthrough `copy`) with
-  deep verification at startup so only encoders that really work are accepted
-  (QSV proven on real hardware; control-UI selectors land with the ingest UI)
-- ✅ **Rolling feed buffer**: live segments are a rolling window (8 × ~2 s by default),
-  expired blob storage reclaimed — streaming for days occupies O(window) space.
-  **`disk` buffer is the default** (stable feed identity → warm DHT topic → fast
-  time-to-play); `ram` session feeds stay available (byte-flat disk) with the SDK
-  following restarts via the catalog without re-login. Verified by `test:retention` +
-  `test:broadcaster-api` (RAM session-core contract **and** disk stable-identity F3).
-  Tuning rationale in `docs/kb/feed-buffer.md`.
-- ✅ **Broadcaster reliability**: ffmpeg watchdog (auto-restart with backoff,
-  re-listen after a publisher disconnect, restart of a stalled live edge), channels
-  **auto-resume** after a broadcaster restart (persisted desired state), `isLive:false`
-  pushed to the catalog on stop/shutdown via one shared panel link (with a boot catch-up
-  that heals stale-live entries), and a per-channel ffmpeg **log ring**. Verified by
-  `test:broadcaster-api` (Tests M/N).
-- ✅ **Ingest/transcode/logs in the control API + UI**: `GET /api/capabilities`,
-  per-channel logs endpoint, status `state` + copy-paste push URLs; UI ingest-kind
-  selector (unavailable protocols hidden), transcode form (unverified encoders
-  disabled with the probe error), 2 s-refreshing logs dialog, honest state badges
-  (ON AIR / WAITING FOR PUBLISHER / RETRYING). Verified by `test:broadcaster-api`
-  Test O + a live browser RTMP-push session.
-- ✅ **Hybrid artwork**: P2P assets drive stays the default; `https://` art URLs pass
-  through to clients unchanged (validated panel-side, https required); dashboard
-  "url" button beside upload. Verified by `test:assets`.
-- ✅ **Android app GUI redesign** to the reference organization (phone + TV, one
-  codebase): splash/auto-auth → menu hub → live-TV overlay browsing, plus the
-  previously missing channel-detail and search screens; the GUI is white-label-able
-  (descriptor-driven theme + sections)
-- ✅ **White-label brand packaging**: a brand dir (`client/brands/<id>/` —
-  descriptor + launcher icon / splash logo / wallpaper / TV banner; credentials
-  rejected) builds through `tools/brand.mjs` into a branded, co-installable APK
-  (`applicationId com.aliranclient.<id>`) via a property-gated gradle product
-  flavor; the default no-flavor build is untouched. Fictional `sunburst` example
-  brand in-repo; operator guide: `docs/white-label.md`.
+Shipped:
+
+- ✅ **Player SDK**: `@aliran/player-sdk` headless engine + the `@aliran/react-native`
+  `<AliranVideo>` binding, dogfooded by the app (an early hybrid CDN↔P2P failover engine
+  is internal test infrastructure only — redirect channels are the product CDN path)
+- ✅ **Redirect channels**: a CDN-link channel class (`redirect: true` + https `url` set
+  in the admin panel) beside untouched P2P channels
+- ✅ **Deploy pack**: Docker Compose (the supported install), bare-metal systemd
+  alternative, Caddy TLS recipe, CI image builds
+- ✅ **Proven on a real VPS over the internet**: remote acceptance harness + the Android
+  app playing live P2P against it — no localhost anywhere
+- ✅ **Complete admin surface**: panel dashboard + API (admins, purge/delete, search,
+  observability, curation, device revoke) and broadcaster control API + UI (start/stop,
+  ingest config, transcode, logs, push URLs, honest state badges)
+- ✅ **Ingest expansion**: RTMP / SRT-with-passphrase / MPEG-TS-over-UDP push and
+  HLS/RTSP pull; typed per-channel input config, auto port allocation, ffmpeg
+  capability probe
+- ✅ **Per-channel transcode incl. GPU**: resolution/fps/bitrate/preset and encoder
+  selection (x264, NVENC, QSV, VAAPI, AMF, passthrough `copy`), deep-verified at startup
+- ✅ **Rolling feed buffer**: endless live streams occupy O(window) space; stable `disk`
+  feed identity by default, byte-flat `ram` mode available
+- ✅ **Broadcaster reliability**: ffmpeg watchdog with backoff, stalled-edge and
+  memory-cap recycling, auto-resume after restart, honest catalog `isLive`, per-channel
+  log ring
+- ✅ **Hybrid artwork**: P2P assets drive by default; `https://` art URLs pass through
+- ✅ **White-label packaging**: brand dirs build into co-installable branded APKs from
+  one codebase (`tools/brand.mjs`; see `docs/white-label.md`)
+- ✅ **Docs site** (GitHub Pages) and **CI** (required deterministic lane + best-effort
+  real-DHT e2e lane)
+
+Open:
+
 - ⬜ Panel **HA / threshold OPRF** across replicas; documented backup & key-rotation runbooks
 - ⬜ Hardening pass + **independent security review** of the crypto paths
 - ⬜ Config validation, structured logging, health/metrics endpoints
-- ✅ Complete documentation site published (GitHub Pages — https://abuelosimpson.github.io/aliran/)
-- ✅ Automated tests (unit + e2e harnesses) and CI (GitHub Actions: a required fast
-  deterministic lane + a best-effort real-DHT e2e lane that never blocks merges)
 
 **Exit criteria:** a new operator can go from clone → live service in under an hour,
 following only the docs.
@@ -168,6 +98,13 @@ following only the docs.
   units, capability-probe verification recipe; optionally a Docker variant via
   nvidia-container-toolkit. Today GPU encoders work on the bare-metal path with
   vendor drivers installed; this packages it as a first-class, tested offering
+- ⬜ **Per-publisher registration keys + channel scopes**: multiple broadcasters can
+  already feed one catalog, but they share a single publisher key — one leaked `.env`
+  can rewrite any channel in the lineup, unattributed. This enrolls each broadcaster
+  (e.g. each carrier downlink site) with its own keypair and admin-assigned channel-id
+  scopes: signature checked against that site's key, writes limited to its channels,
+  `origin` attribution in the catalog, one-click revocation. Migration-safe — legacy
+  shared-key registrations keep working until the operator disables them
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
 - ⬜ Concurrency limits, HDCP/output protection, rental windows, blackout dates
 
@@ -175,15 +112,11 @@ following only the docs.
 
 ## Future / exploratory
 
-- ✅ **Repeater appliance** — a keyless regional super-peer (the Open-Connect
-  analog): SHIPPED as first-class `repeater/` (see `docs/repeater.md` +
-  `npm run test:repeater`). A hosted box (operator- or ISP-run) mirrors chosen
-  channels' **encrypted** feeds and absorbs viewer fan-out, holding no keys and
-  unable to watch what it serves. Built on the earlier groundwork: per-channel
-  `SWARM_MAX_PEERS` (broadcaster), `swarm.maxPeers` (player SDK), and the
-  panel-published catalog `blobsKey`. Remaining follow-ups: panel-ASSIGNED
-  repeaters (dashboard-managed fleets via `repeaters/<pubKey>` records) and
-  locality pinning (panel-published repeater addresses as preferred peers).
+- ✅ **Repeater appliance** — a keyless regional super-peer (the Open-Connect analog),
+  shipped as first-class `repeater/` (see `docs/repeater.md`): a hosted box mirrors
+  chosen channels' **encrypted** feeds and absorbs viewer fan-out while holding no keys
+  and unable to watch what it serves. Remaining follow-ups: panel-ASSIGNED repeater
+  fleets and locality pinning
 - ⬜ iOS / Apple TV client (FairPlay + HLS)
 - ⬜ **Web player via an HTTP gateway** — a hosted page that plays the service in any
   browser. Browsers cannot join the Hyperswarm DHT (no UDP), so the honest design is
@@ -197,7 +130,8 @@ following only the docs.
   True in-browser P2P (WebRTC/WebTransport swarm bridge) stays a separate research
   item on top of this.
 - ⬜ Chat / interactivity alongside live streams
-- ⬜ Multi-broadcaster / multi-admin (Autobase) catalogs
+- ⬜ **Multi-admin (Autobase) catalogs** — fully independent catalog writers, beyond
+  the scoped-publisher model above
 - ⬜ Adaptive bitrate ladders; low-latency HLS/LL-DASH
 - ⬜ Analytics that respect privacy (aggregate, no per-user tracking)
 
