@@ -24,7 +24,7 @@
 // focus-based (the S7 lesson). The bottom menu's touch buttons are phone-only so they
 // stay out of that focus path.
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView } from 'react-native'
+import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView, Animated } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranVideo, type TuneEvent } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
@@ -47,6 +47,11 @@ const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGui
 // The left menu (browse overlay) has no manual close control — it auto-hides this long
 // after the last interaction, fading back to clean fullscreen video.
 const MENU_IDLE_MS = 6000
+
+// The bottom now-playing bar (phone) fades away this long after it appears / the last
+// interaction, for an unobstructed picture; a touch in the bottom reveal zone brings it
+// back. TV keeps the bar always-on (it lives in the D-pad path, not a touch surface).
+const BAR_IDLE_MS = 5000
 
 // Last channel watched THIS session. Module-level so it survives leaving Live for the
 // Menu and coming back (the native stack unmounts the screen in between): re-entering
@@ -78,6 +83,11 @@ export function LiveScreen ({ route }: Props) {
   const [tuneUI, setTuneUI] = useState<{ id: number; phase: ChannelChangePhase; active: boolean } | null>(null)
   const [now, setNow] = useState(() => new Date())
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Bottom bar auto-hide (phone): `barShown` gates mounting; `barOpacity` fades it.
+  // TV never auto-hides (theme.isTV branch in armBarHide).
+  const [barShown, setBarShown] = useState(true)
+  const barIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const barOpacity = useRef(new Animated.Value(1)).current
 
   const overlayRef = useRef(overlay); overlayRef.current = overlay
   const playingIdRef = useRef(playingId); playingIdRef.current = playingId
@@ -115,6 +125,15 @@ export function LiveScreen ({ route }: Props) {
     return clearMenuIdle
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlay])
+
+  // Bottom bar: reveal + re-arm the fade whenever fullscreen (re)appears or the channel
+  // changes (so a zap flashes the new now-playing), then it fades out on its own.
+  useEffect(() => {
+    if (overlay === 'none') showBar()
+    else clearBarIdle()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlay, playingId])
+  useEffect(() => clearBarIdle, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
   const groups = useMemo(() => groupByCategory(streams), [streams])
@@ -155,6 +174,24 @@ export function LiveScreen ({ route }: Props) {
   function onTune (e: TuneEvent) {
     if (e.phase === 'playing') setTuneUI(t => (t && t.id === e.id ? { ...t, active: false } : t))
     else setTuneUI({ id: e.id, phase: e.phase === 'start' ? 'tuning' : e.phase, active: true })
+  }
+
+  // Bottom bar: reveal (fade in) + arm the auto-hide; a bottom-zone touch calls this.
+  function clearBarIdle () { if (barIdle.current) { clearTimeout(barIdle.current); barIdle.current = null } }
+  function armBarHide () {
+    clearBarIdle()
+    if (theme.isTV) return // TV: the bar is always on (D-pad model, not touch)
+    barIdle.current = setTimeout(() => {
+      Animated.timing(barOpacity, { toValue: 0, duration: 350, useNativeDriver: true })
+        .start(({ finished }) => { if (finished) setBarShown(false) })
+    }, BAR_IDLE_MS)
+  }
+  function showBar () {
+    clearBarIdle()
+    barOpacity.stopAnimation()
+    setBarShown(true)
+    Animated.timing(barOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start()
+    armBarHide()
   }
 
   function clearMenuIdle () { if (menuIdle.current) { clearTimeout(menuIdle.current); menuIdle.current = null } }
@@ -235,16 +272,23 @@ export function LiveScreen ({ route }: Props) {
               <Pressable style={styles.zapDown} onFocus={() => bounceZap(-1)} />
             </>
           )}
-          {playing && (
-            <NowPlayingBar
-              stream={playing}
-              number={numbers.get(playing.id)}
-              clock={clockText(now)}
-              favorite={favorites.includes(playing.id)}
-              onChannels={() => setOverlay('list')}
-              onInfo={() => { setInfoStream(playing); setOverlay('info') }}
-              onToggleFavorite={() => backend.toggleFavorite(playing.id)}
-            />
+          {playing && barShown && (
+            <Animated.View style={[styles.barFade, { opacity: barOpacity }]} pointerEvents="box-none">
+              <NowPlayingBar
+                stream={playing}
+                number={numbers.get(playing.id)}
+                clock={clockText(now)}
+                favorite={favorites.includes(playing.id)}
+                onChannels={() => setOverlay('list')}
+                onInfo={() => { setInfoStream(playing); setOverlay('info') }}
+                onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
+              />
+            </Animated.View>
+          )}
+          {/* Bar hidden (phone): a touch in the bottom zone brings it back. A tap higher
+              up still falls through to the catcher and opens the left menu. */}
+          {playing && !barShown && !Platform.isTV && (
+            <Pressable style={styles.barRevealZone} onPress={showBar} />
           )}
         </>
       )}
@@ -311,6 +355,11 @@ export function LiveScreen ({ route }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.videoBackground },
   catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 0, right: 0 },
+  // Full-screen wrapper so the NowPlayingBar's own absolute positioning still anchors
+  // to the bottom while we fade the whole thing; box-none lets non-button taps reach
+  // the catcher beneath. The bottom reveal zone re-shows the faded bar on touch.
+  barFade: { ...StyleSheet.absoluteFillObject },
+  barRevealZone: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 150 },
   zapUp: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
   zapDown: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 80 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },

@@ -13,6 +13,7 @@ import React from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber } from '../catalog'
+import { useEpg } from '../useEpg'
 import { theme } from '../theme'
 
 export interface NowPlayingBarProps {
@@ -26,6 +27,11 @@ export interface NowPlayingBarProps {
 }
 
 export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite }: NowPlayingBarProps) {
+  // What's on NOW from the program guide (S27) — the airing program is more useful on
+  // the bar than the channel synopsis. Falls back to the description ("via plutotv")
+  // for channels without an EPG. The channel synopsis still lives in the Info panel.
+  const { data } = useEpg(stream.epgUrl, stream.epgId)
+  const subtitle = data?.now?.title || stream.description
   return (
     <View style={styles.wrap} pointerEvents="box-none">
       <View style={styles.bar} pointerEvents="box-none">
@@ -37,7 +43,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
               <Text style={styles.title} numberOfLines={1}>{stream.title}</Text>
               {stream.isLive && <Text style={styles.live}>● LIVE</Text>}
             </View>
-            {!!stream.description && <Text style={styles.desc} numberOfLines={1}>{stream.description}</Text>}
+            {!!subtitle && <Text style={styles.desc} numberOfLines={1}>{subtitle}</Text>}
           </View>
           <View style={styles.divider} />
           <Text style={styles.clock}>{clock}</Text>

@@ -6,35 +6,18 @@
 // demand from the provider's epgUrl over https — see src/epg.ts), and falls back to
 // an honest "No program information" placeholder for channels without an EPG (D2 — no
 // fake data).
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber } from '../catalog'
-import { epg, type NowNext, type EpgProgram } from '../epg'
+import { type EpgProgram } from '../epg'
+import { useEpg } from '../useEpg'
 import { theme } from '../theme'
 
 // Local wall-clock HH:MM (no Intl dependency — Hermes' Intl is uneven on Android).
 function hhmm (ms: number): string {
   const d = new Date(ms)
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
-}
-
-// Fetch this channel's now/next on open and refresh on a slow tick so the current
-// program rolls over and the progress bar advances while the panel stays open. The
-// fetch is cached per feed URL (src/epg.ts), so the tick is nearly free.
-function useEpg (epgUrl?: string, epgId?: string): { data: NowNext | null; loaded: boolean } {
-  const [data, setData] = useState<NowNext | null>(null)
-  const [loaded, setLoaded] = useState(false)
-  useEffect(() => {
-    let alive = true
-    setData(null); setLoaded(false)
-    if (!epgUrl || !epgId) { setLoaded(true); return }
-    const run = () => epg.getNowNext(epgUrl, epgId).then((d) => { if (alive) { setData(d); setLoaded(true) } })
-    run()
-    const timer = setInterval(run, 30000)
-    return () => { alive = false; clearInterval(timer) }
-  }, [epgUrl, epgId])
-  return { data, loaded }
 }
 
 export interface ChannelInfoPanelProps {
