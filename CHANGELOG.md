@@ -66,7 +66,10 @@ Android phone + Android TV).
   Unchanged feeds (or ETag 304s) append **nothing** to the replicated catalog. EPG
   stays out of the bee; imported records carry `epgUrl`/`epgId` pointers for a
   future on-demand client fetch. P2P channels tagged with the same category share
-  the rail — zero SDK/app changes.
+  the rail — zero SDK/app changes. Individual entries can be **deselected** per
+  source (dashboard channels-dialog checkboxes / `--exclude`): an excluded channel
+  is purged and skipped on every sync — exclusion changes reset the ETag so a 304
+  can never mask them — and re-checking re-imports and re-grants it.
 
 **Broadcaster (`broadcaster/`)**
 - Multi-channel `ChannelManager`: each channel is ingest → ffmpeg → **encrypted

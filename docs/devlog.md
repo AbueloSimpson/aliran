@@ -1191,3 +1191,26 @@ the fallback already spent.
   browser check against the **real** provider feed: 10 anime channels imported
   through the dashboard, real GitHub ETag answering the second sync with
   "not modified", stream cards showing LIVE / ⇢ REDIRECT / ⇣ anime / Anime chips.
+
+### Sources: per-channel deselect — the exclude list (S27b, verified)
+- **Ask:** the import shows what the feed added — the operator wants to UNCHECK some
+  of them. New per-source `exclude` list of FEED ids ({id, title} — the label is
+  captured at exclusion time so the dialog can name entries that no longer exist in
+  the catalog): excluded entries are skipped by `mapFeed` (counted, not an error),
+  which routes them through the normal missing→delete path — removed immediately,
+  grants included — and keeps them out on every future sync. **An exclusion change
+  resets the stored ETag**, otherwise a 304 would skip the apply pass and silently
+  mask a fresh deselection.
+- **Surface:** Sources tab **channels** button → checkbox dialog (imported entries in
+  feed order + excluded ones labeled `(excluded)`; Save + sync applies immediately;
+  dialog body scrolls for big lists), "N excluded" chip on the row, new
+  `GET /api/sources/:name/channels`, `PATCH {exclude}` and `set-source --exclude
+  "id1,id2"` (`""` re-includes all).
+- **Verification:** `test:sources` grows group I — exclude removes+purges (catalog,
+  secret, grants), the dialog endpoint carries the captured label, the standing
+  exclusion holds through 304s with the bee version pinned, re-include re-imports
+  and re-seals grants; A–J PASS. Live dashboard round-trip against the REAL feed:
+  10 → uncheck Avatar → 9 + "1 excluded" chip + `−1` report → re-check → 10 back
+  with `+1`. (Fun catch during the demo: the provider feed lists Avatar LAST —
+  it was appended after the alphabetical bulk, which is exactly the kind of feed
+  drift the ownership/diff machinery shrugs at.)

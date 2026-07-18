@@ -262,7 +262,40 @@ try {
   sched.close()
   log('H: scheduler picked up the never-synced source and imported + granted it ✓')
 
-  // ===== Test I: removal — detach (keepChannels) vs purge =====
+  // ===== Test I: deselect (exclude) channels — removed, kept out, re-includable =====
+  r = await api('GET', '/api/sources/anime/channels', undefined, token)
+  assert.strictEqual(r.status, 200)
+  assert.deepStrictEqual(r.body.channels.map((c) => c.feedId), ['ch0', 'ch1', 'ch2'], 'channels dialog lists imported entries in feed order')
+  assert.ok(r.body.channels.every((c) => !c.excluded), 'nothing excluded yet')
+
+  r = await api('PATCH', '/api/sources/anime', { exclude: [{ id: 'ch1', title: 'Ch 1' }] }, token)
+  assert.strictEqual(r.body.exclude.length, 1, 'exclusion stored')
+  r = await api('POST', '/api/sources/anime/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, false, 'exclude change resets the ETag — a 304 must not mask it')
+  assert.strictEqual(r.body.removed, 1, 'excluded channel removed')
+  assert.strictEqual(r.body.excluded, 1, 'feed entry counted as excluded, not as an error')
+  assert.strictEqual((await db.get('catalog/anime.ch1')), null, 'excluded channel gone from catalog')
+  assert.strictEqual(loadSecrets(dir)['anime.ch1'], undefined, 'excluded channel secret purged')
+  assert.strictEqual((await db.get('user/bob')).value.wrapped['anime.ch1'], undefined, 'excluded channel grant revoked')
+
+  r = await api('GET', '/api/sources/anime/channels', undefined, token)
+  const exRow = r.body.channels.find((c) => c.feedId === 'ch1')
+  assert.ok(exRow && exRow.excluded && exRow.title === 'Ch 1', 'dialog shows the excluded entry with its captured label')
+
+  const vExcl = db.version
+  r = await api('POST', '/api/sources/anime/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, true, 'unchanged feed + standing exclusion → 304 again')
+  assert.strictEqual(db.version, vExcl, 'the feed cannot re-add an excluded channel (zero appends)')
+
+  r = await api('PATCH', '/api/sources/anime', { exclude: [] }, token)
+  assert.strictEqual(r.body.exclude.length, 0)
+  r = await api('POST', '/api/sources/anime/sync', undefined, token)
+  assert.strictEqual(r.body.added, 1, 're-included channel comes back')
+  assert.ok((await db.get('catalog/anime.ch1')), 'catalog entry restored')
+  assert.ok((await db.get('user/bob')).value.wrapped['anime.ch1'], 'grant re-sealed on re-include')
+  log('I: deselect — excluded channel purged + kept out through 304s, label preserved, re-include restores + re-grants ✓')
+
+  // ===== Test J: removal — detach (keepChannels) vs purge =====
   r = await api('DELETE', '/api/sources/kids?keepChannels=1', undefined, token)
   assert.strictEqual(r.body.detached, 1)
   const k1 = (await db.get('catalog/kids.k1')).value
@@ -280,7 +313,7 @@ try {
   const bob3 = (await db.get('user/bob')).value
   assert.strictEqual(Object.keys(bob3.wrapped).filter((id) => id.startsWith('anime.')).length, 0, 'purged grants gone from bob')
   assert.strictEqual((await api('GET', '/api/sources', undefined, token)).body.length, 0, 'registry empty')
-  log('I: keepChannels detaches (grants kept), plain remove purges channels+grants, manual survives ✓')
+  log('J: keepChannels detaches (grants kept), plain remove purges channels+grants, manual survives ✓')
 
   log('\nPASS: remote channel sources e2e (S27)')
   await cleanup()

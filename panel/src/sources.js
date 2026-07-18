@@ -48,6 +48,7 @@ const normBool = (v) => v === true || /^(1|true|yes)$/i.test(String(v))
 const TITLE_MAX = 200
 const PROVIDER_MAX = 100
 const SKIP_REPORT_MAX = 20
+const EXCLUDE_MAX = 1000
 
 // ---------------------------------------------------------------- registry
 
@@ -110,6 +111,28 @@ function normPrefix (v, name) {
   return s
 }
 
+// Deselected channels: FEED ids (unprefixed) the operator excluded. Stored as
+// {id, title} — the title is the label captured at exclusion time so the channels
+// dialog can name entries that no longer exist in the catalog (it may drift from
+// the feed's current name; harmless, refreshed if re-included and re-excluded).
+// Accepts an array of strings / {id,title} objects, or a comma string (CLI).
+function normExclude (v) {
+  const list = Array.isArray(v) ? v : v == null || v === '' ? [] : String(v).split(',')
+  const out = []
+  const seen = new Set()
+  for (const raw of list) {
+    const isObj = raw !== null && typeof raw === 'object'
+    const id = String(isObj ? raw.id ?? '' : raw).trim()
+    if (!id) continue
+    if (id.length > 128) bad('excluded channel id must be at most 128 characters')
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({ id, title: isObj ? String(raw.title ?? '').trim().slice(0, TITLE_MAX) : '' })
+  }
+  if (out.length > EXCLUDE_MAX) bad(`at most ${EXCLUDE_MAX} excluded channels per source`)
+  return out
+}
+
 function normInterval (v, dflt) {
   if (v == null || v === '') return dflt
   const n = typeof v === 'number' ? v : parseInt(v, 10)
@@ -128,6 +151,7 @@ export function addSource (ctx, name, opts = {}) {
     autoGrant: opts.autoGrant == null ? true : normBool(opts.autoGrant),
     enabled: opts.enabled == null ? true : normBool(opts.enabled),
     intervalMs: normInterval(opts.intervalMs, scfg(ctx).defaultIntervalMs),
+    exclude: normExclude(opts.exclude),
     etag: null,
     lastSync: null,
     lastError: null,
@@ -151,6 +175,13 @@ export function setSource (ctx, name, fields = {}) {
   if (fields.autoGrant != null) s.autoGrant = normBool(fields.autoGrant)
   if (fields.enabled != null) s.enabled = normBool(fields.enabled)
   if (fields.intervalMs != null) s.intervalMs = normInterval(fields.intervalMs, scfg(ctx).defaultIntervalMs)
+  if (fields.exclude !== undefined) {
+    const next = normExclude(fields.exclude)
+    // An exclusion change must not be masked by ETag revalidation: the next sync
+    // needs the full body to apply it, so force a fresh 200.
+    if (JSON.stringify(next.map((e) => e.id)) !== JSON.stringify((s.exclude || []).map((e) => e.id))) s.etag = null
+    s.exclude = next
+  }
   saveSources(ctx.dataDir, sources)
   return { name, ...s }
 }
@@ -247,6 +278,8 @@ function mapFeed (source, feed, { maxChannels }) {
   if (!list) throw new Error('feed shape not recognized — expected {"channels":[…]} or a bare array')
   const entries = new Map()
   const skipped = []
+  const excludedIds = new Set((source.exclude || []).map((e) => e.id))
+  let excluded = 0
   let truncated = 0
   for (let i = 0; i < list.length; i++) {
     if (entries.size >= maxChannels) { truncated = list.length - i; break }
@@ -254,6 +287,7 @@ function mapFeed (source, feed, { maxChannels }) {
     const rawId = ch.id != null ? String(ch.id) : ''
     const skip = (reason) => skipped.push({ id: rawId || '(missing id)', reason })
     if (!rawId) { skip('missing id'); continue }
+    if (excludedIds.has(rawId)) { excluded++; continue } // operator deselected — not an error
     const id = source.prefix + rawId
     try { checkName(id, 'stream id') } catch { skip('invalid id'); continue }
     if (entries.has(id)) { skip('duplicate id'); continue }
@@ -275,7 +309,27 @@ function mapFeed (source, feed, { maxChannels }) {
       epgId: rawId
     })
   }
-  return { entries, skipped, truncated }
+  return { entries, skipped, truncated, excluded }
+}
+
+// The channels dialog's data: every entry the source knows about — imported ones
+// (from the catalog, feed order) followed by excluded ones (from the registry,
+// with their captured labels).
+export async function sourceChannels (ctx, name) {
+  const sources = loadSources(ctx.dataDir)
+  if (!hasOwn(sources, name)) notFound(`no such source: ${name}`)
+  const s = sources[name]
+  const channels = []
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+    if (value && value.source === name) {
+      channels.push({ feedId: value.epgId || key.slice('catalog/'.length + (s.prefix || '').length), id: key.slice('catalog/'.length), title: value.title, order: value.order ?? null, excluded: false })
+    }
+  }
+  channels.sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9))
+  for (const e of s.exclude || []) {
+    channels.push({ feedId: e.id, id: (s.prefix || '') + e.id, title: e.title || e.id, order: null, excluded: true })
+  }
+  return { name, channels }
 }
 
 // ---------------------------------------------------------------- apply (diff)
@@ -419,7 +473,7 @@ async function doSync (ctx, name) {
     const fetched = await fetchFeed(source.url, source.etag, cfg)
     let report
     if (fetched.notModified) {
-      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0 }
+      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length }
     } else {
       const mapped = mapFeed(source, fetched.feed, cfg)
       const applied = await applyFeed(ctx, name, mapped)
@@ -428,7 +482,8 @@ async function doSync (ctx, name) {
         ...applied,
         skipped: mapped.skipped.slice(0, SKIP_REPORT_MAX),
         skippedCount: mapped.skipped.length,
-        truncated: mapped.truncated
+        truncated: mapped.truncated,
+        excluded: mapped.excluded
       }
     }
     // Grants reconcile on EVERY sync (304 included): users created since the last
@@ -450,6 +505,7 @@ async function doSync (ctx, name) {
         conflicts: report.conflicts.length,
         skipped: report.skippedCount,
         truncated: report.truncated,
+        excluded: report.excluded,
         granted: report.granted
       }
       saveSources(ctx.dataDir, fresh)

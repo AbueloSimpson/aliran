@@ -288,14 +288,16 @@ function renderSources () {
         : ''}</td>
       <td>${s.lastError
         ? `<span class="badge disabled" title="${esc(s.lastError)}">ERROR</span> `
-        : `<span class="badge ${disabled ? 'disabled' : 'active'}">${disabled ? 'paused' : 'enabled'}</span> `}${s.autoGrant === false ? '<span class="chip" title="imported channels are NOT auto-granted — grant per user by hand">no auto-grant</span>' : ''}</td>
+        : `<span class="badge ${disabled ? 'disabled' : 'active'}">${disabled ? 'paused' : 'enabled'}</span> `}${s.autoGrant === false ? '<span class="chip" title="imported channels are NOT auto-granted — grant per user by hand">no auto-grant</span>' : ''}${(s.exclude || []).length ? `<span class="chip" title="deselected in the channels dialog — skipped on every sync until re-checked">${s.exclude.length} excluded</span>` : ''}</td>
       <td><div class="row-actions">
         <button class="btn small" data-act="sync">sync now</button>
+        <button class="btn small" data-act="channels">channels</button>
         <button class="btn small" data-act="edit">edit</button>
         <button class="btn small" data-act="toggle">${disabled ? 'enable' : 'pause'}</button>
         <button class="btn small danger" data-act="remove">remove</button>
       </div></td>`
     tr.querySelector('[data-act=sync]').addEventListener('click', () => syncSourceNow(s.name))
+    tr.querySelector('[data-act=channels]').addEventListener('click', () => openSourceChannels(s))
     tr.querySelector('[data-act=edit]').addEventListener('click', () => editSource(s))
     tr.querySelector('[data-act=toggle]').addEventListener('click', () => act(
       () => api('PATCH', `/api/sources/${s.name}`, { enabled: disabled }),
@@ -654,6 +656,25 @@ async function syncSourceNow (name) {
         (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : ''))
     await refresh()
   } catch (err) { toast(err.message, true); await refresh().catch(() => {}) }
+}
+
+// Channels dialog: one checkbox per feed entry — imported ones checked, excluded
+// ones unchecked (with the label captured at exclusion time). Saving replaces the
+// source's exclude list and syncs, so deselections take effect immediately.
+async function openSourceChannels (s) {
+  try {
+    const { channels } = await api('GET', `/api/sources/${s.name}/channels`)
+    if (!channels.length) return toast('no channels imported yet — sync the source first', true)
+    const fields = channels.map((c, i) => ({ name: 'c' + i, label: c.title + (c.excluded ? ' (excluded)' : ''), type: 'checkbox', value: !c.excluded }))
+    const v = await dialog(`Channels — ${s.name} (${channels.length})`, fields, {
+      okLabel: 'Save + sync',
+      body: '<p class="muted">Unchecked = <b>excluded</b>: removed from the catalog (grants included) and skipped on every sync until you re-check it. The feed cannot re-add an excluded channel.</p>'
+    })
+    if (!v) return
+    const exclude = channels.filter((c, i) => !v['c' + i]).map((c) => ({ id: c.feedId, title: c.title }))
+    await api('PATCH', `/api/sources/${s.name}`, { exclude })
+    await syncSourceNow(s.name)
+  } catch (err) { toast(err.message, true) }
 }
 
 async function editSource (s) {

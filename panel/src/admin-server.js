@@ -48,8 +48,9 @@
 //   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
 //   GET    /api/sources                      remote channel sources (S27) + owned-channel counts
 //   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?}
-//   PATCH  /api/sources/:name                edit any of the above fields
+//   PATCH  /api/sources/:name                edit any field (incl. exclude:[{id,title}] — deselected feed ids)
 //   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
+//   GET    /api/sources/:name/channels       imported + excluded entries (the channels-dialog data)
 //   POST   /api/sources/:name/sync           pull + diff + grant NOW; returns the sync report
 //
 // Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
@@ -217,6 +218,9 @@ export function startAdminServer (ctx, opts = {}) {
           act('source-remove', { source: r2, removed: out.removed, detached: out.detached })
           return sendJson(res, 200, out)
         }
+      }
+      if (seg.length === 4 && r3 === 'channels' && req.method === 'GET') {
+        return sendJson(res, 200, await sources.sourceChannels(ctx, r2))
       }
       if (seg.length === 4 && r3 === 'sync' && req.method === 'POST') {
         const out = await sources.syncSource(ctx, r2)

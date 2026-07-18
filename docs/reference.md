@@ -25,7 +25,7 @@
 | `set-publisher-scopes <name> <globs>` | Replace a site's channel scopes (comma-separated; live from its next register) |
 | `set-publisher-status <name> <active\|revoked>` | Revoke / re-accept a site's key (status flip — no re-keying of other sites) |
 | `add-source <name> <url> --category <label> [--prefix --interval-hours --auto-grant false --disabled]` | Register a remote channel feed (provider JSON) imported as a category of redirect channels |
-| `list-sources` / `set-source <name> [--url --category …]` | List sources + sync state / edit one (registry-only — safe beside a running panel) |
+| `list-sources` / `set-source <name> [--url --category … --exclude "id1,id2"]` | List sources + sync state / edit one (registry-only — safe beside a running panel; `--exclude` deselects feed entries, `""` re-includes all) |
 | `sync-source <name>` | Pull + diff + grant **now** (needs the store: panel stopped — on a live panel use the dashboard/API) |
 | `remove-source <name> [--keep-channels]` | Remove a source; purges its channels unless `--keep-channels` detaches them |
 
@@ -85,7 +85,8 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `POST /api/publishers/:name/status` `{status}` | `active` \| `revoked` — a revoked site's registrations bounce until re-activated |
 | `POST /api/publishers/:name/scopes` `{scopes}` | Replace the site's streamId-glob scopes (applies from its next register) |
 | `GET/POST /api/sources` | Remote channel sources: list (+ owned-channel counts, last sync/error) / add (`{name,url,category,prefix?,autoGrant?,enabled?,intervalMs?}`) |
-| `PATCH /api/sources/:name` | Edit any source field (`enabled:false` pauses the schedule; url change resets the ETag) |
+| `PATCH /api/sources/:name` | Edit any source field (`enabled:false` pauses the schedule; url or `exclude` change resets the ETag so the next sync applies it) |
+| `GET /api/sources/:name/channels` | Imported + excluded entries — the channels-dialog data (`{feedId,id,title,order,excluded}`) |
 | `DELETE /api/sources/:name` | Remove a source — **purges its channels** (`?keepChannels=1` detaches them as manual redirect channels instead) |
 | `POST /api/sources/:name/sync` | Pull + diff + grant now → the sync report (`added/updated/removed/skipped/conflicts/granted/notModified`) |
 

@@ -164,9 +164,11 @@ async function main () {
       prefix: str(opts.prefix),
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
-      enabled: opts.enabled != null ? opts.enabled : undefined
+      enabled: opts.enabled != null ? opts.enabled : undefined,
+      exclude: opts.exclude != null && opts.exclude !== true ? String(opts.exclude) : undefined // comma feed-ids; '' clears
     })
-    console.log(`Updated source "${name}" (category "${s.category}", enabled ${s.enabled !== false}). Changes apply on its next sync.`)
+    console.log(`Updated source "${name}" (category "${s.category}", enabled ${s.enabled !== false}` +
+      ((s.exclude || []).length ? `, ${s.exclude.length} excluded` : '') + '). Changes apply on its next sync.')
     return
   }
 
@@ -372,7 +374,8 @@ function usage () {
   add-source <name> <url> --category <label> [--prefix p.] [--interval-hours N] [--auto-grant false] [--disabled]
                                         Register a remote channel feed (provider JSON) as a category
   list-sources                          List channel sources + last sync state
-  set-source <name> [--url --category --prefix --interval-hours --auto-grant --enabled true|false]
+  set-source <name> [--url --category --prefix --interval-hours --auto-grant --enabled true|false --exclude "feedId1,feedId2"]
+                                        (--exclude DESELECTS feed entries: removed + skipped every sync; "" re-includes all)
   sync-source <name>                    Pull + apply the feed NOW (panel stopped — or use the dashboard)
   remove-source <name> [--keep-channels]  Remove a source; purges its channels unless --keep-channels
 `)

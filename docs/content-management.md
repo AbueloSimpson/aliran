@@ -114,6 +114,12 @@ source — the feed's own category strings are ignored (a provider never names y
   on **every** sync — and immediately at user creation — so accounts created between
   pulls converge. As with any grant, a device picks new channels up at its next login
   (app restart). Turn it off per source to gate the category manually.
+- **Deselect channels you don't want**: the Sources tab's **channels** button opens a
+  checkbox list of every feed entry — unchecking one **excludes** it (removed
+  immediately, grants included, and skipped on every future sync; the feed cannot
+  re-add it). Re-check to re-import. Also: `set-source <name> --exclude "id1,id2"`
+  (feed ids, `""` re-includes all) or `PATCH /api/sources/:name {exclude:[{id,title}]}`.
+  Exclusions survive feed updates and ETag 304s.
 - Syncs are frugal: an unchanged feed (or an HTTP 304 off the stored ETag) writes
   **nothing** to the replicated catalog.
 - A failed pull (network, oversized, invalid JSON) keeps the **last good state** and
