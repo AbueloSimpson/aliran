@@ -72,7 +72,10 @@ Build-time config (`client/config`) or runtime **service descriptor**:
 |-----|-------------|
 | `panelPubKey` | The operator's panel public key (pins trust + locates it) |
 | `name` / `branding` | App name, logo, color palette |
-| `hybrid` | Optional global CDN-failover config (dev/test harnesses; production channels that should play a CDN link use per-channel **redirect** catalog entries instead — see [content-management.md](content-management.md)) |
 | `bootstrap` | Optional custom DHT bootstrap nodes |
+
+> A channel that should play a CDN/HLS link is a per-channel **redirect** catalog
+> entry set in the admin panel — not client configuration. See
+> [content-management.md](content-management.md).
 
 > Secrets (`DRM_API_KEY`, keys in `DATA_DIR`) must never be committed. See `.gitignore`.

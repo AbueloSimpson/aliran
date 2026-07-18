@@ -88,8 +88,10 @@ Android phone + Android TV).
   (metadata alone never stands the watchdog down).
 - Live follow-ups without re-login: the active stream tracks catalog **feedKey
   rotation** (`feed-changed`) and redirect-channel **url edits** (next tune).
-- Hybrid CDN↔P2P failover/auto-return (config-driven, for dev/test harnesses) and
-  **redirect-channel passthrough** (`resolve()` returns the catalog URL directly).
+- **Redirect-channel passthrough** — the product CDN path: `resolve()` returns the
+  catalog URL directly. (An internal, config-driven hybrid CDN↔P2P mode predates it
+  and survives as e2e-harness infrastructure; **P2P channels have no CDN failover,
+  by design**.)
 - Bounded hyperbee caches across every store (long-uptime heap safety).
 
 **React Native binding (`sdk/react-native/`, `@aliran/react-native`)**

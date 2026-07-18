@@ -48,47 +48,29 @@ swapped the served feed behind the **same** localhost `url`, so the host just re
 player to flush the stale playlist — no re-login or `resolve()` needed). The emitter never
 throws on unhandled `error`.
 
-## Hybrid CDN↔P2P
-
-Pass a `hybrid` config to fail over to a CDN when P2P isn't healthy — and return
-automatically when it is:
-
-```js
-const player = createPlayer({
-  panelPubKey,
-  hybrid: {
-    mode: 'hybrid',              // 'p2p-only' (default) | 'hybrid' | 'cdn-only'
-    start: 'preferP2P',          // or 'preferCDN' (start on CDN, probe to P2P)
-    cdnUrl: (id) => `https://cdn.example.com/${id}/index.m3u8`, // or '…/{streamId}/…' template
-    readyTimeoutMs: 8000,        // max wait for the P2P playlist before falling back
-    rebufferMsToFallback: 10000, // P2P playlist stalls this long -> fall back
-    probeIntervalMs: 5000        // background P2P health probe while on CDN
-  }
-})
-const { url, source } = await player.resolve(streamId) // url = the ACTIVE source
-player.on('fallback', ({ url }) => video.src = url)         // P2P -> CDN
-player.on('source-changed', ({ url }) => video.src = url)   // CDN -> P2P (auto-return)
-```
-
-The SDK never decodes video: it exposes the current source URL (`resolve()` /
-`source()`) and switches it based on playlist health in the feed replica (present
-within `readyTimeoutMs`, advancing between probes). While on CDN the feed keeps
-replicating in the background — the DHT lookup is re-run on every probe so a
-broadcaster that comes up later is found quickly — and after two consecutive
-advancing probes playback is handed back to P2P. With `mode: 'p2p-only'` (the
-default, used by the app worklet) behavior is exactly the pre-hybrid engine.
-
-## Redirect channels (S23)
+## Redirect channels — the CDN path
 
 A catalog entry can be a **redirect channel** instead of a P2P feed: the admin panel
 stores `{ redirect: true, url: 'https://…' }` on the record, and `resolve()` returns
 that URL verbatim with `source: 'cdn'` and **no `port`** — no feed open, no swarm
 join, no watchdogs. The host player fetches the URL directly (any HLS the platform
-player supports); its errors are the host's to surface, exactly like the CDN side of
-hybrid mode. Because the URL rides the replicated catalog, an admin edit reaches
-viewers on their **next tune** — no re-login. Entitlement is unchanged (the channel
-appears only for granted users), and no `hybrid` config is needed: redirect entries
-play their URL under any mode, while channels without one behave exactly as before.
+player supports); its errors are the host's to surface. Because the URL rides the
+replicated catalog, an admin edit reaches viewers on their **next tune** — no
+re-login. Entitlement is unchanged: the channel appears only for granted users.
+
+This is the **only** CDN mechanism in the product. A channel is either P2P (kept
+playing by the tune self-heal ladder) or a redirect — **P2P channels have no CDN
+failover, by design**.
+
+## Hybrid mode (internal — test harness only)
+
+The engine retains a config-driven `hybrid` option
+(`mode: 'p2p-only'|'hybrid'|'cdn-only'`, a global `cdnUrl` template, and the
+`fallback` / `source-changed` events) from before redirect channels existed. It is
+**not a product path** — the app never configures it — and it survives as
+infrastructure for the e2e harness (`test:sdk` uses it to prove the
+serving-health verdicts). Leave it unset: the default `p2p-only` is the shipped
+behavior.
 
 ## Zap latency
 

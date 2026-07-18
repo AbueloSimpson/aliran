@@ -77,9 +77,11 @@ auto-authorizes, browses live TV under overlay panels, and plays live P2P on pho
 ## v1.0 — Production: "Operators can run a real service"
 
 - ✅ **Player SDK track**: `@aliran/player-sdk` headless engine extracted from the app
-  worklet (e2e-tested via `test:sdk`; the worklet is a thin shell over it), hybrid
-  CDN↔P2P failover/auto-return, and the `@aliran/react-native` `<AliranVideo>`
-  binding — dogfooded by the app on the TV emulator (P2P + observable CDN fallback)
+  worklet (e2e-tested via `test:sdk`; the worklet is a thin shell over it) and the
+  `@aliran/react-native` `<AliranVideo>` binding — dogfooded by the app. (An early
+  hybrid CDN↔P2P failover engine from this track is now internal test-harness
+  infrastructure only — **redirect channels** are the product CDN path, and P2P
+  channels have no CDN failover by design)
 - ✅ **Redirect channels (S23)**: a CDN-link channel class in the catalog
   (`redirect: true` + https `url` set in the admin panel) — viewers play the URL
   directly instead of a P2P feed; P2P channels untouched, url edits reach viewers on

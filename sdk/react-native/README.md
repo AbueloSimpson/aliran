@@ -2,7 +2,8 @@
 
 Drop-in React Native binding for the Aliran P2P player: hosts the engine in a Bare
 worklet (`react-native-bare-kit`) and renders live HLS with `react-native-video` —
-including the hybrid CDN↔P2P policy with automatic fallback and return.
+P2P channels and **redirect channels** (catalog entries that play an operator's
+CDN/HLS URL directly) both flow through the same `<AliranVideo>` surface.
 
 ```tsx
 import { AliranBackend, AliranVideo } from '@aliran/react-native'
@@ -11,7 +12,6 @@ import bundleBase64 from './backend/app.bundle.js' // your bare-pack'd engine bu
 const backend = new AliranBackend()
 backend.start(bundleBase64, {
   panelPubKey: SERVICE.panelPubKey,
-  hybrid: { mode: 'hybrid', cdnUrl: 'https://cdn.example.com/{streamId}/index.m3u8' },
   prewarm: 12,       // warm the first N channels' feeds at login (fast first zap)
   zapPrefetch: false // keep CH+/CH- neighbors' newest segment warm while playing —
                      // OFF by default: costs standing bandwidth (see sdk/README.md)
@@ -32,8 +32,6 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
   streamId="news"
   onPeers={(n) => setPeers(n)}
   onTune={(e) => setTuning(e.phase === 'playing' ? null : e)} // drive your tuning UI from this
-  onFallback={({ reason }) => console.log('now on CDN:', reason)}
-  onSourceChanged={({ source }) => console.log('back on', source)}
   onError={setError}
 />
 ```
@@ -43,10 +41,12 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
   `playRaw()`, `reconnect()` (tear down the active feed's swarm connections and dial
   fresh — the wedged-transport escalation), `onMessage()`, with `streams` / `port` /
   `url` / `source` cached for screens that mount after the one-shot replies.
-- **`<AliranVideo>`** — chrome-free video surface: plays the ACTIVE source URL,
-  auto-retries while the P2P live edge replicates, switches sources on
-  `fallback` / `source-changed`, and remounts on `feed-changed` (the broadcaster
-  rotated the watched channel's feed — reload to flush the stale playlist). It also
+- **`<AliranVideo>`** — chrome-free video surface: plays the ACTIVE source URL (a
+  localhost P2P URL, or a redirect channel's remote URL passed through verbatim),
+  auto-retries while the P2P live edge replicates, and remounts on `feed-changed`
+  (the broadcaster rotated the watched channel's feed — reload to flush the stale
+  playlist). (`onFallback`/`onSourceChanged` exist for the engine's internal hybrid
+  test mode — production never configures it.) It also
   self-heals a **frozen live edge**: live HLS windows are short, so a network blip
   longer than the window slides it past the playhead with *no* error event — once the
   playhead sits still for `stallTimeoutMs` (default 12 s) while playing, the component

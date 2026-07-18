@@ -79,9 +79,10 @@ In likelihood order:
   the replica no longer counts as tuned) and tears the wedged connections down on its
   second expiry (`feed:reconnect`) so the swarm dials fresh; `test:sdk`'s
   wedged-connection section reproduces the exact signature with a paused socket.
-- With the **hybrid CDN↔P2P** policy configured, this case instead triggers a
-  `fallback` to the CDN URL (and auto-returns later) — see the
-  [player SDK README](https://github.com/AbueloSimpson/aliran/tree/main/sdk).
+- A **redirect channel** never hits this failure class at all — there is no P2P feed
+  behind it; the host player fetches the operator's URL directly and owns its errors.
+  (P2P channels have no CDN failover by design — the self-heal ladder above is their
+  recovery story.)
 
 ## Video freezes while everything looks healthy (clock ticks, peers connected)
 
