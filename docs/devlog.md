@@ -1143,3 +1143,51 @@ the fallback already spent.
   Test O covers validation, defaulting, class exclusivity, register-preserve and
   purge. Docs: `docs/content-management.md` + SDK README sections.
 
+
+### Remote channel sources — provider JSON feeds as categories (S27, verified)
+- **The idea**: a provider publishes a prepared channel list (id/name/logo/https
+  HLS url per entry — e.g. a GitHub-raw `anime-es.json` refreshed daily); the
+  operator registers it once as a **source** with a rail label ("Anime") and the
+  panel keeps a **category of redirect channels** in sync with it. P2P channels
+  tagged with the same category share the rail — category was already ordinary
+  catalog metadata end-to-end, so the whole feature is panel-side and needs **zero
+  SDK/app changes**.
+- **Engine** (`panel/src/sources.js`): registry in `DATA_DIR/sources.json`
+  (nothing secret); per-source scheduled pull (daily default, hourly due-check
+  tick, boot catch-up, single-flight, manual "Sync now") with ETag revalidation, a
+  streaming-enforced byte cap and an entry cap; entries validated as **pure
+  data** with the exact admin-input validators (https-only playback url — entry
+  skipped otherwise; art rules — bad logo degrades to no art; id charset), then
+  diffed against the catalog: create / update-only-if-changed / **delete when the
+  entry left the feed** (operator decision — full purge, grants included).
+  Unchanged feed or 304 ⇒ **zero Hyperbee appends**. Ownership is explicit:
+  imported records are stamped `source:<name>` and a sync can only touch records
+  carrying its name — a malicious feed cannot collide into manual channels or
+  another source (conflicts are skipped + reported). Fetch failures keep the last
+  good state and surface `lastError` in the dashboard.
+- **Grants**: `autoGrant` (default on) seals every imported channel to **every**
+  user, reconciled on every sync (304s included) so accounts created between pulls
+  converge, plus an immediate grant pass at user creation (admin API + CLI). New
+  channels reach devices at their next login, the known wrapped-key behavior.
+- **EPG**: the feed carries a full-day schedule per channel; it deliberately stays
+  **out** of the append-only replicated bee (57 KB/day/category, forever, on every
+  client). Imported records instead carry `epgUrl`/`epgId` pointers so a client
+  can fetch the schedule over https on demand — planned client follow-up, same
+  public-https stance as remote art and redirect urls.
+- **Surface**: `add-source` / `list-sources` / `set-source` / `sync-source` /
+  `remove-source [--keep-channels]` (registry verbs are file-only and safe beside
+  a running panel); `/api/sources` CRUD + `/sync`; dashboard **Sources** tab (add
+  auto-syncs, per-row sync now / edit / pause / remove with a keep-channels
+  detach option, last-report and error inline) and a ⇣ source chip on imported
+  stream cards. Removing a source purges its channels; detaching strips the
+  stamp and leaves them as manual redirect channels.
+- **Verification**: new `test:sources` e2e (in-process panel + loopback feed
+  server — deterministic, added to the REQUIRED core CI lane) covers validation,
+  first import (mapping/skips/conflict/grants), 304-and-unchanged frugality
+  (bee version pinned), mutation (update/remove/add + curation surviving), the
+  create-user hook, autoGrant toggle + reconcile, caps, oversized/unreachable
+  feeds failing safe, the scheduler self-syncing a never-synced source, and both
+  removal modes. `test:core` + full `test:admin-api` (A–P) stay green. Live
+  browser check against the **real** provider feed: 10 anime channels imported
+  through the dashboard, real GitHub ETag answering the second sync with
+  "not modified", stream cards showing LIVE / ⇢ REDIRECT / ⇣ anime / Anime chips.

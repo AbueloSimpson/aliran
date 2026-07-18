@@ -39,6 +39,10 @@ jobs:
         run: npm run test:args
       - name: Ephemeral feed buffer / rolling window (test:retention)
         run: npm run test:retention
+      # Loopback-only HTTP (in-process panel + local feed server) — deterministic,
+      # no DHT, so it belongs in the required lane.
+      - name: Remote channel sources (test:sources)
+        run: npm run test:sources
 
   docker-build:
     name: docker images build (best effort, non-blocking)

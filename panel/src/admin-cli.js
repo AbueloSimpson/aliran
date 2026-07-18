@@ -15,6 +15,7 @@ import { config } from './config.js'
 import { initKeys, openKeys } from './keys.js'
 import { openStore } from './store.js'
 import * as ops from './ops.js'
+import * as sources from './sources.js'
 
 function parseArgs (argv) {
   const pos = []; const opts = {}
@@ -126,6 +127,49 @@ async function main () {
     return
   }
 
+  // Remote channel sources (S27). Registry edits touch only DATA_DIR/sources.json —
+  // no store, safe beside a running panel (which picks changes up on its next tick).
+  // sync-source / remove-source need the store: run them with the panel STOPPED, or
+  // use the admin API / dashboard against the live panel instead.
+  if (cmd === 'add-source') {
+    const [name, url] = pos; if (!name || !url || !opts.category) return usage()
+    const s = sources.addSource({ config, keys, dataDir: config.dataDir }, name, {
+      url,
+      category: str(opts.category),
+      prefix: str(opts.prefix),
+      intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
+      autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
+      enabled: opts.disabled === true ? false : undefined
+    })
+    console.log(`Added source "${name}" → category "${s.category}" (prefix "${s.prefix}", every ${Math.round(s.intervalMs / 3600000 * 10) / 10}h, autoGrant ${s.autoGrant}).`)
+    console.log('The running panel syncs it on its next tick; for an immediate pull use the dashboard "Sync now" or sync-source (panel stopped).')
+    return
+  }
+  if (cmd === 'list-sources') {
+    const all = sources.loadSources(config.dataDir)
+    if (Object.keys(all).length === 0) console.log('(no sources)')
+    for (const [name, s] of Object.entries(all)) {
+      console.log(name, '->', JSON.stringify({
+        url: s.url, category: s.category, prefix: s.prefix, enabled: s.enabled !== false, autoGrant: s.autoGrant !== false,
+        lastSync: s.lastSync ? new Date(s.lastSync).toISOString() : null, lastError: s.lastError || null, lastReport: s.lastReport || null
+      }))
+    }
+    return
+  }
+  if (cmd === 'set-source') {
+    const name = pos[0]; if (!name) return usage()
+    const s = sources.setSource({ config, keys, dataDir: config.dataDir }, name, {
+      url: str(opts.url),
+      category: str(opts.category),
+      prefix: str(opts.prefix),
+      intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
+      autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
+      enabled: opts.enabled != null ? opts.enabled : undefined
+    })
+    console.log(`Updated source "${name}" (category "${s.category}", enabled ${s.enabled !== false}). Changes apply on its next sync.`)
+    return
+  }
+
   const { store, db, assets } = await openStore(config.dataDir, keys)
   const ctx = { config, keys, db, assets, dataDir: config.dataDir }
   const done = async () => { await store.close() }
@@ -134,7 +178,8 @@ async function main () {
     case 'create-user': {
       const username = pos[0]; if (!username) return usage(await done())
       await ops.createUser(ctx, username, await needPassword(username, opts))
-      console.log(`Created user "${username}".`)
+      const autoGranted = await sources.grantSourcesToUser(ctx, username).catch(() => 0) // best-effort (S27); next sync reconciles
+      console.log(`Created user "${username}".` + (autoGranted ? ` Auto-granted ${autoGranted} source channel(s).` : ''))
       break
     }
 
@@ -254,6 +299,26 @@ async function main () {
       break
     }
 
+    case 'sync-source': {
+      const name = pos[0]; if (!name) return usage(await done())
+      const r = await sources.syncSource(ctx, name)
+      console.log(`Synced source "${name}" in ${r.ms}ms: +${r.added} added, ~${r.updated} updated, -${r.removed} removed` +
+        (r.notModified ? ' (feed not modified)' : '') + `, ${r.granted} grant(s) sealed.`)
+      if (r.conflicts?.length) console.log('  conflicts (ids owned by manual channels/another source, skipped):', r.conflicts.join(', '))
+      if (r.skippedCount) console.log(`  skipped ${r.skippedCount} invalid feed entr${r.skippedCount === 1 ? 'y' : 'ies'}:`, r.skipped.map((s) => `${s.id} (${s.reason})`).join(', '))
+      if (r.truncated) console.log(`  truncated ${r.truncated} entr${r.truncated === 1 ? 'y' : 'ies'} beyond the channel cap`)
+      break
+    }
+
+    case 'remove-source': {
+      const name = pos[0]; if (!name) return usage(await done())
+      const r = await sources.removeSource(ctx, name, { keepChannels: opts['keep-channels'] === true })
+      console.log(`Removed source "${name}": ` + (r.detached
+        ? `${r.detached} channel(s) detached (they live on as manual redirect channels).`
+        : `${r.removed} channel(s) purged (catalog + keys + grants + art).`))
+      break
+    }
+
     case 'list': {
       let after = ''
       do {
@@ -304,6 +369,12 @@ function usage () {
   set-publisher-scopes <name> <globs>   Replace a publisher's channel scopes (comma-separated)
   set-publisher-status <name> <active|revoked>   Revoke/re-activate a publisher's key
   remove-publisher <name>               Hard-delete a publisher (revoke keeps the audit trail)
+  add-source <name> <url> --category <label> [--prefix p.] [--interval-hours N] [--auto-grant false] [--disabled]
+                                        Register a remote channel feed (provider JSON) as a category
+  list-sources                          List channel sources + last sync state
+  set-source <name> [--url --category --prefix --interval-hours --auto-grant --enabled true|false]
+  sync-source <name>                    Pull + apply the feed NOW (panel stopped — or use the dashboard)
+  remove-source <name> [--keep-channels]  Remove a source; purges its channels unless --keep-channels
 `)
 }
 

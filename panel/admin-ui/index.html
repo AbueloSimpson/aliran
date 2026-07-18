@@ -39,6 +39,7 @@
     <button class="tab" data-tab="users">Users</button>
     <button class="tab" data-tab="admins">Admins</button>
     <button class="tab" data-tab="publishers">Publishers</button>
+    <button class="tab" data-tab="sources">Sources</button>
     <button class="tab" data-tab="overview">Overview</button>
   </nav>
 
@@ -118,6 +119,29 @@
         here instead of re-keying everyone. The secret is shown <b>once</b> at enrollment; put it in that site's
         broadcaster <span class="mono">.env</span> as <span class="mono">PUBLISHER_KEY</span> together with
         <span class="mono">PUBLISHER_NAME</span>. Registry lives in the panel-private <span class="mono">secrets/publishers.json</span>.</p>
+    </section>
+
+    <section id="sources-section" hidden>
+      <form id="add-source-form" class="card row-form">
+        <strong>Add source</strong>
+        <input id="nsrc-name" placeholder="name (e.g. anime)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+        <input id="nsrc-url" placeholder="feed URL (https://…/channels.json)" required>
+        <input id="nsrc-category" placeholder="category label (e.g. Anime)" required>
+        <button class="btn primary">Add</button>
+      </form>
+      <div class="card table-card">
+        <table id="sources-table">
+          <thead><tr>
+            <th>Source</th><th>Category</th><th>Channels</th><th>Every</th><th>Last sync</th><th>State</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted footnote">A source pulls a provider-prepared JSON of channels on its interval and materializes it as a
+        <b>category of redirect channels</b> — viewers play each entry's URL, no P2P feed. The feed is data only: entries are
+        validated like admin input, and a source can never touch manual channels or another source's ids. Channels that
+        <b>leave the feed are removed</b> (grants included). P2P channels tagged with the same category share the rail.
+        Registry lives in <span class="mono">DATA_DIR/sources.json</span>.</p>
     </section>
 
     <section id="overview-section" hidden>

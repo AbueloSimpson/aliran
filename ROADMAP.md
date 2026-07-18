@@ -105,6 +105,14 @@ following only the docs.
   channels, `origin` attribution in the catalog + activity feed, one-click
   revoke/re-activate. Migration-safe: legacy shared-key registrations keep working
   until the operator sets `LEGACY_PUBLISHER=0`
+- ✅ **Remote channel sources**: a provider-prepared JSON feed pulled on a schedule
+  (daily by default, ETag-aware) and materialized as a **category of redirect
+  channels** — validated as pure data, ownership-stamped so a feed can only touch
+  its own namespace, removed-from-feed = removed-from-catalog, auto-granted to
+  every user (reconciled each sync + at user creation), managed via
+  `add-source`/`/api/sources`/the dashboard Sources tab; EPG deliberately kept out
+  of the replicated catalog (per-record `epgUrl`/`epgId` pointers for on-demand
+  client fetch instead)
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
 - ⬜ Concurrency limits, HDCP/output protection, rental windows, blackout dates
 

@@ -24,6 +24,10 @@
 | `list-publishers` / `remove-publisher <name>` | List enrollments / hard-delete one (revoking keeps the audit trail) |
 | `set-publisher-scopes <name> <globs>` | Replace a site's channel scopes (comma-separated; live from its next register) |
 | `set-publisher-status <name> <active\|revoked>` | Revoke / re-accept a site's key (status flip — no re-keying of other sites) |
+| `add-source <name> <url> --category <label> [--prefix --interval-hours --auto-grant false --disabled]` | Register a remote channel feed (provider JSON) imported as a category of redirect channels |
+| `list-sources` / `set-source <name> [--url --category …]` | List sources + sync state / edit one (registry-only — safe beside a running panel) |
+| `sync-source <name>` | Pull + diff + grant **now** (needs the store: panel stopped — on a live panel use the dashboard/API) |
+| `remove-source <name> [--keep-channels]` | Remove a source; purges its channels unless `--keep-channels` detaches them |
 
 > **Stream deletion caveat:** the purge removes everything the panel can remove, but a
 > client that already unsealed the stream key may have it cached — full revocation of
@@ -43,7 +47,10 @@ with preview, **permanent purge** behind a type-the-id confirmation), plus an
 **Admins** tab (add/remove/rotate passwords — rotating your own signs you out), a
 **Publishers** tab (enroll broadcaster sites with their own keys + channel scopes,
 edit scopes live, revoke/re-activate, remove — the site secret is shown once at
-enrollment) and an
+enrollment), a
+**Sources** tab (register provider channel feeds imported as categories of redirect
+channels — add auto-syncs, per-row sync now / edit / pause / remove-with-detach-option,
+last-sync report and error surfaced inline) and an
 **Overview** tab (uptime/memory/peers/storage chips + the live activity feed, polled
 every 10 s while open). Destructive flows state their caveats inline (key-rotation
 for purge, offline-token validity for user delete, cooperative semantics for device
@@ -77,6 +84,10 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `GET/POST /api/publishers` · `DELETE /api/publishers/:name` | Enrolled broadcaster identities: list / enroll (`{name, scopes?}` — returns the site `secretKey` **once**) / hard-delete |
 | `POST /api/publishers/:name/status` `{status}` | `active` \| `revoked` — a revoked site's registrations bounce until re-activated |
 | `POST /api/publishers/:name/scopes` `{scopes}` | Replace the site's streamId-glob scopes (applies from its next register) |
+| `GET/POST /api/sources` | Remote channel sources: list (+ owned-channel counts, last sync/error) / add (`{name,url,category,prefix?,autoGrant?,enabled?,intervalMs?}`) |
+| `PATCH /api/sources/:name` | Edit any source field (`enabled:false` pauses the schedule; url change resets the ETag) |
+| `DELETE /api/sources/:name` | Remove a source — **purges its channels** (`?keepChannels=1` detaches them as manual redirect channels instead) |
+| `POST /api/sources/:name/sync` | Pull + diff + grant now → the sync report (`added/updated/removed/skipped/conflicts/granted/notModified`) |
 
 ## Broadcaster control API + UI (`CONTROL_ENABLED=1`)
 
@@ -157,6 +168,9 @@ are preserved.
   "redirect": false,           // redirect channel class — see below
   "url": null,                 // redirect channels: https HLS the client plays directly
   "origin": null,              // enrolled publisher that made the LAST register (audit), or null
+  "source": "anime",           // imported by this channel source (S27), absent on manual channels
+  "epgUrl": "https://…",       // source imports: the feed URL carrying this channel's schedule
+  "epgId": "plutotv.es.629…",  // source imports: this channel's id INSIDE that feed
   "drm": null,                 // or { scheme, licenseServerRef }
   "status": "live"
 }
@@ -168,6 +182,13 @@ are preserved.
 > it via the `url` field on `POST`/`PATCH /api/streams` or the dashboard's "Redirect
 > URL" input (the CLI does not expose it); a broadcaster re-register never erases the
 > class. Details: [content-management.md](content-management.md).
+
+> **`source` / `epgUrl` / `epgId`** (S27): stamped on records imported by a remote
+> channel source. `source` is the ownership mark — a sync may only touch records
+> carrying **its** name, and detaching/removing the source strips or purges them.
+> The epg fields point back to the feed so a client can fetch the schedule over
+> https on demand (clients currently ignore them). Registry (nothing secret) lives
+> in `DATA_DIR/sources.json`; see [content-management.md](content-management.md).
 
 > The stream's content **encryption key is not in the catalog**. It is kept in a
 > panel-private, non-replicated secrets file (`DATA_DIR/secrets/streams.json`) and

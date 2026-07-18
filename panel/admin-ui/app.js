@@ -15,6 +15,7 @@ let userPrefix = ''
 let streams = []
 let admins = []
 let publishers = []
+let channelSources = []
 let obsTimer = null // 10 s observability poll, runs only while the Overview tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
 
@@ -76,7 +77,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'admins', 'publishers', 'overview']
+const TAB_NAMES = ['streams', 'users', 'admins', 'publishers', 'sources', 'overview']
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
@@ -89,10 +90,11 @@ for (const tab of document.querySelectorAll('.tab')) {
 // ---------------------------------------------------------------- refresh + render
 
 async function refresh () {
-  const [status, s, a, p] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers')])
+  const [status, s, a, p, src] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers'), api('GET', '/api/sources')])
   streams = s
   admins = a
   publishers = p
+  channelSources = src
   $('#status-chips').innerHTML =
     `<span class="chip"><b>${status.users}</b> users</span>` +
     `<span class="chip"><b>${status.streams}</b> streams</span>` +
@@ -102,6 +104,7 @@ async function refresh () {
   renderStreams()
   renderAdmins()
   renderPublishers()
+  renderSources()
   await loadUsers(true) // back to page 1, keeping the current search prefix
   if (!$('#overview-section').hidden) await loadObservability().catch(() => {})
 }
@@ -189,6 +192,7 @@ function renderStreams () {
           <span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>
           ${s.redirect ? '<span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢ REDIRECT</span>' : ''}
           ${s.origin ? `<span class="chip" title="registered by enrolled publisher &quot;${esc(s.origin)}&quot; (last register)">⇡ ${esc(s.origin)}</span>` : ''}
+          ${s.source ? `<span class="chip" title="imported from channel source &quot;${esc(s.source)}&quot; — the feed overwrites mapped fields on every sync">⇣ ${esc(s.source)}</span>` : ''}
           ${s.featured ? '<span class="badge featured">★ FEATURED</span>' : ''}
           ${(s.category || []).map((c) => `<span class="chip">${esc(c)}</span>`).join('')}
         </div>
@@ -263,6 +267,44 @@ function renderPublishers () {
   }
   if (publishers.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" class="muted">no publishers enrolled — broadcasters are using the shared legacy key. Enroll each site above to give it its own scoped key.</td></tr>'
+  }
+}
+
+// Remote channel sources (S27): provider feeds materialized as redirect-channel categories.
+function renderSources () {
+  const tbody = $('#sources-table tbody')
+  tbody.innerHTML = ''
+  for (const s of channelSources) {
+    const disabled = s.enabled === false
+    const rep = s.lastReport
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td><b>${esc(s.name)}</b><br><span class="mono muted" title="${esc(s.url)}">${esc(s.url.length > 46 ? s.url.slice(0, 46) + '…' : s.url)}</span></td>
+      <td><span class="chip">${esc(s.category)}</span></td>
+      <td>${s.channels}</td>
+      <td class="muted">${Math.round((s.intervalMs || 86400000) / 360000) / 10}h</td>
+      <td class="muted">${s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never'}${rep
+        ? `<br><span class="mono">+${rep.added} ~${rep.updated} −${rep.removed}${rep.notModified ? ' · not modified' : ''}${rep.skipped ? ` · ${rep.skipped} skipped` : ''}${rep.conflicts ? ` · ${rep.conflicts} conflicts` : ''}</span>`
+        : ''}</td>
+      <td>${s.lastError
+        ? `<span class="badge disabled" title="${esc(s.lastError)}">ERROR</span> `
+        : `<span class="badge ${disabled ? 'disabled' : 'active'}">${disabled ? 'paused' : 'enabled'}</span> `}${s.autoGrant === false ? '<span class="chip" title="imported channels are NOT auto-granted — grant per user by hand">no auto-grant</span>' : ''}</td>
+      <td><div class="row-actions">
+        <button class="btn small" data-act="sync">sync now</button>
+        <button class="btn small" data-act="edit">edit</button>
+        <button class="btn small" data-act="toggle">${disabled ? 'enable' : 'pause'}</button>
+        <button class="btn small danger" data-act="remove">remove</button>
+      </div></td>`
+    tr.querySelector('[data-act=sync]').addEventListener('click', () => syncSourceNow(s.name))
+    tr.querySelector('[data-act=edit]').addEventListener('click', () => editSource(s))
+    tr.querySelector('[data-act=toggle]').addEventListener('click', () => act(
+      () => api('PATCH', `/api/sources/${s.name}`, { enabled: disabled }),
+      `source "${s.name}" ${disabled ? 're-enabled' : 'paused (its channels stay; scheduled syncs stop)'}`))
+    tr.querySelector('[data-act=remove]').addEventListener('click', () => removeSourceEntry(s))
+    tbody.appendChild(tr)
+  }
+  if (channelSources.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">no sources yet — add a provider feed above and its channels appear as a category</td></tr>'
   }
 }
 
@@ -586,6 +628,63 @@ async function removePublisherEntry (name) {
   })
   if (!v) return
   act(() => api('DELETE', `/api/publishers/${name}`), `removed publisher "${name}"`)
+}
+
+// ---------------------------------------------------------------- source actions
+
+$('#add-source-form').addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const name = $('#nsrc-name').value.trim()
+  const body = { name, url: $('#nsrc-url').value.trim(), category: $('#nsrc-category').value.trim() }
+  try {
+    await api('POST', '/api/sources', body)
+    e.target.reset()
+    toast(`source "${name}" added — pulling the feed…`)
+    await syncSourceNow(name)
+  } catch (err) { toast(err.message, true) }
+})
+
+async function syncSourceNow (name) {
+  toast(`syncing "${name}"…`)
+  try {
+    const r = await api('POST', `/api/sources/${name}/sync`)
+    toast(r.notModified
+      ? `"${name}": feed not modified · ${r.granted} grant(s) sealed`
+      : `"${name}": +${r.added} added, ~${r.updated} updated, −${r.removed} removed, ${r.granted} grant(s) sealed` +
+        (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : ''))
+    await refresh()
+  } catch (err) { toast(err.message, true); await refresh().catch(() => {}) }
+}
+
+async function editSource (s) {
+  const v = await dialog(`Edit source ${s.name}`, [
+    { name: 'url', label: 'Feed URL (https://)', value: s.url },
+    { name: 'category', label: 'Category label (the rail viewers see)', value: s.category },
+    { name: 'prefix', label: 'Channel id prefix (changing it re-creates every entry under new ids)', value: s.prefix },
+    { name: 'hours', label: 'Sync every (hours)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 360000) / 10 },
+    { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false }
+  ], { body: '<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category) on every sync — manual edits to those don\'t stick on imported channels.</p>' })
+  if (!v) return
+  act(() => api('PATCH', `/api/sources/${s.name}`, {
+    url: v.url.trim(),
+    category: v.category.trim(),
+    prefix: v.prefix.trim(),
+    intervalMs: Math.round(parseFloat(v.hours) * 3600000),
+    autoGrant: v.autoGrant
+  }), `source "${s.name}" updated — applies on its next sync`)
+}
+
+async function removeSourceEntry (s) {
+  const v = await dialog(`Remove source ${s.name}?`, [
+    { name: 'keep', label: `keep its ${s.channels} channel(s) as manual redirect channels (detach instead of purge)`, type: 'checkbox', value: false }
+  ], {
+    okLabel: 'Remove', danger: true,
+    body: `<p class="warn-text">Without "keep", its <b>${s.channels} channel(s) are purged</b> — catalog records, keys, every user's grants, and art.</p>
+           <p class="muted">Re-adding the source later re-imports the feed from scratch. Detached channels stop syncing and behave like hand-made redirect channels.</p>`
+  })
+  if (!v) return
+  act(() => api('DELETE', `/api/sources/${s.name}` + (v.keep ? '?keepChannels=1' : '')),
+    v.keep ? `source "${s.name}" removed — channels detached` : `source "${s.name}" removed — channels purged`)
 }
 
 // ---------------------------------------------------------------- stream actions

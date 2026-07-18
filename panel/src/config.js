@@ -51,6 +51,15 @@ export const config = {
     port: int(process.env.ADMIN_PORT, 3210),
     sessionTtlHours: int(process.env.ADMIN_SESSION_TTL_HOURS, 12)
   },
+  // Remote channel sources (S27): provider JSON feeds pulled on a schedule.
+  sources: {
+    tickMs: int(process.env.SOURCES_TICK_MS, 3600000), // registry scan cadence (due-check, not fetch)
+    bootDelayMs: int(process.env.SOURCES_BOOT_DELAY_MS, 15000),
+    defaultIntervalMs: int(process.env.SOURCES_SYNC_INTERVAL_MS, 86400000), // daily pull per source
+    fetchTimeoutMs: int(process.env.SOURCES_FETCH_TIMEOUT_MS, 30000),
+    maxBytes: int(process.env.SOURCES_MAX_BYTES, 5242880),
+    maxChannels: int(process.env.SOURCES_MAX_CHANNELS, 500)
+  },
   geoipDb: process.env.GEOIP_DB || null,
   drm: process.env.DRM_PROVIDER
     ? {

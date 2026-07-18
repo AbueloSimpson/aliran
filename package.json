@@ -35,6 +35,7 @@
     "test:corrupt": "node tools/e2e-corrupt-test.mjs",
     "test:sdk": "node tools/e2e-sdk-test.mjs",
     "test:admin-api": "node tools/e2e-admin-api-test.mjs",
+    "test:sources": "node tools/e2e-sources-test.mjs",
     "test:broadcaster-api": "node tools/e2e-broadcaster-api-test.mjs",
     "test:login-flood": "node tools/e2e-login-flood-test.mjs",
     "test:panel-login-flood": "node tools/e2e-panel-login-flood-test.mjs",

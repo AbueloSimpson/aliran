@@ -72,6 +72,67 @@ PATCH /api/streams/promo  {"url":""}                                            
   **URL itself is public**: it rides the replicated catalog exactly like remote art
   URLs. Use your CDN's tokenized/signed URLs if the link must not be shareable.
 
+## Remote channel sources (provider feeds)
+
+A **source** pulls a provider-prepared JSON of channels from a URL on a schedule and
+materializes it as a **category of [redirect channels](#redirect-channels-cdn-link)** —
+one admin action turns a curated list (say, an anime lineup) into a rail of playable
+channels, kept in sync daily. P2P channels tagged with the same `category` share the
+rail; the category field is ordinary catalog metadata either way.
+
+```bash
+# dashboard: Sources tab → Add (name, feed URL, category label) — the add auto-syncs
+POST  /api/sources               {"name":"anime","url":"https://provider.example/anime.json","category":"Anime"}
+POST  /api/sources/anime/sync    # pull + diff + grant NOW (also: dashboard "Sync now")
+PATCH /api/sources/anime         {"intervalMs": 43200000}         # any field; enabled:false pauses the schedule
+DELETE /api/sources/anime        # purges its channels; ?keepChannels=1 detaches them instead
+```
+
+**Feed format** — `{"channels": [...]}` (or a bare array), one object per channel:
+
+```jsonc
+{ "id": "plutotv.es.629a06…",              // → stream id "<prefix><id>" (prefix defaults to "<source>.")
+  "name": "Detective Conan",               // → title
+  "logo": "https://…/logo.png",            // → logo art (https; invalid/http logos degrade to no art)
+  "url":  "https://…/index.m3u8",          // → the redirect playback URL (https required — entry skipped otherwise)
+  "provider": "plutotv",                   // → description "via plutotv" (optional)
+  "epg": [ { "title": "…", "start": "…", "stop": "…" } ] }   // NOT imported — see EPG below
+```
+
+Feed position becomes the curation `order`; the **category label is yours**, set on the
+source — the feed's own category strings are ignored (a provider never names your rails).
+
+**Sync policy:**
+
+- **The feed wins on the fields it maps** (title, description, url, logo, order,
+  category) — manual edits to those on an imported channel are overwritten on the next
+  sync. Curation fields it does not map (`featured`, an explicit `isLive` flip) stick.
+- **A channel that leaves the feed is removed** — full purge, grants included.
+  Removing the whole source purges everything it owns, unless you detach with
+  *keep channels*.
+- **Auto-grant** (default on): every user is granted every imported channel, reconciled
+  on **every** sync — and immediately at user creation — so accounts created between
+  pulls converge. As with any grant, a device picks new channels up at its next login
+  (app restart). Turn it off per source to gate the category manually.
+- Syncs are frugal: an unchanged feed (or an HTTP 304 off the stored ETag) writes
+  **nothing** to the replicated catalog.
+- A failed pull (network, oversized, invalid JSON) keeps the **last good state** and
+  surfaces the error in the Sources tab; the next tick retries.
+
+**Trust boundary:** the feed is third-party **data, never instructions**. Every entry
+passes the same validators as admin input (https playback URL, art rules, id charset),
+entry count and byte size are capped (`SOURCES_MAX_CHANNELS` / `SOURCES_MAX_BYTES`),
+and ownership is explicit — imported records carry `source: <name>`, and a sync can
+only create/update/delete records stamped with **its** name. A colliding id that
+belongs to a manual channel or another source is skipped and reported as a conflict.
+
+**EPG:** provider feeds often carry a full-day schedule per channel. It is deliberately
+**not** imported into the catalog — the replicated Hyperbee is append-only, so a day of
+schedule per category would grow every client's store forever. Instead each imported
+record carries `epgUrl`/`epgId` pointers back to the feed, so a client can fetch the
+schedule over https on demand (planned client feature; same public-https stance as
+remote art and redirect URLs).
+
 ## Channel ingest & transcode
 
 How a channel's media gets IN (test / file / pull URL / RTMP / SRT / UDP-TS push)

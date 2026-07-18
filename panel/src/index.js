@@ -20,6 +20,7 @@ import { startAdminServer } from './admin-server.js'
 import { loadAdmins } from './ops.js'
 import { makeRing } from './activity.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
+import { loadSources, makeSourcesScheduler } from './sources.js'
 
 export async function startPanel () {
   const keys = openKeys(config.dataDir)
@@ -67,9 +68,16 @@ export async function startPanel () {
     console.log(`Admin dashboard + API on http://${admin.host}:${admin.port}`)
   }
 
-  const shutdown = async () => { if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
+  // Remote channel sources (S27): pull provider JSON feeds on their intervals and
+  // materialize them as redirect-channel categories. Runs in-process for the same
+  // single-writer reason as the admin API.
+  const sourcesSched = makeSourcesScheduler({ config, keys, db, assets, dataDir: config.dataDir, activity })
+  const sourceCount = Object.keys(loadSources(config.dataDir)).length
+  if (sourceCount > 0) console.log(`Channel sources: ${sourceCount} registered — due feeds sync ~${Math.round(config.sources.bootDelayMs / 1000)}s after boot, then every tick.`)
+
+  const shutdown = async () => { sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys, admin, enrich }
+  return { swarm, store, db, keys, admin, enrich, sourcesSched }
 }
 
 // Run directly (not when imported by a test).

@@ -21,6 +21,12 @@ Copy each component's `.env.example` to `.env`.
 | `ADMIN_HOST` | `127.0.0.1` | Admin API bind address (use TLS in front if not loopback) |
 | `ADMIN_PORT` | `3210` | Admin API port |
 | `ADMIN_SESSION_TTL_HOURS` | `12` | Admin session token lifetime |
+| `SOURCES_SYNC_INTERVAL_MS` | `86400000` | Default per-source pull interval (daily); override per source via `intervalMs` |
+| `SOURCES_TICK_MS` | `3600000` | How often the scheduler checks which sources are due (a check, not a fetch) |
+| `SOURCES_BOOT_DELAY_MS` | `15000` | Delay before the first due-check after panel boot |
+| `SOURCES_FETCH_TIMEOUT_MS` | `30000` | Per-pull HTTP timeout |
+| `SOURCES_MAX_BYTES` | `5242880` | Feed size cap (streaming-enforced) |
+| `SOURCES_MAX_CHANNELS` | `500` | Entries imported per source beyond which the feed is truncated |
 | `BOOTSTRAP` | *(empty)* | Custom DHT bootstrap nodes (optional) |
 | `GEOIP_DB` | *(empty)* | Path to MaxMind GeoLite2 mmdb (enables geo) |
 | `DRM_PROVIDER` | *(empty)* | `keyos` \| `ezdrm` \| `axinom` … (enables DRM) |

@@ -46,6 +46,11 @@
 //   DELETE /api/publishers/:name             hard delete (prefer revoke — keeps the audit trail)
 //   POST   /api/publishers/:name/status      {status:'active'|'revoked'}
 //   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
+//   GET    /api/sources                      remote channel sources (S27) + owned-channel counts
+//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?}
+//   PATCH  /api/sources/:name                edit any of the above fields
+//   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
+//   POST   /api/sources/:name/sync           pull + diff + grant NOW; returns the sync report
 //
 // Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
 // directory, GET only — see serveStatic for the traversal guard).
@@ -57,6 +62,7 @@ import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
 import { makeThrottle } from './rpc.js'
 import * as ops from './ops.js'
+import * as sources from './sources.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'admin-ui')
 
@@ -186,6 +192,39 @@ export function startAdminServer (ctx, opts = {}) {
       }
     }
 
+    // Remote channel sources (S27): provider JSON feeds materialized as
+    // redirect-channel categories. Sync is synchronous (bounded by the fetch
+    // timeout) so the dashboard gets the report back in the same request.
+    if (r1 === 'sources') {
+      if (seg.length === 2) {
+        if (req.method === 'GET') return sendJson(res, 200, await sources.listSources(ctx))
+        if (req.method === 'POST') {
+          const b = await readJson(req)
+          const out = sources.addSource(ctx, b.name, b)
+          act('source-create', { source: b.name, category: out.category })
+          return sendJson(res, 201, out)
+        }
+      }
+      if (seg.length === 3) {
+        if (req.method === 'PATCH') {
+          const out = sources.setSource(ctx, r2, await readJson(req))
+          act('source-update', { source: r2 })
+          return sendJson(res, 200, out)
+        }
+        if (req.method === 'DELETE') {
+          const keep = /^(1|true)$/i.test(url.searchParams.get('keepChannels') || '')
+          const out = await sources.removeSource(ctx, r2, { keepChannels: keep })
+          act('source-remove', { source: r2, removed: out.removed, detached: out.detached })
+          return sendJson(res, 200, out)
+        }
+      }
+      if (seg.length === 4 && r3 === 'sync' && req.method === 'POST') {
+        const out = await sources.syncSource(ctx, r2)
+        act('source-sync', { source: r2, added: out.added, updated: out.updated, removed: out.removed, granted: out.granted })
+        return sendJson(res, 200, out)
+      }
+    }
+
     // Art bytes for the dashboard previews. Authed like everything else — the
     // dashboard fetches with the token and renders blob: URLs.
     if (r1 === 'assets' && req.method === 'GET' && seg.length === 4) {
@@ -206,7 +245,12 @@ export function startAdminServer (ctx, opts = {}) {
         }
         if (req.method === 'POST') {
           const b = await readJson(req)
-          const out = await ops.createUser(ctx, b.username, b.password)
+          let out = await ops.createUser(ctx, b.username, b.password)
+          // Auto-grant source channels immediately (S27) — best-effort: the user
+          // exists either way, and the next source sync reconciles any miss.
+          try {
+            if (await sources.grantSourcesToUser(ctx, b.username) > 0) out = await ops.getUser(ctx, b.username)
+          } catch (err) { console.error('sources auto-grant failed for', b.username + ':', err.message || err) }
           act('user-create', { user: b.username })
           return sendJson(res, 201, out)
         }

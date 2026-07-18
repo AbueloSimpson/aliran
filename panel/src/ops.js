@@ -269,7 +269,7 @@ const META_FIELDS = ['title', 'description', 'feedKey', 'status']
 // https is REQUIRED for remote art — Android blocks cleartext off-loopback, so an
 // http:// poster would render on some clients and silently fail on others.
 // Empty string clears the field.
-function normArt (v, kind) {
+export function normArt (v, kind) {
   const s = String(v).trim()
   if (s === '') return null
   if (s.length > 1024) bad(kind + ' must be at most 1024 characters')
@@ -284,7 +284,7 @@ function normArt (v, kind) {
 // same reason as remote art; deliberately NO file-extension requirement — tokenized
 // CDN URLs carry query strings. Empty string clears (the entry stops being a
 // redirect channel).
-function normRedirectUrl (v) {
+export function normRedirectUrl (v) {
   const s = String(v).trim()
   if (s === '') return null
   if (s.length > 2048) bad('url must be at most 2048 characters')

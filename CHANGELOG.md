@@ -54,6 +54,19 @@ Android phone + Android TV).
   site's next register. Legacy shared-key registrations keep working until
   `LEGACY_PUBLISHER=0`. Broadcaster side: set `PUBLISHER_NAME` beside the enrolled
   `PUBLISHER_KEY`.
+- **Remote channel sources**: pull a provider-prepared channel-list JSON on a
+  schedule and materialize it as a **category of redirect channels**
+  (`add-source` CLI, `/api/sources`, dashboard Sources tab; registry in
+  `DATA_DIR/sources.json`). Feed entries are validated as pure data (https url
+  required per entry, art/id rules, size + count caps), records are
+  ownership-stamped (`source:<name>`) so a feed can only touch its own namespace,
+  the feed wins on mapped fields while curation (`featured`, manual `isLive`)
+  sticks, channels that leave the feed are purged, and `autoGrant` seals every
+  imported channel to every user — reconciled on each sync and at user creation.
+  Unchanged feeds (or ETag 304s) append **nothing** to the replicated catalog. EPG
+  stays out of the bee; imported records carry `epgUrl`/`epgId` pointers for a
+  future on-demand client fetch. P2P channels tagged with the same category share
+  the rail — zero SDK/app changes.
 
 **Broadcaster (`broadcaster/`)**
 - Multi-channel `ChannelManager`: each channel is ingest → ffmpeg → **encrypted
