@@ -21,7 +21,7 @@ import RAM from 'random-access-memory'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
-import { mirrorDirToDrive, reclaimExpiredBlobs, purgeStaleCores, feedTreeBytes } from '../broadcaster/src/hls.js'
+import { mirrorDirToDrive, reclaimExpiredBlobs, purgeStaleCores, feedTreeBytes, isStoreCorruption } from '../broadcaster/src/hls.js'
 
 const log = (...a) => console.log(...a)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -362,6 +362,41 @@ async function scenarioNamespaceGc () {
   fs.rmSync(storeDir, { recursive: true, force: true })
 }
 
+// --- Scenario E: an unclean-exit-truncated store is detected as corruption -----------------
+// A SIGKILL/OOM/power-loss (or a `docker stop` that outran its grace) mid-write truncates a
+// disk feed's core files, so the store can never reopen (EPARTIALREAD "Could not satisfy
+// length"). The broadcaster must RECOGNIZE that as corruption so it can self-heal (rotate to
+// a fresh generation) instead of silently stranding the channel on every boot. This proves
+// isStoreCorruption() catches the REAL truncation error, not just a hand-picked code string.
+async function scenarioCorruptStoreDetected () {
+  const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-retention-e-'))
+  const encryptionKey = crypto.randomBytes(32)
+  const store = new Corestore(storeDir)
+  const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey })
+  await drive.ready()
+  const disc = b4a.toString(drive.discoveryKey, 'hex')
+  for (let i = 0; i < 40; i++) { await drive.put(`/seg${i}.ts`, seg(i)); await drive.put('/index.m3u8', playlist([`seg${i}.ts`])) }
+  await drive.close(); await store.close()
+
+  // Truncate the metadata core's tree file to simulate a write cut off by an unclean exit.
+  const treePath = path.join(storeDir, 'cores', disc.slice(0, 2), disc.slice(2, 4), disc, 'tree')
+  const before = fs.statSync(treePath).size
+  fs.truncateSync(treePath, Math.max(0, Math.floor(before / 3)))
+  log(`  …  truncated metadata tree ${before} -> ${Math.floor(before / 3)} bytes (simulated unclean-exit corruption)`)
+
+  let caught = null
+  const store2 = new Corestore(storeDir)
+  const drive2 = new Hyperdrive(store2.namespace('feed'), { encryptionKey })
+  try { await drive2.ready(); await drive2.getBlobs(); for await (const _ of drive2.list('/')) break } catch (err) { caught = err } // eslint-disable-line no-unused-vars
+  try { await drive2.close() } catch {}
+  try { await store2.close() } catch {}
+  assert.ok(caught, 'reopening the truncated store throws')
+  log(`  …  reopen threw: ${caught.code || ''} ${caught.message}`)
+  assert.ok(isStoreCorruption(caught), `isStoreCorruption() recognizes the truncation error (${caught.code || caught.message})`)
+  log('  ok  a truncated feed store is detected as corruption (broadcaster self-heals to a fresh generation)')
+  fs.rmSync(storeDir, { recursive: true, force: true })
+}
+
 try {
   log('scenario A — RAM, clean rotation')
   await scenarioRamCleanRotation()
@@ -371,7 +406,9 @@ try {
   await scenarioBeeCacheBounded()
   log('scenario D — whole-namespace GC bounds metadata (retired feed generations purged)')
   await scenarioNamespaceGc()
-  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded; retired feed generations purged so metadata stays bounded)')
+  log('scenario E — an unclean-exit-truncated store is detected as corruption (self-heal trigger)')
+  await scenarioCorruptStoreDetected()
+  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded; retired feed generations purged; a truncated store is detected as corruption so the broadcaster self-heals)')
   process.exit(0)
 } catch (err) {
   console.error('ERROR:', err.stack || err.message)

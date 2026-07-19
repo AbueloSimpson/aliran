@@ -160,6 +160,20 @@ source changes) are purged automatically; nothing needs manual cleanup.
 immediately — handy to reclaim a specific channel or to prove the mechanism without waiting
 for a threshold.
 
+!!! note "Unclean shutdown: a corrupt store self-heals"
+    A disk feed's cores are append-only files that must be closed cleanly. If the broadcaster
+    is killed mid-write — SIGKILL, OOM, power loss, or a `docker stop` that outruns its grace
+    period while many channels are closing — a core's oplog/tree can be **truncated**, and the
+    feed then refuses to reopen (`EPARTIALREAD` / `OPLOG_CORRUPT`), which would otherwise
+    strand that channel on **every** boot. The broadcaster **self-heals**: on start it detects
+    the corruption and rotates the channel to a **fresh generation** (new cores + `feedKey`;
+    the encryption key and grants are untouched, so viewers just follow the new key via the
+    catalog), then GCs the corrupt generation. It is logged (`self-healing to a fresh
+    generation`), and *any* boot-resume failure is now logged too — a channel never fails
+    silently. Defence-in-depth on the prevention side: the compose file sets
+    `stop_grace_period: 60s` so a clean shutdown has time to finish. RAM-buffer feeds are
+    immune (their store is fresh every start).
+
 ### Why `ram` is *slower* to join, not faster
 
 > **Symptom:** time-to-play from a fresh client store is ~40–55 s (vs ~10 s expected),

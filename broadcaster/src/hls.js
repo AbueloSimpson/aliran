@@ -281,6 +281,22 @@ function dirAllocBytes (dir) {
 
 const DISCOVERY_HEX_RE = /^[0-9a-f]{64}$/
 
+// hypercore/random-access error codes/messages that mean a core's ON-DISK state is
+// UNREADABLE — an unclean broadcaster exit (SIGKILL, OOM, power loss, a `docker stop` that
+// outran its grace period) can truncate a core's oplog/tree mid-write. This is NOT a
+// transient error: the store will never reopen until it is rotated or wiped. Mirrors
+// sdk/recover.js's CORRUPT_CODES (the broadcaster image doesn't vendor the sdk workspace, so
+// the check is duplicated here) PLUS `EPARTIALREAD` / "Could not satisfy length" — the
+// truncation error a killed store.close() leaves behind, which sdk/recover.js still misses.
+const STORE_CORRUPT_CODES = new Set([
+  'EPARTIALREAD', 'OPLOG_CORRUPT', 'OPLOG_HEADER_OVERFLOW', 'INVALID_OPLOG_VERSION', 'INVALID_CHECKSUM', 'DECODING_ERROR'
+])
+export function isStoreCorruption (err) {
+  if (!err) return false
+  if (STORE_CORRUPT_CODES.has(err.code)) return true
+  return /corrupt|could not satisfy length/i.test(String(err.message || err))
+}
+
 // Whole-namespace GC — the metadata analog of reconcileStaleEntries (which drops stale
 // ENTRIES within one namespace; this drops entire retired NAMESPACES).
 //

@@ -363,6 +363,53 @@ try {
   assert.strictEqual((await api('DELETE', '/api/channels/hotrot-chan', undefined, token)).status, 200, 'cleanup hotrot-chan')
   log('F5: hot feed rotation keeps ffmpeg live, catalog + a fresh viewer follow the new feedKey, retired generation purged ✓')
 
+  // ===== Test F6: self-heal a CORRUPT feed store on start (unclean-exit recovery) =====
+  // An unclean exit (SIGKILL/OOM/power loss/`docker stop` over its grace) can truncate a disk
+  // feed's cores mid-write, so the store never reopens (EPARTIALREAD) and the channel would be
+  // silently stranded on every boot. The broadcaster must self-heal: on the corruption error,
+  // rotate to a fresh generation and come back live. Here we start a disk channel, stop it,
+  // TRUNCATE its metadata core on disk (exactly the unclean-exit shape), and start again.
+  r = await api('POST', '/api/channels', { id: 'heal-chan', title: 'Heal', input: 'test', buffer: 'disk' }, token)
+  assert.strictEqual(r.status, 201, 'add heal-chan')
+  const healEnc = r.body.encryptionKey
+  r = await api('POST', '/api/channels/heal-chan/start', undefined, token)
+  const healKey1 = r.body.feedKey
+  await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/heal-chan', undefined, token)).body
+    return x.running && x.ffmpegUp && x.playlist ? x : null
+  }, 90000, 'heal-chan live (gen 0)')
+  assert.strictEqual(manager.channels.get('heal-chan').meta.feedGen ?? 0, 0, 'heal-chan starts at generation 0')
+  assert.strictEqual((await api('POST', '/api/channels/heal-chan/stop', undefined, token)).status, 200, 'stop heal-chan (store closes clean)')
+
+  // Truncate the (now-closed) metadata core's tree file — an unclean-exit-style truncation.
+  const healStore = manager.channels.get('heal-chan').storeDir
+  const healDisc = b4a.toString(hcrypto.discoveryKey(b4a.from(healKey1, 'hex')), 'hex')
+  const healTree = path.join(healStore, 'cores', healDisc.slice(0, 2), healDisc.slice(2, 4), healDisc, 'tree')
+  const healBefore = fs.statSync(healTree).size
+  fs.truncateSync(healTree, Math.max(0, Math.floor(healBefore / 3)))
+  // Prove the store really is unreadable now: a raw reopen throws a corruption error.
+  {
+    const s = new Corestore(healStore); const d = new Hyperdrive(s.namespace('feed'), { encryptionKey: b4a.from(healEnc, 'hex') })
+    let e = null; try { await d.ready(); await d.getBlobs() } catch (err) { e = err }
+    try { await d.close() } catch {}; try { await s.close() } catch {}
+    assert.ok(e && /EPARTIALREAD|corrupt|satisfy length/i.test((e.code || '') + ' ' + e.message), 'raw reopen confirms the store is corrupt: ' + (e && (e.code || e.message)))
+  }
+
+  // Start again → the broadcaster must SELF-HEAL (rotate to a fresh generation), not throw.
+  r = await api('POST', '/api/channels/heal-chan/start', undefined, token)
+  assert.strictEqual(r.status, 200, 'start after corruption self-heals (no throw): ' + JSON.stringify(r.body))
+  const healKey2 = r.body.feedKey
+  assert.match(healKey2, /^[0-9a-f]{64}$/, 'self-heal minted a feedKey')
+  assert.notStrictEqual(healKey2, healKey1, 'self-heal rotated to a FRESH feedKey (the corrupt generation is abandoned)')
+  assert.strictEqual(manager.channels.get('heal-chan').meta.feedGen, 1, 'self-heal bumped feedGen to a fresh generation')
+  await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/heal-chan', undefined, token)).body
+    return x.running && x.ffmpegUp && x.playlist ? x : null
+  }, 90000, 'heal-chan live again on the healed generation')
+  assert.strictEqual((await api('POST', '/api/channels/heal-chan/stop', undefined, token)).status, 200, 'stop heal-chan')
+  assert.strictEqual((await api('DELETE', '/api/channels/heal-chan', undefined, token)).status, 200, 'cleanup heal-chan')
+  log('F6: a corrupt feed store (unclean-exit truncation) self-heals on start → fresh generation, channel live ✓')
+
   // ===== Test F2: admins management (S16a — parity with the panel admin API) =====
   r = await api('GET', '/api/admins', undefined, token)
   assert.strictEqual(r.status, 200)

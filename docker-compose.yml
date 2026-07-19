@@ -34,6 +34,12 @@ services:
       dockerfile: broadcaster/Dockerfile
     network_mode: host
     restart: unless-stopped
+    # Give the graceful shutdown (every channel closing its feed store) time to finish before
+    # Docker SIGKILLs it. A kill mid-`store.close()` truncates a disk feed's cores, so a short
+    # grace can corrupt the stores of a many-channel box on `docker stop`. 60 s is ample; the
+    # broadcaster also SELF-HEALS a corrupt store on next start (rotates to a fresh generation),
+    # so this is defence-in-depth, not the only guard. See docs/kb/feed-buffer.md.
+    stop_grace_period: 60s
     env_file: ./broadcaster/.env
     environment:
       DATA_DIR: /data

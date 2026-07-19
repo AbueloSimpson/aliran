@@ -33,7 +33,7 @@ import net from 'net'
 import dgram from 'dgram'
 import path from 'path'
 import os from 'os'
-import { startFfmpeg, mirrorDirToDrive, purgeStaleCores, feedTreeBytes, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
+import { startFfmpeg, mirrorDirToDrive, purgeStaleCores, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
 
@@ -341,6 +341,37 @@ class Channel {
     return this.meta.feedGen ? ('feed-gen-' + this.meta.feedGen) : 'feed'
   }
 
+  // Open the current generation's Hyperdrive (metadata + blobs cores materialized). If the
+  // on-disk store is CORRUPT (an unclean exit truncated a core — EPARTIALREAD/OPLOG_CORRUPT),
+  // self-heal ONCE by rotating to a fresh generation: bump feedGen so the next namespace
+  // derives brand-new, uncorrupted cores. Disk mode only — a ram store is fresh every start,
+  // so a corruption there is not persistent. The corrupt old generation is left for the
+  // start-time GC to purge. getBlobs() is called here so the blobs core's discovery key is
+  // known before the first GC/rotation (the mirror reuses the cached blobs).
+  async _openFeedDriveSelfHealing (store, encryptionKey, buffer) {
+    const open = async () => {
+      const drive = new Hyperdrive(store.namespace(this.feedNamespace()), { encryptionKey })
+      try {
+        await drive.ready()
+        await drive.getBlobs()
+        return drive
+      } catch (err) {
+        try { await drive.close() } catch {} // release the half-open (possibly corrupt) cores
+        throw err
+      }
+    }
+    try {
+      return await open()
+    } catch (err) {
+      if (buffer === 'ram' || !isStoreCorruption(err)) throw err
+      this._log(`--- self-heal: feed store unreadable (${err.code || err.message}) — rotating to a fresh generation ${(this.meta.feedGen || 0) + 1} ---`)
+      console.error(`channel "${this.meta.id}": feed store corrupt (${err.code || err.message}); self-healing to a fresh generation`)
+      this.meta.feedGen = (this.meta.feedGen || 0) + 1
+      this.meta.feedKey = null
+      return await open() // fresh namespace → brand-new cores (a second failure propagates)
+    }
+  }
+
   // Open the drive briefly to learn the (deterministic) feed key without starting.
   async resolveFeedKey () {
     if (this.meta.feedKey) return this.meta.feedKey
@@ -373,11 +404,14 @@ class Channel {
       ? new Corestore(RAM, { globalCache: this.manager.feedCache })
       : new Corestore(this.storeDir, { globalCache: this.manager.feedCache })
     await store.ready()
-    const drive = new Hyperdrive(store.namespace(this.feedNamespace()), { encryptionKey })
-    await drive.ready()
-    // Materialize the blobs core now so its discovery key is known before the first GC /
-    // rotation (the mirror opens it too; getBlobs caches, so this is a one-time cost).
-    await drive.getBlobs()
+    // Open the current generation's feed drive, self-healing a CORRUPT on-disk store: an
+    // unclean exit (SIGKILL/OOM/power loss/`docker stop` over its grace) can truncate a
+    // core mid-write, so a disk feed can fail to reopen forever (EPARTIALREAD / OPLOG_CORRUPT)
+    // — which would silently strand the channel on every boot. On corruption we rotate ONCE
+    // to a fresh generation (bump feedGen → a brand-new namespace derives uncorrupted cores);
+    // the start-time GC below then purges the corrupt old generation. Grants survive (the
+    // encryption key is untouched); viewers follow the new feedKey via the catalog.
+    const drive = await this._openFeedDriveSelfHealing(store, encryptionKey, buffer)
     const feedKeyHex = b4a.toString(drive.key, 'hex')
     this.meta.feedKey = feedKeyHex
 
@@ -845,7 +879,14 @@ export class ChannelManager {
     for (const ch of this.channels.values()) {
       if (ch.meta.legacy) continue
       if (ch.meta.desiredRunning) {
-        try { await this.start(ch.meta.id) } catch (err) { ch.meta.resumeError = err.message }
+        try {
+          await this.start(ch.meta.id)
+        } catch (err) {
+          // Surface WHY a channel didn't auto-resume — a silent failure here (corrupt store,
+          // capability gate, port clash) otherwise looks like a mysterious "0 ffmpeg" boot.
+          ch.meta.resumeError = err.message
+          console.error(`channel "${ch.meta.id}" failed to auto-resume: ${err.message}`)
+        }
       } else {
         this.panelLink.setDesired(ch.meta.id, this._regPayload({ streamId: ch.meta.id, feedKey: ch.meta.feedKey ?? null, isLive: false }))
       }
