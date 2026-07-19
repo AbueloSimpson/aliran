@@ -89,6 +89,21 @@ test('subtitles: an unlabeled ("Track N") track falls back to index, a labeled o
   expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.TITLE, value: 'English' })
 })
 
+test('picking a track dismisses the menu (onClose fires alongside the selection)', async () => {
+  const onClose = jest.fn()
+  const onSelectText = jest.fn()
+  const tree = await createTree(
+    <TrackMenu {...base} textTracks={[{ index: 0, title: 'English' }]} audioTracks={[]} onSelectText={onSelectText} onClose={onClose} />
+  )
+  pressRow(tree, 'English')
+  expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.TITLE, value: 'English' })
+  expect(onClose).toHaveBeenCalledTimes(1)
+  // "Off" dismisses too.
+  pressRow(tree, 'Off')
+  expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.DISABLED })
+  expect(onClose).toHaveBeenCalledTimes(2)
+})
+
 test('audio: section hidden with a single audio track', async () => {
   const tree = await createTree(
     <TrackMenu {...base} textTracks={[]} audioTracks={[{ index: 0, title: 'English' }]} />

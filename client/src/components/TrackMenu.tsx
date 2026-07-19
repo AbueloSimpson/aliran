@@ -50,6 +50,11 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
   const audioActive = (t: AudioTrack) =>
     selectedAudio ? eqSel(selectedAudio, trackChoice(t)) : !!t.selected
 
+  // Picking a track applies it AND dismisses the menu — a subtitle/audio choice is a
+  // one-shot action, and leaving the panel over the video was the annoyance.
+  const chooseText = (sel: SelectedTrack) => { onSelectText(sel); onClose() }
+  const chooseAudio = (sel: SelectedTrack) => { onSelectAudio(sel); onClose() }
+
   return (
     <View style={styles.overlay}>
       {/* Dim backdrop — a tap anywhere outside the panel dismisses. */}
@@ -57,13 +62,13 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
       <View style={styles.panel} pointerEvents="box-none">
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <Text style={styles.heading}>Subtitles</Text>
-          <Row label="Off" active={textActive()} onPress={() => onSelectText({ type: SelectedTrackType.DISABLED })} />
+          <Row label="Off" active={textActive()} onPress={() => chooseText({ type: SelectedTrackType.DISABLED })} />
           {textTracks.map((t, i) => (
             <Row
               key={t.index}
               label={t.title || t.language || `Subtitle ${i + 1}`}
               active={textActive(t)}
-              onPress={() => onSelectText(trackChoice(t))}
+              onPress={() => chooseText(trackChoice(t))}
             />
           ))}
 
@@ -75,7 +80,7 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
                   key={t.index}
                   label={t.title || t.language || `Audio ${i + 1}`}
                   active={audioActive(t)}
-                  onPress={() => onSelectAudio(trackChoice(t))}
+                  onPress={() => chooseAudio(trackChoice(t))}
                 />
               ))}
             </>
