@@ -9,8 +9,8 @@ const s = (id: string, category?: string[], extra: Partial<Stream> = {}): Stream
 test('All is first and contains every channel; genres follow', () => {
   const streams = [
     s('nhk', ['News']), // P2P news
-    s('cnn', ['News'], { redirect: true }), // CDN news
-    s('conan', ['Anime'], { redirect: true }),
+    s('cnn', ['News']), // CDN news (same rail)
+    s('conan', ['Anime']),
     s('qvc') // uncategorized
   ]
   const groups = groupByCategory(streams)

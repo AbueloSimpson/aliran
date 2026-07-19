@@ -3,7 +3,7 @@
 // row switches the stream IN PLACE (playback never stops). There is no manual close
 // control — the overlay auto-hides after inactivity (LiveScreen's idle timer); any row
 // focus or scroll here bumps that timer via onActivity.
-import React from 'react'
+import React, { useRef, useEffect } from 'react'
 import { View, Text, FlatList, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { ChannelRow } from './ChannelRow'
@@ -21,13 +21,31 @@ export interface ChannelListPanelProps {
 }
 
 export function ChannelListPanel ({ streams, numbers, playingId, favorites, onSelect, onInfo, onActivity }: ChannelListPanelProps) {
+  const listRef = useRef<FlatList<Stream>>(null)
+  const playingIndex = streams.findIndex((s) => s.id === playingId)
+  // On open, bring the currently-playing channel into view. On TV the D-pad focus
+  // (hasTVPreferredFocus below) already scrolls to it; phone has no focus, so scroll
+  // explicitly. Skip when it isn't in this category's list (index < 1 covers -1 and the
+  // already-at-top 0). onScrollToIndexFailed handles the not-yet-laid-out race.
+  useEffect(() => {
+    if (playingIndex < 1) return
+    const t = setTimeout(() => {
+      try { listRef.current?.scrollToIndex({ index: playingIndex, animated: false, viewPosition: 0.35 }) } catch {}
+    }, 0)
+    return () => clearTimeout(t)
+  }, [playingIndex])
   return (
     <View style={styles.panel}>
       <Text style={styles.header}>CHANNELS</Text>
       <FlatList
+        ref={listRef}
         data={streams}
         keyExtractor={(s) => s.id}
         onScrollBeginDrag={onActivity}
+        onScrollToIndexFailed={(info) => {
+          listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
+          setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
+        }}
         renderItem={({ item, index }) => (
           <ChannelRow
             stream={item}

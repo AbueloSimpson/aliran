@@ -166,6 +166,14 @@ export function LiveScreen ({ route }: Props) {
     if (collapse) setOverlay('none')
   }
 
+  // Picking a category always shows its channel LIST: from the browse list it just
+  // re-scopes it; from the channel-detail (info) overlay it leaves detail and returns
+  // to the list for that category (else the tap looked like it did nothing).
+  function selectCategory (c: string) {
+    setCategory(c)
+    setOverlay('list')
+  }
+
   // Tune lifecycle → tuning pill. 'start' shows a FRESH pill (the id keys the component,
   // so a tune that begins while the previous pill is still up replaces it atomically at
   // 0% — no inherited progress); 'retune'/'reconnect' relabel it while the SDK
@@ -303,7 +311,7 @@ export function LiveScreen ({ route }: Props) {
       {overlay !== 'none' && activeCategory && (
         <View style={styles.panels} onTouchStart={bumpMenuIdle}>
           <FocusPane autoFocus style={styles.railPane}>
-            <CategoryRail categories={categories} selected={activeCategory} onSelect={setCategory} onActivity={bumpMenuIdle} />
+            <CategoryRail categories={categories} selected={activeCategory} onSelect={selectCategory} onActivity={bumpMenuIdle} />
           </FocusPane>
           <FocusPane autoFocus style={styles.listPane}>
             {overlay === 'list' ? (
