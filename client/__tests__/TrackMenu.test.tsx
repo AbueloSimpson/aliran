@@ -44,7 +44,7 @@ afterEach(async () => {
   while (mounted.length) { const tree = mounted.pop()!; await ReactTestRenderer.act(async () => { tree.unmount() }) }
 })
 
-test('subtitles: lists Off + one row per text track; selecting fires onSelectText with the right track', async () => {
+test('subtitles: lists Off + one row per text track; selecting fires onSelectText by title/language (not the broken index)', async () => {
   const onSelectText = jest.fn()
   const textTracks: TextTrack[] = [
     { index: 0, title: 'English' },
@@ -58,13 +58,35 @@ test('subtitles: lists Off + one row per text track; selecting fires onSelectTex
   expect(labels).toContain('English')
   expect(labels).toContain('fr')
 
-  // A track row → INDEX selection carrying that track's index.
+  // A titled track → TITLE selection. rn-video's Android <Video> can't select embedded HLS
+  // subtitles by index past the first group (it matches the within-group index while
+  // onTextTracks reports a flat one), so trackChoice prefers title/language which iterate
+  // every group — this is the fix for "English subtitles never showed".
   pressRow(tree, 'English')
-  expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.INDEX, value: 0 })
+  expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.TITLE, value: 'English' })
+
+  // A track with only a language → LANGUAGE selection.
+  pressRow(tree, 'fr')
+  expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.LANGUAGE, value: 'fr' })
 
   // Off → DISABLED.
   pressRow(tree, 'Off')
   expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.DISABLED })
+})
+
+test('subtitles: an unlabeled ("Track N") track falls back to index, a labeled one uses title', async () => {
+  const onSelectText = jest.fn()
+  // rn-video Android synthesizes "Track N" for tracks with no label; those aren't matchable
+  // by title (the format has no label) so they fall back to index (which works for the first
+  // group — the only case an unlabeled track can be reached).
+  const textTracks: TextTrack[] = [{ index: 0, title: 'Track 1' }, { index: 1, title: 'English' }]
+  const tree = await createTree(
+    <TrackMenu {...base} textTracks={textTracks} audioTracks={[]} onSelectText={onSelectText} />
+  )
+  pressRow(tree, 'Track 1')
+  expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.INDEX, value: 0 })
+  pressRow(tree, 'English')
+  expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.TITLE, value: 'English' })
 })
 
 test('audio: section hidden with a single audio track', async () => {
@@ -89,5 +111,5 @@ test('audio: section shown with more than one audio track; selecting fires onSel
   expect(labels).toContain('Español')
 
   pressRow(tree, 'Español')
-  expect(onSelectAudio).toHaveBeenCalledWith({ type: SelectedTrackType.INDEX, value: 1 })
+  expect(onSelectAudio).toHaveBeenCalledWith({ type: SelectedTrackType.TITLE, value: 'Español' })
 })

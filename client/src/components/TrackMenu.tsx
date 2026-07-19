@@ -12,6 +12,22 @@ import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { SelectedTrackType, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
 import { theme } from '../theme'
 
+// react-native-video's Android <Video> selects a TEXT track by matching the WITHIN-GROUP
+// track index, but onTextTracks reports a FLAT index across track groups — so selecting an
+// embedded HLS subtitle by index only works for the first group. An "English" track at
+// index 1 (its own group) silently no-ops and subtitles stay off (found on-device 2026-07-19).
+// So map a track to a SelectedTrack preferring LANGUAGE, then a real TITLE, and only fall
+// back to INDEX for tracks rn-video couldn't label — its synthetic "Track N"/"External N"
+// titles aren't matchable by title either (the underlying format has no label), so those go
+// by index (which does work for the first group). LANGUAGE/TITLE both iterate every group
+// correctly. The same mapping is valid for audio (its index path is per-group anyway).
+const SYNTHETIC_TITLE = /^(Track|External)\s+\d+$/
+export function trackChoice (t: { index: number; title?: string; language?: string }): SelectedTrack {
+  if (t.language) return { type: SelectedTrackType.LANGUAGE, value: t.language }
+  if (t.title && !SYNTHETIC_TITLE.test(t.title)) return { type: SelectedTrackType.TITLE, value: t.title }
+  return { type: SelectedTrackType.INDEX, value: t.index }
+}
+
 export interface TrackMenuProps {
   textTracks: TextTrack[]
   audioTracks: AudioTrack[]
@@ -25,16 +41,14 @@ export interface TrackMenuProps {
 }
 
 export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudio, onSelectText, onSelectAudio, onClose }: TrackMenuProps) {
-  // "Off" is active when nothing is selected (DISABLED); a subtitle row is active when
-  // it matches the selected INDEX.
+  // A row is active when the current selection equals what this track maps to (trackChoice).
+  // "Off" is active when nothing is selected (DISABLED); for audio with no explicit pick,
+  // reflect the player's currently-selected track (`selected`).
+  const eqSel = (a: SelectedTrack | undefined, b: SelectedTrack) => !!a && a.type === b.type && a.value === b.value
   const textActive = (t?: TextTrack) =>
-    t == null ? selectedText.type === SelectedTrackType.DISABLED
-      : selectedText.type === SelectedTrackType.INDEX && selectedText.value === t.index
-  // With no explicit pick, reflect the player's currently-selected track (`selected`).
+    t == null ? selectedText.type === SelectedTrackType.DISABLED : eqSel(selectedText, trackChoice(t))
   const audioActive = (t: AudioTrack) =>
-    selectedAudio && selectedAudio.type === SelectedTrackType.INDEX
-      ? selectedAudio.value === t.index
-      : !!t.selected
+    selectedAudio ? eqSel(selectedAudio, trackChoice(t)) : !!t.selected
 
   return (
     <View style={styles.overlay}>
@@ -49,7 +63,7 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
               key={t.index}
               label={t.title || t.language || `Subtitle ${i + 1}`}
               active={textActive(t)}
-              onPress={() => onSelectText({ type: SelectedTrackType.INDEX, value: t.index })}
+              onPress={() => onSelectText(trackChoice(t))}
             />
           ))}
 
@@ -61,7 +75,7 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
                   key={t.index}
                   label={t.title || t.language || `Audio ${i + 1}`}
                   active={audioActive(t)}
-                  onPress={() => onSelectAudio({ type: SelectedTrackType.INDEX, value: t.index })}
+                  onPress={() => onSelectAudio(trackChoice(t))}
                 />
               ))}
             </>
