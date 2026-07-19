@@ -105,6 +105,61 @@ deliberate access-control boundary.
     6-channel soak: heap flat after the budget fills. `tools/mem-soak.mjs` reproduces and
     measures both this and the slow creep above.
 
+### Tuning feed rotation: disk vs. warm-topic
+
+Periodic rotation is the one lever that bounds a long-lived feed's metadata tree, and it's
+**a single trade-off**: rotate more often for tighter disk, less often to preserve disk
+mode's warm-topic benefit for returning viewers. It's **off by default** — enable it only on
+long-running (multi-week) channels that actually need the bound.
+
+**Pick a trigger** (both `0` = off; if both set, whichever fires first):
+
+- **`FEED_ROTATE_TREE_MB`** — rotate a channel once its merkle tree crosses *N* MB. This is
+  the **direct disk cap**: each channel's metadata is bounded to ~*N* MB, so the store's
+  steady-state ceiling is about `N × channels` plus the (small) segment windows. Rotation
+  cadence follows from the tree's growth rate, which is roughly **1–2 MB/h per channel** at a
+  2 s window (higher-bitrate, churnier channels grow faster — they hit the cap first):
+
+    | Cap | Busy channel (~2–4 MB/h) | Quiet channel (~1 MB/h) |
+    |---|---|---|
+    | `150` | every ~2.5–3.5 days | ~1 week |
+    | `250` | every ~4–6 days | ~1.5–2 weeks |
+    | `400` | every ~1–1.5 weeks | ~2–3 weeks |
+
+    Measure your own rate from the `tree_alloc` slope of a store-size sampler (order
+    ~200 kB/min total for 6 channels was observed in production) and size the cap to the
+    rotation cadence you can accept.
+
+- **`FEED_ROTATE_HOURS`** — rotate every *N* hours regardless of size (e.g. `168` = weekly).
+  Simpler to reason about ("every channel cold-topics at most weekly"), but it does **not**
+  cap disk directly — a high-bitrate channel can still grow a large tree between rotations.
+  Prefer the size cap when disk is the constraint; prefer time when a predictable warm-topic
+  cadence is.
+
+- **`FEED_ROTATE_GRACE_MS`** (default `30000`) — how long the retired generation keeps
+  serving + announced after a rotation, so in-flight viewers finish following the catalog
+  before its cores are purged. Rarely needs changing.
+
+**What a rotation costs viewers.** A channel keeps streaming *through* a rotation (the new
+generation mirrors the same live window before the swap, and both serve during the grace
+window). An **actively-watching** viewer auto-follows the new `feedKey` over the catalog with
+no re-login and no re-zap — at most a brief re-buffer as the host reloads its player. The
+real cost lands on viewers **returning across** a rotation: a new generation means a new DHT
+topic, so their next join is a one-time cold discovery (~30–90 s) instead of the ~10 s warm
+rejoin. New/first-time viewers are unaffected. This is why **infrequent** rotation (a larger
+size cap, or weekly) is the recommended default for lean-back audiences: it keeps the
+warm-topic experience for the overwhelming majority of returns.
+
+**Rule of thumb.** Warm-topic-first (most deployments): size cap of `250`–`400` MB, or
+`FEED_ROTATE_HOURS=168`. Disk-first (small host, many channels): a smaller size cap. Rotation
+only ever fires on a **healthy, advancing** channel, and cadences naturally stagger across
+channels — there is no synchronized mass-rotation event. Retired generations (and any left by
+source changes) are purged automatically; nothing needs manual cleanup.
+
+**One-off / manual:** `POST /api/channels/<id>/rotate` rotates a single running disk channel
+immediately — handy to reclaim a specific channel or to prove the mechanism without waiting
+for a threshold.
+
 ### Why `ram` is *slower* to join, not faster
 
 > **Symptom:** time-to-play from a fresh client store is ~40–55 s (vs ~10 s expected),
