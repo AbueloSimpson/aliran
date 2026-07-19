@@ -9,6 +9,12 @@ import { loadServiceDescriptor, type ServiceDescriptor } from './config'
 
 const isTV = Platform.isTV
 
+// Phone GUI scale: the 10-foot type/spacing ramp reads a touch large up close, so trim
+// the PHONE by this factor (TV keeps full 10-foot sizing). Applied to type, spacing,
+// safe margins and card sizes below — one knob to tune the overall density.
+const SCALE = isTV ? 1 : 0.85
+const px = (n: number) => Math.round(n * SCALE)
+
 const DEFAULT_COLORS = {
   primary: '#0EA5E9',
   background: '#0B1220',
@@ -45,20 +51,21 @@ export function makeTheme (descriptor?: Pick<ServiceDescriptor, 'branding'>) {
     focusRing: isTV ? 3 : 0,
     // Android TV uses a "10-foot" UI: larger type, more spacing, focus rings.
     isTV,
-    spacing: (n: number) => n * (isTV ? 12 : 8),
+    spacing: (n: number) => px(n * (isTV ? 12 : 8)),
     // Overscan-safe screen margins (Google TV: ~48dp horizontal / 27dp vertical).
-    safeX: isTV ? 48 : 16,
-    safeY: isTV ? 27 : 12,
-    // Type scale (TV sizes track the Google TV type ramp; phone a step smaller).
+    safeX: px(isTV ? 48 : 16),
+    safeY: px(isTV ? 27 : 12),
+    // Type scale (TV sizes track the Google TV type ramp; phone a step smaller, then
+    // trimmed by SCALE).
     type: {
-      display: isTV ? 42 : 30,
-      title: isTV ? 26 : 20,
-      body: isTV ? 18 : 15,
-      label: isTV ? 16 : 13,
-      caption: isTV ? 14 : 12
+      display: px(isTV ? 42 : 30),
+      title: px(isTV ? 26 : 20),
+      body: px(isTV ? 18 : 15),
+      label: px(isTV ? 16 : 13),
+      caption: px(isTV ? 14 : 12)
     },
-    cardWidth: isTV ? 240 : 150,
-    cardHeight: isTV ? 135 : 84
+    cardWidth: px(isTV ? 240 : 150),
+    cardHeight: px(isTV ? 135 : 84)
   }
 }
 
