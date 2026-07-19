@@ -94,6 +94,14 @@ Android phone + Android TV).
   archive (playlist-driven blob reclaim); `disk` default (stable feed identity, warm
   DHT topic) or `ram` (byte-flat disk; fresh session feedKey per start — grants
   survive, the catalog follows).
+- **Bounded disk metadata + corruption self-heal**: blob reclaim keeps segment data
+  O(window), and the append-only merkle tree is bounded by always-on **orphaned-
+  generation GC** plus optional **periodic feed rotation** (`FEED_ROTATE_HOURS` /
+  `FEED_ROTATE_TREE_MB`, or `POST /api/channels/:id/rotate`) — viewers follow the new
+  feedKey live. A store corrupted by an unclean exit (`EPARTIALREAD` / `OPLOG_CORRUPT`)
+  **self-heals** on start by rotating to a fresh generation (was: silent boot failure);
+  boot-resume errors are now logged, and compose sets `stop_grace_period: 60s` so a
+  clean shutdown has time to finish.
 - Reliability: ffmpeg watchdog with exponential backoff + stalled-live-edge restart;
   **memory-cap recycle** of a running pull ffmpeg (`FFMPEG_MAX_RSS_MB` — bounds the slow
   demuxer-state accumulation some live-HLS upstreams cause; no feed rotation);

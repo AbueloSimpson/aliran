@@ -63,7 +63,7 @@ channels (the common case: pull a source, re-mux, no encode).
 | **RAM** | **~40 MB** | ~3 MB feed engine (Corestore+Hyperdrive+Hyperswarm) + ~38 MB marginal ffmpeg (VmRSS ~70 MB but libs are shared). Base runtime ~70–90 MB. |
 | **CPU** | **~1.5% of one core** | Just the mux + mirror. Copy does no encoding. |
 | **Disk IOPS** | ~2.5–5 sync ops/s | 1 segment / 2 s × several fsync'd writes (core append, oplog, metadata B-tree). **This is the wall** — put it on tmpfs. |
-| **Disk space** | ~6 MB (bounded) + ~100 MB/day creep | `disk` mode only. Window data is bounded (the reclaim fix); the append-only merkle tree creeps. `ram` mode = 0 disk. |
+| **Disk space** | ~6 MB window + `FEED_ROTATE_TREE_MB` cap | `disk` mode only. Segment window bounded by reclaim; the append-only merkle tree is now **bounded by feed rotation** (`FEED_ROTATE_TREE_MB` — [feed-buffer.md](feed-buffer.md)), so store ≈ `cap × channels`, no unbounded creep. `ram` mode = 0 disk. |
 | **DHT** | 1 swarm + topic | Socket fan-out grows with peers × channels; the practical network wall on very large deployments. |
 
 **Transcoding changes the CPU line entirely:** x264 SD ≈ 0.5–1 core/channel, 1080p more. If
@@ -115,6 +115,32 @@ does ~125 copy channels does only **~8–12 x264 SD** channels.
     OOM, but 15 channels is **not sustainable 24/7 on this box**. Treat the "runs cleanly" figure as
     a *short-term* ceiling and size a long-running deployment **a few channels below it** (≈8–10
     here): multi-hour RSS growth, not the fresh-start footprint, sets the real limit.
+
+!!! success "Measured on a 4 vCPU / 8 GiB / 100 GiB NVMe (1300 IOPS) box — CPU is the wall, not IOPS"
+    A `scale-bench.mjs` sweep (copy channels, `disk` buffer) at 4→16→32→48 channels, all live
+    in <4 s. Marginal node RSS fell 4→1.6 MB/ch; the tool's summed **ffmpeg RSS (~59 MB/ch)
+    triple-counts shared libraries** — the *real* footprint from `free -m` at 48 channels was
+    ~900 MB total (**~19 MB/ch**). Watch out for that when reading the RAM extrapolation.
+
+    The surprises at density:
+
+    - **CPU is the binding wall, ~80 copy channels.** At 48 channels the box ran **59 % of 4
+      cores, 0 % iowait** — so `copy` is *not* free at scale: 48 ffmpegs (demux→remux→HLS-mux→
+      write) plus the mirror use ~2.4 cores, ~5 %/ch total. Size sustained 24/7 at ~65–70.
+    - **Disk IOPS is a non-issue** — 48 channels drove only **~62 write IOPS / 13 MB/s** to the
+      device (reads ≈ 0; all cached). A big **page cache absorbs the write-then-delete churn**,
+      so *more RAM indirectly buys IOPS headroom*. That's ~5 % of this disk's 1300-IOPS cap; even
+      a 500-IOPS disk would be fine here. tmpfs (`HLS_WORK_DIR`) is unnecessary at this IOPS
+      budget — and on a RAM-tight box it would *steal* the RAM you actually need.
+    - **Ordering of the walls (copy):** CPU (~80) < RAM (~370) < IOPS (~1000) < space (~350 at a
+      250 MB rotation cap). So **50 copy channels is comfortable** here (~60 % CPU, ~1 GB RAM,
+      62 IOPS). Transcoding flips it entirely — CPU dominates immediately (~4–6 x264 SD on 4
+      cores); shard or transcode upstream.
+
+    !!! tip "On some VPS providers, IOPS scales with disk *size*"
+        The reference box's 20 GiB tier capped at 500 IOPS; its 100 GiB tier gives 1300. So
+        buying a bigger disk buys **space and IOPS together**, and N cheap boxes give N × the
+        IOPS — sharding across budget nodes beats one big node when IOPS is the constraint.
 
 !!! note "ffmpeg itself creeps on some upstreams — bounded by `FFMPEG_MAX_RSS_MB`"
     The node processes aren't the only slow growers. On certain live-HLS pulls (typically

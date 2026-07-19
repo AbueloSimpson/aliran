@@ -1250,3 +1250,84 @@ the fallback already spent.
   passthrough assertions; `test:sources` grows an A0 case (EPG set/clear on a manual
   channel via setMeta + http rejection) → A0–J. On-device install deferred (phone off
   wireless adb).
+
+### Bounded disk metadata — orphaned-generation GC + periodic feed rotation (S28, verified)
+
+The `disk` buffer keeps *segment data* O(window) via blob reclaim, but a hypercore's
+append-only **merkle tree / metadata** is never freed by `clear()`. It grows for a feed's
+whole lifetime — measured ~1–2 MB/h per channel, and on the production VPS the channel
+store climbed 180 MB → 1177 MB over three days (of which `tree_alloc` alone was 823 MB). A
+slow disk creep, not a crash, but unbounded. Two contributors, each now bounded:
+
+- **Retired generations.** A source change (or a rotation) bumps `feedGen` → a new
+  Corestore namespace → brand-new cores, orphaning the previous generation's cores — tree
+  and all — on disk. New `purgeStaleCores()` (`broadcaster/src/hls.js`) deletes every
+  retired generation's whole core directory, keeping only the current generation's
+  metadata+blobs discovery keys. It runs at every start (a reopened disk store sheds prior
+  generations), after each rotation's grace teardown, and periodically. It refuses to run
+  without both live discovery keys and only ever touches 64-hex core dirs under `cores/`,
+  so a half-open drive can never delete the running feed. Always on, nothing to configure.
+- **A single long-lived feed's own tree.** Bounded by opt-in **hot feed rotation**
+  (`_rotateFeed`): mint the next generation's drive over a fresh namespace, mirror the same
+  live window into it (ffmpeg untouched), announce its topic, swap it in as the served feed,
+  then retire the previous generation through a grace window (it keeps replicating +
+  announced so in-flight viewers finish following) before tearing it down and purging its
+  cores. The encryption key is unchanged (grants survive); only the feedKey moves, which
+  watching viewers follow live over the catalog (`_maybeReresolveActiveFeed` → `feed-changed`,
+  the same path as a RAM restart or source change). Triggered by `FEED_ROTATE_HOURS` /
+  `FEED_ROTATE_TREE_MB` (both off by default — orphan GC is always on) or
+  `POST /api/channels/:id/rotate`. Keep rotation infrequent to preserve disk mode's
+  warm-topic benefit; `docs/kb/feed-buffer.md` carries a cadence/disk-ceiling tuning table.
+
+The swarm connection handler now replicates the whole store (`store.replicate` — equivalent
+to `drive.replicate`), so a retired-but-draining generation and the current one are both
+served to peers requesting either discovery key.
+
+**Verified.** `retention-test` scenario D lays down two generations on disk and asserts
+`purgeStaleCores` keeps only the current generation's tree (not the accumulated history)
+while the live generation survives intact, plus the empty-keep-set safety no-op.
+`broadcaster-api` Test F5 hot-rotates a running channel and proves ffmpeg stays live, the
+panel catalog **and a fresh viewer** follow the new feedKey, and the retired generation is
+purged after grace. **Live on the VPS**: with `FEED_ROTATE_TREE_MB=250`, the watchdog
+auto-rotated the two channels over the cap — store 1.3 GB → 889 MB, `tree_alloc` −347 MB in
+the duration-test cron — while all six channels kept streaming through it.
+
+### Broadcaster self-heals a corrupt feed store on start; a 4 vCPU / 8 GiB scale bench (verified)
+
+An unclean broadcaster exit — SIGKILL, OOM, power loss, or a `docker stop` that outruns its
+grace period while many channels are closing — can truncate a disk feed's core files
+mid-write, so the store never reopens (`EPARTIALREAD: Could not satisfy length`, or
+`OPLOG_CORRUPT`). This bit a resized production box after a `docker stop`: **all six**
+channels' stores were truncated and every one failed to start — and because the boot
+reconcile caught `start()`'s error and *swallowed it silently*, the only symptom was "0
+ffmpeg" with no reason in the logs.
+
+The fix, three parts plus prevention:
+
+- `start()` now opens the feed drive via `_openFeedDriveSelfHealing()`. On a corruption
+  error it rotates **once** to a fresh generation (bump `feedGen` → a new namespace derives
+  brand-new, uncorrupted cores), logs it, and continues; the start-time GC then purges the
+  corrupt old generation. The encryption key is untouched (grants survive) and viewers
+  follow the new feedKey via the catalog. Disk mode only — a `ram` store is fresh every
+  start anyway.
+- The boot reconcile now **logs any auto-resume failure** (corrupt store, capability gate,
+  port clash) instead of failing silently.
+- `isStoreCorruption()` recognizes `EPARTIALREAD` / "Could not satisfy length" — the
+  truncation error a killed `store.close()` leaves behind, which `sdk/recover.js`'s
+  `isCorruptionError` was missing (added there too, for the client's own recovery).
+- `docker-compose.yml` sets `stop_grace_period: 60s` so a clean shutdown of a many-channel
+  box has time to finish — defence-in-depth on the prevention side.
+
+**Verified.** `retention-test` scenario E truncates a real metadata `tree` file and asserts
+the reopen throws `EPARTIALREAD` *and* that `isStoreCorruption` catches it; `broadcaster-api`
+Test F6 starts a disk channel, stops it, truncates its store on disk, and asserts `start()`
+self-heals to a fresh generation and comes back live. Deployed to the VPS (`StopTimeout=60`
+confirmed, clean reopen).
+
+While benchmarking the resized box (**4 vCPU / 8 GiB / 100 GiB NVMe @ 1300 IOPS**) with
+`tools/scale-bench.mjs`, a 4→48-channel copy sweep showed **CPU is the binding wall (~80
+channels)** — `copy` is not free at density (48 ffmpegs + the mirror ≈ 2.4 cores, ~5 %/ch);
+**RAM is ~19 MB/ch** (the tool's summed ffmpeg RSS triple-counts shared libraries — trust
+`free -m`, not the summary); and **disk IOPS is a non-issue** (48 channels drove ~62 write
+IOPS / 13 MB/s — the page cache absorbs the write-then-delete churn, so more RAM indirectly
+buys IOPS headroom). So ~50 copy channels is comfortable on this box. See `docs/kb/scaling.md`.
