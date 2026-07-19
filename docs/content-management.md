@@ -16,10 +16,16 @@ admin-cli set-meta news --order 10          # rail position 0-9999; --order null
 admin-cli upload-art news poster ./poster.jpg      # into the assets Hyperdrive
 ```
 
-**Curation** (`order` 0–9999 or null, `featured` bool) is admin-owned: a broadcaster
-re-registering its stream updates title/feedKey/liveness but **never** erases
-curation or art. Client UIs sort rails by `order` and prefer `featured` live streams
-for the hero slot.
+**The panel owns what viewers see; the broadcaster is just the stream.** A broadcaster
+re-registering its stream updates only the **feed** (`feedKey`) and **liveness**
+(`isLive`). Everything descriptive is **admin-owned** — `title`, `description`,
+`category`, art (`poster`/`backdrop`/`logo`), the program guide (`epgUrl`/`epgId`),
+curation (`order`/`featured`), and the redirect class (`url`). The broadcaster **seeds**
+`title`/`description`/`category` **once, when it first creates a channel**; after that a
+re-register never changes them. So to rename or recategorize a P2P channel, **edit it in
+the panel** — it sticks (changing the broadcaster's config no longer propagates those
+fields). Client UIs sort rails by `order` and prefer `featured` live streams for the
+hero slot.
 
 **Deleting a stream** (`delete-stream` / `DELETE /api/streams/:id`) is a full purge:
 catalog record, panel-private key, every user's sealed grant, and its art. Clients

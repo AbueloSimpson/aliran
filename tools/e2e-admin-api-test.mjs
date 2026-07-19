@@ -307,23 +307,33 @@ try {
   r = await api('PATCH', '/api/streams/movie-night', { order: 5, featured: true, epgUrl: 'https://epg.example/g.json', epgId: 'mn' }, { token })
   assert.strictEqual(r.status, 200)
 
-  // a broadcaster re-register must NOT erase admin curation (or art, or EPG pointers)
+  // a broadcaster re-register must NOT erase admin curation/art/EPG — AND (S27e) must not
+  // change the admin-owned title/description/category of an EXISTING channel: the panel is
+  // authoritative for what viewers see; the broadcaster is just the stream.
   let pcall = null
   const pubSwarm = new Hyperswarm(); cleanups.push(() => pubSwarm.destroy())
   pubSwarm.on('connection', (s) => { if (!pcall) pcall = pubRpc(s).call })
   pubSwarm.join(hcrypto.hash(keys.signing.publicKey), { client: true, server: false })
   await waitFor(async () => pcall, 30000, 'publisher connection')
   await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
-    streamId: 'movie-night', feedKey, title: 'Movie Night LIVE', isLive: true
+    streamId: 'movie-night', feedKey, title: 'Movie Night LIVE', category: ['broadcaster-cat'], isLive: true
   })
   cat2 = (await db.get('catalog/movie-night')).value
-  assert.strictEqual(cat2.title, 'Movie Night LIVE', 'register updates title')
+  assert.strictEqual(cat2.title, 'Movie Night', 'panel-authoritative: re-register does NOT change an existing title')
+  assert.deepStrictEqual(cat2.category, ['film'], 'panel-authoritative: re-register does NOT change an existing category')
   assert.strictEqual(cat2.order, 5, 'register preserves order')
   assert.strictEqual(cat2.featured, true, 'register preserves featured')
   assert.strictEqual(cat2.poster, 'assets/movie-night/poster.png', 'register preserves art')
   assert.strictEqual(cat2.epgUrl, 'https://epg.example/g.json', 'register preserves admin EPG pointer (epgUrl)')
   assert.strictEqual(cat2.epgId, 'mn', 'register preserves admin EPG pointer (epgId)')
-  log('J: typed order/featured; re-register preserves curation + art + EPG pointers ✓')
+  // …but a FIRST register (new channel) SEEDS title/category from the broadcaster.
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'seeded-chan', feedKey, title: 'Seeded From Broadcaster', category: ['seed-cat'], isLive: true
+  })
+  const seeded = (await db.get('catalog/seeded-chan')).value
+  assert.strictEqual(seeded.title, 'Seeded From Broadcaster', 'first register seeds title on a new channel')
+  assert.deepStrictEqual(seeded.category, ['seed-cat'], 'first register seeds category on a new channel')
+  log('J: curation/art/EPG preserved; title/category panel-authoritative (seed on create, never overwrite) ✓')
 
   // ===== Test K: stream delete = FULL purge (S16a) =====
   r = await api('POST', '/api/users', { username: 'carol', password: 'carol-secret-1' }, { token })

@@ -145,6 +145,11 @@ are preserved.
   named registers stamp `origin: "<name>"` on the record. A payload **without**
   `publisher` verifies against the legacy shared key from `init` (implicit scope
   `*`) while `LEGACY_PUBLISHER=1` (the default); set `0` after enrolling every site.
+  **Descriptive metadata is panel-authoritative**: a register only sets `feedKey` +
+  `isLive` on an existing channel; it **seeds** `title`/`description`/`category` only
+  when it first creates the record and never overwrites them after — the admin owns
+  them (as with art, EPG, curation and the redirect class). Rename/recategorize a P2P
+  channel in the panel, not the broadcaster config.
 
 ## Schemas
 

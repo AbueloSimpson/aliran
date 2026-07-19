@@ -141,12 +141,20 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     if (encryptionKey) {
       const secrets = loadSecrets(dataDir); secrets[streamId] = encryptionKey; saveSecrets(dataDir, secrets)
     }
-    const existing = (await db.get('catalog/' + streamId))?.value || {}
+    const node = await db.get('catalog/' + streamId)
+    const existing = node?.value || {}
     const feedKey = payload.feedKey ?? existing.feedKey ?? null
+    // Descriptive metadata is PANEL-authoritative (S27e): the broadcaster is just the
+    // stream, not the arbiter of what viewers see. It SEEDS title/description/category
+    // only when it first creates a channel; a re-register onto an existing record never
+    // touches them again (same admin-owned rule as art / EPG / curation / redirect).
+    // To rename or recategorize a P2P channel, edit it in the panel — broadcaster config
+    // changes to these fields no longer propagate after creation.
+    const seed = node ? {} : payload
     await db.put('catalog/' + streamId, {
-      title: payload.title ?? existing.title ?? streamId,
-      description: payload.description ?? existing.description ?? '',
-      category: payload.category ?? existing.category ?? [],
+      title: seed.title ?? existing.title ?? streamId,
+      description: seed.description ?? existing.description ?? '',
+      category: seed.category ?? existing.category ?? [],
       type: 'live',
       protection: payload.protection ?? existing.protection ?? 'self',
       feedKey,
