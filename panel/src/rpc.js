@@ -165,6 +165,10 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       // admin resolves the clash.)
       redirect: existing.redirect ?? false,
       url: existing.url ?? null,
+      // EPG pointers (S27) are admin-owned metadata too — a re-register must preserve
+      // them (a P2P channel can carry an admin-attached program guide).
+      epgUrl: existing.epgUrl ?? null,
+      epgId: existing.epgId ?? null,
       // Attribution (S26): which enrolled publisher made THIS write. Deliberately
       // not preserved from the previous record — a legacy (unnamed) register is
       // genuinely unattributed, and an audit field must never guess. Clients

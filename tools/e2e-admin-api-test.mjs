@@ -304,10 +304,10 @@ try {
   assert.strictEqual(r.status, 201)
   assert.strictEqual(r.body.catalog.order, 2, 'add-stream accepts order')
   assert.strictEqual(r.body.catalog.featured, true, 'add-stream accepts featured')
-  r = await api('PATCH', '/api/streams/movie-night', { order: 5, featured: true }, { token })
+  r = await api('PATCH', '/api/streams/movie-night', { order: 5, featured: true, epgUrl: 'https://epg.example/g.json', epgId: 'mn' }, { token })
   assert.strictEqual(r.status, 200)
 
-  // a broadcaster re-register must NOT erase admin curation (or art)
+  // a broadcaster re-register must NOT erase admin curation (or art, or EPG pointers)
   let pcall = null
   const pubSwarm = new Hyperswarm(); cleanups.push(() => pubSwarm.destroy())
   pubSwarm.on('connection', (s) => { if (!pcall) pcall = pubRpc(s).call })
@@ -321,7 +321,9 @@ try {
   assert.strictEqual(cat2.order, 5, 'register preserves order')
   assert.strictEqual(cat2.featured, true, 'register preserves featured')
   assert.strictEqual(cat2.poster, 'assets/movie-night/poster.png', 'register preserves art')
-  log('J: typed order/featured; re-register preserves curation ✓')
+  assert.strictEqual(cat2.epgUrl, 'https://epg.example/g.json', 'register preserves admin EPG pointer (epgUrl)')
+  assert.strictEqual(cat2.epgId, 'mn', 'register preserves admin EPG pointer (epgId)')
+  log('J: typed order/featured; re-register preserves curation + art + EPG pointers ✓')
 
   // ===== Test K: stream delete = FULL purge (S16a) =====
   r = await api('POST', '/api/users', { username: 'carol', password: 'carol-secret-1' }, { token })
