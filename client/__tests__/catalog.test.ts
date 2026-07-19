@@ -1,7 +1,7 @@
 // groupByCategory: 'All' is a real everything-rail pinned FIRST (P2P + CDN mix there),
 // genre categories follow; uncategorized channels live only in 'All'.
 
-import { groupByCategory } from '../src/catalog'
+import { groupByCategory, categoryModel, splitCategory, subLabel } from '../src/catalog'
 import type { Stream } from '../src/worklet'
 
 const s = (id: string, category?: string[], extra: Partial<Stream> = {}): Stream => ({ id, title: id, category, ...extra })
@@ -28,4 +28,28 @@ test('All exists even when every channel is categorized', () => {
   const groups = groupByCategory([s('a', ['X']), s('b', ['Y'])])
   expect(Object.keys(groups)[0]).toBe('All')
   expect(groups.All).toHaveLength(2)
+})
+
+test('splitCategory / subLabel parse the Parent/Sub hierarchy', () => {
+  expect(splitCategory('Anime/Español')).toEqual(['Anime', 'Español'])
+  expect(splitCategory('News')).toEqual(['News', undefined])
+  expect(subLabel('Anime/Español')).toBe('Español')
+  expect(subLabel('News')).toBe('News')
+})
+
+test('categoryModel: parent/sub tree; a channel joins BOTH its parent and sub groups', () => {
+  const m = categoryModel([
+    s('conan', ['Anime/Español'], { order: 1 }),
+    s('naruto', ['Anime/English'], { order: 2 }),
+    s('nhk', ['News/English'], { order: 3 }),
+    s('cnn', ['News/Español'], { order: 4 }),
+    s('mbc', ['Entertainment'], { order: 5 }) // no sub
+  ])
+  expect(m.top).toEqual(['All', 'Anime', 'News', 'Entertainment']) // All first, parents in curated order
+  expect([...m.subs.Anime].sort()).toEqual(['Anime/English', 'Anime/Español'])
+  expect([...m.subs.News].sort()).toEqual(['News/English', 'News/Español'])
+  expect(m.subs.Entertainment).toBeUndefined() // parent with no subs
+  expect(m.groups.Anime.map((x) => x.id).sort()).toEqual(['conan', 'naruto']) // parent = union of subs
+  expect(m.groups['Anime/Español'].map((x) => x.id)).toEqual(['conan']) // sub = just that one
+  expect(m.groups.All).toHaveLength(5)
 })

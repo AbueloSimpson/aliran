@@ -11,6 +11,9 @@ import { theme } from '../theme'
 
 export interface ChannelListPanelProps {
   streams: Stream[]
+  /** Header text — the current category/sub path (e.g. "NEWS  ›  ESPAÑOL"); stays pinned
+   *  above the list as it scrolls. Defaults to "CHANNELS". */
+  heading?: string
   numbers: Map<string, number>
   playingId: string | null
   favorites: string[]
@@ -20,7 +23,7 @@ export interface ChannelListPanelProps {
   onActivity?: () => void
 }
 
-export function ChannelListPanel ({ streams, numbers, playingId, favorites, onSelect, onInfo, onActivity }: ChannelListPanelProps) {
+export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onActivity }: ChannelListPanelProps) {
   const listRef = useRef<FlatList<Stream>>(null)
   const playingIndex = streams.findIndex((s) => s.id === playingId)
   // On open, bring the currently-playing channel into view. On TV the D-pad focus
@@ -36,7 +39,7 @@ export function ChannelListPanel ({ streams, numbers, playingId, favorites, onSe
   }, [playingIndex])
   return (
     <View style={styles.panel}>
-      <Text style={styles.header}>CHANNELS</Text>
+      <Text style={styles.header} numberOfLines={1}>{heading}</Text>
       <FlatList
         ref={listRef}
         data={streams}

@@ -29,7 +29,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranVideo, type TuneEvent } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
-import { channelNumbers, groupByCategory, pickHero, sortByCuration } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, sortByCuration } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
@@ -71,7 +71,11 @@ export function LiveScreen ({ route }: Props) {
   const [playingId, setPlayingId] = useState<string | null>(() => route.params?.streamId ?? lastStreamId ?? pickHero(backend.streams)?.id ?? null)
   const [overlay, setOverlay] = useState<Overlay>((route.params?.streamId || lastStreamId) ? 'none' : 'list')
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
-  const [category, setCategory] = useState<string | null>(null)
+  // Two-level category browse: `selected` is the group key whose channels show
+  // ('All' | 'Anime' | 'Anime/Español'); `drillParent` is the parent whose sub-categories
+  // the rail is currently showing (null = top-level rail). See CategoryRail.
+  const [selected, setSelected] = useState<string>('All')
+  const [drillParent, setDrillParent] = useState<string | null>(null)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -91,6 +95,8 @@ export function LiveScreen ({ route }: Props) {
 
   const overlayRef = useRef(overlay); overlayRef.current = overlay
   const playingIdRef = useRef(playingId); playingIdRef.current = playingId
+  const drillRef = useRef(drillParent); drillRef.current = drillParent
+  const selectedRef = useRef(selected); selectedRef.current = selected
 
   useEffect(() => {
     backend.requestPrefs() // favorites may not be loaded yet
@@ -136,10 +142,17 @@ export function LiveScreen ({ route }: Props) {
   useEffect(() => clearBarIdle, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
-  const groups = useMemo(() => groupByCategory(streams), [streams])
-  const categories = useMemo(() => Object.keys(groups), [groups])
-  const activeCategory = category && groups[category] ? category : categories[0] ?? null
-  const list = activeCategory ? groups[activeCategory] : []
+  const model = useMemo(() => categoryModel(streams), [streams])
+  // `selected` may reference a group that vanished after a catalog change; fall back to All.
+  const activeKey = model.groups[selected] ? selected : 'All'
+  const list = model.groups[activeKey] ?? []
+  // Rail contents: top-level categories, or (when drilled) the parent's sub-categories.
+  const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
+  const railItems = inDrill
+    ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
+    : model.top.map((key) => ({ key, label: key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
+  const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0] // top view highlights the parent
+  const listHeading = activeKey === 'All' ? 'CHANNELS' : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toUpperCase()).join('  ›  ')
   const playing = streams.find(s => s.id === playingId) ?? null
 
   // First streams push after a cold navigation: start the hero channel (the tuning
@@ -166,11 +179,25 @@ export function LiveScreen ({ route }: Props) {
     if (collapse) setOverlay('none')
   }
 
-  // Picking a category always shows its channel LIST: from the browse list it just
-  // re-scopes it; from the channel-detail (info) overlay it leaves detail and returns
-  // to the list for that category (else the tap looked like it did nothing).
-  function selectCategory (c: string) {
-    setCategory(c)
+  // Rail tap. Top-level: a parent WITH sub-categories drills in (rail then shows its subs,
+  // list shows all of that parent); a leaf category just scopes the list. Drilled: tapping
+  // a sub scopes the list; tapping the already-selected sub deselects it (back to the
+  // sub-select, showing all of the parent). Any pick shows the channel LIST — from the
+  // channel-detail (info) overlay this leaves detail (else the tap looked like it did nothing).
+  function selectRail (key: string) {
+    if (drillParent == null) {
+      if ((model.subs[key]?.length ?? 0) > 0) { setDrillParent(key); setSelected(key) } // drill into a parent
+      else setSelected(key)
+    } else {
+      setSelected(key === selected ? drillParent : key) // re-tap selected sub -> back to sub-select
+    }
+    setOverlay('list')
+  }
+
+  // Leave the drilled sub-category view, back to the top-level rail (parent stays selected).
+  function exitDrill () {
+    if (drillParent != null) setSelected(drillParent)
+    setDrillParent(null)
     setOverlay('list')
   }
 
@@ -235,7 +262,13 @@ export function LiveScreen ({ route }: Props) {
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       if (overlayRef.current === 'info') { setOverlay('list'); return true }
-      if (overlayRef.current === 'list') { setOverlay('none'); return true } // hide the left menu
+      if (overlayRef.current === 'list') {
+        // Unwind the category drill before the overlay: sub selected -> back to sub-select;
+        // drilled (no sub) -> back to the top-level rail; else hide the left menu.
+        if (drillRef.current != null && selectedRef.current !== drillRef.current) { setSelected(drillRef.current); return true }
+        if (drillRef.current != null) { setDrillParent(null); return true }
+        setOverlay('none'); return true // hide the left menu
+      }
       return false // fullscreen: default back = exit to Menu
     })
     return () => sub.remove()
@@ -308,15 +341,22 @@ export function LiveScreen ({ route }: Props) {
         </View>
       )}
 
-      {overlay !== 'none' && activeCategory && (
+      {overlay !== 'none' && (
         <View style={styles.panels} onTouchStart={bumpMenuIdle}>
           <FocusPane autoFocus style={styles.railPane}>
-            <CategoryRail categories={categories} selected={activeCategory} onSelect={selectCategory} onActivity={bumpMenuIdle} />
+            <CategoryRail
+              items={railItems}
+              selected={railSelected}
+              parentHeader={inDrill ? { label: drillParent!, onBack: exitDrill } : undefined}
+              onSelect={selectRail}
+              onActivity={bumpMenuIdle}
+            />
           </FocusPane>
           <FocusPane autoFocus style={styles.listPane}>
             {overlay === 'list' ? (
               <ChannelListPanel
                 streams={list}
+                heading={listHeading}
                 numbers={numbers}
                 playingId={playingId}
                 favorites={favorites}
