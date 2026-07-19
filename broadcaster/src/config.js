@@ -57,6 +57,20 @@ export const config = {
   // for hosts that must keep the disk byte-flat. Both stay window-bounded via reclaim.
   // See docs/kb/feed-buffer.md.
   feedBuffer: process.env.FEED_BUFFER === 'ram' ? 'ram' : 'disk',
+  // Periodic feed rotation (disk mode). A disk feed's Corestore is append-only: blob
+  // clear() reclaims rotated SEGMENT data (O(window)), but the merkle TREE/metadata is
+  // never freed and grows for the feed's whole lifetime (~a couple MB/h per channel).
+  // Rotating the feed mints a fresh generation (like a source change) and purges the
+  // retired generation's cores, resetting that growth. Viewers follow the new feedKey
+  // live over the catalog (no re-login). The cost is a one-time cold DHT topic for
+  // viewers returning across the rotation, so keep it INFREQUENT to preserve disk mode's
+  // warm-topic benefit. 0 disables (the default — orphan-namespace GC still runs at
+  // start; enable this for multi-week 24/7 channels). See docs/kb/feed-buffer.md.
+  feedRotate: {
+    hours: int(process.env.FEED_ROTATE_HOURS, 0), // rotate a running feed every N hours (0 = off)
+    treeMb: int(process.env.FEED_ROTATE_TREE_MB, 0), // ...or once its merkle tree exceeds N MB (0 = off)
+    graceMs: int(process.env.FEED_ROTATE_GRACE_MS, 30000) // keep the retired feed serving+announced this long
+  },
   // Global entry budget for the per-feed Hyperbee caches (decoded nodes + keys), shared
   // across ALL channels' cores. Unbounded, these grow with every metadata append (~1.5 KB
   // per entry, one entry per append) — the long-uptime RSS leak. 8192 entries ≈ 10-15 MB

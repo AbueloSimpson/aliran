@@ -20,7 +20,8 @@ import Corestore from 'corestore'
 import RAM from 'random-access-memory'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
-import { mirrorDirToDrive, reclaimExpiredBlobs } from '../broadcaster/src/hls.js'
+import b4a from 'b4a'
+import { mirrorDirToDrive, reclaimExpiredBlobs, purgeStaleCores, feedTreeBytes } from '../broadcaster/src/hls.js'
 
 const log = (...a) => console.log(...a)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -71,6 +72,43 @@ function allocatedBytes (dir) {
     }
   }
   walk(dir)
+  return total
+}
+
+// The leaf core directories corestore lays out at cores/<aa>/<bb>/<discoveryKeyHex>/ — one
+// per hypercore (a hyperdrive has two: metadata + blobs). The set of feed-generation cores.
+function listCoreDirs (storeDir) {
+  const out = new Set()
+  const cores = path.join(storeDir, 'cores')
+  let l1 = []
+  try { l1 = fs.readdirSync(cores) } catch { return out }
+  for (const a of l1) {
+    let l2 = []
+    try { l2 = fs.readdirSync(path.join(cores, a)) } catch { continue }
+    for (const b of l2) {
+      let leaves = []
+      try { leaves = fs.readdirSync(path.join(cores, a, b)) } catch { continue }
+      for (const id of leaves) if (/^[0-9a-f]{64}$/.test(id)) out.add(id)
+    }
+  }
+  return out
+}
+
+// Allocated bytes of every append-only `tree` file across the store — the merkle metadata
+// blob clear() never frees. This is what grows for a feed's whole lifetime and what
+// whole-namespace GC (purgeStaleCores) is here to bound.
+function allTreeBytes (storeDir) {
+  let total = 0
+  const walk = (d) => {
+    let ents = []
+    try { ents = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of ents) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (e.name === 'tree') { try { const b = fs.statSync(p).blocks; total += (typeof b === 'number' ? b * 512 : fs.statSync(p).size) } catch {} }
+    }
+  }
+  walk(path.join(storeDir, 'cores'))
   return total
 }
 
@@ -243,6 +281,87 @@ async function scenarioBeeCacheBounded () {
   await store.close()
 }
 
+// --- Scenario D: whole-namespace GC bounds metadata, not just blob data ------------------
+// blob clear() (scenarios A/B) reclaims rotated SEGMENT data, keeping the CURRENT feed's
+// stored blocks O(window). But a disk channel's Corestore accumulates the cores of every
+// feed GENERATION it has run (a source change or a periodic rotation bumps feedGen → a new
+// namespace → new cores). Those retired cores' append-only merkle TREES are never freed by
+// clear() — the slow metadata creep that fills a disk over weeks. purgeStaleCores drops a
+// retired generation's whole core directory. This proves the store's on-disk tree/namespace
+// bytes track the CURRENT generation after GC, not the accumulated history, and that the
+// live generation survives intact — plus the empty-keep-set safety guard.
+async function scenarioNamespaceGc () {
+  const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-retention-d-store-'))
+  const encryptionKey = crypto.randomBytes(32)
+  const store = new Corestore(storeDir)
+
+  // Generation 0 (the retired-to-be feed): grow a real tree with many appends, then clear
+  // its blob data (the rolling reclaim). Data shrinks; the merkle tree stays = dead weight.
+  const d0 = new Hyperdrive(store.namespace('feed'), { encryptionKey })
+  await d0.ready()
+  const b0 = await d0.getBlobs()
+  for (let i = 0; i < 300; i++) {
+    await d0.put(`/seg${i}.ts`, seg(i))
+    await d0.put('/index.m3u8', playlist([`seg${i}.ts`]))
+  }
+  await b0.core.clear(0, b0.core.length) // reclaim ALL blob data — only the tree remains
+  const gen0 = [b4a.toString(d0.discoveryKey, 'hex'), b4a.toString(b0.core.discoveryKey, 'hex')]
+
+  // Generation 1 (the current feed): a small live window.
+  const d1 = new Hyperdrive(store.namespace('feed-gen-1'), { encryptionKey })
+  await d1.ready()
+  const b1 = await d1.getBlobs()
+  for (let i = 0; i < 5; i++) await d1.put(`/seg${i}.ts`, seg(i))
+  await d1.put('/index.m3u8', playlist([0, 1, 2, 3, 4].map((i) => `seg${i}.ts`)))
+  const gen1 = [b4a.toString(d1.discoveryKey, 'hex'), b4a.toString(b1.core.discoveryKey, 'hex')]
+
+  const dirsBefore = listCoreDirs(storeDir)
+  const gen0TreeBefore = feedTreeBytes(storeDir, gen0)
+  const treeBefore = allTreeBytes(storeDir)
+  log(`  …  two generations present: ${dirsBefore.size} core dirs, gen0 tree ${(gen0TreeBefore / 1e3).toFixed(1)} kB, store tree total ${(treeBefore / 1e3).toFixed(1)} kB`)
+  assert.strictEqual(dirsBefore.size, 4, 'both generations laid down two cores each (4 core dirs)')
+  assert.ok(gen0TreeBefore > 0, 'the retired generation has a real, non-empty merkle tree (dead weight blob reclaim cannot touch)')
+  assert.ok(feedTreeBytes(storeDir, gen1) > 0, 'the current generation has its tree too')
+
+  // Close everything so the on-disk files are releasable (Windows), like a broadcaster that
+  // reopens the store on start and GCs before touching the live feed.
+  await d0.close(); await d1.close(); await store.close()
+
+  // GC keeping ONLY the current generation.
+  const keep = new Set(gen1)
+  const res = purgeStaleCores(storeDir, keep)
+  log(`  …  purgeStaleCores removed ${res.removed} retired core dir(s), freed ${(res.bytesFreed / 1e6).toFixed(2)} MB`)
+  assert.strictEqual(res.removed, 2, 'exactly the retired generation\'s two cores were purged')
+  assert.ok(res.bytesFreed > 0, 'purge reported freed bytes')
+
+  const dirsAfter = listCoreDirs(storeDir)
+  assert.deepStrictEqual([...dirsAfter].sort(), [...keep].sort(), 'only the current generation\'s cores remain on disk')
+  assert.strictEqual(feedTreeBytes(storeDir, gen0), 0, 'the retired generation\'s tree bytes are gone (namespace removed), not merely its blob data')
+  const treeAfter = allTreeBytes(storeDir)
+  assert.ok(treeAfter < treeBefore, `store tree bytes dropped after GC (${(treeAfter / 1e3).toFixed(1)} kB < ${(treeBefore / 1e3).toFixed(1)} kB) — metadata is bounded, not just blob data`)
+  assert.ok(treeAfter <= feedTreeBytes(storeDir, gen1) + 4096, 'remaining tree bytes track the current generation only')
+  log('  ok  metadata bounded: the store keeps only the current generation\'s tree after GC')
+
+  // The current generation survives the purge intact and readable.
+  const store2 = new Corestore(storeDir)
+  const d1b = new Hyperdrive(store2.namespace('feed-gen-1'), { encryptionKey })
+  await d1b.ready()
+  assert.ok(!!(await d1b.entry('/index.m3u8')), 'current feed playlist still present after GC')
+  const kept = await d1b.get('/seg4.ts')
+  assert.ok(kept && kept.equals(seg(4)), 'a current-feed segment is still readable after GC')
+  log('  ok  the current generation replicates unharmed by the purge')
+
+  // Safety guard: an empty keep set must be a no-op — never nuke a store because a caller
+  // failed to resolve the live discovery keys.
+  const res2 = purgeStaleCores(storeDir, new Set())
+  assert.strictEqual(res2.removed, 0, 'empty keep set purges nothing')
+  assert.deepStrictEqual(listCoreDirs(storeDir), dirsAfter, 'empty keep set left the store untouched')
+  log('  ok  empty keep set is a safe no-op (never deletes the running feed)')
+
+  await d1b.close(); await store2.close()
+  fs.rmSync(storeDir, { recursive: true, force: true })
+}
+
 try {
   log('scenario A — RAM, clean rotation')
   await scenarioRamCleanRotation()
@@ -250,7 +369,9 @@ try {
   await scenarioDiskOrphanAndRestart()
   log('scenario C — bee metadata caches bounded (globalCache budget)')
   await scenarioBeeCacheBounded()
-  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded)')
+  log('scenario D — whole-namespace GC bounds metadata (retired feed generations purged)')
+  await scenarioNamespaceGc()
+  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded; retired feed generations purged so metadata stays bounded)')
   process.exit(0)
 } catch (err) {
   console.error('ERROR:', err.stack || err.message)

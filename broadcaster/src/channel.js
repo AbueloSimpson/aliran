@@ -33,7 +33,7 @@ import net from 'net'
 import dgram from 'dgram'
 import path from 'path'
 import os from 'os'
-import { startFfmpeg, mirrorDirToDrive, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
+import { startFfmpeg, mirrorDirToDrive, purgeStaleCores, feedTreeBytes, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
 
@@ -265,6 +265,11 @@ const WD = {
 // operator start() clears it, a watchdog respawn only appends a restart marker.
 const LOG_RING_MAX = 400
 
+// Periodic orphan-namespace GC cadence while a channel runs — belt-and-suspenders on top of
+// the start-time sweep and each rotation's own teardown purge (catches anything a crash or
+// a partially-completed rotation stranded). Cheap: a shallow directory scan under cores/.
+const GC_INTERVAL_MS = 30 * 60000
+
 // Deep-equal for typed input objects — flat, primitive-valued (see normalizeInput). Used
 // to decide whether a PATCH actually changed a channel's SOURCE (→ rotate the feed).
 function inputsEqual (a, b) {
@@ -370,6 +375,9 @@ class Channel {
     await store.ready()
     const drive = new Hyperdrive(store.namespace(this.feedNamespace()), { encryptionKey })
     await drive.ready()
+    // Materialize the blobs core now so its discovery key is known before the first GC /
+    // rotation (the mirror opens it too; getBlobs caches, so this is a one-time cost).
+    await drive.getBlobs()
     const feedKeyHex = b4a.toString(drive.key, 'hex')
     this.meta.feedKey = feedKeyHex
 
@@ -382,7 +390,11 @@ class Channel {
     const swarm = new Hyperswarm(maxPeers ? { bootstrap, maxPeers } : { bootstrap })
     swarm.on('connection', (socket) => {
       if (maxPeers && swarm.connections.size > maxPeers) { socket.destroy(); return }
-      drive.replicate(socket)
+      // Replicate the whole STORE (equivalent to drive.replicate — hyperdrive.replicate
+      // delegates to its corestore), so both the current AND a retired-but-still-draining
+      // feed generation (both live in this one store) are served to peers that ask for
+      // either discovery key. Peers request only the feedKey their catalog points at.
+      store.replicate(socket)
     })
     swarm.join(drive.discoveryKey, { server: true, client: false })
     await swarm.flush()
@@ -404,6 +416,16 @@ class Channel {
       feedKey: feedKeyHex,
       encryptionKey: b4a.toString(encryptionKey, 'hex'),
       startedAt: now,
+      // Periodic feed rotation (disk mode): the generation is hot-swapped in place while
+      // ffmpeg keeps running. `drainMirrors` holds the just-retired generation's mirror(s)
+      // still replicating through the grace window; `rotateGraceUntil`/`rotating` gate the
+      // scheduled trigger and periodic GC off the live path during a rotation.
+      lastRotateAt: now,
+      lastGcAt: now,
+      rotating: false,
+      rotateTimer: null,
+      rotateGraceUntil: 0,
+      drainMirrors: [], // [{ stopMirror }] — retired generations mid-grace
       ff: null,
       ffmpegExit: null,
       // S15b watchdog: keeps ffmpeg alive across source hiccups (crash, empty/off-air
@@ -432,6 +454,10 @@ class Channel {
     this.run = run
     this._spawnFfmpeg(run)
     this._startWatchdog(run)
+    // Drop any generations a prior run left behind (source changes, past rotations, an
+    // unclean exit): in disk mode the store persists every generation's cores across
+    // restarts, so this is where a reopened store sheds the orphaned metadata trees.
+    this._gcStaleCores(run)
 
     // Panel registration is now the manager's job: manager.start() enqueues the live
     // register through the ONE manager-owned PanelLink (see panel-link.js). This returns
@@ -514,6 +540,18 @@ class Channel {
           }
         }
       }
+      // Periodic maintenance (disk mode): rotate the feed generation when due — bounds the
+      // never-reclaimed merkle-tree growth — and otherwise sweep any orphaned generations a
+      // past rotation/crash stranded. Only rotate a HEALTHY, advancing feed; both stand down
+      // during an in-flight rotation (see _rotateDue / _gcStaleCores).
+      if (!wd.stopped && this.run === run) {
+        if (ffAlive && wd.everAdvanced && this._rotateDue(run)) {
+          this._rotateFeed(run, 'scheduled').catch((err) => this._log('--- rotate error: ' + (err && err.message) + ' ---'))
+        } else if (Date.now() - run.lastGcAt >= GC_INTERVAL_MS) {
+          run.lastGcAt = Date.now()
+          this._gcStaleCores(run)
+        }
+      }
       if (!wd.stopped && this.run === run) wd.timer = setTimeout(check, WD.checkIntervalMs)
     }
     wd.timer = setTimeout(check, WD.checkIntervalMs)
@@ -540,6 +578,132 @@ class Channel {
     }, wd.backoffMs)
   }
 
+  // --- disk-mode storage bounding: orphan GC + periodic feed rotation -------------------
+
+  // Discovery keys (hex) of the CURRENT generation's live cores (metadata + blobs) — the
+  // GC keep set. Read straight off the open drive, so they are correct by construction.
+  _liveCoreDiscs (run) {
+    const set = new Set()
+    try { if (run.drive && run.drive.discoveryKey) set.add(b4a.toString(run.drive.discoveryKey, 'hex')) } catch {}
+    try {
+      const bc = run.drive && run.drive.blobs && run.drive.blobs.core
+      if (bc && bc.discoveryKey) set.add(b4a.toString(bc.discoveryKey, 'hex'))
+    } catch {}
+    return set
+  }
+
+  // Delete the on-disk cores of every RETIRED feed generation (source changes, past
+  // rotations, unclean exits) — the append-only metadata trees blob reclaim never frees.
+  // Disk mode only; stands down while a rotation's grace window is open (the retired
+  // generation is still replicating then — its own teardown purges it). Refuses to run
+  // unless BOTH live discovery keys are known, so a half-open drive can never delete the
+  // running feed (see purgeStaleCores' empty-keep-set guard).
+  _gcStaleCores (run) {
+    if (this.run !== run) return
+    if ((this.meta.buffer || this.manager.config.feedBuffer || 'disk') === 'ram') return
+    if (run.rotating || Date.now() < (run.rotateGraceUntil || 0)) return
+    const keep = this._liveCoreDiscs(run)
+    if (keep.size < 2) return // both current cores must be resolved before we delete siblings
+    try {
+      const r = purgeStaleCores(this.storeDir, keep)
+      if (r.removed > 0) this._log(`--- gc: purged ${r.removed} retired feed-generation core dir(s), ${(r.bytesFreed / 1e6).toFixed(1)} MB freed ---`)
+    } catch {}
+  }
+
+  // Is a scheduled feed rotation due? Disk mode only; never while stopped, rotating, or
+  // inside a grace window. Triggers on age (FEED_ROTATE_HOURS since the last rotation/start)
+  // or the live merkle tree crossing FEED_ROTATE_TREE_MB. Both 0 (default) = never.
+  _rotateDue (run) {
+    if ((this.meta.buffer || this.manager.config.feedBuffer || 'disk') === 'ram') return false
+    if (run.rotating || Date.now() < (run.rotateGraceUntil || 0)) return false
+    const rc = this.manager.config.feedRotate || {}
+    if (rc.hours > 0 && Date.now() - (run.lastRotateAt || run.startedAt) >= rc.hours * 3600000) return true
+    if (rc.treeMb > 0 && feedTreeBytes(this.storeDir, this._liveCoreDiscs(run)) >= rc.treeMb * 1e6) return true
+    return false
+  }
+
+  // Operator-triggered feed rotation (control API POST /api/channels/:id/rotate).
+  async rotateFeed () {
+    const run = this.run
+    if (!run) bad(`channel "${this.meta.id}" is not running`)
+    if ((this.meta.buffer || this.manager.config.feedBuffer || 'disk') === 'ram') {
+      bad('feed rotation applies to disk-buffer channels only (a ram feed already rotates on every restart)')
+    }
+    if (run.rotating || Date.now() < (run.rotateGraceUntil || 0)) bad(`channel "${this.meta.id}" is already rotating`)
+    await this._rotateFeed(run, 'manual')
+    return { id: this.meta.id, feedKey: run.feedKey, feedGen: this.meta.feedGen }
+  }
+
+  // Hot feed rotation (disk mode). Mint the next generation's drive over a fresh namespace,
+  // mirror the SAME live window into it (ffmpeg is untouched), announce its topic, and make
+  // it the served feed — then retire the previous generation: keep it replicating +
+  // announced through the grace window so in-flight viewers finish following the catalog to
+  // the new feedKey, and finally tear it down and purge its cores. The ENCRYPTION key is
+  // unchanged (grants survive); only the feedKey/discovery topic moves, which watching
+  // viewers follow live via the catalog (sdk _maybeReresolveActiveFeed → 'feed-changed').
+  async _rotateFeed (run, reason) {
+    if (this.run !== run || run.rotating) return
+    run.rotating = true
+    let newDrive = null
+    let newStopMirror = null
+    try {
+      const encryptionKey = loadOrCreateEncryptionKey(this.storeDir)
+      const newGen = (this.meta.feedGen || 0) + 1
+      newDrive = new Hyperdrive(run.store.namespace('feed-gen-' + newGen), { encryptionKey })
+      await newDrive.ready()
+      await newDrive.getBlobs()
+      // Mirror the SAME live window into the new generation (ffmpeg is untouched).
+      if (this.run !== run) return // stopped mid-rotate — finally cleans up newDrive
+      newStopMirror = mirrorDirToDrive(run.outDir, newDrive, { interval: 500 })
+
+      // Announce the new topic BEFORE swapping so it is discoverable the moment viewers
+      // learn the new feedKey. join()/flush() can race a concurrent stop() — guard after.
+      try { run.swarm.join(newDrive.discoveryKey, { server: true, client: false }); await run.swarm.flush() } catch {}
+      if (this.run !== run) return // finally cleans up newStopMirror + newDrive
+
+      // Commit the swap synchronously (no awaits from here) so a concurrent stop() sees a
+      // consistent run: the retired generation goes on the drain list as the new one lands.
+      const oldDrive = run.drive
+      const oldStopMirror = run.stopMirror
+      const oldDiscovery = oldDrive.discoveryKey
+      const newFeedKeyHex = b4a.toString(newDrive.key, 'hex')
+      run.drive = newDrive
+      run.stopMirror = newStopMirror
+      run.feedKey = newFeedKeyHex
+      run.lastRotateAt = Date.now()
+      run.drainMirrors.push({ stopMirror: oldStopMirror })
+      this.meta.feedGen = newGen
+      this.meta.feedKey = newFeedKeyHex
+      newDrive = null // ownership transferred to run — don't close it in finally
+      newStopMirror = null
+
+      const graceMs = this.manager.config.feedRotate?.graceMs ?? 30000
+      run.rotateGraceUntil = Date.now() + graceMs
+      this._log(`--- rotate: feed → generation ${newGen} (${reason}); retiring previous feed for ${Math.round(graceMs / 1000)}s ---`)
+
+      // Re-register the new feedKey (isLive:true) so watching viewers' catalog-follow picks
+      // it up, and persist the new generation to the registry.
+      this.manager._reregisterLive(this, run)
+
+      // Grace teardown: stop the retired mirror, leave its topic, close it, purge its cores.
+      run.rotateTimer = setTimeout(async () => {
+        run.rotateTimer = null
+        run.rotateGraceUntil = 0
+        try { oldStopMirror() } catch {}
+        const idx = run.drainMirrors.findIndex((d) => d.stopMirror === oldStopMirror)
+        if (idx >= 0) run.drainMirrors.splice(idx, 1)
+        try { run.swarm.leave(oldDiscovery) } catch {}
+        try { await oldDrive.close() } catch {} // release the retired cores so the purge can unlink them
+        if (this.run === run) this._gcStaleCores(run)
+      }, graceMs)
+    } finally {
+      run.rotating = false
+      // Aborted before committing (stopped mid-rotate): tear down the half-built new gen.
+      if (newStopMirror) { try { newStopMirror() } catch {} }
+      if (newDrive) { try { await newDrive.close() } catch {} }
+    }
+  }
+
   async stop () {
     const run = this.run
     if (!run) bad(`channel "${this.meta.id}" is not running`)
@@ -549,6 +713,11 @@ class Channel {
     run.watchdog.stopped = true
     if (run.watchdog.timer) { clearTimeout(run.watchdog.timer); run.watchdog.timer = null }
     if (run.watchdog.respawnTimer) { clearTimeout(run.watchdog.respawnTimer); run.watchdog.respawnTimer = null }
+    // Cancel a pending rotation grace teardown and stop every mirror (current + any retired
+    // generation still draining); run.store.close() below closes all their cores.
+    if (run.rotateTimer) { clearTimeout(run.rotateTimer); run.rotateTimer = null }
+    for (const d of run.drainMirrors) { try { d.stopMirror() } catch {} }
+    run.drainMirrors = []
     run.stopMirror()
     try { run.ff.kill('SIGINT') } catch {}
     // Give ffmpeg a moment to exit; force-kill if it ignores SIGINT (Windows).
@@ -706,6 +875,14 @@ export class ChannelManager {
       protection: ch.meta.protection || 'self',
       isLive: true
     })
+  }
+
+  // Re-announce a running channel's CURRENT feedKey to the panel (isLive:true) after a hot
+  // feed rotation, so watching viewers' catalog-follow picks up the new key, and persist the
+  // rotated generation (feedGen/feedKey moved) to the registry.
+  _reregisterLive (ch, run) {
+    this._save()
+    this.panelLink.setDesired(ch.meta.id, this._livePayload(ch, { feedKey: run.feedKey, encryptionKey: run.encryptionKey }))
   }
 
   // Newest-last ffmpeg log lines for a channel (S15b log ring; the S15c control API exposes it).
@@ -916,6 +1093,10 @@ export class ChannelManager {
     await this.panelLink.flush(id, seq, 5000)
     return { id, running: false }
   }
+
+  // Mint a fresh feed generation for a running disk-mode channel now, bounding the feed's
+  // never-reclaimed merkle-tree growth. Viewers follow the new feedKey live (no re-login).
+  async rotate (id) { return this._get(id).rotateFeed() }
 
   async get (id) { return this._get(id).status() }
 

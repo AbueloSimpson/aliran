@@ -19,6 +19,8 @@
 //   DELETE /api/channels/:id             remove from registry (must be stopped; data kept)
 //   POST   /api/channels/:id/start
 //   POST   /api/channels/:id/stop
+//   POST   /api/channels/:id/rotate       disk mode: mint a fresh feed generation now
+//                                          (bounds merkle-tree growth; viewers follow live)
 //   GET    /api/channels/:id/logs?lines=N  ffmpeg stderr ring → {lines,running,restarts,state}
 //   GET    /api/admins
 //   POST   /api/admins                   {username,password}
@@ -130,6 +132,7 @@ export function startControlServer (ctx, opts = {}) {
       if (seg.length === 4 && req.method === 'POST') {
         if (r3 === 'start') return sendJson(res, 200, await ctx.manager.start(r2))
         if (r3 === 'stop') return sendJson(res, 200, await ctx.manager.stop(r2))
+        if (r3 === 'rotate') return sendJson(res, 200, await ctx.manager.rotate(r2))
       }
       // The per-channel ffmpeg stderr ring (S15b) — why a source won't play. Survives
       // watchdog respawns (restart markers); cleared on an operator start.

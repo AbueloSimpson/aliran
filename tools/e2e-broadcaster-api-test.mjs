@@ -53,6 +53,8 @@ const dirs = {
   bc2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc2-')), // S15b: "restart" a broadcaster over the same dataDir
   viewer: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view-')),
   viewer2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view2-')),
+  viewer3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view3-')), // F5 hot-rotation gen0 viewer
+  viewer4: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-view4-')), // F5 hot-rotation gen1 viewer
   bc3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bc3-')), // S20a: SWARM_MAX_PEERS cap test
   bcR: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-bcr-')), // FFMPEG_MAX_RSS_MB recycle test
   procR: fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-proc-')), // fake /proc for the recycle test
@@ -105,6 +107,9 @@ try {
     bootstrap: [],
     hls: { time: 2, listSize: 6 },
     feedBuffer: 'disk', // production default; channels below opt into 'ram' explicitly
+    // Scheduled rotation OFF (hours/treeMb 0) so the long test never auto-rotates; a SHORT
+    // grace so Test F5's manual rotation tears the retired generation down promptly.
+    feedRotate: { hours: 0, treeMb: 0, graceMs: 2000 },
     argon2: { memKiB: 8192, time: 1 }
   }
   const manager = new ChannelManager(bcConfig); await manager.init(); cleanups.push(() => manager.close())
@@ -311,6 +316,52 @@ try {
   assert.strictEqual((await api('POST', '/api/channels/rotate-chan/stop', undefined, token)).status, 200, 'stop rotate-chan again')
   assert.strictEqual((await api('DELETE', '/api/channels/rotate-chan', undefined, token)).status, 200, 'cleanup rotate-chan')
   log('F4: disk source change rotates the feedKey (stale-replica fix); same-source PATCH does not; grants survive; blobsKey cleared + re-enriched ✓')
+
+  // ===== Test F5: HOT feed rotation (disk mode) bounds metadata; viewers follow live =====
+  // F4 rotates across a stop/start (source change). Here the feed rotates WHILE RUNNING
+  // (POST /rotate): ffmpeg is untouched, a fresh generation is minted + mirrored + announced,
+  // the panel catalog follows the new feedKey (so watching viewers re-resolve live), a fresh
+  // viewer replicates the ROTATED feed end to end, and after the grace window the retired
+  // generation's on-disk cores are PURGED — the whole point: metadata stops accumulating.
+  r = await api('POST', '/api/channels', { id: 'hotrot-chan', title: 'Hot Rotate', input: 'test', buffer: 'disk' }, token)
+  assert.strictEqual(r.status, 201, 'add hotrot-chan: ' + JSON.stringify(r.body))
+  const hotEnc = r.body.encryptionKey
+  r = await api('POST', '/api/channels/hotrot-chan/start', undefined, token)
+  assert.strictEqual(r.status, 200, 'start hotrot-chan')
+  const hotKey1 = r.body.feedKey
+  await waitFor(async () => {
+    const x = (await api('GET', '/api/channels/hotrot-chan', undefined, token)).body
+    return x.running && x.ffmpegUp && x.playlist && x.registered ? x : null
+  }, 90000, 'hotrot-chan running + registered (gen 0)')
+  assert.strictEqual(manager.channels.get('hotrot-chan').meta.feedGen ?? 0, 0, 'starts at generation 0')
+  await ffprobeValidateFeed(hotKey1, hotEnc, dirs.viewer3) // gen0 replicates + ffprobe-validates
+  // Where gen 0's metadata core lives on disk (must be gone after the rotation grace).
+  const hotStoreDir = manager.channels.get('hotrot-chan').storeDir
+  const gen0Disc = b4a.toString(hcrypto.discoveryKey(b4a.from(hotKey1, 'hex')), 'hex')
+  const gen0CoreDir = path.join(hotStoreDir, 'cores', gen0Disc.slice(0, 2), gen0Disc.slice(2, 4), gen0Disc)
+  assert.ok(fs.existsSync(gen0CoreDir), 'gen 0 metadata core is on disk before rotation')
+
+  // HOT rotate — ffmpeg keeps running.
+  r = await api('POST', '/api/channels/hotrot-chan/rotate', undefined, token)
+  assert.strictEqual(r.status, 200, 'rotate hotrot-chan: ' + JSON.stringify(r.body))
+  const hotKey2 = r.body.feedKey
+  assert.match(hotKey2, /^[0-9a-f]{64}$/, 'rotation minted a new feedKey')
+  assert.notStrictEqual(hotKey2, hotKey1, 'hot rotation moved the feedKey to a new generation')
+  assert.strictEqual(r.body.feedGen, 1, 'feedGen bumped to 1')
+  const hotStatus = (await api('GET', '/api/channels/hotrot-chan', undefined, token)).body
+  assert.strictEqual(hotStatus.running && hotStatus.ffmpegUp, true, 'ffmpeg kept running across the hot rotation')
+  assert.strictEqual(hotStatus.feedKey, hotKey2, 'status reports the rotated feedKey')
+  assert.strictEqual(manager.channels.get('hotrot-chan').encryptionKeyHex(), hotEnc, 'encryption key unchanged (grants survive the hot rotation)')
+  // The panel catalog follows the new feedKey — this is what makes watching viewers re-resolve.
+  await waitFor(async () => (await db.get('catalog/hotrot-chan'))?.value?.feedKey === hotKey2, 30000, 'panel catalog follows the rotated feedKey')
+  // A fresh viewer replicates the ROTATED feed end to end (the new generation is a real live feed).
+  await ffprobeValidateFeed(hotKey2, hotEnc, dirs.viewer4)
+  // After the grace window the retired generation's cores are purged (metadata bounded).
+  await waitFor(async () => !fs.existsSync(gen0CoreDir), 30000, 'retired generation 0 cores purged after grace')
+  assert.strictEqual((await api('POST', '/api/channels/hotrot-chan/rotate', undefined, token)).status, 200, 'a second hot rotation works too')
+  assert.strictEqual((await api('POST', '/api/channels/hotrot-chan/stop', undefined, token)).status, 200, 'stop hotrot-chan')
+  assert.strictEqual((await api('DELETE', '/api/channels/hotrot-chan', undefined, token)).status, 200, 'cleanup hotrot-chan')
+  log('F5: hot feed rotation keeps ffmpeg live, catalog + a fresh viewer follow the new feedKey, retired generation purged ✓')
 
   // ===== Test F2: admins management (S16a — parity with the panel admin API) =====
   r = await api('GET', '/api/admins', undefined, token)

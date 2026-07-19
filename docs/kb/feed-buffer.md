@@ -65,15 +65,29 @@ deliberate access-control boundary.
 > reclaim** on the next start after upgrading. Covered by the orphan-pin scenario in
 > `test:retention`.
 
-!!! note "The window bound is on *segment data*; metadata creeps slowly"
-    The **tens of MB** figure is the reclaimed **segment (blob) data** — the acute term.
-    A hypercore's **merkle tree and metadata** are append-only and are *not* reclaimed by
-    `clear()`; they grow slowly with total runtime (order ~100 MB/day for a 2 s window at a
-    few Mbps), independent of window size. A broadcaster **restart does not** reset this
-    (disk mode reopens the same core); only a **feed rotation** (a source change bumps
-    `feedGen` → a fresh core) or a re-key starts the metadata over. For multi-week 24/7
-    channels, budget for this slow creep or rotate the feed periodically — viewers follow a
-    `feedKey` change automatically (next section).
+!!! note "Two different bounds: *segment data* (automatic) vs *metadata* (rotate to bound)"
+    The rolling reclaim above bounds the **segment (blob) data** — the acute term, always
+    O(window) in both buffer modes. It does **not** bound a hypercore's **merkle tree and
+    metadata**: those are append-only and `clear()` never frees them, so they grow slowly
+    with total runtime (order ~1–2 MB/h *per channel* at a 2 s window — ~100–250 MB/day
+    across a handful of channels), independent of window size. This is a **slow disk creep,
+    not a crash risk** — but on a multi-week 24/7 channel it accumulates.
+
+    Two contributors, each with its own fix:
+
+    - **Retired feed generations.** Every time a feed rotates identity — a **source change**
+      bumps `feedGen`, or a **periodic rotation** (below) — the previous generation's cores
+      are orphaned on disk, tree and all. The broadcaster now **GCs these automatically**:
+      at every start (a reopened disk store sheds prior generations) and after each rotation,
+      the retired generation's whole core directory is deleted. Nothing to configure.
+    - **A single long-lived feed's own tree.** A feed that never rotates grows its tree for
+      its whole lifetime. A broadcaster **restart does not** reset this (disk mode reopens
+      the same core); only a **feed rotation** (fresh `feedGen` → fresh core) or a re-key
+      starts the metadata over. Bound it with **periodic feed rotation** (`FEED_ROTATE_HOURS`
+      / `FEED_ROTATE_TREE_MB`, off by default) or a manual `POST /api/channels/<id>/rotate`.
+      Watching viewers follow the new `feedKey` live over the catalog (next section) — the
+      only cost is a one-time cold DHT topic for viewers returning *across* a rotation, so
+      keep rotation **infrequent** (e.g. weekly) to preserve disk mode's warm-topic benefit.
 
     **Where the creep lands depends on the buffer mode.** In `disk` mode it is disk bytes
     (the OS page cache absorbs the reads — node RSS stays flat). In `ram` mode those same
