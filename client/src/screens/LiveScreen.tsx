@@ -26,7 +26,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView, Animated } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { AliranVideo, type TuneEvent } from '@aliran/react-native'
+import { AliranVideo, SelectedTrackType, type TuneEvent, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
 import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, sortByCuration } from '../catalog'
@@ -35,6 +35,7 @@ import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
 import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/ChannelChangeIndicator'
 import { NowPlayingBar } from '../components/NowPlayingBar'
+import { TrackMenu } from '../components/TrackMenu'
 import { SectionLoading } from '../components/SectionLoading'
 import { theme } from '../theme'
 
@@ -86,6 +87,14 @@ export function LiveScreen ({ route }: Props) {
   // active flips false on 'playing' (snap to 100% + hold); null = no pill (error UI).
   const [tuneUI, setTuneUI] = useState<{ id: number; phase: ChannelChangePhase; active: boolean } | null>(null)
   const [now, setNow] = useState(() => new Date())
+  // Subtitle/CC + audio tracks the player found in the CURRENT stream, plus the current
+  // picks (default subtitles Off, audio = the stream's default). The CC button + TrackMenu
+  // are phone-only. These reset whenever the channel changes (a new stream's tracks differ).
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([])
+  const [textTracks, setTextTracks] = useState<TextTrack[]>([])
+  const [selectedText, setSelectedText] = useState<SelectedTrack>({ type: SelectedTrackType.DISABLED })
+  const [selectedAudio, setSelectedAudio] = useState<SelectedTrack | undefined>(undefined)
+  const [showTracks, setShowTracks] = useState(false)
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Bottom bar auto-hide (phone): `barShown` gates mounting; `barOpacity` fades it.
   // TV never auto-hides (theme.isTV branch in armBarHide).
@@ -116,6 +125,14 @@ export function LiveScreen ({ route }: Props) {
 
   // Remember the channel across a trip out to the Menu (see lastStreamId).
   useEffect(() => { if (playingId) lastStreamId = playingId }, [playingId])
+
+  // A new channel has different tracks — clear the picker so the previous channel's
+  // tracks/selection don't carry over, reset subtitles to Off, and close the menu.
+  useEffect(() => {
+    setAudioTracks([]); setTextTracks([])
+    setSelectedText({ type: SelectedTrackType.DISABLED }); setSelectedAudio(undefined)
+    setShowTracks(false)
+  }, [playingId])
 
   // Wall clock for the bottom menu — tick twice a minute so the minute never lags far behind.
   useEffect(() => {
@@ -288,6 +305,10 @@ export function LiveScreen ({ route }: Props) {
           onFallback={() => setSource('cdn')}
           onSourceChanged={({ source: s }) => setSource(s)}
           onPeers={setPeers}
+          selectedAudioTrack={selectedAudio}
+          selectedTextTrack={selectedText}
+          onAudioTracks={setAudioTracks}
+          onTextTracks={setTextTracks}
           onTune={onTune}
           // Live-edge freeze self-heal (log only — onTune 'start' re-arms the pill).
           onStall={() => console.log('[live] stall resync', playingIdRef.current)}
@@ -323,6 +344,8 @@ export function LiveScreen ({ route }: Props) {
                 onChannels={() => setOverlay('list')}
                 onInfo={() => { setInfoStream(playing); setOverlay('info') }}
                 onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
+                hasTracks={textTracks.length > 0 || audioTracks.length > 1}
+                onTracks={() => { showBar(); setShowTracks(true) }}
               />
             </Animated.View>
           )}
@@ -393,6 +416,20 @@ export function LiveScreen ({ route }: Props) {
           phase={tuneUI.phase}
           number={playing ? numbers.get(playing.id) : undefined}
           title={playing?.title}
+        />
+      )}
+
+      {/* Subtitle/CC + audio selector — floats over the video independent of the browse
+          overlay state machine (opened from the phone NowPlayingBar CC button). */}
+      {showTracks && (
+        <TrackMenu
+          textTracks={textTracks}
+          audioTracks={audioTracks}
+          selectedText={selectedText}
+          selectedAudio={selectedAudio}
+          onSelectText={setSelectedText}
+          onSelectAudio={setSelectedAudio}
+          onClose={() => setShowTracks(false)}
         />
       )}
 

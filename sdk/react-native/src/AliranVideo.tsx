@@ -26,8 +26,23 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native'
-import Video, { type BufferConfig } from 'react-native-video'
+import Video, {
+  SelectedTrackType,
+  type BufferConfig,
+  type SelectedTrack,
+  type AudioTrack,
+  type TextTrack,
+  type OnAudioTracksData,
+  type OnTextTracksData
+} from 'react-native-video'
 import { AliranBackend, type BackendMessage } from './backend'
+
+// Track selection re-exported here so the host app imports these from
+// @aliran/react-native (the single binding surface) instead of reaching into
+// react-native-video directly. SelectedTrackType is a runtime enum (value), the rest
+// are types. index.ts re-exports them again for the package entry point.
+export { SelectedTrackType }
+export type { SelectedTrack, AudioTrack, TextTrack }
 
 const RETRY_MS = 2500
 // Start-buffer tuning (zap latency): ExoPlayer's DefaultLoadControl waits for
@@ -90,6 +105,16 @@ export interface AliranVideoProps {
    *  first REAL playback of this tune, raw player events can't be trusted for that
    *  (see the tune-lifecycle note above). */
   onTune?: (e: TuneEvent) => void
+  /** Currently selected audio track — { type: SelectedTrackType.INDEX, value } to pick one.
+   *  Streams here are single-audio, but multi-audio streams can still be switched. */
+  selectedAudioTrack?: SelectedTrack
+  /** Currently selected subtitle/CC track — { type: SelectedTrackType.DISABLED } for off,
+   *  { type: SelectedTrackType.INDEX, value } to show a WebVTT / CEA-608 track. */
+  selectedTextTrack?: SelectedTrack
+  /** The available audio tracks the player found (on load / track change). */
+  onAudioTracks?: (tracks: AudioTrack[]) => void
+  /** The available subtitle/CC text tracks the player found. */
+  onTextTracks?: (tracks: TextTrack[]) => void
   /** How long the playhead may sit still (while playing) before a resync; 0 disables.
    *  Default 12000 — under the smallest deployed live window (8×2 s). */
   stallTimeoutMs?: number
@@ -103,7 +128,8 @@ export interface AliranVideoProps {
 export function AliranVideo ({
   backend, streamId, autoPlay = true, style, controls = true, paused,
   resizeMode = 'contain', onSource, onFallback, onSourceChanged, onFeedChanged, onPeers,
-  onBuffering, onError, onStall, onTune, stallTimeoutMs = STALL_MS, bufferConfig, videoProps
+  onBuffering, onError, onStall, onTune, selectedAudioTrack, selectedTextTrack,
+  onAudioTracks, onTextTracks, stallTimeoutMs = STALL_MS, bufferConfig, videoProps
 }: AliranVideoProps) {
   const [url, setUrl] = useState<string | null>(backend.url)
   const [attempt, setAttempt] = useState(0) // remounts <Video>; trails epoch (see remount)
@@ -112,8 +138,8 @@ export function AliranVideo ({
   // identify themselves as stale in the gap before React commits the new mount.
   const epoch = useRef(0)
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const cb = useRef({ onSource, onFallback, onSourceChanged, onFeedChanged, onPeers, onBuffering, onError, onStall, onTune })
-  cb.current = { onSource, onFallback, onSourceChanged, onFeedChanged, onPeers, onBuffering, onError, onStall, onTune }
+  const cb = useRef({ onSource, onFallback, onSourceChanged, onFeedChanged, onPeers, onBuffering, onError, onStall, onTune, onAudioTracks, onTextTracks })
+  cb.current = { onSource, onFallback, onSourceChanged, onFeedChanged, onPeers, onBuffering, onError, onStall, onTune, onAudioTracks, onTextTracks }
   // The in-flight tune (see the tune-lifecycle note in the header). `live` = the engine
   // confirmed the shared localhost URL serves THIS tune's stream; only then can the
   // current mount's playback complete the tune.
@@ -259,6 +285,10 @@ export function AliranVideo ({
       controls={controls}
       paused={paused}
       resizeMode={resizeMode}
+      selectedAudioTrack={selectedAudioTrack}
+      selectedTextTrack={selectedTextTrack}
+      onAudioTracks={(e: OnAudioTracksData) => cb.current.onAudioTracks?.(e.audioTracks ?? [])}
+      onTextTracks={(e: OnTextTracksData) => cb.current.onTextTracks?.(e.textTracks ?? [])}
       onBuffer={({ isBuffering }: { isBuffering: boolean }) => {
         cb.current.onBuffering?.(isBuffering)
         if (!isBuffering && mountEpoch === epoch.current) completeTune()
