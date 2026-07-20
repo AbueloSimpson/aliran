@@ -7,7 +7,9 @@
 // heartbeat) must append ZERO blocks to the append-only bee while still storing the
 // private secret, and a changed field must still write. It also proves the enrichment
 // probes are DISPOSABLE — repeated rotations and a permanently unreachable feed must leave
-// the panel's own on-disk core set unchanged. No ffmpeg needed. Exits 0 on PASS.
+// the panel's own on-disk core set unchanged — and, at the end, that a restart RECLAIMS the
+// cores older (pre-purge) builds stranded, with accounts, catalog and assets intact.
+// No ffmpeg needed. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
@@ -23,7 +25,7 @@ import {
 import { panelClient as clientRpc, login } from '../client/backend/login.mjs'
 import { panelClient as pubRpc, registerWithPanel } from '../broadcaster/src/register.js'
 import { initKeys, openKeys } from '../panel/src/keys.js'
-import { openStore, loadSecrets, saveSecrets } from '../panel/src/store.js'
+import { openStore, reclaimStrayCores, loadSecrets, saveSecrets } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { makeBlobsKeyEnricher } from '../panel/src/blobs-key.js'
 import { addPublisher, setPublisherStatus, setPublisherScopes, loadPublishers } from '../panel/src/ops.js'
@@ -61,7 +63,7 @@ try {
   // ===== Panel =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
-  const { store: panelStore, db } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
+  const { store: panelStore, db, assets, core: panelCore } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
   const throttle = makeThrottle(1000, 60)
   const topic = hcrypto.hash(keys.signing.publicKey)
   const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
@@ -339,7 +341,70 @@ try {
   assert.strictEqual(streams[0]?.encryptionKey, encKeyHex, 'logged-in user recovers the registered encryption key')
   log('client: login recovered the broadcaster-registered key ✓')
 
-  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; enrichment probes purge their cores, so panel disk is flat across rotations; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover; S29 register idempotence: unchanged re-register appends nothing)')
+  // ===== Start-time reclaim of stray cores written by OLDER builds =====
+  // Purging probes as they run bounds NEW growth; it does not touch what a pre-purge build
+  // already stranded. openStore() sweeps those at start — the one delete in the panel that
+  // could be unrecoverable, so what matters is as much what SURVIVES as what goes.
+  await assets.put('/gc/keepme.txt', b4a.from('assets must survive the sweep'))
+  const newsBefore = (await db.get('catalog/news')).value
+  const aliceBefore = (await db.get('user/alice')).value
+  const ownCores = panelCores(dirs.panel).sort()
+  assert.strictEqual(ownCores.length, 3, "the panel owns exactly 3 cores (bee + assets metadata/blobs)")
+
+  // Strand cores the way a pre-purge probe did: open the feed's metadata + blobs cores on the
+  // panel's own store and close() without purging. They are KEYED, so they land under
+  // cores/<disc>/ exactly as the enricher's did, namespace or not.
+  for (const hex of [feedKey2Hex, realBlobsKey2]) {
+    const c = panelStore.get({ key: b4a.from(hex, 'hex') }); await c.ready(); await c.close()
+  }
+  // …plus a core dir left by a build we can no longer open at all (an unclean exit can
+  // truncate one): the sweep must not depend on a stray being a readable core.
+  const junk = b4a.toString(hcrypto.randomBytes(32), 'hex')
+  const junkDir = path.join(dirs.panel, 'cores', junk.slice(0, 2), junk.slice(2, 4), junk)
+  fs.mkdirSync(junkDir, { recursive: true }); fs.writeFileSync(path.join(junkDir, 'oplog'), b4a.alloc(4096))
+
+  const strayed = panelCores(dirs.panel)
+  for (const id of [disc(feedKey2Hex), disc(realBlobsKey2), junk]) {
+    assert.ok(strayed.includes(id), 'planted stray ' + id.slice(0, 8) + ' is on disk before the restart')
+  }
+  assert.strictEqual(strayed.length, 6, 'three strays planted alongside the panel\'s own three cores')
+
+  // The guard that makes this safe to ship: unless all three of the panel's own cores are
+  // positively resolved, the sweep must delete NOTHING — leaking is recoverable, deleting
+  // the bee is not.
+  assert.strictEqual(reclaimStrayCores(dirs.panel, { store: panelStore, core: null, assets }), null,
+    'an unresolved bee core refuses the sweep')
+  assert.strictEqual(reclaimStrayCores(dirs.panel, { store: panelStore, core: panelCore, assets: {} }), null,
+    'an unresolved assets drive refuses the sweep')
+  assert.strictEqual(panelCores(dirs.panel).length, 6, 'a refused sweep deleted nothing')
+  log('panel: an incomplete keep set refuses the sweep (leak, never delete) ✓')
+
+  // Restart the panel: close the store and reopen it exactly as startPanel() does.
+  await panelStore.close()
+  const restarted = await openStore(dirs.panel, keys); cleanups.push(() => restarted.store.close())
+  assert.strictEqual(restarted.reclaimed?.removed, 3, 'restart reclaimed all three stray core dirs')
+  assert.ok(restarted.reclaimed.bytesFreed > 0, 'reclaim reported the bytes it freed')
+  assert.deepStrictEqual(panelCores(dirs.panel).sort(), ownCores, "the panel's own cores survived the sweep")
+
+  // The bee is the single-writer origin of truth with no peer to re-replicate from: had the
+  // sweep eaten its core, openStore would hand back an EMPTY bee under the same key.
+  assert.deepStrictEqual((await restarted.db.get('user/alice'))?.value, aliceBefore, 'accounts survived the restart')
+  assert.deepStrictEqual((await restarted.db.get('catalog/news'))?.value, newsBefore, 'catalog survived the restart')
+  assert.strictEqual((await restarted.db.get('catalog/scoped-1'))?.value?.origin, 'east', 'per-publisher catalog records survived')
+  assert.strictEqual(b4a.toString(await restarted.assets.get('/gc/keepme.txt'), 'utf8'), 'assets must survive the sweep',
+    'the assets drive (metadata + blobs cores) survived the sweep')
+  log(`panel: restart reclaimed ${restarted.reclaimed.removed} stray core dir(s) (${(restarted.reclaimed.bytesFreed / 1e3).toFixed(0)} kB); accounts, catalog + assets intact ✓`)
+
+  // And it must be a no-op from then on — a sweep that ever ate its own cores would do it
+  // on the NEXT boot, not this one.
+  await restarted.store.close()
+  const again = await openStore(dirs.panel, keys); cleanups.push(() => again.store.close())
+  assert.strictEqual(again.reclaimed?.removed, 0, 'a second restart has nothing left to reclaim')
+  assert.deepStrictEqual(panelCores(dirs.panel).sort(), ownCores, 'a clean store is left untouched')
+  assert.deepStrictEqual((await again.db.get('user/alice'))?.value, aliceBefore, 'accounts still intact after a second restart')
+  log('panel: the sweep is idempotent — a clean store is left untouched ✓')
+
+  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; enrichment probes purge their cores, so panel disk is flat across rotations; older builds\' strays reclaimed at start with accounts/catalog/assets intact; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover; S29 register idempotence: unchanged re-register appends nothing)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

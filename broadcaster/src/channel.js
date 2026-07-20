@@ -33,10 +33,11 @@ import net from 'net'
 import dgram from 'dgram'
 import path from 'path'
 import os from 'os'
-import { startFfmpeg, mirrorDirToDrive, purgeStaleCores, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
+import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
+import { purgeStaleCores } from '@aliran/core/store-gc.js'
 
 export class ControlError extends Error {
   constructor (code, message) { super(message); this.code = code }

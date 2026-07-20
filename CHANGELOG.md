@@ -227,6 +227,17 @@ Android phone + Android TV).
   control plane grow with rotations × channels, unbounded. Each probe now purges the
   cores it opened; `test:register` asserts the panel's core set is unchanged across
   repeated feedKey rotations.
+- Panel: **stray cores from older builds are reclaimed at start**. Purging probes as they
+  run bounds new growth but leaves whatever a pre-fix build already stranded, and hand-
+  deleting it is not an option — the panel's bee is the single-writer origin of truth for
+  accounts and the catalog, with no peer to re-replicate a wrongly deleted core from.
+  `openStore()` now sweeps every core directory the panel cannot account for, reusing the
+  broadcaster's retired-generation GC (lifted to `@aliran/core/store-gc.js`). It runs at
+  open, before the enricher can start a probe, and refuses to delete anything unless all
+  **three** of the panel's own cores resolve — plus everything the store holds open is kept
+  regardless, so a future fourth core is safe by default. `test:register` plants strays
+  (including an unopenable one), restarts, and asserts they are gone while accounts,
+  catalog and assets survive — and that the next start reclaims nothing.
 - Ops: live feeds no longer grow unbounded (~1–2 GB/h/channel → O(window));
   orphan-pin disk reclaim; remote acceptance always ends with a verdict.
 

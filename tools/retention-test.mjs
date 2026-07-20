@@ -21,7 +21,8 @@ import RAM from 'random-access-memory'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
-import { mirrorDirToDrive, reclaimExpiredBlobs, purgeStaleCores, feedTreeBytes, isStoreCorruption } from '../broadcaster/src/hls.js'
+import { mirrorDirToDrive, reclaimExpiredBlobs, feedTreeBytes, isStoreCorruption } from '../broadcaster/src/hls.js'
+import { purgeStaleCores } from '@aliran/core/store-gc.js'
 
 const log = (...a) => console.log(...a)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))

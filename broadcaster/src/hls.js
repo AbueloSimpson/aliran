@@ -12,6 +12,9 @@
 import { spawn } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+// Whole-namespace core GC lives in @aliran/core (the panel reclaims stray cores with the
+// same sweep, and cannot import from this workspace — separate image).
+import { DISCOVERY_HEX_RE } from '@aliran/core/store-gc.js'
 
 export const TRANSCODE_DEFAULTS = {
   encoder: 'libx264',
@@ -264,23 +267,6 @@ export async function reconcileStaleEntries (dir, drive, blobs) {
   return dropped
 }
 
-// Allocated bytes of every file under `dir` (st.blocks*512 where the FS reports it, else
-// st.size). Used to report how much a namespace purge frees and to size a live feed's
-// merkle tree. Best-effort — an unreadable/vanishing entry contributes 0.
-function dirAllocBytes (dir) {
-  let total = 0
-  let ents = []
-  try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return 0 }
-  for (const e of ents) {
-    const p = path.join(dir, e.name)
-    if (e.isDirectory()) total += dirAllocBytes(p)
-    else { try { const st = fs.statSync(p); total += (st.blocks ? st.blocks * 512 : st.size) } catch {} }
-  }
-  return total
-}
-
-const DISCOVERY_HEX_RE = /^[0-9a-f]{64}$/
-
 // hypercore/random-access error codes/messages that mean a core's ON-DISK state is
 // UNREADABLE — an unclean broadcaster exit (SIGKILL, OOM, power loss, a `docker stop` that
 // outran its grace period) can truncate a core's oplog/tree mid-write. This is NOT a
@@ -295,54 +281,6 @@ export function isStoreCorruption (err) {
   if (!err) return false
   if (STORE_CORRUPT_CODES.has(err.code)) return true
   return /corrupt|could not satisfy length/i.test(String(err.message || err))
-}
-
-// Whole-namespace GC — the metadata analog of reconcileStaleEntries (which drops stale
-// ENTRIES within one namespace; this drops entire retired NAMESPACES).
-//
-// A disk-mode channel's Corestore accumulates the metadata+blobs cores of EVERY feed
-// generation it has ever run: a source change (or a periodic rotation) bumps feedGen → a
-// new Corestore namespace → brand-new cores, orphaning the previous generation's core
-// directories on disk. blob clear() only reclaims the CURRENT feed's rotated segment DATA;
-// a retired generation's cores — including their append-only merkle TREES, which clear()
-// never touches — are dead weight that grows the store for the channel's whole lifetime.
-//
-// keepDiscoveryKeys = the hex discovery keys of the cores to KEEP (the current generation's
-// metadata + blobs cores). Every other 64-hex core directory under <storeDir>/cores/ is a
-// retired generation and is removed. Corestore lays cores out at
-// cores/<id[0:2]>/<id[2:4]>/<id>/ (see getStorageRoot); we ONLY ever touch that tree —
-// never the primary-key / feed.key files alongside it. Returns { removed, bytesFreed }.
-//
-// SAFETY: with an empty keep set this is a no-op — it refuses to delete cores it cannot
-// positively account for, so a caller that fails to resolve the live discovery keys leaks
-// (safe, retried next pass) rather than nuking the running feed. Only directories whose
-// name is a full 64-char discovery key are ever considered, so stray files are left alone.
-export function purgeStaleCores (storeDir, keepDiscoveryKeys) {
-  const keep = keepDiscoveryKeys instanceof Set ? keepDiscoveryKeys : new Set(keepDiscoveryKeys || [])
-  const out = { removed: 0, bytesFreed: 0 }
-  if (keep.size < 1) return out // refuse to run without a positive keep set
-  const coresDir = path.join(storeDir, 'cores')
-  let l1 = []
-  try { l1 = fs.readdirSync(coresDir, { withFileTypes: true }) } catch { return out }
-  for (const a of l1) {
-    if (!a.isDirectory()) continue
-    const aDir = path.join(coresDir, a.name)
-    let l2 = []
-    try { l2 = fs.readdirSync(aDir, { withFileTypes: true }) } catch { continue }
-    for (const b of l2) {
-      if (!b.isDirectory()) continue
-      const bDir = path.join(aDir, b.name)
-      let leaves = []
-      try { leaves = fs.readdirSync(bDir, { withFileTypes: true }) } catch { continue }
-      for (const leaf of leaves) {
-        if (!leaf.isDirectory() || !DISCOVERY_HEX_RE.test(leaf.name) || keep.has(leaf.name)) continue
-        const leafDir = path.join(bDir, leaf.name)
-        const bytes = dirAllocBytes(leafDir)
-        try { fs.rmSync(leafDir, { recursive: true, force: true }); out.removed++; out.bytesFreed += bytes } catch {}
-      }
-    }
-  }
-  return out
 }
 
 // Allocated bytes of the append-only `tree` files for the given cores — the merkle

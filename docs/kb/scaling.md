@@ -226,12 +226,33 @@ mints a **fresh feedKey per rotation**, which re-enqueues the enricher, so the p
 **rotations × channels**, without bound. Each probe now purges the cores it opened, and
 `test:register` asserts the panel's core set is unchanged across repeated rotations.
 
-!!! note "Upgrading an existing panel"
-    The fix stops the growth; it does not retroactively remove cores an older build already
-    left behind. Those show up in the `du` breakdown above as many small `cores/**` entries
-    that match no key the panel owns. **Don't hand-delete them** — the panel's Hyperbee is
-    the single-writer origin of truth for accounts and the catalog, so deleting the wrong
-    core directory is unrecoverable (there is no peer to re-replicate it from).
+!!! note "Upgrading an existing panel — the stranded cores are reclaimed for you"
+    Purging probes as they run only stops *new* growth; cores an older build already left
+    behind show up in the `du` breakdown above as many small `cores/**` entries matching no
+    key the panel owns. **Never hand-delete them** — the panel's Hyperbee is the
+    single-writer origin of truth for accounts and the catalog, so deleting the wrong core
+    directory is unrecoverable (there is no peer to re-replicate it from).
+
+    You don't have to. **Restarting the panel reclaims them**: `openStore()` sweeps every
+    core directory it cannot account for, and logs what it took:
+
+    ```
+    [gc] reclaimed 412 stray core dir(s), 34.15 MB freed (blobsKey probe cores stranded by earlier builds)
+    ```
+
+    It is deliberately timid, because this is the one delete in the panel that could cost
+    you the control plane:
+
+    - it runs **inside `openStore()`**, before the enricher exists — it cannot race a probe;
+    - it refuses to delete anything unless **all three** of the panel's own cores resolve,
+      so a half-open store leaks (retried next start) instead of deleting;
+    - anything the Corestore currently holds **open** is kept regardless of that list;
+    - only directories named like a full discovery key are considered — files, `primary-key`
+      and the rest of `DATA_DIR` are never touched.
+
+    The sweep is the same one the broadcaster has used since S28 to drop retired feed
+    generations (`@aliran/core/store-gc.js`). Nothing to enable, and no downtime beyond the
+    restart itself; a second start reports nothing left to do.
 
 ## Measure your own hardware
 
