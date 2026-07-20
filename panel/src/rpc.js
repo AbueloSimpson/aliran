@@ -104,7 +104,10 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
   // three. An unnamed payload falls back to the legacy shared publisher key at
   // implicit scope `*` while `legacyPublisher` is on. The panel then writes the
   // PUBLIC catalog record (no encryptionKey, origin stamped for named publishers)
-  // and stores the encryption key in its private secrets file.
+  // and stores the encryption key in its private secrets file. The catalog write is
+  // IDEMPOTENT — a re-register that changes nothing appends nothing to the bee (see
+  // the frugality note at the put); the secrets file is written unconditionally,
+  // since it is an ordinary rewritten file, not an append-only log.
   rpc.respond('register', async (reqBuf) => {
     if (!db || !dataDir) return json({ error: 'registration unavailable' })
     let req
@@ -151,7 +154,7 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     // To rename or recategorize a P2P channel, edit it in the panel — broadcaster config
     // changes to these fields no longer propagate after creation.
     const seed = node ? {} : payload
-    await db.put('catalog/' + streamId, {
+    const record = {
       title: seed.title ?? existing.title ?? streamId,
       description: seed.description ?? existing.description ?? '',
       category: seed.category ?? existing.category ?? [],
@@ -183,8 +186,33 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       // ignore unknown catalog fields.
       origin,
       status: payload.status ?? (payload.isLive !== false ? 'live' : 'idle')
-    })
-    if (activity) activity.record('register', { streamId, isLive: payload.isLive !== false, ...(origin ? { origin } : {}) })
+    }
+
+    // Bee frugality (S29) — same rule as the source sync (src/sources.js): an unchanged
+    // re-register is NOT re-put. The broadcaster re-asserts every RUNNING stream on a
+    // 5-min heartbeat (HEARTBEAT_MS in broadcaster/src/panel-link.js), so the vast
+    // majority of registers restate a record that is already correct — and because the
+    // bee is append-only with no compaction, each of those cost a block FOREVER
+    // (43 channels = 12,384 needless appends/day ≈ 5.8 MiB/day measured, monotonic).
+    // The comparison is sound because every field above is a pure function of the
+    // payload and the stored record — no timestamps, no nonces, and the heartbeat
+    // re-sends its payload verbatim — so an unchanged re-register rebuilds a
+    // byte-identical record. With valueEncoding:'json' the stored block IS
+    // JSON.stringify(value), so this compares exactly the bytes a put would append.
+    // Anything that genuinely differs still writes: a feedKey rotation, an isLive /
+    // status flip, and a change of `origin` — a different publisher taking over the
+    // channel is an attribution change the audit trail must record.
+    const changed = !node || JSON.stringify(record) !== JSON.stringify(node.value)
+    if (changed) await db.put('catalog/' + streamId, record)
+
+    // The activity ring is a 200-entry in-memory feed of NOTEWORTHY events, so a no-op
+    // heartbeat stays out of it: at 43 channels those alone would evict the whole ring
+    // (admin mutations, viewer sessions) every ~20 min. Liveness is not lost — it is
+    // the catalog record's own isLive/status, plus the broadcaster's status API.
+    if (activity && changed) activity.record('register', { streamId, isLive: payload.isLive !== false, ...(origin ? { origin } : {}) })
+    // Enqueued even when the put was SKIPPED: a stream whose blobsKey never landed
+    // (broadcaster offline, or nothing written to the drive yet) parks after maxAttempts
+    // and it is precisely this heartbeat that retries it (see src/blobs-key.js).
     if (enrich && feedKey) enrich.enqueue(streamId)
     return json({ ok: true })
   })

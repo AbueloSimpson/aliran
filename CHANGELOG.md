@@ -208,6 +208,18 @@ Android phone + Android TV).
   flood can no longer freeze media or viewer logins; PanelLink re-finds a restarted
   panel (ephemeral swarm identity) instead of stranding registrations; broadcaster
   re-registers preserve admin-owned fields (curation, art, redirect class).
+- Panel: **`register` is idempotent** — the rebuilt catalog record is compared against
+  the stored one and an unchanged re-register is **not re-put**, the same bee-frugality
+  rule the source sync already followed. The broadcaster re-asserts every *running*
+  stream on a 5-minute heartbeat, and the signed bee is append-only with no compaction,
+  so each of those used to cost a block forever: 43 channels = **12,384 redundant
+  appends/day (~5.8 MiB/day measured, monotonic)**. Real changes still write — feedKey
+  rotation, `isLive`/`status` flips, and a change of `origin` (a different publisher
+  taking over a channel is an attribution change the audit trail must keep). The
+  private secrets file is still written on the skipped path, and the `blobsKey`
+  enricher is still nudged, because that heartbeat is its retry timer. No-op registers
+  also stop flooding the 200-entry activity ring, which they otherwise evicted whole
+  every ~20 minutes at 43 channels.
 - Ops: live feeds no longer grow unbounded (~1–2 GB/h/channel → O(window));
   orphan-pin disk reclaim; remote acceptance always ends with a verdict.
 

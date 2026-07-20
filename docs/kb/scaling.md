@@ -176,6 +176,39 @@ does ~125 copy channels does only **~8–12 x264 SD** channels.
 > broadcaster nodes (each registers with the same panel); the panel catalog already aggregates
 > them. RAM+tmpfs is the right *per-node* engine; sharding is how you reach the hundreds.
 
+## The panel's own disk (control plane)
+
+The four walls above are the **broadcaster's**. The panel has a different growth law, and it
+is the one that bites on a long-running box: its signed Hyperbee is **append-only, single-
+writer, and never compacted**. That is deliberate — an append-only verifiable log is what lets
+every client replicate and *verify* the catalog — but it means panel disk tracks **how many
+writes you have ever made**, not how many records you currently have. A 300-channel catalog is
+a few hundred KiB of *records*; the store is however large the write history made it.
+
+So the thing to watch on the panel is **write rate**, not record count. What writes:
+
+| Writer | Cost | Notes |
+|---|---|---|
+| Broadcaster `register` | **0 when nothing changed** | The 5-min heartbeat re-asserts every running stream. Since S29 an unchanged re-assert is compared and skipped, so steady-state heartbeat traffic is free. |
+| `register` with a real change | 1 block (~490 B) | feedKey rotation, `isLive`/`status` flip, new `origin`. Rotation is the one that recurs — see `FEED_ROTATE_TREE_MB`/`FEED_ROTATE_HOURS` in [feed-buffer.md](feed-buffer.md): rotating harder bounds *broadcaster* disk but adds *panel* writes. |
+| Viewer `session` | 1 block per session | Rewrites the whole user record, including its `wrapped` grant map — so this scales with **grants per user**, not with channel count alone. |
+| Admin edits / grants | 1 block each | `grant` re-puts the full user record per channel, so granting *n* channels one at a time is O(n²) in bytes. Bulk/auto-grant paths matter at 300 channels. |
+| Source sync | 0 for unchanged entries | [`sources.js`](../../panel/src/sources.js) compares before it puts; a 304 or an unchanged feed appends nothing. |
+
+Measured, on the register path before the S29 fix: **43 channels × 288 heartbeats/day = 12,384
+redundant appends/day ≈ 5.8 MiB/day**, forever, growing linearly with the lineup. Small per day
+— but monotonic, with no compaction to ever give it back, which is what makes it a planning
+item rather than a rounding error.
+
+> **Sizing the panel volume is not the same question as sizing the broadcaster's.** The panel's
+> `DATA_DIR` also holds the **assets Hyperdrive** (posters/backdrops/logos) in the *same*
+> corestore, and art is itself append-only — a re-uploaded poster does not reclaim the old one.
+> If a panel volume is far larger than the write rates above explain, measure the pieces before
+> assuming it is the catalog:
+> ```bash
+> du -sh $DATA_DIR/_data/cores/* | sort -h | tail -20   # biggest cores first
+> ```
+
 ## Measure your own hardware
 
 Absolute numbers are hardware-specific. Run the bench **on the target box** (it uses a local DHT

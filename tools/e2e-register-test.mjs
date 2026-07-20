@@ -2,7 +2,10 @@
 // user logs in and recovers the registered key. S20a adds the blobsKey enrichment round
 // trip: the panel opens the announced feed drive with its stored encryptionKey and
 // publishes the blobs-core key in the catalog (async), clears + re-enriches it across a
-// feedKey rotation, and preserves it across a same-key re-register. No ffmpeg needed.
+// feedKey rotation, and preserves it across a same-key re-register. S29 adds the
+// register-idempotence assertions: an unchanged re-register (the 5-min broadcaster
+// heartbeat) must append ZERO blocks to the append-only bee while still storing the
+// private secret, and a changed field must still write. No ffmpeg needed.
 // Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -19,7 +22,7 @@ import {
 import { panelClient as clientRpc, login } from '../client/backend/login.mjs'
 import { panelClient as pubRpc, registerWithPanel } from '../broadcaster/src/register.js'
 import { initKeys, openKeys } from '../panel/src/keys.js'
-import { openStore, loadSecrets } from '../panel/src/store.js'
+import { openStore, loadSecrets, saveSecrets } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { makeBlobsKeyEnricher } from '../panel/src/blobs-key.js'
 import { addPublisher, setPublisherStatus, setPublisherScopes, loadPublishers } from '../panel/src/ops.js'
@@ -98,11 +101,51 @@ try {
   assert.notStrictEqual(enriched, feedKeyHex, 'blobsKey is a distinct core key, not the feedKey')
   log('panel: catalog enriched with the real blobsKey (async, zero broadcaster changes) ✓')
 
-  // A same-feedKey re-register (the broadcaster heartbeat) must PRESERVE the blobsKey…
+  // ===== S29: an unchanged re-register is IDEMPOTENT — it appends NOTHING =====
+  // The broadcaster re-asserts every RUNNING stream on a 5-min heartbeat. The bee is
+  // append-only and the panel never compacts, so re-putting an identical record would
+  // grow the panel store forever (measured on the VPS: 1.9 GB at 43 channels).
+  const beeLen = () => db.core.length
+  const beforeNoop = beeLen()
   await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
     streamId: 'news', feedKey: feedKeyHex, encryptionKey: encKeyHex, isLive: true
   })
+  await sleep(500) // the register also nudges the enricher — that must not write either
+  assert.strictEqual(beeLen(), beforeNoop, 'unchanged re-register appends NOTHING to the bee')
+  // …and a same-feedKey re-register still PRESERVES the blobsKey (record left untouched).
   assert.strictEqual((await db.get('catalog/news')).value.blobsKey, realBlobsKey, 'same-feedKey re-register preserves blobsKey')
+
+  // The private secrets file is NOT the bee: a SKIPPED catalog write must still store the
+  // encryptionKey. Drop the secret, re-register unchanged — it comes back, bee untouched.
+  const dropped = loadSecrets(dirs.panel); delete dropped.news; saveSecrets(dirs.panel, dropped)
+  const beforeSecret = beeLen()
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'news', feedKey: feedKeyHex, encryptionKey: encKeyHex, isLive: true
+  })
+  assert.strictEqual(loadSecrets(dirs.panel).news, encKeyHex, 'skipped catalog write still restores the private secret')
+  assert.strictEqual(beeLen(), beforeSecret, 'restoring the secret appended nothing to the bee')
+
+  // A CHANGED field still writes. isLive:false flips status→idle and costs one append…
+  const beforeChange = beeLen()
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'news', feedKey: feedKeyHex, encryptionKey: encKeyHex, isLive: false
+  })
+  assert.ok(beeLen() > beforeChange, 'a CHANGED register still writes to the bee')
+  const flipped = (await db.get('catalog/news')).value
+  assert.strictEqual(flipped.isLive, false, 'the changed field landed')
+  assert.strictEqual(flipped.status, 'idle', 'status follows isLive')
+  // …and repeating THAT payload is itself a no-op (idempotence holds at the new state).
+  const beforeRepeat = beeLen()
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'news', feedKey: feedKeyHex, encryptionKey: encKeyHex, isLive: false
+  })
+  assert.strictEqual(beeLen(), beforeRepeat, 'repeating the changed payload appends nothing')
+  // Restore live for the rest of the test (a real change again → one more append).
+  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+    streamId: 'news', feedKey: feedKeyHex, encryptionKey: encKeyHex, isLive: true
+  })
+  assert.strictEqual((await db.get('catalog/news')).value.isLive, true, 'restored isLive')
+  log('panel: unchanged re-register = zero bee appends; changed fields still write ✓')
 
   // …and a feedKey ROTATION (broadcaster source change / RAM restart) must clear it
   // immediately and re-enrich against the NEW drive.
@@ -225,7 +268,7 @@ try {
   assert.strictEqual(streams[0]?.encryptionKey, encKeyHex, 'logged-in user recovers the registered encryption key')
   log('client: login recovered the broadcaster-registered key ✓')
 
-  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover)')
+  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover; S29 register idempotence: unchanged re-register appends nothing)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

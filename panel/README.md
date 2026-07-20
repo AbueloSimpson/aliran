@@ -43,7 +43,10 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
 - [x] OPRF login RPC (blinded eval, PoW, throttling/lockout) — see `docs/security-model.md`
 - [x] Session token signing + `tokenVersion` revocation + device-limit enforcement
 - [x] Assets Hyperdrive + `upload-art`
-- [x] Broadcaster auto-registration (publisher-signed `register` RPC)
+- [x] Broadcaster auto-registration (publisher-signed `register` RPC), **idempotent**:
+      an unchanged re-register (the broadcaster's 5-min heartbeat) is compared against
+      the stored record and appends nothing to the append-only bee — see
+      [docs/kb/scaling.md](../docs/kb/scaling.md) "The panel's own disk"
 - [x] Per-publisher keys + channel scopes: enrolled per-site keypairs
       (`add-publisher`, `/api/publishers`, dashboard Publishers tab), streamId-glob
       scope check before any write, `origin` attribution, per-site revoke;
