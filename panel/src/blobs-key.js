@@ -22,7 +22,9 @@
 // that nothing has been written yet — the header block only exists once the first file
 // lands) parks after maxAttempts and is re-enqueued by the next register (the
 // broadcaster heartbeats its running state every 5 min). sweep() heals records from
-// before this feature / registers missed while the panel was down.
+// before this feature / registers missed while the panel was down. Every probe PURGES
+// the cores it opened (see teardown) — otherwise the panel's control-plane disk would
+// grow with every distinct feedKey it ever saw.
 
 import Hyperdrive from 'hyperdrive'
 import b4a from 'b4a'
@@ -38,18 +40,24 @@ const DEFAULTS = {
 export function makeBlobsKeyEnricher ({ store, swarm, db, dataDir }, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts }
   const jobs = new Map() // streamId -> { attempts, wake } (present = loop running)
-  const probes = new Set() // in-flight { drive, topic } — force-closed by close()
+  const probes = new Set() // in-flight { drive, topic, torn } — force-torn by close()
   let closed = false
 
   // Fetch the blobs-core key for one feedKey. The drive opens on a namespaced session
   // of the panel's corestore, so the existing swarm 'connection' handler
   // (store.replicate) serves its replication; only the tiny header block is requested.
+  // The namespace costs nothing on disk (corestore namespaces are in-memory key-derivation
+  // salts, and this drive's cores are keyed anyway — see teardown) and has to stay
+  // per-probe: drive.close() closes whatever corestore session it was handed, so a shared
+  // probe namespace would be shut by whichever probe finished first.
   async function readBlobsKey (feedKeyHex, encKeyHex) {
     const drive = new Hyperdrive(store.namespace('blobs-probe:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
-    await drive.ready()
-    const probe = { drive, topic: drive.discoveryKey }
+    // Registered BEFORE ready() so a failed open is torn down (and purged) too.
+    const probe = { drive, topic: null, torn: null }
     probes.add(probe)
     try {
+      await drive.ready()
+      probe.topic = drive.discoveryKey
       swarm.join(drive.discoveryKey, { client: true, server: false })
       const open = drive.getBlobs()
       open.catch(() => {}) // a post-timeout settle must not become an unhandled rejection
@@ -59,10 +67,51 @@ export function makeBlobsKeyEnricher ({ store, swarm, db, dataDir }, opts = {}) 
       })
       return b4a.toString(blobs.core.key, 'hex')
     } finally {
-      probes.delete(probe)
-      try { await swarm.leave(probe.topic) } catch {}
-      try { await drive.close() } catch {}
+      await teardown(probe)
     }
+  }
+
+  // Close a probe AND reclaim its disk.
+  //
+  // A probe drive's cores are KEYED — the metadata core by the feedKey, the blobs core by
+  // the key inside the header — so corestore files them under <dataDir>/cores/<disc>/
+  // regardless of the 'blobs-probe:' namespace, and drive.close() only ends the SESSION:
+  // the directories stay behind forever with nothing to collect them. That grows with the
+  // number of DISTINCT feedKeys ever probed, not with channel count, and since S28 every
+  // periodic feed rotation (FEED_ROTATE_TREE_MB / FEED_ROTATE_HOURS) mints a fresh feedKey
+  // and re-enqueues the stream here — so the panel's disk would grow with
+  // rotations × channels, without bound.
+  //
+  // purge() closes every session of a core and unlinks its storage (oplog/tree/bitfield/
+  // data); corestore opens those with rmdir, so the core directory goes with the last file.
+  // Same call the repeater makes when it retires a rotated mirror (repeater/src/index.js).
+  // The warm replication state this drops is worth nothing: a probe reads exactly one block
+  // (the encrypted bee header) and throws the rest away.
+  //
+  // A RAM-backed probe store would avoid the panel's disk entirely, but it would have to be
+  // replicated on the panel's swarm connections too — and a SECOND corestore on one
+  // connection silently breaks the first: both call protomux pair() for 'hypercore/alpha',
+  // and the later registration REPLACES the earlier one's on-demand core lookup, so the
+  // panel would stop answering discovery-key requests for the signed DB and the assets
+  // drive. Purging on the shared store is the contained fix.
+  //
+  // Idempotent — close() force-tears in-flight probes while readBlobsKey's own finally may
+  // be running, so the delete + purge decision is taken synchronously here. Purging cannot
+  // yank a sibling probe's session either: hyperdrive opens its bee core `exclusive`, so
+  // only one probe per feedKey is ever open at a time.
+  function teardown (probe) {
+    if (probe.torn) return probe.torn
+    probes.delete(probe)
+    probe.torn = (async () => {
+      if (probe.topic) { try { await swarm.leave(probe.topic) } catch {} }
+      for (const core of [probe.drive.core, probe.drive.blobs && probe.drive.blobs.core]) {
+        // A purge that fails only leaks disk (retried the next time this feedKey is
+        // probed); it must never wedge the enricher, so fall back to a plain close.
+        if (core) { try { await core.purge() } catch { try { await core.close() } catch {} } }
+      }
+      try { await probe.drive.close() } catch {}
+    })()
+    return probe.torn
   }
 
   // One enrichment attempt. Returns true when there is nothing (left) to do for the
@@ -134,11 +183,9 @@ export function makeBlobsKeyEnricher ({ store, swarm, db, dataDir }, opts = {}) 
     async close () {
       closed = true
       for (const job of jobs.values()) { if (job.wake) job.wake() }
-      // Force in-flight probes shut so their header waits reject promptly.
-      await Promise.all([...probes].map(async (p) => {
-        try { await swarm.leave(p.topic) } catch {}
-        try { await p.drive.close() } catch {}
-      }))
+      // Force in-flight probes shut so their header waits reject promptly (and leave no
+      // cores behind — a probe killed by shutdown is exactly as disposable as one that ran).
+      await Promise.all([...probes].map(teardown))
     }
   }
 }

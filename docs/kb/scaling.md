@@ -206,8 +206,32 @@ item rather than a rounding error.
 > If a panel volume is far larger than the write rates above explain, measure the pieces before
 > assuming it is the catalog:
 > ```bash
-> du -sh $DATA_DIR/_data/cores/* | sort -h | tail -20   # biggest cores first
+> # biggest cores first. Use du, NOT `find -printf %s`/`ls` — blob `data`
+> # files are SPARSE, so apparent size reports TB-scale nonsense.
+> du -sh $DATA_DIR/cores/*/*/* | sort -h | tail -20
 > ```
+
+Steady state, the panel's corestore holds exactly **three** cores: the signed Hyperbee, and the
+assets drive's metadata + blobs cores. Anything else under `cores/` is a leftover — see below.
+
+**Fixed: the `blobsKey` enricher used to leak a core per feed it probed.** To publish a feed's
+blobs-core key, the panel opens that feed's drive on its **own** Corestore
+(`panel/src/blobs-key.js`). Those cores are *keyed*, so corestore files them under
+`cores/<discovery-key>/` regardless of the `blobs-probe:` namespace, and `drive.close()` only
+ended the session — the directories stayed behind with nothing to collect them. The cost
+tracked **distinct feedKeys ever probed**, not channel count: ~85 KB per reachable feed
+(metadata + blobs core) and ~8 KB per feed that never answered. Harmless while feedKeys were
+stable — but [feed rotation](feed-buffer.md) (`FEED_ROTATE_TREE_MB` / `FEED_ROTATE_HOURS`)
+mints a **fresh feedKey per rotation**, which re-enqueues the enricher, so the panel grew with
+**rotations × channels**, without bound. Each probe now purges the cores it opened, and
+`test:register` asserts the panel's core set is unchanged across repeated rotations.
+
+!!! note "Upgrading an existing panel"
+    The fix stops the growth; it does not retroactively remove cores an older build already
+    left behind. Those show up in the `du` breakdown above as many small `cores/**` entries
+    that match no key the panel owns. **Don't hand-delete them** — the panel's Hyperbee is
+    the single-writer origin of truth for accounts and the catalog, so deleting the wrong
+    core directory is unrecoverable (there is no peer to re-replicate it from).
 
 ## Measure your own hardware
 

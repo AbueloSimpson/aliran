@@ -5,8 +5,9 @@
 // feedKey rotation, and preserves it across a same-key re-register. S29 adds the
 // register-idempotence assertions: an unchanged re-register (the 5-min broadcaster
 // heartbeat) must append ZERO blocks to the append-only bee while still storing the
-// private secret, and a changed field must still write. No ffmpeg needed.
-// Exits 0 on PASS.
+// private secret, and a changed field must still write. It also proves the enrichment
+// probes are DISPOSABLE — repeated rotations and a permanently unreachable feed must leave
+// the panel's own on-disk core set unchanged. No ffmpeg needed. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperdrive from 'hyperdrive'
@@ -30,6 +31,26 @@ import { addPublisher, setPublisherStatus, setPublisherScopes, loadPublishers } 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 async function waitFor (fn, ms, label) { const t = Date.now(); while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v } catch {} await sleep(300) } throw new Error('timeout: ' + label) }
 const log = (...a) => console.log(...a)
+
+// Corestore lays cores out at <dir>/cores/<id[0:2]>/<id[2:4]>/<id>/ (id = discovery key
+// hex). Counting those leaves is how we assert the panel's control-plane disk stays
+// BOUNDED across feedKey rotations: every blobsKey probe opens the feed drive on the
+// panel's OWN corestore, and a probe that only close()s leaves its cores there forever
+// (one metadata + one blobs core per DISTINCT feedKey ever seen — and S28's periodic
+// feed rotation mints a fresh feedKey per rotation).
+function panelCores (dir) {
+  const out = []
+  const walk = (d, depth) => {
+    let ents = []
+    try { ents = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of ents) {
+      if (!e.isDirectory()) continue
+      if (depth === 2) { if (/^[0-9a-f]{64}$/.test(e.name)) out.push(e.name) } else walk(path.join(d, e.name), depth + 1)
+    }
+  }
+  walk(path.join(dir, 'cores'), 0)
+  return out
+}
 
 const DIFFICULTY = 8; const PASSWORD = 'test123'
 const dirs = { panel: fs.mkdtempSync(path.join(os.tmpdir(), 'e2er-panel-')), feed: fs.mkdtempSync(path.join(os.tmpdir(), 'e2er-feed-')), cli: fs.mkdtempSync(path.join(os.tmpdir(), 'e2er-cli-')) }
@@ -101,6 +122,15 @@ try {
   assert.notStrictEqual(enriched, feedKeyHex, 'blobsKey is a distinct core key, not the feedKey')
   log('panel: catalog enriched with the real blobsKey (async, zero broadcaster changes) ✓')
 
+  // The probe is DISPOSABLE: it opened the feed's metadata + blobs cores on the panel's own
+  // corestore to read one block, and must leave neither behind. (blobsKey lands in the
+  // catalog only after the probe's teardown, so this is a quiescent point.)
+  const disc = (hex) => b4a.toString(hcrypto.discoveryKey(b4a.from(hex, 'hex')), 'hex')
+  const baseCores = panelCores(dirs.panel)
+  assert.ok(!baseCores.includes(disc(feedKeyHex)), 'probe left no feed metadata core on the panel')
+  assert.ok(!baseCores.includes(disc(realBlobsKey)), 'probe left no feed blobs core on the panel')
+  log(`panel: probe purged its cores — panel store holds only its own ${baseCores.length} core(s) ✓`)
+
   // ===== S29: an unchanged re-register is IDEMPOTENT — it appends NOTHING =====
   // The broadcaster re-asserts every RUNNING stream on a 5-min heartbeat. The bee is
   // append-only and the panel never compacts, so re-putting an identical record would
@@ -147,23 +177,64 @@ try {
   assert.strictEqual((await db.get('catalog/news')).value.isLive, true, 'restored isLive')
   log('panel: unchanged re-register = zero bee appends; changed fields still write ✓')
 
-  // …and a feedKey ROTATION (broadcaster source change / RAM restart) must clear it
-  // immediately and re-enrich against the NEW drive.
+  // …and a feedKey ROTATION (broadcaster source change / RAM restart / S28's periodic feed
+  // rotation) must clear it immediately and re-enrich against the NEW drive.
+  // Mint the next generation the way a rotating broadcaster does, register it, and wait for
+  // the panel to re-enrich. Returns the new drive's real blobs-core key.
+  async function rotateFeed (drive) {
+    await drive.put('/index.m3u8', b4a.from('#EXTM3U')) // header exists once content does
+    const keyHex = b4a.toString(drive.key, 'hex')
+    feedSwarm.join(drive.discoveryKey, { server: true, client: false }); await feedSwarm.flush()
+    await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
+      streamId: 'news', feedKey: keyHex, encryptionKey: encKeyHex, isLive: true
+    })
+    const rotated = (await db.get('catalog/news')).value
+    assert.strictEqual(rotated.feedKey, keyHex, 'rotation: catalog follows the new feedKey')
+    assert.strictEqual(rotated.blobsKey ?? null, null, 'rotation: stale blobsKey cleared with the register itself')
+    const realKey = b4a.toString((await drive.getBlobs()).core.key, 'hex')
+    const got = await waitFor(async () => (await db.get('catalog/news'))?.value?.blobsKey, 90000, 'blobsKey re-enrichment after rotation')
+    assert.strictEqual(got, realKey, "re-enriched blobsKey equals the NEW drive's blobs-core key")
+    return realKey
+  }
+
   const feed2 = new Hyperdrive(feedStore.namespace('feed2'), { encryptionKey: encKey }); await feed2.ready()
-  await feed2.put('/index.m3u8', b4a.from('#EXTM3U')) // header exists once content does
   const feedKey2Hex = b4a.toString(feed2.key, 'hex')
-  feedSwarm.join(feed2.discoveryKey, { server: true, client: false }); await feedSwarm.flush()
-  await registerWithPanel(pcall, b4a.toString(keys.publisher.secretKey, 'hex'), {
-    streamId: 'news', feedKey: feedKey2Hex, encryptionKey: encKeyHex, isLive: true
-  })
-  const rotated = (await db.get('catalog/news')).value
-  assert.strictEqual(rotated.feedKey, feedKey2Hex, 'rotation: catalog follows the new feedKey')
-  assert.strictEqual(rotated.blobsKey ?? null, null, 'rotation: stale blobsKey cleared with the register itself')
-  const realBlobsKey2 = b4a.toString((await feed2.getBlobs()).core.key, 'hex')
-  const enriched2 = await waitFor(async () => (await db.get('catalog/news'))?.value?.blobsKey, 90000, 'blobsKey re-enrichment after rotation')
-  assert.strictEqual(enriched2, realBlobsKey2, "re-enriched blobsKey equals the NEW drive's blobs-core key")
-  assert.notStrictEqual(enriched2, realBlobsKey, 'rotation produced a different blobs core')
+  const realBlobsKey2 = await rotateFeed(feed2)
+  assert.notStrictEqual(realBlobsKey2, realBlobsKey, 'rotation produced a different blobs core')
   log('panel: feedKey rotation cleared + re-enriched blobsKey ✓')
+
+  // S28 rotates a live feed periodically (FEED_ROTATE_TREE_MB / FEED_ROTATE_HOURS), and each
+  // rotation mints a feedKey the panel has never probed before. The enricher opens those
+  // drives on the panel's OWN corestore, so its footprint must be a function of what the
+  // panel OWNS — not of how many feedKeys have ever passed through it.
+  for (let gen = 3; gen <= 5; gen++) {
+    const next = new Hyperdrive(feedStore.namespace('feed' + gen), { encryptionKey: encKey }); await next.ready()
+    await rotateFeed(next)
+    const now = panelCores(dirs.panel)
+    assert.deepStrictEqual(now.sort(), [...baseCores].sort(),
+      `rotation ${gen}: panel core set must be unchanged (was ${baseCores.length}, now ${now.length}) — probe cores are leaking`)
+  }
+  log(`panel: 4 feedKey rotations left the panel store at ${baseCores.length} core(s) — enrichment disk is O(panel), not O(rotations × channels) ✓`)
+
+  // An UNREACHABLE feed is the ordinary enrichment case — a broadcaster that is offline, or
+  // a channel so freshly started that nothing has been written yet — and the one that used
+  // to leak hardest: every timed-out attempt abandoned another core. Drive it with a
+  // short-timeout enricher of its own: it must park cleanly and leave the store untouched.
+  const ghostKey = b4a.toString(hcrypto.randomBytes(32), 'hex')
+  await db.put('catalog/ghost', { id: 'ghost', title: 'Ghost', feedKey: ghostKey })
+  saveSecrets(dirs.panel, { ...loadSecrets(dirs.panel), ghost: encKeyHex })
+  const ghostEnrich = makeBlobsKeyEnricher(
+    { store: panelStore, swarm: panelSwarm, db, dataDir: dirs.panel },
+    { attemptTimeoutMs: 1500, backoffBaseMs: 200, backoffMaxMs: 200, maxAttempts: 3 }
+  )
+  ghostEnrich.enqueue('ghost')
+  await waitFor(async () => ghostEnrich.pending() === 0, 60000, 'unreachable feed parks after its retries')
+  assert.strictEqual((await db.get('catalog/ghost')).value.blobsKey ?? null, null, 'unreachable feed stays un-enriched')
+  assert.deepStrictEqual(panelCores(dirs.panel).sort(), [...baseCores].sort(), 'a parked probe leaves no cores behind')
+  await ghostEnrich.close()
+  await db.del('catalog/ghost')
+  const { ghost, ...keptSecrets } = loadSecrets(dirs.panel); saveSecrets(dirs.panel, keptSecrets)
+  log('panel: an unreachable feed parks after its retries and leaves no probe cores ✓')
 
   // ===== Unauthorized publisher is rejected =====
   let unauth = false
@@ -268,7 +339,7 @@ try {
   assert.strictEqual(streams[0]?.encryptionKey, encKeyHex, 'logged-in user recovers the registered encryption key')
   log('client: login recovered the broadcaster-registered key ✓')
 
-  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover; S29 register idempotence: unchanged re-register appends nothing)')
+  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; enrichment probes purge their cores, so panel disk is flat across rotations; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover; S29 register idempotence: unchanged re-register appends nothing)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

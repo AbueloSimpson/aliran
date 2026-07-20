@@ -220,6 +220,13 @@ Android phone + Android TV).
   enricher is still nudged, because that heartbeat is its retry timer. No-op registers
   also stop flooding the 200-entry activity ring, which they otherwise evicted whole
   every ~20 minutes at 43 channels.
+- Panel: the **`blobsKey` enricher no longer leaks a core per probed feed**. Its probe
+  drives are keyed, so corestore filed them on the panel's own disk regardless of the
+  probe namespace, and `close()` only ended the session — the cores stayed forever.
+  Growth tracked *distinct feedKeys ever seen*, so periodic feed rotation made the
+  control plane grow with rotations × channels, unbounded. Each probe now purges the
+  cores it opened; `test:register` asserts the panel's core set is unchanged across
+  repeated feedKey rotations.
 - Ops: live feeds no longer grow unbounded (~1–2 GB/h/channel → O(window));
   orphan-pin disk reclaim; remote acceptance always ends with a verdict.
 
