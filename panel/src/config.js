@@ -22,6 +22,9 @@ loadDotEnv()
 
 const bool = (v, d) => (v === undefined ? d : /^(1|true|yes)$/i.test(v))
 const int = (v, d) => (v === undefined || v === '' ? d : parseInt(v, 10))
+// An "MB" env knob in bytes. Garbage or a negative value disables that direction rather
+// than throwing — socket tuning must never be the reason the panel fails to boot.
+const mib = (v, d) => { const n = int(v, d); return Number.isFinite(n) && n > 0 ? n * 1048576 : 0 }
 
 export const config = {
   dataDir: process.env.DATA_DIR || './data',
@@ -41,6 +44,12 @@ export const config = {
     threshold: int(process.env.LOCKOUT_THRESHOLD, 10),
     seconds: int(process.env.LOCKOUT_SECONDS, 900)
   },
+  // Swarm UDP socket buffers, in MB (0 = leave that direction alone). Every client
+  // replicates the catalog bee over this ONE swarm, so its socket pair carries the whole
+  // lineup's fan-out. See core/net-tune.js — the host must permit the size via
+  // net.core.{r,w}mem_max or the request is silently clamped (a warning names the sysctl).
+  swarmRcvBuf: mib(process.env.SWARM_RCVBUF_MB, 2),
+  swarmSndBuf: mib(process.env.SWARM_SNDBUF_MB, 2),
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean),
   admin: {

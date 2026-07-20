@@ -20,6 +20,7 @@ import Hyperswarm from 'hyperswarm'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { panelClient, registerWithPanel } from './register.js'
+import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 
 const HEARTBEAT_MS = 5 * 60 * 1000 // idempotent re-assert of running streams
 const RETRY_MS = 2000 // after a delivery error, before the queue retries
@@ -75,6 +76,11 @@ export class PanelLink {
     const bootstrap = this.config.bootstrap && this.config.bootstrap.length ? this.config.bootstrap : undefined
     const swarm = new Hyperswarm({ bootstrap })
     this.swarm = swarm
+    // Fire-and-forget: connect() is synchronous by design (connections arrive later and
+    // kick the queue), and tuning must not gate the panel link coming up.
+    tuneSwarm(swarm, { recvBytes: this.config.swarmRcvBuf, sendBytes: this.config.swarmSndBuf })
+      .then((r) => logSwarmTuning(r, (line) => console.log('[net]', line)))
+      .catch(() => {})
     swarm.on('connection', (socket) => this._onConnection(socket))
     this._discovery = swarm.join(crypto.hash(b4a.from(this.config.panelPubKey, 'hex')), { client: true, server: false })
     this._disconnectedSince = Date.now() // disconnected until the first connection lands

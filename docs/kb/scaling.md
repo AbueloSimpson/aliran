@@ -11,6 +11,13 @@ read this first.
 > ~60 channels, a 1 GB box ~14. **Transcoding** channels are CPU-bound instead (~0.5–1 core
 > each). Measure your own box with `node tools/scale-bench.mjs`.
 
+> **Before you put real viewers on it:** channel density is an *ingest* cost. Viewer
+> fan-out is a different limit, and on stock Linux it is capped by the kernel's socket
+> buffers rather than by anything in this page — install
+> `deploy/sysctl/99-aliran.conf` and read [Network tuning](network-tuning.md). An
+> undersized buffer drops packets inside the kernel, so it looks like stalling playback,
+> not like a resource limit.
+
 ## Why this is different from a normal HLS server
 
 nginx/Nimble/Flussonic are HTTP HLS origins: they write the rolling window to tmpfs and serve

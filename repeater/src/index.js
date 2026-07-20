@@ -50,6 +50,7 @@ import Hyperbee from 'hyperbee'
 import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { config } from './config.js'
+import { tuneSwarm, logSwarmTuning } from './net-tune.js'
 
 const HEX64 = /^[0-9a-f]{64}$/i
 
@@ -121,6 +122,12 @@ export class Repeater {
     const swarmOpts = { maxPeers }
     if (this.config.bootstrap.length) swarmOpts.bootstrap = this.config.bootstrap
     this._swarm = new Hyperswarm(swarmOpts)
+    // Size the UDP socket buffers before this box starts absorbing fan-out — the single
+    // socket pair below carries every mirrored channel to every viewer that picks us.
+    logSwarmTuning(
+      await tuneSwarm(this._swarm, { recvBytes: this.config.swarmRcvBuf, sendBytes: this.config.swarmSndBuf }),
+      (line) => console.log('[net]', line)
+    )
     // Serving IS this handler: corestore replication answers any request for a core
     // this box holds — every mirrored channel plus the public panel bee — over one
     // stream per connection. hyperswarm 4.x only budgets OUTGOING dials, so the

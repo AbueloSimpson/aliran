@@ -1,0 +1,7 @@
+# Files consumed by the Linux host must keep LF endings regardless of who committed them.
+# This repo is developed on Windows, where core.autocrlf hands out CRLF working copies —
+# and a CRLF checkout breaks these silently at the worst moment: a shebang followed by \r
+# fails with "bad interpreter: /bin/sh^M", and sysctl.d parses the trailing \r into the
+# value. Normalising here means it cannot depend on a contributor's local git config.
+*.sh text eol=lf
+deploy/sysctl/*.conf text eol=lf

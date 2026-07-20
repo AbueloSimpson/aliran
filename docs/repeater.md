@@ -81,6 +81,13 @@ docker compose -f deploy/docker-compose.repeater.yml up -d --build
 # Or bare-metal: repeater/README.md + deploy/systemd/aliran-repeater.service
 ```
 
+> **Worth running the optional host network tuning on this box in particular.** Absorbing
+> fan-out is a repeater's entire job, so of every Aliran component it is the most likely to
+> hit the kernel's UDP socket-buffer ceiling — and the clamp is silent, so it presents as
+> viewers stalling rather than as a limit. One command, one time:
+> `sudo deploy/sysctl/install.sh` (details:
+> [network tuning](kb/network-tuning.md), [operator guide](operator-guide.md)).
+
 Configuration (see `repeater/.env.example` for the full comments):
 
 | Env | Default | Meaning |

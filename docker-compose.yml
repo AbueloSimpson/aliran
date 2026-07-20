@@ -8,6 +8,13 @@
 #   - Push-ingest listeners (RTMP/SRT/TS) added at runtime need no compose edits.
 # A bridge-network variant is documented in docs/operator-guide.md if you need it.
 #
+# A consequence of host networking worth knowing: Docker REFUSES `sysctls:` for net.* here
+# (the container shares the host's network namespace, so there is nothing separate to set),
+# so the swarm's UDP socket buffers are a HOST setting this file cannot make for you.
+# Nothing here needs it to run — but before real viewer load, see the optional
+# deploy/sysctl/install.sh and docs/kb/network-tuning.md, or the kernel silently clamps
+# those buffers and throughput caps out with no error anywhere.
+#
 # First-time setup (creates the panel keys, then an admin account):
 #   docker compose build
 #   docker compose run --rm panel node src/admin-cli.js init

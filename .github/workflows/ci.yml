@@ -37,6 +37,11 @@ jobs:
         run: npm run test:corrupt
       - name: ffmpeg argument builders (test:args)
         run: npm run test:args
+      # Loopback UDP + a 1-node local testnet — deterministic, never touches the public
+      # DHT. Runners ship the stock net.core.wmem_max, so this also exercises the
+      # clamp-detection path against a real undersized kernel ceiling.
+      - name: Swarm socket tuning (test:nettune)
+        run: npm run test:nettune
       - name: Ephemeral feed buffer / rolling window (test:retention)
         run: npm run test:retention
       # Loopback-only HTTP (in-process panel + local feed server) — deterministic,

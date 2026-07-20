@@ -21,6 +21,7 @@ import { loadAdmins } from './ops.js'
 import { makeRing } from './activity.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
+import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 
 export async function startPanel () {
   const keys = openKeys(config.dataDir)
@@ -37,6 +38,12 @@ export async function startPanel () {
 
   const sessionTtlMs = config.sessionTtlDays * 86400000
   const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
+  // Size the UDP socket buffers before announcing (core/net-tune.js). Every client
+  // replicates the catalog over this single swarm, so its send buffer carries the fan-out.
+  logSwarmTuning(
+    await tuneSwarm(swarm, { recvBytes: config.swarmRcvBuf, sendBytes: config.swarmSndBuf }),
+    (line) => console.log('[net]', line)
+  )
   // blobsKey catalog enrichment (S20a): register nudges it; it opens each feed drive
   // with the panel-stored encryptionKey (async, off the RPC path) and publishes the
   // blobs-core key so keyless repeaters (S20) can mirror ciphertext.

@@ -169,10 +169,28 @@ Android phone + Android TV).
   absorbs viewer fan-out off the origin. It holds no grants and cannot watch what it
   serves. Ships with its own deploy pack and testnet-proven e2e.
 
+**Networking (all components)**
+- Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes
+  every peer stream of a swarm onto one socket pair, so under viewer fan-out the socket
+  buffer overflows first — and the kernel drops those packets **silently**, which
+  presents as stalling playback rather than an error. udx raised only the receive side
+  (1 MiB) and left the send side at the OS default (~208 KiB); both are now set
+  (`SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB`).
+- Because `setsockopt` is silently clamped to `net.core.{r,w}mem_max` — and Linux stores
+  double what it grants, so a readback cannot detect a partial clamp — the ceiling is
+  read from `/proc` and a clamped request logs a warning naming the exact sysctl, once
+  per process. Raising the ceiling is a **host** action Docker cannot do for you (`net.*`
+  sysctls belong to the host under `network_mode: host`), so it ships as an **optional
+  standalone script** — `deploy/sysctl/install.sh` + its drop-in — that nothing in the
+  normal deploy calls, documented under "Host network tuning" in the
+  [operator guide](docs/operator-guide.md) and the
+  [network-tuning KB page](docs/kb/network-tuning.md) (which also covers conntrack and fd
+  limits); `test:nettune` in the required CI lane.
+
 **Deploy + CI + tooling**
 - Deploy pack: root-context Dockerfiles, host-network Docker Compose, systemd units,
-  Caddy TLS recipe; CI runs the deterministic suites, best-effort DHT e2e, and
-  docker-build smoke on every push.
+  Caddy TLS recipe, `sysctl` drop-in; CI runs the deterministic suites, best-effort DHT
+  e2e, and docker-build smoke on every push.
 - e2e suites for every subsystem (`test:core`, `test:sdk`, `test:admin-api`,
   `test:broadcaster-api`, `test:register`, `test:repeater`, `test:serve`,
   `test:retention`, login-flood suites, …) plus `tools/acceptance-remote.mjs` — a

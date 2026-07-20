@@ -18,6 +18,9 @@ loadDotEnv()
 
 const int = (v, d) => (v === undefined || v === '' ? d : parseInt(v, 10))
 const bool = (v, d) => (v === undefined ? d : /^(1|true|yes)$/i.test(v))
+// An "MB" env knob in bytes. Garbage or a negative value disables that direction rather
+// than throwing — socket tuning must never be the reason a broadcaster fails to boot.
+const mib = (v, d) => { const n = int(v, d); return Number.isFinite(n) && n > 0 ? n * 1048576 : 0 }
 
 export const config = {
   dataDir: process.env.DATA_DIR || './data',
@@ -97,6 +100,15 @@ export const config = {
   // headroom for non-viewer peers (repeaters, the panel's blobsKey probe) — they take a
   // slot like any viewer.
   swarmMaxPeers: int(process.env.SWARM_MAX_PEERS, 0) || null,
+  // Swarm UDP socket buffers, in MB (0 = leave that direction alone). UDX carries EVERY
+  // peer stream of a swarm over one socket pair, so under fan-out the socket buffer is
+  // what overflows first — and an overflow is a silent kernel-side packet drop, not an
+  // error. udx already raises recv to 1 MiB but leaves SEND at the OS default (~208 KiB),
+  // which is the direction a broadcaster actually uses. See core/net-tune.js; the host
+  // must allow it via net.core.{r,w}mem_max (deploy/sysctl/99-aliran.conf) or the request
+  // is silently clamped — the broadcaster logs a warning naming the exact sysctl.
+  swarmRcvBuf: mib(process.env.SWARM_RCVBUF_MB, 2),
+  swarmSndBuf: mib(process.env.SWARM_SNDBUF_MB, 2),
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean),
   control: {

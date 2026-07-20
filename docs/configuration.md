@@ -27,6 +27,7 @@ Copy each component's `.env.example` to `.env`.
 | `SOURCES_FETCH_TIMEOUT_MS` | `30000` | Per-pull HTTP timeout |
 | `SOURCES_MAX_BYTES` | `5242880` | Feed size cap (streaming-enforced) |
 | `SOURCES_MAX_CHANNELS` | `500` | Entries imported per source beyond which the feed is truncated |
+| `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `2` / `2` | Swarm UDP socket buffers in MB (`0` = OS default). Every client replicates the catalog over this one swarm. **Only takes effect if the host allows it:** clamped to `net.core.{r,w}mem_max` — optional `deploy/sysctl/install.sh` raises it. See [KB](kb/network-tuning.md) |
 | `BOOTSTRAP` | *(empty)* | Custom DHT bootstrap nodes (optional) |
 | `GEOIP_DB` | *(empty)* | Path to MaxMind GeoLite2 mmdb (enables geo) |
 | `DRM_PROVIDER` | *(empty)* | `keyos` \| `ezdrm` \| `axinom` … (enables DRM) |
@@ -51,6 +52,7 @@ Copy each component's `.env.example` to `.env`.
 | `FFMPEG_MAX_RSS_MB` | `150` | Recycle a running ffmpeg once its VmRSS+VmSwap crosses this (MB) — bounds the slow demuxer-state accumulation some live-HLS upstreams cause. Same watchdog backoff as a stalled-edge respawn, no feed rotation. `0` disables; Linux-only (reads `/proc`) |
 | `FEED_BUFFER` | `disk` | `disk` (stable feed identity, warm DHT topic — faster joins) or `ram` (byte-flat disk, cold discovery each restart). See [KB](kb/feed-buffer.md) |
 | `SWARM_MAX_PEERS` | *(unset)* | Optional **per-channel** swarm connection budget (each channel runs its own swarm; hyperswarm's own default is 64, also per channel). Connections beyond the budget are dropped at accept time. Leave headroom for non-viewer peers (repeaters, the panel's blobsKey probe) |
+| `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `2` / `2` | Swarm UDP socket buffers in MB (`0` = OS default). UDX carries every peer stream over one socket pair, so this is what overflows under fan-out — silently, as kernel packet drops. **Only takes effect if the host allows it:** `setsockopt` is clamped to `net.core.{r,w}mem_max` (212992 on stock Linux) — optional `deploy/sysctl/install.sh` raises it. See [KB](kb/network-tuning.md) |
 | `PROTECTION` | `self` | `self` (encrypted Hyperdrive) or `drm` (CENC via packager) |
 | `CONTROL_ENABLED` | `false` | Serve the channel control HTTP API |
 | `CONTROL_HOST` | `127.0.0.1` | Control API bind address (use TLS in front if not loopback) |
@@ -69,6 +71,7 @@ The keyless regional super-peer — see the [repeater appliance page](repeater.m
 | `CHANNELS` | `all` | `all`, `ch1,ch2`, or `category:news[,sports]` |
 | `RETENTION_SECONDS` | `300` | Live window kept per channel (may exceed the origin's HLS window) |
 | `SWARM_MAX_PEERS` | `256` | Connection budget (a repeater exists to absorb fan-out) |
+| `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `4` / `4` | Swarm UDP socket buffers in MB (`0` = OS default). Higher than the broadcaster's: absorbing fan-out is this box's entire job, so it is the most likely to hit a buffer wall. Worth pairing with the optional `deploy/sysctl/install.sh` — otherwise the request is silently clamped. See [KB](kb/network-tuning.md) |
 | `DATA_DIR` | `./data` | Ciphertext block store (disposable cache) |
 | `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
 | `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes |

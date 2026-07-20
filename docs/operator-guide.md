@@ -194,6 +194,54 @@ Nothing else is needed — clients reach the panel through the DHT, not an IP/do
 `RELAY_ONLY=1` on the panel hides the origin IP behind DHT relays (slower, more
 private).
 
+## Host network tuning (optional)
+
+**Aliran runs fine without this.** It matters once you put real viewer load on a box —
+before that you will not notice the difference, and after that you will notice it as
+something that looks like a bug rather than a limit.
+
+**What the problem is.** Hyperswarm's transport is UDX, which carries *every* peer stream
+of a swarm over a single pair of UDP sockets. So viewer fan-out concentrates on one socket
+instead of spreading across per-viewer connections, and the kernel's socket buffer is what
+runs out first. When it does, the kernel **discards the packets silently** — no error, no
+log line — and playback just stalls and degrades as more viewers join.
+
+Aliran already asks the kernel for bigger buffers at startup (2 MiB, or 4 MiB on a
+repeater; see `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` in
+[Configuration](configuration.md)). The catch is that `setsockopt` is **silently clamped**
+to `net.core.rmem_max` / `net.core.wmem_max`, which ship at 212992 bytes (208 KiB) on stock
+Linux. The request succeeds and the socket just stays small.
+
+**The optional helper.** [`deploy/sysctl/install.sh`](https://github.com/AbueloSimpson/aliran/tree/main/deploy/sysctl)
+raises those ceilings for you. It is a standalone script — nothing in the normal
+`docker compose up` / systemd flow calls it, and you can equally do it by hand or through
+whatever configuration management you already run:
+
+```bash
+sudo deploy/sysctl/install.sh          # copies the drop-in, applies it, verifies it took
+docker compose restart                 # services re-request their buffers at startup
+```
+
+It installs `/etc/sysctl.d/99-aliran.conf` (8 MiB ceilings), so it is a **one-time** action
+per host — `systemd-sysctl` re-applies it on every boot. Re-run it after a host rebuild or
+migration, since these are host settings that a fresh image will not carry over.
+
+**Why it is not automatic.** The services run with `network_mode: host`, and Docker refuses
+`sysctls:` for `net.*` there — the container shares the host's network namespace, so there
+is nothing separate to set. Doing it from a container would mean shipping a **privileged**
+container that writes to host config, which is a worse trade than one `sudo` you can read
+first. Bare-metal/systemd installs need the same thing for the same reason.
+
+**If you skip it**, the services say so at startup, naming the exact sysctl:
+
+```
+[net] WARNING: swarm send buffer clamped to 208 KiB — asked for 2 MiB … Fix: sysctl -w
+net.core.wmem_max=2097152 — persist it in /etc/sysctl.d/99-aliran.conf
+```
+
+Full background, plus the conntrack and file-descriptor limits that matter at the same
+scale: [Network tuning KB](kb/network-tuning.md).
+
 ## Sizing
 
 Verified on a 1 vCPU / 1 GB VPS: two concurrent **copy** (passthrough) channels run at ~1.6%

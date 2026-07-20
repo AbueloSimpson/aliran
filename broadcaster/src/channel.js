@@ -36,6 +36,7 @@ import os from 'os'
 import { startFfmpeg, mirrorDirToDrive, purgeStaleCores, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
+import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 
 export class ControlError extends Error {
   constructor (code, message) { super(message); this.code = code }
@@ -422,6 +423,17 @@ class Channel {
     // replication starts (the peer's own retry/self-heal covers the refusal).
     const maxPeers = config.swarmMaxPeers || 0
     const swarm = new Hyperswarm(maxPeers ? { bootstrap, maxPeers } : { bootstrap })
+    // Size the UDP socket buffers BEFORE this swarm starts serving. This swarm carries
+    // every viewer of this channel over one socket pair, so the send buffer is the thing
+    // that overflows under fan-out — and it is the direction udx leaves at the OS default.
+    // Warnings are deduped process-wide (a clamp is a host property, not a per-channel one).
+    // Goes to the process log, not this channel's ring: a clamped buffer is a property of
+    // the HOST and applies to every channel equally, so pinning it to whichever channel
+    // happened to start first would be misleading.
+    logSwarmTuning(
+      await tuneSwarm(swarm, { recvBytes: config.swarmRcvBuf, sendBytes: config.swarmSndBuf }),
+      (line) => console.log('[net]', line)
+    )
     swarm.on('connection', (socket) => {
       if (maxPeers && swarm.connections.size > maxPeers) { socket.destroy(); return }
       // Replicate the whole STORE (equivalent to drive.replicate — hyperdrive.replicate
