@@ -104,7 +104,7 @@ In likelihood order:
   silently frozen frame.
 - **Widen the margin (operators):** deepening the live window (`HLS_LIST_SIZE`
   12–16) gives clients more room to recover from blips — the same lever as the
-  rebuffer cushion in [sizing the segment window](feed-buffer.md#sizing-the-segment-window-hls_time--hls_list_size).
+  rebuffer cushion in [sizing the segment window](feed-buffer.md#sizing-the-segment-window-hls_time-hls_list_size).
 
 ## Channel zapping is slow, or flipping back to a channel hangs
 

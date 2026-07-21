@@ -167,7 +167,7 @@ and how it's encoded (copy passthrough, x264, GPU) is **broadcaster** configurat
 manage it in the broadcaster control dashboard (kind + transcode under Edit, push URL
 on the card, ffmpeg logs behind the Logs button). See the
 [operator guide](operator-guide.md#e-broadcaster-input) and
-[reference](reference.md#broadcaster-control-api--ui-control_enabled1). The panel
+[reference](reference.md#broadcaster-control-api-ui-control_enabled1). The panel
 only learns the resulting feed identity through the register RPC.
 
 ## Live vs VOD

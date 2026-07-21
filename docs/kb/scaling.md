@@ -238,7 +238,7 @@ So the thing to watch on the panel is **write rate**, not record count. What wri
 | `register` with a real change | 1 block (~490 B) | feedKey rotation, `isLive`/`status` flip, new `origin`. Rotation is the one that recurs — see `FEED_ROTATE_TREE_MB`/`FEED_ROTATE_HOURS` in [feed-buffer.md](feed-buffer.md): rotating harder bounds *broadcaster* disk but adds *panel* writes. |
 | Viewer `session` | 1 block per session | Rewrites the whole user record, including its `wrapped` grant map — so this scales with **grants per user**, not with channel count alone. |
 | Admin edits / grants | 1 block each | `grant` re-puts the full user record per channel, so granting *n* channels one at a time is O(n²) in bytes. Bulk/auto-grant paths matter at 300 channels. |
-| Source sync | 0 for unchanged entries | [`sources.js`](../../panel/src/sources.js) compares before it puts; a 304 or an unchanged feed appends nothing. |
+| Source sync | 0 for unchanged entries | [`sources.js`](https://github.com/AbueloSimpson/aliran/blob/main/panel/src/sources.js) compares before it puts; a 304 or an unchanged feed appends nothing. |
 
 Measured, on the register path before the S29 fix: **43 channels × 288 heartbeats/day = 12,384
 redundant appends/day ≈ 5.8 MiB/day**, forever, growing linearly with the lineup. Small per day
