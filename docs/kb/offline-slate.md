@@ -32,8 +32,7 @@ Probed from a live segment of all 68 running channels on 2026-07-21 (`ffprobe` o
 | hevc 1920x1080 | 9 | `slate-1080p-hevc-aac.ts` |
 | hevc 1280x720 | 6 | `slate-720p-hevc-aac.ts` |
 | h264 1920x1080 | 5 | `slate-1080p-h264-aac.ts` |
-| h264 852x720 | 4 | 720p h264 (codec match, letterboxed) |
-| h264 720x480 / 718x480 | 3 | 720p h264 (codec match, upscaled) |
+| h264 852x720 / 720x480 / 1024x576 | 7 | 720p h264 — aspect-correct, see below |
 
 Two things worth knowing before matching:
 
@@ -45,6 +44,63 @@ Two things worth knowing before matching:
   profile is one of the things a decoder absorbs at an IDR.
 - Frame rates in the fleet are mixed (29.97 ×35, 59.94 ×25, 30 ×7, 23.976 ×1) and **8 channels
   are mono**. The slates are all 30 fps stereo; see below for why that is safe.
+
+## Non-standard resolutions, and SD
+
+Seven channels are neither 720p nor 1080p. Re-probed 2026-07-21 with pixel aspect included:
+
+| Raster | SAR | DAR | Channels |
+|---|---|---|---|
+| 852x720 | 3:2 | 71:40 (1.775) | `espn-1-arg`, `espn-2-arg`, `fox-sports-2-arg`, `fox-sports-3-arg` (all **mono**) |
+| 720x480 | 32:27 | 16:9 | `via-x-cl`, `zona-latina-cl` |
+| 1024x576 | 1:1 | 16:9 | `bein-n` |
+
+**The important result: every channel in the fleet displays at 16:9**, including the SD and
+odd rasters — they are anamorphic (non-square pixels), not differently-shaped pictures.
+720x480 SAR 32:27 is *exactly* 16:9; 852x720 SAR 3:2 is 1.775 against the slate's 1.778, a
+0.2% difference. So the square-pixel 16:9 slate is **aspect-correct fleet-wide** — a slated SD
+channel is upscaled, never stretched or letterboxed. No SD slate variant is needed.
+
+Verified by decoding a real mixed playlist (two live segments from the channel, then slate
+segments appended as failover would produce them):
+
+| Case | Result |
+|---|---|
+| `via-x-cl` 720x480 stereo → 720p slate | 246 frames, raster `720x480 → 1280x720`, clean |
+| `espn-1-arg` 852x720 **mono** → 720p stereo slate | 246 frames, raster `852x720 → 1280x720`, audio `1ch → 2ch`, clean |
+
+The only decoder complaints were `Packet corrupt` originating in the *live* segment — a
+pre-existing property of flaky IPTV sources (see `discardCorrupt` in the ingest tuning), not
+caused by the slate.
+
+**Match at selection time, not from a static table.** Source resolutions drift: between two
+probes hours apart, `bein-n` moved to 1024x576 and a 718x480 channel disappeared entirely.
+The consuming feature must read the channel's *currently detected* profile.
+
+## Failover inserts a timestamp discontinuity (design input)
+
+Switching a channel to the slate means restarting ffmpeg, and a restarted ffmpeg **resets its
+output clock**. Measured on a channel running ~1.7 h:
+
+```
+live channel, newest segment, first DTS : 543226451 ticks = 6036 s
+freshly restarted ffmpeg (slate)        :    126000 ticks =    1.4 s
+=> DTS jumps BACKWARD ~6034 s inside the same index.m3u8
+```
+
+The jump scales with channel uptime, so on a channel up for days it is far larger. With
+`append_list` and no discontinuity tag, players are being handed a playlist whose timeline
+goes backwards — expect stalls or a stuck live edge.
+
+**Verified fix:** add `discont_start` to the HLS flags when starting the slate run —
+
+```
+-hls_flags delete_segments+append_list+omit_endlist+discont_start
+```
+
+ffmpeg 5.1.9 accepts it and writes `#EXT-X-DISCONTINUITY` ahead of the appended segments.
+This is the single most important thing for the wiring task to get right; the codec and
+resolution matching above is secondary to it.
 
 ## The files
 
