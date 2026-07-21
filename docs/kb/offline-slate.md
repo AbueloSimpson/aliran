@@ -23,16 +23,22 @@ IDR without a visible break, so varying them would multiply the library for no g
 
 ## Measured fleet distribution
 
-Probed from a live segment of all 68 running channels on 2026-07-21 (`ffprobe` of the newest
-`seg*.ts` in each `/tmp/aliran-hls-*/`). This is what the library is sized against:
+Probed from a live segment of every running channel (`ffprobe` of the newest `seg*.ts` in
+each `/tmp/aliran-hls-*/`). Re-measured 2026-07-21 after the fleet grew 68 → 82 running:
 
-| Codec × resolution | Channels | Slate |
+| Codec × height | Channels | Slate |
 |---|---:|---|
-| h264 1280x720 | 41 | `slate-720p-h264-aac.ts` |
-| hevc 1920x1080 | 9 | `slate-1080p-hevc-aac.ts` |
-| hevc 1280x720 | 6 | `slate-720p-hevc-aac.ts` |
-| h264 1920x1080 | 5 | `slate-1080p-h264-aac.ts` |
-| h264 852x720 / 720x480 / 1024x576 | 7 | 720p h264 — aspect-correct, see below |
+| h264 720 | 49 | `slate-720p-h264-aac.ts` |
+| hevc 1080 | 13 | `slate-1080p-hevc-aac.ts` |
+| h264 1080 | 11 | `slate-1080p-h264-aac.ts` |
+| hevc 720 | 6 | `slate-720p-hevc-aac.ts` |
+| h264 480 / 576 | 3 | 720p h264 — aspect-correct, see below |
+
+**The four variants cover 100% of the fleet**, and did so again unchanged after 14 channels
+were added — the codec mix is still h264 (63) and hevc (19) only. Re-run the census after a
+bulk import: a new codec (mpeg2video, av1) would silently fall back to 720p h264, which is a
+*codec* mismatch and the one thing a player cannot absorb. The one-liner is in the git history
+of this page, or just check `detectedProfile` across `GET /api/channels`.
 
 Two things worth knowing before matching:
 
