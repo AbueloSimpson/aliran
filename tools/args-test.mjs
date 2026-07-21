@@ -251,21 +251,21 @@ let now = 0
 const inc = makeIncidents({ windowMs: 1000, minChannels: 5, capacity: 10, clock: () => now })
 
 // under the threshold: pure churn, nothing recorded at all
-for (let i = 0; i < 4; i++) { now += 10; assert.strictEqual(inc.restart('ch' + i), null, 'below threshold is silent') }
+for (let i = 0; i < 4; i++) { now += 10; assert.strictEqual(inc.restart('ch' + i, 8), null, 'below threshold is silent') }
 assert.strictEqual(inc.list().length, 0, 'ordinary churn must not fill the ring')
 
 // the 5th DISTINCT channel inside the window trips it — one incident, not five
 now += 10
-let ev = inc.restart('ch4', 69)
+let ev = inc.restart('ch4', 8) // small fleet: the absolute floor of 5 applies
 assert.ok(ev && ev.type === 'fleet-restart', 'burst opens a fleet incident')
 assert.strictEqual(ev.channels, 5, 'counts distinct channels')
-assert.strictEqual(ev.of, 69, 'records the fleet size it happened against')
+assert.strictEqual(ev.of, 8, 'records the fleet size it happened against')
 assert.strictEqual(inc.list().length, 1, 'a burst is ONE incident')
 
 // more restarts EXTEND that incident rather than emitting new ones — otherwise a fleet
 // event floods the ring and evicts its own beginning
-now += 10; inc.restart('ch5', 69)
-now += 10; inc.restart('ch6', 69)
+now += 10; inc.restart('ch5', 8)
+now += 10; inc.restart('ch6', 8)
 assert.strictEqual(inc.list().length, 1, 'burst still one incident')
 assert.strictEqual(inc.list()[0].channels, 7, 'extended in place')
 assert.ok(inc.list()[0].lastAt > inc.list()[0].firstAt, 'incident spans a duration')
@@ -277,7 +277,7 @@ assert.strictEqual(solo.list().length, 0, 'one channel flapping 20x is not a fle
 
 // once the window passes, a fresh burst is a NEW incident
 now += 5000
-for (let i = 0; i < 5; i++) { now += 10; inc.restart('later' + i, 60) }
+for (let i = 0; i < 5; i++) { now += 10; inc.restart('later' + i, 8) }
 assert.strictEqual(inc.list().length, 2, 'a later burst is a separate incident')
 assert.strictEqual(inc.list()[0].channels, 5, 'newest first, fresh count')
 
@@ -289,6 +289,21 @@ assert.strictEqual(inc.list()[0].type, 'source-failover', 'discrete events land 
 const cap = makeIncidents({ capacity: 3, clock: () => now })
 for (let i = 0; i < 10; i++) cap.record('x', { i })
 assert.strictEqual(cap._size(), 3, 'ring is bounded')
+
+// ⚠ THE THRESHOLD SCALES WITH FLEET SIZE. Measured churn on the live box is ~5 distinct
+// channels per 2 min at 68 channels, so a FLAT floor of 5 would fire continuously. With
+// minFraction the same churn stays silent on a big fleet but still trips a small one.
+const big = makeIncidents({ windowMs: 1000, minChannels: 5, minFraction: 0.25, clock: () => now })
+for (let i = 0; i < 10; i++) { now += 5; big.restart('c' + i, 69) } // 10 of 69 = 14%
+assert.strictEqual(big.list().length, 0, '10 of 69 channels is churn, not a fleet event')
+for (let i = 10; i < 18; i++) { now += 5; big.restart('c' + i, 69) } // 18 of 69 = 26%
+assert.strictEqual(big.list().length, 1, 'crossing 25% of the fleet IS a fleet event')
+assert.strictEqual(big.list()[0].channels, 18, 'reports the distinct-channel count')
+
+// a small deployment still trips on the absolute floor (5 of 6 really is fleet-wide)
+const small = makeIncidents({ windowMs: 1000, minChannels: 5, minFraction: 0.25, clock: () => now })
+for (let i = 0; i < 5; i++) { now += 5; small.restart('s' + i, 6) }
+assert.strictEqual(small.list().length, 1, 'minChannels is the floor for small fleets')
 log('L: incident correlation (churn silent, burst = one extended incident, per-channel flap ignored, bounded) ✓')
 
 log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation)')

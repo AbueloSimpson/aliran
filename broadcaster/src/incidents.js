@@ -22,7 +22,15 @@
 export function makeIncidents ({
   capacity = 100,
   windowMs = 120000, // 2 min — the 05:51Z event put 51 of 68 channels inside ~2 min
-  minChannels = 5, // below this it is ordinary churn, not a fleet event
+  // ⚠ THE THRESHOLD MUST SCALE WITH FLEET SIZE, or it cries wolf. Measured baseline:
+  // 2085 respawns / 68 channels / 12.1 h = ~2.5 per channel per hour, i.e. ~5.7 restarts
+  // across ~5 DISTINCT channels every 2 minutes on a healthy box. A flat "5 channels"
+  // trigger therefore sits exactly on the noise floor and fires continuously — useless.
+  // A fraction of the RUNNING fleet keeps the signal: 25% of 69 is ~17, far above that
+  // ~5 churn floor and far below the 51 actually seen. minChannels is only the floor for
+  // small deployments, where 5 of 6 channels really is a fleet event.
+  minFraction = 0.25,
+  minChannels = 5,
   clock = () => Date.now()
 } = {}) {
   const events = []
@@ -49,8 +57,9 @@ export function makeIncidents ({
       recent = recent.filter((r) => now - r.t < windowMs)
       recent.push({ id: channelId, t: now })
       const distinct = new Set(recent.map((r) => r.id))
-      if (distinct.size < minChannels) {
-        open = null // burst died out before reaching the threshold
+      const threshold = Math.max(minChannels, Math.ceil((runningTotal || 0) * minFraction))
+      if (distinct.size < threshold) {
+        open = null // ordinary churn, or a burst that never reached the bar
         return null
       }
       // Extend the incident already open rather than emitting a new one per restart —
