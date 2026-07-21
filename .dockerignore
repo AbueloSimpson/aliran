@@ -19,6 +19,10 @@
 client/
 sdk/
 tools/
+# ...except the slate renderer, which the broadcaster image runs at BUILD time so the
+# offline-slate media is produced by the same ffmpeg that later loops it (see
+# broadcaster/Dockerfile and docs/kb/offline-slate.md).
+!tools/render-slates.sh
 docs/
 site/
 deploy/

@@ -715,6 +715,15 @@ class Channel {
       if (next.reason !== 'slate-disabled') {
         try { this.manager.incidents.record('slate-retry', { channel: this.meta.id }) } catch {}
       }
+      // Leaving the slate to probe: put the backoff back to the base. Respawn delay is what
+      // bounds the viewer's DEAD AIR here — the slate stops producing segments the moment it
+      // is killed, and the player only has the live window (listSize x hls.time, ~16 s) to
+      // coast on. With a grown backoff the probe, and then the re-slate if it fails, would
+      // each be delayed up to backoffMaxMs, so a still-dead source could show ~30 s of
+      // nothing every retry cycle. It happens to decay on its own when SLATE_RETRY_MS equals
+      // backoffResetMs (both 60 s by default), but that is a coincidence of the defaults —
+      // shortening SLATE_RETRY_MS would silently reintroduce the gap.
+      run.watchdog.backoffMs = WD.backoffBaseMs
     }
     run.slated = next.slated
     run.slateSince = next.slateSince
