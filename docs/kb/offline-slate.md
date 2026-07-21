@@ -77,30 +77,55 @@ caused by the slate.
 probes hours apart, `bein-n` moved to 1024x576 and a 718x480 channel disappeared entirely.
 The consuming feature must read the channel's *currently detected* profile.
 
-## Failover inserts a timestamp discontinuity (design input)
+## Failover: swap the INPUT, don't just restart ffmpeg
 
-Switching a channel to the slate means restarting ffmpeg, and a restarted ffmpeg **resets its
-output clock**. Measured on a channel running ~1.7 h:
+A restarted ffmpeg resets its output clock. Measured on a channel running ~1.7 h:
 
 ```
 live channel, newest segment, first DTS : 543226451 ticks = 6036 s
 freshly restarted ffmpeg (slate)        :    126000 ticks =    1.4 s
-=> DTS jumps BACKWARD ~6034 s inside the same index.m3u8
+=> DTS would jump BACKWARD ~6034 s
 ```
 
-The jump scales with channel uptime, so on a channel up for days it is far larger. With
-`append_list` and no discontinuity tag, players are being handed a playlist whose timeline
-goes backwards — expect stalls or a stuck live edge.
+Whether that matters depends entirely on how the switch is implemented, because the two
+restart paths behave differently. Both were measured on a live channel:
 
-**Verified fix:** add `discont_start` to the HLS flags when starting the slate run —
+| Switch style | feedKey | Consequence |
+|---|---|---|
+| Restart with a **changed input** | **rotates** (new generation) | New feed + drive + playlist. Catalog updates, clients auto-follow. The backwards DTS lands in a *fresh* playlist, so it is a non-issue. |
+| Plain restart, **same input** | **unchanged** | Same feed, same playlist. Segments append after the old ones with a backwards timeline — this is the case that needs `#EXT-X-DISCONTINUITY`. |
+
+**Implement the slate as an input swap.** That path is verified end-to-end on real hardware
+(below) and needs no discontinuity handling at all. Note this holds with `FEED_BUFFER=disk`
+— rotation on source change is not a ram-mode-only behaviour.
+
+If a future implementation instead keeps the same feed and only re-points ffmpeg, it **must**
+add `discont_start` to the HLS flags:
 
 ```
 -hls_flags delete_segments+append_list+omit_endlist+discont_start
 ```
 
 ffmpeg 5.1.9 accepts it and writes `#EXT-X-DISCONTINUITY` ahead of the appended segments.
-This is the single most important thing for the wiring task to get right; the codec and
-resolution matching above is secondary to it.
+
+## On-device verification (Samsung S22 Ultra)
+
+Client is `react-native-video` 6.19.2 → ExoPlayer/Media3 → hardware MediaCodec, which is far
+less forgiving than an ffmpeg software decode. Staged as a real failover: a temporary channel
+looping an 854x480 program clip, then its input swapped to `slate-720p-h264-aac.ts` and
+restarted, watched over the live P2P path.
+
+| What | Result |
+|---|---|
+| 854x480 → 1280x720 raster change | **Handled.** No stall, no permanent black, no decoder error |
+| Time from last program frame to slate on screen | **~2-4 s** (feed rotation + catalog re-resolve + rebuffer) |
+| Transition appearance | One brief black frame, then bars |
+| Slate rendering | Full-width, correct aspect, message legible |
+| Loop wrap, 30 s spanning multiple wraps | **No glitch.** Every captured frame is a clean slate frame; no black, blank or partial frames |
+
+This is the confirmation that mattered: hardware decoders are exactly where mid-stream raster
+changes misbehave, and ExoPlayer absorbed it. The ~2-4 s gap is feed re-acquisition, not
+decode trouble.
 
 ## The files
 
