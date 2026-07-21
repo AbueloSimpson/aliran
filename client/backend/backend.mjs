@@ -127,9 +127,15 @@ function writePrefs (prefs) {
 function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
 
 let player = null
+// The operator/user's CONFIGURED upload policy. The network gate (S25) flips the live
+// policy to 'client-only' on cellular/metered and restores THIS on the way back — so a
+// deployment that ships uploadPolicy:'client-only' is never silently upgraded to reseed
+// by a Wi-Fi event.
+let basePolicy = 'reseed'
 
 function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy) {
   if (player) return player
+  if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
   player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy })
   player.on('ready', () => send({ type: 'ready' }))
   player.on('streams', (streams) => send({ type: 'streams', streams }))
@@ -182,7 +188,20 @@ IPC.on('data', (data) => {
       if (player) { try { player.setZapPrefetch(msg.zapPrefetch) } catch (err) { fail(err) } }
       sendPrefs()
     } else if (msg.type === 'net-info') {
-      if (player) { try { player.setNetworkProfile({ expensive: !!msg.expensive }) } catch (err) { fail(err) } }
+      if (player) {
+        try {
+          player.setNetworkProfile({ expensive: !!msg.expensive })
+          // S25: on cellular OR a metered link, stop re-seeding — a viewer should never
+          // burn mobile upload allowance serving other peers. Restores the configured
+          // policy the moment the network is cheap again. `client` stays true throughout,
+          // so this never interrupts the viewer's OWN playback; only the announce flips.
+          const limited = !!msg.expensive || !!msg.cellular
+          const want = limited ? 'client-only' : basePolicy
+          player.setUploadPolicy(want).then((r) => {
+            if (r.changed) send({ type: 'upload-policy', policy: r.policy, reason: limited ? (msg.cellular ? 'cellular' : 'metered') : 'unmetered' })
+          }).catch(() => {})
+        } catch (err) { fail(err) }
+      }
     } else if (msg.feedKey && msg.encryptionKey) {
       ensurePlayer().serveFeed(msg.feedKey, msg.encryptionKey).then((port) => send({ type: 'port', port })).catch(fail)
     } else if (msg.username) {

@@ -54,7 +54,10 @@ export default function App () {
     backend.boot(service.panelPubKey, service.hybrid)
     let offNet: (() => void) | undefined
     try {
-      offNet = NetInfo?.addEventListener((s) => backend.setNetworkProfile(!!s?.details?.isConnectionExpensive))
+      // Both signals matter: `isConnectionExpensive` gates prefetch, and either that OR
+      // being on cellular stops re-seeding (S25) — an unmetered mobile plan still costs
+      // the viewer battery and uplink.
+      offNet = NetInfo?.addEventListener((s) => backend.setNetworkProfile(!!s?.details?.isConnectionExpensive, s?.type === 'cellular'))
     } catch { /* native module absent (stale APK / jest) — expensive-network gate just stays off */ }
     return () => { off(); if (offNet) offNet() }
   }, [])

@@ -202,7 +202,11 @@ export class AliranBackend {
   setZapPrefetch (v: boolean | ZapPrefetchConfig) { this.send({ type: 'zap-prefetch-set', zapPrefetch: v }) }
   /** Host network profile (feed RN NetInfo changes down): expensive=true suspends
    *  zap prefetch immediately; false lifts the suspension on the next tick. */
-  setNetworkProfile (expensive: boolean) { this.send({ type: 'net-info', expensive }) }
+  // `cellular` is separate from `expensive` on purpose: an unmetered cellular plan
+  // reports isConnectionExpensive === false, but the viewer is still on mobile data and
+  // uploading there is what burns their battery and allowance. Either signal limits
+  // upload (S25); only `expensive` gates prefetch.
+  setNetworkProfile (expensive: boolean, cellular = false) { this.send({ type: 'net-info', expensive, cellular }) }
 
   /** Ask the worklet for saved credentials + favorites; answers as {type:'prefs'}. */
   requestPrefs () { this.send({ type: 'prefs-get' }) }

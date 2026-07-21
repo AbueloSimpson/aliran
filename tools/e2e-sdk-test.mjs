@@ -818,8 +818,60 @@ try {
   }
   const rU = await resolveWithin(playerU, 'news', 20000)
   await waitFor(async () => { const r = await httpGet(rU.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 40000, 'client-only viewer still plays over P2P')
-  const feedU = await playerU._feeds.get(rotKeyHex + ':' + b4a.toString(encKey, 'hex'))
+  const cacheKeyU = rotKeyHex + ':' + b4a.toString(encKey, 'hex')
+  const feedU = await playerU._feeds.get(cacheKeyU)
   if (!feedU || feedU.discovery.isServer !== false || feedU.discovery.isClient !== true) throw new Error('client-only must join feed topics server:false')
+
+  // ===== S25: setUploadPolicy flips re-seeding at RUNTIME, mid-playback =====
+  // The point of the feature: a viewer who walks from Wi-Fi onto cellular must stop
+  // uploading NOW, not at the next app start. `client` must stay true throughout or the
+  // switch would interrupt their own playback — which is the one thing it may not do.
+  const stillPlaying = async () => {
+    const r = await httpGet(rU.port, '/index.m3u8')
+    return r.status === 200 && r.body.includes('.ts')
+  }
+  const upEvents = []
+  playerU.on('upload-policy', (e) => upEvents.push(e))
+
+  let sw = await playerU.setUploadPolicy('reseed')
+  if (!sw.changed || sw.rejoined < 1) throw new Error('setUploadPolicy(reseed) should have re-joined at least the open feed')
+  const feedOn = await playerU._feeds.get(cacheKeyU)
+  if (feedOn.discovery.isServer !== true) throw new Error('runtime switch to reseed must announce (server:true)')
+  if (feedOn.discovery.isClient !== true) throw new Error('runtime switch must KEEP client:true — playback must not blip')
+  if (!(await stillPlaying())) throw new Error('playback broke when upload policy switched to reseed')
+
+  sw = await playerU.setUploadPolicy('client-only')
+  if (!sw.changed) throw new Error('setUploadPolicy(client-only) should report changed')
+  const feedOff = await playerU._feeds.get(cacheKeyU)
+  if (feedOff.discovery.isServer !== false) throw new Error('runtime switch to client-only must stop announcing (server:false)')
+  if (feedOff.discovery.isClient !== true) throw new Error('client:true must survive the switch back')
+  if (!(await stillPlaying())) throw new Error('playback broke when upload policy switched to client-only')
+
+  // idempotent: re-applying the same policy is a no-op, not another round of re-joins
+  const same = await playerU.setUploadPolicy('client-only')
+  if (same.changed !== false || same.rejoined !== 0) throw new Error('re-applying the same uploadPolicy must be a no-op')
+  if (playerU.uploadPolicy !== 'client-only') throw new Error('uploadPolicy getter must reflect the live policy')
+  if (upEvents.length !== 2) throw new Error(`expected 2 upload-policy events, got ${upEvents.length}`)
+  log('S25: setUploadPolicy flipped announce on/off mid-playback (client:true kept, stream never broke), and is idempotent')
+
+  // ===== feed-cache LRU: browsing must not leave every visited feed open =====
+  // Before this bound, zapping away destroyed the download range but kept the drive and
+  // its swarm topic open for the whole session — measured on a live broadcaster as six
+  // channels holding a peer link each with no decay over 25 minutes. Each lingering topic
+  // eats a slot in that channel's SWARM_MAX_PEERS budget.
+  const limit = playerU._feedLimit
+  if (!Number.isInteger(limit) || limit < 2) throw new Error('_feedLimit must be a sane integer')
+  for (let i = 0; i < limit + 6; i++) {
+    // distinct, never-resolvable keys: we only care that the CACHE is bounded
+    const fake = hcrypto.randomBytes(32).toString('hex')
+    playerU._feeds.set(fake + ':x', Promise.resolve({ drive: { discoveryKey: hcrypto.randomBytes(32), close: async () => {} }, discovery: {} }))
+  }
+  playerU._trimFeeds()
+  if (playerU._feeds.size > limit) throw new Error(`feed cache unbounded: ${playerU._feeds.size} > ${limit}`)
+  if (!playerU._feeds.has(playerU._activeFeedKey)) throw new Error('LRU evicted the ACTIVE feed — playback would break')
+  if (!(await stillPlaying())) throw new Error('playback broke after the feed cache was trimmed')
+  log(`feed-cache LRU: bounded at ${limit} feeds, active feed never evicted, playback unaffected`)
+
   await playerU.stop()
   const clientOnlyProven = true
   log("uploadPolicy: 'client-only' played news but joined its topic UNANNOUNCED (server:false); the default player announced (server:true)")

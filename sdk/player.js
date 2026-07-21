@@ -263,6 +263,11 @@ export class AliranPlayer extends Emitter {
     this._server = null
     this._assetsDrive = null
     this._feedDrive = null // the CURRENTLY served feed (one of _feeds' drives)
+    this._activeFeedKey = null // its _feeds key — _trimFeeds must never evict this one
+    // Cache bound. Big enough that surfing a category and coming back is still instant
+    // (zapPrefetch warms neighbours either side), small enough that browsing a 300-channel
+    // catalogue cannot leave hundreds of drives + swarm topics open. See _trimFeeds.
+    this._feedLimit = 12
     this._feedDiscovery = null
     this._feeds = new Map() // feedKey:encKey -> Promise<{ drive, discovery }> — opened feeds (single-flight), reused across resolve()s
     this._statusTimer = null
@@ -357,6 +362,47 @@ export class AliranPlayer extends Emitter {
     this._netExpensive = !!expensive
     if (this._netExpensive && this._zapTimer) this._suspendZap('metered')
   }
+
+  // S25: flip re-seeding at RUNTIME, so a viewer who walks off Wi-Fi onto cellular stops
+  // uploading mid-session instead of only at the next app start. Before this, uploadPolicy
+  // was fixed at construction (the join mode is set when a topic is joined), and the RN
+  // client never set it at all — so every viewer re-seeded on every network, and the
+  // metered gate only suspended PREFETCH, never upload.
+  //
+  // `client` stays TRUE on every re-join: we keep pulling, so **playback never blips**.
+  // Only the announce flips — the thing that makes other viewers pull FROM us.
+  //
+  // ⚠ HONEST LIMIT: this stops us ANNOUNCING, so no new peer discovers us to download
+  // from. Connections that already exist are NOT force-closed, because this player cannot
+  // tell "a peer I am serving" from "a peer serving me" — hypercore replication is
+  // bidirectional over one socket, and closing the wrong one would stall playback, which
+  // this feature must never do. Existing peers therefore drain as they disconnect rather
+  // than being cut off. Upload falls to zero for NEW peers immediately and to zero overall
+  // shortly after; it is not an instantaneous hard stop.
+  async setUploadPolicy (policy) {
+    const next = normalizeUploadPolicy(policy)
+    if (next === this._uploadPolicy) return { policy: next, changed: false, rejoined: 0 }
+    this._uploadPolicy = next
+    const server = next !== 'client-only'
+    // ⚠ Use session.refresh(), NOT swarm.join() again. `join()` on an already-joined
+    // topic returns discovery.session(opts) — a NEW session — and sessions are ADDITIVE:
+    // PeerDiscovery announces while any session wants server, so re-joining with
+    // server:false leaves the original server:true session open and changes nothing.
+    // refresh() mutates the existing session and adjusts the discovery's _serverSessions
+    // count, which is what actually stops the announce.
+    let rejoined = 0
+    const sessions = []
+    const feeds = await Promise.all([...this._feeds.values()].map((p) => Promise.resolve(p).catch(() => null)))
+    for (const f of feeds) if (f && f.discovery) sessions.push(f.discovery)
+    if (this._assetsDiscovery) sessions.push(this._assetsDiscovery)
+    for (const s of sessions) {
+      try { await s.refresh({ server, client: true }); rejoined++ } catch {}
+    }
+    this.emit('upload-policy', { policy: next, rejoined })
+    return { policy: next, changed: true, rejoined }
+  }
+
+  get uploadPolicy () { return this._uploadPolicy }
 
   _suspendZap (reason) {
     const g = this._zapGate
@@ -623,6 +669,8 @@ export class AliranPlayer extends Emitter {
     if (!feed) throw new Error(`tune timeout: the feed did not open within ${Math.round(this._tune.timeoutMs * 2 / 1000)}s — try again`)
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
+    this._activeFeedKey = feedKeyHex + ':' + encKeyHex // the one feed _trimFeeds must never evict
+    this._trimFeeds()
     this.emit('status', { state: 'feed:ready' })
     const port = await this._ensureServer()
     // Feed-health ticker for player overlays: how many peers serve the CURRENT feed.
@@ -680,6 +728,23 @@ export class AliranPlayer extends Emitter {
   // awaiting a wedged open here would recreate the very hang being recovered from.
   // (Until the orphan settles and closes, a fresh open of the SAME feed blocks on the
   // shared store namespace — that block is bounded by the caller's own timeout.)
+  // Bound the feed cache. Zapping away destroys a neighbour's download RANGE but keeps
+  // its drive open on purpose (a re-zap is then instant) — and before this, nothing ever
+  // closed them: browsing 50 channels left 50 open drives, 50 corestore sessions and 50
+  // joined swarm topics for the whole session. Measured on a live broadcaster: six
+  // contiguous channels held one peer link each, unchanged over 25 minutes with no decay.
+  // Bandwidth cost is small (the range is gone), but each lingering topic occupies a slot
+  // in that channel's SWARM_MAX_PEERS budget (64 by default), so browse traffic can crowd
+  // out actual viewers. Evict oldest-first; the Map preserves insertion order.
+  _trimFeeds () {
+    if (this._feeds.size <= this._feedLimit) return
+    for (const key of [...this._feeds.keys()]) {
+      if (this._feeds.size <= this._feedLimit) break
+      if (key === this._activeFeedKey) continue // never drop the feed we are serving
+      this._evictFeed(key)
+    }
+  }
+
   _evictFeed (cacheKey) {
     const feed = this._feeds.get(cacheKey)
     if (!feed) return
@@ -1121,6 +1186,20 @@ export class AliranPlayer extends Emitter {
     this._store = new Corestore(this._storeDir, { globalCache: new Rache({ maxSize: 4096 }) })
     await this._store.ready()
     this._swarm = new Hyperswarm(this._swarmOpts ?? {})
+    // NOT tuned here with S29's `core/net-tune.js` — tried and reverted 2026-07-21.
+    // Measured, so the next person does not repeat the experiment: importing it DOES
+    // bundle cleanly and does NOT add a new `builtin:` ref (`builtin:fs` is already in
+    // the shipped bundle from elsewhere in the graph, so the worklet tolerates it). The
+    // reason to leave it out is value, not safety:
+    //   - net-tune reads /proc to detect the kernel clamp; on Android that read simply
+    //     fails, so it can never do more than report "could not tune",
+    //   - and a phone's uplink caps throughput long before a 2 MiB socket buffer does
+    //     (S29's own assessment of the viewer path).
+    // So it would ship a server-side /proc reader into a mobile bundle for no measurable
+    // gain. If a viewer ever genuinely needs tuned sockets — a desktop or repeater host,
+    // where reading /proc is legal — pass a pre-tuned swarm in via the `swarm` option
+    // instead of importing it here. That keeps the SDK's runtime-agnostic contract, which
+    // is also why it takes `fs`/`http` by injection rather than importing them.
     // The first connection after connect() is the panel (we join only its topic
     // first); wire the RPC there. Later feed connections are ignored for RPC (call is
     // already set). If the panel socket drops, clear `call` so the next reconnect
@@ -1333,7 +1412,8 @@ export class AliranPlayer extends Emitter {
     if (!meta || !meta.value.key) return
     this._assetsDrive = new Hyperdrive(this._store.namespace('assets-replica'), b4a.from(meta.value.key, 'hex'))
     await this._assetsDrive.ready()
-    this._swarm.join(this._assetsDrive.discoveryKey, { client: true, server: this._uploadPolicy !== 'client-only' })
+    // keep the session — setUploadPolicy() refreshes it to flip announcing at runtime
+    this._assetsDiscovery = this._swarm.join(this._assetsDrive.discoveryKey, { client: true, server: this._uploadPolicy !== 'client-only' })
   }
 
   // One persistent localhost server for the whole session: /assets/* is served from
