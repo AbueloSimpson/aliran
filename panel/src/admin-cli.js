@@ -303,6 +303,34 @@ async function main () {
       break
     }
 
+    case 'list-categories': {
+      const rows = await ops.listCategories(ctx)
+      if (!rows.length) { console.log('(no categories in use)'); break }
+      for (const c of rows) {
+        console.log(`${c.slug.padEnd(28)} ${String(c.channels).padStart(4)} ch  ` +
+          `${c.label !== c.slug ? 'label="' + c.label + '" ' : ''}` +
+          `${c.order != null ? 'order=' + c.order + ' ' : ''}` +
+          `${c.hidden ? 'HIDDEN ' : ''}${c.registered ? '' : '(unregistered)'}`)
+      }
+      break
+    }
+
+    case 'rename-category': {
+      const [from, to] = pos; if (!from || !to) return usage(await done())
+      const r = await ops.renameCategory(ctx, from, to)
+      console.log(`Renamed "${r.from}" → "${r.to}": ${r.channels} channel(s), ${r.registry} registry entr${r.registry === 1 ? 'y' : 'ies'}.`)
+      console.log('Note: children of a parent move with it. A SOURCE-owned rail is reasserted on the next sync — rename the source instead (set-source --category).')
+      break
+    }
+
+    case 'merge-categories': {
+      const to = opts.into; const from = pos
+      if (!from.length || !to) return usage(await done())
+      const r = await ops.mergeCategories(ctx, from, to)
+      console.log(`Merged ${r.from.map((f) => '"' + f + '"').join(', ')} → "${r.to}": ${r.channels} channel(s) retagged, ${r.registry} registry entr${r.registry === 1 ? 'y' : 'ies'} dropped.`)
+      break
+    }
+
     case 'sync-source': {
       const name = pos[0]; if (!name) return usage(await done())
       const r = await sources.syncSource(ctx, name)
@@ -379,6 +407,9 @@ function usage () {
   list-sources                          List channel sources + last sync state
   set-source <name> [--url --category --prefix --interval-hours --auto-grant --enabled true|false --exclude "feedId1,feedId2"]
                                         (--exclude DESELECTS feed entries: removed + skipped every sync; "" re-includes all)
+  list-categories                       Category vocabulary in use + per-category channel counts
+  rename-category <from> <to>           Rename a rail; children of a parent move with it
+  merge-categories <a> <b> … --into <c> Retag several categories onto one
   sync-source <name>                    Pull + apply the feed NOW (panel stopped — or use the dashboard)
   remove-source <name> [--keep-channels]  Remove a source; purges its channels unless --keep-channels
 `)

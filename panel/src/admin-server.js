@@ -51,6 +51,11 @@
 //   PATCH  /api/sources/:name                edit any field (incl. exclude:[{id,title}] — deselected feed ids)
 //   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
 //   GET    /api/sources/:name/channels       imported + excluded entries (the channels-dialog data)
+//   GET    /api/categories                   category vocabulary + per-category channel counts
+//   POST   /api/categories                   {slug,label?,order?,hidden?} upsert presentation
+//   PATCH  /api/categories                   {from,to} rename · {op:'merge',from:[],to} merge
+//   DELETE /api/categories                   {slug} — drops the registry entry, KEEPS membership
+//     (slugs ride in the body, not the path: 'Parent/Child' contains a path separator)
 //   POST   /api/sources/:name/sync           pull + diff + grant NOW; returns the sync report
 //
 // Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
@@ -225,6 +230,37 @@ export function startAdminServer (ctx, opts = {}) {
       if (seg.length === 4 && r3 === 'sync' && req.method === 'POST') {
         const out = await sources.syncSource(ctx, r2)
         act('source-sync', { source: r2, added: out.added, updated: out.updated, removed: out.removed, granted: out.granted })
+        return sendJson(res, 200, out)
+      }
+    }
+
+    // Category presentation registry. Every slug travels in the BODY, never the path:
+    // two-level rails are 'Parent/Child', and a slash in a path segment would split into
+    // two segments (or force %2F, which proxies love to normalise). So this route has no
+    // path parameters at all — GET to list, and one verb per mutation.
+    if (r1 === 'categories' && seg.length === 2) {
+      if (req.method === 'GET') return sendJson(res, 200, await ops.listCategories(ctx))
+      if (req.method === 'POST') {
+        const b = await readJson(req)
+        const out = await ops.upsertCategory(ctx, b.slug, b)
+        act('category-upsert', { category: out.slug })
+        return sendJson(res, 200, out)
+      }
+      if (req.method === 'PATCH') {
+        const b = await readJson(req)
+        if (b.op === 'merge') {
+          const out = await ops.mergeCategories(ctx, b.from, b.to)
+          act('category-merge', { from: out.from.join(','), to: out.to, channels: out.channels })
+          return sendJson(res, 200, out)
+        }
+        const out = await ops.renameCategory(ctx, b.from, b.to)
+        act('category-rename', { from: out.from, to: out.to, channels: out.channels })
+        return sendJson(res, 200, out)
+      }
+      if (req.method === 'DELETE') {
+        const b = await readJson(req)
+        const out = await ops.deleteCategory(ctx, b.slug)
+        act('category-delete', { category: out.slug })
         return sendJson(res, 200, out)
       }
     }

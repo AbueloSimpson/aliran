@@ -40,6 +40,7 @@
     <button class="tab" data-tab="admins">Admins</button>
     <button class="tab" data-tab="publishers">Publishers</button>
     <button class="tab" data-tab="sources">Sources</button>
+    <button class="tab" data-tab="categories">Categories</button>
     <button class="tab" data-tab="overview">Overview</button>
   </nav>
 
@@ -142,6 +143,31 @@
         validated like admin input, and a source can never touch manual channels or another source's ids. Channels that
         <b>leave the feed are removed</b> (grants included). P2P channels tagged with the same category share the rail.
         Registry lives in <span class="mono">DATA_DIR/sources.json</span>.</p>
+    </section>
+
+    <section id="categories-section" hidden>
+      <form id="add-category-form" class="card row-form">
+        <strong>Add / edit category</strong>
+        <input id="ncat-slug" placeholder="slug (e.g. Nacional/Chile)" required>
+        <input id="ncat-label" placeholder="display label (blank = slug)">
+        <input id="ncat-order" type="number" min="0" max="9999" placeholder="order">
+        <label class="inline"><input type="checkbox" id="ncat-hidden"> hidden</label>
+        <button class="btn primary">Save</button>
+      </form>
+      <div class="card table-card">
+        <table id="categories-table">
+          <thead><tr>
+            <th>Category</th><th>Label</th><th>Channels</th><th>Order</th><th>State</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted footnote">Categories are stored <b>on each channel</b> as plain strings — that stays the wire format, so
+        the apps need no change. This tab manages the <b>vocabulary</b>: display label, sort order, visibility, and bulk
+        rename/merge. A two-level rail is written <span class="mono">Parent/Child</span>, and renaming a parent moves its
+        children with it. <b>Membership vs presentation:</b> a source feed decides <i>which</i> channels carry its category and
+        reasserts that on every sync — so to move an imported rail, rename the <b>source's</b> category on the Sources tab.
+        Everything here (label / order / hidden) is yours and survives a sync.</p>
     </section>
 
     <section id="overview-section" hidden>

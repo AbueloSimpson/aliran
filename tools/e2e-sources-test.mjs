@@ -333,6 +333,58 @@ try {
   assert.strictEqual((await api('GET', '/api/sources', undefined, token)).body.length, 0, 'registry empty')
   log('J: keepChannels detaches (grants kept), plain remove purges channels+grants, manual survives ✓')
 
+  // ===== Test K: source/operator split — sync owns MEMBERSHIP, catmeta owns PRESENTATION =====
+  // The whole point of the presentation registry: a provider feed rewrites which channels
+  // carry its category on every sync, while the operator's label/order/hidden live in a
+  // DIFFERENT keyspace and therefore cannot be clobbered. Before this split, manual edits
+  // to a source-mapped field simply did not stick (admin-ui/app.js said so in a hint).
+  feeds['/kids.json'] = { channels: [
+    { id: 'k1', name: 'Kid One', url: 'https://cdn.example/k1.m3u8' },
+    { id: 'k2', name: 'Kid Two', url: 'https://cdn.example/k2.m3u8' }
+  ] }; rev++ // bump or the ETag serves a 304 and the sync no-ops
+  r = await api('POST', '/api/sources', { name: 'split', url: feedBase + '/kids.json', category: 'Kids' }, token)
+  assert.strictEqual(r.status, 201, 'source re-created for the split test')
+  assert.strictEqual((await api('POST', '/api/sources/split/sync', undefined, token)).body.added, 2, 'first sync imported')
+
+  // operator sets presentation on the source's category
+  await ops.upsertCategory(ctx, 'Kids', { label: 'Children', order: 7, hidden: true })
+  const before = (await db.get('catmeta/Kids')).value
+
+  // provider changes membership: k2 disappears, k3 arrives
+  feeds['/kids.json'] = { channels: [
+    { id: 'k1', name: 'Kid One', url: 'https://cdn.example/k1.m3u8' },
+    { id: 'k3', name: 'Kid Three', url: 'https://cdn.example/k3.m3u8' }
+  ] }; rev++
+  r = await api('POST', '/api/sources/split/sync', undefined, token)
+  assert.ok(r.body.added === 1 && r.body.removed === 1, 'sync still owns membership')
+
+  const after = (await db.get('catmeta/Kids')).value
+  assert.deepStrictEqual(after, before, 'sync did NOT touch the operator presentation')
+  assert.strictEqual(after.label, 'Children', 'operator label survived a sync')
+  assert.strictEqual(after.hidden, true, 'operator hidden flag survived a sync')
+  assert.deepStrictEqual((await db.get('catalog/split.k3')).value.category, ['Kids'], 'new channel carries the source category')
+
+  // Renaming the RAIL of a source-owned category: the honest, two-sided answer.
+  await ops.renameCategory(ctx, 'Kids', 'Infantil')
+  assert.deepStrictEqual((await db.get('catalog/split.k1')).value.category, ['Infantil'], 'rename moved the channel')
+
+  // (a) an unchanged feed (ETag 304) never refetches, so the rename simply stands
+  await api('POST', '/api/sources/split/sync', undefined, token)
+  assert.deepStrictEqual((await db.get('catalog/split.k1')).value.category, ['Infantil'], 'a 304 sync leaves the operator rename alone')
+
+  // (b) but a real refetch reasserts the SOURCE's category, because membership is the
+  // source's half of the split. Renaming a source-owned rail therefore means renaming
+  // the SOURCE's category (PATCH /api/sources/:name), not just the catmeta entry.
+  rev++
+  await api('POST', '/api/sources/split/sync', undefined, token)
+  assert.deepStrictEqual((await db.get('catalog/split.k1')).value.category, ['Kids'], 'a real re-sync reasserts the source category — membership is the source half')
+  r = await api('PATCH', '/api/sources/split', { category: 'Infantil' }, token)
+  assert.strictEqual(r.status, 200, 'rename the SOURCE category')
+  rev++
+  await api('POST', '/api/sources/split/sync', undefined, token)
+  assert.deepStrictEqual((await db.get('catalog/split.k1')).value.category, ['Infantil'], 'source-category rename is the durable way to move an imported rail')
+  log('K: source/operator split — sync owns membership, catmeta presentation survives sync ✓')
+
   log('\nPASS: remote channel sources e2e (S27)')
   await cleanup()
   process.exit(0)

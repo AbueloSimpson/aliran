@@ -16,6 +16,7 @@ let streams = []
 let admins = []
 let publishers = []
 let channelSources = []
+let categories = []
 let obsTimer = null // 10 s observability poll, runs only while the Overview tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
 
@@ -77,7 +78,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'admins', 'publishers', 'sources', 'overview']
+const TAB_NAMES = ['streams', 'users', 'admins', 'publishers', 'sources', 'categories', 'overview']
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
@@ -90,8 +91,9 @@ for (const tab of document.querySelectorAll('.tab')) {
 // ---------------------------------------------------------------- refresh + render
 
 async function refresh () {
-  const [status, s, a, p, src] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers'), api('GET', '/api/sources')])
+  const [status, s, a, p, src, cats] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers'), api('GET', '/api/sources'), api('GET', '/api/categories')])
   streams = s
+  categories = cats
   admins = a
   publishers = p
   channelSources = src
@@ -105,6 +107,7 @@ async function refresh () {
   renderAdmins()
   renderPublishers()
   renderSources()
+  renderCategories()
   await loadUsers(true) // back to page 1, keeping the current search prefix
   if (!$('#overview-section').hidden) await loadObservability().catch(() => {})
 }
@@ -271,6 +274,99 @@ function renderPublishers () {
 }
 
 // Remote channel sources (S27): provider feeds materialized as redirect-channel categories.
+// Categories are rendered as a shallow tree: a parent row, then its children indented
+// beneath it. The hierarchy is encoded in the slug ('Parent/Child'), so there is nothing
+// to join — sorting the slugs already groups them.
+function renderCategories () {
+  const tbody = $('#categories-table tbody')
+  tbody.innerHTML = ''
+  if (!categories.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">no categories yet — they appear as soon as a channel carries one</td></tr>'
+    return
+  }
+  const roots = categories.filter((c) => !c.parent)
+  const kids = (p) => categories.filter((c) => c.parent === p)
+  const orphans = categories.filter((c) => c.parent && !roots.some((r) => r.slug === c.parent))
+  const ordered = []
+  for (const r of roots) { ordered.push([r, 0]); for (const k of kids(r.slug)) ordered.push([k, 1]) }
+  for (const o of orphans) ordered.push([o, 1]) // parent slug never registered/in use
+  for (const [c, depth] of ordered) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td>${depth ? '<span class="muted">└ </span>' : ''}<b>${esc(c.slug.split('/').pop())}</b>${depth ? '' : ''}<br><span class="mono muted">${esc(c.slug)}</span></td>
+      <td>${c.label !== c.slug ? esc(c.label) : '<span class="muted">—</span>'}</td>
+      <td>${c.channels}</td>
+      <td class="muted">${c.order != null ? c.order : '—'}</td>
+      <td>${c.hidden ? '<span class="badge disabled">hidden</span> ' : ''}${c.registered ? '' : '<span class="chip" title="in use on channels but has no presentation entry yet">unregistered</span>'}</td>
+      <td><div class="row-actions">
+        <button class="btn small" data-act="edit">edit</button>
+        <button class="btn small" data-act="rename">rename</button>
+        <button class="btn small" data-act="merge">merge</button>
+        <button class="btn small danger" data-act="forget"${c.registered ? '' : ' disabled'}>forget</button>
+      </div></td>`
+    tr.querySelector('[data-act=edit]').addEventListener('click', () => editCategory(c))
+    tr.querySelector('[data-act=rename]').addEventListener('click', () => renameCategoryDlg(c))
+    tr.querySelector('[data-act=merge]').addEventListener('click', () => mergeCategoryDlg(c))
+    const forget = tr.querySelector('[data-act=forget]')
+    if (c.registered) forget.addEventListener('click', () => forgetCategory(c))
+    tbody.appendChild(tr)
+  }
+}
+
+async function editCategory (c) {
+  const v = await dialog(`Presentation — ${c.slug}`, [
+    { name: 'label', label: 'Display label (blank = use the slug)', value: c.label === c.slug ? '' : c.label },
+    { name: 'order', label: 'Order (0-9999, blank = unset)', type: 'number', value: c.order ?? '' },
+    { name: 'hidden', label: 'Hidden', type: 'select', options: ['no', 'yes'], value: c.hidden ? 'yes' : 'no' }
+  ], { body: '<p class="muted">Presentation only. This never changes which channels carry the category, so a source sync cannot undo it.</p>' })
+  if (!v) return
+  act(() => api('POST', '/api/categories', {
+    slug: c.slug,
+    label: v.label.trim() || c.slug,
+    order: v.order === '' ? null : Number(v.order),
+    hidden: v.hidden === 'yes'
+  }), `"${c.slug}" updated`)
+}
+
+async function renameCategoryDlg (c) {
+  const childCount = categories.filter((x) => x.parent === c.slug).length
+  const v = await dialog(`Rename ${c.slug}`, [
+    { name: 'to', label: 'New slug', value: c.slug }
+  ], {
+    okLabel: 'Rename',
+    body: `<p class="muted">Rewrites <b>${c.channels}</b> channel(s)` +
+      (childCount ? ` and moves <b>${childCount}</b> child categor${childCount === 1 ? 'y' : 'ies'} with it` : '') +
+      '.</p><p class="muted">If this rail comes from a <b>source</b>, the next sync reasserts the source\'s category — rename it on the Sources tab instead.</p>'
+  })
+  if (!v || !v.to.trim() || v.to.trim() === c.slug) return
+  act(async () => {
+    const r = await api('PATCH', '/api/categories', { from: c.slug, to: v.to.trim() })
+    toast(`renamed → "${r.to}" (${r.channels} channel(s))`)
+  })
+}
+
+async function mergeCategoryDlg (c) {
+  const others = categories.filter((x) => x.slug !== c.slug).map((x) => x.slug)
+  if (!others.length) return toast('nothing to merge into', true)
+  const v = await dialog(`Merge ${c.slug} into…`, [
+    { name: 'to', label: 'Target category', type: 'select', options: others, value: others[0] }
+  ], { okLabel: 'Merge', body: `<p class="muted">Every channel tagged <b>${esc(c.slug)}</b> is retagged to the target, and this category's presentation entry is dropped. Channels already carrying both end up with one tag, not two.</p>` })
+  if (!v) return
+  act(async () => {
+    const r = await api('PATCH', '/api/categories', { op: 'merge', from: [c.slug], to: v.to })
+    toast(`merged into "${r.to}" (${r.channels} channel(s))`)
+  })
+}
+
+async function forgetCategory (c) {
+  const v = await dialog(`Forget "${c.slug}"?`, [], {
+    okLabel: 'Forget',
+    body: `<p class="muted">Drops the presentation entry (label / order / hidden). The <b>${c.channels}</b> channel(s) keep the category — this never untags content. Use rename or merge to move channels.</p>`
+  })
+  if (!v) return
+  act(() => api('DELETE', '/api/categories', { slug: c.slug }), `"${c.slug}" forgotten`)
+}
+
 function renderSources () {
   const tbody = $('#sources-table tbody')
   tbody.innerHTML = ''
@@ -633,6 +729,23 @@ async function removePublisherEntry (name) {
 }
 
 // ---------------------------------------------------------------- source actions
+
+// Upsert: the same form creates a presentation entry for a category already in use on
+// channels, or edits one that exists. There is no "create a category" as such — a
+// category exists because a channel carries it.
+$('#add-category-form').addEventListener('submit', (e) => {
+  e.preventDefault()
+  const order = $('#ncat-order').value
+  act(async () => {
+    await api('POST', '/api/categories', {
+      slug: $('#ncat-slug').value.trim(),
+      label: $('#ncat-label').value.trim() || undefined,
+      order: order === '' ? null : Number(order),
+      hidden: $('#ncat-hidden').checked
+    })
+    e.target.reset()
+  }, 'category saved')
+})
 
 $('#add-source-form').addEventListener('submit', async (e) => {
   e.preventDefault()

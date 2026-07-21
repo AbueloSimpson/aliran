@@ -568,7 +568,74 @@ try {
   r = await api('DELETE', '/api/streams/west-1', undefined, { token }); assert.strictEqual(r.status, 200)
   log('P: publishers — enroll/list (secret once), scoped register + origin stamp, live scope edit, revoke, delete, activity + UI ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability — all land in the signed DB; viewer login works end-to-end)')
+  // ===== Q: category presentation registry =====
+  // Membership stays on the catalog records (the wire format the app reads); catmeta/
+  // owns only presentation. The two must never overwrite each other.
+  for (const [id, cat] of [['cat-a', 'Nacional/Chile'], ['cat-b', 'Nacional/Peru'], ['cat-c', 'Deportes']]) {
+    r = await api('POST', '/api/streams', { id, category: cat }, { token })
+    assert.strictEqual(r.status, 201, 'create ' + id)
+  }
+  r = await api('GET', '/api/categories', undefined, { token })
+  assert.strictEqual(r.status, 200, 'list categories')
+  const byslug = Object.fromEntries(r.body.map((c) => [c.slug, c]))
+  assert.strictEqual(byslug['Nacional/Chile'].channels, 1, 'counts channels in use')
+  assert.strictEqual(byslug['Nacional/Chile'].parent, 'Nacional', 'parent derived from the slug')
+  assert.strictEqual(byslug['Nacional/Chile'].registered, false, 'in use but unregistered still listed')
+
+  // presentation upsert, then the S29 idempotency gate: a repeat must cost ZERO appends
+  r = await api('POST', '/api/categories', { slug: 'Nacional/Chile', label: 'Chile', order: 3 }, { token })
+  assert.strictEqual(r.status, 200, 'upsert category')
+  assert.strictEqual(r.body.label, 'Chile', 'label stored')
+  const lenBefore = db.core.length
+  r = await api('POST', '/api/categories', { slug: 'Nacional/Chile', label: 'Chile', order: 3 }, { token })
+  assert.strictEqual(db.core.length, lenBefore, 'redundant upsert appends nothing')
+  const lenBeforeNoop = db.core.length
+  r = await api('PATCH', '/api/categories', { from: 'Deportes', to: 'Deportes' }, { token })
+  assert.strictEqual(db.core.length, lenBeforeNoop, 'no-op rename appends nothing')
+
+  // rename a PARENT: children must travel with it, unrelated categories must not
+  r = await api('PATCH', '/api/categories', { from: 'Nacional', to: 'Local' }, { token })
+  assert.strictEqual(r.status, 200, 'rename parent')
+  assert.strictEqual(r.body.channels, 2, 'both children rewritten')
+  // there is no GET /api/streams/:id — only the list (admin-server.js r1==='streams')
+  const cats = async (id) => ((await api('GET', '/api/streams', undefined, { token })).body.find((s) => s.id === id) || {}).category
+  assert.deepStrictEqual(await cats('cat-a'), ['Local/Chile'], 'child a followed the parent')
+  assert.deepStrictEqual(await cats('cat-b'), ['Local/Peru'], 'child b followed the parent')
+  assert.deepStrictEqual(await cats('cat-c'), ['Deportes'], 'unrelated category untouched')
+  r = await api('GET', '/api/categories', undefined, { token })
+  const moved = r.body.find((c) => c.slug === 'Local/Chile')
+  assert.ok(moved && moved.label === 'Chile', 'hand-written label survived the rename')
+
+  // merge many → one, de-duplicating
+  r = await api('PATCH', '/api/categories', { op: 'merge', from: ['Local/Chile', 'Local/Peru'], to: 'Local/All' }, { token })
+  assert.strictEqual(r.status, 200, 'merge')
+  assert.strictEqual(r.body.channels, 2, 'merged both')
+  assert.deepStrictEqual(await cats('cat-a'), ['Local/All'], 'merged into target')
+  assert.deepStrictEqual(await cats('cat-b'), ['Local/All'], 'merged into target')
+
+  // delete drops the REGISTRY entry only — membership must survive, or a label edit
+  // would silently untag content
+  await api('POST', '/api/categories', { slug: 'Local/All', label: 'Everything' }, { token })
+  r = await api('DELETE', '/api/categories', { slug: 'Local/All' }, { token })
+  assert.strictEqual(r.status, 200, 'delete registry entry')
+  assert.deepStrictEqual(await cats('cat-a'), ['Local/All'], 'channels keep their membership')
+  r = await api('GET', '/api/categories', undefined, { token })
+  assert.strictEqual(r.body.find((c) => c.slug === 'Local/All').registered, false, 'registry entry gone')
+
+  // slug validation — the hierarchy has to stay parseable
+  for (const badSlug of ['/x', 'x/', 'a//b', 'a/b/c', 'x'.repeat(65)]) {
+    r = await api('POST', '/api/categories', { slug: badSlug }, { token })
+    assert.strictEqual(r.status, 400, 'rejects slug: ' + badSlug)
+  }
+  const appJsQ = await (await fetch(base + '/app.js')).text()
+  for (const marker of ['api/categories', 'renderCategories', 'mergeCategoryDlg']) {
+    assert.ok(appJsQ.includes(marker), `app.js wires the category flows: ${marker}`)
+  }
+  assert.ok((await (await fetch(base + '/')).text()).includes('data-tab="categories"'), 'dashboard has the Categories tab')
+  for (const id of ['cat-a', 'cat-b', 'cat-c']) await api('DELETE', '/api/streams/' + id, undefined, { token })
+  log('Q: categories — union list + counts, presentation upsert (idempotent), parent rename cascades, merge, delete keeps membership, slug validation ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry — all land in the signed DB; viewer login works end-to-end)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

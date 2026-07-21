@@ -244,7 +244,7 @@ function channelRow (c) {
     <td><span class="badge run-badge idle">STOPPED</span></td>
     <td>
       <div class="cell-chan">
-        <span class="t">${esc(c.title)}</span>
+        <span class="t" title="as seeded by this broadcaster — the PANEL is authoritative for title/description/category, so if it was edited there this may be stale">${esc(c.title)}</span>
         <span class="mono muted">${esc(c.id)}${c.legacy ? ' · <span class="badge legacy" title="env-configured channel (STREAM_ID) — legacy data layout">env</span>' : ''}</span>
         ${(c.category || []).length ? `<span class="muted" style="font-size:11px">${esc((c.category || []).join(' · '))}</span>` : ''}
       </div>

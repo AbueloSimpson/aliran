@@ -416,6 +416,161 @@ async function requireStream (ctx, id) {
   return node.value
 }
 
+// ---------------------------------------------------------------- categories
+//
+// Categories live ON each catalog record as a plain string array
+// (`category: ['Nacional/Chile']`) and that STAYS the wire format — the RN app and the
+// SDK read those strings, so nothing in here needs a client change. What was missing is
+// a VOCABULARY: no list of which categories exist, no ordering, no hierarchy, and a
+// rename meant editing every channel by hand.
+//
+// `catmeta/<slug>` adds that vocabulary without touching the wire format. It owns only
+// PRESENTATION (label / parent / order / hidden). MEMBERSHIP — which channels carry a
+// category — stays on the catalog records, which is exactly what an S27 source rewrites
+// on every sync. The two can never fight, because they write different keys: a provider
+// feed stays authoritative over who is in its rail, the operator over how it looks.
+//
+// ⚠ KEY ORDERING: every catalog scan is bounded `gt:'catalog/' lt:'catalog0'`, and
+// 'catmeta/' sorts ABOVE 'catalog0' (compare position 3: 'a' < 'm'), so this keyspace is
+// invisible to all of them. That was verified before adding it — if you ever rename the
+// prefix, re-check it does not land BETWEEN those bounds or listStreams starts returning
+// categories as if they were channels.
+
+const CAT_MAX = 64
+
+// Mirrors sources.js normCategoryLabel, plus the hierarchy rules: two-level rails
+// (S27h/i) encode parent/child as 'Parent/Child', so a slug must not start with, end
+// with, or double up the separator, or the tree cannot be parsed back out.
+function normSlug (s, what = 'category') {
+  const v = s == null ? '' : String(s).trim()
+  if (!v) bad(`${what} is required`)
+  if (v.length > CAT_MAX) bad(`${what} must be at most ${CAT_MAX} characters`)
+  if (/[\r\n]/.test(v)) bad(`${what} must not contain line breaks`)
+  if (v.startsWith('/') || v.endsWith('/') || v.includes('//')) bad(`${what} must not start, end or double up on "/"`)
+  if (v.split('/').length > 2) bad(`${what} supports at most two levels (Parent/Child)`)
+  return v
+}
+
+const parentOf = (slug) => (slug.includes('/') ? slug.slice(0, slug.indexOf('/')) : null)
+// Renaming 'Nacional' has to carry 'Nacional/Chile' with it or the children orphan.
+const isSelfOrChild = (slug, root) => slug === root || slug.startsWith(root + '/')
+const reslug = (slug, from, to) => (slug === from ? to : to + slug.slice(from.length))
+
+// Union of the registry and what the catalog ACTUALLY uses: a category in use but never
+// registered still has to appear, or an operator cannot manage what is really there.
+export async function listCategories (ctx) {
+  const reg = new Map()
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'catmeta/', lt: 'catmeta0' })) {
+    reg.set(key.slice('catmeta/'.length), value)
+  }
+  const counts = new Map()
+  for await (const { value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+    for (const c of value.category || []) counts.set(c, (counts.get(c) || 0) + 1)
+  }
+  return [...new Set([...reg.keys(), ...counts.keys()])].sort().map((slug) => {
+    const m = reg.get(slug) || {}
+    return {
+      slug,
+      label: m.label ?? slug,
+      parent: m.parent ?? parentOf(slug),
+      order: m.order ?? null,
+      hidden: !!m.hidden,
+      ownedBy: m.ownedBy ?? null,
+      channels: counts.get(slug) || 0,
+      registered: reg.has(slug)
+    }
+  })
+}
+
+export async function upsertCategory (ctx, slug, fields = {}) {
+  const s = normSlug(slug)
+  const node = await ctx.db.get('catmeta/' + s)
+  const cur = node ? node.value : {}
+  const next = {
+    label: fields.label != null ? String(fields.label).trim().slice(0, CAT_MAX) : (cur.label ?? s),
+    parent: parentOf(s),
+    order: fields.order !== undefined ? normOrder(fields.order) : (cur.order ?? null),
+    hidden: fields.hidden !== undefined ? normBool(fields.hidden) : !!cur.hidden,
+    ownedBy: fields.ownedBy != null ? String(fields.ownedBy) : (cur.ownedBy ?? 'operator')
+  }
+  // S29 idempotency (rpc.js, 5312fbd): the bee is append-only with no compaction, so a
+  // no-op write is pure growth. Compare before putting.
+  if (!node || JSON.stringify(next) !== JSON.stringify(cur)) await ctx.db.put('catmeta/' + s, next)
+  return { slug: s, ...next }
+}
+
+// Registry entry only — channels KEEP their membership. Deleting a label must never
+// silently untag content; use rename/merge to move channels.
+export async function deleteCategory (ctx, slug) {
+  const s = normSlug(slug)
+  const node = await ctx.db.get('catmeta/' + s)
+  if (!node) notFound(`no such category: ${s}`)
+  await ctx.db.del('catmeta/' + s)
+  return { slug: s, deleted: true }
+}
+
+// Rewrites membership across the catalog AND carries the registry entries (root plus
+// children) over. Every put is idempotency-gated, so a no-op rename costs zero appends.
+export async function renameCategory (ctx, from, to) {
+  const a = normSlug(from, 'from')
+  const b = normSlug(to, 'to')
+  if (a === b) return { from: a, to: b, channels: 0, registry: 0 }
+  let channels = 0
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+    const cats = value.category || []
+    if (!cats.some((c) => isSelfOrChild(c, a))) continue
+    const next = []
+    for (const c of cats) {
+      const n = isSelfOrChild(c, a) ? reslug(c, a, b) : c
+      if (!next.includes(n)) next.push(n) // a rename can collide with a tag already there
+    }
+    const rec = { ...value, category: next }
+    if (JSON.stringify(rec) === JSON.stringify(value)) continue
+    await ctx.db.put(key, rec)
+    channels++
+  }
+  const moves = []
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'catmeta/', lt: 'catmeta0' })) {
+    const slug = key.slice('catmeta/'.length)
+    if (isSelfOrChild(slug, a)) moves.push([slug, reslug(slug, a, b), value])
+  }
+  for (const [oldSlug, newSlug, value] of moves) {
+    await ctx.db.del('catmeta/' + oldSlug)
+    // A label that was just the slug follows the rename; a hand-written one is kept.
+    await ctx.db.put('catmeta/' + newSlug, {
+      ...value,
+      parent: parentOf(newSlug),
+      label: value.label === oldSlug ? newSlug : value.label
+    })
+  }
+  return { from: a, to: b, channels, registry: moves.length }
+}
+
+export async function mergeCategories (ctx, from, to) {
+  const list = [...new Set((Array.isArray(from) ? from : [from]).map((f) => normSlug(f, 'from')))]
+  const target = normSlug(to, 'to')
+  let channels = 0
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+    const cats = value.category || []
+    if (!cats.some((c) => list.includes(c))) continue
+    const next = []
+    for (const c of cats) {
+      const n = list.includes(c) ? target : c
+      if (!next.includes(n)) next.push(n)
+    }
+    const rec = { ...value, category: next }
+    if (JSON.stringify(rec) === JSON.stringify(value)) continue
+    await ctx.db.put(key, rec)
+    channels++
+  }
+  let registry = 0
+  for (const f of list) {
+    if (f === target) continue
+    if (await ctx.db.get('catmeta/' + f)) { await ctx.db.del('catmeta/' + f); registry++ }
+  }
+  return { from: list, to: target, channels, registry }
+}
+
 function normCategory (cat) {
   if (cat == null) return []
   if (Array.isArray(cat)) return cat.map(String)
