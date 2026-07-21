@@ -1,18 +1,29 @@
 /* Aliran panel admin dashboard — dark, lean, no framework. */
 
+/* ---- ALIRAN SHARED THEME — canonical palette -------------------------------
+   Derived from client/src/theme.ts DEFAULT_COLORS, which S18 makes the single
+   source of brand colour for the product. The app, the panel dashboard and this
+   dashboard must read as ONE product, so this block is kept BYTE-IDENTICAL in:
+       panel/admin-ui/style.css
+       broadcaster/control-ui/style.css
+   Change it in both or not at all (npm run test:theme asserts they match).
+   White-label (S19): an operator rebrands by overriding these 11 tokens. The
+   status-badge fills further down are deliberately NOT brand-tinted — red/green/
+   amber must keep meaning the same thing under every brand. */
 :root {
-  --bg: #0b1016;
-  --panel: #121a24;
-  --panel-2: #182230;
-  --border: #24303f;
-  --text: #dbe4ee;
-  --muted: #7d8ea1;
-  --accent: #22d3ee;
-  --accent-dim: #0e7490;
-  --danger: #f87171;
-  --ok: #34d399;
-  --warn: #fbbf24;
+  --bg: #0B1220;         /* client background */
+  --panel: #111A2E;      /* client surface */
+  --panel-2: #18243C;    /* one step up: inputs, chips, hovers */
+  --border: #24314D;
+  --text: #E5EEF7;       /* client text */
+  --muted: #93A4BF;      /* client textDim */
+  --accent: #22D3EE;     /* client accent */
+  --accent-dim: #0E7490; /* accent fill behind light text */
+  --danger: #F87171;
+  --ok: #34D399;
+  --warn: #FBBF24;
 }
+/* ---- end shared theme ---- */
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }

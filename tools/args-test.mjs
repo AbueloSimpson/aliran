@@ -9,7 +9,7 @@ import {
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
-  isPushInput, pushUrl
+  isPushInput, pushUrl, pickSource
 } from '../broadcaster/src/channel.js'
 
 const log = (...a) => console.log(...a)
@@ -194,4 +194,52 @@ assert.strictEqual(pushUrl({ kind: 'udp', port: 5003, timeoutMs: 1000 }, 'h'), '
 assert.strictEqual(pushUrl({ kind: 'test' }, 'h'), null)
 log('I: randomStreamKey / isPushInput / pushUrl ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation)')
+// ===== J: backup sources — validation =====
+const P = 'http://a/1.m3u8'; const B1 = 'http://b/2.m3u8'; const B2 = 'srt://c:9000'
+assert.deepStrictEqual(normalizeInput({ kind: 'pull', url: P }), { kind: 'pull', url: P })
+// no fallbacks => the key is absent entirely, not an empty array (keeps records small
+// and means an existing catalog/channels.json is byte-identical after an upgrade)
+assert.ok(!('fallbacks' in normalizeInput({ kind: 'pull', url: P })), 'no empty fallbacks key')
+assert.deepStrictEqual(normalizeInput({ kind: 'pull', url: P, fallbacks: [B1, B2] }),
+  { kind: 'pull', url: P, fallbacks: [B1, B2] })
+// dupes and echoes of the primary are dropped, order preserved
+assert.deepStrictEqual(normalizeInput({ kind: 'pull', url: P, fallbacks: [B1, B1, P, B2] }),
+  { kind: 'pull', url: P, fallbacks: [B1, B2] })
+// a backup must pass the SAME rules as a primary
+throws(() => normalizeInput({ kind: 'pull', url: P, fallbacks: ['ftp://nope/x'] }), /fallback url scheme/, 'bad fallback scheme')
+throws(() => normalizeInput({ kind: 'pull', url: P, fallbacks: ['http://a/' + 'x'.repeat(512)] }), /1-512/, 'long fallback')
+throws(() => normalizeInput({ kind: 'pull', url: P, fallbacks: ['http://a/x\ny'] }), /1-512/, 'CRLF fallback')
+throws(() => normalizeInput({ kind: 'pull', url: P, fallbacks: 'nope' }), /must be an array/, 'non-array')
+throws(() => normalizeInput({ kind: 'pull', url: P, fallbacks: [B1, B2, 'http://d/4', 'http://e/5', 'http://f/6'] }), /at most 4/, 'cap')
+// PATCH semantics: omitted keeps stored, explicit [] clears
+const stored = { kind: 'pull', url: P, fallbacks: [B1] }
+assert.deepStrictEqual(normalizeInput({ kind: 'pull', url: P }, { existing: stored }), stored, 'omitted inherits')
+assert.ok(!('fallbacks' in normalizeInput({ kind: 'pull', url: P, fallbacks: [] }, { existing: stored })), 'explicit [] clears')
+log('J: backup source validation (dupes, scheme, cap, inherit/clear) ✓')
+
+// ===== K: backup sources — rotation decision (fail forward, return to primary) =====
+const S3 = ['p', 'b1', 'b2']
+const roll = (st) => pickSource({ sources: S3, failoverAfter: 2, primaryRetryMs: 300000, ...st })
+// a single failure does NOT move (one ffmpeg exit is normal on flaky IPTV)
+assert.strictEqual(roll({ srcIndex: 0, srcFailures: 1, now: 0 }).srcIndex, 0, '1 failure holds')
+// a run of them fails forward, and resets the counter so each url gets a fair trial
+const f1 = roll({ srcIndex: 0, srcFailures: 2, now: 0 })
+assert.deepStrictEqual([f1.srcIndex, f1.srcFailures, f1.reason], [1, 0, 'failover'], 'fail forward')
+// ... and wraps around the ring
+assert.strictEqual(roll({ srcIndex: 2, srcFailures: 2, lastPrimaryTryAt: 0, now: 1000 }).srcIndex, 0, 'ring wraps')
+// on a backup, before the cooldown: stay put when healthy
+assert.strictEqual(roll({ srcIndex: 1, srcFailures: 0, lastPrimaryTryAt: 0, now: 1000 }).srcIndex, 1, 'healthy backup holds')
+// after the cooldown: come home even though nothing failed — this is return-to-primary
+const home = roll({ srcIndex: 1, srcFailures: 0, lastPrimaryTryAt: 0, now: 300000 })
+assert.deepStrictEqual([home.srcIndex, home.reason], [0, 'primary-retry'], 'returns to primary')
+// return-to-primary OUTRANKS failover, so a failing backup can't lap the ring forever
+// without ever re-probing the primary
+assert.strictEqual(roll({ srcIndex: 1, srcFailures: 9, lastPrimaryTryAt: 0, now: 300000 }).reason, 'primary-retry', 'primary wins over failover')
+// wrapping onto the primary re-arms the cooldown, so we don't instantly "retry" it again
+assert.strictEqual(roll({ srcIndex: 2, srcFailures: 2, lastPrimaryTryAt: 0, now: 5000 }).lastPrimaryTryAt, 5000, 'wrap re-arms cooldown')
+// a single-source channel never rotates, whatever the failure count
+assert.strictEqual(pickSource({ sources: ['only'], srcIndex: 0, srcFailures: 99 }).srcIndex, 0, 'single source pinned')
+assert.strictEqual(pickSource({ sources: [], srcFailures: 99 }).srcIndex, 0, 'no sources pinned')
+log('K: backup source rotation (hold, fail forward, wrap, return to primary) ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources)')

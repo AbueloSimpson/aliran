@@ -1,7 +1,9 @@
 // Aliran broadcaster control UI — vanilla JS over the S12a control API only.
 // Auth token lives in sessionStorage; any 401 drops back to the login view.
 // Live status (ffmpeg/peers/registered/playlist) is polled every 5 s and patched
-// into the cards in place, so buttons and open dialogs never get clobbered.
+// into the table rows in place, so buttons, sort order and open dialogs never get
+// clobbered. Channels render as a sortable/filterable TABLE: the old card stack was
+// fine at 6 channels and unusable at 69.
 'use strict'
 
 const $ = (s) => document.querySelector(s)
@@ -14,8 +16,14 @@ let who = sessionStorage.getItem('aliranControlName') || ''
 let channels = []
 let panelConfigured = false
 let caps = null // /api/capabilities — ffmpeg probe (protocols + deep-verified encoders)
-let renderedShape = '' // meta fingerprint of the rendered cards (full re-render only on change)
+let renderedShape = '' // meta fingerprint of the rendered rows (full re-render only on change)
 let pollTimer = null
+
+// view state (client-side only — never round-trips to the API)
+let sortKey = 'state'
+let sortDir = 1
+let filterText = ''
+let quickFilter = 'all'
 
 // ---------------------------------------------------------------- api
 
@@ -48,6 +56,8 @@ function logout () {
 }
 
 $('#logout-btn').addEventListener('click', logout)
+$('#side-toggle').addEventListener('click', () => $('#app-view').classList.toggle('side-open'))
+$('#nav-add').addEventListener('click', () => { $('#add-panel').open = true })
 
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault()
@@ -136,13 +146,50 @@ async function refresh () {
   const [status, list] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/channels')])
   channels = list
   panelConfigured = !!status.panelConfigured
-  $('#status-chips').innerHTML =
-    `<span class="chip"><b>${status.channels}</b> channel${status.channels === 1 ? '' : 's'}</span>` +
-    `<span class="chip"><b>${status.running}</b> running</span>` +
-    (panelConfigured
-      ? '<span class="chip">panel ✓</span>'
-      : '<span class="chip warn" title="set PANEL_PUBKEY + PUBLISHER_KEY to auto-register channels">panel not configured</span>')
+  $('#panel-state').className = panelConfigured ? 'chip' : 'chip warn'
+  $('#panel-state').innerHTML = panelConfigured
+    ? 'panel &#10003;'
+    : '<span title="set PANEL_PUBKEY + PUBLISHER_KEY to auto-register channels">panel not configured</span>'
   renderChannels()
+  renderTiles()
+}
+
+// Every tile below is derived from real API values. Nothing here is decorative — if a
+// number can't be sourced from /api/channels or /api/status it does not get a tile.
+function renderTiles () {
+  const total = channels.length
+  const running = channels.filter((c) => c.running).length
+  const onAir = channels.filter((c) => c.state === 'up').length
+  const issues = channels.filter((c) => c.running && c.state !== 'up' && c.state !== 'starting').length
+  const peers = channels.reduce((n, c) => n + (c.running ? (c.peers || 0) : 0), 0)
+  const peerChannels = channels.filter((c) => c.running && c.peers > 0).length
+  const restarts = channels.reduce((n, c) => n + (c.watchdog?.restarts || 0), 0)
+  const unregistered = channels.filter((c) => c.running && !c.registered && c.registerError).length
+
+  const tile = (k, v, s, cls) => `<div class="tile ${cls || ''}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></div>`
+  $('#tiles').innerHTML = [
+    tile('On air', onAir, `of ${total} channel${total === 1 ? '' : 's'}`, onAir === running && running > 0 ? 'ok' : ''),
+    tile('Needs attention', issues, issues ? 'retrying or waiting' : 'none', issues ? 'warn' : ''),
+    // Sum of per-channel swarm connections — NOT a viewer count. One viewer with S21
+    // zap-prefetch on holds connections to its rail neighbours too, so a single person
+    // browsing a category can show up here as 5-6. Label says "links" for that reason.
+    tile('Peer links', peers, peerChannels ? `on ${peerChannels} channel${peerChannels === 1 ? '' : 's'} · not unique viewers` : 'no peers connected'),
+    tile('Watchdog restarts', restarts, 'this broadcaster run', restarts > 0 ? 'warn' : ''),
+    tile('Register errors', unregistered, unregistered ? 'channel(s) rejected' : 'none', unregistered ? 'err' : '')
+  ].join('')
+
+  const banner = $('#banner')
+  if (total === 0) { banner.className = 'banner'; banner.textContent = 'No channels configured yet.'; return }
+  if (issues || unregistered) {
+    banner.className = 'banner warn'
+    banner.textContent = `${onAir}/${running} live — ${issues + unregistered} need attention`
+  } else if (running === 0) {
+    banner.className = 'banner'
+    banner.textContent = `${total} channel${total === 1 ? '' : 's'} configured, none running`
+  } else {
+    banner.className = 'banner ok'
+    banner.textContent = `All ${running} running channel${running === 1 ? '' : 's'} live`
+  }
 }
 
 function metaShape () {
@@ -177,52 +224,60 @@ function transcodeSummary (t) {
 }
 
 function renderChannels () {
-  const list = $('#channels-list')
+  const body = $('#chan-rows')
   const shape = metaShape()
   if (shape !== renderedShape) {
     renderedShape = shape
-    list.innerHTML = ''
-    if (channels.length === 0) list.innerHTML = '<div class="card muted">No channels yet — add one above.</div>'
-    else for (const c of channels) list.appendChild(channelCard(c))
+    body.innerHTML = ''
+    for (const c of channels) body.appendChild(channelRow(c))
   }
   for (const c of channels) updateStatus(c)
+  applyView()
 }
 
-function channelCard (c) {
-  const card = document.createElement('div')
-  card.className = 'card chan-card'
-  card.dataset.id = c.id
-  card.innerHTML = `
-    <div class="chan-head">
-      <h3>${esc(c.title)}</h3>
-      <span class="mono muted">${esc(c.id)}</span>
-      <span class="badge run-badge idle">STOPPED</span>
-      ${c.legacy ? '<span class="badge legacy" title="env-configured channel (STREAM_ID) — legacy data layout">env</span>' : ''}
-      ${(c.category || []).map((x) => `<span class="chip">${esc(x)}</span>`).join('')}
-    </div>
-    <p class="chan-desc">${esc(c.description) || '<i>no description</i>'}</p>
-    <div class="status-strip"><span class="muted">stopped</span></div>
-    <pre class="log-inline mono" hidden></pre>
-    <div class="mono muted">input: ${esc(inputSummary(c.input))} · ${esc(transcodeSummary(c.transcode))} · hls ${esc(c.hls?.time)}s ×${esc(c.hls?.listSize)} · feed: ${c.feedKey ? esc(c.feedKey.slice(0, 16)) + '…' : '(on first start)'}</div>
-    ${c.ingest?.pushUrl ? `
-    <div class="push-row">
-      <span class="muted">push URL</span>
-      <span class="mono push-url">${esc(c.ingest.pushUrl)}</span>
-      <button class="btn small" data-act="copy" title="copy the push URL for your encoder (OBS / ffmpeg / hardware)">copy</button>
-    </div>` : ''}
-    <div class="chan-foot">
+function channelRow (c) {
+  const frag = document.createDocumentFragment()
+  const tr = document.createElement('tr')
+  tr.dataset.id = c.id
+  const input = inputSummary(c.input)
+  tr.innerHTML = `
+    <td><span class="badge run-badge idle">STOPPED</span></td>
+    <td>
+      <div class="cell-chan">
+        <span class="t">${esc(c.title)}</span>
+        <span class="mono muted">${esc(c.id)}${c.legacy ? ' · <span class="badge legacy" title="env-configured channel (STREAM_ID) — legacy data layout">env</span>' : ''}</span>
+        ${(c.category || []).length ? `<span class="muted" style="font-size:11px">${esc((c.category || []).join(' · '))}</span>` : ''}
+      </div>
+    </td>
+    <td class="cell-input mono muted" title="${esc(input)} · ${esc(transcodeSummary(c.transcode))} · hls ${esc(c.hls?.time)}s ×${esc(c.hls?.listSize)}">${esc(input)}</td>
+    <td class="cell-health"><span class="muted">stopped</span></td>
+    <td class="num peers-cell muted">—</td>
+    <td class="num restarts-cell muted">—</td>
+    <td class="num uptime-cell muted">—</td>
+    <td><div class="row-actions">
       <button class="btn small primary" data-act="startstop">Start</button>
+      ${c.ingest?.pushUrl ? '<button class="btn small" data-act="copy" title="copy the push URL for your encoder (OBS / ffmpeg / hardware)">Push URL</button>' : ''}
       <button class="btn small" data-act="edit">Edit</button>
       <button class="btn small" data-act="logs" title="last ffmpeg log lines — why a source won't play">Logs</button>
-      <button class="btn small danger" data-act="remove">Remove</button>
-    </div>`
-  card.querySelector('[data-act=startstop]').addEventListener('click', (e) => startStop(c.id, e.currentTarget))
-  card.querySelector('[data-act=edit]').addEventListener('click', () => editChannel(c.id))
-  card.querySelector('[data-act=logs]').addEventListener('click', () => showLogs(c.id))
-  card.querySelector('[data-act=remove]').addEventListener('click', () => removeChannel(c.id))
-  const copyBtn = card.querySelector('[data-act=copy]')
+      <button class="btn small danger" data-act="remove">×</button>
+    </div></td>`
+  tr.querySelector('[data-act=startstop]').addEventListener('click', (e) => startStop(c.id, e.currentTarget))
+  tr.querySelector('[data-act=edit]').addEventListener('click', () => editChannel(c.id))
+  tr.querySelector('[data-act=logs]').addEventListener('click', () => showLogs(c.id))
+  tr.querySelector('[data-act=remove]').addEventListener('click', () => removeChannel(c.id))
+  const copyBtn = tr.querySelector('[data-act=copy]')
   if (copyBtn) copyBtn.addEventListener('click', () => copyText(c.ingest.pushUrl))
-  return card
+
+  // the inline "why is it unhealthy" tail lives in its own row under this one
+  const logTr = document.createElement('tr')
+  logTr.className = 'log-row'
+  logTr.dataset.logFor = c.id
+  logTr.hidden = true
+  logTr.innerHTML = '<td colspan="8"><pre class="log-inline mono"></pre></td>'
+
+  frag.appendChild(tr)
+  frag.appendChild(logTr)
+  return frag
 }
 
 async function copyText (text) {
@@ -237,58 +292,95 @@ async function copyText (text) {
 // One badge per channel state (S15c): ON AIR / waiting for publisher / backoff+exit.
 function stateBadge (c) {
   switch (c.state) {
-    case 'up': return { text: 'ON AIR', cls: 'live' }
-    case 'waiting-input': return { text: 'WAITING FOR PUBLISHER', cls: 'warn' }
-    case 'backoff': return { text: 'RETRYING' + (c.watchdog?.lastExit != null ? ` (exit ${c.watchdog.lastExit})` : ''), cls: 'err' }
-    case 'starting': return { text: 'STARTING', cls: 'dim' }
-    default: return { text: 'STOPPED', cls: 'idle' }
+    case 'up': return { text: 'ON AIR', cls: 'live', tip: 'ffmpeg is up and the live edge is advancing' }
+    // Short copy because it lives in a table cell now; the full wording that used to be
+    // the badge label moved to the tooltip rather than being dropped.
+    case 'waiting-input': return { text: 'WAITING', cls: 'warn', tip: 'listener is up — WAITING FOR PUBLISHER to connect' }
+    case 'backoff': return { text: 'RETRYING' + (c.watchdog?.lastExit != null ? ` (${c.watchdog.lastExit})` : ''), cls: 'err', tip: 'ffmpeg exited; the watchdog is respawning it with backoff' }
+    case 'starting': return { text: 'STARTING', cls: 'dim', tip: 'ffmpeg spawned, no playlist yet' }
+    default: return { text: 'STOPPED', cls: 'idle', tip: 'not running' }
   }
 }
 
-// Patch the live bits (run badge, status strip, start/stop button, inline logs)
-// without re-rendering.
+// Sort rank for the Status column: most-urgent first, so an ops view surfaces
+// problems at the top rather than sorting them alphabetically into the middle.
+const STATE_RANK = { backoff: 0, 'waiting-input': 1, starting: 2, up: 3 }
+const stateRank = (c) => (c.running ? (STATE_RANK[c.state] ?? 3) : 9)
+
+// Patch the live bits (badge, health, counters, start/stop button, inline logs)
+// without re-rendering the row.
 function updateStatus (c) {
-  const card = $('#channels-list').querySelector(`[data-id="${CSS.escape(c.id)}"]`)
-  if (!card) return
-  const run = card.querySelector('.run-badge')
+  const tr = $('#chan-rows').querySelector(`tr[data-id="${CSS.escape(c.id)}"]`)
+  if (!tr) return
+  const run = tr.querySelector('.run-badge')
   const badge = stateBadge(c)
   run.textContent = badge.text
   run.className = 'badge run-badge ' + badge.cls
-  const btn = card.querySelector('[data-act=startstop]')
+  run.title = badge.tip || ''
+  const btn = tr.querySelector('[data-act=startstop]')
   btn.textContent = c.running ? 'Stop' : 'Start'
   btn.classList.toggle('primary', !c.running)
-  const strip = card.querySelector('.status-strip')
-  updateInlineLogs(card, c)
-  if (!c.running) { strip.innerHTML = '<span class="muted">stopped</span>'; return }
+
+  const health = tr.querySelector('.cell-health')
+  const peersCell = tr.querySelector('.peers-cell')
+  const restartsCell = tr.querySelector('.restarts-cell')
+  const uptimeCell = tr.querySelector('.uptime-cell')
+  updateInlineLogs(tr, c)
+
+  const restarts = c.watchdog?.restarts || 0
+  restartsCell.textContent = restarts || '—'
+  restartsCell.className = 'num restarts-cell' + (restarts ? ' ' : ' muted')
+
+  if (!c.running) {
+    health.innerHTML = '<span class="muted">stopped</span>'
+    peersCell.textContent = '—'; peersCell.className = 'num peers-cell muted'
+    uptimeCell.textContent = '—'; uptimeCell.className = 'num uptime-cell muted'
+    return
+  }
   const bits = [
     c.ffmpegUp
-      ? '<span class="badge ok">ffmpeg ✓</span>'
-      : `<span class="badge err">ffmpeg DOWN${c.ffmpegExit != null ? ' (exit ' + esc(c.ffmpegExit) + ')' : ''}</span>`,
-    `<span class="chip"><b>${c.peers}</b> peer${c.peers === 1 ? '' : 's'}</span>`
+      ? '<span class="badge ok">ffmpeg</span>'
+      : `<span class="badge err">ffmpeg DOWN${c.ffmpegExit != null ? ' (' + esc(c.ffmpegExit) + ')' : ''}</span>`
   ]
-  if (c.registered) bits.push('<span class="badge ok">registered ✓</span>')
-  else if (c.registerError) bits.push(`<span class="badge err" title="${esc(c.registerError)}">register ✗</span>`)
+  // Running on a backup is the single most important thing to surface: the channel looks
+  // healthy but its primary source is down, and nobody would otherwise notice.
+  if (c.sourceIndex > 0) {
+    bits.push(`<span class="badge warn" title="primary source is failing — now pulling backup ${c.sourceIndex} of ${(c.sourceCount || 1) - 1}: ${esc(c.activeSource || '')}\nThe watchdog re-probes the primary automatically.">BACKUP ${c.sourceIndex}</span>`)
+  }
+  if (c.registered) bits.push('<span class="badge ok">reg</span>')
+  else if (c.registerError) bits.push(`<span class="badge err" title="${esc(c.registerError)}">reg ✗</span>`)
   else if (panelConfigured) bits.push('<span class="badge dim">registering…</span>')
   else bits.push('<span class="badge dim" title="set PANEL_PUBKEY + PUBLISHER_KEY to auto-register">no panel</span>')
-  bits.push(c.playlist ? '<span class="badge ok">playlist ✓</span>' : '<span class="badge dim">no playlist yet</span>')
-  if (c.watchdog?.restarts > 0) bits.push(`<span class="chip" title="watchdog respawns of ffmpeg this run">${c.watchdog.restarts} restart${c.watchdog.restarts === 1 ? '' : 's'}</span>`)
-  if (c.startedAt) bits.push(`<span class="chip">up ${fmtUp(Date.now() - c.startedAt)}</span>`)
-  strip.innerHTML = bits.join(' ')
+  bits.push(c.playlist ? '<span class="badge ok">playlist</span>' : '<span class="badge dim">no playlist</span>')
+  health.innerHTML = bits.join(' ')
+
+  peersCell.textContent = c.peers ?? 0
+  peersCell.className = 'num peers-cell'
+  // Uptime = how long the CURRENT ffmpeg has been alive, not how long ago the operator
+  // pressed Start. On a flaky source those differ by hours, and the ffmpeg clock is the
+  // one that says whether media is actually flowing. Channel age lives in the tooltip.
+  const ffSince = c.watchdog?.lastRestartAt ?? c.startedAt
+  uptimeCell.textContent = ffSince ? fmtUp(Date.now() - ffSince) : '—'
+  uptimeCell.className = 'num uptime-cell' + (ffSince ? '' : ' muted')
+  uptimeCell.title = c.startedAt
+    ? `ffmpeg up ${fmtUp(Date.now() - ffSince)} · channel started ${fmtUp(Date.now() - c.startedAt)} ago`
+    : ''
 }
 
 // While a running channel is NOT healthy ('up'), surface its last few ffmpeg lines
-// right on the card — the diagnosis usually IS the last line.
-async function updateInlineLogs (card, c) {
-  const pre = card.querySelector('.log-inline')
-  if (!pre) return
+// in the row beneath it — the diagnosis usually IS the last line.
+async function updateInlineLogs (tr, c) {
+  const logTr = tr.nextElementSibling
+  if (!logTr || !logTr.classList.contains('log-row')) return
+  const pre = logTr.querySelector('.log-inline')
   const show = c.running && c.state !== 'up' && c.state !== 'starting'
-  if (!show) { pre.hidden = true; return }
+  if (!show) { logTr.hidden = true; return }
   try {
     const r = await api('GET', `/api/channels/${encodeURIComponent(c.id)}/logs?lines=3`)
-    if (r.lines.length === 0) { pre.hidden = true; return }
+    if (r.lines.length === 0) { logTr.hidden = true; return }
     pre.textContent = r.lines.map((e) => e.line).join('\n')
-    pre.hidden = false
-  } catch { pre.hidden = true }
+    logTr.hidden = tr.classList.contains('hidden-row') // stay hidden if the row is filtered out
+  } catch { logTr.hidden = true }
 }
 
 function fmtUp (ms) {
@@ -298,6 +390,83 @@ function fmtUp (ms) {
   if (m < 90) return m + 'm'
   const h = Math.floor(m / 60)
   return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'm' : '')
+}
+
+// ---------------------------------------------------------------- filter + sort
+
+function matchesQuick (c) {
+  switch (quickFilter) {
+    case 'onair': return c.state === 'up'
+    case 'issues': return c.running && c.state !== 'up' && c.state !== 'starting'
+    case 'stopped': return !c.running
+    default: return true
+  }
+}
+
+function matchesText (c) {
+  if (!filterText) return true
+  const hay = [c.id, c.title, (c.category || []).join(' '), inputSummary(c.input)].join(' ').toLowerCase()
+  return hay.includes(filterText)
+}
+
+function sortValue (c) {
+  switch (sortKey) {
+    case 'id': return c.id.toLowerCase()
+    case 'peers': return c.running ? (c.peers || 0) : -1
+    case 'restarts': return c.watchdog?.restarts || 0
+    case 'uptime': { const t = c.watchdog?.lastRestartAt ?? c.startedAt; return t ? Date.now() - t : -1 }
+    default: return stateRank(c)
+  }
+}
+
+// Reorders the existing DOM rows (each channel row drags its log row with it) and
+// applies the filters. Called after every poll, so it must not rebuild anything.
+function applyView () {
+  const body = $('#chan-rows')
+  const ordered = [...channels].sort((a, b) => {
+    const av = sortValue(a); const bv = sortValue(b)
+    if (av < bv) return -1 * sortDir
+    if (av > bv) return 1 * sortDir
+    return a.id.localeCompare(b.id)
+  })
+  let visible = 0
+  for (const c of ordered) {
+    const tr = body.querySelector(`tr[data-id="${CSS.escape(c.id)}"]`)
+    if (!tr) continue
+    const logTr = tr.nextElementSibling
+    body.appendChild(tr)
+    if (logTr && logTr.classList.contains('log-row')) body.appendChild(logTr)
+    const ok = matchesQuick(c) && matchesText(c)
+    tr.classList.toggle('hidden-row', !ok)
+    if (logTr && logTr.classList.contains('log-row') && !ok) logTr.hidden = true
+    if (ok) visible++
+  }
+  $('#row-count').textContent = channels.length
+    ? `${visible} of ${channels.length} channel${channels.length === 1 ? '' : 's'}`
+    : ''
+  const empty = $('#empty-msg')
+  if (channels.length === 0) { empty.hidden = false; empty.textContent = 'No channels yet — add one above.' } else if (visible === 0) { empty.hidden = false; empty.textContent = 'No channels match this filter.' } else empty.hidden = true
+
+  for (const th of document.querySelectorAll('th.sortable')) {
+    th.classList.toggle('sorted-asc', th.dataset.sort === sortKey && sortDir === 1)
+    th.classList.toggle('sorted-desc', th.dataset.sort === sortKey && sortDir === -1)
+  }
+}
+
+$('#filter').addEventListener('input', (e) => { filterText = e.target.value.trim().toLowerCase(); applyView() })
+$('#quick-filters').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-f]')
+  if (!btn) return
+  quickFilter = btn.dataset.f
+  for (const b of $('#quick-filters').querySelectorAll('button')) b.classList.toggle('active', b === btn)
+  applyView()
+})
+for (const th of document.querySelectorAll('th.sortable')) {
+  th.addEventListener('click', () => {
+    if (sortKey === th.dataset.sort) sortDir = -sortDir
+    else { sortKey = th.dataset.sort; sortDir = 1 }
+    applyView()
+  })
 }
 
 // ---------------------------------------------------------------- dialog helper
@@ -415,7 +584,7 @@ $('#add-channel-form').addEventListener('submit', async (e) => {
              <p class="muted">Starting the channel delivers it to the panel automatically — you only need to
              copy it for a panel you administer by hand (admin-cli / panel dashboard add-stream).</p>` +
              (push ? `<p class="muted">Push ingest on port <b>${esc(r.input.port)}</b> — start the channel and
-             copy the <b>push URL</b> from its card into your encoder. Remember to open the port in your
+             copy the <b>push URL</b> from its row into your encoder. Remember to open the port in your
              firewall for the encoder's IP.</p>` : '')
     })
   } catch (err) { toast(err.message, true) }
@@ -468,12 +637,21 @@ async function editChannel (id) {
     disabled: !kindAvailable(k) && k !== input.kind,
     title: !kindAvailable(k) ? 'this ffmpeg build has no ' + k + ' protocol support' : undefined
   }))
+  // Title / description / category are DELIBERATELY absent. They are panel-authoritative
+  // (panel/src/rpc.js: the broadcaster seeds them when it first creates the catalog
+  // record, and every re-register onto an existing record leaves them alone). Offering
+  // them here would edit only the broadcaster's local copy while viewers kept seeing the
+  // old value — a control that looks like it works and doesn't. Edit them in the panel.
   const v = await dialog(`Edit ${c.id}`, [
-    { name: 'title', label: 'Title', value: c.title },
-    { name: 'description', label: 'Description', type: 'textarea', value: c.description },
-    { name: 'category', label: 'Category (comma-separated)', value: (c.category || []).join(', ') },
     { name: 'kind', label: 'Ingest', type: 'select', options: kindOpts, value: input.kind },
     { name: 'source', label: 'Source', value: input.url || input.path || '', placeholder: 'URL or file path' },
+    {
+      name: 'fallbacks',
+      label: 'Backup sources (one URL per line, max 4)',
+      type: 'textarea',
+      value: (input.fallbacks || []).join('\n'),
+      title: 'Tried in order when the primary keeps failing. The watchdog returns to the primary automatically once it recovers — failover is not sticky.'
+    },
     { name: 'port', label: 'Listen port (blank = keep/auto)', type: 'number', value: input.port ?? '' },
     { name: 'streamKey', label: 'Stream key (blank = keep current)', value: input.streamKey ?? '', title: 'obscurity only — firewall the port; SRT+passphrase is the authenticated push' },
     { name: 'passphrase', label: 'SRT passphrase (10-79 chars; empty = unencrypted)', value: input.passphrase ?? '', title: 'SRT + passphrase = authenticated push (enforced by the SRT handshake)' },
@@ -488,10 +666,14 @@ async function editChannel (id) {
     { name: 'hlsTime', label: 'HLS segment seconds (1-30)', type: 'number', value: c.hls?.time },
     { name: 'hlsListSize', label: 'HLS window segments (2-60)', type: 'number', value: c.hls?.listSize }
   ], {
-    body: c.running ? '<p class="muted">This channel is running — ingest/transcode changes apply on the next start. Changing the SOURCE rotates the feed identity (viewers follow automatically).</p>' : '',
+    body: `<p class="muted"><b>${esc(c.title)}</b>${(c.category || []).length ? ' · ' + esc((c.category || []).join(', ')) : ''}<br>
+           Title, description and category are <b>panel-authoritative</b> — edit them in the panel
+           admin dashboard. This broadcaster only seeds them when the channel is first created.</p>` +
+          (c.running ? '<p class="muted">This channel is running — ingest/transcode changes apply on the next start. Changing the SOURCE rotates the feed identity (viewers follow automatically).</p>' : ''),
     onReady (inputs) {
       const showFor = {
         source: ['pull', 'file'],
+        fallbacks: ['pull'], // backup urls only make sense for a pull source
         port: PUSH_KINDS,
         streamKey: ['rtmp'],
         passphrase: ['srt'],
@@ -514,17 +696,20 @@ async function editChannel (id) {
     }
   })
   if (!v) return
-  const body = {
-    description: v.description,
-    category: v.category.split(',').map((x) => x.trim()).filter(Boolean)
-  }
-  if (v.title.trim()) body.title = v.title.trim()
+  // PATCH is partial (channel.js: `if (fields.title != null) …`), so omitting the
+  // descriptive fields leaves the broadcaster's stored copy untouched rather than
+  // blanking it. Only ingest/transcode/hls are this UI's business.
+  const body = {}
 
   const kind = v.kind
   if (kind === 'pull' || kind === 'file') {
     const src = v.source.trim()
     if (!src) return toast(kind + ' input needs a ' + (kind === 'file' ? 'path' : 'URL'), true)
-    body.input = kind === 'pull' ? { kind, url: src } : { kind, path: src }
+    // Always send fallbacks for a pull (even empty) so clearing the box actually clears
+    // them — normalizeInput treats OMITTED as "keep stored" and [] as "clear".
+    body.input = kind === 'pull'
+      ? { kind, url: src, fallbacks: v.fallbacks.split('\n').map((x) => x.trim()).filter(Boolean) }
+      : { kind, path: src }
   } else if (PUSH_KINDS.includes(kind)) {
     const inp = { kind }
     if (v.port !== '') inp.port = Number(v.port) // blank = inherit (same kind) or auto-alloc

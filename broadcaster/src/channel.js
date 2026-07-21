@@ -154,7 +154,21 @@ export function normalizeInput (value, { config, usedPorts = new Set(), existing
     const url = value.url == null ? '' : String(value.url)
     if (!url || url.length > 512 || /[\r\n]/.test(url)) bad('pull input needs a url (≤512 chars)')
     if (!PULL_SCHEME_RE.test(url)) bad('unsupported pull url scheme (allowed: http(s), rtsp, rtmp(s), srt, udp)')
-    return { kind: 'pull', url }
+    // Backup sources, tried in order when the primary keeps failing (see _pickSource).
+    // Omitted on a PATCH = keep what's stored (same `inherit` rule as a push streamKey);
+    // an explicit [] clears them. Same validation as the primary — a backup that would be
+    // rejected as a primary is worse than no backup, because it fails at 3am instead of now.
+    const rawFb = value.fallbacks !== undefined ? value.fallbacks : (inherit?.fallbacks ?? [])
+    if (!Array.isArray(rawFb)) bad('input.fallbacks must be an array of urls')
+    if (rawFb.length > MAX_FALLBACKS) bad(`input.fallbacks: at most ${MAX_FALLBACKS} urls`)
+    const fallbacks = []
+    for (const f of rawFb) {
+      const u = f == null ? '' : String(f)
+      if (!u || u.length > 512 || /[\r\n]/.test(u)) bad('each fallback url must be 1-512 chars')
+      if (!PULL_SCHEME_RE.test(u)) bad('unsupported fallback url scheme (allowed: http(s), rtsp, rtmp(s), srt, udp)')
+      if (u !== url && !fallbacks.includes(u)) fallbacks.push(u) // drop dupes / echoes of the primary
+    }
+    return fallbacks.length ? { kind: 'pull', url, fallbacks } : { kind: 'pull', url }
   }
   if (!PUSH_KINDS.has(kind)) bad('input.kind must be one of: test, file, pull, rtmp, srt, udp')
 
@@ -259,7 +273,48 @@ const WD = {
   stallGraceMs: 20000, // a pull-style source must advance the live edge within this window
   backoffBaseMs: 1000, // first respawn delay after an ffmpeg exit
   backoffMaxMs: 30000, // respawn backoff cap
-  backoffResetMs: 60000 // sustained health this long → backoff decays back to the base
+  backoffResetMs: 60000, // sustained health this long → backoff decays back to the base
+  // Backup sources (pull inputs with `fallbacks`). Failover is deliberately conservative:
+  // a single ffmpeg exit is normal on flaky IPTV, so only a RUN of failures moves off the
+  // current url. Return-to-primary is opportunistic — we never interrupt a working backup,
+  // we just re-probe the primary on the next respawn once the cooldown has passed. On these
+  // sources a respawn is never far away, so in practice the primary is retried often; on a
+  // perfectly stable backup we stay there, which is the correct trade (no self-inflicted
+  // glitch to go back to a source that only just started working).
+  srcFailoverAfter: 2, // consecutive failed respawns on one url before trying the next
+  srcPrimaryRetryMs: 300000 // 5 min on a backup → next respawn re-probes the primary
+}
+
+// Cap on `input.fallbacks`. Enough for a real redundancy chain, small enough that a
+// failover cycle can't take longer than an operator's patience.
+const MAX_FALLBACKS = 4
+
+// The backup-source rotation decision, as a pure function of the current state — split
+// out of Channel so the tricky half ("fail forward, but come home when you can") is
+// unit-testable without spawning ffmpeg or opening a store. Returns the next rotation
+// state plus WHY it changed, which is what the operator log line is built from.
+export function pickSource ({
+  sources, srcIndex = 0, srcFailures = 0, lastPrimaryTryAt = 0, now = Date.now(),
+  failoverAfter = WD.srcFailoverAfter, primaryRetryMs = WD.srcPrimaryRetryMs
+} = {}) {
+  const keep = { srcIndex, srcFailures, lastPrimaryTryAt, reason: null }
+  if (!Array.isArray(sources) || sources.length < 2) return { ...keep, srcIndex: 0 }
+  // Rule 1 — return to primary. Checked BEFORE failover so a backup that is also failing
+  // can't walk the ring forever without ever re-probing the primary.
+  if (srcIndex !== 0 && now - lastPrimaryTryAt >= primaryRetryMs) {
+    return { srcIndex: 0, srcFailures: 0, lastPrimaryTryAt: now, reason: 'primary-retry' }
+  }
+  // Rule 2 — fail forward after a RUN of failures (one exit is normal on flaky IPTV).
+  if (srcFailures >= failoverAfter) {
+    const next = (srcIndex + 1) % sources.length
+    return {
+      srcIndex: next,
+      srcFailures: 0,
+      lastPrimaryTryAt: next === 0 ? now : lastPrimaryTryAt,
+      reason: 'failover'
+    }
+  }
+  return keep
 }
 
 // S15b log ring: the last N ffmpeg stderr lines per channel, for diagnosing why a source
@@ -475,6 +530,11 @@ class Channel {
       drainMirrors: [], // [{ stopMirror }] — retired generations mid-grace
       ff: null,
       ffmpegExit: null,
+      // Backup-source rotation for pull inputs with `fallbacks` (see _pickSource).
+      // srcIndex 0 is always the primary `input.url`.
+      srcIndex: 0,
+      srcFailures: 0,
+      lastPrimaryTryAt: now,
       // S15b watchdog: keeps ffmpeg alive across source hiccups (crash, empty/off-air
       // source, publisher disconnect) and restarts a stalled live edge. See _startWatchdog.
       watchdog: {
@@ -514,10 +574,46 @@ class Channel {
 
   // Spawn (or respawn) ffmpeg into the run's outDir. onExit is bound to THIS process so a
   // late exit callback from a process we already replaced can't clobber the live one.
+  // [primary, ...fallbacks] for a pull input; [] for anything else. Re-read from meta on
+  // every call so a PATCHed source list takes effect on the next respawn.
+  _sources () {
+    const i = this.meta.input
+    return i && i.kind === 'pull' ? [i.url, ...(i.fallbacks || [])] : []
+  }
+
+  // The url this run should use right now. Never throws and never returns undefined: a
+  // srcIndex left dangling by a PATCH that shortened the list falls back to the primary.
+  _activeUrl (run) {
+    const s = this._sources()
+    if (s.length === 0) return null
+    return s[run.srcIndex] ?? s[0]
+  }
+
+  // Decide which source the NEXT spawn uses. Called once per respawn, before _spawnFfmpeg.
+  // Two rules, in priority order:
+  //   1. return-to-primary — if we're on a backup and the cooldown has elapsed, go home.
+  //      This is why failover isn't sticky: we get back without interrupting a working run.
+  //   2. fail forward — a run of consecutive failures on the current url advances to the next.
+  _pickSource (run) {
+    const sources = this._sources()
+    const next = pickSource({ ...run, sources, now: Date.now() })
+    if (next.reason === 'primary-retry') this._log(`--- watchdog: retrying PRIMARY source ${sources[0]} ---`)
+    else if (next.reason === 'failover') this._log(`--- watchdog: source failover → [${next.srcIndex}] ${sources[next.srcIndex]} ---`)
+    run.srcIndex = next.srcIndex
+    run.srcFailures = next.srcFailures
+    run.lastPrimaryTryAt = next.lastPrimaryTryAt
+  }
+
   _spawnFfmpeg (run) {
     const { config } = this.manager
+    // Swap the active backup url in without mutating meta.input (which stays the operator's
+    // configured primary + list — status() and a PATCH must still see what was configured).
+    const activeUrl = this._activeUrl(run)
+    const input = activeUrl && activeUrl !== this.meta.input.url
+      ? { ...this.meta.input, url: activeUrl }
+      : this.meta.input
     const proc = startFfmpeg({
-      input: this.meta.input,
+      input,
       transcode: this.meta.transcode,
       hls: this.meta.hls,
       vaapiDevice: config.vaapiDevice
@@ -564,6 +660,9 @@ class Channel {
           wd.lastAdvanceAt = t
           wd.everAdvanced = true
           wd.state = 'live'
+          // The live edge advanced, so whatever url we're on is working — clear the
+          // failure run so an old streak can't trigger a failover much later.
+          run.srcFailures = 0
           if (t - wd.lastRestartAt > WD.backoffResetMs) wd.backoffMs = WD.backoffBaseMs
         } else if (!isPush && t - wd.lastAdvanceAt > WD.stallGraceMs) {
           wd.stalls++
@@ -616,6 +715,10 @@ class Channel {
       wd.restarting = false
       if (wd.stopped || this.run !== run) return
       wd.restarts++
+      // This respawn is itself the evidence the current source failed. Count it, then let
+      // _pickSource decide whether to fail forward or go back to the primary.
+      run.srcFailures++
+      this._pickSource(run)
       wd.lastRestartAt = Date.now()
       wd.lastAdvanceAt = Date.now() // fresh grace window before stall detection re-arms
       wd.lastSig = null
@@ -814,6 +917,12 @@ class Channel {
       registered: this.manager.panelLink.isRegistered(this.meta.id),
       registerError: this.manager.panelLink.lastError(this.meta.id),
       startedAt: run ? run.startedAt : null,
+      // Backup-source state: which of [primary, ...fallbacks] this run is pulling from
+      // right now. sourceIndex 0 = primary, so a non-zero value means "running on a
+      // backup" — the one thing an operator needs to see at a glance.
+      sourceIndex: run ? run.srcIndex : 0,
+      sourceCount: this._sources().length,
+      activeSource: run ? this._activeUrl(run) : null,
       // S15b watchdog surface: is ffmpeg being kept alive, and how hard.
       watchdog: run ? {
         state: run.watchdog.state,
@@ -821,6 +930,11 @@ class Channel {
         stalls: run.watchdog.stalls,
         lastExit: run.watchdog.lastExit,
         backoffMs: run.watchdog.backoffMs,
+        // When the CURRENT ffmpeg process started — initialised to the run's startedAt and
+        // bumped on every respawn. On a flaky source the channel can be hours old while
+        // ffmpeg is seconds old, so this is the honest "how long has media been flowing"
+        // clock; run.startedAt only tells you when the operator pressed Start.
+        lastRestartAt: run.watchdog.lastRestartAt,
         memMb: run.watchdog.memMb,
         memRecycles: run.watchdog.memRecycles
       } : null,

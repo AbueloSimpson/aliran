@@ -678,7 +678,11 @@ try {
   const uiJs = await (await fetch(base + '/app.js')).text()
   assert.ok(uiJs.includes('/api/capabilities'), 'UI fetches the capability probe')
   assert.ok(uiJs.includes('logs?lines='), 'UI has the logs fetch')
-  assert.ok(uiJs.includes('WAITING FOR PUBLISHER'), 'UI has the push state badge')
+  // Bind to the STATE KEY, not the badge copy: the label was shortened to fit the channel
+  // table (the long wording moved to the badge tooltip) and a copy-only assert made that
+  // read as a regression. The state key is the durable contract with the API.
+  assert.ok(uiJs.includes("case 'waiting-input'"), 'UI handles the waiting-input state')
+  assert.ok(uiJs.includes('WAITING FOR PUBLISHER'), 'UI still explains the push wait somewhere')
   const uiHtml = await (await fetch(base + '/')).text()
   assert.ok(uiHtml.includes('nc-kind'), 'UI add form has the input-kind selector')
   log('O: capabilities endpoint; status state+ingest.pushUrl; logs API (cap, 404); waiting-input; UI statics ✓')

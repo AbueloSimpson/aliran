@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aliran broadcaster control</title>
 <link rel="stylesheet" href="style.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23fb923c'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%2322d3ee'/%3E%3C/svg%3E">
 </head>
 <body>
 
@@ -26,30 +26,83 @@
 
 <!-- ============ app ============ -->
 <div id="app-view" hidden>
-  <header>
-    <h1 class="brand">Aliran <span>broadcaster</span></h1>
-    <div id="status-chips" class="chips"></div>
-    <div class="spacer"></div>
-    <span id="who" class="muted"></span>
-    <button class="btn ghost" id="logout-btn">Sign out</button>
-  </header>
 
-  <main>
-    <form id="add-channel-form" class="card row-form">
-      <strong>Add channel</strong>
-      <input id="nc-id" placeholder="id (e.g. news-24)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" maxlength="64">
-      <input id="nc-title" placeholder="Title">
-      <input id="nc-category" placeholder="Category">
-      <select id="nc-kind" title="ingest type (push kinds get a copy-paste push URL on the card)"></select>
-      <input id="nc-source" placeholder="source URL">
-      <button class="btn primary">Add</button>
-    </form>
-    <p class="hint muted"><b>SRT with a passphrase is the authenticated push</b> — an RTMP stream key is only
-    obscurity; firewall your ingest ports. Push details (port / stream key / passphrase) and per-channel
-    transcode live under Edit. Channel art (poster / backdrop / logo) is a <b>panel</b> operation — upload it
-    in the panel admin dashboard.</p>
-    <div id="channels-list" class="cards"></div>
-  </main>
+  <aside id="sidebar">
+    <h1 class="brand">Aliran <span>broadcaster</span></h1>
+    <nav class="side-nav">
+      <a class="nav-item active" href="#channels">Channels</a>
+      <a class="nav-item" href="#add" id="nav-add">Add channel</a>
+    </nav>
+    <div class="side-foot">
+      <div id="panel-state" class="chip"></div>
+      <div id="who" class="muted"></div>
+      <button class="btn ghost small" id="logout-btn">Sign out</button>
+    </div>
+  </aside>
+
+  <div id="content">
+    <header class="topbar">
+      <button class="btn ghost small" id="side-toggle" aria-label="Toggle navigation">&#9776;</button>
+      <div>
+        <h2 id="page-title">Channels</h2>
+        <div id="banner" class="banner">&nbsp;</div>
+      </div>
+    </header>
+
+    <main>
+      <!-- KPI tiles: every value below comes from the control API, nothing is decorative -->
+      <section id="tiles" class="tiles"></section>
+
+      <details id="add-panel" class="card add-panel">
+        <summary>Add a channel</summary>
+        <form id="add-channel-form" class="row-form">
+          <input id="nc-id" placeholder="id (e.g. news-24)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*" maxlength="64">
+          <input id="nc-title" placeholder="Title">
+          <input id="nc-category" placeholder="Category">
+          <select id="nc-kind" title="ingest type (push kinds get a copy-paste push URL on the row)"></select>
+          <input id="nc-source" placeholder="source URL">
+          <button class="btn primary">Add</button>
+        </form>
+        <p class="hint muted"><b>SRT with a passphrase is the authenticated push</b> — an RTMP stream key is only
+        obscurity; firewall your ingest ports. Push details (port / stream key / passphrase) and per-channel
+        transcode live under Edit. Channel art (poster / backdrop / logo) is a <b>panel</b> operation — upload it
+        in the panel admin dashboard.</p>
+      </details>
+
+      <section class="card table-card">
+        <div class="table-toolbar">
+          <input id="filter" type="search" placeholder="Filter by id, title or category…" autocomplete="off">
+          <div class="segmented" id="quick-filters">
+            <button type="button" data-f="all" class="active">All</button>
+            <button type="button" data-f="onair">On air</button>
+            <button type="button" data-f="issues">Issues</button>
+            <button type="button" data-f="stopped">Stopped</button>
+          </div>
+          <span class="spacer"></span>
+          <span id="row-count" class="muted"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table id="chan-table">
+            <thead>
+              <tr>
+                <th class="sortable" data-sort="state">Status</th>
+                <th class="sortable" data-sort="id">Channel</th>
+                <th>Input</th>
+                <th>Health</th>
+                <th class="sortable num" data-sort="peers">Peers</th>
+                <th class="sortable num" data-sort="restarts" title="watchdog ffmpeg respawns this run">Restarts</th>
+                <th class="sortable num" data-sort="uptime" title="how long the CURRENT ffmpeg has been alive — not when the channel was started (hover a cell for both)">FFmpeg up</th>
+                <th class="actions-col"></th>
+              </tr>
+            </thead>
+            <tbody id="chan-rows"></tbody>
+          </table>
+        </div>
+        <p id="empty-msg" class="muted pad" hidden></p>
+      </section>
+    </main>
+  </div>
 </div>
 
 <!-- generic modal -->
