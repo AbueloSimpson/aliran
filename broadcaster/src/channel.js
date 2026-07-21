@@ -36,6 +36,7 @@ import os from 'os'
 import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
+import { makeIncidents } from './incidents.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 import { purgeStaleCores } from '@aliran/core/store-gc.js'
 
@@ -597,8 +598,15 @@ class Channel {
   _pickSource (run) {
     const sources = this._sources()
     const next = pickSource({ ...run, sources, now: Date.now() })
-    if (next.reason === 'primary-retry') this._log(`--- watchdog: retrying PRIMARY source ${sources[0]} ---`)
-    else if (next.reason === 'failover') this._log(`--- watchdog: source failover → [${next.srcIndex}] ${sources[next.srcIndex]} ---`)
+    // Failover and coming home are ALWAYS worth an incident on their own — unlike a
+    // respawn, they are rare and they change which source viewers are being served.
+    if (next.reason === 'primary-retry') {
+      this._log(`--- watchdog: retrying PRIMARY source ${sources[0]} ---`)
+      try { this.manager.incidents.record('source-primary-retry', { channel: this.meta.id }) } catch {}
+    } else if (next.reason === 'failover') {
+      this._log(`--- watchdog: source failover → [${next.srcIndex}] ${sources[next.srcIndex]} ---`)
+      try { this.manager.incidents.record('source-failover', { channel: this.meta.id, index: next.srcIndex, of: sources.length }) } catch {}
+    }
     run.srcIndex = next.srcIndex
     run.srcFailures = next.srcFailures
     run.lastPrimaryTryAt = next.lastPrimaryTryAt
@@ -715,6 +723,12 @@ class Channel {
       wd.restarting = false
       if (wd.stopped || this.run !== run) return
       wd.restarts++
+      // Feed the correlator. A lone respawn returns null (ordinary churn); a burst opens
+      // or extends ONE fleet-restart incident — the thing that was invisible before.
+      try {
+        const running = [...this.manager.channels.values()].filter((c) => c.run).length
+        this.manager.incidents.restart(this.meta.id, running)
+      } catch {}
       // This respawn is itself the evidence the current source failed. Count it, then let
       // _pickSource decide whether to fail forward or go back to the primary.
       run.srcFailures++
@@ -956,6 +970,9 @@ export class ChannelManager {
     this.config = config
     this.channels = new Map()
     this._caps = null
+    // Correlated incident ring (see incidents.js): individual respawns are noise on
+    // flaky sources, so only bursts and discrete events land here.
+    this.incidents = makeIncidents()
     // ONE bounded cache budget shared by every channel's cores. Without it each feed's
     // Hyperbee grows two per-instance caches (decoded nodes + keys) keyed by the
     // ever-increasing seq — ~1.5 KB retained per metadata append, forever (the prod

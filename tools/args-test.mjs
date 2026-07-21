@@ -11,6 +11,7 @@ import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
   isPushInput, pushUrl, pickSource
 } from '../broadcaster/src/channel.js'
+import { makeIncidents } from '../broadcaster/src/incidents.js'
 
 const log = (...a) => console.log(...a)
 const throws = (fn, re, label) => assert.throws(fn, (e) => e instanceof ControlError && e.code === 'bad-request' && re.test(e.message), label)
@@ -242,4 +243,52 @@ assert.strictEqual(pickSource({ sources: ['only'], srcIndex: 0, srcFailures: 99 
 assert.strictEqual(pickSource({ sources: [], srcFailures: 99 }).srcIndex, 0, 'no sources pinned')
 log('K: backup source rotation (hold, fail forward, wrap, return to primary) ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources)')
+// ===== L: incident correlation (fleet-restart detection) =====
+// The whole point: ONE channel respawning is noise (~2.5/channel/hour on flaky IPTV),
+// so it must NOT be logged; forty inside two minutes is an outage and must be. This is
+// exactly what was missing when all 69 channels bounced together on 2026-07-21.
+let now = 0
+const inc = makeIncidents({ windowMs: 1000, minChannels: 5, capacity: 10, clock: () => now })
+
+// under the threshold: pure churn, nothing recorded at all
+for (let i = 0; i < 4; i++) { now += 10; assert.strictEqual(inc.restart('ch' + i), null, 'below threshold is silent') }
+assert.strictEqual(inc.list().length, 0, 'ordinary churn must not fill the ring')
+
+// the 5th DISTINCT channel inside the window trips it — one incident, not five
+now += 10
+let ev = inc.restart('ch4', 69)
+assert.ok(ev && ev.type === 'fleet-restart', 'burst opens a fleet incident')
+assert.strictEqual(ev.channels, 5, 'counts distinct channels')
+assert.strictEqual(ev.of, 69, 'records the fleet size it happened against')
+assert.strictEqual(inc.list().length, 1, 'a burst is ONE incident')
+
+// more restarts EXTEND that incident rather than emitting new ones — otherwise a fleet
+// event floods the ring and evicts its own beginning
+now += 10; inc.restart('ch5', 69)
+now += 10; inc.restart('ch6', 69)
+assert.strictEqual(inc.list().length, 1, 'burst still one incident')
+assert.strictEqual(inc.list()[0].channels, 7, 'extended in place')
+assert.ok(inc.list()[0].lastAt > inc.list()[0].firstAt, 'incident spans a duration')
+
+// the SAME channel flapping repeatedly is NOT a fleet event — distinct channels is the test
+const solo = makeIncidents({ windowMs: 1000, minChannels: 5, clock: () => now })
+for (let i = 0; i < 20; i++) { now += 5; solo.restart('flappy') }
+assert.strictEqual(solo.list().length, 0, 'one channel flapping 20x is not a fleet event')
+
+// once the window passes, a fresh burst is a NEW incident
+now += 5000
+for (let i = 0; i < 5; i++) { now += 10; inc.restart('later' + i, 60) }
+assert.strictEqual(inc.list().length, 2, 'a later burst is a separate incident')
+assert.strictEqual(inc.list()[0].channels, 5, 'newest first, fresh count')
+
+// discrete events are always recorded on their own
+inc.record('source-failover', { channel: 'espn-2', index: 1, of: 3 })
+assert.strictEqual(inc.list()[0].type, 'source-failover', 'discrete events land immediately')
+
+// the ring is bounded
+const cap = makeIncidents({ capacity: 3, clock: () => now })
+for (let i = 0; i < 10; i++) cap.record('x', { i })
+assert.strictEqual(cap._size(), 3, 'ring is bounded')
+log('L: incident correlation (churn silent, burst = one extended incident, per-channel flap ignored, bounded) ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation)')

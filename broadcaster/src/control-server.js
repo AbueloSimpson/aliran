@@ -102,6 +102,12 @@ export function startControlServer (ctx, opts = {}) {
       return sendJson(res, 200, await ctx.manager.capabilities())
     }
 
+    // Correlated incidents (see incidents.js): fleet-wide respawn bursts and source
+    // failovers, newest first. Ephemeral — a broadcaster restart clears it.
+    if (r1 === 'incidents' && req.method === 'GET' && seg.length === 2) {
+      return sendJson(res, 200, ctx.manager.incidents.list())
+    }
+
     if (r1 === 'admins') {
       if (seg.length === 2) {
         if (req.method === 'GET') return sendJson(res, 200, listAdmins(ctx))

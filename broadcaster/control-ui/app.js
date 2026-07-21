@@ -152,6 +152,35 @@ async function refresh () {
     : '<span title="set PANEL_PUBKEY + PUBLISHER_KEY to auto-register channels">panel not configured</span>'
   renderChannels()
   renderTiles()
+  api('GET', '/api/incidents').then(renderIncidents).catch(() => {})
+}
+
+// Correlated events only — a lone ffmpeg respawn never appears here. That is the point:
+// at ~2.5 respawns per channel per hour, listing them individually would be the same
+// noise that hid the 2026-07-21 fleet event in the first place.
+function renderIncidents (list) {
+  const card = $('#incidents-card')
+  const ol = $('#incidents-list')
+  if (!Array.isArray(list) || list.length === 0) { card.hidden = true; return }
+  const ago = (t) => {
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000))
+    if (s < 90) return s + 's ago'
+    const m = Math.round(s / 60)
+    return m < 90 ? m + 'm ago' : Math.round(m / 60) + 'h ago'
+  }
+  const describe = (e) => {
+    if (e.type === 'fleet-restart') {
+      const span = Math.max(1, Math.round(((e.lastAt || e.t) - (e.firstAt || e.t)) / 1000))
+      return `<b>${e.channels}${e.of ? ' of ' + e.of : ''} channels restarted together</b> — ${e.restarts} respawns over ${span}s. Correlated, so this is an upstream or host event, not one flaky source.`
+    }
+    if (e.type === 'source-failover') return `<b>${esc(e.channel)}</b> failed over to backup source ${e.index} of ${(e.of || 1) - 1}`
+    if (e.type === 'source-primary-retry') return `<b>${esc(e.channel)}</b> returned to its primary source`
+    return esc(e.type)
+  }
+  ol.innerHTML = list.slice(0, 8).map((e) =>
+    `<li><span class="when">${ago(e.t)}</span><span class="what">${describe(e)}</span></li>`).join('')
+  $('#incidents-note').textContent = `· ${list.length} since this broadcaster started`
+  card.hidden = false
 }
 
 // Every tile below is derived from real API values. Nothing here is decorative — if a
