@@ -113,7 +113,7 @@ hunting a stuck ffmpeg, match its command line by the HLS output directory it wr
 Working as designed. When a source fails past `SLATE_AFTER` consecutive respawns (default 3,
 counted per configured fallback url), the broadcaster loops a pre-rendered slate so the
 channel stays live with a clear message rather than sitting blank in watchdog backoff. It is
-NOT stuck: every `SLATE_RETRY_MS` (default 60 s) it drops the slate and re-probes the real
+NOT stuck: every `SLATE_RETRY_MS` (default 30 s) it drops the slate and re-probes the real
 source, and returns on its own the moment the source comes back — no operator action needed.
 
 The trap for operators: a slated channel reports `state: up` and looks healthy by every other

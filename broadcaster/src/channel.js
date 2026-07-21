@@ -361,7 +361,7 @@ export function pickSource ({
 // than a fresh `after`-long blank window every cycle.
 export function pickSlate ({
   slated = false, failures = 0, sources = 1, slateSince = 0, now = Date.now(),
-  enabled = true, after = 3, retryMs = 60000
+  enabled = true, after = 3, retryMs = 30000
 } = {}) {
   if (!enabled) return { slated: false, slateSince: 0, reason: slated ? 'slate-disabled' : null }
   if (slated) {
@@ -719,10 +719,11 @@ class Channel {
       // bounds the viewer's DEAD AIR here — the slate stops producing segments the moment it
       // is killed, and the player only has the live window (listSize x hls.time, ~16 s) to
       // coast on. With a grown backoff the probe, and then the re-slate if it fails, would
-      // each be delayed up to backoffMaxMs, so a still-dead source could show ~30 s of
-      // nothing every retry cycle. It happens to decay on its own when SLATE_RETRY_MS equals
-      // backoffResetMs (both 60 s by default), but that is a coincidence of the defaults —
-      // shortening SLATE_RETRY_MS would silently reintroduce the gap.
+      // each be delayed up to backoffMaxMs, so a still-dead source could show ~30 s of nothing
+      // every retry cycle. This reset is LOAD-BEARING at the 30 s default: SLATE_RETRY_MS
+      // (30 s) is now SHORTER than backoffResetMs (60 s), so the backoff would NOT have decayed
+      // on its own by the time we probe — without this line a shortened retry silently
+      // reintroduces the gap. (It was a no-op only back when both happened to be 60 s.)
       run.watchdog.backoffMs = WD.backoffBaseMs
     }
     run.slated = next.slated
@@ -830,7 +831,7 @@ class Channel {
         // bars forever even after the source came back. Killing it routes into the same
         // exit→respawn path, where _pickSlate drops the slate and re-probes the source.
         const slateCfg = this.manager.config.slate || {}
-        if (run.slated && t - run.slateSince >= (slateCfg.retryMs || 60000)) {
+        if (run.slated && t - run.slateSince >= (slateCfg.retryMs || 30000)) {
           try { run.ff.kill('SIGKILL') } catch {}
         }
         // Memory cap (independent of the edge checks above — a leaking pull is usually

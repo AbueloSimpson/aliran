@@ -76,11 +76,24 @@ Three things are load-bearing and easy to get wrong if this is ever refactored:
 | `SLATE_ENABLED` | `1` | Master switch |
 | `SLATE_DIR` | `broadcaster/slate` | Where the rendered `.ts` files live |
 | `SLATE_AFTER` | `3` | Consecutive failed respawns **per source** before slating |
-| `SLATE_RETRY_MS` | `60000` | How often a slated channel drops out to re-probe the source |
+| `SLATE_RETRY_MS` | `30000` | How often a slated channel drops out to re-probe the source |
 
 `SLATE_AFTER` is multiplied by the number of configured sources, so each fallback gets its own
 ~3 attempts: a 1-url channel slates after 3 failures (~7 s of backoff), a 2-url channel
-after 6. If the media is missing the channel **stays on the source** and logs it, rather than
+after 6.
+
+**Picking `SLATE_RETRY_MS`.** This is both how quickly a *recovered* source is noticed and the
+worst-case extra time bars keep showing after it is already back — but it is not free to lower,
+because the probe re-uses the watchdog's kill-and-respawn: each probe restarts ffmpeg (one
+playlist discontinuity in the bars), and a *hung* source can hold ~20 s of dead air per probe
+before the watchdog gives up. So lower = recovery noticed sooner but the bars glitch more often
+during a long outage; higher = smoother bars, slower recovery. **30 s is the shipped default**
+as a balance; raise it (e.g. `60000`) if you prefer smoother bars, and avoid going much below
+~20 s (it approaches the 20 s stall grace, so you mostly buy glitchier bars). A cleaner future
+design would probe the source *out of band* without interrupting the slate, decoupling detection
+from the bars entirely — not built yet.
+
+If the media is missing the channel **stays on the source** and logs it, rather than
 crash-looping ffmpeg against a nonexistent file.
 
 Operators see it in `GET /api/channels/:id` as `slate: { slated, file, since, failures }` plus

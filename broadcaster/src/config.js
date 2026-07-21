@@ -94,14 +94,23 @@ export const config = {
   //             The url-failover mechanism runs first: with fallbacks configured a channel
   //             works through every url before it gives up and shows bars.
   //   retryMs — a looped file never exits, so nothing would ever re-probe the real source.
-  //             The watchdog kills the slate this often to go back and try it again.
+  //             The watchdog kills the slate this often to go back and try it again, and this
+  //             is ALSO the worst-case extra time a channel keeps showing bars AFTER its source
+  //             is already back. Lower = recovery is noticed sooner; higher = the bars glitch
+  //             less often during a long outage (each probe restarts ffmpeg = one playlist
+  //             discontinuity, and a hung source can hold ~20 s of dead air per probe before
+  //             the watchdog gives up). Default 30 s balances the two. Operators who value
+  //             smoother bars over fast recovery can raise it (e.g. SLATE_RETRY_MS=60000);
+  //             going much below ~20 s is discouraged — it approaches the stall grace, so you
+  //             mostly buy glitchier bars. Tunable with no image rebuild: set it in
+  //             broadcaster/.env and recreate the container.
   //   dir     — where the rendered .ts files live. Baked into the image at build time by
   //             tools/render-slates.sh; override to serve them off the data volume instead.
   slate: {
     enabled: bool(process.env.SLATE_ENABLED, true),
     dir: process.env.SLATE_DIR || path.join(__dirname, '..', 'slate'),
     after: int(process.env.SLATE_AFTER, 3),
-    retryMs: int(process.env.SLATE_RETRY_MS, 60000)
+    retryMs: int(process.env.SLATE_RETRY_MS, 30000)
   },
   // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
   // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR
