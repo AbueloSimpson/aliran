@@ -55,6 +55,7 @@ nav:
       - Viewer bandwidth & battery: kb/viewer-bandwidth.md
       - Source compatibility (pull ingest): kb/source-compatibility.md
       - Operating panel & broadcaster: kb/operator.md
+      - Publishing the dashboards: kb/public-dashboards.md
       - Android & RN builds: kb/android-build.md
       - Bare worklet & bundling: kb/bare-worklet.md
   - FAQ & troubleshooting: faq.md

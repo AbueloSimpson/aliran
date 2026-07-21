@@ -138,7 +138,14 @@ port 3310). Both bind `127.0.0.1` and speak plain HTTP — **never expose them r
 
 - **With a domain:** install Caddy and use
   [deploy/Caddyfile.example](https://github.com/AbueloSimpson/aliran/blob/main/deploy/Caddyfile.example)
-  — automatic HTTPS, the plain-HTTP APIs never leave loopback.
+  — automatic HTTPS, the plain-HTTP APIs never leave loopback. Full walkthrough with the
+  credential setup, the firewall rules and the verification steps:
+  **[kb/public-dashboards.md](kb/public-dashboards.md)**.
+
+  > ⚠ If you add `basic_auth`, it **must not cover `/api/*`** — use the
+  > `@ui not path /api/*` matcher from the example. HTTP has one `Authorization` header
+  > and the dashboard needs it for its own Bearer token; guarding the API with basic auth
+  > makes the browser re-prompt for a password on every single request.
 - **Without a domain:** SSH tunnel from your workstation, no server changes at all:
 
   ```bash
@@ -186,10 +193,21 @@ Nothing else is needed — clients reach the panel through the DHT, not an IP/do
 
 | Purpose | Direction | Ports |
 |---|---|---|
-| P2P (DHT, replication, viewers) | outbound only | UDP, any |
+| P2P (DHT, replication, viewers) | outbound, **plus inbound if you run a firewall** | UDP `32768:60999` — see below |
 | Dashboards via Caddy | inbound | 80 + 443 TCP |
 | Dashboards via SSH tunnel | inbound | 22 TCP only |
 | Push ingest (RTMP = TCP; SRT/UDP-TS = UDP) | inbound | the channel's listen port, restricted: `ufw allow from <encoder-ip> to any port <port>` |
+
+⚠ **P2P is not "outbound only" once a firewall is in front of it.** A broadcaster binds
+roughly **two UDP sockets per channel** (≈140 at 69 channels) to `0.0.0.0` on **random
+ephemeral ports that change on every restart**, so no static per-port rule can name them.
+A default-deny firewall drops unsolicited inbound UDP to all of them. Hole-punched flows
+mostly survive via conntrack, which is why this is easy to miss — but a VPS has a public
+IP and **no NAT**, so peers address it directly and that first inbound packet is the one
+that gets dropped. The symptom is degraded seeding with nothing logged. Allow the
+ephemeral range (`ufw allow 32768:60999/udp`, matching
+`net.ipv4.ip_local_port_range`) and verify inbound `/proc/net/snmp` `Udp:` counters climb
+in step with outbound. Details: [kb/public-dashboards.md](kb/public-dashboards.md).
 
 `RELAY_ONLY=1` on the panel hides the origin IP behind DHT relays (slower, more
 private).

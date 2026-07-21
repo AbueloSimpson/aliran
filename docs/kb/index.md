@@ -10,6 +10,7 @@ Aliran. Each page is grep-friendly: search for the error text you're seeing.
 | [Viewer bandwidth & battery](viewer-bandwidth.md) | Measured costs (idle/watching/smooth-zapping), the adaptive prefetch gate, upload policy, metered networks |
 | [Network tuning (socket buffers)](network-tuning.md) | Stalling under load with no errors, `RcvbufErrors`/`SndbufErrors`, the `net.core.*mem_max` clamp, conntrack, fd limits |
 | [Operating the panel & broadcaster](operator.md) | Env vars, grants breaking, `ELOCKED`, wedged processes, login-flood freeze, latency expectations |
+| [Publishing the dashboards](public-dashboards.md) | DNS + Caddy + TLS, the basic-auth/Bearer `Authorization` collision (login popup that never goes away), firewall rules that silently break P2P |
 | [Android & React Native builds](android-build.md) | Toolchain traps, emulator crashes/rot, dependency pinning, stale JS bundles |
 | [Bare worklet & bundling](bare-worklet.md) | bare-pack flags, shims, native addons, worklet debugging, hyper-stack API traps |
 

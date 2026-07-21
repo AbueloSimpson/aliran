@@ -1,18 +1,58 @@
 # TLS for the two Aliran dashboards with Caddy (automatic HTTPS via Let's Encrypt).
 #
 # The admin (panel, :3210) and control (broadcaster, :3310) APIs speak plain HTTP and
-# bind 127.0.0.1 by default — NEVER expose them raw. Point two DNS A-records at the
-# box, install Caddy (https://caddyserver.com/docs/install), drop this file at
+# bind 127.0.0.1 by default — NEVER expose them raw. Point DNS A-records at the box,
+# install Caddy (https://caddyserver.com/docs/install), drop this file at
 # /etc/caddy/Caddyfile with your domains, and `sudo systemctl reload caddy`.
+#
+# Full walkthrough (DNS, cert, credentials, firewall): docs/kb/public-dashboards.md
 #
 # No domain? Skip Caddy entirely and use an SSH tunnel from your workstation:
 #   ssh -N -L 3210:127.0.0.1:3210 -L 3310:127.0.0.1:3310 user@your-vps
 # then browse http://127.0.0.1:3210 (panel) and http://127.0.0.1:3310 (broadcaster).
+#
+# ---------------------------------------------------------------------------------
+# ⚠ basic_auth MUST NOT cover /api/* — HTTP has ONE Authorization header
+# ---------------------------------------------------------------------------------
+# Both dashboards authenticate to their own API with `Authorization: Bearer <token>`.
+# If basic_auth also guards /api/*, the browser's automatic `Authorization: Basic …`
+# is REPLACED by that Bearer header on every API call. Caddy then sees a non-Basic
+# value, rejects it, and answers 401 + `WWW-Authenticate: Basic` — which makes the
+# browser re-prompt for a password on every single request. The symptom is a login
+# popup that will not go away.
+#
+# The `@ui not path /api/*` matcher below is what prevents that. Do not remove it.
+#
+# Be honest about what this buys: the UI gets two gates, the API gets ONE — its own
+# rate-limited token login, reachable without basic auth. That keeps casual scanners
+# off the dashboard; it does not harden the API. If you want a real second layer on
+# the API, use something that does not touch the Authorization header — an IP
+# allowlist (see the commented block) or mTLS.
 
 panel.example.com {
+	@ui not path /api/*
+	basic_auth @ui {
+		# caddy hash-password --plaintext 'your-password'
+		operator $2a$14$REPLACE_WITH_YOUR_OWN_BCRYPT_HASH
+	}
 	reverse_proxy 127.0.0.1:3210
 }
 
 studio.example.com {
+	@ui not path /api/*
+	basic_auth @ui {
+		operator $2a$14$REPLACE_WITH_YOUR_OWN_BCRYPT_HASH
+	}
 	reverse_proxy 127.0.0.1:3310
 }
+
+# Stronger alternative — an IP allowlist composes with the app's Bearer auth because
+# it inspects the connection, not the Authorization header. Protects /api/* too.
+#
+# studio.example.com {
+# 	@allowed remote_ip 203.0.113.4 198.51.100.0/24
+# 	handle @allowed {
+# 		reverse_proxy 127.0.0.1:3310
+# 	}
+# 	respond 403
+# }
