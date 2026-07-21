@@ -4,12 +4,15 @@ How many channels can one broadcaster run, what hardware you need, and how to ke
 constant per-segment write churn off your disk. If you're going past a handful of channels,
 read this first.
 
-> **TL;DR** — At scale the wall is **disk IOPS**, not space. Turn on the **scale profile**
-> (`HLS_WORK_DIR` on tmpfs **+** `FEED_BUFFER=ram`) so segments and the feed live in RAM and
-> nothing hammers the disk. Then RAM and CPU set the ceiling. Rough rule for **copy**
-> (passthrough) channels: **~40 MB RAM/channel** and **negligible CPU** — so a 4 GB box does
-> ~60 channels, a 1 GB box ~14. **Transcoding** channels are CPU-bound instead (~0.5–1 core
-> each). Measure your own box with `node tools/scale-bench.mjs`.
+> **TL;DR** — At scale the wall is **disk IOPS**, not space, once you're off a real disk (see the
+> scale profile below). Past that, **CPU is the real wall for copy channels, not RAM.** Measured
+> with live (flaky) IPTV sources on a 4 vCPU / 8 GiB box: **~0.04 core/channel (~1 % of the box
+> each)** and **~20–40 MB RAM/channel** — CPU runs out long before RAM does. At the recommended
+> **≤80 % average-CPU sizing policy**, a 4 vCPU box's ceiling is **≈80 copy channels**, while its
+> RAM alone could hold several times that. **Transcoding** channels are still CPU-bound, just far
+> more so (~0.5–1 core each). Measure your own box with `node tools/scale-bench.mjs` — but see the
+> real-world measurement further down, since a quiet synthetic bench undercounts the watchdog
+> churn that live sources cause.
 
 > **Before you put real viewers on it:** channel density is an *ingest* cost. Viewer
 > fan-out is a different limit, and on stock Linux it is capped by the kernel's socket
@@ -68,7 +71,7 @@ channels (the common case: pull a source, re-mux, no encode).
 | Resource | Per channel (copy) | Notes |
 |---|---|---|
 | **RAM** | **~40 MB** | ~3 MB feed engine (Corestore+Hyperdrive+Hyperswarm) + ~38 MB marginal ffmpeg (VmRSS ~70 MB but libs are shared). Base runtime ~70–90 MB. |
-| **CPU** | **~1.5% of one core** | Just the mux + mirror. Copy does no encoding. |
+| **CPU** | **~0.04 core (~1% of a 4-vCPU box)** | Mux + mirror, plus watchdog/demuxer churn from real (flaky) sources — measured at 69-channel scale on a 4 vCPU box (see the real-world callout below). A quiet/synthetic source undercounts this. |
 | **Disk IOPS** | ~2.5–5 sync ops/s | 1 segment / 2 s × several fsync'd writes (core append, oplog, metadata B-tree). **This is the wall** — put it on tmpfs. |
 | **Disk space** | ~6 MB window + `FEED_ROTATE_TREE_MB` cap | `disk` mode only. Segment window bounded by reclaim; the append-only merkle tree is now **bounded by feed rotation** (`FEED_ROTATE_TREE_MB` — [feed-buffer.md](feed-buffer.md)), so store ≈ `cap × channels`, no unbounded creep. `ram` mode = 0 disk. |
 | **DHT** | 1 swarm + topic | Socket fan-out grows with peers × channels; the practical network wall on very large deployments. |
@@ -79,25 +82,35 @@ Use `copy` wherever the source codec is already deliverable.
 
 ## Capacity formula
 
+Size the CPU term to a **≤80 % average-CPU policy**, not 100 % — headroom absorbs watchdog
+respawn bursts from flaky live sources (see the real-world callout below), and loadavg is *not*
+a substitute here: dozens of ffmpeg processes queuing in D-state on a flaky source can push
+`load1` well past core count while CPU idle still has room to spare.
+
 ```
 max_channels ≈ min(
-    (RAM_MB − 90) / 40,          # RAM, copy   (÷ more for transcode's bigger ffmpeg)
-    cores / cpu_per_channel,     # copy ≈ 0.015 core/ch ; x264 SD ≈ 0.5–1 core/ch
-    disk_iops / 4,               # ONLY if not on tmpfs — the scale profile removes this term
-    dht_socket_budget            # very large deployments; shard across nodes
+    (RAM_MB − 90) / 40,               # RAM, copy   (÷ more for transcode's bigger ffmpeg)
+    (cores × 0.8) / cpu_per_channel,  # copy ≈ 0.04 core/ch (measured, live sources) ; x264 SD ≈ 0.5–1 core/ch
+    disk_iops / 4,                    # ONLY if not on tmpfs — the scale profile removes this term
+    dht_socket_budget                 # very large deployments; shard across nodes
 )
 ```
 
-### Starter table — copy channels, scale profile on (RAM-bound)
+### Starter table — copy channels, scale profile on (first wall = min of RAM and CPU)
+
+CPU is sized to the ≤80 % policy (`cores × 0.8 / 0.04`), so it stops being "free" once a box has
+more RAM than roughly `20 × cores` MB — most small/RAM-tight boxes are still RAM-bound, but a
+RAM-rich, core-light box (a Pi 5 with 8 GB, for instance) flips to CPU-bound.
 
 | Box | RAM | Cores | ~Max copy channels | First wall |
 |---|---|---|---|---|
 | Raspberry Pi 4 | 2 GB | 4 | ~30 | RAM |
 | Raspberry Pi 4/5 | 4 GB | 4 | ~60 | RAM |
-| Raspberry Pi 5 | 8 GB | 4 | ~125 | RAM |
+| Raspberry Pi 5 | 8 GB | 4 | ~80 | CPU |
 | Small VPS (the Aliran box) | 1 GB | 1 | ~14 | RAM |
 | VPS | 2 GB | 2 | ~30 | RAM |
 | VPS | 4 GB | 4 | ~60 | RAM |
+| VPS 4 vCPU / 8 GiB (this doc's live-measured box — see below) | 8 GB | 4 | ~80 (measured) | CPU |
 | Server | 8 GB | 8 | ~125 | RAM |
 
 For **transcoding** deployments, recompute the CPU term and it dominates: the 8-core server that
@@ -148,6 +161,38 @@ does ~125 copy channels does only **~8–12 x264 SD** channels.
         The reference box's 20 GiB tier capped at 500 IOPS; its 100 GiB tier gives 1300. So
         buying a bigger disk buys **space and IOPS together**, and N cheap boxes give N × the
         IOPS — sharding across budget nodes beats one big node when IOPS is the constraint.
+
+!!! success "Real-world confirmation: live (flaky) IPTV sources, same 4 vCPU / 8 GiB / 100 GB NVMe box"
+    The sweep above uses quiet, well-behaved test sources — no live-source flakiness, no
+    watchdog churn. Real IPTV/live pull sources aren't so well-behaved: they drop, stall, and
+    reconnect, and every hiccup fires the watchdog to restart ffmpeg. Two sustained
+    real-deployment runs on this same box class, both **true CPU averages over the whole
+    window** (`/proc/stat` deltas, not `vmstat` spot samples — a 1-second spot sample is a poor
+    estimator of a 10-minute average and can miss the true figure by double digits, especially if
+    it lands during a channel-count change):
+
+    | Channels | Window | CPU (us+sy) mean | Watchdog respawns |
+    |---|---|---|---|
+    | 43 (copy, mixed h264/HEVC, 720p–1080p) | 17.4 h sustained | **45.5 %** | ~1.45/channel/hour |
+    | 69 (copy, mixed h264/HEVC, 720p–1080p) | 10 h confirmation run | **69.6 %** (max 72.5 %, min 64.9 %, 0/61 samples over 80 %, drift 69.1 %→70.5 %) | ~1.8/channel/hour (1,265 total) |
+
+    That's a **linear marginal cost of ~0.93 % CPU/channel (~0.037 core/channel)** between the two
+    points — close to the simple **~1.0 % CPU/channel (~0.04 core/channel)** average at 69. Either
+    way, **~0.04 core/channel** is the number to size against. RAM was a non-issue throughout
+    (2.5–2.9 GB of 8 GB, swap peaked at 22 MB — noise, not pressure). At the **≤80 %
+    average-CPU sizing policy**, that puts this box's ceiling at **≈80 copy channels**; 69 ran
+    with real headroom, not at the edge, and every channel stayed up (two transient watchdog
+    backoffs during the run, both self-recovered — not a capacity symptom).
+
+    **Why this exceeds what the quiet synthetic sweep alone would suggest sizing against:** the
+    two per-channel figures are actually close — what the synthetic sweep doesn't model is the
+    *churn*: over a thousand ffmpeg watchdog restarts across the fleet from flaky upstreams over
+    just 10 hours. That churn is also why **loadavg is not a usable saturation proxy here** —
+    `load1` ran **7.8 mean / 11.0 max** at 69 channels while CPU idle still had ~28–30 % to spare,
+    because dozens of ffmpeg processes were queued in D-state waiting on flaky sources, not
+    because the CPU was out of headroom. Size real deployments off measured CPU%, not load, and
+    off this live-source row rather than the quiet synthetic sweep — flaky sources are the common
+    case in production.
 
 !!! note "ffmpeg itself creeps on some upstreams — bounded by `FFMPEG_MAX_RSS_MB`"
     The node processes aren't the only slow growers. On certain live-HLS pulls (typically
@@ -253,6 +298,13 @@ mints a **fresh feedKey per rotation**, which re-enqueues the enricher, so the p
     The sweep is the same one the broadcaster has used since S28 to drop retired feed
     generations (`@aliran/core/store-gc.js`). Nothing to enable, and no downtime beyond the
     restart itself; a second start reports nothing left to do.
+
+!!! note "Confirmed in production: panel bee growth is now flat"
+    On the live 69-channel deployment, a 10-hour post-restart measurement window (true interval
+    disk-growth sampling) showed **panel-bee growth: +0 MB over the window** (steady at ~20 MB,
+    matching the three-core steady state) — versus the pre-fix leak, which had been adding
+    roughly 100 MB/hour. The one-time restart reclaim recovered about 2.2 GB on this box; ongoing
+    growth is now negligible.
 
 ## Measure your own hardware
 
