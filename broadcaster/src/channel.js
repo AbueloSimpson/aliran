@@ -290,6 +290,33 @@ const WD = {
 // failover cycle can't take longer than an operator's patience.
 const MAX_FALLBACKS = 4
 
+// Per-channel demuxer tuning (see hls.js ingestTuningArgs for WHY each one exists).
+// Every field is optional and null means "ffmpeg's default", so an untouched channel is
+// byte-identical to before. Ranges are wide because the encoders that need these are
+// genuinely bad: 50 MB of probe and 20 s of analysis is a normal setting for a cheap
+// HDMI box, not an abuse.
+const TUNING_BOUNDS = {
+  probesizeKB: [32, 102400], // 32 KB … 100 MB
+  analyzeDurationMs: [100, 60000], // 0.1 s … 60 s
+  threadQueueSize: [8, 65536]
+}
+
+export function normalizeIngestTuning (value, existing = null) {
+  if (value == null) return existing ?? null
+  if (typeof value !== 'object' || Array.isArray(value)) bad('ingestTuning must be an object')
+  const out = {}
+  for (const [key, [lo, hi]] of Object.entries(TUNING_BOUNDS)) {
+    const raw = value[key] !== undefined ? value[key] : existing?.[key]
+    if (raw == null || raw === '') continue
+    const n = typeof raw === 'number' ? raw : Number(raw)
+    if (!Number.isInteger(n) || n < lo || n > hi) bad(`ingestTuning.${key} must be an integer ${lo}-${hi} (or null for the ffmpeg default)`)
+    out[key] = n
+  }
+  const dc = value.discardCorrupt !== undefined ? value.discardCorrupt : existing?.discardCorrupt
+  if (dc != null && dc !== '') out.discardCorrupt = dc === true || /^(1|true|yes)$/i.test(String(dc))
+  return Object.keys(out).length ? out : null
+}
+
 // The backup-source rotation decision, as a pure function of the current state — split
 // out of Channel so the tricky half ("fail forward, but come home when you can") is
 // unit-testable without spawning ffmpeg or opening a store. Returns the next rotation
@@ -623,6 +650,7 @@ class Channel {
     const proc = startFfmpeg({
       input,
       transcode: this.meta.transcode,
+      ingestTuning: this.meta.ingestTuning,
       hls: this.meta.hls,
       vaapiDevice: config.vaapiDevice
     }, run.outDir, {
@@ -1147,6 +1175,8 @@ export class ChannelManager {
       })
     }
     if (fields.transcode !== undefined) out.transcode = normalizeTranscode(fields.transcode) // null clears
+    // Demuxer tuning follows the same partial-update rule: omitted keeps, null clears.
+    if (fields.ingestTuning !== undefined) out.ingestTuning = normalizeIngestTuning(fields.ingestTuning)
     if (fields.buffer != null) {
       if (fields.buffer !== 'ram' && fields.buffer !== 'disk') bad("buffer must be 'ram' (ephemeral session feed) or 'disk' (persistent feed identity)")
       out.buffer = fields.buffer
@@ -1172,6 +1202,7 @@ export class ChannelManager {
       category: norm.category || [],
       input: norm.input || { kind: 'test' },
       transcode: norm.transcode ?? null,
+      ingestTuning: norm.ingestTuning ?? null,
       buffer: norm.buffer ?? null, // null = config.feedBuffer default at start
       hls: norm.hls || { time: this.config.hls.time, listSize: this.config.hls.listSize },
       protection: 'self',
@@ -1214,6 +1245,7 @@ export class ChannelManager {
       category: category ? [category] : (ch.meta.category || []),
       input: newInput,
       transcode: ch.meta.transcode ?? null,
+      ingestTuning: ch.meta.ingestTuning ?? null,
       hls: hls || { time: this.config.hls?.time ?? 2, listSize: this.config.hls?.listSize ?? 8 },
       protection: protection || 'self'
     })

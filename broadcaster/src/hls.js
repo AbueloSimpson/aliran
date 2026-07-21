@@ -187,10 +187,36 @@ export function hlsMuxArgs (hls, outDir) {
 // Build the full ffmpeg argument list.
 // spec = { input, transcode?, hls, vaapiDevice? } — input may be a typed object
 // (see channel.js normalizeInput) or a legacy string.
+// Demuxer tuning that belongs to the SOURCE, not the encode. These exist because cheap
+// hardware encoders (the HDMI->RTMP/SRT boxes most small operations actually use) are
+// irregular in ways ffmpeg's defaults do not tolerate:
+//   probesize / analyzeduration — a sparse or late PMT means ffmpeg gives up before it
+//     has seen every elementary stream and fails with "could not find codec parameters",
+//     or silently picks up video but not audio. Difficult encoders routinely need 10-50 MB
+//     and 10-20 s instead of the 5 MB / 5 s defaults.
+//   threadQueueSize — a bursty push listener overflows the small default input queue and
+//     ffmpeg logs "Thread message queue blocking; consider raising the thread_queue_size
+//     option" while dropping packets. This is REAL input buffering: queue depth between
+//     the demuxer and the encoder.
+//   discardCorrupt — keep going through corrupt TS packets instead of aborting, which a
+//     marginal RF/HDMI capture chain produces constantly.
+// All are input options and must precede -i, hence the position in ffmpegArgs below.
+// null/absent = use ffmpeg's default, so an untouched channel behaves exactly as before.
+export function ingestTuningArgs (t) {
+  if (!t) return []
+  const out = []
+  if (t.probesizeKB != null) out.push('-probesize', String(t.probesizeKB * 1024))
+  if (t.analyzeDurationMs != null) out.push('-analyzeduration', String(t.analyzeDurationMs * 1000)) // ffmpeg wants µs
+  if (t.threadQueueSize != null) out.push('-thread_queue_size', String(t.threadQueueSize))
+  if (t.discardCorrupt) out.push('-fflags', '+discardcorrupt')
+  return out
+}
+
 export function ffmpegArgs (spec, outDir) {
   const encoder = (spec.transcode && spec.transcode.encoder) || TRANSCODE_DEFAULTS.encoder
   return [
     ...hwDeviceArgs(encoder, spec.vaapiDevice),
+    ...ingestTuningArgs(spec.ingestTuning),
     ...inputArgs(spec.input),
     ...encodeArgs(spec.transcode, spec.hls),
     ...hlsMuxArgs(spec.hls, outDir)

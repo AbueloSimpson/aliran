@@ -5,11 +5,11 @@ import assert from 'assert'
 import path from 'path'
 import {
   ffmpegArgs, inputArgs, encodeArgs, hwDeviceArgs, hlsMuxArgs,
-  upgradeInputString, TRANSCODE_DEFAULTS
+  upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
-  isPushInput, pushUrl, pickSource
+  isPushInput, pushUrl, pickSource, normalizeIngestTuning
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -322,6 +322,31 @@ assert.strictEqual(big.list()[0].channels, 18, 'reports the distinct-channel cou
 const small = makeIncidents({ windowMs: 1000, minChannels: 5, minFraction: 0.25, clock: () => now })
 for (let i = 0; i < 5; i++) { now += 5; small.restart('s' + i, 6) }
 assert.strictEqual(small.list().length, 1, 'minChannels is the floor for small fleets')
+// ===== M: per-channel demuxer tuning (the cheap-HDMI-encoder knobs) =====
+// These exist because hardware encoders with a sparse/late PMT need far more probe than
+// ffmpeg's defaults, and a bursty push listener overflows the small default input queue.
+assert.deepStrictEqual(ingestTuningArgs(null), [], 'absent = ffmpeg defaults, args unchanged')
+assert.deepStrictEqual(ingestTuningArgs({}), [], 'empty = ffmpeg defaults')
+assert.deepStrictEqual(ingestTuningArgs({ probesizeKB: 50000 }), ['-probesize', '51200000'], 'KB → bytes')
+assert.deepStrictEqual(ingestTuningArgs({ analyzeDurationMs: 20000 }), ['-analyzeduration', '20000000'], 'ms → µs (ffmpeg wants microseconds)')
+assert.deepStrictEqual(ingestTuningArgs({ threadQueueSize: 2048 }), ['-thread_queue_size', '2048'])
+assert.deepStrictEqual(ingestTuningArgs({ discardCorrupt: true }), ['-fflags', '+discardcorrupt'])
+assert.deepStrictEqual(ingestTuningArgs({ discardCorrupt: false }), [], 'false must not emit the flag')
+// they are INPUT options: must land before -i or ffmpeg ignores them for the input
+const tuned = ffmpegArgs({ input: { kind: 'rtmp', port: 5001, streamKey: 'k1k2k3k4k5' }, ingestTuning: { probesizeKB: 50000, threadQueueSize: 2048 }, hls: HLS }, outDir)
+assert.ok(tuned.indexOf('-probesize') < tuned.indexOf('-i'), 'probesize precedes -i')
+assert.ok(tuned.indexOf('-thread_queue_size') < tuned.indexOf('-i'), 'thread_queue_size precedes -i')
+// validation: wide ranges (50 MB probe is NORMAL for a bad encoder), but bounded
+assert.strictEqual(normalizeIngestTuning(null), null)
+assert.deepStrictEqual(normalizeIngestTuning({ probesizeKB: 50000, discardCorrupt: 'yes' }), { probesizeKB: 50000, discardCorrupt: true })
+assert.deepStrictEqual(normalizeIngestTuning({ probesizeKB: '' }), null, 'blank clears back to the ffmpeg default')
+throws(() => normalizeIngestTuning({ probesizeKB: 8 }), /32-102400/, 'probe floor')
+throws(() => normalizeIngestTuning({ analyzeDurationMs: 999999 }), /100-60000/, 'analyze ceiling')
+throws(() => normalizeIngestTuning({ threadQueueSize: 2.5 }), /8-65536/, 'must be an integer')
+// partial update: omitted keeps the stored value, explicit blank clears it
+assert.deepStrictEqual(normalizeIngestTuning({ threadQueueSize: 512 }, { probesizeKB: 40000 }), { probesizeKB: 40000, threadQueueSize: 512 }, 'omitted key inherits')
+log('M: ingest tuning (probesize/analyzeduration/thread_queue/discardcorrupt, unit conversion, before -i, bounds, inherit) ✓')
+
 log('L: incident correlation (churn silent, burst = one extended incident, per-channel flap ignored, bounded) ✓')
 
 log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation)')

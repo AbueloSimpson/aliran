@@ -692,6 +692,10 @@ async function editChannel (id) {
     { name: 'videoBitrateKbps', label: 'Video bitrate kbps (blank = quality-based)', type: 'number', value: t.videoBitrateKbps ?? '' },
     { name: 'audioBitrateKbps', label: 'Audio bitrate kbps (blank = 128)', type: 'number', value: t.audioBitrateKbps ?? '' },
     { name: 'preset', label: 'Encoder preset', type: 'select', options: ['fast', 'balanced', 'quality'], value: t.preset || 'balanced' },
+    { name: 'probesizeKB', label: 'Probe size KB (blank = ffmpeg default ~5000)', type: 'number', value: c.ingestTuning?.probesizeKB ?? '', title: 'Raise for cheap HDMI/RTMP encoders with a sparse or late PMT — the cause of could-not-find-codec-parameters and of audio going missing. 10000-50000 is normal for a difficult box.' },
+    { name: 'analyzeDurationMs', label: 'Analyze duration ms (blank = default ~5000)', type: 'number', value: c.ingestTuning?.analyzeDurationMs ?? '', title: 'How long ffmpeg may study the stream before deciding what is in it. Raise alongside probe size for irregular encoders.' },
+    { name: 'threadQueueSize', label: 'Input queue packets (blank = ffmpeg default)', type: 'number', value: c.ingestTuning?.threadQueueSize ?? '', title: 'REAL input buffering: queue depth between demuxer and encoder. Raise to 512-4096 if the log says Thread message queue blocking — a bursty push source is overflowing it and dropping packets.' },
+    { name: 'discardCorrupt', label: 'Tolerate corrupt packets', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.discardCorrupt ? 'yes' : 'no', title: 'Keep going through corrupt TS packets instead of aborting — marginal RF/HDMI capture chains produce them constantly.' },
     { name: 'hlsTime', label: 'HLS segment seconds (1-30)', type: 'number', value: c.hls?.time },
     { name: 'hlsListSize', label: 'HLS window segments (2-60)', type: 'number', value: c.hls?.listSize }
   ], {
@@ -764,6 +768,14 @@ async function editChannel (id) {
         ...(v.audioBitrateKbps !== '' ? { audioBitrateKbps: Number(v.audioBitrateKbps) } : {})
       }
 
+  // Demuxer tuning: blank means "use ffmpeg's default", so send null rather than 0.
+  const num = (x) => (String(x).trim() === '' ? null : Number(x))
+  body.ingestTuning = {
+    probesizeKB: num(v.probesizeKB),
+    analyzeDurationMs: num(v.analyzeDurationMs),
+    threadQueueSize: num(v.threadQueueSize),
+    discardCorrupt: v.discardCorrupt === 'yes'
+  }
   if (v.hlsTime !== '') body.hlsTime = v.hlsTime
   if (v.hlsListSize !== '') body.hlsListSize = v.hlsListSize
   act(async () => {
