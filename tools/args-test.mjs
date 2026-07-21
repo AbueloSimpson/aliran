@@ -10,7 +10,7 @@ import {
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
-  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate
+  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -401,4 +401,34 @@ assert.ok(hlsMuxArgs(HLS, outDir).join(' ').includes('delete_segments+append_lis
   'every spawn must mark its first segment with EXT-X-DISCONTINUITY')
 log('O: HLS discontinuity flag on every spawn ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate)')
+// ===== P: adaptive boot-resume pacing (waitLoopIdle) =====
+// Injected clock + sleeper so the loop-lag logic is deterministic and instant (no real waits).
+{
+  // idle loop: sleep(sampleMs) advances exactly sampleMs → lag 0 → returns after ONE sample
+  let t = 0; let n = 0
+  const now = () => t
+  const sleepIdle = (ms) => { n++; t += ms; return Promise.resolve() }
+  const a = await waitLoopIdle({ targetLagMs: 50, maxWaitMs: 3000, sampleMs: 100 }, { now, sleep: sleepIdle })
+  assert.strictEqual(n, 1, 'idle loop returns after a single sample')
+  assert.strictEqual(a.lag, 0)
+  assert.strictEqual(a.timedOut, false)
+
+  // busy loop: every sample overruns by 200 ms (lag 200 > target) → keeps sampling until the
+  // maxWaitMs deadline, then returns timedOut so a permanently-busy loop still makes progress
+  t = 0; n = 0
+  const sleepBusy = (ms) => { n++; t += ms + 200; return Promise.resolve() }
+  const b = await waitLoopIdle({ targetLagMs: 50, maxWaitMs: 1000, sampleMs: 100 }, { now, sleep: sleepBusy })
+  assert.strictEqual(b.timedOut, true, 'busy loop is bounded by maxWaitMs')
+  assert.ok(b.lag > 50, 'busy loop reports real lag')
+  assert.ok(n >= 3 && n <= 5, `busy loop samples within the deadline (got ${n})`)
+
+  // loop that recovers mid-wait: first sample lags, second is clean → returns not-timed-out
+  t = 0; n = 0
+  const sleepRecover = (ms) => { n++; t += ms + (n === 1 ? 500 : 0); return Promise.resolve() }
+  const c = await waitLoopIdle({ targetLagMs: 50, maxWaitMs: 5000, sampleMs: 100 }, { now, sleep: sleepRecover })
+  assert.strictEqual(n, 2, 'stops sampling once the loop catches up')
+  assert.strictEqual(c.timedOut, false)
+}
+log('P: adaptive boot-resume pacing (idle→1 sample, busy→bounded, recovers→stops) ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing)')

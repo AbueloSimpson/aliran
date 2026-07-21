@@ -51,6 +51,10 @@ Copy each component's `.env.example` to `.env`.
 | `HLS_LIST_SIZE` | `8` | Rolling playlist window (segments); deepen to 12–16 for large swarms |
 | `FFMPEG_MAX_RSS_MB` | `150` | Recycle a running ffmpeg once its VmRSS+VmSwap crosses this (MB) — bounds the slow demuxer-state accumulation some live-HLS upstreams cause. Same watchdog backoff as a stalled-edge respawn, no feed rotation. `0` disables; Linux-only (reads `/proc`) |
 | `FEED_BUFFER` | `disk` | `disk` (stable feed identity, warm DHT topic — faster joins) or `ram` (byte-flat disk, cold discovery each restart). See [KB](kb/feed-buffer.md) |
+| `RESUME_PACE` | `true` | Pace the boot auto-resume: between channel starts, wait until the event loop has caught up so the control API + swarm stay responsive during a mass restart (a full-fleet recreate otherwise blacks out `/api` for minutes). Adaptive — barely waits on an idle box, backs off on a loaded one. `false` = old back-to-back resume |
+| `RESUME_PACE_TARGET_MS` | `50` | Event-loop lag (ms) the pacer waits to fall below before starting the next channel. Higher = faster resume, less API headroom during it |
+| `RESUME_PACE_MAX_MS` | `3000` | Cap on the per-channel wait, so a permanently-busy loop still makes forward progress |
+| `RESUME_PACE_MIN` | `8` | Don't pace fleets smaller than this — a handful of channels has no resume storm |
 | `SLATE_ENABLED` | `true` | Loop a pre-rendered "SOURCE OFFLINE" slate when a source is dead, so the channel stays live with a message instead of going blank in watchdog backoff. `false` reverts to the blank-during-backoff behaviour. See [KB](kb/offline-slate.md) |
 | `SLATE_DIR` | *(image `broadcaster/slate`)* | Where the rendered slate `.ts` files live. They are built into the image at build time; point this at the data volume (e.g. `/data/slate`) to serve operator-supplied files instead |
 | `SLATE_AFTER` | `3` | Consecutive failed respawns **per configured source** before a channel gives up and slates (so a channel with fallbacks tries every url first). A slated channel is remuxed with `-c copy` — ~0 CPU, and cheaper than the live pull it replaces |

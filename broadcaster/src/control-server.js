@@ -66,6 +66,14 @@ export function startControlServer (ctx, opts = {}) {
   async function handle (req, res) {
     const url = new URL(req.url, 'http://x')
     const seg = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+    // Liveness + boot-resume progress. Deliberately UNAUTHENTICATED and handled FIRST, before
+    // the /api routing and the auth gate: its entire job is to answer "up and resuming N/total"
+    // vs "dead" while a mass resume keeps the authenticated API busy. Cheap and synchronous
+    // (manager.health() does no I/O or await), so it responds as long as the loop turns at all.
+    if (seg[0] === 'healthz' && seg.length === 1) {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      return sendJson(res, 200, ctx.manager.health())
+    }
     if (seg[0] !== 'api') {
       if (req.method !== 'GET') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
       return serveStatic(res, url.pathname)

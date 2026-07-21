@@ -373,6 +373,22 @@ export function pickSlate ({
   return { slated: false, slateSince: 0, reason: null }
 }
 
+// Adaptive event-loop back-pressure for the boot resume. Measures how late a timer actually
+// fires — the direct proxy for "how starved would an HTTP request be right now" — and returns
+// once that lag is under `targetLagMs`, or `maxWaitMs` elapses (so a permanently-busy loop
+// still makes forward progress). Each await yields, so pending HTTP/swarm/IO runs while we
+// wait. Pure enough to unit-test with an injected clock/sleeper; defaults use real ones.
+export async function waitLoopIdle ({ targetLagMs = 50, maxWaitMs = 3000, sampleMs = 100 } = {},
+  { now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const deadline = now() + maxWaitMs
+  for (;;) {
+    const t0 = now()
+    await sleep(sampleMs)
+    const lag = (now() - t0) - sampleMs // excess over the scheduled delay = event-loop lag
+    if (lag <= targetLagMs || now() >= deadline) return { lag, timedOut: now() >= deadline }
+  }
+}
+
 // S15b log ring: the last N ffmpeg stderr lines per channel, for diagnosing why a source
 // won't play. It lives on the Channel (not the run) so it survives ffmpeg respawns; an
 // operator start() clears it, a watchdog respawn only appends a restart marker.
@@ -1149,6 +1165,27 @@ export class ChannelManager {
     this.feedCache = new Rache({ maxSize: config.feedCacheMax || 8192 })
     // ONE panel connection for every channel's registration (S15b) — see panel-link.js.
     this.panelLink = new PanelLink(config)
+    // Process start + boot-resume progress, surfaced (unauthenticated) at /healthz so a
+    // monitor can tell "up and resuming 45/83" from "dead" while a mass resume is in flight.
+    this.startedAt = Date.now()
+    this.resume = { active: false, total: 0, resumed: 0, failed: 0, startedAt: 0, finishedAt: 0 }
+  }
+
+  // Cheap liveness + boot-resume progress. No auth, no I/O, no await — safe to serve even
+  // while the resume has the rest of the API busy (that is the whole point of it existing).
+  health () {
+    const r = this.resume
+    return {
+      up: true,
+      uptimeSec: Math.round((Date.now() - this.startedAt) / 1000),
+      resuming: r.active,
+      resumed: r.resumed,
+      total: r.total,
+      failed: r.failed,
+      // How long the resume took (or has been running) — the number this whole feature exists
+      // to keep small and observable.
+      resumeSec: r.startedAt ? Math.round(((r.finishedAt || Date.now()) - r.startedAt) / 1000) : 0
+    }
   }
 
   registryPath () { return path.join(this.config.dataDir, 'channels.json') }
@@ -1188,20 +1225,41 @@ export class ChannelManager {
   //  - otherwise → enqueue isLive:false so a catalog entry left LIVE by an unclean crash is
   //    healed. Idempotent: a catalog that's already idle just gets rewritten idle.
   async _reconcile () {
-    for (const ch of this.channels.values()) {
-      if (ch.meta.legacy) continue
-      if (ch.meta.desiredRunning) {
-        try {
-          await this.start(ch.meta.id)
-        } catch (err) {
-          // Surface WHY a channel didn't auto-resume — a silent failure here (corrupt store,
-          // capability gate, port clash) otherwise looks like a mysterious "0 ffmpeg" boot.
-          ch.meta.resumeError = err.message
-          console.error(`channel "${ch.meta.id}" failed to auto-resume: ${err.message}`)
-        }
-      } else {
+    const all = [...this.channels.values()].filter((ch) => !ch.meta.legacy)
+    const toResume = all.filter((ch) => ch.meta.desiredRunning)
+    // Heal the catalog for stopped channels first — enqueuing an isLive:false register is
+    // cheap (no ffmpeg/store/swarm), so it never contends with the resume below.
+    for (const ch of all) {
+      if (!ch.meta.desiredRunning) {
         this.panelLink.setDesired(ch.meta.id, this._regPayload({ streamId: ch.meta.id, feedKey: ch.meta.feedKey ?? null, isLive: false }))
       }
+    }
+    const pace = this.config.resumePacing || {}
+    const paced = pace.enabled !== false && toResume.length >= (pace.minChannels || 8)
+    this.resume = { active: true, total: toResume.length, resumed: 0, failed: 0, startedAt: Date.now(), finishedAt: 0 }
+    for (let i = 0; i < toResume.length; i++) {
+      const ch = toResume[i]
+      try {
+        await this.start(ch.meta.id)
+      } catch (err) {
+        // Surface WHY a channel didn't auto-resume — a silent failure here (corrupt store,
+        // capability gate, port clash) otherwise looks like a mysterious "0 ffmpeg" boot.
+        ch.meta.resumeError = err.message
+        this.resume.failed++
+        console.error(`channel "${ch.meta.id}" failed to auto-resume: ${err.message}`)
+      }
+      this.resume.resumed++
+      // Adaptive back-pressure: before the next start, let the event loop catch up so the
+      // control API + swarm stay responsive during the ramp (see waitLoopIdle). Skipped after
+      // the last channel and when pacing is off / the fleet is small.
+      if (paced && i < toResume.length - 1) {
+        await waitLoopIdle({ targetLagMs: pace.targetLagMs, maxWaitMs: pace.maxWaitMs })
+      }
+    }
+    this.resume.active = false
+    this.resume.finishedAt = Date.now()
+    if (toResume.length) {
+      console.log(`[resume] ${this.resume.resumed - this.resume.failed}/${toResume.length} channels resumed in ${Math.round((this.resume.finishedAt - this.resume.startedAt) / 1000)}s${paced ? ' (paced)' : ''}${this.resume.failed ? `, ${this.resume.failed} failed` : ''}`)
     }
   }
 

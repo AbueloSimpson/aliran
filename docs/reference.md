@@ -119,6 +119,7 @@ are preserved.
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /healthz` | **Unauthenticated** liveness + boot-resume progress → `{up, uptimeSec, resuming, resumed, total, failed, resumeSec}`. Cheap and served before the auth gate, so monitoring can tell "up, resuming 45/83" from "dead" even while a mass resume keeps the rest of the API busy. Point uptime checks here, not at `/api/status` (which needs a token and does real work) |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
 | `GET /api/status` | Channels, running count, panel configured |
 | `GET /api/capabilities` | ffmpeg probe: input protocols + deep-verified encoders (`{listed,verified,error?}`) |

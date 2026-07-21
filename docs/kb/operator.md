@@ -124,6 +124,28 @@ log. If a channel is *permanently* slated, the source itself is down — check i
 ring for why. Set `SLATE_ENABLED=false` to revert to the old blank-during-backoff behaviour.
 Full detail: [Offline slate media](offline-slate.md).
 
+## Monitoring says the control API is down right after a deploy
+
+Expected for a few moments on a **full-fleet recreate**, and now bounded. On restart the
+broadcaster auto-resumes every desired-running channel; each one's one-time startup cost
+(open the store, reconcile the drive, join the swarm, spawn ffmpeg) lands on the single Node
+event loop, so a dense enough resume can starve the authenticated `/api` for the duration of
+the ramp. At ~83 channels an unpaced resume blacked `/api` out for ~7 minutes.
+
+Two things fix this, both on by default:
+
+- **`RESUME_PACE`** (default on) paces the resume — it waits for the event loop to catch up
+  between channel starts, so `/api` and swarm replication stay responsive throughout. Adaptive,
+  so it barely slows a small fleet. `RESUME_PACE=0` restores the old back-to-back behaviour.
+- **`GET /healthz`** is unauthenticated and cheap, served before the auth gate, and reports
+  `{up, resuming, resumed, total, ...}`. **Point your uptime check and alerting at `/healthz`,
+  not `/api/status`** — `/api/status` needs a token and does real work, so it is the wrong probe
+  for "is the process alive". During a resume `/healthz` shows `resuming:true, resumed:45,
+  total:83` — progress, not a dead socket.
+
+If `/healthz` itself is unreachable, the process is genuinely down (or the port is blocked) —
+that is the signal to act on.
+
 ## Latency expectations (healthy system)
 
 - First DHT connect from a fresh client store: **30–90 s**; subsequent logins ~10 s.

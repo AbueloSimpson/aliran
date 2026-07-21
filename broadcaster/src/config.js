@@ -112,6 +112,22 @@ export const config = {
     after: int(process.env.SLATE_AFTER, 3),
     retryMs: int(process.env.SLATE_RETRY_MS, 30000)
   },
+  // Boot-resume pacing. On restart the broadcaster auto-resumes every desired-running channel;
+  // starting them back-to-back stacks each one's one-time open cost (corestore open + drive
+  // reconcile + GC + swarm join + ffmpeg spawn) so densely that the single Node event loop
+  // can't serve the control HTTP API — a full-fleet recreate blacked out /api for ~7 min at
+  // ~83 channels. Instead, between starts we wait until the loop has caught up (a timer fires
+  // within targetLagMs), so the API + swarm stay responsive throughout and /healthz keeps
+  // reporting progress. ADAPTIVE, not a fixed sleep: on an idle box it barely waits; on a
+  // loaded one it waits for the loop to drain, bounded by maxWaitMs so a permanently-busy loop
+  // still makes forward progress. Skipped below `minChannels` (a small fleet has no storm).
+  //   RESUME_PACE=0 restores the old back-to-back behaviour.
+  resumePacing: {
+    enabled: bool(process.env.RESUME_PACE, true),
+    minChannels: int(process.env.RESUME_PACE_MIN, 8),
+    targetLagMs: int(process.env.RESUME_PACE_TARGET_MS, 50),
+    maxWaitMs: int(process.env.RESUME_PACE_MAX_MS, 3000)
+  },
   // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
   // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR
   // at a tmpfs mount to keep the per-segment write churn off disk — essential at high
