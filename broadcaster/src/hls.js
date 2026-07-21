@@ -47,6 +47,26 @@ export function upgradeInputString (input) {
   return { kind: 'file', path: input }
 }
 
+// Let ffmpeg's HTTP demuxer heal a dropped connection ITSELF instead of exiting and
+// leaving the S15b watchdog to respawn the process. That distinction matters a lot on
+// flaky IPTV: a respawn restarts ffmpeg's `seg%d` counter from 0, which strands the
+// previous run's high-numbered segments (the orphan that pinned blob reclaim and caused
+// the 2026-07-15 disk leak) and puts a visible gap in the feed. An internal reconnect
+// keeps the same process, the same segment sequence, and the same feed.
+//   reconnect_streamed         — REQUIRED for live: without it only seekable inputs retry
+//   reconnect_on_network_error — retry a mid-stream socket error, not just EOF
+//   reconnect_delay_max 5      — cap the backoff; the watchdog is still the outer net
+// Verified present in the container's ffmpeg 5.1.9 before shipping — an unknown input
+// option makes ffmpeg exit immediately, which would turn every channel into a crash loop.
+// (This dev box runs 8.1.2, and test:args is pure-args, so it cannot catch that skew.)
+const HTTP_RECONNECT = ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1', '-reconnect_delay_max', '5']
+
+// Only these get -re. A VOD file served over http genuinely needs realtime pacing;
+// anything else on http(s) is assumed LIVE (see the pull branch for why that default).
+// -reconnect_at_eof is deliberately NOT applied to these: for a real file, EOF means the
+// file ended, and retrying there would loop forever.
+const VOD_FILE_RE = /\.(mp4|m4v|mkv|mov|avi|webm|flv|mpg|mpeg|wmv)($|\?)/i
+
 export function urlScheme (url) {
   const m = String(url).match(/^([a-z][a-z0-9+.-]*):\/\//i)
   return m ? m[1].toLowerCase() : null
@@ -69,15 +89,24 @@ export function inputArgs (input) {
       const scheme = urlScheme(t.url)
       if (scheme === 'rtsp') return ['-rtsp_transport', 'tcp', '-i', t.url]
       if (scheme === 'http' || scheme === 'https') {
-        // A .m3u8 URL is a live playlist (the demuxer waits for new segments);
-        // anything else over http(s) is a VOD file that needs realtime pacing.
         // -allowed_extensions ALL lets the HLS demuxer accept SSAI / ad-beacon segment URLs
         // that don't end in .ts (Amagi/DistroTV and many FAST channels) — without it ffmpeg
         // rejects the playlist ("not in allowed_segment_extensions"). It only RELAXES a filter,
         // so it's harmless for plain .ts feeds, and the operator already trusts the pull URL.
-        return /\.m3u8($|\?)/i.test(t.url)
-          ? ['-allowed_extensions', 'ALL', '-i', t.url]
-          : ['-re', '-i', t.url]
+        if (/\.m3u8($|\?)/i.test(t.url)) return [...HTTP_RECONNECT, '-allowed_extensions', 'ALL', '-i', t.url]
+        // ⚠ LIVE IS THE DEFAULT for an unknown http(s) pull, and -re is now opt-IN by file
+        // extension. The old rule was ".m3u8 = live, everything else = a VOD file needing
+        // realtime pacing" — false for raw mpegts over http, which is what most IPTV
+        // actually serves (`http://host:81/CHANNEL/mpegts?token=…`, no extension at all).
+        // All 69 production channels took the -re branch. ffmpeg's own docs say -re
+        // "should not be used with actual grab devices or live input streams": it throttles
+        // the reader to 1x, so after any jitter ffmpeg cannot catch up, the server-side
+        // buffer backs up, and many IPTV servers drop a slow client — a self-inflicted
+        // share of the restarts. Guessing "live" for an unknown URL is also the safer
+        // error: a live source read without -re is correct, whereas a live source read
+        // WITH -re degrades continuously.
+        if (VOD_FILE_RE.test(t.url)) return [...HTTP_RECONNECT, '-re', '-i', t.url]
+        return [...HTTP_RECONNECT, '-reconnect_at_eof', '1', '-i', t.url]
       }
       return ['-i', t.url] // rtmp(s)/srt/udp pulls
     }

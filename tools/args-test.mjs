@@ -39,12 +39,30 @@ assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'rtsp://cam/main' }),
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'rtmp://origin/app/key' }), ['-i', 'rtmp://origin/app/key'])
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'srt://origin:9000' }), ['-i', 'srt://origin:9000'])
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'udp://239.0.0.1:1234' }), ['-i', 'udp://239.0.0.1:1234'])
+// Every http(s) pull now carries the reconnect flags so ffmpeg heals a dropped
+// connection itself instead of exiting into a watchdog respawn (which also resets the
+// seg%d counter and strands orphaned segments).
+const RC = ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1', '-reconnect_delay_max', '5']
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'https://cdn/live/master.m3u8' }),
-  ['-allowed_extensions', 'ALL', '-i', 'https://cdn/live/master.m3u8'], 'live HLS: no -re, SSAI-tolerant')
+  [...RC, '-allowed_extensions', 'ALL', '-i', 'https://cdn/live/master.m3u8'], 'live HLS: no -re, SSAI-tolerant, reconnecting')
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'https://cdn/live/MASTER.M3U8?token=x' }),
-  ['-allowed_extensions', 'ALL', '-i', 'https://cdn/live/MASTER.M3U8?token=x'])
+  [...RC, '-allowed_extensions', 'ALL', '-i', 'https://cdn/live/MASTER.M3U8?token=x'])
 assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'https://cdn/vod/movie.mp4' }),
-  ['-re', '-i', 'https://cdn/vod/movie.mp4'], 'http VOD: -re')
+  [...RC, '-re', '-i', 'https://cdn/vod/movie.mp4'], 'http VOD file: -re, and NO reconnect_at_eof (EOF means it ended)')
+// ⚠ THE REGRESSION THAT MATTERED: raw mpegts over http has no extension at all, and the
+// old rule (".m3u8 = live, everything else = VOD") gave it -re. All 69 production
+// channels looked like this. -re throttles the reader to 1x on a source that is already
+// realtime, so after any jitter ffmpeg cannot catch up and slow-client drops follow.
+for (const live of [
+  'http://209.222.97.39:81/ESPN1_NORTE/mpegts?token=x',
+  'http://104.238.205.133:81/CH-13-RECTV-STREAM_1',
+  'https://cdn.example/live/feed.ts'
+]) {
+  const a = inputArgs({ kind: 'pull', url: live })
+  assert.ok(!a.includes('-re'), 'live mpegts must NOT be paced with -re: ' + live)
+  assert.ok(a.includes('-reconnect_at_eof'), 'live pull retries at EOF: ' + live)
+  assert.deepStrictEqual(a.slice(0, RC.length), RC, 'live pull reconnects: ' + live)
+}
 assert.deepStrictEqual(upgradeInputString('test'), { kind: 'test' })
 assert.deepStrictEqual(upgradeInputString('rtsp://cam/1'), { kind: 'pull', url: 'rtsp://cam/1' })
 assert.deepStrictEqual(upgradeInputString('C:\\media\\a.mp4'), { kind: 'file', path: 'C:\\media\\a.mp4' })
