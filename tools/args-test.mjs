@@ -5,11 +5,12 @@ import assert from 'assert'
 import path from 'path'
 import {
   ffmpegArgs, inputArgs, encodeArgs, hwDeviceArgs, hlsMuxArgs,
-  upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs
+  upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs,
+  pickSlateFile, parseVideoProfile
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
-  isPushInput, pushUrl, pickSource, normalizeIngestTuning
+  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -349,4 +350,55 @@ log('M: ingest tuning (probesize/analyzeduration/thread_queue/discardcorrupt, un
 
 log('L: incident correlation (churn silent, burst = one extended incident, per-channel flap ignored, bounded) ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation)')
+// ===== N: offline slate =====
+// Variant matching is codec-FIRST: a codec change is the one thing a player cannot absorb
+// mid-playlist even at a discontinuity, whereas a raster change is a decoder reconfigure.
+assert.strictEqual(pickSlateFile({ codec: 'h264', height: 720 }), 'slate-720p-h264-aac.ts')
+assert.strictEqual(pickSlateFile({ codec: 'h264', height: 1080 }), 'slate-1080p-h264-aac.ts')
+assert.strictEqual(pickSlateFile({ codec: 'hevc', height: 720 }), 'slate-720p-hevc-aac.ts')
+assert.strictEqual(pickSlateFile({ codec: 'hevc', height: 1080 }), 'slate-1080p-hevc-aac.ts')
+// the fleet's odd rasters (854x480, 852x720, 720x480, 1024x576) are all sub-900 → 720p,
+// which is aspect-correct for them because every one is anamorphic 16:9 (see the KB page)
+assert.strictEqual(pickSlateFile({ codec: 'h264', height: 480 }), 'slate-720p-h264-aac.ts')
+assert.strictEqual(pickSlateFile({ codec: 'hevc', height: 576 }), 'slate-720p-hevc-aac.ts')
+// unknown / absent / exotic codec must never throw — it falls back to the widest variant
+assert.strictEqual(pickSlateFile(null), 'slate-720p-h264-aac.ts', 'no profile → fallback')
+assert.strictEqual(pickSlateFile({}), 'slate-720p-h264-aac.ts', 'empty profile → fallback')
+assert.strictEqual(pickSlateFile({ codec: 'mpeg2video', height: 576 }), 'slate-720p-h264-aac.ts')
+assert.strictEqual(pickSlateFile({ codec: 'H264', height: 1080 }), 'slate-1080p-h264-aac.ts', 'codec match is case-insensitive')
+
+// banner scraping: must pick the raster, not the SAR/DAR group or a bitrate
+assert.deepStrictEqual(
+  parseVideoProfile('  Stream #0:0[0x100]: Video: h264 (High) ([27][0][0][0] / 0x001B), yuv420p(tv, bt709), 1280x720 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 90k tbn'),
+  { codec: 'h264', width: 1280, height: 720 })
+assert.deepStrictEqual(
+  parseVideoProfile('  Stream #0:0[0x100]: Video: hevc (Main) ([36][0][0][0] / 0x0024), yuvj420p(pc), 1920x1080, 30 fps, 30 tbr, 90k tbn'),
+  { codec: 'hevc', width: 1920, height: 1080 })
+assert.strictEqual(parseVideoProfile('  Stream #0:1[0x101]: Audio: aac (LC), 48000 Hz, stereo, fltp, 130 kb/s'), null, 'audio line is not a profile')
+assert.strictEqual(parseVideoProfile('frame= 123 fps=30 q=-1.0 size=N/A time=00:00:04.10'), null, 'progress line is not a profile')
+assert.strictEqual(parseVideoProfile(null), null)
+
+// state machine: enter after `after` x sources failures, leave only to re-probe
+const S = { enabled: true, after: 3, retryMs: 60000 }
+assert.strictEqual(pickSlate({ ...S, failures: 2, sources: 1 }).slated, false, 'below threshold stays on source')
+assert.strictEqual(pickSlate({ ...S, failures: 3, sources: 1 }).slated, true, '1 url slates at 3')
+assert.strictEqual(pickSlate({ ...S, failures: 3, sources: 2 }).slated, false, 'threshold scales with fallbacks')
+assert.strictEqual(pickSlate({ ...S, failures: 6, sources: 2 }).slated, true, 'every fallback got its attempts')
+assert.strictEqual(pickSlate({ ...S, failures: 99, enabled: false }).slated, false, 'disabled never slates')
+assert.strictEqual(pickSlate({ ...S, slated: true, slateSince: 1000, now: 2000 }).slated, true, 'stays slated inside retryMs')
+const retry = pickSlate({ ...S, slated: true, slateSince: 1000, now: 1000 + 60000 })
+assert.strictEqual(retry.slated, false, 'drops the slate to re-probe the source')
+assert.strictEqual(retry.reason, 'slate-retry')
+// a still-dead source must re-slate on its very next failure, not sit blank for another
+// `after` window — this is why `failures` is not reset when leaving to probe
+assert.strictEqual(pickSlate({ ...S, slated: false, failures: 7, sources: 2 }).slated, true, 're-slates immediately after a failed probe')
+assert.strictEqual(pickSlate({ ...S, slated: true, enabled: false }).reason, 'slate-disabled')
+log('N: offline slate (variant matching, banner scraping, enter/retry state machine) ✓')
+
+// the discontinuity marker is what makes a slate's codec/resolution change legal
+// mid-playlist, and it also marks the backwards-DTS every ordinary respawn already causes
+assert.ok(hlsMuxArgs(HLS, outDir).join(' ').includes('delete_segments+append_list+omit_endlist+discont_start'),
+  'every spawn must mark its first segment with EXT-X-DISCONTINUITY')
+log('O: HLS discontinuity flag on every spawn ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate)')

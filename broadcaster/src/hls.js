@@ -173,15 +173,74 @@ export function encodeArgs (transcode, hls) {
   return out
 }
 
+// `discont_start` marks the first segment of EVERY spawn with #EXT-X-DISCONTINUITY. This is
+// not slate-specific: a respawn restarts ffmpeg, and a restarted ffmpeg resets its output
+// clock, so with `append_list` the new segments land after the old ones with a timestamp
+// that jumps BACKWARD — measured at ~6034 s on a channel up 1.7 h, and it scales with
+// uptime. That is the unmarked "visible gap" every watchdog respawn has always produced
+// (~1.45 per channel per hour on the production fleet). The tag tells the player to reset
+// its timestamp mapping instead of trying to reconcile a timeline that ran backwards, and
+// it is the ONLY thing that makes a slate's codec/resolution change legal mid-playlist.
+// Adding a marker can never make a playlist worse than an unmarked discontinuity.
 export function hlsMuxArgs (hls, outDir) {
   return [
     '-f', 'hls',
     '-hls_time', String(hls.time),
     '-hls_list_size', String(hls.listSize),
-    '-hls_flags', 'delete_segments+append_list+omit_endlist',
+    '-hls_flags', 'delete_segments+append_list+omit_endlist+discont_start',
     '-hls_segment_filename', path.join(outDir, 'seg%d.ts'),
     path.join(outDir, 'index.m3u8')
   ]
+}
+
+// --- offline slate -------------------------------------------------------------------
+// Pre-rendered "SOURCE OFFLINE" media looped with -c copy when a source is dead, so the
+// channel stays live at ~0 CPU instead of going blank in watchdog backoff. Rendered by
+// tools/render-slates.sh; see docs/kb/offline-slate.md for the measured properties.
+
+// Ordered so the FIRST match wins. Codec is matched before resolution deliberately: a
+// codec change is the one thing a player cannot absorb mid-playlist even at a
+// discontinuity (it is a different decoder), whereas a raster change is a decoder
+// reconfigure — verified on-device that ExoPlayer/MediaCodec absorbs 854x480 -> 1280x720.
+export const SLATE_VARIANTS = [
+  { codec: 'hevc', minHeight: 900, file: 'slate-1080p-hevc-aac.ts' },
+  { codec: 'hevc', minHeight: 0, file: 'slate-720p-hevc-aac.ts' },
+  { codec: 'h264', minHeight: 900, file: 'slate-1080p-h264-aac.ts' },
+  { codec: 'h264', minHeight: 0, file: 'slate-720p-h264-aac.ts' }
+]
+export const SLATE_FALLBACK = 'slate-720p-h264-aac.ts'
+
+// Pick the slate matching a channel's OUTPUT profile. Note OUTPUT, not source: a `copy`
+// channel's output is its source, but a transcoding channel's output is whatever the
+// encoder produces, and the slate has to match what the playlist has been carrying.
+// An unknown/absent profile falls back to 720p h264 — the widest-compatibility entry and
+// the one that matches the plurality of the fleet.
+export function pickSlateFile (profile) {
+  const codec = profile && typeof profile.codec === 'string' ? profile.codec.toLowerCase() : null
+  const height = profile && Number.isFinite(profile.height) ? profile.height : 0
+  const hit = SLATE_VARIANTS.find((v) => v.codec === codec && height >= v.minHeight)
+  return hit ? hit.file : SLATE_FALLBACK
+}
+
+// Scrape codec + raster off ffmpeg's stream banner so the slate can match the channel's
+// real output. Example line:
+//   Stream #0:0[0x100]: Video: h264 (High) ([27][0][0][0] / 0x001B), yuv420p(tv, bt709),
+//   1280x720 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 90k tbn
+// Returns null for anything that isn't a video stream line, so it can be fed every log
+// line cheaply. The raster is matched with a leading comma+space to avoid colliding with
+// the `[SAR a:b DAR c:d]` group or a bitrate that happens to contain an 'x'.
+const VIDEO_LINE_RE = /Stream #\d+:\d+.*?: Video: ([a-zA-Z0-9_]+)/
+const RASTER_RE = /,\s(\d{2,5})x(\d{2,5})(?:[\s,[]|$)/
+export function parseVideoProfile (line) {
+  if (typeof line !== 'string') return null
+  const m = VIDEO_LINE_RE.exec(line)
+  if (!m) return null
+  const r = RASTER_RE.exec(line)
+  return {
+    codec: m[1].toLowerCase(),
+    width: r ? parseInt(r[1], 10) : null,
+    height: r ? parseInt(r[2], 10) : null
+  }
 }
 
 // Build the full ffmpeg argument list.

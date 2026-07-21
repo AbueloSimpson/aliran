@@ -3,8 +3,8 @@
 Pre-rendered "source offline" media that a channel loops when its source dies, so viewers
 see a clear message instead of nothing while the watchdog backs off.
 
-This page documents the **assets and their measured properties**. Wiring the broadcaster to
-switch to them is a separate change; nothing here is hooked up yet.
+This page documents the **assets, their measured properties, and how the broadcaster uses
+them**. The media is rendered into the image at build time by `tools/render-slates.sh`.
 
 ## Why a file, and why several
 
@@ -44,6 +44,49 @@ Two things worth knowing before matching:
   profile is one of the things a decoder absorbs at an IDR.
 - Frame rates in the fleet are mixed (29.97 ×35, 59.94 ×25, 30 ×7, 23.976 ×1) and **8 channels
   are mono**. The slates are all 30 fps stereo; see below for why that is safe.
+
+## How it works in the broadcaster
+
+The slate rides the existing watchdog rather than adding a parallel one. `_pickSlate` runs
+once per respawn, straight after `_pickSource`, so a channel works through **every configured
+fallback url before it gives up and shows bars**. When slated, `_spawnFfmpeg` overrides the
+input with `{kind:'file', path:<slate>}` and **forces `encoder:'copy'`** — `meta` is never
+mutated, so `status()` and a `PATCH` still show what the operator configured (the same
+contract the backup-url swap already uses).
+
+Three things are load-bearing and easy to get wrong if this is ever refactored:
+
+- **A looped file never exits and never stalls**, so every exit-driven watchdog path is dead
+  while slated. The watchdog kills the slate every `SLATE_RETRY_MS` specifically to re-probe
+  the real source; without that the channel shows bars forever after the source returns.
+- **`failures` is not reset when leaving the slate to probe.** If the source is still dead,
+  the single failed attempt re-slates immediately, so viewers get one brief blip per retry
+  instead of a fresh `SLATE_AFTER`-long blank window every cycle.
+- **Profile detection is skipped while slated.** Once bars are up, ffmpeg's banner describes
+  the *slate*; learning from it would pin the channel to the fallback profile forever.
+
+| Env | Default | Meaning |
+|---|---|---|
+| `SLATE_ENABLED` | `1` | Master switch |
+| `SLATE_DIR` | `broadcaster/slate` | Where the rendered `.ts` files live |
+| `SLATE_AFTER` | `3` | Consecutive failed respawns **per source** before slating |
+| `SLATE_RETRY_MS` | `60000` | How often a slated channel drops out to re-probe the source |
+
+`SLATE_AFTER` is multiplied by the number of configured sources, so each fallback gets its own
+~3 attempts: a 1-url channel slates after 3 failures (~7 s of backoff), a 2-url channel
+after 6. If the media is missing the channel **stays on the source** and logs it, rather than
+crash-looping ffmpeg against a nonexistent file.
+
+Operators see it in `GET /api/channels/:id` as `slate: { slated, file, since, failures }` plus
+`detectedProfile`. That flag matters because a slated channel is healthy by every other
+measure — ffmpeg alive, live edge advancing, peers connected — which is the whole point of the
+feature and exactly why `state: 'up'` alone can no longer be trusted to mean "showing the
+source". Entering and leaving also raise `slate-on` / `slate-retry` incidents.
+
+**Push inputs (rtmp/srt/udp) never slate.** They idle legitimately while awaiting a publisher,
+so the watchdog marks them `waiting` rather than respawning, and `failures` never climbs. A
+listener with no publisher still shows viewers nothing — worth revisiting, but it is a
+different trigger (waiting, not failing) and deliberately out of scope here.
 
 ## Non-standard resolutions, and SD
 
@@ -245,27 +288,21 @@ player that waits for audio before presenting video does not stall on a slated c
 
 ## Where the files live
 
-They are binary, so they are **not in git**. Two options:
-
-**Recommended — render at image build time.** The broadcaster image already ships everything
-needed: `drawtext` (libfreetype), `drawbox`, `smptehdbars`, `anullsrc`, `sine`, `libx264`,
-`libx265`, and DejaVu fonts. `tools/render-slates.sh` auto-detects the font and runs unchanged
-inside the container (verified). Rendering at build time means no binary in git, no manual
-copy step, and the files are produced by the *same* ffmpeg that will loop them — which removes
-the dev-box/container version skew entirely.
+They are binary, so they are **not in git** — the Dockerfile renders them at build time into
+`broadcaster/slate` (the default `SLATE_DIR`). The image already ships everything needed:
+`drawtext` (libfreetype), `drawbox`, `smptehdbars`, `anullsrc`, `sine`, `libx264`, `libx265`,
+and DejaVu fonts. Rendering there means no binary in git, no manual copy step, and the files
+are produced by the *same* ffmpeg that will loop them — which removes the dev-box/container
+version skew entirely, the one thing that could silently break the `-c copy` remux.
 
 Caveat: the container's older libx265 emits extra IDRs (every 1 s rather than 2 s) for the
 HEVC variants. Harmless — a keyframe still exists at every 2 s boundary, so segmentation is
 unaffected — but the files are slightly larger than the 8.1.2-rendered ones.
 
-**Alternative — ship them on the data volume** at `$DATA_DIR/slate/` (`/data/slate/` in the
-`broadcaster-data` volume), populated once by the operator. Safe from the GC: `core/store-gc.js`
-only ever walks `<storeDir>/cores/`, so a sibling `slate/` directory is never swept. Total cost
-is ~2.6 MB against a volume that already churns GBs per day.
-
-Either way the consuming feature should resolve a channel's slate by matching its **detected
-codec, then resolution** against the table above, and fall back to `slate-720p-h264-aac.ts`
-(the widest-compatibility entry) when nothing matches.
+**To serve them off the data volume instead**, render into `$DATA_DIR/slate/` and set
+`SLATE_DIR=/data/slate`. Safe from the GC: `core/store-gc.js` only ever walks
+`<storeDir>/cores/`, so a sibling `slate/` directory is never swept. Total cost is ~2.6 MB
+against a volume that already churns GBs per day.
 
 ## Re-rendering
 

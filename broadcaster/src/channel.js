@@ -33,7 +33,7 @@ import net from 'net'
 import dgram from 'dgram'
 import path from 'path'
 import os from 'os'
-import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS } from './hls.js'
+import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS, pickSlateFile, parseVideoProfile } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
 import { makeIncidents } from './incidents.js'
@@ -345,6 +345,34 @@ export function pickSource ({
   return keep
 }
 
+// Offline slate: decide whether the NEXT spawn shows bars instead of the source. Pure, so
+// the state machine is covered by test:args rather than by staring at a live channel.
+//
+// Entering: `failures` counts CONSECUTIVE failed respawns and only resets when the live
+// edge actually advances, so it spans the whole url-failover cycle. The threshold is
+// scaled by the number of sources (after × sources) so every configured fallback gets its
+// own ~`after` attempts before the channel gives up — a 1-url channel slates after 3
+// failures (~7 s of backoff), a 2-url channel after 6.
+//
+// Leaving: a looped file never exits, so nothing would re-probe the source on its own —
+// after `retryMs` we drop the slate and try the real source once. Note `failures` is
+// deliberately NOT reset when we leave to probe: if the source is still dead, the single
+// failed attempt re-slates immediately, so viewers get one brief blip per retry rather
+// than a fresh `after`-long blank window every cycle.
+export function pickSlate ({
+  slated = false, failures = 0, sources = 1, slateSince = 0, now = Date.now(),
+  enabled = true, after = 3, retryMs = 60000
+} = {}) {
+  if (!enabled) return { slated: false, slateSince: 0, reason: slated ? 'slate-disabled' : null }
+  if (slated) {
+    if (now - slateSince >= retryMs) return { slated: false, slateSince: 0, reason: 'slate-retry' }
+    return { slated: true, slateSince, reason: null }
+  }
+  const threshold = Math.max(1, after) * Math.max(1, sources)
+  if (failures >= threshold) return { slated: true, slateSince: now, reason: 'slate-on' }
+  return { slated: false, slateSince: 0, reason: null }
+}
+
 // S15b log ring: the last N ffmpeg stderr lines per channel, for diagnosing why a source
 // won't play. It lives on the Channel (not the run) so it survives ffmpeg respawns; an
 // operator start() clears it, a watchdog respawn only appends a restart marker.
@@ -396,6 +424,10 @@ class Channel {
     this.meta = meta // { id, title, description, category[], input, hls, protection, feedKey, legacy, desiredRunning }
     this.run = null // runtime state while started
     this.logRing = [] // S15b: last LOG_RING_MAX ffmpeg stderr lines {t,line}; survives respawns
+    // Last video profile seen on this channel's OUTPUT ({codec,width,height}), scraped from
+    // ffmpeg's stream banner. Lives on the Channel, not the run, so a respawn — or a source
+    // that dies before its banner prints — still has the profile the slate must match.
+    this.detectedProfile = null
   }
 
   // Append an ffmpeg stderr line (or an internal restart marker) to the ring.
@@ -563,6 +595,14 @@ class Channel {
       srcIndex: 0,
       srcFailures: 0,
       lastPrimaryTryAt: now,
+      // Offline slate (see _pickSlate). `failures` counts consecutive failed respawns
+      // across the WHOLE failover cycle — unlike srcFailures, which each failover resets —
+      // so it measures "this channel is down" rather than "this url is down". Only the
+      // live edge advancing clears it.
+      failures: 0,
+      slated: false,
+      slateSince: 0,
+      slateFile: null,
       // S15b watchdog: keeps ffmpeg alive across source hiccups (crash, empty/off-air
       // source, publisher disconnect) and restarts a stalled live edge. See _startWatchdog.
       watchdog: {
@@ -639,22 +679,86 @@ class Channel {
     run.lastPrimaryTryAt = next.lastPrimaryTryAt
   }
 
+  // Decide whether the NEXT spawn shows the slate. Called once per respawn, after
+  // _pickSource (so a channel works through every fallback url before giving up).
+  _pickSlate (run) {
+    const cfg = this.manager.config.slate || {}
+    const next = pickSlate({
+      slated: run.slated,
+      failures: run.failures,
+      sources: Math.max(1, this._sources().length),
+      slateSince: run.slateSince,
+      now: Date.now(),
+      enabled: cfg.enabled !== false,
+      after: cfg.after,
+      retryMs: cfg.retryMs
+    })
+    if (next.slated && !run.slated) {
+      // Match the slate to what this channel's playlist has been carrying. A channel that
+      // never came up at all has no detected profile — pickSlateFile falls back to 720p
+      // h264, the widest-compatibility variant.
+      run.slateFile = path.join(cfg.dir, pickSlateFile(this.detectedProfile))
+      if (!fs.existsSync(run.slateFile)) {
+        // No rendered media: stay on the source rather than spawning ffmpeg against a
+        // missing file, which would crash-loop far more noisily than the blank channel
+        // this feature exists to fix. Logged every time so it is not a silent no-op.
+        this._log(`--- slate: SKIPPED, no media at ${run.slateFile} (run tools/render-slates.sh) ---`)
+        run.slated = false
+        return
+      }
+      const p = this.detectedProfile
+      const prof = p ? `${p.codec} ${p.width}x${p.height}` : 'unknown profile'
+      this._log(`--- slate: source offline after ${run.failures} failed respawns — looping ${path.basename(run.slateFile)} (${prof}) ---`)
+      try { this.manager.incidents.record('slate-on', { channel: this.meta.id, file: path.basename(run.slateFile), failures: run.failures }) } catch {}
+    } else if (!next.slated && run.slated) {
+      this._log(`--- slate: ${next.reason === 'slate-disabled' ? 'disabled' : 'retrying source'} ---`)
+      if (next.reason !== 'slate-disabled') {
+        try { this.manager.incidents.record('slate-retry', { channel: this.meta.id }) } catch {}
+      }
+    }
+    run.slated = next.slated
+    run.slateSince = next.slateSince
+  }
+
   _spawnFfmpeg (run) {
     const { config } = this.manager
     // Swap the active backup url in without mutating meta.input (which stays the operator's
     // configured primary + list — status() and a PATCH must still see what was configured).
     const activeUrl = this._activeUrl(run)
-    const input = activeUrl && activeUrl !== this.meta.input.url
+    let input = activeUrl && activeUrl !== this.meta.input.url
       ? { ...this.meta.input, url: activeUrl }
       : this.meta.input
+    let transcode = this.meta.transcode
+    let ingestTuning = this.meta.ingestTuning
+    // Slated: loop the pre-rendered bars instead of the source. `copy` is FORCED regardless
+    // of the channel's configured encoder — re-encoding a static slate would cost 0.5-1
+    // core per slated channel, which across a large fleet is the whole box, and the file is
+    // already rendered to match this channel's output profile. Ingest tuning is dropped
+    // too: probesize/analyzeduration/thread_queue exist for difficult LIVE sources and mean
+    // nothing for a local file. meta is never mutated, so a PATCH and status() still show
+    // what the operator configured (same contract as the url swap above).
+    if (run.slated) {
+      input = { kind: 'file', path: run.slateFile }
+      transcode = { ...(this.meta.transcode || {}), encoder: 'copy' }
+      ingestTuning = null
+    }
     const proc = startFfmpeg({
       input,
-      transcode: this.meta.transcode,
-      ingestTuning: this.meta.ingestTuning,
+      transcode,
+      ingestTuning,
       hls: this.meta.hls,
       vaapiDevice: config.vaapiDevice
     }, run.outDir, {
-      onLine: (line) => this._log(line), // → the per-channel log ring
+      onLine: (line) => {
+        this._log(line) // → the per-channel log ring
+        // Remember the SOURCE's output profile so a later slate can match codec+raster.
+        // Guarded on !slated: once bars are up, ffmpeg's banner describes the SLATE, and
+        // learning from that would pin the channel to the fallback profile forever.
+        if (!run.slated) {
+          const p = parseVideoProfile(line)
+          if (p) this.detectedProfile = p
+        }
+      },
       onExit: (code) => {
         if (run.ff !== proc) return // superseded process — ignore its exit
         run.ffmpegExit = code ?? -1
@@ -699,6 +803,10 @@ class Channel {
           // The live edge advanced, so whatever url we're on is working — clear the
           // failure run so an old streak can't trigger a failover much later.
           run.srcFailures = 0
+          // Only a REAL source clears the slate streak. The slate's own edge advances
+          // happily forever (it is a local file), so counting those would reset `failures`
+          // and lose the reason we slated in the first place.
+          if (!run.slated) run.failures = 0
           if (t - wd.lastRestartAt > WD.backoffResetMs) wd.backoffMs = WD.backoffBaseMs
         } else if (!isPush && t - wd.lastAdvanceAt > WD.stallGraceMs) {
           wd.stalls++
@@ -707,6 +815,14 @@ class Channel {
           try { run.ff.kill('SIGKILL') } catch {} // exit path respawns it with backoff
         } else if (isPush && !wd.everAdvanced) {
           wd.state = 'waiting' // listener up, no publisher yet — normal
+        }
+        // Slate retry. A looped file never exits and never stalls, so the exit-driven
+        // paths above can NEVER fire while slated — without this the channel would show
+        // bars forever even after the source came back. Killing it routes into the same
+        // exit→respawn path, where _pickSlate drops the slate and re-probes the source.
+        const slateCfg = this.manager.config.slate || {}
+        if (run.slated && t - run.slateSince >= (slateCfg.retryMs || 60000)) {
+          try { run.ff.kill('SIGKILL') } catch {}
         }
         // Memory cap (independent of the edge checks above — a leaking pull is usually
         // still advancing). Push listeners are exempt: a kill would drop the publisher's
@@ -760,7 +876,13 @@ class Channel {
       // This respawn is itself the evidence the current source failed. Count it, then let
       // _pickSource decide whether to fail forward or go back to the primary.
       run.srcFailures++
+      // `failures` spans the whole failover cycle (srcFailures is reset by each failover),
+      // and only the live edge advancing clears it — that is what makes it a fair measure
+      // of "this channel is down" rather than "this url is down". Counted BEFORE the slate
+      // decision, but NOT while slated: a slate respawn is not evidence of a bad source.
+      if (!run.slated) run.failures++
       this._pickSource(run)
+      this._pickSlate(run)
       wd.lastRestartAt = Date.now()
       wd.lastAdvanceAt = Date.now() // fresh grace window before stall detection re-arms
       wd.lastSig = null
@@ -965,6 +1087,14 @@ class Channel {
       sourceIndex: run ? run.srcIndex : 0,
       sourceCount: this._sources().length,
       activeSource: run ? this._activeUrl(run) : null,
+      // Offline slate: `slated` true means viewers are seeing bars, NOT the source. That
+      // distinction is invisible from `state: 'up'` alone — a slated channel is healthy by
+      // every other measure (ffmpeg alive, live edge advancing, peers connected), which is
+      // exactly the point of the feature and exactly why it needs its own flag here.
+      slate: run && run.slated
+        ? { slated: true, file: path.basename(run.slateFile || ''), since: run.slateSince, failures: run.failures }
+        : { slated: false },
+      detectedProfile: this.detectedProfile || null,
       // S15b watchdog surface: is ffmpeg being kept alive, and how hard.
       watchdog: run ? {
         state: run.watchdog.state,

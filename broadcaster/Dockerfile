@@ -7,7 +7,10 @@
 FROM node:24-bookworm-slim
 
 # Debian bookworm's ffmpeg ships with libsrt — SRT ingest works out of the box.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+# fonts-dejavu-core is for the offline-slate render below: drawtext needs a real font file,
+# and pinning it explicitly keeps the build from depending on whatever ffmpeg happens to
+# pull in transitively.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,6 +24,15 @@ RUN cd core && npm install --omit=dev \
 
 COPY broadcaster/src broadcaster/src
 COPY broadcaster/control-ui broadcaster/control-ui
+
+# Render the offline-slate media INTO the image (default SLATE_DIR = broadcaster/slate).
+# Building them here rather than committing ~2.6 MB of binaries means the files are produced
+# by the exact ffmpeg that will later loop them — no dev-box/container version skew, which is
+# the one thing that could silently break the -c copy remux. Cached until the script changes.
+# Override SLATE_DIR to serve them off the data volume instead; SLATE_ENABLED=0 turns the
+# whole feature off. See docs/kb/offline-slate.md.
+COPY tools/render-slates.sh tools/render-slates.sh
+RUN bash tools/render-slates.sh /app/broadcaster/slate
 
 ENV DATA_DIR=/data
 VOLUME ["/data"]

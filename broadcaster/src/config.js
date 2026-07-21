@@ -86,6 +86,23 @@ export const config = {
   // stalled edge: same backoff/marker machinery, no feed rotation, sub-window viewer blip.
   // 0 disables. Linux-only (/proc); harmlessly inert elsewhere.
   ffmpegMaxRssMb: int(process.env.FFMPEG_MAX_RSS_MB, 150),
+  // Offline slate: loop pre-rendered "SOURCE OFFLINE" media when a source is dead, so the
+  // channel stays live with a clear message instead of going blank in watchdog backoff.
+  // The slate is remuxed with -c copy, so a slated channel costs ~0 CPU and `copy` channels
+  // (which have no encoder settings at all) can slate too — see docs/kb/offline-slate.md.
+  //   after   — consecutive failed respawns, on the LAST source in the list, before slating.
+  //             The url-failover mechanism runs first: with fallbacks configured a channel
+  //             works through every url before it gives up and shows bars.
+  //   retryMs — a looped file never exits, so nothing would ever re-probe the real source.
+  //             The watchdog kills the slate this often to go back and try it again.
+  //   dir     — where the rendered .ts files live. Baked into the image at build time by
+  //             tools/render-slates.sh; override to serve them off the data volume instead.
+  slate: {
+    enabled: bool(process.env.SLATE_ENABLED, true),
+    dir: process.env.SLATE_DIR || path.join(__dirname, '..', 'slate'),
+    after: int(process.env.SLATE_AFTER, 3),
+    retryMs: int(process.env.SLATE_RETRY_MS, 60000)
+  },
   // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
   // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR
   // at a tmpfs mount to keep the per-segment write churn off disk — essential at high
