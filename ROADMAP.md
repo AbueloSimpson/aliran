@@ -68,8 +68,10 @@ Shipped:
 - ✅ **Rolling feed buffer**: endless live streams occupy O(window) space; stable `disk`
   feed identity by default, byte-flat `ram` mode available
 - ✅ **Broadcaster reliability**: ffmpeg watchdog with backoff, stalled-edge and
-  memory-cap recycling, auto-resume after restart, honest catalog `isLive`, per-channel
-  log ring
+  memory-cap recycling, backup sources with fail-forward, auto-resume after restart,
+  honest catalog `isLive`, per-channel log ring, correlated incident log, and an
+  **offline slate** (loops "SOURCE OFFLINE" bars when a source dies, auto-returns on
+  recovery) so a dead channel stays live with a message instead of going blank
 - ✅ **Hybrid artwork**: P2P assets drive by default; `https://` art URLs pass through
 - ✅ **White-label packaging**: brand dirs build into co-installable branded APKs from
   one codebase (`tools/brand.mjs`; see `docs/white-label.md`)

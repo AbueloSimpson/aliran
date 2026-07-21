@@ -108,6 +108,22 @@ The panel and broadcaster both run as `node src/index.js` — the command line a
 won't tell them apart. Distinguish by working directory / parent process, or when
 hunting a stuck ffmpeg, match its command line by the HLS output directory it writes.
 
+## A channel shows colour bars / "SOURCE OFFLINE" instead of its content
+
+Working as designed. When a source fails past `SLATE_AFTER` consecutive respawns (default 3,
+counted per configured fallback url), the broadcaster loops a pre-rendered slate so the
+channel stays live with a clear message rather than sitting blank in watchdog backoff. It is
+NOT stuck: every `SLATE_RETRY_MS` (default 60 s) it drops the slate and re-probes the real
+source, and returns on its own the moment the source comes back — no operator action needed.
+
+The trap for operators: a slated channel reports `state: up` and looks healthy by every other
+measure (ffmpeg alive, live edge advancing, peers connected), because it genuinely is — bars
+are flowing. To tell "showing the source" from "showing bars," check `slate.slated` in
+`GET /api/channels/:id`, or watch for the `slate-on` / `slate-retry` entries in the incident
+log. If a channel is *permanently* slated, the source itself is down — check its ffmpeg log
+ring for why. Set `SLATE_ENABLED=false` to revert to the old blank-during-backoff behaviour.
+Full detail: [Offline slate media](offline-slate.md).
+
 ## Latency expectations (healthy system)
 
 - First DHT connect from a fresh client store: **30–90 s**; subsequent logins ~10 s.

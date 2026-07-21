@@ -105,15 +105,28 @@ Android phone + Android TV).
 - Reliability: ffmpeg watchdog with exponential backoff + stalled-live-edge restart;
   **memory-cap recycle** of a running pull ffmpeg (`FFMPEG_MAX_RSS_MB` — bounds the slow
   demuxer-state accumulation some live-HLS upstreams cause; no feed rotation);
-  **feed rotation on source change**; **auto-resume on boot** (`desiredRunning`);
-  `isLive:false` on stop via one manager-owned, self-healing **PanelLink** (serialized
-  registers, boot catch-up, heartbeat, forced DHT re-lookup after a panel restart);
-  per-channel ffmpeg log ring.
+  **backup sources** (per-channel fallback URLs with fail-forward + opportunistic
+  return-to-primary); **feed rotation on source change**; **auto-resume on boot**
+  (`desiredRunning`); `isLive:false` on stop via one manager-owned, self-healing
+  **PanelLink** (serialized registers, boot catch-up, heartbeat, forced DHT re-lookup
+  after a panel restart); per-channel ffmpeg log ring; **correlated incident log** for
+  fleet-wide events.
+- **Offline slate**: when a source stays dead past `SLATE_AFTER` respawns, the channel
+  loops a pre-rendered "SOURCE OFFLINE" slate (SMPTE bars + message) instead of going
+  blank in backoff, and returns to the source automatically when it recovers. Remuxed
+  with `-c copy` (~0 CPU; works on `copy` channels too), profile-matched to the channel's
+  output, media rendered into the image at build time. `#EXT-X-DISCONTINUITY` is now
+  emitted on every spawn, which also marks the timestamp reset an ordinary respawn
+  already caused. See [kb/offline-slate.md](docs/kb/offline-slate.md).
+- **Per-channel ingest/demuxer tuning** (`probesize`/`analyzeduration`/`thread_queue_size`/
+  `discardcorrupt`) for difficult push encoders, editable in the control UI.
 - Control HTTP API + no-build web UI: add/edit/start/stop channels, ingest +
   transcode forms driven by the capability probe, push-URL copy, logs dialog, honest
-  state badges (`ON AIR` / `WAITING FOR PUBLISHER` / `RETRYING`); admin accounts with
-  the same hardening as the panel.
-- `SWARM_MAX_PEERS`: per-channel swarm connection budget for scale-out.
+  state badges (`ON AIR` / `WAITING FOR PUBLISHER` / `RETRYING`; a slated channel is
+  `ON AIR` with a `slate` flag in the status API); admin accounts with the same
+  hardening as the panel.
+- `SWARM_MAX_PEERS`: per-channel swarm connection budget for scale-out; swarm UDP
+  socket-buffer sizing (`SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB`).
 
 **Player SDK (`sdk/`, `@aliran/player-sdk`)**
 - Runtime-agnostic engine (same graph runs headless in Node and inside the app's

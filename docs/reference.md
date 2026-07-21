@@ -100,7 +100,10 @@ transcode with unusable encoders disabled and the probe error as tooltip), start
 them, copy the **push URL** for push channels straight off the card, read the ffmpeg
 **log ring** (2 s-refreshing dialog; the last lines also appear inline on an unhealthy
 card), and watch live status. State badges: **ON AIR** / **WAITING FOR PUBLISHER**
-(push listener idle — normal) / **RETRYING (exit N)** (watchdog backoff). Channel art
+(push listener idle — normal) / **RETRYING (exit N)** (watchdog backoff). A channel
+whose source has failed past `SLATE_AFTER` shows the offline slate: it reports **ON AIR**
+(it genuinely is — bars are flowing) with `slate.slated` set, so check that flag, not the
+state, to tell "showing the source" from "showing bars." See [KB](kb/offline-slate.md). Channel art
 is a panel admin operation (the register RPC carries no art) — upload it in the panel
 dashboard. The UI consumes only the API below.
 Channels are runtime start/stoppable; each has its own persisted feed
@@ -120,7 +123,7 @@ are preserved.
 | `GET /api/status` | Channels, running count, panel configured |
 | `GET /api/capabilities` | ffmpeg probe: input protocols + deep-verified encoders (`{listed,verified,error?}`) |
 | `GET/POST /api/channels` | List (+ live status) / add (`{id,title,category,input,transcode,buffer,…}`) |
-| `GET /api/channels/:id` | Status: `state` (`stopped·starting·up·waiting-input·backoff`), running, ffmpegUp, peers, registered, playlist, watchdog, `ingest.pushUrl` (push kinds; uses `PUBLIC_HOST`) |
+| `GET /api/channels/:id` | Status: `state` (`stopped·starting·up·waiting-input·backoff`), running, ffmpegUp, peers, registered, playlist, watchdog, `slate` (`{slated,file,since,failures}` — `slated:true` means viewers see the offline slate, not the source, even though `state` is `up`), `detectedProfile` (`{codec,width,height}` the slate matches against), `ingest.pushUrl` (push kinds; uses `PUBLIC_HOST`) |
 | `PATCH /api/channels/:id` | Edit meta/input/transcode (applies on next start; a SOURCE change rotates the feed identity) |
 | `DELETE /api/channels/:id` | Remove from the registry (must be stopped; data kept) |
 | `POST /api/channels/:id/start` · `…/stop` | Spawn / tear down the pipeline |

@@ -76,6 +76,9 @@ path — pinned ffmpeg/Node, auto-restart, host networking pre-configured) — s
   favorites/search, D-pad navigation on TV — white-label themable
 - Web admin dashboards: panel (users, streams, grants, art, curation) and broadcaster
   (channels, push/pull ingest, transcode incl. GPU, ffmpeg logs)
+- Resilient ingest: crash/stall watchdog, backup sources, and an **offline slate** — a
+  channel whose source dies loops a "SOURCE OFFLINE" card and auto-recovers, never going
+  blank
 - **Redirect channels**: catalog entries that play an operator's CDN/HLS URL
   directly — no P2P feed behind them
 - Self-healing playback: tune watchdog, wedged-connection teardown, live-edge stall

@@ -136,6 +136,12 @@ port 3310). Both bind `127.0.0.1` and speak plain HTTP — **never expose them r
 > this build: channels created before the upgrade have no persisted desired state yet, so
 > press Start once (dashboard or API) — from then on they resume on their own.
 
+> Offline slate: if a source stays dead past a few retries, the channel loops a
+> "SOURCE OFFLINE" slate instead of going blank, and returns to the source automatically
+> when it recovers. A slated channel still shows **ON AIR** (bars are flowing), so check
+> `slate.slated` in the status API to distinguish it from a live source. Configurable via
+> `SLATE_*` ([configuration](configuration.md)); see [kb/offline-slate.md](kb/offline-slate.md).
+
 - **With a domain:** install Caddy and use
   [deploy/Caddyfile.example](https://github.com/AbueloSimpson/aliran/blob/main/deploy/Caddyfile.example)
   — automatic HTTPS, the plain-HTTP APIs never leave loopback. Full walkthrough with the
@@ -263,12 +269,18 @@ scale: [Network tuning KB](kb/network-tuning.md).
 ## Sizing
 
 Verified on a 1 vCPU / 1 GB VPS: two concurrent **copy** (passthrough) channels run at ~1.6%
-CPU each in a 165 MB container. What sets the ceiling depends on the encoder:
+CPU each in a 165 MB container. What sets the ceiling depends on the encoder **and the box
+shape** — which wall you hit first flips with the RAM-to-core ratio:
 
-- **`copy` channels (pull + re-mux, the common case):** **RAM-bound**, ~40 MB/channel — a 1 GB
-  box does ~14, a 4 GB box ~60. CPU is negligible.
-- **Transcoding channels (libx264 etc.):** **CPU-bound** — budget ~0.5–1 core per SD channel
-  (a test-pattern source *encodes*, so "~two per vCPU" applies to those, not to `copy`).
+- **`copy` channels (pull + re-mux, the common case):** ~40 MB/channel, and **~0.04 core per
+  channel** with real (flaky) sources — the demux→remux→HLS-mux→mirror pipeline plus watchdog
+  churn. On a RAM-tight box (a 1 GB VPS does ~14) **RAM is the first wall**. On a core-light,
+  RAM-rich box CPU is: a **4 vCPU / 8 GB box runs ~80 copy channels at the ≤80% CPU policy**,
+  where RAM alone could hold several times that. So per-channel CPU is small but **not
+  negligible at scale** — measured at 90 channels ≈ 76% of 4 cores. See
+  [Scaling](kb/scaling.md) for the capacity formula and the hardware table.
+- **Transcoding channels (libx264 etc.):** **CPU-bound**, far more so — budget ~0.5–1 core per
+  SD channel (a test-pattern source *encodes*, so "~two per vCPU" applies to those, not `copy`).
 
 On boxes with ≤2 GB RAM, add swap and lower the login KDF memory in `panel/.env` —
 `ARGON2_MEM_KIB=65536` (64 MiB per login instead of the 256 MiB default; the parameters are

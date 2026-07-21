@@ -1331,3 +1331,51 @@ channels)** — `copy` is not free at density (48 ffmpegs + the mirror ≈ 2.4 c
 `free -m`, not the summary); and **disk IOPS is a non-issue** (48 channels drove ~62 write
 IOPS / 13 MB/s — the page cache absorbs the write-then-delete churn, so more RAM indirectly
 buys IOPS headroom). So ~50 copy channels is comfortable on this box. See `docs/kb/scaling.md`.
+
+### Offline slate — a dead source loops "SOURCE OFFLINE" instead of going blank (S30, verified in production)
+
+When a channel's source died it sat in watchdog backoff and viewers saw **nothing**. Now the
+channel loops a pre-rendered slate (SMPTE bars + "SOURCE OFFLINE / PLEASE STAND BY") so it
+stays live with a clear message, and it returns to the real source on its own when the source
+recovers.
+
+**Why a file, not live-generated bars.** The slate is remuxed with `-c copy` (input kind
+`file`, forced `copy`), so a slated channel costs ~0 CPU and `copy` channels — which have no
+encoder configured at all — can slate too. Live `drawtext` would force a re-encode (~0.5–1
+core per slated channel; across a 69-channel fleet that is the whole box) plus a runtime font
+dependency. **Why a library, not one file.** Slate segments append to the *same* `index.m3u8`
+as the channel's pre-failure segments, and a codec or resolution change mid-playlist with no
+`EXT-X-DISCONTINUITY` is what breaks players — so the slate matches the dead channel's detected
+output on codec first, resolution second. Four variants (720p/1080p × h264/hevc) cover 100% of
+the fleet; the fleet's odd rasters (854×480, 852×720, 720×480, 1024×576) are all anamorphic
+16:9, so the square-pixel 720p slate is aspect-correct for them (upscaled, never stretched).
+
+**How it rides the watchdog.** `_pickSlate` runs once per respawn, right after `_pickSource`,
+so a channel works through every configured fallback URL before it gives up. When slated,
+`_spawnFfmpeg` overrides the input with the slate file and forces `copy`; `meta` is never
+mutated, so `status()` and a `PATCH` still show what the operator configured (same contract as
+the backup-URL swap). Three subtleties: a looped file never exits or stalls, so every
+exit-driven watchdog path is dead while slated — the watchdog kills the slate every
+`SLATE_RETRY_MS` (60 s) purely to re-probe, **which is the return mechanism**; `failures` is
+not reset when leaving to probe, so a still-dead source re-slates on its single failed attempt
+rather than blanking for another `SLATE_AFTER` window; and profile detection is skipped while
+slated, or the channel would learn the *slate's* profile and pin itself to the fallback.
+
+**`discont_start` is now on every spawn**, not just slate ones. A respawn restarts ffmpeg,
+which resets its output clock, so with `append_list` the new segments carry a backward
+timestamp jump — measured ~6034 s on a channel up 1.7 h, scaling with uptime. That is the
+unmarked "visible gap" every respawn (~1.45/channel/hour here) always produced; the tag also
+makes the slate's codec/resolution change legal mid-playlist.
+
+**Verified end-to-end.** Timing/monotonicity checked on the **container's ffmpeg 5.1.9** (not
+just the 8.1.2 that renders the files): `-stream_loop -1 -c copy` gives zero DTS regressions
+and `+genpts` is not needed. The loop wrap is pixel-identical (consecutive-frame luma delta
+0.0000). On the **S22 Ultra** (ExoPlayer → hardware MediaCodec) an 854×480 → 1280×720 slate
+switch is absorbed cleanly (~2–4 s gap, no stall). In **production**: a test channel's source
+was blackholed → it slated after 3 failed respawns with the profile-matched variant (`state`
+went `backoff` → `up`) → the source was repaired with **no restart** → it dropped the slate and
+reconnected by itself within one poll. A real channel (`espn-east`) slated and self-recovered
+during the same window. Media is rendered into the image at build time by
+`tools/render-slates.sh`, so it is produced by the exact ffmpeg that later loops it.
+Pure functions (`pickSlate` / `pickSlateFile` / `parseVideoProfile`) covered by `test:args`.
+Full detail: `docs/kb/offline-slate.md`.
