@@ -1332,6 +1332,208 @@ channels)** — `copy` is not free at density (48 ffmpegs + the mirror ≈ 2.4 c
 IOPS / 13 MB/s — the page cache absorbs the write-then-delete churn, so more RAM indirectly
 buys IOPS headroom). So ~50 copy channels is comfortable on this box. See `docs/kb/scaling.md`.
 
+### Swarm UDP socket buffers — the silent stall under fan-out (verified)
+
+Hyperswarm's transport is UDX, which multiplexes **every** peer stream of a swarm over one UDP
+socket pair. Under viewer fan-out the traffic concentrates on that single socket rather than
+spreading across per-viewer connections, so the kernel socket buffer runs out first — and when
+it does the kernel drops datagrams **silently**. UDX's congestion control only sees a gap,
+backs off, and the symptom is stalling throughput with nothing logged anywhere. Measured on the
+live box: UDX raises its own receive buffer to 1 MiB but leaves the **send** buffer at the OS
+default (212992) — and sending is exactly what a broadcaster or repeater does under fan-out, so
+the untuned direction was the one that mattered.
+
+`core/net-tune.js` requests both directions at swarm startup, reads the achieved size back, and
+reports clamps — best-effort throughout, so a refused `setsockopt` is logged, never thrown
+(tuning can never be why a service fails to boot). Wired into the broadcaster's per-channel
+feed swarms + panel link, the panel, and the repeater; `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB`,
+default 2/2 (repeater 4/4). Detecting a clamp needs `/proc`, not a readback: Linux caps the
+request at `net.core.{r,w}mem_max` and **then stores double** the capped value, so a request
+between the ceiling and twice the ceiling reads back larger than asked even though it was
+capped — the ceiling is read from `/proc` and treated as authoritative. A clamped request logs
+a warning naming the exact sysctl, deduped process-wide (43 channels must not print 43
+warnings).
+
+Raising the ceiling is a **host** action Docker cannot perform (the services run
+`network_mode: host`, where Docker refuses `net.*` sysctls), so it ships as an optional
+standalone `deploy/sysctl/install.sh` that nothing in the normal deploy calls — idempotent, and
+it verifies the value actually took. New `test:nettune` (required CI lane) covers the doubling
+trap, `/proc` parsing and its non-Linux fallback, a real bound UDX socket, and the dedupe; it
+asserts whichever outcome is correct for the host, so stock-kernel CI exercises clamp detection
+against a real undersized ceiling. See `docs/kb/network-tuning.md`.
+
+### Panel control-plane disk: idempotent register + the probe-core leak (S29, verified)
+
+Three fixes to unbounded growth in the panel's own on-disk state, found chasing
+`aliran_panel-data` size on the live box.
+
+**Idempotent register.** The register responder rebuilt a catalog record and `put` it
+unconditionally, but the broadcaster's PanelLink re-asserts every running stream on a 5-minute
+heartbeat, and the signed Hyperbee is append-only with no compaction — so every heartbeat cost
+a block forever (43 channels ≈ 12,384 redundant appends/day at ~487 B). It now compares the
+rebuilt record against the stored one and skips the put when identical (an exact byte
+comparison — `valueEncoding:'json'` stores `JSON.stringify(value)`, and the record is a pure
+function of the payload with no timestamps or nonces). Carve-outs still write: feedKey rotation,
+`isLive`/status flips, an origin change (attribution the audit trail must keep); the private
+secrets file still lands on the skipped path; and the blobsKey enricher is still nudged, since
+the heartbeat **is** its retry timer.
+
+**The probe cores were the real leak.** To publish a feed's blobsKey the panel opens that feed's
+drive on its own corestore. Those cores are **keyed** (metadata by feedKey, blobs by the key
+inside the encrypted bee header), so corestore files them under `cores/<discovery-key>/`
+regardless of the `blobs-probe:` namespace — and `drive.close()` only ended the session; the
+directories stayed on disk forever. Harmless while feedKeys were stable, but **S28's periodic
+rotation mints a fresh feedKey per rotation** and re-enqueues the enricher, so the control plane
+grew with rotations × channels, without bound (this was the 2.1 GB). Each probe now `purge()`s
+the cores it opened (close every session, unlink storage; corestore's `rmdir` takes the
+directory with the last file); teardown is shared with `close()` and idempotent, and probes
+register before `ready()` so a failed open is purged too. Not a RAM store, deliberately — a
+second corestore replicating on the panel's existing connections would clobber the
+`hypercore/alpha` protomux pairing and silently break serving the signed DB by discovery key.
+
+**Reclaiming what older builds stranded.** Purging new probes bounds new growth, but nothing
+collects the cores a pre-purge build already wrote. `openStore()` now sweeps them, reusing the
+GC the broadcaster has trusted since S28 — which moved to `@aliran/core/store-gc.js` (panel/
+cannot import from broadcaster/; both images vendor core/). Two fail-safe guards: all **three**
+cores the panel owns must resolve (the signed bee + the assets drive's metadata and blobs
+cores) or it deletes nothing, and anything the Corestore currently holds open is kept
+regardless. On deploy this logged `reclaimed 191 stray core dir(s), 2188 MB freed`; the panel
+volume went **2.1 GB → 18 MB**, core dirs **194 → 3** (the documented steady state — never
+hand-delete those; the bee is the single-writer origin of truth with no peer to re-replicate
+from). `test:register` plants strays (including a core too corrupt to open) across four
+rotations and a permanently-unreachable feed, and asserts they are gone while accounts, catalog
+and assets survive — all negative-checked.
+
+### Ops dashboard, shared theme, and backup sources (verified)
+
+The broadcaster dashboard rendered channels as a vertical card stack — fine at 6, unusable at
+the 69 the scale test runs. Rebuilt on an operations-dashboard shape: a dense
+sortable/filterable table that **sorts by urgency** by default (retrying > waiting > starting >
+on air > stopped) so problems surface at the top, plus five KPI tiles all derived from real
+control-API values — deliberately **no** CPU/RAM/disk bars, because the control API exposes no
+host metrics and inventing them would be a lie. "Peer links", not "peers": the number sums
+per-channel swarm connections and one S21 zap-prefetch viewer holds several, so it is not a
+viewer count. The uptime column shows how long the **current** ffmpeg has been alive
+(`watchdog.lastRestartAt`), not when the operator pressed Start — at ~2.5 respawns/channel/hour
+those differ by hours, and only the ffmpeg clock says whether media is actually flowing.
+
+Both dashboards now use the palette from `client/src/theme.ts` — they administer the same
+product but looked unrelated (broadcaster warm brown, panel cool cyan); `test:theme` asserts
+the shared block stays byte-identical across both stylesheets.
+
+**Backup sources.** A pull input takes `fallbacks` (max 4, same validation as the primary). A
+run of consecutive failures fails forward to the next url; return-to-primary is opportunistic —
+re-probing on a later respawn rather than interrupting a working backup — so failover is **not**
+sticky. The rotation decision is a pure exported `pickSource()`, unit-testable (args groups
+J/K). `status()` reports `sourceIndex`/`sourceCount`/`activeSource` and a **BACKUP** badge
+surfaces the case that otherwise hides: channel looks healthy, primary is down. The Edit dialog
+dropped title/description/category — those are panel-authoritative and editing them here only
+changed a local copy viewers never saw.
+
+### Category presentation registry — bulk rename and merge (verified)
+
+Categories could only be edited one channel at a time as a free-text array. With 300+ channels
+on two-level rails like `Nacional/Chile` there was no list of which categories exist, no
+ordering, no hierarchy, and renaming a rail meant editing every channel by hand. A new
+`catmeta/<slug>` keyspace owns **presentation only** — label, parent, order, hidden — while
+catalog records keep `category: ['Nacional/Chile']` exactly as before, so the RN app, the SDK
+and every existing client are untouched (this is why it was chosen over first-class category
+IDs).
+
+Membership and presentation write different keys and therefore cannot fight, which closes the
+long-standing "manual edits to mapped fields don't stick" wart: a source feed decides which
+channels carry its category and reasserts that on every sync; the operator owns how it looks.
+Documented honestly — renaming a **source-owned** rail via catmeta is undone by the next real
+re-sync (a 304 sync leaves it alone); rename the source's category instead. Rename cascades to
+children and de-duplicates on collision; every put is gated by the S29 idempotency rule so a
+no-op costs zero appends. Key ordering was verified before choosing the prefix: catalog scans
+are bounded `gt:'catalog/' lt:'catalog0'`, and `catmeta/` sorts above `catalog0`, so the new
+keyspace is invisible to them. Surfaced as a Categories tab (tree view, inline edit, rename,
+merge, forget) with admin-cli parity. Tests: admin-api group Q and sources group K, both
+negative-checked.
+
+### Runtime upload policy + a bounded feed cache (S25, verified)
+
+**Network-adaptive upload.** `uploadPolicy` was fixed at construction and the RN client never
+set it, so every viewer re-seeded on every network; the metered gate only suspended prefetch.
+`setUploadPolicy()` now flips re-seeding mid-session, wired to the client's NetInfo listener:
+cellular **or** expensive → `client-only`, restoring the configured policy when the network is
+cheap again (a deployment shipping `client-only` is never silently upgraded to reseed by a
+Wi-Fi event). The mechanism is subtle and the test negative-checks it: `swarm.join()` on an
+already-joined topic returns a **new**, additive session, so re-joining with `server:false`
+changes nothing — the fix is `session.refresh({server, client})`, which mutates the session and
+its `_serverSessions` count. Stated honestly in the code: this stops us **announcing**, so no
+new peer can discover us, but existing bidirectional connections are not force-closed (the
+player cannot tell "a peer I serve" from "a peer serving me", and closing the wrong one stalls
+playback) — so upload drops to zero for new peers immediately, overall shortly after.
+
+**Bounded feed cache.** Zapping away kept a neighbour's drive, corestore sessions and swarm
+topic open for the whole session — browsing 50 channels left 50 open, each occupying a slot in
+that channel's `SWARM_MAX_PEERS` budget, so browsing could crowd out actual viewers. `_feeds`
+is now LRU-bound to 12, never evicting the feed being served. Viewer-path socket tuning was
+deliberately **not** added (net-tune reads `/proc`, which cannot work on Android, and a phone's
+uplink caps throughput long before a 2 MiB buffer does) — recorded in a comment so nobody
+repeats the measurement. Tests: `test:sdk` runtime-switch coverage + the LRU bound; worklet
+bundle regenerated and verified free of net-tune.
+
+### Correlated incident log for fleet-wide events (verified)
+
+`watchdog.restarts` counted every respawn, but only as a per-channel cumulative total. On flaky
+IPTV that counter climbs constantly (~2.5/channel/hour across 69 channels), so a single restart
+carries no information — when all 69 channels respawned together at 05:51Z on 2026-07-21,
+**nothing recorded it**: each incremented by one, exactly like ordinary churn. It was noticed
+only because a 10-minute sampler happened to land in the trough.
+
+The signal is **correlation**, not count, so respawns are deliberately not logged individually
+(that would be the same noise with timestamps). `incidents.js` opens **one** fleet-restart
+incident when enough **distinct** channels respawn inside a window and extends it while the
+burst continues — distinct channels is the test, not event count, so one channel flapping
+twenty times is a flaky source, not an outage. Source failover and return-to-primary are
+recorded as discrete incidents (rare, and they change which source viewers are served).
+Surfaced at `GET /api/incidents` and as a dashboard timeline that explains what a burst means
+("upstream or host event, not one flaky source"); ephemeral by design, like the activity ring.
+
+The threshold shipped flat ("5 distinct channels in 2 min") and was corrected within minutes:
+the measured baseline is ~2.5 respawns/channel/hour, so a healthy 69-channel box already
+produces ~5 distinct-channel restarts every 2 minutes — a flat floor of 5 would have cried wolf
+constantly, which is worse than nothing because the one real event then looks like the noise.
+It is now `max(minChannels, ceil(running × 0.25))` — ~17 of 69, comfortably above the churn
+floor and below the 51-of-68 actually observed — with `minChannels` still the floor for small
+deployments where 5 of 6 really is fleet-wide. Tests: args group L, both regimes,
+negative-checked.
+
+### Ingest restart rate: drop -re from live pulls, reconnect internally, per-channel demuxer tuning (verified)
+
+Two passes at the 2085-respawns-in-12.1-h restart rate (~2.5/channel/hour), previously treated
+as an unavoidable property of flaky IPTV. Part of it was self-inflicted.
+
+**-re was pacing every live stream.** The old rule was ".m3u8 = live, anything else over http =
+a VOD file needing realtime pacing" — false for raw mpegts over http, which is what most IPTV
+serves (`http://host:81/CHANNEL/mpegts?token=…`, no extension); 69 of 69 running channels took
+the `-re` branch. ffmpeg's own docs say `-re` "should not be used with live input streams": it
+throttles the reader to 1×, so after any jitter ffmpeg cannot catch up, the server-side buffer
+backs up, and many IPTV servers drop a slow client. `-re` is now opt-**in** by VOD file
+extension, LIVE the default for an unknown http(s) URL — also the safer way to be wrong, since a
+live source read without `-re` is correct while one read *with* it degrades continuously. And
+http pulls now reconnect **internally** (`-reconnect_streamed` the load-bearing option) instead
+of exiting: an exit-and-respawn restarts ffmpeg's `seg%d` counter from 0, stranding the
+previous run's high-numbered segments (the orphan that pinned blob reclaim in the 2026-07-15
+disk leak) and leaving a visible gap — an internal reconnect keeps the same process, sequence
+and feed. Verified the options exist in the **container's ffmpeg 5.1.9** before shipping, since
+an unknown input option makes ffmpeg exit immediately (this dev box runs 8.1.2, and `test:args`
+is pure-args, so neither would have caught the skew).
+
+**Per-channel demuxer tuning** for difficult push encoders — the cheap HDMI→RTMP/SRT boxes most
+small operations use, not the IPTV pulls above. `probesize`/`analyzeduration` (a sparse or late
+PMT makes ffmpeg give up before it has seen every elementary stream — "could not find codec
+parameters", or audio silently missing; 10–50 MB / 10–20 s are normal against 5 MB / 5 s
+defaults), `thread_queue_size` (a bursty listener overflows the default input queue and drops
+packets), and `discardcorrupt` (keep going through the corrupt TS a marginal capture chain
+produces). Every field is optional and null means ffmpeg's default, so an untouched channel
+emits byte-identical arguments; they are **input** options asserted to land before `-i` (after
+it, ffmpeg would apply them to the output). Editable per channel in the dashboard. Tests: args
+group M (unit conversion, placement, bounds, partial-update inheritance).
+
 ### Offline slate — a dead source loops "SOURCE OFFLINE" instead of going blank (S30, verified in production)
 
 When a channel's source died it sat in watchdog backoff and viewers saw **nothing**. Now the
