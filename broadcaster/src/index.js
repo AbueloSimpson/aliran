@@ -22,7 +22,12 @@ import { loadAdmins } from './control-auth.js'
 
 async function main () {
   const manager = new ChannelManager(config)
-  await manager.init()
+  // init() only PREPARES (loads the registry, warms probes, connects the panel link). The
+  // auto-resume is run LAST, via manager.resumeAll() below, AFTER the control server is
+  // listening — otherwise resuming a large fleet blocks the boot before the server ever binds,
+  // so /healthz and /api are dead for the whole ~minutes-long ramp and monitoring reads it as
+  // an outage. Order now: prepare → start control server → (env channel) → paced resume.
+  await manager.init({ resume: false })
 
   let control = null
   if (config.control.enabled) {
@@ -69,6 +74,11 @@ async function main () {
   } else if (control) {
     console.log('No STREAM_ID in the environment — channels are managed via the control API.')
   }
+
+  // Auto-resume the persisted desired-running channels LAST, with the control server already
+  // listening so /healthz reports {resuming, resumed, total} throughout and /api comes alive
+  // channel-by-channel as the (paced) ramp proceeds. Not awaited-before-serving on purpose.
+  manager.resumeAll().catch((err) => console.error('boot resume error:', err))
 
   const shutdown = async () => {
     console.log('\nShutting down…')

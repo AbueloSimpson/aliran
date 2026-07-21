@@ -126,7 +126,11 @@ export const config = {
     enabled: bool(process.env.RESUME_PACE, true),
     minChannels: int(process.env.RESUME_PACE_MIN, 8),
     targetLagMs: int(process.env.RESUME_PACE_TARGET_MS, 50),
-    maxWaitMs: int(process.env.RESUME_PACE_MAX_MS, 3000)
+    // Cap per-channel wait. With the control server started FIRST (index.js), the resume runs
+    // in the background and its own awaits already yield; pacing only needs to hand HTTP a
+    // breathing gap, not wait for full idle — so ~1 s max per channel keeps the API responsive
+    // while bounding total pacing overhead to ~(channels × 1 s).
+    maxWaitMs: int(process.env.RESUME_PACE_MAX_MS, 1000)
   },
   // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
   // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR

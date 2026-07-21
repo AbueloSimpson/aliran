@@ -1190,7 +1190,10 @@ export class ChannelManager {
 
   registryPath () { return path.join(this.config.dataDir, 'channels.json') }
 
-  async init () {
+  // `resume` (default true) runs the boot auto-resume inline, which is what tests and simple
+  // callers want (init then assert channels are up). Production (index.js) passes false and
+  // calls resumeAll() AFTER the control server is listening — see the note below.
+  async init ({ resume = true } = {}) {
     let reg = {}
     try { reg = JSON.parse(fs.readFileSync(this.registryPath(), 'utf8')) } catch {}
     for (const meta of Object.values(reg)) this.channels.set(meta.id, new Channel(this, meta))
@@ -1214,9 +1217,19 @@ export class ChannelManager {
     if (upgraded) this._save()
     this.capabilities().catch(() => {}) // warm the ffmpeg probe in the background
     this.panelLink.connect() // one panel connection for all channel registrations
-    await this._reconcile() // auto-resume desired-running channels; heal stale-live catalog
+    // Auto-resume desired-running channels. Deferred in production: running it here, before
+    // the caller starts the control server, meant the HTTP server (and /healthz) did not come
+    // up until the whole ramp finished — a ~7 min blackout at 83 channels that read as an
+    // outage to monitoring. index.js passes resume:false and calls resumeAll() AFTER the
+    // server is listening, so /healthz answers and reports progress throughout.
+    if (resume) await this._reconcile()
     return this
   }
+
+  // Auto-resume desired-running channels (paced — see _reconcile) and heal any catalog entry
+  // an unclean crash left LIVE. Call this AFTER the control server is listening so /healthz is
+  // available during the resume. Idempotent-ish: safe to call once at boot.
+  async resumeAll () { return this._reconcile() }
 
   // Boot reconciliation (S15b). For every persisted channel:
   //  - desiredRunning → auto-start it (it re-registers isLive:true). The env/legacy channel
