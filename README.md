@@ -1,6 +1,10 @@
 # Aliran
 
 [![ci](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml/badge.svg)](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml)
+[![docs](https://github.com/AbueloSimpson/aliran/actions/workflows/docs.yml/badge.svg)](https://abuelosimpson.github.io/aliran/)
+[![npm](https://img.shields.io/npm/v/%40aliran%2Fplayer-sdk?label=%40aliran%2Fplayer-sdk)](https://www.npmjs.com/package/@aliran/player-sdk)
+[![viewer builds](https://img.shields.io/github/v/release/AbueloSimpson/aliran?label=viewer%20builds)](https://github.com/AbueloSimpson/aliran/releases/latest)
+[![license](https://img.shields.io/github/license/AbueloSimpson/aliran)](LICENSE)
 
 **Aliran** (Malay/Indonesian: *flow / stream / current*) — a self-hostable,
 open-source, **peer-to-peer OTT streaming platform** built on the
@@ -8,18 +12,43 @@ open-source, **peer-to-peer OTT streaming platform** built on the
 re-seed each other, so there are **no central media servers** and near-zero
 bandwidth cost.
 
+<img src="docs/img/desktop/browse.png" width="720" alt="The desktop player: browse overlay over live video — category rail, numbered channel list with program-guide now-lines">
+
+*Screenshots show demo channels from the broadcaster's built-in `test` source
+(colour bars) — every UI element is real.*
+
 > **Status: pre-1.0, actively developed — and running for real.** The full pipeline is
-> verified end to end on live infrastructure: panel + broadcaster deployed on a 1 GB
-> VPS via the provided Docker pack, channels ingested from real sources, and the
-> Android app (phone + TV) logging in and playing live P2P video **over the public
-> DHT** — plus web admin dashboards for both server components and a remote
-> acceptance harness that proves a deployment from anywhere. See the
+> verified end to end on live infrastructure **over the public DHT**: panel +
+> broadcaster deployed on a small VPS via the provided Docker pack, dozens of
+> channels ingested 24/7 from real sources, and the Android app (phone + TV) and
+> the Windows desktop player logging in and playing live P2P video against it —
+> with the same player packaged for macOS, keyless **public viewer builds** on the
+> [releases page](https://github.com/AbueloSimpson/aliran/releases/latest), the
+> engine published on npm, web admin dashboards for both server components, and a
+> remote acceptance harness that proves a deployment from anywhere. See the
 > [Roadmap](ROADMAP.md) for what's done vs. planned, [CHANGELOG.md](CHANGELOG.md)
 > for the shipped-feature summary, and each package's `README.md` for details.
 
+## Get the apps (viewers)
+
+Keyless **public builds** of every viewer are on the
+**[releases page](https://github.com/AbueloSimpson/aliran/releases/latest)** —
+Windows (installer + portable exe), macOS (Apple silicon + Intel, dmg/zip), and
+one Android APK that covers phone **and** Android TV. On first run each app shows
+a **Connect screen**: enter the three things an Aliran operator hands out — the
+**panel public key**, a **username**, and a **password** — and the app finds the
+service over the P2P network. No URLs. Install steps (including the unsigned-build
+warnings each OS shows) are in the
+[desktop viewer guide](docs/desktop-viewer-guide.md) (Windows + macOS) and the
+[Android viewer guide](docs/android-viewer-guide.md).
+
+There is no public demo service: Aliran is infrastructure for operators. You
+connect the apps to your own deployment (Quickstart below) or to a service
+someone runs for you.
+
 ## What it is
 
-Five cooperating peer-to-peer components (all serverless in transport — they find
+Cooperating peer-to-peer components (all serverless in transport — they find
 each other over the Hyperswarm DHT by public key):
 
 | Component | Runs on | Role |
@@ -29,14 +58,15 @@ each other over the Hyperswarm DHT by public key):
 | **[`repeater/`](repeater/)** | Linux (headless) | Optional **keyless** regional super-peer (Open-Connect model): mirrors + serves encrypted feeds, absorbs viewer fan-out, cannot watch what it serves |
 | **[`library/`](library/)** | Linux (headless) | Optional **VOD service**: one-shot ingest of video files → encrypted, P2P-seeded on-demand titles with full seek, granted like channels |
 | **[`client/`](client/)** | Android (phone + TV) | The app/APK: logs in, browses an OTT UI, plays the stream, **and re-seeds to other viewers** |
-| **[`desktop/`](desktop/)** | Windows | The desktop player (Electron): the same OTT interface and P2P engine on a PC — installer + portable exe |
+| **[`desktop/`](desktop/)** | Windows & macOS | The desktop player (Electron): the same OTT interface and P2P engine on a PC — Windows installer/portable exe, macOS dmg/zip |
+| **[`sdk/`](sdk/)** | anywhere Node runs | The published engine — [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) (with `@aliran/core` and `@aliran/react-native`): build your own client or headless viewer on the exact engine the apps run |
 
 ```
  ORIGIN (OBS/RTSP/HLS)      Hyperswarm DHT (find peers by public key)
         │                ┌───────────────┬───────────────────────────┐
         ▼                │               │                           │
-  broadcaster ──encrypted feed──►  client (APK) ◄──re-seed──► client (APK)
-        │                                ▲
+  broadcaster ──encrypted feed──►  viewer app ◄──re-seed──► viewer app
+        │                                ▲       (Android / Windows / macOS)
         └── registers stream ──►  panel  │  login + catalog + entitlement
                                   (accounts, catalog, OPRF)
 ```
@@ -71,11 +101,18 @@ path — pinned ffmpeg/Node, auto-restart, host networking pre-configured) — s
 ## Features
 
 - Live P2P streaming (HLS-over-Hyperdrive), viewers re-seed each other
-- Phone **and** Android TV from one codebase
+- Phone **and** Android TV from one codebase, plus Windows & macOS desktop players
+  on the same engine
 - Username/password login validated against a **panel-signed** P2P database
 - Brute-force resistance (OPRF + throttling), device limits, long-TTL sessions
 - OTT-style GUI: splash auto-auth, menu hub, fullscreen live TV with overlay browsing,
   favorites/search, D-pad navigation on TV — white-label themable
+- **Program guide**: on-demand EPG (now/next lines in the channel list + a full
+  guide panel) fetched from operator URLs — schedules never bloat the P2P catalog
+- In-player **subtitle/CC and audio-track selection**, plus a "smooth zapping"
+  prefetch toggle for instant channel changes
+- **Mobile-honest networking**: on cellular/metered connections the app stops
+  re-seeding and throttles prefetch — viewers never burn upload data on a data plan
 - Web admin dashboards: panel (users, streams, grants, art, curation) and broadcaster
   (channels, push/pull ingest, transcode incl. GPU, ffmpeg logs)
 - Resilient ingest: crash/stall watchdog, backup sources, and an **offline slate** — a
@@ -87,6 +124,10 @@ path — pinned ffmpeg/Node, auto-restart, host networking pre-configured) — s
   resync — plus optional keyless **repeater** super-peers to absorb fan-out
 - **VOD**: the optional `library/` service — file → encrypted, P2P-seeded on-demand
   titles with full seek, granted like channels
+- **White-label**: brand overlays (name, colors, logo, wallpaper, TV banner) and
+  per-operator custom builds for Android and desktop — the
+  [operator build walkthrough](docs/operator-build-walkthrough.md) goes from your
+  keys to a branded APK and exe
 - **No DRM, by design**: content protection is transport encryption + per-user sealed
   keys + key rotation — honest access control, not studio-grade DRM. The
   [security model](docs/security-model.md) spells out exactly what that does and
@@ -101,6 +142,10 @@ Browse online at **<https://abuelosimpson.github.io/aliran/>**, or start at
 [Security model](docs/security-model.md) ·
 [Operator guide](docs/operator-guide.md) ·
 [Configuration](docs/configuration.md) ·
+[Player SDK](docs/sdk.md) ·
+[Desktop viewer guide](docs/desktop-viewer-guide.md) ·
+[Android viewer guide](docs/android-viewer-guide.md) ·
+[Operator build walkthrough](docs/operator-build-walkthrough.md) ·
 [Knowledge base](docs/kb/index.md) ·
 [FAQ](docs/faq.md).
 
