@@ -389,6 +389,31 @@ export async function waitLoopIdle ({ targetLagMs = 50, maxWaitMs = 3000, sample
   }
 }
 
+// Bounded-concurrency async pool: run `worker(item)` over `items` with at most `concurrency`
+// in flight. Before launching each task it awaits `gate()` (the adaptive back-pressure — see
+// waitLoopIdle), so concurrency buys overlap while the gate keeps a burst from saturating the
+// event loop. `onSettle(item, err)` fires as each task finishes (err=null on success), for
+// progress tracking. A worker rejection is delivered to onSettle and never aborts the pool —
+// one channel failing to resume must not strand the rest. Pure (no globals); unit-tested.
+export async function runPool (items, worker, { concurrency = 4, gate = null, onSettle = null } = {}) {
+  const inFlight = new Set()
+  let i = 0
+  const launch = (item) => {
+    const p = Promise.resolve().then(() => worker(item)).then(
+      () => { if (onSettle) onSettle(item, null) },
+      (err) => { if (onSettle) onSettle(item, err) }
+    ).finally(() => inFlight.delete(p))
+    inFlight.add(p)
+  }
+  while (i < items.length || inFlight.size > 0) {
+    while (i < items.length && inFlight.size < Math.max(1, concurrency)) {
+      if (gate) await gate()
+      launch(items[i++])
+    }
+    if (inFlight.size > 0) await Promise.race([...inFlight])
+  }
+}
+
 // S15b log ring: the last N ffmpeg stderr lines per channel, for diagnosing why a source
 // won't play. It lives on the Channel (not the run) so it survives ffmpeg respawns; an
 // operator start() clears it, a watchdog respawn only appends a restart marker.
@@ -1249,9 +1274,14 @@ export class ChannelManager {
     }
     const pace = this.config.resumePacing || {}
     const paced = pace.enabled !== false && toResume.length >= (pace.minChannels || 8)
+    // Concurrency overlaps each start's I/O wait (corestore open, swarm join) to cut total
+    // recovery time; the adaptive gate throttles the LAUNCH rate so a burst never saturates
+    // the loop. Unpaced (or a small fleet) falls back to strictly-sequential (concurrency 1,
+    // no gate) — the conservative behaviour.
+    const concurrency = paced ? Math.max(1, pace.concurrency || 1) : 1
+    const gate = paced ? () => waitLoopIdle({ targetLagMs: pace.targetLagMs, maxWaitMs: pace.maxWaitMs }) : null
     this.resume = { active: true, total: toResume.length, resumed: 0, failed: 0, startedAt: Date.now(), finishedAt: 0 }
-    for (let i = 0; i < toResume.length; i++) {
-      const ch = toResume[i]
+    await runPool(toResume, async (ch) => {
       try {
         await this.start(ch.meta.id)
       } catch (err) {
@@ -1261,18 +1291,11 @@ export class ChannelManager {
         this.resume.failed++
         console.error(`channel "${ch.meta.id}" failed to auto-resume: ${err.message}`)
       }
-      this.resume.resumed++
-      // Adaptive back-pressure: before the next start, let the event loop catch up so the
-      // control API + swarm stay responsive during the ramp (see waitLoopIdle). Skipped after
-      // the last channel and when pacing is off / the fleet is small.
-      if (paced && i < toResume.length - 1) {
-        await waitLoopIdle({ targetLagMs: pace.targetLagMs, maxWaitMs: pace.maxWaitMs })
-      }
-    }
+    }, { concurrency, gate, onSettle: () => { this.resume.resumed++ } })
     this.resume.active = false
     this.resume.finishedAt = Date.now()
     if (toResume.length) {
-      console.log(`[resume] ${this.resume.resumed - this.resume.failed}/${toResume.length} channels resumed in ${Math.round((this.resume.finishedAt - this.resume.startedAt) / 1000)}s${paced ? ' (paced)' : ''}${this.resume.failed ? `, ${this.resume.failed} failed` : ''}`)
+      console.log(`[resume] ${this.resume.resumed - this.resume.failed}/${toResume.length} channels resumed in ${Math.round((this.resume.finishedAt - this.resume.startedAt) / 1000)}s${paced ? ` (paced, concurrency ${concurrency})` : ''}${this.resume.failed ? `, ${this.resume.failed} failed` : ''}`)
     }
   }
 

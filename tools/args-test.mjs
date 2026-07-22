@@ -10,7 +10,7 @@ import {
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
-  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle
+  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -430,5 +430,36 @@ log('O: HLS discontinuity flag on every spawn ✓')
   assert.strictEqual(c.timedOut, false)
 }
 log('P: adaptive boot-resume pacing (idle→1 sample, busy→bounded, recovers→stops) ✓')
+
+// ===== Q: bounded-concurrency resume pool (runPool) =====
+{
+  // never exceeds the concurrency limit, processes everything, runs the gate per launch
+  let inflight = 0; let maxInflight = 0; let gate = 0; const done = []
+  const items = [...Array(20).keys()]
+  await runPool(items, async (x) => {
+    inflight++; maxInflight = Math.max(maxInflight, inflight)
+    await new Promise((r) => setTimeout(r, 2)); done.push(x); inflight--
+  }, { concurrency: 4, gate: async () => { gate++ }, onSettle: () => {} })
+  assert.strictEqual(done.length, 20, 'all items processed')
+  assert.ok(maxInflight <= 4, `never exceeds concurrency (max ${maxInflight})`)
+  assert.ok(maxInflight > 1, 'actually overlaps (not sequential)')
+  assert.strictEqual(gate, 20, 'gate awaited once per launch')
+
+  // a worker rejection is isolated — the rest of the pool still completes
+  let ok = 0
+  await runPool([...Array(10).keys()], async (x) => { if (x === 3) throw new Error('boom'); ok++ }, { concurrency: 3 })
+  assert.strictEqual(ok, 9, 'one failure does not strand the pool')
+
+  // concurrency 1 is strictly sequential (the unpaced fallback)
+  let mi = 0; let inf = 0
+  await runPool([...Array(6).keys()], async () => { inf++; mi = Math.max(mi, inf); await new Promise((r) => setTimeout(r, 1)); inf-- }, { concurrency: 1 })
+  assert.strictEqual(mi, 1, 'concurrency 1 = sequential')
+
+  // onSettle fires once per item (the resume progress counter)
+  let settled = 0
+  await runPool([...Array(7).keys()], async () => {}, { concurrency: 3, onSettle: () => { settled++ } })
+  assert.strictEqual(settled, 7, 'onSettle fires once per item')
+}
+log('Q: bounded-concurrency resume pool (bound respected, overlaps, failure-isolated, seq fallback) ✓')
 
 log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing)')

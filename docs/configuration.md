@@ -55,6 +55,7 @@ Copy each component's `.env.example` to `.env`.
 | `RESUME_PACE_TARGET_MS` | `50` | Event-loop lag (ms) the pacer waits to fall below before starting the next channel. Higher = faster resume, less API headroom during it |
 | `RESUME_PACE_MAX_MS` | `1000` | Cap on the per-channel wait, so a permanently-busy loop still makes forward progress (bounds total pacing overhead to ~channels × this) |
 | `RESUME_PACE_MIN` | `8` | Don't pace fleets smaller than this — a handful of channels has no resume storm |
+| `RESUME_CONCURRENCY` | `4` | How many channel starts run concurrently on boot. A start is mostly I/O wait, so overlapping several cuts total recovery time roughly in proportion; the adaptive gate still throttles the launch rate under load. `1` = strictly sequential |
 | `SLATE_ENABLED` | `true` | Loop a pre-rendered "SOURCE OFFLINE" slate when a source is dead, so the channel stays live with a message instead of going blank in watchdog backoff. `false` reverts to the blank-during-backoff behaviour. See [KB](kb/offline-slate.md) |
 | `SLATE_DIR` | *(image `broadcaster/slate`)* | Where the rendered slate `.ts` files live. They are built into the image at build time; point this at the data volume (e.g. `/data/slate`) to serve operator-supplied files instead |
 | `SLATE_AFTER` | `3` | Consecutive failed respawns **per configured source** before a channel gives up and slates (so a channel with fallbacks tries every url first). A slated channel is remuxed with `-c copy` — ~0 CPU, and cheaper than the live pull it replaces |
