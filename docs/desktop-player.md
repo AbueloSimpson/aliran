@@ -142,10 +142,12 @@ npm run dist        # electron-builder → dist/Aliran Setup <v>.exe + Aliran-<v
   unsigned distribution; operators shipping to real users should countersign with
   their own certificate (electron-builder's `win.signtoolOptions`), which also
   builds SmartScreen reputation over time.
-- Per-brand desktop packaging (the `client/brands/<id>/` white-label flow) is a
-  follow-up; today the icon and product name are set in
-  `desktop/electron-builder.yml` and the colors/name flow from the descriptor at
-  runtime.
+- Per-brand desktop packaging (the `client/brands/<id>/`
+  [white-label flow](white-label.md)) is a follow-up; today the icon and product
+  name are set in `desktop/electron-builder.yml`, while the in-app branding —
+  colors, name, logo, wallpaper — flows from the descriptor at runtime, so **a
+  brand's `service.json` works here unchanged** (see
+  [White-label branding](white-label.md#desktop-player-windows)).
 
 ## 5. Codecs (what this player can decode)
 

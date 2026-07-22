@@ -94,6 +94,27 @@ What a build does:
 The APK lands in
 `client/android/app/build/outputs/apk/<id>/<variant>/app-<id>-<variant>.apk`.
 
+## Desktop player (Windows)
+
+The same descriptor brands the [desktop player](desktop-player.md) — its
+screens also render entirely from `branding` (colors become the UI's CSS
+variables; the splash logo, menu wallpaper and service name come from the same
+fields), so a brand's `service.json` carries over unchanged:
+
+1. Copy the brand's `service.json` to `desktop/config/service.json`.
+2. Package: `cd desktop && npm run dist` — the descriptor is baked as a
+   resource, and the build boots with your panel key and theme
+   (see [Desktop player §4](desktop-player.md)).
+
+Two desktop-specific notes:
+
+- **No `brand.mjs` equivalent yet:** the installer/exe **icon** and **product
+  name** are set by hand in `desktop/electron-builder.yml` (they stay "Aliran"
+  otherwise). Everything *inside* the app is branded with no edits.
+- The PNG files in a brand dir are Android packaging inputs. For the desktop,
+  point `branding.logo` / `branding.wallpaper` at **https URLs** in the
+  descriptor — baked Android drawable references don't exist there.
+
 ## Keys and credentials
 
 - **`panelPubKey` is public** — it ships inside every APK, like the branding. Set
@@ -113,7 +134,8 @@ The APK lands in
   (see the [React Native signed-APK guide](https://reactnative.dev/docs/signed-apk-android)).
 - **Versioning:** `versionCode` / `versionName` are shared app defaults today —
   bump them in `client/android/app/build.gradle` per release train.
-- **One generic APK instead:** the descriptor can also be delivered at runtime
-  (QR / deep link) if you prefer a single unbranded binary — see
+- **One generic APK instead:** the public keyless flavor takes the descriptor at
+  runtime — first run shows a **Connect screen** where the viewer enters your
+  panel key + account — if you prefer a single unbranded binary; see
   [Client build](client-build.md). Brand packaging exists for the opposite goal:
   a store listing that *is* the operator's product.
