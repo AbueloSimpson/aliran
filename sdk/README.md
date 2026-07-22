@@ -141,7 +141,7 @@ connections without blipping playback). See the
 [viewer bandwidth page](https://abuelosimpson.github.io/aliran/kb/viewer-bandwidth/)
 for measured numbers.
 
-## Swarm tuning (seed nodes)
+## Swarm tuning
 
 `createPlayer({ swarm: { maxPeers } })` raises the total-connection budget of the
 engine's single Hyperswarm (lib default 64 — plenty for a viewer). Ordinary viewers
@@ -151,6 +151,20 @@ hundreds so they can hold big fan-out while re-seeding.
 `swarm: { bootstrap: [{ host, port }, …] }` points the engine at custom DHT
 bootstrap nodes — for local DHT testnets (`hyperdht/testnet.js`, used by
 `test:repeater`) or private-DHT deployments. Omit it for the public DHT.
+
+**UDP socket buffers** (`swarm: { rcvbufMb, sndbufMb }`, MiB): all peer streams
+multiplex over the engine's **one UDP socket pair**, so when a socket buffer
+overflows the kernel drops datagrams silently and playback stalls with nothing in
+any log. By default the engine requests a **2 MiB receive buffer** (a viewer is
+download-dominant — the whole stream funnels into the receive side while the JS
+thread is busy decrypting) and leaves **send untouched** (reseed upload is
+opportunistic and never buffer-bound on a typical uplink). `0` disables a
+direction; raise `sndbufMb` on SDK-based seed nodes. Semantics mirror the server
+envs `SWARM_RCVBUF_MB`/`SWARM_SNDBUF_MB` (see the
+[network tuning page](https://abuelosimpson.github.io/aliran/kb/network-tuning/)).
+Best-effort everywhere: on hosts where `/proc` is unreadable (Android, Windows,
+macOS) the request still applies — only clamp *detection* degrades — and the
+outcome is emitted as a `status` event `{ state: 'net:tuned', message }`.
 
 The on-disk store is a **disposable replica cache**: corruption (e.g. a crash mid-write →
 `OPLOG_CORRUPT`) is detected, the store is purged and the operation retried once —

@@ -1,16 +1,11 @@
-// Swarm UDP socket tuning.
+// Swarm UDP socket tuning — the runtime-agnostic core.
 //
-// VERBATIM COPY of the core net-tune logic — keep it in sync. (Since S33 the original
-// is split for the Bare worklet: `core/net-tune-core.js` holds the logic, `core/
-// net-tune.js` is a thin node:fs binding. This copy stays the flattened single-file
-// form — logic changes over there must land here too.) The repeater deliberately
-// depends on NOTHING from @aliran/core (no crypto, no hyperdrive, no sodium): the whole
-// security story is that this box provably cannot decrypt what it serves, and pulling in
-// the crypto package to reach one networking helper would dilute that. A ~150-line copy is
-// the cheaper trade.
-//
-// This matters MORE here than anywhere else in the system: a repeater exists purely to
-// absorb fan-out, so it is the box most likely to hit a socket-buffer wall.
+// This file has NO imports on purpose. `net-tune.js` (the server entry every Node
+// component imports) binds it to node:fs for the /proc ceiling read; the viewer engine
+// (sdk/player.js) passes its INJECTED fs instead, because the SDK bundles into the Bare
+// worklet where a `node:fs` edge in the module graph becomes a `builtin:` ref the
+// 0.13.x worklet runtime cannot load. Callers that cannot read /proc at all (Android,
+// Windows, macOS) still get the setsockopt itself — only clamp DETECTION degrades.
 //
 // WHY THIS EXISTS
 //
@@ -42,8 +37,6 @@
 // Tuning is BEST EFFORT throughout. A platform that refuses a setsockopt, or a container
 // without /proc, must never take the service down — we report and carry on.
 
-import fs from 'fs'
-
 // 2 MiB in each direction. Modest on purpose: this is a per-socket ceiling the kernel
 // allocates against on demand, not a reservation, but it is still charged to kernel memory
 // on a busy box (one socket pair per swarm, and the broadcaster runs one swarm per
@@ -53,17 +46,19 @@ export const DEFAULT_BUFFER_BYTES = 2 * 1024 * 1024
 const CEILING_PATHS = { recv: '/proc/sys/net/core/rmem_max', send: '/proc/sys/net/core/wmem_max' }
 export const SYSCTL_KEYS = { recv: 'net.core.rmem_max', send: 'net.core.wmem_max' }
 
-// Read the kernel's per-socket buffer ceilings. Linux only; anything else (Windows, macOS,
-// a container without /proc) yields null, which pushes evaluateBuffer onto its readback
-// fallback. Never throws.
-export function readKernelCeilings (readFile = (p) => fs.readFileSync(p, 'utf8')) {
+// Read the kernel's per-socket buffer ceilings via an injected readFile(path) -> string
+// (net-tune.js binds node:fs; the SDK passes its injected fs). Linux only; anything else
+// (Windows, macOS, Android's sandboxed /proc, no readFile at all) yields null, which
+// pushes evaluateBuffer onto its readback fallback. Never throws.
+export function readKernelCeilings (readFile) {
   const out = { recv: null, send: null }
+  if (typeof readFile !== 'function') return out
   for (const dir of ['recv', 'send']) {
     try {
       const n = parseInt(String(readFile(CEILING_PATHS[dir])).trim(), 10)
       if (Number.isFinite(n) && n > 0) out[dir] = n
     } catch {
-      // not Linux, or /proc not mounted — leave null
+      // not Linux, or /proc not readable — leave null
     }
   }
   return out
@@ -104,12 +99,13 @@ export function tuneSocket (socket, { recvBytes = 0, sendBytes = 0, ceilings = {
 }
 
 // Tune both of a swarm's UDP sockets. Awaits dht.ready() because the sockets are bound
-// lazily — calling this before the bind would find nothing to tune.
-export async function tuneSwarm (swarm, { recvBytes = DEFAULT_BUFFER_BYTES, sendBytes = DEFAULT_BUFFER_BYTES, ceilings } = {}) {
+// lazily — calling this before the bind would find nothing to tune. `readFile` feeds the
+// ceiling read when `ceilings` is not supplied.
+export async function tuneSwarm (swarm, { recvBytes = DEFAULT_BUFFER_BYTES, sendBytes = DEFAULT_BUFFER_BYTES, ceilings, readFile } = {}) {
   const report = { sockets: [], clamped: false, error: null, ceilings: null, recvBytes, sendBytes }
   if (!(recvBytes > 0) && !(sendBytes > 0)) return report // operator opted out of both
   try {
-    report.ceilings = ceilings ?? readKernelCeilings()
+    report.ceilings = ceilings ?? readKernelCeilings(readFile)
     await swarm.dht.ready()
     const io = swarm.dht.io
     for (const name of ['serverSocket', 'clientSocket']) {
@@ -150,7 +146,11 @@ export function tuningMessages (report) {
   if (!out.length && report.sockets.length) {
     const c = report.ceilings || {}
     const ceil = c.recv || c.send ? ` (kernel ceilings rmem_max ${c.recv ? mib(c.recv) : '?'} / wmem_max ${c.send ? mib(c.send) : '?'})` : ''
-    out.push(`swarm sockets tuned: recv ${mib(report.recvBytes)}, send ${mib(report.sendBytes)}${ceil}`)
+    // A direction requested as 0 was never touched — say so, rather than "0 MiB",
+    // which reads as if the buffer had been shrunk to nothing (the viewer default
+    // is recv-only, so this is the line every phone logs).
+    const dir = (n) => (n > 0 ? mib(n) : 'untouched')
+    out.push(`swarm sockets tuned: recv ${dir(report.recvBytes)}, send ${dir(report.sendBytes)}${ceil}`)
   }
   return out
 }

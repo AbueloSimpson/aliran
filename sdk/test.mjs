@@ -77,15 +77,40 @@ function ok (name) { n++; console.log('  ok ', name) }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-swarm-'))
   const p = createPlayer({ storeDir: dir, swarm: { maxPeers: 300 } })
   const q = createPlayer({ storeDir: dir + '-b' })
+  const tuned = []
+  p.on('status', (s) => { if (s.state === 'net:tuned') tuned.push(s.message) })
   try {
     await p._ensureStore(); await q._ensureStore() // no join/announce — offline-safe
     assert.strictEqual(p._swarm.maxPeers, 300, 'maxPeers reaches the Hyperswarm instance')
     assert.strictEqual(q._swarm.maxPeers, 64, 'omitted = hyperswarm default untouched')
+    // S33 socket-buffer tuning ran and reported. The text depends on the HOST (a stock
+    // Linux ceiling of 212992 genuinely clamps the 2 MiB default — then the correct
+    // report is the warning), so accept either outcome but require exactly one report.
+    assert.strictEqual(tuned.length, 1, `expected one net:tuned status, got ${tuned.length}`)
+    assert.ok(/swarm sockets tuned|buffer clamped/.test(tuned[0]), `unexpected tuning report: ${tuned[0]}`)
   } finally {
     await p.stop(); await q.stop()
     for (const d of [dir, dir + '-b']) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
   }
   ok('swarm.maxPeers/bootstrap validated + plumbed into Hyperswarm (default preserved)')
+}
+
+// --- swarm socket buffers (S33): validation, defaults, opt-out ---
+// Byte math and defaults are white-box against _swarmBufs — the live setsockopt path is
+// exercised by the group above (and cross-host by test:nettune), where the outcome
+// depends on the machine's kernel ceiling.
+{
+  for (const bad of [{ rcvbufMb: -1 }, { rcvbufMb: 'big' }, { rcvbufMb: NaN }, { sndbufMb: -0.5 }, { sndbufMb: Infinity }]) {
+    assert.throws(() => createPlayer({ swarm: bad }), /swarm\.(rcvbufMb|sndbufMb)/, JSON.stringify(bad))
+  }
+  const MB = 1048576
+  const defaults = createPlayer({})
+  assert.deepStrictEqual(defaults._swarmBufs, { recvBytes: 2 * MB, sendBytes: 0 }, 'viewer default: recv 2 MiB, send untouched')
+  const seed = createPlayer({ swarm: { rcvbufMb: 4, sndbufMb: 1.5 } })
+  assert.deepStrictEqual(seed._swarmBufs, { recvBytes: 4 * MB, sendBytes: Math.floor(1.5 * MB) }, 'overrides in MiB, fractional allowed')
+  const off = createPlayer({ swarm: { rcvbufMb: 0 } })
+  assert.deepStrictEqual(off._swarmBufs, { recvBytes: 0, sendBytes: 0 }, '0 disables — with send defaulting off, nothing is touched')
+  ok('swarm.rcvbufMb/sndbufMb validated; defaults recv 2 MiB / send 0; opt-out clean')
 }
 
 // --- bounded bee cache budget: the store must carry ONE bounded globalCache ---

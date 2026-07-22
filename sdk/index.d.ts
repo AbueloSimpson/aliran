@@ -65,6 +65,14 @@ export interface SwarmConfig {
   maxPeers?: number
   /** Custom DHT bootstrap nodes (local testnets / private DHT). Omit for the public DHT. */
   bootstrap?: Array<{ host: string; port: number }>
+  /** UDP receive-buffer request in MiB (default 2 — a viewer is download-dominant, so
+   *  fan-in absorbs into the receive side). 0 leaves the OS/udx default. Mirrors the
+   *  servers' SWARM_RCVBUF_MB. Best-effort; the outcome is emitted as a 'status'
+   *  event with state 'net:tuned'. */
+  rcvbufMb?: number
+  /** UDP send-buffer request in MiB (default 0 = untouched — viewer reseed upload is
+   *  opportunistic; raise on SDK-based seed nodes). Mirrors SWARM_SNDBUF_MB. */
+  sndbufMb?: number
 }
 
 /**

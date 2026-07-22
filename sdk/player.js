@@ -20,7 +20,9 @@
 //   'streams' (list)     display catalog (no keys inside): after a successful login,
 //                        and re-emitted live whenever the panel edits the catalog
 //                        (title/isLive/art/... — no polling, no re-login)
-//   'status'  ({state})  breadcrumbs: 'feed:open' | 'feed:ready' | 'feed:retune'
+//   'status'  ({state})  breadcrumbs: 'feed:open' | 'feed:ready' | 'feed:retune';
+//                        'net:tuned' also carries {message} — the swarm socket-buffer
+//                        tuning outcome, same text the server components log ([net])
 //   'peers'   (count)    feed-health ticker while a stream is being served
 //   'recovered' (err)    a corrupt store was purged and the operation retried
 //   'error'   (err)      background failures that have no caller to throw to
@@ -80,6 +82,10 @@ import b4a from 'b4a'
 import { panelClient, login as oprfLogin } from './login.js'
 import { isCorruptionError, withRecovery } from './recover.js'
 import { createDriveHandler, playlistUris } from './serve.js'
+// The runtime-agnostic half of core/net-tune.js — no fs import (a node:fs edge in this
+// graph would become a `builtin:` ref the Bare worklet cannot load); the /proc ceiling
+// read gets the engine's INJECTED fs instead. See _tuneSwarmSockets.
+import { tuneSwarm, tuningMessages, DEFAULT_BUFFER_BYTES } from '@aliran/core/net-tune-core.js'
 
 // Minimal emitter: unlike node:events it exists in both runtimes and never throws on
 // an unhandled 'error' event (SDK errors surface to callers as rejections instead).
@@ -218,18 +224,33 @@ function lastSegmentDurationMs (text) {
 // should omit it; SDK-based seed nodes and the repeater appliance (S20) raise it into
 // the hundreds so they can hold big fan-out. bootstrap = custom DHT bootstrap nodes
 // (local testnets / private DHTs) — omit for the public DHT.
+//
+// rcvbufMb / sndbufMb (S33) size the swarm's UDP socket BUFFERS — MiB, mirroring the
+// server envs SWARM_RCVBUF_MB/SWARM_SNDBUF_MB; 0 leaves that direction at the OS/udx
+// default. Viewer defaults: recv 2 MiB, send 0 — a viewer is download-dominant, so the
+// receive buffer is the one that absorbs fan-in while the JS thread is busy; reseed
+// upload is opportunistic and never buffer-bound on a phone uplink. Returns the
+// Hyperswarm constructor opts (ctor) separately from our buffer knobs, which hyperswarm
+// must not see.
 function normalizeSwarmOpts (v) {
-  if (v == null) return null
-  const out = {}
+  const out = { ctor: null, recvBytes: DEFAULT_BUFFER_BYTES, sendBytes: 0 }
+  if (v == null) return out
+  const ctor = {}
   if (v.maxPeers != null) {
     if (!Number.isInteger(v.maxPeers) || v.maxPeers < 1) throw new Error('swarm.maxPeers must be a positive integer')
-    out.maxPeers = v.maxPeers
+    ctor.maxPeers = v.maxPeers
   }
   if (v.bootstrap != null) {
     if (!Array.isArray(v.bootstrap)) throw new Error('swarm.bootstrap must be an array of DHT bootstrap nodes')
-    out.bootstrap = v.bootstrap
+    ctor.bootstrap = v.bootstrap
   }
-  return Object.keys(out).length ? out : null
+  if (Object.keys(ctor).length) out.ctor = ctor
+  for (const [key, dir] of [['rcvbufMb', 'recvBytes'], ['sndbufMb', 'sendBytes']]) {
+    if (v[key] == null) continue
+    if (typeof v[key] !== 'number' || !Number.isFinite(v[key]) || v[key] < 0) throw new Error(`swarm.${key} must be a number >= 0 (MiB; 0 disables)`)
+    out[dir] = Math.floor(v[key] * 1048576)
+  }
+  return out
 }
 
 export class AliranPlayer extends Emitter {
@@ -240,7 +261,9 @@ export class AliranPlayer extends Emitter {
     this._prewarmN = normalizePrewarm(prewarm)
     this._tune = normalizeTune(tune)
     this._zapPrefetch = normalizeZapPrefetch(zapPrefetch)
-    this._swarmOpts = normalizeSwarmOpts(swarm)
+    const swarmOpts = normalizeSwarmOpts(swarm)
+    this._swarmOpts = swarmOpts.ctor
+    this._swarmBufs = { recvBytes: swarmOpts.recvBytes, sendBytes: swarmOpts.sendBytes }
     this._uploadPolicy = normalizeUploadPolicy(uploadPolicy)
     this._zapTimer = null // adjacent-channel warm loop (only when zapPrefetch is on)
     this._zapRanges = new Map() // streamId -> { path, range } — newest warmed segment per neighbor
@@ -1186,20 +1209,21 @@ export class AliranPlayer extends Emitter {
     this._store = new Corestore(this._storeDir, { globalCache: new Rache({ maxSize: 4096 }) })
     await this._store.ready()
     this._swarm = new Hyperswarm(this._swarmOpts ?? {})
-    // NOT tuned here with S29's `core/net-tune.js` — tried and reverted 2026-07-21.
-    // Measured, so the next person does not repeat the experiment: importing it DOES
-    // bundle cleanly and does NOT add a new `builtin:` ref (`builtin:fs` is already in
-    // the shipped bundle from elsewhere in the graph, so the worklet tolerates it). The
-    // reason to leave it out is value, not safety:
-    //   - net-tune reads /proc to detect the kernel clamp; on Android that read simply
-    //     fails, so it can never do more than report "could not tune",
-    //   - and a phone's uplink caps throughput long before a 2 MiB socket buffer does
-    //     (S29's own assessment of the viewer path).
-    // So it would ship a server-side /proc reader into a mobile bundle for no measurable
-    // gain. If a viewer ever genuinely needs tuned sockets — a desktop or repeater host,
-    // where reading /proc is legal — pass a pre-tuned swarm in via the `swarm` option
-    // instead of importing it here. That keeps the SDK's runtime-agnostic contract, which
-    // is also why it takes `fs`/`http` by injection rather than importing them.
+    // S33: size this swarm's UDP socket buffers — the viewer-path completion of S29,
+    // which tuned every server-side swarm (see core/net-tune-core.js for the whole
+    // story: udx multiplexes ALL peer streams over one UDP socket pair, and kernel
+    // buffer overflow is silent stalling, not an error). An earlier note here argued
+    // the viewer path wasn't worth tuning because a phone's uplink caps first — true,
+    // but that only disqualifies the SEND side. A viewer is RECV-dominant: the whole
+    // stream download funnels into the receive buffer, and a worklet thread busy with
+    // crypto drains it late. Hence the defaults request recv 2 MiB / send 0 (left at
+    // the OS/udx default); swarm.rcvbufMb/sndbufMb override (see normalizeSwarmOpts).
+    // Best-effort everywhere: the /proc ceiling read uses the INJECTED fs and on
+    // Android simply degrades (the setsockopt still applies — only clamp detection is
+    // lost), and no failure in here may ever delay or break boot. The awaited
+    // dht.ready() is not added latency: the join right after would trigger the same
+    // bind before any packet flows.
+    await this._tuneSwarmSockets()
     // The first connection after connect() is the panel (we join only its topic
     // first); wire the RPC there. Later feed connections are ignored for RPC (call is
     // already set). If the panel socket drops, clear `call` so the next reconnect
@@ -1215,6 +1239,27 @@ export class AliranPlayer extends Emitter {
         socket.on('close', () => { if (this._call === rpcCall) this._call = null })
       }
     })
+  }
+
+  // Request the configured UDP socket buffer sizes on the swarm just created (also
+  // re-applied when a corruption purge rebuilds the store + swarm). Emits the same
+  // operator lines the servers log — 'status' {state:'net:tuned', message} — so a host
+  // (and adb logcat, via the app's debug relay) can prove the tuning ran on-device.
+  // Never fatal and never throws: an untuned socket is exactly the pre-S33 behavior.
+  async _tuneSwarmSockets () {
+    const { recvBytes, sendBytes } = this._swarmBufs
+    if (!(recvBytes > 0) && !(sendBytes > 0)) return // both directions opted out
+    try {
+      // No encoding arg: bare-fs and node:fs both return a Buffer, and String() of a
+      // Buffer is its utf8 text — the least common denominator the two runtimes share.
+      const readFile = (p) => this._fs.readFileSync(p)
+      const report = await tuneSwarm(this._swarm, { recvBytes, sendBytes, readFile })
+      // Set-dedupe: a clamp yields the SAME warning for both of the pair's sockets
+      // (the text names the host property, not the socket) — emit it once.
+      for (const message of new Set(tuningMessages(report))) this.emit('status', { state: 'net:tuned', message })
+    } catch {
+      // Best-effort by contract — a tuning failure must never surface as a boot error.
+    }
   }
 
   // Open (or re-open, after a corruption purge) the panel DB and join its topic.

@@ -137,5 +137,42 @@ log('B: readKernelCeilings parses /proc and degrades to null off Linux ✓')
   log('E: warnings are actionable and deduped process-wide ✓')
 }
 
+// ===== F: the runtime-agnostic core (S33 split for the Bare worklet) =====
+// core/net-tune-core.js is what sdk/player.js bundles into the Android worklet, where a
+// node:fs edge in the module graph becomes a `builtin:` ref the worklet cannot load. The
+// contract is therefore twofold: the file must import NOTHING, and every fs touch must go
+// through an injected readFile — absent one, ceilings degrade to null (readback fallback)
+// instead of throwing.
+{
+  const fs = await import('fs')
+  const src = fs.readFileSync(new URL('../core/net-tune-core.js', import.meta.url), 'utf8')
+  assert.ok(!/^\s*import\s/m.test(src), 'net-tune-core.js must have no import statements (Bare worklet graph)')
+
+  const core = await import('../core/net-tune-core.js')
+  assert.deepStrictEqual(core.readKernelCeilings(), { recv: null, send: null }, 'no readFile → nulls, no throw')
+  assert.deepStrictEqual(core.readKernelCeilings(() => '8388608'), { recv: 8388608, send: 8388608 }, 'injected readFile honoured')
+
+  // tuneSwarm hands the injected readFile to the ceiling read; a fake swarm keeps this
+  // group pure. Buffers are Buffer-typed on bare-fs, so a Buffer return must parse too.
+  const calls = []
+  const sock = (name) => ({
+    setRecvBufferSize: (n) => calls.push([name, 'recv', n]),
+    getRecvBufferSize: () => 4 * MB,
+    setSendBufferSize: (n) => calls.push([name, 'send', n]),
+    getSendBufferSize: () => 4 * MB
+  })
+  const fakeSwarm = { dht: { ready: async () => {}, io: { serverSocket: sock('server'), clientSocket: sock('client') } } }
+  const report = await core.tuneSwarm(fakeSwarm, { recvBytes: 2 * MB, sendBytes: 0, readFile: () => Buffer.from('8388608\n') })
+  assert.deepStrictEqual(report.ceilings, { recv: 8388608, send: 8388608 }, 'Buffer readFile output parses (bare-fs returns Buffers)')
+  assert.deepStrictEqual(calls, [['server', 'recv', 2 * MB], ['client', 'recv', 2 * MB]], 'recv requested on both sockets, send untouched')
+  assert.strictEqual(report.clamped, false)
+
+  // The viewer default is recv-only; its summary must say "untouched", not "0 MiB",
+  // which would read as if the send buffer had been shrunk to nothing.
+  const line = core.tuningMessages(report)[0]
+  assert.ok(/recv 2 MiB, send untouched/.test(line), `viewer-style summary: ${line}`)
+  log('F: runtime-agnostic core — no imports, injected readFile, recv-only summary ✓')
+}
+
 assert.strictEqual(DEFAULT_BUFFER_BYTES, 2 * MB)
 log('\nnet-tune: ALL PASS')

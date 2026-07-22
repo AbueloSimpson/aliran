@@ -56,15 +56,28 @@ ss -uanm | grep -A1 '0.0.0.0:' | head    # skmem rb=<recv bytes> tb=<send bytes>
 
 ## What Aliran does for you
 
-Every component sizes its swarm sockets at startup (`core/net-tune.js`):
+Every component sizes its swarm sockets at startup (`core/net-tune.js`; the viewer
+engine bundles its runtime-agnostic half, `core/net-tune-core.js`):
 
-| Component | Default request | Env override |
+| Component | Default request | Override |
 |---|---|---|
 | Broadcaster (one swarm **per channel**) | 2 MiB recv / 2 MiB send | `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` |
 | Panel (one swarm, serves the catalog to every client) | 2 MiB / 2 MiB | same |
 | Repeater (one swarm, all mirrored channels) | **4 MiB / 4 MiB** | same |
+| Viewer engine (SDK / the app — one swarm, panel + every feed) | 2 MiB recv / send **untouched** | SDK option `swarm: { rcvbufMb, sndbufMb }` |
 
 Set either to `0` to leave that direction at the OS default.
+
+**The viewer path** is deliberately asymmetric: a viewer is download-dominant, so the
+whole stream funnels into the **receive** side of its one socket pair — and on a phone
+the engine shares a single JS thread with decryption, so the kernel buffer is what
+absorbs bursts while userspace is busy. Upload (re-seeding) is opportunistic and
+saturates a typical uplink long before a bigger send buffer would matter, so send is
+left alone. On Android `/proc/sys/net/core` is not readable from an app: the request
+itself still applies (`setsockopt` needs no privileges), only clamp *detection*
+degrades to a readback comparison. The engine reports the outcome as a
+`status`/`net:tuned` event and the app's worklet logs the same `[net] swarm sockets
+tuned: …` line the servers print, so `adb logcat` can prove it ran on-device.
 
 Two details worth knowing:
 

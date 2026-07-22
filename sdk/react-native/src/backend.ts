@@ -74,8 +74,16 @@ export interface ZapPrefetchConfig {
 // maxPeers raises hyperswarm's total-connection budget (lib default 64) — for
 // SDK-based seed nodes / repeater-style hosts that hold big fan-out. Ordinary
 // viewers should omit it.
+// rcvbufMb / sndbufMb request UDP socket buffer sizes in MiB (0 = leave the OS/udx
+// default; mirrors the servers' SWARM_RCVBUF_MB/SWARM_SNDBUF_MB). Engine defaults:
+// recv 2 MiB — a viewer's whole download funnels into the one UDP socket pair, and
+// an overflowing receive buffer drops packets silently — and send untouched (reseed
+// upload is opportunistic; a phone uplink saturates first). Best-effort on-device:
+// the outcome arrives as {type:'status', state:'net:tuned', message}.
 export interface SwarmConfig {
   maxPeers?: number
+  rcvbufMb?: number
+  sndbufMb?: number
 }
 
 export interface SavedCredentials { username: string; password: string }

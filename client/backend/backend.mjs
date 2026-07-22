@@ -19,7 +19,9 @@
 //                                        zap prefetch (OFF by default — standing
 //                                        bandwidth; see sdk/player.js), swarm
 //                                        tuning ({ maxPeers } — seed nodes only,
-//                                        viewers omit it), and uploadPolicy
+//                                        viewers omit it — and { rcvbufMb, sndbufMb }
+//                                        UDP socket buffers, default recv 2 MiB /
+//                                        send untouched), and uploadPolicy
 //                                        ('reseed' default | 'client-only' = never
 //                                        announce, ~zero viewer-to-viewer upload)
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
@@ -139,7 +141,12 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy) 
   player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy })
   player.on('ready', () => send({ type: 'ready' }))
   player.on('streams', (streams) => send({ type: 'streams', streams }))
-  player.on('status', (status) => send({ type: 'status', ...status }))
+  player.on('status', (status) => {
+    // Mirror the servers' "[net] ..." console line for the socket-buffer tuning
+    // outcome (S33) so plain logcat shows it even without the RN debug relay.
+    if (status && status.state === 'net:tuned') { try { console.log('[net]', status.message) } catch {} }
+    send({ type: 'status', ...status })
+  })
   player.on('peers', (peers) => send({ type: 'status', peers }))
   player.on('recovered', (err) => send({ type: 'status', state: 'store:reset', message: String((err && err.message) || err) }))
   player.on('fallback', (e) => send({ type: 'fallback', ...e }))

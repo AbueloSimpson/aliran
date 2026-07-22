@@ -1642,3 +1642,47 @@ Full detail: `docs/kb/offline-slate.md`.
   `systemctl start caddy` is not a failure). `mkdocs build --strict` green; no `caddy`
   binary on the dev box, so the example is checked by eye and mirrors the production
   config verbatim.
+
+
+### S33 — viewer-path swarm socket tuning (verified on the S22 over the live VPS)
+The deliberately-deferred half of the socket-buffer work (the servers were tuned in
+S29): the viewer engine's single Hyperswarm now sizes its UDP buffers too. An earlier
+session had tried this and reverted it as "no value on a phone" — that assessment was
+half right, and the half matters: a phone's **uplink** does cap first, but that only
+disqualifies tuning the *send* side. A viewer is **download-dominant** — every watched
+feed's traffic funnels into the receive side of one UDP socket pair while the worklet's
+single JS thread is busy with crypto — so the receive buffer is exactly the kernel-side
+shock absorber worth sizing. Defaults: **recv 2 MiB, send untouched**; overridable via
+the SDK `swarm: { rcvbufMb, sndbufMb }` option (MiB, `0` disables — the server envs'
+semantics).
+- **The Bare constraint shaped the design.** `core/net-tune.js` imports `node:fs` for
+  the `/proc` ceiling read, and an fs edge in the worklet bundle graph becomes a
+  `builtin:` ref the 0.13.x runtime cannot load. Split: `core/net-tune-core.js` now
+  holds ALL the logic with **zero imports** (a `test:nettune` group asserts that
+  property on the file text) and takes `readFile` by injection; `net-tune.js` stays the
+  Node entry binding fs, so every server callsite is untouched (suite passes unchanged).
+  The engine passes its already-injected `fs` — on Android the `/proc` read is denied
+  and the code degrades exactly as designed: the `setsockopt` still applies (needs no
+  privileges), only clamp *detection* falls back to the readback comparison.
+- **Proof on hardware** (release APK of this tree, Galaxy S22, live VPS): logcat shows
+  `{"type":"status","state":"net:tuned","message":"swarm sockets tuned: recv 2 MiB,
+  send untouched"}` ~5 s after cold launch — the healthy summary, i.e. the S22's kernel
+  granted the 2 MiB receive request. Worklet boots clean (no `builtin:` refs at all in
+  the new bundle — the previous shipped bundle carried a stray inert `builtin:fs`, gone
+  now), auto-login lands, `espn-east` plays **P2P** (localhost HLS, `peers: 1` ticker),
+  and zapping CDN→P2P→P2P→P2P held up with the engine healthy throughout. One lineup
+  channel (`espn-1-arg`) sat in "Tuning" with an advancing progress bar while its
+  upstream IPTV source limped — the engine kept serving (steady peers, `feed:ready`
+  fired) and zapping away was instant, which is the flaky-source profile the scale test
+  already documented, not a client regression.
+- **Reporting**: the outcome emits as a `status`/`net:tuned` event with the same text
+  the servers log (identical clamp warnings deduped — one socket pair, one host). The
+  app's debug relay (`adb logcat -s ReactNativeJS`, `[backend]` lines) is the proven
+  on-device sink; the worklet also mirrors a `[net]` console line for Bare hosts whose
+  console reaches a log.
+- **Versions**: `@aliran/core` 0.1.1 (new entry point — published 0.1.0 tarballs are
+  immutable and lack the file), `@aliran/player-sdk` 0.1.1 (requires `core ^0.1.1`),
+  `@aliran/react-native` 0.1.1 (SwarmConfig mirror). All three lockfiles regenerated;
+  publish remains a maintainer action (core → player-sdk → react-native, one at a
+  time). Suites: `test:nettune` (new group F), sdk unit (new S33 group), **full
+  `test:sdk` e2e**, client `tsc` + jest 10/10.

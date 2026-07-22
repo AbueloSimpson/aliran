@@ -1,6 +1,6 @@
 {
   "name": "@aliran/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Aliran shared crypto: OPRF login, Argon2id verifiers, key wrapping",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,7 @@
     "./pow.js": "./pow.js",
     "./token.js": "./token.js",
     "./net-tune.js": "./net-tune.js",
+    "./net-tune-core.js": "./net-tune-core.js",
     "./store-gc.js": "./store-gc.js",
     "./package.json": "./package.json"
   },
@@ -24,6 +25,7 @@
     "pow.js",
     "token.js",
     "net-tune.js",
+    "net-tune-core.js",
     "store-gc.js",
     "README.md"
   ],

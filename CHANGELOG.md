@@ -217,6 +217,16 @@ Android phone + Android TV).
   [operator guide](docs/operator-guide.md) and the
   [network-tuning KB page](docs/kb/network-tuning.md) (which also covers conntrack and fd
   limits); `test:nettune` in the required CI lane.
+- The **viewer engine now tunes its swarm too** (S33) — asymmetrically: 2 MiB receive
+  (a viewer's whole download funnels into one socket pair while the worklet thread is
+  busy decrypting), send left at the OS/udx default (reseed upload is opportunistic).
+  SDK option `swarm: { rcvbufMb, sndbufMb }` overrides, mirroring the server envs. The
+  tuning logic split into runtime-agnostic `core/net-tune-core.js` (no `node:fs` in
+  the Bare worklet bundle graph — the `/proc` ceiling read uses the engine's injected
+  `fs` and degrades gracefully where `/proc` is unreadable, e.g. Android) with
+  `core/net-tune.js` as the Node binding; outcome surfaces as a `status`/`net:tuned`
+  event and a `[net] swarm sockets tuned: …` worklet log line. Packages bumped to
+  0.1.1 (`@aliran/core` gains the new entry point; `@aliran/player-sdk` requires it).
 
 **Deploy + CI + tooling**
 - Deploy pack: root-context Dockerfiles, host-network Docker Compose, systemd units,
