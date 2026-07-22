@@ -31,8 +31,13 @@
 //                                        https URL, source 'cdn', port undefined —
 //                                        the player plays it directly, no localhost)
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
-//        { type:'prefs-get' }         -> { type:'prefs', creds, favorites, smoothZapping }
+//        { type:'prefs-get' }         -> { type:'prefs', creds, favorites, smoothZapping,
+//                                        service }
 //        { type:'creds-save', username, password } | { type:'creds-clear' }
+//        { type:'service-save', service: { panelPubKey, name? } } | { type:'service-clear' }
+//                                        (S36 runtime descriptor: the public keyless app
+//                                        persists the operator service entered on its
+//                                        Connect screen; baked builds never send these)
 //        { type:'favorites-set', favorites: [streamId] }   (each replies with 'prefs')
 //        { type:'reconnect' }         -> tear down the active feed's swarm connections
 //                                        and dial fresh (wedged-transport escalation
@@ -59,7 +64,8 @@
 //        { type:'zap-prefetch', enabled }          (echo of a runtime toggle) |
 //        { type:'zap-prefetch', state:'suspended'|'resumed', reason? }   (adaptive gate)
 //        { type:'prefs', creds: {username,password}|null, favorites: [streamId],
-//          smoothZapping: true|false|null }   (null = user never set the toggle)
+//          smoothZapping: true|false|null,   (null = user never set the toggle)
+//          service: {panelPubKey,name?}|null }   (runtime-entered operator service)
 //
 // Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
 // the app-private files dir, the stated tradeoff; sign-out clears them) + favorites
@@ -118,10 +124,15 @@ function readPrefs () {
       favorites: Array.isArray(p && p.favorites) ? p.favorites.filter((x) => typeof x === 'string') : [],
       // "Smooth zapping" toggle: null = the user never chose (boot uses the app's
       // compiled default), true/false = their persisted choice wins.
-      smoothZapping: typeof (p && p.smoothZapping) === 'boolean' ? p.smoothZapping : null
+      smoothZapping: typeof (p && p.smoothZapping) === 'boolean' ? p.smoothZapping : null,
+      // Runtime service descriptor (S36): the operator panel key the public keyless
+      // app connected to. Builds with a baked key ignore it (baked always wins).
+      service: p && p.service && /^[0-9a-f]{64}$/.test(p.service.panelPubKey)
+        ? { panelPubKey: p.service.panelPubKey, ...(typeof p.service.name === 'string' ? { name: p.service.name } : {}) }
+        : null
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null }
+    return { creds: null, favorites: [], smoothZapping: null, service: null }
   }
 }
 
@@ -134,6 +145,9 @@ function writePrefs (prefs) {
 function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
 
 let player = null
+// The panel key the live player was built for — a later {panelPubKey} message with a
+// DIFFERENT key is a service switch (S36) and replaces the engine wholesale.
+let connectedKey = null
 // The operator/user's CONFIGURED upload policy. The network gate (S25) flips the live
 // policy to 'client-only' on cellular/metered and restores THIS on the way back — so a
 // deployment that ships uploadPolicy:'client-only' is never silently upgraded to reseed
@@ -184,6 +198,12 @@ IPC.on('data', (data) => {
     } else if (msg.type === 'creds-clear') {
       writePrefs({ ...readPrefs(), creds: null })
       sendPrefs()
+    } else if (msg.type === 'service-save' && msg.service && /^[0-9a-f]{64}$/.test(msg.service.panelPubKey)) {
+      writePrefs({ ...readPrefs(), service: { panelPubKey: msg.service.panelPubKey, ...(typeof msg.service.name === 'string' ? { name: msg.service.name } : {}) } })
+      sendPrefs()
+    } else if (msg.type === 'service-clear') {
+      writePrefs({ ...readPrefs(), service: null })
+      sendPrefs()
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       writePrefs({ ...readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
       sendPrefs()
@@ -230,7 +250,20 @@ IPC.on('data', (data) => {
       // app's compiled zapPrefetch default; true means the SDK's adaptive defaults.
       const saved = readPrefs().smoothZapping
       const zap = saved == null ? msg.zapPrefetch : saved
-      ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy).connect(msg.panelPubKey).catch(fail)
+      const boot = () => ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy).connect(msg.panelPubKey).catch(fail)
+      if (player && connectedKey && connectedKey !== msg.panelPubKey) {
+        // Service switch (S36: a Connect-screen retry after a wrong key, or "Change
+        // service…"): the swarm, panel bee and every cached feed belong to the OLD
+        // panel, so replace the engine wholesale — full teardown, then a fresh player
+        // on the new key. The RN side waits for the fresh {type:'ready'} before it
+        // logs in, so nothing races the store while stop() drains.
+        const old = player
+        player = null
+        old.stop().catch(() => {}).then(boot)
+      } else {
+        boot()
+      }
+      connectedKey = msg.panelPubKey
     }
   }
 })

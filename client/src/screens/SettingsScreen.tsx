@@ -1,12 +1,15 @@
 // Settings — account, service info, live diagnostics (P2P source + peers + entitled
 // channel count), and sign out. Sign out clears the saved "remember me" credentials
-// (D1) so the next boot lands on Login instead of auto-authorizing.
+// (D1) so the next boot lands on Login instead of auto-authorizing. Public (keyless)
+// builds additionally get "Change service…" (S36): forget the runtime-entered panel
+// key + sign-in and go back to the Connect screen — never offered when the key is
+// baked into the APK (operator flavor).
 import React, { useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend } from '../worklet'
-import { loadServiceDescriptor } from '../config'
+import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -19,6 +22,7 @@ export function SettingsScreen ({ navigation }: Props) {
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
   const [signOutFocused, setSignOutFocused] = useState(false)
+  const [changeFocused, setChangeFocused] = useState(false)
   // "Smooth zapping" (S21): user-facing switch for the engine's adjacent-channel
   // prefetch. null in prefs = never set -> the app default (off) applies.
   const [smoothZap, setSmoothZap] = useState<boolean>(backend.smoothZapping ?? false)
@@ -49,6 +53,17 @@ export function SettingsScreen ({ navigation }: Props) {
     navigation.reset({ index: 0, routes: [{ name: 'Login' }] })
   }
 
+  // "Change service…" (public keyless flavor only): forget the runtime panel key AND
+  // the sign-in (the credentials belong to that panel), then land on Connect. The
+  // engine stays on the old panel until the next Connect submit — the worklet swaps
+  // it wholesale when a different key arrives.
+  function changeService () {
+    backend.clearService()
+    backend.clearCredentials()
+    backend.streams = []
+    navigation.reset({ index: 0, routes: [{ name: 'Connect' }] })
+  }
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.header}>SETTINGS</Text>
@@ -71,8 +86,8 @@ export function SettingsScreen ({ navigation }: Props) {
 
       <Text style={styles.groupTitle}>SERVICE</Text>
       <View style={styles.group}>
-        <Row label="Service" value={service.name} />
-        <Row label="Panel key" value={service.panelPubKey.slice(0, 16) + '…'} />
+        <Row label="Service" value={(hasBakedKey() ? service.name : backend.service?.name) ?? service.name} />
+        <Row label="Panel key" value={panelKeyLabel()} />
         <Row label="Playback" value={service.hybrid?.mode ?? 'p2p-only'} />
       </View>
 
@@ -91,8 +106,29 @@ export function SettingsScreen ({ navigation }: Props) {
         <Text style={styles.signOutText}>Sign out</Text>
       </Pressable>
       <Text style={styles.signOutHint}>Sign out forgets the saved sign-in on this device.</Text>
+
+      {!hasBakedKey() && (
+        <>
+          <Pressable
+            style={[styles.changeService, changeFocused && styles.changeServiceFocused]}
+            onFocus={() => setChangeFocused(true)}
+            onBlur={() => setChangeFocused(false)}
+            onPress={changeService}
+          >
+            <Text style={styles.signOutText}>Change service…</Text>
+          </Pressable>
+          <Text style={styles.signOutHint}>Forgets this service's panel key and sign-in, then returns to the Connect screen.</Text>
+        </>
+      )}
     </ScrollView>
   )
+}
+
+// The service's panel key, truncated for the row: the baked key when the build ships
+// one, else the runtime-entered service's key ('—' before the first Connect).
+function panelKeyLabel (): string {
+  const key = hasBakedKey() ? service.panelPubKey : backend.service?.panelPubKey
+  return key ? key.slice(0, 16) + '…' : '—'
 }
 
 function Row ({ label, value }: { label: string; value: string }) {
@@ -158,5 +194,10 @@ const styles = StyleSheet.create({
   },
   signOutFocused: { backgroundColor: theme.colors.live, borderColor: theme.colors.focus },
   signOutText: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '800' },
-  signOutHint: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 8 }
+  signOutHint: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 8 },
+  changeService: {
+    marginTop: theme.spacing(2), backgroundColor: theme.colors.surface, borderRadius: 10,
+    paddingVertical: 14, alignItems: 'center', borderWidth: Math.max(theme.focusRing, 1), borderColor: 'transparent'
+  },
+  changeServiceFocused: { borderColor: theme.colors.focus, backgroundColor: theme.colors.background }
 })

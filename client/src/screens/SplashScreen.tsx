@@ -8,7 +8,7 @@ import { View, Text, Image, ActivityIndicator, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend } from '../worklet'
-import { loadServiceDescriptor } from '../config'
+import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -26,7 +26,7 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const route = (name: 'Login' | 'Menu') => {
+  const route = (name: 'Connect' | 'Login' | 'Menu') => {
     if (routed.current) return
     routed.current = true
     navigation.replace(name)
@@ -39,6 +39,13 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
     const off = backend.onMessage((m) => {
       if (m.type === 'prefs') {
         if (routed.current) return
+        // Public (keyless) flavor: nothing baked, so the persisted runtime service
+        // decides — connect to it, or land on Connect for first-run entry. A baked
+        // key ignores any persisted service entirely (precedence: baked > runtime).
+        if (!hasBakedKey()) {
+          if (!m.service) { route('Connect'); return }
+          backend.connect(m.service.panelPubKey)
+        }
         if (m.creds) {
           setStatus('Authorizing device')
           backend.login(m.creds.username, m.creds.password)

@@ -6,10 +6,15 @@
 // the per-brand packaging (gradle flavors + baked launcher/splash assets).
 //
 // Two supported paths (see docs/client-build.md):
-//   - Build-time: bundle config/service.json into the app (tools/brand.mjs swaps it).
-//   - Runtime: accept a service descriptor via a QR/deep link and persist it.
-//
-// This stub imports a bundled JSON; swap in runtime loading if you ship one generic APK.
+//   - Build-time (operator flavor): bundle config/service.json WITH a panelPubKey into
+//     the app (tools/brand.mjs swaps it per brand). The key is baked; the app never
+//     shows the Connect screen and the key is not changeable at runtime.
+//   - Runtime (public flavor, S36): bake the committed KEYLESS config/service.public.json
+//     (panelPubKey: "") instead. First run shows the Connect screen (panel key +
+//     username + password), and the descriptor persists in the worklet prefs beside
+//     the other device-local settings. Settings gains "Change service…".
+// Precedence: a baked key always wins — a build that ships one ignores any persisted
+// runtime service and never offers to change it (mirrors the desktop player flavors).
 
 import service from '../config/service.json'
 import type { HybridConfig } from '@aliran/react-native'
@@ -72,9 +77,22 @@ export interface ServiceDescriptor {
   dev?: { username: string; password: string }
 }
 
+// An operator panel public key: 32 bytes as lowercase hex — the one thing a viewer
+// types on the Connect screen (everything else is DHT discovery).
+export const PANEL_KEY_RE = /^[0-9a-f]{64}$/
+
 export function loadServiceDescriptor (): ServiceDescriptor {
-  if (!service?.panelPubKey || service.panelPubKey.startsWith('REPLACE_')) {
+  // An EMPTY panelPubKey is the deliberate keyless marker (the committed
+  // service.public.json): the public flavor, which connects at runtime via the
+  // Connect screen. Only a missing/unedited key is a configuration mistake.
+  if (service?.panelPubKey == null || service.panelPubKey.startsWith('REPLACE_')) {
     throw new Error('Configure config/service.json with your panel public key (see service.example.json).')
   }
   return service as ServiceDescriptor
+}
+
+// True when this build ships an operator key (baked flavor): the app boots straight
+// onto it, ignores any persisted runtime service, and never offers "Change service…".
+export function hasBakedKey (): boolean {
+  return PANEL_KEY_RE.test(service?.panelPubKey ?? '')
 }

@@ -192,6 +192,16 @@ phone + Android TV, and the Windows desktop player).
   co-installable APK (`applicationId com.aliranclient.<id>`) via a property-gated
   gradle flavor; the default no-flavor build is untouched. Ships the fictional
   `sunburst` example brand; operator guide: [docs/white-label.md](docs/white-label.md).
+- **Public (keyless) flavor** — one generic APK, phone + TV, that connects to any
+  operator's service at runtime (the Android analogue of the desktop player's
+  public build): baking the committed keyless `config/service.public.json` routes
+  first run to a **Connect screen** (panel public key + username + password — no
+  URLs, discovery is the DHT); both persist on the device only after a successful
+  sign-in, later launches auto-authorize, and *Settings → Change service…* forgets
+  the service + sign-in and reconnects (the engine is swapped wholesale when a
+  different panel key arrives). A baked operator key always wins and is never
+  changeable at runtime. Viewer guide:
+  [docs/android-viewer-guide.md](docs/android-viewer-guide.md).
 
 **Desktop player (`desktop/`)**
 - Windows desktop player (Electron): the engine (`@aliran/player-sdk`) runs in the

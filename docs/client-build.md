@@ -78,6 +78,8 @@ re-replication. Verified by `npm run test:corrupt` (repo root).
 
 ```
 Splash (boot + auto-auth: "Authorizing device…")
+  ├─ Connect     public (keyless) builds only: first run, or after "Change service…" —
+  │              the viewer enters their operator's panel key + credentials
   ├─ Login       only when there are no saved credentials, or they stopped working
   └─ Menu        icon-bar hub over the featured stream's wallpaper (sections are
      │           descriptor-driven; Exit is TV-only by default)
@@ -105,11 +107,24 @@ Splash (boot + auto-auth: "Authorizing device…")
   the channel-detail panel shows an honest "No program information" placeholder
   instead of a fake guide.
 
-## Configure the panel key
+## Configure the panel key — two flavors, one codebase
 
-- **Build-time:** put the operator `panelPubKey` + branding in `client/config`.
-- **Runtime:** accept a **service-descriptor QR/deep link** so one generic APK works
-  for any operator.
+The build's `config/service.json` decides the flavor (mirrors the desktop player):
+
+- **Operator (baked) flavor:** copy `config/service.example.json` to
+  `config/service.json` and set your `panelPubKey` + branding. The key ships in the
+  APK, the app boots straight onto it, and it is **not** changeable at runtime
+  (Settings shows it read-only). `tools/brand.mjs` swaps this file per brand.
+- **Public (keyless) flavor:** copy the committed `config/service.public.json` to
+  `config/service.json` instead (its `panelPubKey` is the empty string — the
+  deliberate keyless marker). First run shows a **Connect screen** asking for the
+  operator's panel key + username + password; they persist on the device
+  (`aliran-prefs.json`, only after a successful sign-in) and Settings gains
+  **"Change service…"** to forget them and reconnect. One generic APK connects to
+  any operator's panel — phone and TV alike.
+
+Precedence is **baked → persisted runtime service → Connect screen**; a baked key
+always wins and ignores any persisted one.
 
 > **Gradle gotcha:** the release JS-bundling task does not track `client/config/*.json`
 > as an input — after editing `service.json`, delete

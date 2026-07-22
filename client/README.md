@@ -28,8 +28,12 @@ brands/                  white-label brand dirs -> branded APKs via tools/brand.
 # 1. Native project (once): scaffold a react-native-tvos app, copy src/ backend/ config/ in.
 npm install
 
-# 2. Configure the operator panel key
-cp config/service.example.json config/service.json   # set panelPubKey
+# 2. Pick the flavor (config/service.json decides it):
+cp config/service.example.json config/service.json   # OPERATOR flavor: set panelPubKey
+#   — or —
+cp config/service.public.json config/service.json    # PUBLIC flavor: keyless, viewers
+#                                                      enter their operator's panel key
+#                                                      on a first-run Connect screen
 
 # 3. Bundle the Bare backend
 npm run bundle-backend        # -> backend/app.bundle
@@ -37,6 +41,15 @@ npm run bundle-backend        # -> backend/app.bundle
 # 4. Run
 npm run android               # phone or Android TV emulator/device
 ```
+
+**Flavors** (S36, mirrors the desktop player): a BAKED `panelPubKey` ships in the APK,
+boots directly, and is never changeable at runtime. The committed keyless
+`config/service.public.json` (`panelPubKey: ""`) instead routes first run to a
+**Connect screen** (panel key + username + password, persisted on-device after a
+successful sign-in) and adds Settings → **"Change service…"**. Precedence:
+baked → persisted runtime service → Connect. When rebuilding after swapping
+`config/service.json`, delete `android/app/build/generated/assets/react` first — the
+gradle JS-bundle task does not track config JSON as an input (see docs/client-build.md).
 
 ## Requirements
 
@@ -54,5 +67,7 @@ a **phone** and an **Android TV** target. See [`../docs/client-build.md`](../doc
 - [ ] Localhost Range server mapping to the decrypting Hyperdrive + `/assets`
 - [ ] Live catalog `bee.watch()` → stream list; peer-count status
 - [ ] Dual phone+TV manifest (leanback + touchscreen-optional), cleartext localhost
-- [ ] Optional: runtime service-descriptor QR (one generic APK connects to any
-      operator — the desktop player already ships this as its Connect screen)
+- [x] Runtime service descriptor (S36): one generic keyless APK connects to any
+      operator via the first-run Connect screen (panel key + credentials, persisted;
+      Settings → "Change service…") — the Android analogue of the desktop player's
+      public flavor. A QR/deep-link shortcut for the key stays a possible future nicety.

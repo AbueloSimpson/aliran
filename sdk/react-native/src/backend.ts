@@ -95,6 +95,10 @@ export interface SwarmConfig {
 
 export interface SavedCredentials { username: string; password: string }
 
+/** Runtime-entered operator service (S36): persisted by a keyless public build's
+ *  Connect screen. Builds with a baked descriptor never save one (baked wins). */
+export interface SavedService { panelPubKey: string; name?: string }
+
 export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[] }
@@ -121,11 +125,14 @@ export type BackendMessage =
   // 'thin' = neighbor downloads show the pipe has no headroom).
   | { type: 'zap-prefetch'; enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }
   // smoothZapping: the persisted "Smooth zapping" choice — null/absent when the user
-  // never set the toggle (the app's compiled default applies at boot).
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null }
+  // never set the toggle (the app's compiled default applies at boot). service: the
+  // runtime-entered operator service — null/absent unless a keyless build saved one.
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null }
 
 export interface StartOptions {
-  panelPubKey: string
+  /** Omit to boot the worklet WITHOUT connecting (S36 runtime-descriptor flow: read
+   *  prefs first, then connect() with the persisted or user-entered panel key). */
+  panelPubKey?: string
   hybrid?: HybridConfig
   /**
    * Warm entitled feeds after login so the FIRST zap to a channel is fast (the cold DHT
@@ -178,6 +185,9 @@ export class AliranBackend {
   favorites: string[] = []
   /** Persisted "Smooth zapping" choice; null until the user first sets the toggle. */
   smoothZapping: boolean | null = null
+  /** Runtime-entered operator service mirrored from the worklet prefs (S36); null
+   *  until a keyless build's Connect screen saves one. */
+  service: SavedService | null = null
   prefsLoaded = false
 
   private worklet = new Worklet()
@@ -188,21 +198,34 @@ export class AliranBackend {
   // Messages sent before start() wires the IPC stream (e.g. a splash screen asking
   // for prefs while the host is still booting the worklet) queue up and flush then.
   private pending: unknown[] = []
+  // Engine options stashed by start() so a later connect() (runtime-descriptor flow)
+  // boots the engine with the same policy the host compiled in.
+  private engineOpts: Omit<StartOptions, 'panelPubKey' | 'debug'> = {}
 
   /**
    * Boot the worklet with a bare-pack bundle (base64 string or raw bytes) and connect
    * to the panel. Bytes are passed via startBytes so the binary bundle is preserved
-   * intact; the filename extension must be `.bundle`.
+   * intact; the filename extension must be `.bundle`. Omit opts.panelPubKey to boot
+   * WITHOUT connecting — prefs are readable right away, and connect() dials the panel
+   * once the host knows which one (persisted runtime service, or the Connect screen).
    */
   start (bundle: string | Uint8Array, opts: StartOptions) {
     this.debug = !!opts.debug
+    this.engineOpts = { hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch, swarm: opts.swarm, uploadPolicy: opts.uploadPolicy }
     const bytes = typeof bundle === 'string' ? b4a.from(bundle, 'base64') : bundle
     this.worklet.start('/app.bundle', bytes as any)
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
-    this.send({ panelPubKey: opts.panelPubKey, hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch, swarm: opts.swarm, uploadPolicy: opts.uploadPolicy })
+    if (opts.panelPubKey) this.connect(opts.panelPubKey)
     const queued = this.pending; this.pending = []
     for (const m of queued) this.send(m)
+  }
+
+  /** Connect (or re-connect) the engine to a panel. With the engine already on a
+   *  DIFFERENT panel this is a service switch: the worklet tears the old engine down
+   *  and boots fresh — wait for the new {type:'ready'} before logging in. */
+  connect (panelPubKey: string) {
+    this.send({ ...this.engineOpts, panelPubKey })
   }
 
   onMessage (fn: (m: BackendMessage) => void) {
@@ -236,6 +259,10 @@ export class AliranBackend {
   /** Persist "remember me" credentials (device-local; sign-out clears them). */
   saveCredentials (username: string, password: string) { this.send({ type: 'creds-save', username, password }) }
   clearCredentials () { this.creds = null; this.send({ type: 'creds-clear' }) }
+  /** Persist the runtime-entered operator service (keyless public builds; S36). */
+  saveService (service: SavedService) { this.service = service; this.send({ type: 'service-save', service }) }
+  /** Forget the runtime service ("Change service…" — never affects a baked key). */
+  clearService () { this.service = null; this.send({ type: 'service-clear' }) }
   /** Toggle a favorite; the worklet persists and answers with the new prefs. */
   toggleFavorite (streamId: string) {
     const next = this.favorites.includes(streamId)
@@ -262,7 +289,7 @@ export class AliranBackend {
         const msg = JSON.parse(line) as BackendMessage
         // Never log the raw 'prefs' line — it can carry the saved password.
         if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.prefsLoaded = true }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.prefsLoaded = true }
         if (msg.type === 'streams') this.streams = msg.streams
         if (msg.type === 'port') {
           this.port = msg.port ?? null

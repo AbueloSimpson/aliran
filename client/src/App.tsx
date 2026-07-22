@@ -2,6 +2,8 @@
 // Boots the Bare backend behind the splash, then:
 //
 //   Splash (auto-auth with saved credentials, D1)
+//     ├─ Connect (public keyless flavor only, S36: no baked key and no persisted
+//     │           runtime service — enter the operator's panel key + credentials)
 //     ├─ Login   (exception path: no/invalid saved credentials)
 //     └─ Menu    (hub: icon bar over the featured stream's wallpaper)
 //          ├─ Live        one fullscreen video surface + browse/detail overlays
@@ -16,8 +18,9 @@ import React, { useEffect, useState } from 'react'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { backend } from './worklet'
-import { loadServiceDescriptor } from './config'
+import { hasBakedKey, loadServiceDescriptor } from './config'
 import { SplashScreen } from './screens/SplashScreen'
+import { ConnectScreen } from './screens/ConnectScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { MenuScreen } from './screens/MenuScreen'
 import { LiveScreen } from './screens/LiveScreen'
@@ -27,6 +30,7 @@ import { SettingsScreen } from './screens/SettingsScreen'
 
 export type RootStackParamList = {
   Splash: undefined
+  Connect: undefined
   Login: undefined
   Menu: undefined
   Live: { streamId?: string } | undefined
@@ -51,7 +55,11 @@ export default function App () {
     const off = backend.onMessage((m) => {
       if (m.type === 'ready') setReady(true)
     })
-    backend.boot(service.panelPubKey, service.hybrid)
+    // Baked (operator) flavor: connect to the shipped key right away — unchanged.
+    // Public (keyless) flavor: boot the worklet idle; Splash reads the persisted
+    // runtime service and either connect()s or routes to the Connect screen.
+    if (hasBakedKey()) backend.boot(service.panelPubKey, service.hybrid)
+    else backend.bootIdle(service.hybrid)
     let offNet: (() => void) | undefined
     try {
       // Both signals matter: `isConnectionExpensive` gates prefetch, and either that OR
@@ -70,6 +78,7 @@ export default function App () {
             <SplashScreen {...props} backendReady={ready} />
           )}
         </Stack.Screen>
+        <Stack.Screen name="Connect" component={ConnectScreen} />
         <Stack.Screen name="Login">
           {(props: NativeStackScreenProps<RootStackParamList, 'Login'>) => (
             <LoginScreen {...props} backendReady={ready} />

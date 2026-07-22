@@ -31,6 +31,14 @@ class Backend extends AliranBackend {
     // of DHT topics at once; a bounded TV lineup warms fully.
     this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, debug: true })
   }
+
+  // Public (keyless) flavor, S36: boot the worklet WITHOUT a panel so the persisted
+  // prefs — including a runtime-saved service — are readable first. Splash then either
+  // connect()s to the saved panel or routes to the Connect screen. Same engine policy
+  // as boot(); only the panel key arrives later.
+  bootIdle (hybrid?: HybridConfig) {
+    this.start(bundleBase64, { hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, debug: true })
+  }
 }
 
 export const backend = new Backend()

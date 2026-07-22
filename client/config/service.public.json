@@ -1,0 +1,5 @@
+{
+  "//": "PUBLIC (keyless) service descriptor — the generic APK flavor. The empty panelPubKey deliberately routes first run to the Connect screen, where the viewer enters their operator's panel key + credentials at runtime (persisted on the device). Build the public APK by copying this file over config/service.json (back up any operator config first); see client/README.md.",
+  "panelPubKey": "",
+  "name": "Aliran"
+}

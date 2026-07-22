@@ -41,6 +41,12 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
   `playRaw()`, `reconnect()` (tear down the active feed's swarm connections and dial
   fresh — the wedged-transport escalation), `onMessage()`, with `streams` / `port` /
   `url` / `source` cached for screens that mount after the one-shot replies.
+  **Runtime service descriptor** (keyless generic apps): omit `panelPubKey` from
+  `start()` to boot the worklet without connecting, read the persisted prefs, then
+  `connect(panelPubKey)` — with the engine already on a *different* panel this swaps
+  it wholesale (teardown + fresh engine), so wait for the new `{type:'ready'}` before
+  logging in. `saveService()` / `clearService()` persist the viewer-entered service
+  beside the saved credentials (mirrored on `backend.service`).
 - **`<AliranVideo>`** — chrome-free video surface: plays the ACTIVE source URL (a
   localhost P2P URL, or a redirect channel's remote URL passed through verbatim),
   auto-retries while the P2P live edge replicates, and remounts on `feed-changed`
