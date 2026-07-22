@@ -24,7 +24,9 @@ to the channel's own bitrate at most), and stops when you close the app. See
 
 ## 2. Install
 
-Your operator gives you one of two files:
+Your operator gives you one of two files — or you can download the generic
+public build yourself from the project's
+[releases page](https://github.com/AbueloSimpson/aliran/releases/latest):
 
 - **`Aliran Setup <version>.exe`** — a normal installer: run it, and the app
   lands in your Start menu. It installs per-user, so no administrator prompt.

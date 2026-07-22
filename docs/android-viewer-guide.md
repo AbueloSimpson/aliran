@@ -24,9 +24,12 @@ you close the app. On mobile data it behaves better than most: see
 
 ## 2. Install
 
-Your operator hands you an APK file (usually `aliran-public-arm64.apk` or their
-own branded name). It isn't from an app store, so Android asks you to allow the
-install:
+Your operator hands you an APK file (usually `aliran-android-public-arm64.apk`
+or their own branded name) — or you can download the generic public build
+yourself from the project's
+[releases page](https://github.com/AbueloSimpson/aliran/releases/latest)
+(pick the `arm64` APK for real phones and TVs). It isn't from an app store, so
+Android asks you to allow the install:
 
 - **Phone / tablet:** open the APK (from Files, your browser's downloads, or a
   link your operator sent). Android asks to allow installs from that app —
