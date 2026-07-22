@@ -102,6 +102,9 @@ studio.example.com {
 }
 ```
 
+(`basic_auth` is the Caddy ≥ 2.8 spelling of the directive; older packaged builds call
+it `basicauth` — same syntax otherwise.)
+
 ⚠ **`basic_auth` must not cover `/api/*`.** HTTP allows exactly one `Authorization`
 header, and both layers want it. The dashboard authenticates to its own API with
 `Authorization: Bearer <token>`; the moment its JavaScript sets that, it **replaces** the
@@ -117,8 +120,10 @@ $ caddy validate --config /etc/caddy/Caddyfile
 $ systemctl start caddy
 ```
 
-Give it a few seconds. A `curl` fired immediately after `start` returns `000` because it
-raced the ACME exchange — that is not a failure.
+Give it a few seconds. Issuance is automatic — in production it completed via the
+`tls-alpn-01` challenge on port 443 with no extra configuration — but a `curl` fired
+immediately after `start` returns `000` because it raced that ACME exchange. That is
+not a failure; retry a few seconds later.
 
 ## 6. Verify, including the case that actually broke
 

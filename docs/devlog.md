@@ -1613,3 +1613,32 @@ Full detail: `docs/kb/offline-slate.md`.
   `examples/headless-player.mjs` (the quickstart as a program; resolves the SDK
   through the workspace), and a **Player SDK docs-site page** (`docs/sdk.md`) —
   `mkdocs build --strict` green.
+
+### Publishing the dashboards — the exposure pattern, folded back into the repo (verified)
+- The S13 deploy pack shipped `deploy/Caddyfile.example` with no auth guidance. The
+  pattern that survived contact with a real deployment (the broadcaster dashboard went
+  public over TLS on 2026-07-21) now lives in the repo: `basic_auth` **scoped to the
+  UI only** (`@ui not path /api/*`), a bcrypt placeholder (`caddy hash-password`,
+  cost 14), the broadcaster (:3310) as the worked example with the panel (:3210)
+  flagged as the bigger decision (its API creates users and grants channels — own
+  credential, if exposed at all), and a commented `remote_ip` allowlist variant.
+- Why the scope is load-bearing (this shipped broken on first delivery): HTTP has ONE
+  `Authorization` header. The dashboard sends `Bearer <token>` to its own API, which
+  replaces the browser's automatic `Basic …`, so an unscoped gate 401s every API call
+  and the browser re-prompts on every click. Stated honestly everywhere: the UI gets
+  two gates, the API keeps its one rate-limited Bearer gate — no header-based
+  mechanism can add a second; an IP allowlist or mTLS can.
+- Two lessons that generalise, now in the docs: **verify layered auth with the
+  composed request** (each layer in isolation passes while the combination is broken —
+  `POST /api/login` through the proxy, then Bearer `GET /api/channels`, must return
+  200 with no `www-authenticate`), and **a P2P host is not "outbound only" behind a
+  firewall** — a broadcaster holds ~2 UDP sockets per channel on random ephemeral
+  ports, and a public IP is addressed directly by peers (no NAT conntrack to mask the
+  gap), so a default-deny ufw silently degrades seeding unless the ephemeral UDP range
+  is allowed; verified by inbound `/proc/net/snmp` datagram counters climbing with
+  `RcvbufErrors` 0.
+- Full walkthrough: `docs/kb/public-dashboards.md` (DNS before Caddy, host install,
+  credential hygiene, the ACME race — a first `curl` returning 000 after
+  `systemctl start caddy` is not a failure). `mkdocs build --strict` green; no `caddy`
+  binary on the dev box, so the example is checked by eye and mirrors the production
+  config verbatim.

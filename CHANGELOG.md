@@ -222,6 +222,16 @@ Android phone + Android TV).
 - Deploy pack: root-context Dockerfiles, host-network Docker Compose, systemd units,
   Caddy TLS recipe, `sysctl` drop-in; CI runs the deterministic suites, best-effort DHT
   e2e, and docker-build smoke on every push.
+- Publishing the dashboards, hardened by a real deployment: `deploy/Caddyfile.example`
+  now ships the **scoped** `basic_auth` pattern (`@ui not path /api/*` — the dashboards
+  send `Authorization: Bearer` to their own APIs and HTTP has one `Authorization`
+  header, so an unscoped gate 401s every API call and the browser re-prompts on every
+  click), states the resulting posture honestly (UI gets two gates, the API keeps its
+  one rate-limited Bearer gate; a `remote_ip` allowlist is the real second layer), and
+  links the full walkthrough `docs/kb/public-dashboards.md` — DNS-first ordering,
+  credential hygiene, the verification that actually catches the header collision, and
+  the ufw ephemeral-UDP rule without which a default-deny firewall silently degrades
+  P2P seeding.
 - e2e suites for every subsystem (`test:core`, `test:sdk`, `test:admin-api`,
   `test:broadcaster-api`, `test:register`, `test:repeater`, `test:serve`,
   `test:retention`, login-flood suites, …) plus `tools/acceptance-remote.mjs` — a

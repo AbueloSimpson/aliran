@@ -11,6 +11,12 @@
 #   ssh -N -L 3210:127.0.0.1:3210 -L 3310:127.0.0.1:3310 user@your-vps
 # then browse http://127.0.0.1:3210 (panel) and http://127.0.0.1:3310 (broadcaster).
 #
+# Certificates are automatic (Let's Encrypt). In production, issuance completed via
+# the tls-alpn-01 challenge on port 443 with no extra configuration. A freshly
+# started Caddy races its own ACME flow for a few seconds — a first curl returning
+# 000 right after `systemctl start caddy` is the exchange still in flight, not a
+# failure. Retry a few seconds later.
+#
 # ---------------------------------------------------------------------------------
 # ⚠ basic_auth MUST NOT cover /api/* — HTTP has ONE Authorization header
 # ---------------------------------------------------------------------------------
@@ -28,22 +34,31 @@
 # off the dashboard; it does not harden the API. If you want a real second layer on
 # the API, use something that does not touch the Authorization header — an IP
 # allowlist (see the commented block) or mTLS.
+#
+# (`basic_auth` is the Caddy >= 2.8 spelling of the directive; older packaged builds
+# call it `basicauth` — same syntax otherwise.)
 
-panel.example.com {
-	@ui not path /api/*
-	basic_auth @ui {
-		# caddy hash-password --plaintext 'your-password'
-		operator $2a$14$REPLACE_WITH_YOUR_OWN_BCRYPT_HASH
-	}
-	reverse_proxy 127.0.0.1:3210
-}
-
+# The broadcaster control dashboard (:3310) — publish this one first: it is the
+# smaller surface (starts/stops channels, but cannot create users or grants).
 studio.example.com {
 	@ui not path /api/*
 	basic_auth @ui {
+		# caddy hash-password --plaintext 'your-password'   (bcrypt, cost 14 — the default)
 		operator $2a$14$REPLACE_WITH_YOUR_OWN_BCRYPT_HASH
 	}
 	reverse_proxy 127.0.0.1:3310
+}
+
+# The panel admin dashboard (:3210) takes exactly the same shape — but exposing it
+# is a BIGGER decision: its API can create users and grant channels. Leaving it
+# loopback-only behind the SSH tunnel is a fine permanent answer. If you do publish
+# it, give it its OWN password — do not reuse the broadcaster's hash.
+panel.example.com {
+	@ui not path /api/*
+	basic_auth @ui {
+		operator $2a$14$A_DIFFERENT_HASH_FOR_THE_PANEL
+	}
+	reverse_proxy 127.0.0.1:3210
 }
 
 # Stronger alternative — an IP allowlist composes with the app's Bearer auth because
