@@ -131,10 +131,19 @@ export const config = {
     maxWaitMs: int(process.env.RESUME_PACE_MAX_MS, 1000),
     // How many channel starts run CONCURRENTLY on boot. A start is mostly I/O wait (corestore
     // open off disk, swarm join) during which the event loop is idle, so overlapping several
-    // cuts total recovery time roughly in proportion — sequential ~5 s/ch became the wall. The
+    // cuts total recovery time roughly in proportion — sequential ~5 s/ch was the wall. The
     // adaptive gate above still throttles LAUNCH rate under load, so concurrency buys speed
     // without re-saturating the loop. 1 = the old strictly-sequential resume.
-    concurrency: int(process.env.RESUME_CONCURRENCY, 4)
+    //
+    // Default 12, measured on the live 83-channel / 4-vCPU box: full recovery 451 s (seq) →
+    // 40 s, 0 /healthz drops, ramp CPU peak 77 % (< the 80 % policy). Up to ~8 the ramp is
+    // effectively free (I/O-bound, CPU stayed BELOW steady-state); 12 trades a little CPU
+    // headroom during the one-time startup burst for the fastest comeback. A high default is
+    // safe on smaller hosts BECAUSE of the gate: on a slow/constrained box the loop lags, the
+    // gate holds launches back, and effective concurrency self-limits — fast where there's
+    // headroom, gentle where there isn't. Lower it if a host must keep the startup burst well
+    // clear of its CPU ceiling.
+    concurrency: int(process.env.RESUME_CONCURRENCY, 12)
   },
   // Scratch dir where ffmpeg writes the live HLS window before the mirror copies it into
   // the feed. Defaults to the OS temp dir (disk-backed in a container). Point HLS_WORK_DIR

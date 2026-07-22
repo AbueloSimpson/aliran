@@ -120,6 +120,12 @@ Android phone + Android TV).
   already caused. See [kb/offline-slate.md](docs/kb/offline-slate.md).
 - **Per-channel ingest/demuxer tuning** (`probesize`/`analyzeduration`/`thread_queue_size`/
   `discardcorrupt`) for difficult push encoders, editable in the control UI.
+- **Fast, observable boot resume**: the control server starts before the auto-resume (not
+  after), which runs bounded-concurrent (`RESUME_CONCURRENCY`, default 12) with adaptive
+  event-loop back-pressure so it never starves the API. An unauthenticated `GET /healthz`
+  reports `{up, resuming, resumed, total, …}` throughout — point uptime checks there. Measured
+  on the live 83-channel box: full recovery 451 s → 40 s, with the API responsive the whole
+  time (previously `/api` was dark for the entire ~7 min ramp).
 - Control HTTP API + no-build web UI: add/edit/start/stop channels, ingest +
   transcode forms driven by the capability probe, push-URL copy, logs dialog, honest
   state badges (`ON AIR` / `WAITING FOR PUBLISHER` / `RETRYING`; a slated channel is
