@@ -36,8 +36,8 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
 />
 ```
 
-- **`AliranBackend`** — boots the worklet from a [bare-pack](../../docs/client-build.md)
-  bundle (base64 or bytes) and speaks the engine's IPC protocol: `login()`, `play()`,
+- **`AliranBackend`** — boots the worklet from a
+  [bare-pack](https://abuelosimpson.github.io/aliran/client-build/) bundle (base64 or bytes) and speaks the engine's IPC protocol: `login()`, `play()`,
   `playRaw()`, `reconnect()` (tear down the active feed's swarm connections and dial
   fresh — the wedged-transport escalation), `onMessage()`, with `streams` / `port` /
   `url` / `source` cached for screens that mount after the one-shot replies.
@@ -71,7 +71,8 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
 
 Requirements: peers `react-native-bare-kit` (min SDK 29) and `react-native-video`;
 Android release builds need cleartext-to-loopback permitted for the local media
-server (see `docs/client-build.md`). Ships TypeScript source (Metro consumes it
+server (see the [client build guide](https://abuelosimpson.github.io/aliran/client-build/)).
+Ships TypeScript source (Metro consumes it
 directly); if the package lives outside your app root (monorepo / `file:` dep), add
 its path to Metro `watchFolders` and map its peers in `tsconfig` paths — see
 `client/metro.config.js` + `client/tsconfig.json`.

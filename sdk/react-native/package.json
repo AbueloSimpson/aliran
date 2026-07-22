@@ -1,16 +1,40 @@
 {
   "name": "@aliran/react-native",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Aliran React Native binding — Bare worklet host + drop-in <AliranVideo> on react-native-video",
   "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "peerDependencies": {
-    "b4a": "*",
-    "react": "*",
-    "react-native": "*",
-    "react-native-bare-kit": "*",
-    "react-native-video": "*"
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbueloSimpson/aliran.git",
+    "directory": "sdk/react-native"
   },
-  "comment": "Ships TypeScript source — Metro consumes it directly (RN CLI's default sourceExts include ts/tsx). No native code of its own: react-native-bare-kit provides the worklet runtime and react-native-video the player. The host app supplies the worklet bundle (bare-pack output; see client/backend). Install alongside those peers; with react-native-tvos prereleases use --legacy-peer-deps."
+  "homepage": "https://abuelosimpson.github.io/aliran/sdk/",
+  "bugs": "https://github.com/AbueloSimpson/aliran/issues",
+  "keywords": [
+    "react-native",
+    "android-tv",
+    "p2p",
+    "streaming",
+    "ott",
+    "hls",
+    "holepunch",
+    "aliran"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "b4a": "^1.6.6",
+    "react": ">=18",
+    "react-native": "*",
+    "react-native-bare-kit": ">=0.13.3",
+    "react-native-video": "^6"
+  },
+  "comment": "Ships TypeScript source — Metro consumes it directly (RN CLI's default sourceExts include ts/tsx). No native code of its own: react-native-bare-kit provides the worklet runtime and react-native-video the player. The host app supplies the worklet bundle (bare-pack output; see client/backend). The react-native peer stays '*' on purpose: TV apps install it as an npm alias of react-native-tvos, whose prerelease versions fail any strict semver range (ERESOLVE) — with those, install with --legacy-peer-deps."
 }

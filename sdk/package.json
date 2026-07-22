@@ -1,22 +1,61 @@
 {
   "name": "@aliran/player-sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Headless Aliran player engine — P2P OPRF login, catalog, and localhost HLS serving (Node + Bare)",
   "license": "MIT",
   "type": "module",
   "main": "index.js",
+  "types": "index.d.ts",
   "exports": {
-    ".": "./index.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
     "./player.js": "./player.js",
     "./login.js": "./login.js",
     "./recover.js": "./recover.js",
-    "./serve.js": "./serve.js"
+    "./serve.js": "./serve.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "player.js",
+    "login.js",
+    "recover.js",
+    "serve.js",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbueloSimpson/aliran.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://abuelosimpson.github.io/aliran/sdk/",
+  "bugs": "https://github.com/AbueloSimpson/aliran/issues",
+  "keywords": [
+    "p2p",
+    "streaming",
+    "ott",
+    "hls",
+    "player",
+    "holepunch",
+    "hyperswarm",
+    "hyperdrive",
+    "oprf",
+    "aliran"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "node test.mjs"
   },
   "dependencies": {
-    "@aliran/core": "file:../core",
+    "@aliran/core": "^0.1.0",
     "b4a": "^1.6.6",
     "corestore": "^6.18.0",
     "hyperbee": "^2.20.0",
@@ -26,5 +65,5 @@
     "protomux-rpc": "^1.5.0",
     "rache": "^1.0.0"
   },
-  "comment": "Runtime-agnostic: player.js takes injected { http, fs } so it runs in Node (index.js wires node builtins) and in the Bare worklet (client/backend/backend.mjs wires bare-http1/bare-fs). Keep dependency ranges in sync with client/backend/package.json — the Android bundle resolves this same graph."
+  "comment": "Runtime-agnostic: player.js takes injected { http, fs } so it runs in Node (index.js wires node builtins) and in the Bare worklet (client/backend/backend.mjs wires bare-http1/bare-fs). Keep dependency ranges in sync with client/backend/package.json — the Android bundle resolves this same graph. @aliran/core is a semver range for publishability; inside the repo the npm workspace (root package.json) and client/backend's direct file:../../core dep both satisfy it with the local copy — nothing is fetched from the registry."
 }

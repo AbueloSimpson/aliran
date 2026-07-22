@@ -6,6 +6,17 @@ the signed catalog DB, performs the OPRF login (no plaintext password ever leave
 process), and serves entitled encrypted feeds + catalog art on a localhost Range HTTP
 server that any HLS-capable player can consume.
 
+## Install
+
+```sh
+npm install @aliran/player-sdk
+```
+
+Node >= 20 (or the Bare runtime — see below). TypeScript definitions ship with the
+package (`index.d.ts`). Inside the [Aliran monorepo](https://github.com/AbueloSimpson/aliran)
+this is the `sdk/` npm workspace; the Android app's worklet consumes the very same
+code via `file:` (see `client/backend`).
+
 ```js
 import { createPlayer } from '@aliran/player-sdk'
 
@@ -124,8 +135,11 @@ are served back to other viewers on request (opportunistic, demand-driven upload
 that strengthens the swarm). `'client-only'` joins **unannounced** (`server:
 false`): the peer is not discoverable on those topics, so other viewers can never
 dial it — practically **zero viewer-to-viewer upload** by construction, at the
-swarm-wide cost of one fewer re-seeder. Boot-time option. See
-`docs/kb/viewer-bandwidth.md` for measured numbers.
+swarm-wide cost of one fewer re-seeder. Boot-time option; `setUploadPolicy()`
+switches it live (re-joins the active topics and drops standing reseed
+connections without blipping playback). See the
+[viewer bandwidth page](https://abuelosimpson.github.io/aliran/kb/viewer-bandwidth/)
+for measured numbers.
 
 ## Swarm tuning (seed nodes)
 
@@ -165,5 +179,8 @@ The app's worklet (`client/backend/backend.mjs`) is a thin IPC shell over `playe
 - `npm run test:serve` (repo root) — deterministic serving-core test: progressive
   first-byte-before-full-blob, availability wait, Range math, playlist read-ahead.
 
-For React Native apps, see **[`@aliran/react-native`](react-native/README.md)** — a
-drop-in `<AliranVideo>` component + worklet host built on this engine.
+For React Native apps, see
+**[`@aliran/react-native`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/react-native)** —
+a drop-in `<AliranVideo>` component + worklet host built on this engine. A runnable
+headless example lives in
+[`examples/headless-player.mjs`](https://github.com/AbueloSimpson/aliran/tree/main/examples).
