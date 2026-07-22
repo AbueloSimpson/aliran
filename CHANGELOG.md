@@ -158,6 +158,13 @@ Android phone + Android TV).
   and survives as e2e-harness infrastructure; **P2P channels have no CDN failover,
   by design**.)
 - Bounded hyperbee caches across every store (long-uptime heap safety).
+- **npm-ready packaging (S32)** for `@aliran/core` / `@aliran/player-sdk` /
+  `@aliran/react-native` (0.1.0): registry-publishable metadata (`files`,
+  `repository`, `publishConfig`, semver-ranged `@aliran/core` dep — the workspace
+  and the app's `file:` graph still resolve it locally), hand-maintained TypeScript
+  definitions (`sdk/index.d.ts`) for the whole engine surface, a `@aliran/core`
+  README, a runnable headless example (`examples/headless-player.mjs`), and a
+  Player SDK page on the docs site.
 
 **React Native binding (`sdk/react-native/`, `@aliran/react-native`)**
 - `AliranBackend` (worklet host, IPC protocol, prefs) + `<AliranVideo>`: tune
