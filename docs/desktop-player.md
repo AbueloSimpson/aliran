@@ -13,6 +13,12 @@ loads in Electron unchanged), and the renderer is a plain React app playing the
 engine's localhost HLS with hls.js. If you are building your own desktop viewer,
 `desktop/` is the working reference for the whole shape.
 
+![The browse overlay over live video — category rail, numbered channel list with
+program-guide now-lines](img/desktop/browse.png)
+
+*Screenshots on this page and the viewer guide show demo channels from the
+broadcaster's built-in `test` source (colour bars) — every UI element is real.*
+
 ---
 
 ## 1. Architecture

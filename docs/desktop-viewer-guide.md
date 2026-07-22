@@ -55,12 +55,20 @@ finds your service on a global peer-to-peer network using the key alone. The key
 is public (it identifies the service, it doesn't unlock anything), your password
 is what signs you in — and it never leaves your computer in readable form.
 
+![The Connect screen with the three fields filled in](img/desktop/connect.png)
+
 Press **Connect**. The first connection can take up to a minute while the app
 finds the network; after that, the app remembers everything and every later
 launch goes straight to live TV. If it fails, see
 [§8](#8-when-something-doesnt-work).
 
+*(The screenshots in this guide show a small demo service broadcasting colour
+bars — your operator's channels appear the same way, with their names, logos and
+programs.)*
+
 ## 4. Watching TV
+
+![Fullscreen video with the now-playing bar](img/desktop/live-bar.png)
 
 Everything works with the keyboard (like a remote) and the mouse equally.
 
@@ -74,6 +82,10 @@ Everything works with the keyboard (like a remote) and the mouse equally.
 | Subtitles / audio language | `c` (or the `CC` button) — shown only when the current channel actually carries tracks |
 | Go back / close a panel | `Esc` |
 | Main menu (Favorites, Search, Settings) | `Esc` from fullscreen video |
+
+![The channel list and category rail over the video](img/desktop/browse.png)
+
+![Channel details with the program guide](img/desktop/info-epg.png)
 
 Things that are normal:
 
