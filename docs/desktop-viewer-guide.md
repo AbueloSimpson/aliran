@@ -42,9 +42,9 @@ per-publisher). If you got the file from your operator, click **More info →
 Run anyway**. If you got it from somewhere you don't trust — don't.
 
 **macOS** — pick the file for your Mac's chip (Apple menu →
-*About This Mac*): **`…-arm64…`** for Apple silicon (M-series), the one
-without `arm64` for Intel. The **`.dmg`** is the normal route: open it and
-drag **Aliran** into *Applications* (the `.zip` is the same app, just
+*About This Mac*): **`…-arm64…`** for Apple silicon (M-series),
+**`…-intel…`** for an Intel Mac. The **`.dmg`** is the normal route: open it
+and drag **Aliran** into *Applications* (the `.zip` is the same app, just
 unpacked by double-click).
 
 **About the macOS warning:** these builds aren't notarized with Apple (same
