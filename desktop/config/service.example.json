@@ -1,0 +1,8 @@
+{
+  "panelPubKey": "REPLACE_WITH_YOUR_PANEL_PUBLIC_KEY_HEX",
+  "name": "Aliran",
+  "branding": {
+    "colors": {}
+  },
+  "sections": {}
+}

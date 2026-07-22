@@ -47,5 +47,8 @@ Thumbs.db
 .vscode/
 *.swp
 
+# Desktop player — per-deployment descriptor is operator-local (see service.example.json)
+desktop/config/service.json
+
 # Claude Code personal project settings (machine-specific permissions)
 .claude/settings.local.json

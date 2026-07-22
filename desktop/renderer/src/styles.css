@@ -1,0 +1,345 @@
+/* Aliran desktop player — the S18 design language on the web platform. Every color
+ * comes from the CSS custom properties applyTheme() sets from the operator
+ * descriptor (--c-*, see theme.ts) — no brand literals in the rules below.
+ * Focus grammar (ported): accent border box (menu entries), accent underline
+ * (category rail), light row fill (lists). */
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: var(--c-background);
+  color: var(--c-text);
+  overflow: hidden;
+  user-select: none;
+}
+
+#root { height: 100%; }
+
+img { -webkit-user-drag: none; }
+
+/* --- shared bits --- */
+
+.spinner {
+  width: 16px; height: 16px;
+  border: 2px solid color-mix(in srgb, var(--c-accent) 30%, transparent);
+  border-top-color: var(--c-accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+  flex: none;
+}
+.spinner-dark {
+  border-color: color-mix(in srgb, var(--c-brand-text) 25%, transparent);
+  border-top-color: var(--c-primary);
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.badge-live {
+  background: var(--c-live);
+  color: var(--c-on-primary);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.panel-heading {
+  color: var(--c-text-dim);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  margin: 4px 10px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-hint {
+  color: var(--c-text-dim);
+  font-size: 11px;
+  opacity: 0.7;
+  margin: 6px 10px 2px;
+}
+
+.section-loading {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-text-dim);
+}
+
+.setup-hint {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 15%;
+  text-align: center;
+}
+.setup-hint code { color: var(--c-accent); }
+
+/* --- splash (the light "brand world") --- */
+
+.splash {
+  height: 100%;
+  background: var(--c-brand-surface);
+  color: var(--c-brand-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.splash-corner {
+  position: absolute;
+  top: 24px; right: 32px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  opacity: 0.75;
+}
+.splash-wordmark { font-size: 56px; font-weight: 800; letter-spacing: 1px; }
+.splash-logo { max-width: 50%; max-height: 30%; object-fit: contain; }
+
+/* --- login --- */
+
+.login {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.login-title { font-size: 44px; font-weight: 800; margin-bottom: 20px; }
+.login-input {
+  width: 340px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 2px solid transparent;
+  border-radius: 10px;
+  padding: 13px 16px;
+  font-size: 16px;
+  outline: none;
+}
+.login-input:focus { border-color: var(--c-focus); }
+.login-input::placeholder { color: var(--c-text-dim); }
+.login-error { color: var(--c-live); max-width: 380px; text-align: center; }
+.login-button {
+  margin-top: 6px;
+  min-width: 200px;
+  background: var(--c-primary);
+  color: var(--c-on-primary);
+  border: 2px solid transparent;
+  border-radius: 10px;
+  padding: 13px 32px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-button:focus-visible { border-color: var(--c-focus); outline: none; }
+.login-button:disabled { opacity: 0.7; cursor: default; }
+
+/* --- menu stub (Stage B replaces with the full hub) --- */
+
+.menu-stub {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.menu-stub-wordmark { font-size: 40px; font-weight: 800; }
+.menu-stub-hint { color: var(--c-text-dim); }
+
+/* --- live surface --- */
+
+.live {
+  height: 100%;
+  position: relative;
+  background: var(--c-video-background);
+  overflow: hidden;
+}
+
+.video-surface {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--c-video-background);
+}
+
+.live-catcher { position: absolute; inset: 0; }
+
+.live-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 0 15%;
+}
+.live-error-title { font-size: 26px; font-weight: 700; }
+.live-error-msg { color: var(--c-text-dim); }
+.live-error-hint { color: var(--c-text-dim); font-size: 13px; opacity: 0.8; }
+
+.live-panels {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  padding: 24px 0 24px 24px;
+}
+
+/* --- channel list --- */
+
+.channel-list {
+  width: 460px;
+  max-width: 44%;
+  background: var(--c-overlay);
+  border-radius: 12px;
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.channel-rows { flex: 1; overflow-y: auto; min-height: 0; }
+
+.channel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  margin-bottom: 2px;
+  cursor: pointer;
+}
+.channel-row.playing { border-left-color: var(--c-accent); }
+.channel-row.focused { background: var(--c-focus-fill); }
+.channel-row.focused .row-title,
+.channel-row.focused .row-number,
+.channel-row.focused .row-star { color: var(--c-focus-fill-text); }
+.channel-row.focused .row-now { color: var(--c-focus-fill-text); opacity: 0.7; }
+
+.row-number {
+  color: var(--c-text-dim);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  width: 40px;
+  flex: none;
+}
+.row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row-title-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.row-title {
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.row-title.dimmed { opacity: 0.5; }
+.row-star { color: var(--c-accent); font-size: 13px; flex: none; }
+.row-now {
+  color: var(--c-text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row-logo {
+  width: 46px; height: 26px;
+  object-fit: contain;
+  border-radius: 4px;
+  flex: none;
+}
+.row-logo-fallback {
+  background: var(--c-surface);
+  color: var(--c-text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 13px;
+}
+
+/* --- status badge (source + peers) --- */
+
+.status-badge {
+  position: absolute;
+  right: 32px; bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--c-overlay-strong);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  pointer-events: none;
+}
+.src-p2p { color: var(--c-accent); font-weight: 800; }
+.src-cdn { color: var(--c-live); font-weight: 800; }
+.badge-peers { color: var(--c-text-dim); }
+
+/* --- tuning pill --- */
+
+.tune-pill {
+  position: absolute;
+  top: 24px; right: 32px;
+  min-width: 190px;
+  max-width: 300px;
+  background: var(--c-overlay-strong);
+  border-radius: 10px;
+  padding: 9px 14px;
+  pointer-events: none;
+}
+.tune-pill-row { display: flex; align-items: center; gap: 9px; }
+.tune-pill-label { font-size: 13px; font-weight: 700; }
+.tune-pill-pct {
+  color: var(--c-accent);
+  font-size: 13px;
+  font-weight: 800;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+.tune-pill-title {
+  color: var(--c-text-dim);
+  font-size: 12px;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tune-pill-track {
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--c-text) 15%, transparent);
+  margin-top: 7px;
+  overflow: hidden;
+}
+.tune-pill-fill { height: 3px; border-radius: 2px; background: var(--c-accent); }
+
+/* --- scrollbars (the browse panels live over video — keep them quiet) --- */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--c-text-dim) 35%, transparent); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }

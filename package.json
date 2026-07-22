@@ -11,7 +11,8 @@
     "repeater",
     "library",
     "sdk",
-    "tools"
+    "tools",
+    "desktop"
   ],
   "dependencies": {
     "@aliran/bare-node-crypto": "file:client/backend/shims/bare-node-crypto"

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- Self-contained app: scripts/styles from the bundle only. The engine's media is
+       localhost HLS (hls.js XHR + MSE blob), art/EPG/redirects are operator https —
+       exactly what connect/img/media enumerate. -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' http://127.0.0.1:* https: data:;
+    media-src 'self' blob: http://127.0.0.1:* https:;
+    connect-src 'self' http://127.0.0.1:* https:;
+    font-src 'self';
+  " />
+  <title>Aliran</title>
+  <link rel="stylesheet" href="./dist/main.css" />
+  <style>html, body, #root { height: 100%; margin: 0; background: #0B1220; }</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="./dist/main.js"></script>
+</body>
+</html>
