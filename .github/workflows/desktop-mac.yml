@@ -1,0 +1,58 @@
+# Unsigned macOS builds (dmg + zip, arm64 + x64) of the desktop player, on the
+# free GitHub-hosted macOS runners. Manual dispatch only while builds are
+# unsigned — artifacts land on the run page, not in a release.
+#
+# The repo carries no desktop/config/service.json (gitignored, per-deployment),
+# so this always produces the KEYLESS PUBLIC flavor: nothing is baked and first
+# run opens the Connect screen. Operator builds (baked descriptor) are packaged
+# locally, never in CI.
+#
+# Unsigned-mac reality (same class as the Windows SmartScreen note): the app is
+# only ad-hoc-signed, so Gatekeeper blocks the first launch — right-click the
+# app → Open. Real signing/notarization needs an Apple Developer account and is
+# deliberately not wired up yet.
+name: desktop-mac
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: unsigned mac dmg+zip (arm64 + x64)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      # Root install: desktop/ is a workspace member, so @aliran/player-sdk
+      # resolves to the local sdk/ (never the registry) and every native module
+      # arrives as a darwin N-API prebuild — nothing compiles (npmRebuild: false).
+      - run: npm ci
+      - name: Renderer bundle (esbuild)
+        run: npm run build --workspace desktop
+      - name: Package (unsigned)
+        working-directory: desktop
+        env:
+          # Belt-and-braces with mac.identity: null — never look for a cert.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --mac dmg zip --arm64 --x64
+      - name: Checksums
+        run: shasum -a 256 desktop/dist/*.dmg desktop/dist/*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aliran-desktop-mac-unsigned
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+          retention-days: 14
+          if-no-files-found: error

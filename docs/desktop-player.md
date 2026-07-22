@@ -1,6 +1,6 @@
-# Desktop player (Windows)
+# Desktop player (Windows & macOS)
 
-The Aliran desktop player (`desktop/`) is the Windows sibling of the Android app:
+The Aliran desktop player (`desktop/`) is the PC sibling of the Android app:
 one Electron application that logs in over the DHT, browses the same TV interface
 (menu hub, category rail, numbered channel list, detail panel with the program
 guide), plays live P2P channels and redirect channels, and re-seeds to other
@@ -124,11 +124,12 @@ The browse overlay auto-hides after 6 s idle (playback is never interrupted by
 browsing); the bottom bar and the mouse cursor fade over clean video and return on
 any activity.
 
-## 4. Package (installer + portable)
+## 4. Package (installer + portable + mac)
 
 ```sh
 cd desktop
-npm run dist        # electron-builder → dist/Aliran Setup <v>.exe + Aliran-<v>-portable.exe
+npm run dist        # Windows: electron-builder → dist/Aliran Setup <v>.exe + Aliran-<v>-portable.exe
+npm run dist:mac    # macOS (run on a Mac): electron-builder → dist/Aliran-<v>[-arm64].dmg + .zip
 ```
 
 - The flavor is decided by what's on disk when you package: with
@@ -142,6 +143,15 @@ npm run dist        # electron-builder → dist/Aliran Setup <v>.exe + Aliran-<v
   unsigned distribution; operators shipping to real users should countersign with
   their own certificate (electron-builder's `win.signtoolOptions`), which also
   builds SmartScreen reputation over time.
+- **macOS.** The engine's native modules all ship darwin (arm64 + x64) N-API
+  prebuilds, so the same package step works on a Mac — `npm run dist:mac` — and
+  the repo's `desktop-mac` GitHub Actions workflow (manual dispatch) produces the
+  same artifacts on a hosted mac runner; because CI has no `config/service.json`,
+  those are always the **public** flavor. The mac builds carry only the ad-hoc
+  signature, so Gatekeeper blocks the first launch: **right-click the app →
+  Open** (once per machine). Operators with an Apple Developer account should
+  sign and notarize instead (electron-builder `mac.identity` + `notarize`), which
+  removes that friction.
 - Per-brand desktop packaging (the `client/brands/<id>/`
   [white-label flow](white-label.md)) is a follow-up; today the icon and product
   name are set in `desktop/electron-builder.yml`, while the in-app branding —

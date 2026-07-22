@@ -43,7 +43,7 @@ nav:
   - Content management: content-management.md
   - Client build: client-build.md
   - Android app — viewer guide: android-viewer-guide.md
-  - Desktop player (Windows): desktop-player.md
+  - Desktop player (Windows & macOS): desktop-player.md
   - Desktop player — viewer guide: desktop-viewer-guide.md
   - Player SDK: sdk.md
   - SDK installation & configuration: sdk-guide.md

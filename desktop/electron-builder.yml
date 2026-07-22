@@ -1,9 +1,13 @@
-# Windows packaging (S35): NSIS installer + portable single exe.
-#   npm run dist          (from desktop/; needs config/service.json — the descriptor
-#                          is baked into the artifact as a resource, like the phone
-#                          APK bakes its service.json)
+# Desktop packaging: Windows (NSIS installer + portable exe) and macOS (dmg + zip).
+#   npm run dist          (Windows, from desktop/)
+#   npm run dist:mac      (macOS — needs a Mac; CI runs it on a GitHub macOS runner
+#                          via .github/workflows/desktop-mac.yml)
+# The flavor is decided by what's on disk when packaging: with config/service.json
+# present the descriptor is baked into the artifact as a resource (operator build,
+# like the phone APK bakes its service.json); absent = keyless public build.
 # Builds are UNSIGNED — no code-signing certificate — so Windows SmartScreen shows
-# "unknown publisher" on first run (More info → Run anyway). Documented honestly in
+# "unknown publisher" on first run (More info → Run anyway), and macOS Gatekeeper
+# blocks the first launch (right-click the app → Open). Documented honestly in
 # docs/desktop-player.md; per-brand packaging hooks are a follow-up, not v1.
 appId: app.aliran.desktop
 productName: Aliran
@@ -45,3 +49,15 @@ nsis:
   deleteAppDataOnUninstall: false
 portable:
   artifactName: ${productName}-${version}-portable.exe
+mac:
+  target:
+    - dmg
+    - zip
+  # electron-builder derives the .icns from the 512×512 PNG.
+  icon: assets/icon.png
+  category: public.app-category.video
+  # UNSIGNED: no Apple Developer certificate. electron-builder still applies the
+  # ad-hoc signature arm64 requires, but Gatekeeper flags the first launch
+  # (right-click → Open). When a Developer ID cert lands, drop `identity: null`
+  # and add hardenedRuntime + entitlements + notarization here.
+  identity: null

@@ -218,7 +218,10 @@ phone + Android TV, and the Windows desktop player).
   remounts, the frozen-live-edge resync ladder with `reconnectActiveFeed()`
   escalation, and a clean per-channel error for codecs the host GPU can't decode
   (HEVC support = platform hardware decode). electron-builder packaging: NSIS
-  installer + portable exe (unsigned — the SmartScreen reality is documented), in
+  installer + portable exe on Windows, dmg + zip on macOS (`dist:mac` locally or
+  the manual-dispatch `desktop-mac` GitHub Actions workflow — the engine's N-API
+  modules all ship darwin prebuilds; unsigned — the SmartScreen/Gatekeeper
+  reality is documented), in
   **two flavors from one codebase**: the operator build bakes `service.json` as a
   resource; the public build ships keyless and opens on a **Connect screen**
   (panel public key + account, persisted in the profile, with *Settings → Change

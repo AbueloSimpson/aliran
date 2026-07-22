@@ -2,7 +2,7 @@
   "name": "aliran-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Aliran desktop player for Windows — Electron shell over @aliran/player-sdk (never published; built with electron-builder)",
+  "description": "Aliran desktop player for Windows and macOS — Electron shell over @aliran/player-sdk (never published; built with electron-builder)",
   "author": "Aliran contributors",
   "license": "MIT",
   "type": "module",
@@ -11,7 +11,8 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron .",
-    "dist": "npm run build && electron-builder --win nsis portable"
+    "dist": "npm run build && electron-builder --win nsis portable",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip"
   },
   "dependencies": {
     "@aliran/player-sdk": "^0.1.1",
