@@ -165,7 +165,11 @@ Android phone + Android TV).
   definitions (`sdk/index.d.ts`) for the whole engine surface, a `@aliran/core`
   README, a runnable headless example (`examples/headless-player.mjs`), and a
   Player SDK page on the docs site. **Published to the npm registry as `0.1.0`**
-  (first release, 2026-07-22 UTC; cold-install verified).
+  (first release, 2026-07-22 UTC; cold-install verified). Two deep-dive docs pages
+  followed: **SDK installation & configuration** (every install path, option,
+  event, runtime control, and troubleshooting) and **Operator APIs & the SDK**
+  (every admin/control/RPC endpoint mapped to the viewer-visible effect and its
+  propagation latency — live-push vs next-tune vs next-login).
 
 **React Native binding (`sdk/react-native/`, `@aliran/react-native`)**
 - `AliranBackend` (worklet host, IPC protocol, prefs) + `<AliranVideo>`: tune

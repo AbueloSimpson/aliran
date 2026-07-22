@@ -130,6 +130,7 @@ are preserved.
 | `POST /api/channels/:id/start` · `…/stop` | Spawn / tear down the pipeline |
 | `POST /api/channels/:id/rotate` | Disk mode: mint a fresh feed generation now (bounds merkle-tree growth); ffmpeg keeps running, watching viewers follow the new `feedKey` live, the retired generation's cores are purged after a grace window. See [feed buffer](kb/feed-buffer.md) |
 | `GET /api/channels/:id/logs?lines=N` | ffmpeg stderr ring → `{lines:[{t,line}], running, restarts, state}` (≤400; cleared on operator start, survives watchdog respawns) |
+| `GET /api/incidents` | Correlated incident log: fleet-wide respawn bursts and per-source outage windows detected across channels (what a lone per-channel restart counter can't show) |
 | `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage control admin accounts |
 | `POST /api/admins/:name/password` | Rotate an admin password (revokes their sessions) |
 

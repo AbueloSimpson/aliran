@@ -15,6 +15,11 @@ All three are MIT, ship from the monorepo, and are packaged for the npm registry
 under the `@aliran` scope. TypeScript definitions are included (`player-sdk` ships
 `index.d.ts`; the RN binding ships TypeScript source).
 
+**Building on it?** The [installation & configuration guide](sdk-guide.md) is the
+complete manual (every install path, option, event, and troubleshooting), and
+[Operator APIs & the SDK](ops-sdk-integration.md) maps the operator control plane
+to what your app observes.
+
 ## Headless quickstart (Node)
 
 ```js
