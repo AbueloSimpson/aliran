@@ -1755,3 +1755,54 @@ different hardware.
   `test:register`/`test:broadcaster-api` PASS (zero broadcaster changes);
   `test:core`/`corrupt`/`args`/`retention`/`nettune`/`sources` PASS. Stage 2 (the
   app: Library rail, seek UI, S22 on-device) is a follow-up card.
+
+### S8a stage 2 — VOD in the app: Library rail, transport UI, live machinery interplay (verified on-emulator against production)
+
+The app half of the on-demand library. The worklet (`client/backend/backend.mjs`)
+now forwards the engine's ResolveResult `type`/`durationSec` as
+**`recordType`/`durationSec` on the `port` IPC reply** (named `recordType` because
+`type` is the IPC envelope's own discriminant — the RN union already declared the
+fields). `<AliranVideo>` keys on it: the live-edge **stall-resync ladder disarms**
+while the served record is vod — a paused, seeking, or finished playhead sits
+still by design, and a resync remount would yank the title back to 0:00 — and
+re-arms the moment a live port reply lands (vod→live zap). The component also
+gains a **`seek()` imperative handle** (`AliranVideoHandle`; the internal ref
+always points at the CURRENT mount, surviving self-heal remounts) and the
+`AliranBackend` singleton mirrors `recordType`/`durationSec` so a re-entered
+screen starts disarmed without waiting for a fresh reply.
+
+App-side, titles are deliberately **channel-shaped where it helps and not where
+it lies**: the Library rail falls out of the category machinery for free
+(`category:['Library']` on the record — zero rail code), rows/detail reuse
+ChannelRow/ChannelInfoPanel with a **runtime badge instead of LIVE** (vod records
+carry no `isLive`; availability is `status`, and `'unavailable'` grays out), the
+EPG slot is omitted (a title has no schedule), and titles take **no channel
+number and no place in the CH+/CH- ring** (`zapOrder`/`channelNumbers` are
+live-only — adding movies must never renumber the lineup; zapping from a title
+lands on channel 001 and re-arms live behavior). The NowPlayingBar grows a
+phone-only **transport row**: play/pause, elapsed/runtime (`formatDuration`
+h:mm:ss), and a tap-or-drag **seek bar built in pure JS** (PanResponder — no
+native slider dependency to autolink); the bar stays up while paused (the play
+control must not fade away), and end-of-title parks on ▶ which replays from the
+top. TV renders the row display-only — nothing focusable enters the D-pad zap
+path (the S7 lesson).
+
+Verified end-to-end against **production infrastructure** (the live VPS panel +
+its ~84-channel lineup) with the emulator (x86_64 release build; the S22 was
+off-network overnight — same APK, arm64, pending a phone spot-check): the panel
+image was updated to the stage-1 code (the vod record class predates deployment —
+a pre-update register would have landed in the old responder), a **library
+instance on the dev desktop** (the separate-hardware operator model) enrolled as
+publisher `library1` scoped `vod-*`, ingested a 3-minute h264/aac clip with a
+burnt-in running clock, registered `vod-clock-demo` (`type:'vod'`,
+`durationSec:180`, blobsKey enriched) and seeded it over the public DHT. On
+device: the Library rail + `3:00` badge rendered, the title played P2P from the
+desktop seed, and the burnt-in clock made the transport provable frame-exactly —
+elapsed `0:58` over frame `00:00:57.000`, **seek forward** to `00:02:07.840`,
+**seek back** to `00:00:32.120`, **pause held 36 s on the identical frame** with
+zero stall/resync/error lines (the old ladder would have fired at 12 s), resume
+from position, and a zap out to a live channel flipping the reply to
+`recordType:'live'` with the numbered tuning pill and no transport row. Client
+suites: jest 11/11 (43 tests, incl. the new `AliranVideoVod` group pinning
+disarm/re-arm/seek and the catalog/row/bar vod cases), `tsc` clean, bundle
+regenerated and validated (main + 15 linked addons, zero `builtin:` refs).

@@ -3,10 +3,12 @@
 // else the catalog description), LIVE badge, favorite star, channel logo thumb on the
 // right edge. Focus grammar: focused row = light fill (focusFill tokens); the playing
 // channel keeps an accent edge bar. Press = play/select; long-press = channel info.
+// vod library titles (S8a) ride the same row: runtime badge instead of LIVE, no
+// channel number ('—'), and status 'unavailable' grays them out.
 import React, { useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
-import { formatChannelNumber } from '../catalog'
+import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '@aliran/react-native'
 import { theme } from '../theme'
 
@@ -23,7 +25,12 @@ export interface ChannelRowProps {
 
 export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, onFocus, onPress, onLongPress }: ChannelRowProps) {
   const [focused, setFocused] = useState(false)
-  const dimmed = stream.isLive === false
+  // Off-air channel, or a vod title the library took down (S8a: vod records carry no
+  // isLive — their availability signal is status 'available'/'unavailable').
+  const vod = isVod(stream)
+  const dimmed = vod ? stream.status === 'unavailable' : stream.isLive === false
+  // vod rows swap the LIVE badge for the title's runtime.
+  const duration = vod ? formatDuration(stream.durationSec) : ''
   // Now-playing line: the airing EPG program (S27) when the channel has a guide, else
   // the catalog synopsis. The feed is shared per category, so all its rows resolve from
   // one cached fetch (src/epg.ts); guide-less channels never fetch.
@@ -43,6 +50,7 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
         <View style={styles.titleLine}>
           <Text style={[styles.title, focused && styles.textOnFill, dimmed && styles.dimmed]} numberOfLines={1}>{stream.title}</Text>
           {stream.isLive && <Text style={styles.live}>LIVE</Text>}
+          {!!duration && <Text style={[styles.duration, dimmed && styles.dimmed]}>{duration}</Text>}
           {favorite && <Text style={[styles.star, focused && styles.textOnFill]}>★</Text>}
         </View>
         {!!nowText && (
@@ -71,6 +79,7 @@ const styles = StyleSheet.create({
   title: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', flexShrink: 1 },
   dimmed: { opacity: 0.5 },
   live: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption - 2, fontWeight: '800', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
+  duration: { color: theme.colors.textDim, borderColor: theme.colors.textDim, borderWidth: 1, fontSize: theme.type.caption - 2, fontWeight: '700', fontVariant: ['tabular-nums'], paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
   star: { color: theme.colors.accent, fontSize: theme.type.label },
   nowPlaying: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 2 },
   textOnFill: { color: theme.colors.focusFillText },

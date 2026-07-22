@@ -43,3 +43,23 @@ test('falls back to the description when the channel has no EPG', async () => {
   expect(t).toContain('via plutotv')
   expect(spy).not.toHaveBeenCalled()
 })
+
+// S8a: a vod title grows the transport row — elapsed / runtime around the seek bar,
+// and the play/pause glyph tracks the paused state.
+test('vod transport: elapsed + runtime render; glyph follows paused', async () => {
+  const stream: Stream = { id: 'vod-heat', title: 'Heat', type: 'vod', durationSec: 5525, description: 'Crime saga' }
+  const vodProps = { ...props, stream, onTogglePause: () => {}, onSeek: () => {} }
+  const playing = texts(await createTree(<NowPlayingBar {...vodProps} vod={{ position: 754, duration: 5525, paused: false }} />))
+  expect(playing).toContain('12:34') // elapsed
+  expect(playing).toContain('1:32:05') // runtime
+  expect(playing).toContain('❚❚') // playing -> the control offers pause
+  const paused = texts(await createTree(<NowPlayingBar {...vodProps} vod={{ position: 754, duration: 5525, paused: true }} />))
+  expect(paused).toContain('▶') // paused -> the control offers play
+})
+
+test('no transport row for live channels', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via plutotv' }
+  const t = texts(await createTree(<NowPlayingBar stream={stream} {...props} />))
+  expect(t).not.toContain('❚❚')
+  expect(t).not.toContain('--:--')
+})

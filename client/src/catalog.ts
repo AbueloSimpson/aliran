@@ -17,10 +17,11 @@ export function sortByCuration (streams: Stream[]): Stream[] {
   })
 }
 
-// Hero / wallpaper pick: first featured live ?? first live ?? first (curated order).
+// Hero / wallpaper pick: first featured live ?? first live ?? first channel ?? first.
+// vod titles are on-demand — never auto-played as the hero while any channel exists.
 export function pickHero (streams: Stream[]): Stream | undefined {
   const sorted = sortByCuration(streams)
-  return sorted.find(s => s.featured && s.isLive) ?? sorted.find(s => s.isLive) ?? sorted[0]
+  return sorted.find(s => s.featured && s.isLive) ?? sorted.find(s => s.isLive) ?? sorted.find(s => !isVod(s)) ?? sorted[0]
 }
 
 // Two-level categories: a category string may be hierarchical, "Parent/Sub" (e.g.
@@ -82,15 +83,39 @@ export function groupByCategory (streams: Stream[]): Record<string, Stream[]> {
   return categoryModel(streams).groups
 }
 
-// Derived channel numbers (D3): curated sort over the WHOLE catalog -> 1..N. The same
-// stream keeps its number in every category group. Zero-pad for the 10-foot list.
+// A vod library title (S8a). Everything channel-shaped — numbers, CH+/CH- zap,
+// LIVE badges, EPG — applies only to the rest of the catalog.
+export function isVod (s: Stream): boolean {
+  return s.type === 'vod'
+}
+
+// The channel ring CH+/CH- walks (and the numbers follow): curated order over the
+// LIVE catalog only. vod titles are on-demand — they neither take a channel number
+// (adding movies must not renumber the lineup) nor sit in the zap ring.
+export function zapOrder (streams: Stream[]): Stream[] {
+  return sortByCuration(streams.filter(s => !isVod(s)))
+}
+
+// Derived channel numbers (D3): curated sort over the live catalog -> 1..N. The same
+// stream keeps its number in every category group; vod titles have none. Zero-pad
+// for the 10-foot list.
 export function channelNumbers (streams: Stream[]): Map<string, number> {
   const map = new Map<string, number>()
-  sortByCuration(streams).forEach((s, i) => map.set(s.id, i + 1))
+  zapOrder(streams).forEach((s, i) => map.set(s.id, i + 1))
   return map
 }
 
 export function formatChannelNumber (n: number | undefined): string {
   if (!n) return '—'
   return String(n).padStart(3, '0')
+}
+
+// "1:32:05" / "23:45" from a vod record's durationSec (null/absent/broken -> '').
+export function formatDuration (sec: number | null | undefined): string {
+  if (typeof sec !== 'number' || !isFinite(sec) || sec <= 0) return ''
+  const s = Math.round(sec)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = String(s % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }

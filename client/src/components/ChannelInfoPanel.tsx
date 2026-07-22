@@ -5,11 +5,13 @@
 // slot shows a live now/next guide for source-imported channels (S27: fetched on
 // demand from the provider's epgUrl over https — see src/epg.ts), and falls back to
 // an honest "No program information" placeholder for channels without an EPG (D2 — no
-// fake data).
+// fake data). vod library titles (S8a) show their runtime (badge on the art) and an
+// availability note instead of LIVE state, and omit the guide slot — titles have no
+// schedule.
 import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
-import { formatChannelNumber } from '../catalog'
+import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg, type EpgProgram } from '@aliran/react-native'
 import { theme } from '../theme'
 
@@ -32,6 +34,10 @@ export interface ChannelInfoPanelProps {
 
 export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite }: ChannelInfoPanelProps) {
   const art = stream.poster || stream.backdrop || stream.logo
+  // vod library title (S8a): runtime + availability instead of LIVE state, and the
+  // program-guide slot does not apply (a title has no schedule).
+  const vod = isVod(stream)
+  const duration = vod ? formatDuration(stream.durationSec) : ''
   return (
     <ScrollView style={styles.panel} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.header}>
@@ -44,12 +50,17 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
           ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" />
           : <View style={[styles.art, styles.artFallback]}><Text style={styles.artInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
         {stream.isLive && <Text style={styles.live}>● LIVE</Text>}
+        {!!duration && <Text style={styles.durationBadge}>{duration}</Text>}
       </View>
 
       {!!stream.category?.length && (
         <View style={styles.chips}>
           {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toUpperCase()}</Text>)}
         </View>
+      )}
+
+      {vod && stream.status === 'unavailable' && (
+        <Text style={styles.unavailable}>Currently unavailable</Text>
       )}
 
       {!!stream.description && <Text style={styles.desc}>{stream.description}</Text>}
@@ -62,8 +73,9 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
       )}
 
       {/* EPG slot: live now/next for channels that carry a guide (S27), else an
-          honest placeholder (D2 — no fake data). */}
-      <EpgGuide stream={stream} />
+          honest placeholder (D2 — no fake data). A vod title has no schedule — the
+          slot is omitted entirely rather than showing "No program information". */}
+      {!vod && <EpgGuide stream={stream} />}
 
       <View style={styles.actions}>
         <ActionButton label={playing ? 'Watching' : 'Watch'} primary onPress={onWatch} hasTVPreferredFocus />
@@ -144,6 +156,8 @@ const styles = StyleSheet.create({
   artFallback: { alignItems: 'center', justifyContent: 'center' },
   artInitial: { color: theme.colors.textDim, fontSize: theme.type.display, fontWeight: '800' },
   live: { position: 'absolute', top: 8, left: 8, color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption - 2, fontWeight: '800', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
+  durationBadge: { position: 'absolute', bottom: 8, right: 8, color: theme.colors.text, backgroundColor: theme.colors.overlayStrong, fontSize: theme.type.caption - 1, fontWeight: '700', fontVariant: ['tabular-nums'], paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
+  unavailable: { color: theme.colors.textDim, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 1, marginTop: theme.spacing(1), textTransform: 'uppercase' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: theme.spacing(1) },
   chip: { color: theme.colors.textDim, borderColor: theme.colors.textDim, borderWidth: 1, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2, fontSize: theme.type.caption - 1, letterSpacing: 1 },
   desc: { color: theme.colors.text, fontSize: theme.type.body, marginTop: theme.spacing(1), lineHeight: theme.type.body * 1.4 },

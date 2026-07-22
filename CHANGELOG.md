@@ -227,6 +227,20 @@ Android phone + Android TV).
   + RN mirror types carry `type`/`durationSec`/`status`. New required-lane
   **`test:vod`** e2e proves the whole chain on a local testnet, including that the
   watchdog provably does NOT arm for vod and DOES for live across zaps.
+- **App VOD playback (S8a stage 2)**: the worklet forwards the engine's
+  `type`/`durationSec` as **`recordType`/`durationSec` on the `port` IPC reply**;
+  `<AliranVideo>` disarms its live-edge stall-resync ladder while the served
+  record is vod (a paused/seeking/finished playhead is by design — a resync would
+  yank the title back to 0:00) and re-arms it on the next live serve, and gains an
+  imperative **`seek()` handle** (`AliranVideoHandle`). In the app, titles ride
+  the same surfaces as channels: a **Library rail** straight from the category
+  machinery, rows/info showing a **runtime badge instead of LIVE** (no channel
+  number — numbers and the CH+/CH- zap ring are live-only, so adding movies never
+  renumbers the lineup), `status:'unavailable'` graying, no EPG slot, and the
+  NowPlayingBar grows a phone **transport row** — play/pause, elapsed/runtime,
+  tap-or-drag seek bar (pure JS, no native slider dep) that stays up while
+  paused; end-of-title parks on ▶ and replays from the top. Zapping out of a
+  title lands on channel 001 with every live behavior re-armed.
 
 **Networking (all components)**
 - Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes

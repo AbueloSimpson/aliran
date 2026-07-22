@@ -166,6 +166,11 @@ export class AliranBackend {
   // URL serves whatever feed is active, so this — not the URL — is what identifies the
   // channel behind the player. Survives screen unmounts (module-singleton backend).
   activeStreamId: string | null = null
+  // Record class of the active serve (S8a): 'vod' = a finished library title (seek/pause
+  // UI, no live self-heal), with its durationSec beside it. null until a reply carries
+  // them (worklet bundles older than the field never do — treat as live).
+  recordType: 'live' | 'vod' | null = null
+  durationSec: number | null = null
   // Device-local prefs mirrored from the worklet (see client/backend/backend.mjs):
   // saved "remember me" credentials + favorite stream ids. `prefsLoaded` flips on the
   // first {type:'prefs'} reply — request with requestPrefs().
@@ -264,6 +269,8 @@ export class AliranBackend {
           this.url = msg.url ?? (msg.port ? `http://127.0.0.1:${msg.port}/index.m3u8` : null)
           this.source = msg.source ?? (this.url ? 'p2p' : null)
           if (msg.streamId) this.activeStreamId = msg.streamId
+          this.recordType = msg.recordType ?? null
+          this.durationSec = msg.durationSec ?? null
         }
         if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn' }
         if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source }

@@ -23,13 +23,17 @@
 // HWEvents to useTVEventHandler while a view holds focus, so key handling must be
 // focus-based (the S7 lesson). The bottom menu's touch buttons are phone-only so they
 // stay out of that focus path.
+// VOD (S8a): library titles play on this same surface — the bottom bar grows a
+// seek/pause transport (phone), the SDK's live self-heal disarms itself (port
+// recordType), and CH+/CH- stays a live-only ring: zapping from a title lands on
+// channel 001 and re-arms every live behavior.
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView, Animated } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { AliranVideo, SelectedTrackType, type TuneEvent, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
+import { AliranVideo, SelectedTrackType, type AliranVideoHandle, type TuneEvent, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
-import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, sortByCuration } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
@@ -101,6 +105,18 @@ export function LiveScreen ({ route }: Props) {
   const [barShown, setBarShown] = useState(true)
   const barIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   const barOpacity = useRef(new Animated.Value(1)).current
+  // vod transport (S8a): playhead position (whole seconds — one re-render per second,
+  // not per progress tick), runtime (player-reported on load, catalog durationSec until
+  // then), and the app-owned pause. Live channels ignore all three.
+  const [vodPos, setVodPos] = useState(0)
+  const [vodDur, setVodDur] = useState(0)
+  const [vodPaused, setVodPausedState] = useState(false)
+  const vodPausedRef = useRef(false)
+  // Ref+state in one step: armBarHide reads the ref synchronously (the bar must never
+  // fade away over a paused title — the play control would vanish with it).
+  function setVodPaused (v: boolean) { vodPausedRef.current = v; setVodPausedState(v) }
+  // Imperative seek into the SDK's player (vod transport; see AliranVideoHandle).
+  const videoHandle = useRef<AliranVideoHandle | null>(null)
 
   const overlayRef = useRef(overlay); overlayRef.current = overlay
   const playingIdRef = useRef(playingId); playingIdRef.current = playingId
@@ -128,10 +144,17 @@ export function LiveScreen ({ route }: Props) {
 
   // A new channel has different tracks — clear the picker so the previous channel's
   // tracks/selection don't carry over, reset subtitles to Off, and close the menu.
+  // The vod transport resets with them: leaving a title (for live OR another title)
+  // must re-enter cleanly — unpaused, playhead at 0, runtime from the new record's
+  // catalog durationSec until the player reports the real one (onLoad).
   useEffect(() => {
     setAudioTracks([]); setTextTracks([])
     setSelectedText({ type: SelectedTrackType.DISABLED }); setSelectedAudio(undefined)
     setShowTracks(false)
+    setVodPaused(false); setVodPos(0)
+    const s = backend.streams.find(x => x.id === playingId)
+    setVodDur(s && isVod(s) ? s.durationSec ?? 0 : 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playingId])
 
   // Wall clock for the bottom menu — tick twice a minute so the minute never lags far behind.
@@ -171,6 +194,9 @@ export function LiveScreen ({ route }: Props) {
   const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0] // top view highlights the parent
   const listHeading = activeKey === 'All' ? 'CHANNELS' : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toUpperCase()).join('  ›  ')
   const playing = streams.find(s => s.id === playingId) ?? null
+  // The playing record is a vod library title (S8a): transport UI on the bar, pause is
+  // app-owned, and the SDK's live self-heal is off (it keys on the port recordType).
+  const playingVod = !!playing && isVod(playing)
 
   // First streams push after a cold navigation: start the hero channel (the tuning
   // indicator arms itself — mounting <AliranVideo> fires onTune 'start').
@@ -233,6 +259,7 @@ export function LiveScreen ({ route }: Props) {
   function armBarHide () {
     clearBarIdle()
     if (theme.isTV) return // TV: the bar is always on (D-pad model, not touch)
+    if (vodPausedRef.current) return // paused vod: the bar (and its play control) stays up
     barIdle.current = setTimeout(() => {
       Animated.timing(barOpacity, { toValue: 0, duration: 350, useNativeDriver: true })
         .start(({ finished }) => { if (finished) setBarShown(false) })
@@ -255,11 +282,13 @@ export function LiveScreen ({ route }: Props) {
     menuIdle.current = setTimeout(() => setOverlay('none'), MENU_IDLE_MS)
   }
 
-  // Fullscreen zap: prev/next over the WHOLE catalog in curated order — the same
+  // Fullscreen zap: prev/next over the LIVE catalog in curated order — the same
   // order the derived channel numbers follow (001, 002, …), like a TV's CH+/CH-.
-  // (The category rail scopes the browse list, not the zap.)
+  // (The category rail scopes the browse list, not the zap.) vod titles are not in
+  // the ring (zapOrder): zapping FROM one lands on channel 001 — CH+/CH- is how you
+  // leave a title back into live TV, and live behavior re-arms on that play().
   function zap (dir: 1 | -1) {
-    const all = sortByCuration(streams)
+    const all = zapOrder(streams)
     if (!all.length) return
     const i = all.findIndex(s => s.id === playingId)
     const next = all[(i < 0 ? 0 : i + dir + all.length) % all.length]
@@ -297,10 +326,12 @@ export function LiveScreen ({ route }: Props) {
     <View style={styles.container}>
       {playingId && !error && (
         <AliranVideo
+          ref={videoHandle}
           backend={backend}
           streamId={playingId}
           controls={false}
           resizeMode="contain"
+          paused={playingVod && vodPaused}
           onSource={(_url, s) => setSource(s)}
           onFallback={() => setSource('cdn')}
           onSourceChanged={({ source: s }) => setSource(s)}
@@ -310,9 +341,19 @@ export function LiveScreen ({ route }: Props) {
           onAudioTracks={setAudioTracks}
           onTextTracks={setTextTracks}
           onTune={onTune}
-          // Live-edge freeze self-heal (log only — onTune 'start' re-arms the pill).
+          // Live-edge freeze self-heal (log only — onTune 'start' re-arms the pill;
+          // the SDK disarms the whole ladder for vod).
           onStall={() => console.log('[live] stall resync', playingIdRef.current)}
           onError={(msg) => { setError(msg); setTuneUI(null) }} // pill hands off to the error UI
+          // vod transport feed (chained by the SDK behind its own handlers): playhead
+          // in whole seconds (one re-render/second), the player-reported runtime, and
+          // end-of-title parking the transport on ▶ (no auto-anything — the viewer
+          // seeks back, replays, or zaps out).
+          videoProps={playingVod ? {
+            onProgress: (e: { currentTime: number }) => setVodPos(Math.floor(e.currentTime)),
+            onLoad: (e: { duration?: number }) => { if (e.duration && e.duration > 0) setVodDur(e.duration) },
+            onEnd: () => { setVodPaused(true); showBar() }
+          } : undefined}
         />
       )}
 
@@ -346,6 +387,20 @@ export function LiveScreen ({ route }: Props) {
                 onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
                 hasTracks={textTracks.length > 0 || audioTracks.length > 1}
                 onTracks={() => { showBar(); setShowTracks(true) }}
+                vod={playingVod ? { position: vodPos, duration: vodDur, paused: vodPaused } : null}
+                onTogglePause={() => {
+                  // ▶ on a finished title replays from the top (unpausing at the end
+                  // is a no-op in the player — it is already "ended").
+                  if (vodPausedRef.current && vodDur > 0 && vodPos >= Math.floor(vodDur) - 1) { videoHandle.current?.seek(0); setVodPos(0) }
+                  setVodPaused(!vodPausedRef.current); showBar()
+                }}
+                onSeek={(sec) => {
+                  videoHandle.current?.seek(sec)
+                  // Optimistic playhead: while paused no progress event will confirm
+                  // the jump, and the bar must not snap back under the finger.
+                  setVodPos(Math.floor(sec))
+                  showBar()
+                }}
               />
             </Animated.View>
           )}

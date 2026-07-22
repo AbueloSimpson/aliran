@@ -25,7 +25,8 @@
 //                                        ('reseed' default | 'client-only' = never
 //                                        announce, ~zero viewer-to-viewer upload)
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
-//        { streamId }                 -> play an entitled stream -> { port, url, source }
+//        { streamId }                 -> play an entitled stream -> { port, url, source,
+//                                        recordType, durationSec }
 //                                        (redirect channels, S23: url is the remote
 //                                        https URL, source 'cdn', port undefined —
 //                                        the player plays it directly, no localhost)
@@ -43,11 +44,15 @@
 //   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
 //                                        live whenever the panel edits the catalog —
 //                                        same shape; the Home screen re-renders on it)
-//        { type:'port', port, url, source, streamId }   (url = ACTIVE source under
-//                                        hybrid; streamId echoes the play() request so
-//                                        the client can tell WHICH channel the shared
-//                                        localhost URL now serves — no streamId on the
-//                                        dev direct-play reply)
+//        { type:'port', port, url, source, streamId, recordType, durationSec }
+//                                        (url = ACTIVE source under hybrid; streamId
+//                                        echoes the play() request so the client can
+//                                        tell WHICH channel the shared localhost URL
+//                                        now serves — no streamId on the dev
+//                                        direct-play reply. recordType/durationSec,
+//                                        S8a: the engine's ResolveResult type —
+//                                        'vod' = finished library title, show
+//                                        seek/pause UI and expect no live self-heal)
 //        { type:'status', state|peers } | { type:'login-error'|'error', message }
 //        { type:'fallback', streamId, url, reason } | { type:'source-changed', streamId, source, url }
 //        { type:'feed-changed', streamId, feedKey, url }   (active stream's feedKey rotated)
@@ -216,7 +221,10 @@ IPC.on('data', (data) => {
       // transient 'not connected to panel' while the swarm dials) surface here.
       ensurePlayer().login(msg.username, msg.password).catch((e) => send({ type: 'login-error', message: String((e && e.message) || e) }))
     } else if (msg.streamId) {
-      ensurePlayer().resolve(msg.streamId).then(({ port, url, source }) => send({ type: 'port', port, url, source, streamId: msg.streamId })).catch(fail)
+      // `type` from the engine rides as `recordType` (the IPC message's own `type` is
+      // the envelope discriminant): 'vod' = finished library title (seek/pause UI, no
+      // live self-heal events), with durationSec beside it for the transport display.
+      ensurePlayer().resolve(msg.streamId).then(({ port, url, source, type, durationSec }) => send({ type: 'port', port, url, source, streamId: msg.streamId, recordType: type, durationSec })).catch(fail)
     } else if (msg.panelPubKey) {
       // The persisted "Smooth zapping" choice (if the user ever set it) wins over the
       // app's compiled zapPrefetch default; true means the SDK's adaptive defaults.

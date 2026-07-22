@@ -24,10 +24,11 @@
 // outgoing mount can neither finish a tune nor feed the stall watchdog, and a
 // remount mid-tune simply re-arms the same tune on the fresh mount.
 
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native'
 import Video, {
   SelectedTrackType,
+  type VideoRef,
   type BufferConfig,
   type SelectedTrack,
   type AudioTrack,
@@ -64,9 +65,23 @@ const BUFFER_CONFIG = { bufferForPlaybackMs: 1000, bufferForPlaybackAfterRebuffe
 // (a network flap can leave it that way; the same S22 day, 15+ min stuck with
 // "1 peer" showing) — so the ladder calls backend.reconnect() to tear it down and
 // dial fresh before each further remount.
+// VOD (S8a): the whole ladder is live-edge machinery, so it DISARMS when the engine
+// reports the served record is a vod title (the 'port' reply's recordType) — a
+// paused, seeking, or finished vod playhead sits still by design, and a resync
+// remount would yank playback back to 0:00.
 const STALL_MS = 12000
 
 export type TunePhase = 'start' | 'retune' | 'reconnect' | 'playing'
+
+// Imperative surface (React ref): seek, for vod transport UI. The handle survives the
+// component's internal remounts (source switches, error retries) — it always talks to
+// the CURRENT <Video> mount.
+export interface AliranVideoHandle {
+  /** Seek to an absolute position in seconds. Meant for vod titles (the localhost
+   *  server does full Range, so the whole timeline is seekable); no-op before the
+   *  player mounts. */
+  seek: (seconds: number) => void
+}
 
 export interface TuneEvent {
   /** Monotonic per-component tune counter — a new id on every 'start' (channel change,
@@ -116,7 +131,8 @@ export interface AliranVideoProps {
   /** The available subtitle/CC text tracks the player found. */
   onTextTracks?: (tracks: TextTrack[]) => void
   /** How long the playhead may sit still (while playing) before a resync; 0 disables.
-   *  Default 12000 — under the smallest deployed live window (8×2 s). */
+   *  Default 12000 — under the smallest deployed live window (8×2 s). Auto-disabled
+   *  while the engine reports the served record is a vod title (recordType 'vod'). */
   stallTimeoutMs?: number
   /** ExoPlayer load-control overrides, merged over the zap-tuned defaults
    *  (bufferForPlaybackMs 1000 / bufferForPlaybackAfterRebufferMs 1500). */
@@ -125,12 +141,12 @@ export interface AliranVideoProps {
   videoProps?: Record<string, unknown>
 }
 
-export function AliranVideo ({
+export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>(function AliranVideo ({
   backend, streamId, autoPlay = true, style, controls = true, paused,
   resizeMode = 'contain', onSource, onFallback, onSourceChanged, onFeedChanged, onPeers,
   onBuffering, onError, onStall, onTune, selectedAudioTrack, selectedTextTrack,
   onAudioTracks, onTextTracks, stallTimeoutMs = STALL_MS, bufferConfig, videoProps
-}: AliranVideoProps) {
+}: AliranVideoProps, ref) {
   const [url, setUrl] = useState<string | null>(backend.url)
   const [attempt, setAttempt] = useState(0) // remounts <Video>; trails epoch (see remount)
   // Synchronous shadow of `attempt`: bumped BEFORE the remounting setState, so event
@@ -155,6 +171,16 @@ export function AliranVideo ({
   // Consecutive stall resyncs with no playback in between: 1 = plain remount, ≥2 =
   // the remount didn't restore playback, escalate to a transport teardown.
   const resyncs = useRef(0)
+  // The served record is a vod title (engine's 'port' recordType) — the stall ladder
+  // disarms (see the STALL_MS note). Seeded from the backend for re-entry on a title
+  // the engine already serves; every port reply for OUR stream refreshes it.
+  const vod = useRef(backend.activeStreamId === streamId && backend.recordType === 'vod')
+  // The current <Video> mount, for the imperative seek() handle (vod transport UI).
+  const videoRef = useRef<VideoRef | null>(null)
+
+  useImperativeHandle(ref, () => ({
+    seek: (seconds: number) => { videoRef.current?.seek(seconds) }
+  }), [])
 
   function remount () {
     epoch.current++
@@ -176,6 +202,10 @@ export function AliranVideo ({
     // channel), the mount is live from the start — first playback completes the tune
     // without waiting for the play() reply.
     tune.current = { id: tune.current.id + 1, streamId, tuning: true, live: served.current === streamId }
+    // Re-derive the record class for the (possibly new) channel: known when the engine
+    // already serves it, else assumed live until this channel's port reply says vod —
+    // so a vod→live zap re-arms the stall ladder immediately.
+    vod.current = backend.activeStreamId === streamId && backend.recordType === 'vod'
     cb.current.onTune?.({ id: tune.current.id, streamId, phase: 'start' })
     const off = backend.onMessage((m: BackendMessage) => {
       if (m.type === 'port' && backend.url) {
@@ -190,6 +220,9 @@ export function AliranVideo ({
           // otherwise the old channel plays on until ExoPlayer stumbles into the swap.
           if (changed) remount()
           tune.current.live = true
+          // Record class of the confirmed serve (absent on pre-S8a worklet bundles →
+          // keep the live assumption).
+          if (m.recordType) vod.current = m.recordType === 'vod'
         }
         // else: a stale reply from an outrun zap — recorded; ours is still on the way.
       }
@@ -253,6 +286,7 @@ export function AliranVideo ({
     if (!stallTimeoutMs) return
     const timer = setInterval(() => {
       const p = progress.current
+      if (vod.current) { p.at = Date.now(); return } // vod: a still playhead (paused/seeking/finished) is by design — never resync
       if (paused) { p.at = Date.now(); return } // a paused playhead is not a stall
       if (p.played) resyncs.current = 0 // motion since the last resync — the ladder resets
       else if (resyncs.current === 0) return // never played: the tune phase owns recovery
@@ -280,6 +314,7 @@ export function AliranVideo ({
   return (
     <Video
       key={url + ':' + attempt}
+      ref={videoRef}
       source={{ uri: url, bufferConfig: { ...BUFFER_CONFIG, ...bufferConfig } }}
       style={style ?? StyleSheet.absoluteFill}
       controls={controls}
@@ -316,4 +351,4 @@ export function AliranVideo ({
       {...restVideoProps}
     />
   )
-}
+})
