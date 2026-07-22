@@ -8,8 +8,9 @@
 # locally, never in CI.
 #
 # Unsigned-mac reality (same class as the Windows SmartScreen note): the app is
-# only ad-hoc-signed, so Gatekeeper blocks the first launch — right-click the
-# app → Open. Real signing/notarization needs an Apple Developer account and is
+# only ad-hoc-signed, so Gatekeeper blocks the first launch — the user approves
+# it in System Settings → Privacy & Security (macOS 15+; older: right-click →
+# Open). Real signing/notarization needs an Apple Developer account and is
 # deliberately not wired up yet.
 name: desktop-mac
 
@@ -46,6 +47,57 @@ jobs:
           # Belt-and-braces with mac.identity: null — never look for a cert.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --mac dmg zip --arm64 --x64
+      # Runtime proof on real Apple hardware (the runner IS a Mac — macOS cannot
+      # legitimately run anywhere else): unpack the arm64 zip, launch the app
+      # with a CDP port, and assert the renderer reaches the Connect screen —
+      # the packaged-app analogue of the CDP smoke that runtime-proved the
+      # Windows public portable exe. No credentials involved: the public
+      # flavor's first screen needs none.
+      - name: Boot smoke (packaged app renders the Connect screen)
+        timeout-minutes: 5
+        working-directory: desktop
+        run: |
+          ditto -x -k dist/*-arm64-mac.zip smoke
+          node --input-type=module - <<'EOF'
+          import { spawn } from 'node:child_process'
+          const app = spawn('smoke/Aliran.app/Contents/MacOS/Aliran',
+            ['--remote-debugging-port=9333'], { stdio: 'inherit' })
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+          const deadline = Date.now() + 90_000
+          const seen = () => /panel key/i.test(text) && /password/i.test(text)
+          let text = ''
+          try {
+            let target
+            while (Date.now() < deadline && !target) {
+              await sleep(2000)
+              try {
+                const pages = await (await fetch('http://127.0.0.1:9333/json')).json()
+                target = pages.find((p) => p.type === 'page' && p.webSocketDebuggerUrl)
+              } catch {}
+            }
+            if (!target) throw new Error('no CDP page target appeared before the deadline')
+            const ws = new WebSocket(target.webSocketDebuggerUrl)
+            await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('CDP websocket failed')) })
+            const innerText = () => new Promise((res, rej) => {
+              ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id === 1) res(d.result?.result?.value ?? '') }
+              ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'document.body.innerText', returnByValue: true } }))
+              setTimeout(() => rej(new Error('Runtime.evaluate timed out')), 10_000)
+            })
+            while (Date.now() < deadline) {
+              text = await innerText()
+              if (seen()) break
+              await sleep(2000)
+            }
+            ws.close()
+          } finally {
+            app.kill('SIGKILL')
+          }
+          if (!seen()) {
+            console.error('Connect screen not detected; innerText was:\n' + text)
+            process.exit(1)
+          }
+          console.log('BOOT SMOKE PASS — Connect screen rendered on macOS. innerText head:\n' + text.slice(0, 400))
+          EOF
       - name: Checksums
         run: shasum -a 256 desktop/dist/*.dmg desktop/dist/*.zip
       - uses: actions/upload-artifact@v4

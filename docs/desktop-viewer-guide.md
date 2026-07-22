@@ -24,22 +24,37 @@ to the channel's own bitrate at most), and stops when you close the app. See
 
 ## 2. Install
 
-Your operator gives you one of two files — or you can download the generic
-public build yourself from the project's
-[releases page](https://github.com/AbueloSimpson/aliran/releases/latest):
+Your operator gives you the right file for your computer — or you can download
+the generic public build yourself from the project's
+[releases page](https://github.com/AbueloSimpson/aliran/releases/latest).
+
+**Windows** (either file; both behave identically once running):
 
 - **`Aliran Setup <version>.exe`** — a normal installer: run it, and the app
   lands in your Start menu. It installs per-user, so no administrator prompt.
 - **`Aliran-<version>-portable.exe`** — no install at all: put the file
   anywhere (Desktop, USB stick) and double-click it.
 
-Both behave identically once running.
-
 **About the Windows warning:** the first launch usually shows a blue
 SmartScreen dialog — *"Windows protected your PC"*, publisher unknown. That's
 because community builds aren't code-signed (signing certificates are paid,
 per-publisher). If you got the file from your operator, click **More info →
 Run anyway**. If you got it from somewhere you don't trust — don't.
+
+**macOS** — pick the file for your Mac's chip (Apple menu →
+*About This Mac*): **`…-arm64…`** for Apple silicon (M-series), the one
+without `arm64` for Intel. The **`.dmg`** is the normal route: open it and
+drag **Aliran** into *Applications* (the `.zip` is the same app, just
+unpacked by double-click).
+
+**About the macOS warning:** these builds aren't notarized with Apple (same
+paid-certificate reality as Windows), so the first launch is blocked with
+*"Aliran" cannot be opened*. On macOS 15 or newer: close that dialog, open
+**System Settings → Privacy & Security**, scroll down to the "Aliran was
+blocked" notice and click **Open Anyway** (once per machine). On older macOS,
+right-click the app → **Open** → **Open** does it. Same trust rule as
+Windows: if the file didn't come from your operator or the project's releases
+page — don't.
 
 ## 3. First run: connecting to your service
 

@@ -148,10 +148,11 @@ npm run dist:mac    # macOS (run on a Mac): electron-builder → dist/Aliran-<v>
   the repo's `desktop-mac` GitHub Actions workflow (manual dispatch) produces the
   same artifacts on a hosted mac runner; because CI has no `config/service.json`,
   those are always the **public** flavor. The mac builds carry only the ad-hoc
-  signature, so Gatekeeper blocks the first launch: **right-click the app →
-  Open** (once per machine). Operators with an Apple Developer account should
-  sign and notarize instead (electron-builder `mac.identity` + `notarize`), which
-  removes that friction.
+  signature, so Gatekeeper blocks the first launch — on macOS 15+ the user
+  approves it under **System Settings → Privacy & Security → Open Anyway**
+  (older macOS: right-click → Open), once per machine. Operators with an Apple
+  Developer account should sign and notarize instead (electron-builder
+  `mac.identity` + `notarize`), which removes that friction.
 - Per-brand desktop packaging (the `client/brands/<id>/`
   [white-label flow](white-label.md)) is a follow-up; today the icon and product
   name are set in `desktop/electron-builder.yml`, while the in-app branding —
