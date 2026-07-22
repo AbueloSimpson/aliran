@@ -1457,7 +1457,7 @@ export class ChannelManager {
   // Back-compat: the env-configured stream keeps the legacy DATA_DIR-root layout
   // (same Corestore + feed.key as pre-S12a broadcasters → same feed identity).
   // Meta is refreshed from the env on every boot.
-  async ensureLegacy ({ id, title, category, input, hls, protection }) {
+  async ensureLegacy ({ id, title, category, input, hls }) {
     let ch = this.channels.get(id)
     if (!ch) {
       ch = new Channel(this, { id, legacy: true, createdAt: Date.now() })
@@ -1481,7 +1481,7 @@ export class ChannelManager {
       transcode: ch.meta.transcode ?? null,
       ingestTuning: ch.meta.ingestTuning ?? null,
       hls: hls || { time: this.config.hls?.time ?? 2, listSize: this.config.hls?.listSize ?? 8 },
-      protection: protection || 'self'
+      protection: 'self'
     })
     await ch.resolveFeedKey()
     this._save()

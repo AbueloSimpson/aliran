@@ -114,4 +114,4 @@ Build-time config (`client/config`) or runtime **service descriptor**:
 > entry set in the admin panel — not client configuration. See
 > [content-management.md](content-management.md).
 
-> Secrets (`DRM_API_KEY`, keys in `DATA_DIR`) must never be committed. See `.gitignore`.
+> Secrets (keys in `DATA_DIR`) must never be committed. See `.gitignore`.

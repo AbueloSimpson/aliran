@@ -52,8 +52,7 @@ async function main () {
       title: config.title,
       category: config.category,
       input: config.input,
-      hls: config.hls,
-      protection: config.protection
+      hls: config.hls
     })
     const { feedKey, encryptionKey } = await manager.start(ch.meta.id)
 

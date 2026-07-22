@@ -18,5 +18,5 @@
     "rache": "^1.0.0",
     "random-access-memory": "^6.2.1"
   },
-  "comment": "Requires ffmpeg on PATH. For DRM (PROTECTION=drm) use a multi-DRM packager (Nimble Streamer / Unified Streaming / shaka-packager) instead of plain ffmpeg."
+  "comment": "Requires ffmpeg on PATH."
 }

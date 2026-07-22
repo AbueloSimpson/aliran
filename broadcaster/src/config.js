@@ -151,7 +151,6 @@ export const config = {
   // channel density (see docs/kb/scaling.md). Pair with FEED_BUFFER=ram to take the
   // Hypercore off disk too = zero segment IOPS on disk (the "scale profile").
   workDir: process.env.HLS_WORK_DIR || os.tmpdir(),
-  protection: process.env.PROTECTION || 'self',
   // Optional per-channel swarm connection budget (S20a). Every channel owns its OWN
   // Hyperswarm, so this caps EACH channel's fan-out separately (hyperswarm's default of
   // 64 is also per channel). Raise it on a big origin box; lower it to push fan-out onto

@@ -1,7 +1,7 @@
 // ffmpeg → live HLS → mirror the rolling window into a Hyperdrive.
 //
 // v0.1 uses MPEG-TS segments (index.m3u8 + segN.ts): simple, universally playable, no
-// separate init file to track. CMAF/fMP4 (for DRM) comes later.
+// separate init file to track.
 //
 // S15a: typed inputs (test / file / pull URL / rtmp / srt / udp push listeners) and
 // per-channel transcode settings (encoder incl. GPU, resolution/fps/bitrate/preset).

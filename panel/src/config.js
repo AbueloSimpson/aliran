@@ -68,15 +68,7 @@ export const config = {
     fetchTimeoutMs: int(process.env.SOURCES_FETCH_TIMEOUT_MS, 30000),
     maxBytes: int(process.env.SOURCES_MAX_BYTES, 5242880),
     maxChannels: int(process.env.SOURCES_MAX_CHANNELS, 500)
-  },
-  geoipDb: process.env.GEOIP_DB || null,
-  drm: process.env.DRM_PROVIDER
-    ? {
-        provider: process.env.DRM_PROVIDER,
-        licenseUrl: process.env.DRM_LICENSE_URL || null,
-        apiKey: process.env.DRM_API_KEY || null
-      }
-    : null
+  }
 }
 
 export default config
