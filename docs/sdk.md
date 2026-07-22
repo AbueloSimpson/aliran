@@ -88,7 +88,7 @@ the video URL — video travels P2P, metadata stays yours. At the other extreme,
 
 ## Publishing status
 
-The packages are publish-ready (`npm pack` produces clean tarballs; the `@aliran`
-npm scope is unclaimed at the time of writing). Until a registry release is cut,
-consume them from the monorepo — npm workspaces (`sdk/`) inside the repo, or a git
-dependency from outside.
+The packages are publish-ready (`npm pack` produces clean tarballs, MIT license
+text included) and the `@aliran` npm scope is registered to the project. Until the
+first registry release is cut, consume them from the monorepo — npm workspaces
+(`sdk/`) inside the repo, or a git dependency from outside.
