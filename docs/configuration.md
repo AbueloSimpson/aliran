@@ -88,7 +88,7 @@ The keyless regional super-peer — see the [repeater appliance page](repeater.m
 ## Library (`library/.env`) — VOD (S8a)
 
 The standalone VOD service — see [library/README.md](https://github.com/AbueloSimpson/aliran/blob/main/library/README.md)
-and the [reference](reference.md#library-control-api--ui-control_enabled1-s8a).
+and the [reference](reference.md#library-control-api-ui-control_enabled1-s8a).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
