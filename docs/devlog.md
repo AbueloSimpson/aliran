@@ -1581,3 +1581,35 @@ during the same window. Media is rendered into the image at build time by
 `tools/render-slates.sh`, so it is produced by the exact ffmpeg that later loops it.
 Pure functions (`pickSlate` / `pickSlateFile` / `parseVideoProfile`) covered by `test:args`.
 Full detail: `docs/kb/offline-slate.md`.
+
+### S32 — SDK productization: npm-ready packages, TypeScript defs, example, docs (verified)
+- **All three consumer packages made registry-publishable at 0.1.0** — `@aliran/core`,
+  `@aliran/player-sdk`, `@aliran/react-native`: `files` whitelists (tarballs carry
+  exactly the runtime + README: 10 / 8 / 7 files, proven by `npm pack --dry-run`),
+  `repository`/`homepage`/`bugs`/`keywords`/`engines`, and `publishConfig.access:
+  public` (scoped packages default to private). The `@aliran` npm scope was verified
+  unclaimed; actually publishing is a maintainer action (create the org, `npm publish`
+  in dependency order: core → player-sdk → react-native).
+- **The one real blocker was `@aliran/player-sdk`'s `"@aliran/core": "file:../core"`**
+  — npm does not rewrite `file:` specs at publish, so the tarball would have been
+  uninstallable. Moved to `^0.1.0`; inside the repo nothing changes: the root
+  workspace links `core/` (satisfies the range), and `client/backend`'s own
+  `file:../../core` dep dedupes the same way for the Android worklet graph — proven
+  by regenerating all three lockfiles (root, `client/`, `client/backend/`) and a
+  **full `test:sdk` e2e pass** on the new resolution. The `client/` lock regen needs
+  `--legacy-peer-deps` (react-native-tvos prerelease alias), as documented.
+- **TypeScript definitions** (`sdk/index.d.ts`, hand-maintained): the entire engine
+  surface — options (`hybrid`/`tune`/`zapPrefetch`/`swarm`/`uploadPolicy`), a typed
+  event map (all 11 events with exact payloads read from `player.js`, not the README),
+  methods, and the login/recover helpers — kept deliberately in sync with the
+  JSON-safe mirror types in `sdk/react-native/src/backend.ts`. Wired via `types` +
+  an `exports` types condition.
+- **`@aliran/react-native` peers tightened where honest** (`react >=18`,
+  `react-native-video ^6`, `react-native-bare-kit >=0.13.3`) while `react-native`
+  stays `*` **by design**: TV apps alias it to react-native-tvos prereleases, which
+  fail any strict semver range (ERESOLVE).
+- **New**: `@aliran/core` README (the registry page was blank), absolute links in
+  published READMEs (relative repo links break on npmjs.com), a runnable
+  `examples/headless-player.mjs` (the quickstart as a program; resolves the SDK
+  through the workspace), and a **Player SDK docs-site page** (`docs/sdk.md`) —
+  `mkdocs build --strict` green.
