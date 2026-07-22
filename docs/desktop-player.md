@@ -86,6 +86,11 @@ baked-vs-runtime descriptor paths):
 A baked descriptor always wins over a runtime-entered one, so an operator build
 ignores any previously stored key on the machine.
 
+Distributing the public build? Hand your viewers the
+**[viewer guide](desktop-viewer-guide.md)** — install + SmartScreen, the Connect
+screen, everyday use, and the honest bandwidth/privacy notes, written for
+non-technical users.
+
 ## 3. Run from the repo (development)
 
 ```sh

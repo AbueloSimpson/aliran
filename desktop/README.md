@@ -35,3 +35,5 @@ npm run dist
 
 Full guide — architecture, keyboard map, packaging, the unsigned/SmartScreen
 reality, and the codec (HEVC) story: [docs/desktop-player.md](../docs/desktop-player.md).
+End-user documentation for the public build (hand it to viewers):
+[docs/desktop-viewer-guide.md](../docs/desktop-viewer-guide.md).
