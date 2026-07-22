@@ -42,6 +42,7 @@ nav:
   - Configuration: configuration.md
   - Content management: content-management.md
   - Client build: client-build.md
+  - Desktop player (Windows): desktop-player.md
   - Player SDK: sdk.md
   - SDK installation & configuration: sdk-guide.md
   - Operator APIs & the SDK: ops-sdk-integration.md

@@ -197,7 +197,7 @@ Nothing else is needed — clients reach the panel through the DHT, not an IP/do
 
 ## G. The VOD library (optional)
 
-On-demand titles come from the **[library](../library/README.md)** — a separate
+On-demand titles come from the **[library](https://github.com/AbueloSimpson/aliran/tree/main/library)** — a separate
 service on purpose: ingest is a one-shot transcode burst (0.5–1 core) plus a static
 seed, so it belongs on whatever box has the disk and spare CPU, **not** inside the
 live pipeline (a production broadcaster near its CPU ceiling must never absorb a

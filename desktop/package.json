@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Aliran desktop player for Windows — Electron shell over @aliran/player-sdk (never published; built with electron-builder)",
+  "author": "Aliran contributors",
   "license": "MIT",
   "type": "module",
   "main": "main/index.js",

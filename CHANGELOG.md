@@ -193,6 +193,25 @@ Android phone + Android TV).
   gradle flavor; the default no-flavor build is untouched. Ships the fictional
   `sunburst` example brand; operator guide: [docs/white-label.md](docs/white-label.md).
 
+**Desktop player (`desktop/`)**
+- Windows desktop player (Electron): the engine (`@aliran/player-sdk`) runs in the
+  main process on the stock N-API prebuilds; the sandboxed React renderer plays the
+  localhost/redirect HLS with hls.js behind a three-call IPC bridge speaking the
+  worklet message protocol. Full S18 parity — splash auto-auth (credentials wrapped
+  with `safeStorage`/DPAPI, password never re-enters the renderer), menu hub,
+  fullscreen live TV with category rail + numbered list + detail panel, the live
+  EPG now/next guide (the shared plain-TS data layer from `@aliran/react-native`),
+  favorites/search/settings, "Smooth zapping" toggle, subtitle/audio selection
+  (flat hls.js indexes), tuning pill, keyboard-first D-pad-style navigation, and a
+  vod seek/pause transport. The `<AliranVideo>` playback contracts are
+  reimplemented for hls.js: engine-confirmed tune completion, feed-rotation
+  remounts, the frozen-live-edge resync ladder with `reconnectActiveFeed()`
+  escalation, and a clean per-channel error for codecs the host GPU can't decode
+  (HEVC support = platform hardware decode). electron-builder packaging: NSIS
+  installer + portable exe, the service descriptor baked as a resource (unsigned —
+  the SmartScreen reality is documented). Guide:
+  [docs/desktop-player.md](docs/desktop-player.md).
+
 **Repeater (`repeater/`)**
 - Keyless regional super-peer (Open-Connect model): mirrors chosen channels' live
   windows **as ciphertext** at the block level (catalog `feedKey` + panel-published

@@ -1,0 +1,147 @@
+# Desktop player (Windows)
+
+The Aliran desktop player (`desktop/`) is the Windows sibling of the Android app:
+one Electron application that logs in over the DHT, browses the same S18 interface
+(menu hub, category rail, numbered channel list, detail panel with the program
+guide), plays live P2P channels and redirect channels, and re-seeds to other
+viewers — a full viewer node on a PC.
+
+It is a **consumer of the published SDK, not a fork of the engine**: the Electron
+main process runs [`@aliran/player-sdk`](sdk-guide.md) directly (the native modules
+are N-API prebuilds, so the same dependency graph the Node e2e suites exercise
+loads in Electron unchanged), and the renderer is a plain React app playing the
+engine's localhost HLS with hls.js. If you are building your own desktop viewer,
+`desktop/` is the working reference for the whole shape.
+
+---
+
+## 1. Architecture
+
+```
+Electron MAIN process                     Electron RENDERER (sandboxed)
+┌─────────────────────────────┐           ┌──────────────────────────────┐
+│ @aliran/player-sdk          │  IPC      │ React UI (menu/rail/list/    │
+│  swarm · OPRF login ·       │◄─────────►│ info/EPG/settings)           │
+│  catalog replication ·      │  bridge   │ hls.js/MSE over <video>      │
+│  localhost HLS serving      │           │  http://127.0.0.1:<port>     │
+│ safeStorage credentials     │           │  (or the redirect URL)       │
+└─────────────────────────────┘           └──────────────────────────────┘
+```
+
+- **All engine access stays in main.** The renderer runs with
+  `contextIsolation: true`, `sandbox: true`, no `nodeIntegration`; a preload
+  script exposes exactly three calls (send message / event feed / state snapshot).
+  The message protocol is the same one the Android worklet speaks
+  (`client/backend/backend.mjs`), so the two apps' screens stay portable.
+- **Media never leaves the machine**: P2P channels are served by the engine on
+  `127.0.0.1` and decoded by Chromium's MSE; redirect channels play their operator
+  URL directly.
+- **Saved credentials use `safeStorage`** (DPAPI on Windows) — encrypted at rest,
+  and the password is never sent back to the renderer: the splash's auto-login is
+  fulfilled entirely inside the main process. When the OS offers no encryption,
+  credentials simply aren't saved (the app still works; every boot lands on Login).
+- **Session store** (`aliran-store` under the app's user-data dir) is the SDK's
+  disposable replica cache — corruption self-heals, deleting it while the app is
+  closed is always safe.
+
+### Playback contracts (ported from `<AliranVideo>`)
+
+The renderer's `HlsVideo` component reimplements the RN binding's S22-proven
+behaviors on hls.js, and they matter for any custom host:
+
+- **Tune lifecycle from engine confirmations, not player events.** ONE localhost
+  URL serves every P2P channel, so after a zap the previous channel keeps playing
+  under the same URL until the engine flips the feed. The tuning pill completes
+  only when the engine confirmed the serve (`port` reply for this channel) *and*
+  the current player mount produced an advancing playhead.
+- **`feed-changed` → remount** the player behind the same URL (broadcaster restart
+  or rotation) to flush the stale playlist.
+- **Frozen-live-edge ladder**: a playhead still for 12 s while "playing" forces a
+  reload at the live edge; a second consecutive failed resync calls
+  `reconnectActiveFeed()` (wedged-transport teardown) first.
+- **VOD (S8a)**: a `type:'vod'` title disarms the ladder (a paused/seeking/finished
+  playhead is by design) and the bottom bar grows a seek/pause transport. The
+  desktop transport is implemented against the same contracts as the phone app's;
+  its live-VPS pass is pending an operator library deployment with granted titles.
+
+---
+
+## 2. Run from the repo (development)
+
+```sh
+npm install                     # repo root — desktop/ is a workspace member
+cd desktop
+cp config/service.example.json config/service.json   # set your panelPubKey
+npm run build                   # esbuild → renderer/dist/
+npx electron .
+```
+
+`config/service.json` is the same operator service-descriptor contract as the
+phone app (panel public key + optional branding colors/wallpaper/logo + section
+toggles) and is gitignored — one descriptor per deployment. Without it the app
+starts to a setup hint.
+
+Keyboard map (the D-pad patterns on desktop keys):
+
+| Context | Keys |
+|---|---|
+| Fullscreen video | `↑`/`↓` zap · `Enter`/click channel list · `i` info · `f` favorite · `c` subtitles/audio · `Space` pause (VOD) · `Esc` menu |
+| Channel list | `↑`/`↓` rows · `←`/`→` rail↔list · `Enter` watch · `i`/right-click detail · `Esc` unwind (sub-category → parent → close) |
+| Everywhere else | Arrows + `Enter` navigate · `Esc` back |
+
+The browse overlay auto-hides after 6 s idle (playback is never interrupted by
+browsing); the bottom bar and the mouse cursor fade over clean video and return on
+any activity.
+
+## 3. Package (installer + portable)
+
+```sh
+cd desktop
+npm run dist        # electron-builder → dist/Aliran Setup <v>.exe + Aliran-<v>-portable.exe
+```
+
+- Packaging **bakes `config/service.json` into the artifact** (an extra resource,
+  like the phone APK bundles its descriptor) — a build is per-deployment. The
+  installer is per-user (no admin prompt); the portable exe runs from anywhere.
+- **The builds are unsigned.** There is no code-signing certificate, so Windows
+  SmartScreen will show "Windows protected your PC" with an unknown publisher on
+  first run — users click *More info → Run anyway*. That is the honest reality of
+  unsigned distribution; operators shipping to real users should countersign with
+  their own certificate (electron-builder's `win.signtoolOptions`), which also
+  builds SmartScreen reputation over time.
+- Per-brand desktop packaging (the `client/brands/<id>/` white-label flow) is a
+  follow-up; today the icon and product name are set in
+  `desktop/electron-builder.yml` and the colors/name flow from the descriptor at
+  runtime.
+
+## 4. Codecs (what this player can decode)
+
+The engine passes streams through untouched (`copy` end to end), so playback is
+bounded by what Chromium/MSE on the *host machine* can decode:
+
+- **H.264 + AAC**: works everywhere; the bulk of a typical lineup.
+- **HEVC (H.265)**: depends on **platform hardware decode**. Chromium exposes HEVC
+  only when the GPU/driver decodes it (most Intel/AMD/NVIDIA GPUs from the last
+  decade do). Verified on the reference deployment: the HEVC 1080p channels
+  (`cos-pa`, `telemetro-pa`) play at full 1920×1080 on a machine with hardware
+  HEVC. On a machine without it, the player surfaces a clean per-channel error
+  ("This device can't decode this channel's video format") instead of a black
+  screen — the channel list keeps working.
+- Compared to the Android app: ExoPlayer on the S22 also plays both, so the two
+  clients cover the same lineup; the desktop's HEVC support just varies per PC
+  where the phone's is fixed per device model.
+
+In-stream **subtitle/CC and audio tracks** are selectable from the `CC` button /
+`c` key (hls.js reports the tracks; selection is by index — flat and reliable,
+unlike the ExoPlayer group-index pitfall the phone app works around).
+
+## 5. Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Setup hint at start | No `config/service.json` beside the app (dev) or baked into it (packaged build with the descriptor missing at build time). |
+| Login spins ~1 min then "Cannot reach the service" | The DHT is still unreachable — check the network; the main process already retried the transient window for you. |
+| SmartScreen blocks first run | Unsigned build (see §3): *More info → Run anyway*. |
+| A channel shows the codec error | The host GPU can't decode that channel's codec (usually HEVC on an older PC) — every other channel keeps working. |
+| Frequent `store:reset` status lines | The disposable replica cache self-healed after unclean exits; if constant, check disk health/space under the app's user-data dir. |
+| Two copies fight over the store | The app is single-instance per user-data dir by design; a second launch focuses the first window. |

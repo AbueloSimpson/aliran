@@ -1,0 +1,42 @@
+# Windows packaging (S35): NSIS installer + portable single exe.
+#   npm run dist          (from desktop/; needs config/service.json — the descriptor
+#                          is baked into the artifact as a resource, like the phone
+#                          APK bakes its service.json)
+# Builds are UNSIGNED — no code-signing certificate — so Windows SmartScreen shows
+# "unknown publisher" on first run (More info → Run anyway). Documented honestly in
+# docs/desktop-player.md; per-brand packaging hooks are a follow-up, not v1.
+appId: app.aliran.desktop
+productName: Aliran
+# Keep in step with devDependencies.electron (hoisted to the workspace root, where
+# electron-builder cannot resolve a semver range on its own).
+electronVersion: 37.10.3
+# buildResources deliberately NOT named "build" — the repo's global .gitignore
+# ignores build/ dirs, and the icon must be committed.
+directories:
+  output: dist
+  buildResources: assets
+files:
+  - main/**
+  - renderer/index.html
+  - renderer/dist/**
+  - package.json
+extraResources:
+  # The operator service descriptor (gitignored — per-deployment, never in the repo).
+  - from: config/service.json
+    to: config/service.json
+# The engine's native modules (sodium-native, udx-native, …) are N-API prebuilds:
+# no rebuild against Electron needed, but .node files cannot load from inside asar.
+asarUnpack:
+  - "**/*.node"
+npmRebuild: false
+win:
+  target:
+    - nsis
+    - portable
+  icon: assets/icon.png
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+portable:
+  artifactName: ${productName}-${version}-portable.exe

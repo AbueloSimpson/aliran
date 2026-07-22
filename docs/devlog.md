@@ -1820,3 +1820,76 @@ test title, its grants, and the session's temp admins were purged from the
 production panel afterwards (stop the library BEFORE the purge — its register
 heartbeat resurrects a purged record); publisher `library1` stays enrolled for
 future library deployments.
+
+### S35 — Windows desktop player: full TV-app parity on Electron (verified against the live VPS)
+
+The roadmap's DRM-hardening and geo items were dropped (2026-07-22) and the effort
+moved into a **Windows desktop player** — Electron shell, full parity with the
+Android app's S18 experience. New top-level `desktop/` workspace (private, never
+published), built in three pushed stages.
+
+**Architecture.** The engine (`@aliran/player-sdk`) runs in the Electron **main
+process** — the N-API prebuilds (sodium-native, udx-native, …) that the Node e2e
+suites exercise load in Electron unchanged, so the desktop app consumes the
+published SDK with zero engine forks. The renderer is a sandboxed React app
+(`contextIsolation` on, no `nodeIntegration`) behind a three-call preload bridge
+speaking the same line-JSON message protocol as the Android worklet shell — which
+made the RN screens port mechanically. hls.js/MSE plays both the engine's
+localhost P2P playlists and redirect-channel URLs on one `<video>`. Saved
+credentials are `safeStorage` (DPAPI)-wrapped, and the desktop goes one step
+further than the phone: the password **never returns to the renderer** — splash
+auto-login is fulfilled inside main, and the `prefs` reply carries the username
+only. The transient-login retry loop lives main-side, once.
+
+**The `<AliranVideo>` contracts, reimplemented for hls.js** (`HlsVideo`):
+engine-confirmed tune lifecycle (one localhost URL serves every channel — the pill
+completes only on the `port` reply for *this* channel + an advancing playhead on
+the current mount), `feed-changed` remounts behind the same URL, the
+frozen-live-edge ladder (12 s still playhead → live-edge reload → second failure
+tears the wedged transport via `reconnectActiveFeed()`), fatal-network retry
+remounts, one `recoverMediaError()` before a media-error remount, and a **clean
+per-channel codec error** instead of a retry loop when the host GPU can't decode a
+stream. VOD (S8a) rides the same surface — recordType disarms the ladder and the
+bar grows a seek/pause transport (implemented to the same contracts; a live-VPS
+vod pass awaits an operator library deployment with granted titles).
+
+**Parity surface.** Menu hub (icon bar over the featured wallpaper, sections
+data-driven from the descriptor), category rail with the two-level drill,
+numbered channel list with per-row EPG now-lines, detail panel with the live
+now/next guide — the **plain-TS EPG data layer is imported from
+`@aliran/react-native` source unchanged** (one cached fetch covers every row
+sharing a feed URL), favorites (device-local), search, settings with the
+"Smooth zapping" toggle (persisted + applied live), subtitle/audio TrackMenu
+(flat hls.js indexes — the ExoPlayer group-index pitfall doesn't exist here),
+tuning pill with honest self-heal labels, NowPlayingBar with clock + EPG-now,
+resume-last-channel, and keyboard-first navigation mirroring the D-pad model
+(rail/list panes, Esc unwind, `f`/`i`/`c` shortcuts).
+
+**Packaging** (electron-builder 26): NSIS one-click installer + portable exe,
+`asarUnpack` for the native modules, the operator `service.json` baked as a
+resource (per-deployment builds, like the phone APK), a brand-palette icon.
+electron-builder's workspace support collected the symlinked `@aliran/{core,
+player-sdk}` into the asar correctly. Builds are **unsigned** — the SmartScreen
+"unknown publisher" reality is documented rather than hidden. Per-brand desktop
+packaging is noted as a follow-up.
+
+**Verification — against the production VPS (~84 live P2P channels + ~238
+redirects), on the PACKAGED portable/unpacked build,** with a throwaway user
+(`s35test`, deleted after): sign-out → login → the 244-channel lineup; P2P
+playback with the peers badge (espn-east, `P2P · 1 peer`); a zap chain
+P2P→P2P→P2P→redirect wrapping the numbered ring (241→…→001) with the tuning
+pill; the EPG guide rendering now/next with the elapsed bar (Pluto feeds); track
+selection flipping an English subtitle track to `showing`; the Smooth-zapping
+toggle persisting + echoing; and the **HEVC verdict: the HEVC 1080p channels
+(`cos-pa`, `telemetro-pa`) play at full 1920×1080** on this box (platform
+hardware decode; `MediaSource.isTypeSupported('hvc1')` true) — on hosts without
+it the player surfaces the clean codec error. Screenshots:
+`aliran-ops/s35-screenshots/01…12`. The engine logged the S33 socket tuning
+(`recv 2 MiB`) on desktop too. `tsc` clean, `node --check` clean,
+`mkdocs build --strict` green. Docs: `docs/desktop-player.md` + nav/README/
+CHANGELOG. Gotchas kept for the next session: electron postinstall's zip
+extraction silently produced only `locales/` on this box (manual
+`Expand-Archive` + `path.txt` fixed it); electron-builder needs `electronVersion`
+pinned when electron is hoisted to the workspace root; the packaged and dev apps
+share `%APPDATA%\aliran-desktop` (userData follows package.json `name`), so the
+single-instance lock spans them — close one before launching the other.

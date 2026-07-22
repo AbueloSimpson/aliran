@@ -29,6 +29,7 @@ each other over the Hyperswarm DHT by public key):
 | **[`repeater/`](repeater/)** | Linux (headless) | Optional **keyless** regional super-peer (Open-Connect model): mirrors + serves encrypted feeds, absorbs viewer fan-out, cannot watch what it serves |
 | **[`library/`](library/)** | Linux (headless) | Optional **VOD service**: one-shot ingest of video files → encrypted, P2P-seeded on-demand titles with full seek, granted like channels |
 | **[`client/`](client/)** | Android (phone + TV) | The app/APK: logs in, browses an OTT UI, plays the stream, **and re-seeds to other viewers** |
+| **[`desktop/`](desktop/)** | Windows | The desktop player (Electron): the same OTT interface and P2P engine on a PC — installer + portable exe |
 
 ```
  ORIGIN (OBS/RTSP/HLS)      Hyperswarm DHT (find peers by public key)

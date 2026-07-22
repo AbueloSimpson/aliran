@@ -52,7 +52,7 @@ absorbing fan-out so the origin broadcaster's per-channel egress drops to roughl
 one stream per repeater. It holds no grants and cannot watch what it serves.
 
 ### Library (Linux, optional — VOD)
-The standalone **VOD service** ([library/README.md](../library/README.md)):
+The standalone **VOD service** ([library/README.md](https://github.com/AbueloSimpson/aliran/tree/main/library)):
 operator-registered video **files** become encrypted, P2P-seeded on-demand titles
 (`type:'vod'` + `durationSec` in the catalog, granted exactly like channels).
 Deliberately separate from the broadcaster: ingest is a one-shot transcode burst

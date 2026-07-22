@@ -177,7 +177,7 @@ Two record classes share the catalog, the grant machinery, and the P2P transport
 - **Live** (`type:'live'`, the default): a rolling HLS window in a Hyperdrive, fed
   by the **broadcaster**. Carries `isLive`; segments rotate out and are reclaimed.
 - **VOD** (`type:'vod'`, S8a): an on-demand **title** served by the standalone
-  **[library](../library/README.md) service** — a finished HLS VOD rendition
+  **[library](https://github.com/AbueloSimpson/aliran/tree/main/library) service** — a finished HLS VOD rendition
   (`#EXT-X-PLAYLIST-TYPE:VOD`, **all** segments kept) in its own encrypted
   Hyperdrive. The record carries `durationSec` and **no `isLive` at all** (liveness
   is not a property a title has); `status` is `'available'` while the library seeds
