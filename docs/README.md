@@ -8,10 +8,11 @@ Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
 
 - [Getting started](getting-started.md) — quick tour for operators, developers, users
 - [Concepts](concepts.md) — P2P / Pear / Bare primer, glossary
-- [Architecture](architecture.md) — the four components, data flows, **sequence diagrams**
+- [Architecture](architecture.md) — the five components, data flows, **sequence diagrams**
 - [Security model](security-model.md) — threat model, auth, brute-force, DRM, geo, **and honest limits**
 - [Operator guide](operator-guide.md) — install, generate keys, run panel + broadcaster, HA
 - [Repeater appliance](repeater.md) — optional keyless regional super-peer (Open-Connect model)
+- [VOD library](https://github.com/AbueloSimpson/aliran/blob/main/library/README.md) — optional standalone service for on-demand titles (`type:'vod'`; API in [Reference](reference.md), ops in the [operator guide](operator-guide.md))
 - [Configuration](configuration.md) — full config reference for every component
 - [Content management](content-management.md) — catalog, metadata, assets, DRM, geo, VOD
 - [Client build](client-build.md) — build the Android (phone + TV) app

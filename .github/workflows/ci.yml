@@ -1,5 +1,6 @@
 # Test suites on every push to main and every PR. Two lanes:
-#   core    — fast + deterministic (no network, no ffmpeg). REQUIRED: keep it green.
+#   core    — fast + deterministic (loopback/local-testnet only, never the public
+#             DHT; ffmpeg installed for test:vod). REQUIRED: keep it green.
 #   e2e-dht — end-to-end suites over the real Hyperswarm DHT (+ ffmpeg for the media
 #             ones). The public DHT can be flaky from hosted runners, so this job is
 #             continue-on-error: it reports signal but can never block a merge.
@@ -30,6 +31,8 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Install ffmpeg (needed by test:vod)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npm ci
       - name: Crypto unit tests (test:core)
         run: npm run test:core
@@ -48,6 +51,12 @@ jobs:
       # no DHT, so it belongs in the required lane.
       - name: Remote channel sources (test:sources)
         run: npm run test:sources
+      # The whole VOD chain (S8a) on a LOCAL DHT testnet — library ingest → panel vod
+      # record class → grant → SDK resolve/serve/seek → delete. Loopback UDP + ffmpeg
+      # only, never the public DHT, so it is deterministic enough for the required lane.
+      - name: VOD library end-to-end (test:vod)
+        timeout-minutes: 10
+        run: npm run test:vod
 
   docker-build:
     name: docker images build (best effort, non-blocking)
@@ -63,6 +72,9 @@ jobs:
       - name: Build broadcaster image
         if: ${{ !cancelled() }}
         run: docker build -f broadcaster/Dockerfile -t aliran-broadcaster .
+      - name: Build library image
+        if: ${{ !cancelled() }}
+        run: docker build -f library/Dockerfile -t aliran-library .
       # Prove the images actually run: `init` exercises the whole panel dependency
       # graph (sodium-native, @aliran/core) in a throwaway container, and the
       # broadcaster image must ship ffmpeg with SRT protocol support (needed for
@@ -73,6 +85,12 @@ jobs:
       - name: Smoke broadcaster image (ffmpeg + libsrt present)
         if: ${{ !cancelled() }}
         run: docker run --rm --entrypoint ffmpeg aliran-broadcaster -hide_banner -protocols | grep -w srt
+      # The library needs ffprobe (ingest probe) and its dependency graph must load.
+      - name: Smoke library image (ffprobe present + admin CLI runs)
+        if: ${{ !cancelled() }}
+        run: |
+          docker run --rm --entrypoint ffprobe aliran-library -version | head -1
+          docker run --rm aliran-library node src/library-cli.js list-admins
 
   e2e-dht:
     name: e2e over the public DHT (best effort, non-blocking)

@@ -71,6 +71,17 @@
 // operator-set https URL that viewers play DIRECTLY (resolve() returns it with
 // source:'cdn' and no port). No feed, no swarm join, no self-heal machinery: there is
 // no replica to heal, so remote-URL playback and its errors belong to the host player.
+//
+// VOD titles (S8a): a catalog record with type:'vod' (+ durationSec) is a library
+// title — a STATIC encrypted drive holding a finished HLS VOD rendition. resolve()
+// serves it on the same localhost server (full Range support = full seek) and returns
+// {type:'vod', durationSec}, but arms NONE of the live machinery: the tune watchdog,
+// the zap-prefetch gate and the hybrid stall/recovery probes all define health as the
+// playlist ADVANCING, and a finished playlist never advances — each would false-fire
+// on a perfectly healthy title. vod plays P2P even under hybrid config, is never
+// segment-warmed as a zap neighbor, and does not hot-follow a catalog feedKey change
+// (a re-ingest applies on the NEXT resolve, not mid-film). See the vod branch in
+// resolve() and the a.vod guards it leans on.
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
@@ -457,6 +468,11 @@ export class AliranPlayer extends Emitter {
     if (!cfg || this._hybrid.mode === 'cdn-only') return
     const a = this._active
     if (!a || !a.feedKey) return // redirect channel active (S23): no local playlist for the gate to watch
+    // vod active (S8a): the adaptive gate reads the ACTIVE playlist's advance as
+    // playback health, and a finished VOD playlist never advances — the loop would
+    // suspend on a false 'stall' within stallMs and never resume. Guarded HERE (not
+    // only at resolve()) because setZapPrefetch(true) mid-play calls this directly.
+    if (a.vod) return
     const now = Date.now()
     this._zapGate = { suspended: false, reason: null, lastSig: null, lastAdvance: now, cleanSince: now, thinStreak: 0 }
     let busy = false
@@ -512,6 +528,14 @@ export class AliranPlayer extends Emitter {
       if (dir <= 0) wanted.add(ids[(i - k + ids.length) % ids.length])
     }
     wanted.delete(a.streamId)
+    // vod titles (S8a) are not channel-surf targets — warming one would download a
+    // film's newest segment for a zap that never comes. They keep their slot in the
+    // curated order (prewarm still warms their CONNECTIONS, which is ~free and makes
+    // first play snappy); only the bandwidth-spending segment warm skips them.
+    for (const id of [...wanted]) {
+      const k = this._entitled.get(id)
+      if (k && k.type === 'vod') wanted.delete(id)
+    }
     // Drop warm state for channels that are no longer neighbors (we zapped away).
     for (const [id, s] of this._zapRanges) {
       if (!wanted.has(id)) {
@@ -596,18 +620,23 @@ export class AliranPlayer extends Emitter {
     // is no replica to heal; remote-URL errors belong to the host player). The live
     // catalog read above means an admin URL edit reaches viewers on their next tune,
     // without a re-login.
+    // Record class (S8a): a vod title is a STATIC, finished playlist — it gets the
+    // plain P2P serving path below and NONE of the live machinery (see the vod branch
+    // after serveFeed). The class rides the live catalog read with the login snapshot
+    // as fallback, like feedKey/redirect.
+    const isVod = chan.type === 'vod'
     if (chan.redirect && chan.url) {
       this._clearHybridTimers()
       this._clearTuneTimer()
       this._clearZapPrefetch() // no neighbor warming while off P2P — the gate needs an active playlist
       this._active = { streamId, feedKey: null, localUrl: null, cdnUrl: chan.url, source: 'cdn', lastSig: null, lastAdvance: 0 }
-      return { url: chan.url, source: 'cdn', localUrl: undefined, port: undefined, feedKey: null }
+      return { url: chan.url, source: 'cdn', localUrl: undefined, port: undefined, feedKey: null, type: isVod ? 'vod' : 'live', durationSec: isVod ? chan.durationSec ?? null : undefined }
     }
     const feedKey = chan.feedKey
     // A catalog entry can exist before any broadcaster feeds it (feedKey null) —
     // surface that honestly instead of leaking a key-length error from hypercore.
     if (this._hybrid.mode !== 'cdn-only' && (!feedKey || !keys.encryptionKey)) {
-      throw new Error('channel is not broadcasting right now')
+      throw new Error(isVod ? 'title is not available right now' : 'channel is not broadcasting right now')
     }
     // Which way is the viewer surfing? An adjacent-channel move sets the prefetch
     // direction (directional zapPrefetch warms only that side); a non-adjacent jump
@@ -627,16 +656,32 @@ export class AliranPlayer extends Emitter {
     if (cfg.mode === 'cdn-only') {
       const url = cfg.cdnUrl(streamId)
       this._active = { streamId, feedKey, localUrl: null, cdnUrl: url, source: 'cdn', lastSig: null, lastAdvance: 0 }
-      return { url, source: 'cdn', localUrl: undefined, port: undefined, feedKey }
+      return { url, source: 'cdn', localUrl: undefined, port: undefined, feedKey, type: isVod ? 'vod' : 'live', durationSec: isVod ? chan.durationSec ?? null : undefined }
     }
 
     const port = await this.serveFeed(feedKey, keys.encryptionKey)
     const localUrl = `http://127.0.0.1:${port}/index.m3u8`
+    // VOD (S8a): serve and stop — none of the live self-heal machinery may arm,
+    // because ALL of it keys on the playlist ADVANCING, and a finished VOD playlist
+    // never advances: the tune watchdog would read a healthy title as a dead tune
+    // and walk its ladder to a false 'error'; the zap-prefetch gate would suspend on
+    // an instant false 'stall'; hybrid's stall watchdog would fall back to CDN on
+    // play and its recovery probe could never flip back — so vod skips hybrid too
+    // and always plays P2P here (cdn-only above still returns the host's own URL,
+    // honoring "never open P2P"). What carries vod playback instead: the serving
+    // layer's availability wait + Range + progressive bodies, the host player's own
+    // error handling, and reconnectActiveFeed() for a host-driven redial (which
+    // must not re-arm the live watchdog — see its vod guard).
+    if (isVod) {
+      this._clearZapPrefetch() // a previous live channel's warm loop must not outlive its play (same as the redirect path)
+      this._active = { streamId, feedKey, localUrl, cdnUrl: null, source: 'p2p', vod: true, lastSig: null, lastAdvance: Date.now() }
+      return { url: localUrl, source: 'p2p', localUrl, port, feedKey, type: 'vod', durationSec: chan.durationSec ?? null }
+    }
     if (cfg.mode === 'p2p-only') {
       this._active = { streamId, feedKey, localUrl, cdnUrl: null, source: 'p2p', lastSig: null, lastAdvance: Date.now() }
       this._startTuneWatchdog()
       this._startZapPrefetch()
-      return { url: localUrl, source: 'p2p', localUrl, port, feedKey }
+      return { url: localUrl, source: 'p2p', localUrl, port, feedKey, type: 'live', durationSec: undefined }
     }
 
     // hybrid: pick the starting source, then keep watching/probing in the background.
@@ -654,7 +699,7 @@ export class AliranPlayer extends Emitter {
     }
     const url = this._active.source === 'p2p' ? localUrl : this._active.cdnUrl
     this._startZapPrefetch() // warms P2P neighbors regardless of the active source
-    return { url, source: this._active.source, localUrl, port, feedKey }
+    return { url, source: this._active.source, localUrl, port, feedKey, type: 'live', durationSec: undefined }
   }
 
   // Current active source for the last resolve(), or null.
@@ -799,13 +844,15 @@ export class AliranPlayer extends Emitter {
         return {
           feedKey: v.feedKey || fallback.feedKey || null,
           redirect: !!(v.redirect && v.url),
-          url: v.url || null
+          url: v.url || null,
+          type: v.type ?? fallback.type ?? null, // S8a: 'vod' | 'live'
+          durationSec: v.durationSec ?? fallback.durationSec ?? null
         }
       }
     } catch { /* replicated catalog momentarily unreadable — use the cached values */ } finally {
       clearTimeout(timer)
     }
-    return { feedKey: fallback.feedKey || null, redirect: !!(fallback.redirect && fallback.url), url: fallback.url || null }
+    return { feedKey: fallback.feedKey || null, redirect: !!(fallback.redirect && fallback.url), url: fallback.url || null, type: fallback.type ?? null, durationSec: fallback.durationSec ?? null }
   }
 
   // feedKey-only shim for the callers that never care about the redirect class
@@ -897,7 +944,13 @@ export class AliranPlayer extends Emitter {
   _startTuneWatchdog () {
     this._clearTuneTimer()
     const a = this._active
-    if (!a || a.source !== 'p2p' || this._hybrid.mode !== 'p2p-only') return
+    // a.vod (S8a): "tuned" is defined as the playlist ADVANCING, which a finished VOD
+    // playlist never does — armed on a healthy title, the ladder would spin relookups
+    // and surface a false friendly error at ≤3× timeoutMs. Guarded HERE (not only at
+    // resolve(), which never arms it for vod) because reconnectActiveFeed() — the
+    // host's stall-escalation hook, useful for a starving vod download too — re-arms
+    // the watchdog and must not bring the live machinery with it.
+    if (!a || a.vod || a.source !== 'p2p' || this._hybrid.mode !== 'p2p-only') return
     const cfg = this._tune
     const t0 = Date.now()
     let started = t0
@@ -1324,6 +1377,11 @@ export class AliranPlayer extends Emitter {
     const a = this._active
     if (!a || this._hybrid.mode === 'cdn-only') return // cdn-only never serves the P2P feed
     if (!a.feedKey) return // redirect channel (S23): nothing served locally, nothing to rotate
+    // vod (S8a): a catalog feedKey change means a RE-INGEST replaced the title —
+    // hot-swapping the served drive would yank the viewer's playhead onto a
+    // different rendition mid-film. Finish on the local replica; the NEXT resolve()
+    // plays the new generation. (Live rotation-following stays live-only.)
+    if (a.vod) return
     const keys = this._entitled.get(a.streamId)
     if (!keys || !keys.encryptionKey) return
     // Fallback = the key we're already serving, so a momentarily unreadable catalog (or a
@@ -1400,7 +1458,7 @@ export class AliranPlayer extends Emitter {
     const port = await this._ensureServer() // posters must be loadable before anything plays
     this._entitled.clear()
     return streams.map((s) => {
-      this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null })
+      this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null, type: s.type ?? null, durationSec: s.durationSec ?? null })
       return this._display(port, s.id, s)
     })
   }
@@ -1424,7 +1482,13 @@ export class AliranPlayer extends Emitter {
       // the app can fetch the schedule on demand. Safe to expose like the art URLs
       // (unlike url/redirect, which stay engine-internal — see the display test).
       epgUrl: cat.epgUrl ?? undefined,
-      epgId: cat.epgId ?? undefined
+      epgId: cat.epgId ?? undefined,
+      // Record class (S8a): 'vod' = a library title (host shows seek UI, no live-edge
+      // machinery) | 'live'. durationSec rides only on vod records. status is exposed
+      // so a host can gray out an 'unavailable' title (its library deleted it).
+      type: cat.type ?? undefined,
+      durationSec: cat.durationSec ?? undefined,
+      status: cat.status ?? undefined
     }
   }
 

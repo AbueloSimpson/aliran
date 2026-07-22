@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aliran library</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #10131a; color: #dbe2ee; font: 14px/1.5 system-ui, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 14px 20px; border-bottom: 1px solid #232a38; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .sub { color: #7d8aa0; font-size: 12px; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px; }
+  .card { background: #171c26; border: 1px solid #232a38; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #7d8aa0; margin: 0 0 12px; }
+  label { display: block; font-size: 12px; color: #9aa7bd; margin: 8px 0 2px; }
+  input, select { width: 100%; padding: 7px 9px; background: #10131a; color: #dbe2ee; border: 1px solid #2c3547; border-radius: 6px; font: inherit; }
+  button { padding: 7px 14px; background: #2d6cdf; color: #fff; border: 0; border-radius: 6px; font: inherit; cursor: pointer; }
+  button.subtle { background: #232a38; color: #c6d0e0; }
+  button.danger { background: #7a2733; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #232a38; vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #7d8aa0; }
+  .state { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; }
+  .state.ready { background: #14351f; color: #59c17a; }
+  .state.ingesting, .state.queued { background: #34301a; color: #d9b64a; }
+  .state.error { background: #3a1b21; color: #e07a8a; }
+  .muted { color: #7d8aa0; font-size: 12px; }
+  .err { color: #e07a8a; font-size: 12px; white-space: pre-wrap; }
+  .bar { height: 4px; background: #232a38; border-radius: 2px; overflow: hidden; margin-top: 4px; width: 140px; }
+  .bar > div { height: 100%; background: #d9b64a; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 160px; }
+  pre { background: #10131a; border: 1px solid #232a38; border-radius: 6px; padding: 10px; font-size: 11px; overflow: auto; max-height: 260px; white-space: pre-wrap; }
+  #app { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Aliran library</h1>
+  <span class="sub">on-demand titles — encrypted, P2P-seeded</span>
+  <span style="flex:1"></span>
+  <span class="sub" id="who"></span>
+</header>
+<main>
+  <div class="card" id="loginCard">
+    <h2>Sign in</h2>
+    <div class="row">
+      <div><label>Admin</label><input id="lu" autocomplete="username"></div>
+      <div><label>Password</label><input id="lp" type="password" autocomplete="current-password"></div>
+    </div>
+    <p><button id="loginBtn">Sign in</button> <span class="err" id="loginErr"></span></p>
+    <p class="muted">No admin yet? On the library box: <code>node src/library-cli.js add-admin &lt;name&gt;</code></p>
+  </div>
+
+  <div id="app">
+    <div class="card">
+      <h2>Add title</h2>
+      <div class="row">
+        <div><label>Id</label><input id="tid" placeholder="movie-1"></div>
+        <div><label>Title</label><input id="ttitle" placeholder="My Movie"></div>
+        <div><label>Category</label><input id="tcat" placeholder="Movies"></div>
+      </div>
+      <label>Input (file path on the library box, or any URL ffmpeg reads)</label>
+      <input id="tinput" placeholder="/media/my-movie.mp4">
+      <div class="row">
+        <div><label>Mode</label><select id="tmode"><option value="auto">auto (copy when compatible)</option><option value="copy">copy (remux only)</option><option value="transcode">transcode (h264/aac)</option></select></div>
+        <div><label>Segment length (s)</label><input id="thls" type="number" min="1" max="30" placeholder="4"></div>
+        <div style="align-self:end"><button id="addBtn">Ingest</button></div>
+      </div>
+      <p class="err" id="addErr"></p>
+      <p class="muted">Ingest is a one-shot job (transcodes cost 0.5–1 core — they run one at a time). The title, description and category you set here SEED the catalog record; after that they are edited in the panel, not here.</p>
+    </div>
+
+    <div class="card">
+      <h2>Titles <span class="muted" id="sum"></span></h2>
+      <table>
+        <thead><tr><th>Id</th><th>State</th><th>Duration</th><th>Size</th><th>Peers</th><th>Panel</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="logCard" style="display:none">
+      <h2>Logs — <span id="logId"></span></h2>
+      <pre id="logBody"></pre>
+    </div>
+  </div>
+</main>
+<script>
+let token = sessionStorage.getItem('lib-token') || null
+let logOpen = null
+const $ = (id) => document.getElementById(id)
+
+async function api (method, path, body) {
+  const res = await fetch('/api' + path, {
+    method,
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 401 && path !== '/login') { token = null; sessionStorage.removeItem('lib-token'); show(); throw new Error('session expired — sign in again') }
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status))
+  return data
+}
+
+function show () {
+  $('loginCard').style.display = token ? 'none' : ''
+  $('app').style.display = token ? 'block' : 'none'
+}
+
+$('loginBtn').onclick = async () => {
+  $('loginErr').textContent = ''
+  try {
+    const r = await api('POST', '/login', { username: $('lu').value.trim(), password: $('lp').value })
+    token = r.token; sessionStorage.setItem('lib-token', token)
+    $('who').textContent = $('lu').value.trim()
+    show(); refresh()
+  } catch (e) { $('loginErr').textContent = e.message }
+}
+
+$('addBtn').onclick = async () => {
+  $('addErr').textContent = ''
+  const body = { id: $('tid').value.trim(), title: $('ttitle').value.trim() || undefined, input: $('tinput').value.trim() }
+  const cat = $('tcat').value.trim(); if (cat) body.category = cat.split(',').map(s => s.trim()).filter(Boolean)
+  const mode = $('tmode').value; if (mode !== 'auto') body.mode = mode
+  const hls = parseInt($('thls').value, 10); if (Number.isInteger(hls)) body.hlsTime = hls
+  try { await api('POST', '/titles', body); $('tid').value = $('ttitle').value = $('tinput').value = $('tcat').value = ''; refresh() }
+  catch (e) { $('addErr').textContent = e.message }
+}
+
+function fmtDur (s) { if (s == null) return '—'; const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return (h ? h + 'h ' : '') + m + 'm ' + Math.floor(s % 60) + 's' }
+function fmtSize (b) { return b == null ? '—' : (b / 1e6 >= 1000 ? (b / 1e9).toFixed(1) + ' GB' : (b / 1e6).toFixed(1) + ' MB') }
+
+async function refresh () {
+  if (!token) return
+  let titles
+  try { titles = await api('GET', '/titles') } catch { return }
+  const ready = titles.filter(t => t.state === 'ready').length
+  $('sum').textContent = `— ${titles.length} total, ${ready} ready`
+  $('rows').innerHTML = ''
+  for (const t of titles) {
+    const tr = document.createElement('tr')
+    const prog = t.ingest ? `<div class="muted">${t.ingest.phase} ${(t.ingest.pct * 100).toFixed(0)}%</div><div class="bar"><div style="width:${(t.ingest.pct * 100).toFixed(0)}%"></div></div>` : ''
+    const err = t.state === 'error' && t.error ? `<div class="err">${esc(t.error)}</div>` : ''
+    const reg = t.state !== 'ready' ? '—' : t.registered ? '✓ registered' : (t.registerError ? `<span class="err">${esc(t.registerError)}</span>` : 'registering…')
+    tr.innerHTML = `
+      <td><b>${esc(t.id)}</b><div class="muted">${esc(t.title || '')}</div></td>
+      <td><span class="state ${esc(t.state)}">${esc(t.state)}</span>${prog}${err}</td>
+      <td>${fmtDur(t.durationSec)}</td>
+      <td>${fmtSize(t.bytes)}<div class="muted">${t.segments != null ? t.segments + ' seg' : ''}</div></td>
+      <td>${t.peers ?? 0}</td>
+      <td>${reg}</td>
+      <td style="white-space:nowrap">
+        <button class="subtle" data-logs="${esc(t.id)}">logs</button>
+        <button class="subtle" data-reingest="${esc(t.id)}" ${t.state === 'ingesting' || t.state === 'queued' ? 'disabled' : ''}>re-ingest</button>
+        <button class="danger" data-del="${esc(t.id)}" ${t.state === 'ingesting' || t.state === 'queued' ? 'disabled' : ''}>delete</button>
+      </td>`
+    $('rows').appendChild(tr)
+  }
+  if (logOpen) loadLogs(logOpen)
+}
+
+function esc (s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) }
+
+$('rows').onclick = async (ev) => {
+  const b = ev.target.closest('button'); if (!b) return
+  if (b.dataset.logs) { logOpen = b.dataset.logs; $('logCard').style.display = ''; loadLogs(logOpen); return }
+  try {
+    if (b.dataset.reingest && confirm(`Re-ingest "${b.dataset.reingest}"? This mints a fresh feed (viewers follow the catalog).`)) await api('POST', `/titles/${encodeURIComponent(b.dataset.reingest)}/ingest`, {})
+    if (b.dataset.del && confirm(`Delete "${b.dataset.del}"? Its data is purged from this box (remove the catalog record + grants in the panel).`)) await api('DELETE', `/titles/${encodeURIComponent(b.dataset.del)}`)
+    refresh()
+  } catch (e) { alert(e.message) }
+}
+
+async function loadLogs (id) {
+  $('logId').textContent = id
+  try { const r = await api('GET', `/titles/${encodeURIComponent(id)}/logs?lines=120`); $('logBody').textContent = r.lines.join('\n') || '(no log lines)' }
+  catch (e) { $('logBody').textContent = e.message }
+}
+
+show()
+if (token) { $('who').textContent = ''; refresh() }
+setInterval(refresh, 3000)
+</script>
+</body>
+</html>

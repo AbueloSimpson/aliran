@@ -91,7 +91,12 @@ following only the docs.
 
 ## v1.x — Optional modules (opt-in, provider-pluggable)
 
-- ⬜ **VOD**: finished-file Hyperdrives, seek/resume, Continue Watching, live→VOD recording
+- 🚧 **VOD** (S8a server side ✅): the standalone `library/` service ships — file →
+  HLS-VOD ingest (copy/transcode) into per-title encrypted Hyperdrives, `type:'vod'`
+  + `durationSec` catalog class, unchanged grants, SDK serves with full seek and no
+  live machinery (`test:vod` in the required CI lane). Remaining: the app's Library
+  rail + seek UI + on-device verify (S8a stage 2), then resume positions / Continue
+  Watching / live→VOD recording as later options
 - ⬜ **Commercial DRM**: CENC/CMAF packaging + BuyDRM/KeyOS, EZDRM, Axinom… via CPIX;
   panel-issued entitlement JWTs; Widevine on Android/TV
 - ⬜ **Geo-locking**: MaxMind GeoIP at entitlement time + vendor license geo policy

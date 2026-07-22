@@ -104,7 +104,9 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
   // three. An unnamed payload falls back to the legacy shared publisher key at
   // implicit scope `*` while `legacyPublisher` is on. The panel then writes the
   // PUBLIC catalog record (no encryptionKey, origin stamped for named publishers)
-  // and stores the encryption key in its private secrets file. The catalog write is
+  // and stores the encryption key in its private secrets file. Payloads carry a
+  // record class: `type:'vod'` (library titles — durationSec, no isLive) or the
+  // default 'live' (see the class note at the record build). The catalog write is
   // IDEMPOTENT — a re-register that changes nothing appends nothing to the bee (see
   // the frugality note at the put); the secrets file is written unconditionally,
   // since it is an ordinary rewritten file, not an append-only log.
@@ -147,6 +149,17 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     const node = await db.get('catalog/' + streamId)
     const existing = node?.value || {}
     const feedKey = payload.feedKey ?? existing.feedKey ?? null
+    // Record class (S8a): 'vod' — the library's on-demand titles — or 'live' (the
+    // default, so pre-S8a broadcasters need no change; unknown types are refused to
+    // 'live' rather than written through). The two classes differ in exactly two
+    // fields, both handled at their slots below: vod records carry `durationSec` (a
+    // media fact the publisher measures at ingest — payload-owned like feedKey, never
+    // admin-curated) and NO `isLive` — liveness is not a property a title has, so the
+    // field is OMITTED entirely and clients must not read liveness into vod records.
+    // Everything else — grant/sealing via the secret stored above, blobsKey
+    // enrichment, panel-authoritative descriptive metadata, curation/redirect/EPG
+    // preservation, the S29 idempotent put — applies to both classes verbatim.
+    const type = payload.type === 'vod' ? 'vod' : 'live'
     // Descriptive metadata is PANEL-authoritative (S27e): the broadcaster is just the
     // stream, not the arbiter of what viewers see. It SEEDS title/description/category
     // only when it first creates a channel; a re-register onto an existing record never
@@ -158,14 +171,20 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       title: seed.title ?? existing.title ?? streamId,
       description: seed.description ?? existing.description ?? '',
       category: seed.category ?? existing.category ?? [],
-      type: 'live',
+      type,
       protection: payload.protection ?? existing.protection ?? 'self',
       feedKey,
       // blobsKey rides beside the feedKey it belongs to: preserved while the feedKey is
       // unchanged, cleared on rotation. The enricher (src/blobs-key.js) refills it
-      // ASYNCHRONOUSLY — a register reply never waits on a drive open.
+      // ASYNCHRONOUSLY — a register reply never waits on a drive open. (vod drives
+      // enrich identically — a keyless mirror of a title needs the blobs key too.)
       blobsKey: (feedKey && feedKey === existing.feedKey ? existing.blobsKey : null) ?? null,
-      isLive: payload.isLive !== false,
+      // The one class-conditional slot (kept in isLive's position so a live record's
+      // key order — and therefore its S29 byte-compare vs pre-S8a records — is
+      // unchanged): live carries isLive, vod carries durationSec instead.
+      ...(type === 'vod'
+        ? { durationSec: Number.isFinite(payload.durationSec) ? payload.durationSec : (existing.durationSec ?? null) }
+        : { isLive: payload.isLive !== false }),
       poster: existing.poster ?? null, backdrop: existing.backdrop ?? null, logo: existing.logo ?? null,
       // curation is admin-owned — a re-register must never erase it
       order: existing.order ?? null,
@@ -185,7 +204,10 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       // genuinely unattributed, and an audit field must never guess. Clients
       // ignore unknown catalog fields.
       origin,
-      status: payload.status ?? (payload.isLive !== false ? 'live' : 'idle')
+      // vod status vocabulary: 'available' (seeding) / 'unavailable' (the library
+      // deleted the title — the record itself is admin-owned, so it stays until an
+      // admin removes it and its grants in the panel).
+      status: payload.status ?? (type === 'vod' ? 'available' : (payload.isLive !== false ? 'live' : 'idle'))
     }
 
     // Bee frugality (S29) — same rule as the source sync (src/sources.js): an unchanged
@@ -209,7 +231,7 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     // heartbeat stays out of it: at 43 channels those alone would evict the whole ring
     // (admin mutations, viewer sessions) every ~20 min. Liveness is not lost — it is
     // the catalog record's own isLive/status, plus the broadcaster's status API.
-    if (activity && changed) activity.record('register', { streamId, isLive: payload.isLive !== false, ...(origin ? { origin } : {}) })
+    if (activity && changed) activity.record('register', { streamId, ...(type === 'vod' ? { type: 'vod', status: record.status } : { isLive: payload.isLive !== false }), ...(origin ? { origin } : {}) })
     // Enqueued even when the put was SKIPPED: a stream whose blobsKey never landed
     // (broadcaster offline, or nothing written to the drive yet) parks after maxAttempts
     // and it is precisely this heartbeat that retries it (see src/blobs-key.js).

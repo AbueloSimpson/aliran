@@ -1686,3 +1686,72 @@ semantics).
   publish remains a maintainer action (core → player-sdk → react-native, one at a
   time). Suites: `test:nettune` (new group F), sdk unit (new S33 group), **full
   `test:sdk` e2e**, client `tsc` + jest 10/10.
+
+### S8a — the VOD library: a separate service for on-demand titles (verified)
+
+VOD landed as a **new top-level deployable, `library/`** — an explicit architecture
+decision, not an accident of code placement: the broadcaster is a live pipeline
+(watchdogs, rolling buffers, feed rotation, boot-resume pacing) and none of that
+lifecycle applies to a static seed; ingest is a one-shot transcode burst (0.5–1
+core) that a production live box running at ~72% CPU must never absorb; and the
+failure domains stay separate. Operators run the library wherever the disk and
+spare cores are — beside the stack via the compose `vod` profile, or on entirely
+different hardware.
+
+- **A title = a catalog record + one encrypted Hyperdrive.** Ingest: ffprobe the
+  input (must have a FINITE duration — a live stream would fill the disk, and is
+  refused at probe time), `-c copy` remux when the codecs are already
+  HLS-compatible (h264/hevc + aac/mp3/ac3) else transcode h264/aac with keyframes
+  forced onto segment boundaries, `#EXT-X-PLAYLIST-TYPE:VOD` + `#EXT-X-ENDLIST`,
+  segments imported in order with the playlist LAST, ALL segments kept — disk =
+  title size, reclaimed only by delete. Storage is the repeater's model (ONE
+  Corestore + ONE Hyperswarm for every title — a seeder needs one socket pair, not
+  one per title), per-generation namespaces (`title:<id>:g<n>`) so a re-ingest
+  mints a fresh feedKey and purges the old cores, and per-title encryption keys
+  minted once and reused across re-ingests so grants survive (the broadcaster's
+  feed.key contract). PanelLink + register.js ride as self-contained copies (the
+  control-auth convention: separate deployables each ship their own).
+- **The panel gained a record CLASS, not a new pipeline**: `type:'vod'` carries
+  `durationSec` (payload-owned, like feedKey) and **omits `isLive` entirely** —
+  liveness is not a property a title has. The conditional sits exactly in isLive's
+  slot in the record builder, so a live record's key order — and therefore its S29
+  byte-compare against pre-S8a records — is unchanged (test:register stayed green
+  untouched). Grants/sealing, panel-authoritative descriptive metadata, curation
+  preservation and blobsKey enrichment (a future keyless title mirror needs it)
+  apply to titles verbatim.
+- **The SDK branch is mostly about what must NOT run.** Every live self-heal
+  mechanism defines health as "the playlist ADVANCES" — and a finished VOD playlist
+  never advances, so each would false-fire on a perfectly healthy title: the tune
+  watchdog would walk retune → teardown → a false friendly error within 3×
+  timeoutMs; the zap-prefetch gate would suspend on a fake 'stall' within 12 s;
+  hybrid's stall probe would dump the viewer to CDN on play. resolve() now returns
+  `{type, durationSec}` and for vod serves-and-stops; the guards live INSIDE
+  `_startTuneWatchdog`/`_startZapPrefetch` too, because `reconnectActiveFeed()` and
+  `setZapPrefetch(true)` re-arm mid-play. vod titles keep their curated slot (and
+  prewarm still warms their connections) but are never segment-warmed as zap
+  neighbors, and a catalog feedKey change is deliberately NOT hot-followed (a
+  re-ingest mid-film would yank the playhead; it applies on the next resolve). The
+  localhost serving layer needed exactly one change: the playlist read-ahead now
+  prefetches the HEAD of an ENDLIST playlist (a viewer starts at the top) instead
+  of the tail (the end credits).
+- **`test:vod`** runs the whole chain on a LOCAL DHT testnet (deterministic → the
+  REQUIRED CI lane, which now installs ffmpeg): generate a real file → control-API
+  ingest (copy remux) → vod record class asserted field-by-field (including S29
+  idempotence for the class) → blobsKey enrichment → grant → SDK login/resolve →
+  **ffprobe validates the SERVED url** (12.0 s over P2P) → Range read on the LAST
+  segment (seek-style random access, no sequential fetch led there) → a 10 s
+  quiet-wait past 3× a shortened tune timeout proves the watchdog did NOT arm
+  (events + internals) while a synthetic live channel beside it proves it still
+  DOES arm and stand down, cleanly across vod↔live zaps → DELETE purges the cores
+  from disk and the catalog flips `status:'unavailable'`. One harness gotcha worth
+  remembering: **never `spawnSync` a probe against a server hosted by the same
+  Node process** — spawnSync blocks the event loop, the server can't answer, and
+  ffprobe "times out" against a perfectly healthy stack (async spawn + await).
+- **Versions**: `@aliran/player-sdk` 0.1.2, `@aliran/react-native` 0.1.2 (Stream
+  gains `type`/`durationSec`/`status`; ResolveResult gains `type`/`durationSec`;
+  the RN `port` message declares `recordType`/`durationSec` for the stage-2 app
+  work). Core untouched. Publish remains a maintainer action.
+- **Suites**: new `test:vod` (required lane) PASS; full `test:sdk` PASS untouched;
+  `test:register`/`test:broadcaster-api` PASS (zero broadcaster changes);
+  `test:core`/`corrupt`/`args`/`retention`/`nettune`/`sources` PASS. Stage 2 (the
+  app: Library rail, seek UI, S22 on-device) is a follow-up card.

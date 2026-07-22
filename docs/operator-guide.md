@@ -195,6 +195,44 @@ Build/brand the client with your **panel public key** (build-time config) or gen
 a **service-descriptor QR** for runtime pairing. See [client-build.md](client-build.md).
 Nothing else is needed — clients reach the panel through the DHT, not an IP/domain.
 
+## G. The VOD library (optional)
+
+On-demand titles come from the **[library](../library/README.md)** — a separate
+service on purpose: ingest is a one-shot transcode burst (0.5–1 core) plus a static
+seed, so it belongs on whatever box has the disk and spare CPU, **not** inside the
+live pipeline (a production broadcaster near its CPU ceiling must never absorb a
+transcode). It can share the compose file on a small setup (behind the `vod`
+profile) or run on entirely different hardware — it only needs outbound UDP and the
+panel's public key.
+
+```sh
+# 1. Enroll the library as its OWN publisher on the PANEL (never reuse the live key).
+#    Title ids must match the scopes. Prints the matching PUBLISHER_KEY once.
+docker compose run --rm panel node src/admin-cli.js add-publisher library1 --scopes 'vod-*'
+
+# 2. Configure + start (single-box compose; else copy library/ to its own box)
+cp library/.env.example library/.env     # PANEL_PUBKEY + PUBLISHER_NAME/KEY + CONTROL_ENABLED=1
+docker compose --profile vod build library
+docker compose --profile vod run --rm library node src/library-cli.js add-admin op
+docker compose --profile vod up -d library
+
+# 3. Add a title (control UI at 127.0.0.1:3320, or the API). input = a file path
+#    on the library box (mount your media into the container) or a URL ffmpeg reads.
+#    Compatible codecs (h264/hevc + aac/mp3/ac3) are remuxed with -c copy — no
+#    transcode CPU at all; anything else transcodes to h264/aac, one job at a time.
+
+# 4. Grant it like any channel, on the panel:
+docker compose run --rm panel node src/admin-cli.js grant alice vod-movie-1
+```
+
+The title appears in granted viewers' catalogs as `type:'vod'` with full seek. Disk
+on the library box = the sum of title sizes (no rolling reclaim — deleting the title
+is what frees it). Sizing: ingest at `-c copy` is I/O-bound and quick; a transcode
+runs ~0.5–1 core for roughly the title's runtime ÷ encode speed. Serving is the same
+seeder economics as the repeater (bandwidth, not CPU) — raise
+`SWARM_SNDBUF_MB`/host `wmem_max` under real fan-out
+([network tuning](kb/network-tuning.md)).
+
 ## Firewall
 
 | Purpose | Direction | Ports |

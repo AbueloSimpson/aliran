@@ -134,6 +134,30 @@ function ok (name) { n++; console.log('  ok ', name) }
   ok('store carries the bounded bee cache budget (globalCache maxSize 4096)')
 }
 
+// --- vod guards (S8a): the live machinery must refuse to arm on a vod active ---
+// White-box on purpose: resolve() never calls these for vod, but BOTH have public
+// re-arm paths mid-play (reconnectActiveFeed() re-arms the tune watchdog; the app's
+// setZapPrefetch(true) toggle re-arms the warm loop), so the guards must live inside
+// the arm functions themselves. A finished VOD playlist never "advances", so an armed
+// watchdog/gate would false-fire on a perfectly healthy title. The full behavioral
+// proof (events over 3× a shortened tune timeout, against a real title) is test:vod.
+{
+  const p = createPlayer({ zapPrefetch: true })
+  p._active = { streamId: 't1', feedKey: 'f'.repeat(64), localUrl: 'http://127.0.0.1:1/index.m3u8', cdnUrl: null, source: 'p2p', vod: true, lastSig: null, lastAdvance: Date.now() }
+  p._startTuneWatchdog()
+  assert.strictEqual(p._tuneTimer, null, 'tune watchdog refuses a vod active (reconnectActiveFeed path)')
+  p._startZapPrefetch()
+  assert.strictEqual(p._zapTimer, null, 'zap-prefetch loop refuses a vod active (setZapPrefetch path)')
+  p._active.vod = false
+  p._startTuneWatchdog()
+  assert.ok(p._tuneTimer !== null, 'the same active WITHOUT vod arms (guard is the vod flag, not an accident)')
+  p._clearTuneTimer()
+  p._startZapPrefetch()
+  assert.ok(p._zapTimer !== null, 'zap loop arms for live')
+  p._clearZapPrefetch()
+  ok('vod guards: tune watchdog + zap prefetch refuse to arm on a vod active')
+}
+
 // --- event emitter basics (on/off/once, no throw on unhandled error) ---
 {
   const p = createPlayer({})

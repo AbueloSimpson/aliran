@@ -25,6 +25,13 @@ export interface Stream {
   epgUrl?: string
   /** This channel's id INSIDE the epgUrl feed (matches feed `channels[].id`). */
   epgId?: string
+  /** Record class (S8a): 'vod' = an on-demand library title (seek/pause UI, no
+   *  live-edge machinery — isLive does not apply); 'live' (or absent, old records). */
+  type?: 'live' | 'vod'
+  /** Title duration in seconds — vod records only. */
+  durationSec?: number | null
+  /** Catalog status ('live'/'idle'; vod: 'available'/'unavailable' — gray out the latter). */
+  status?: string
 }
 
 // JSON-safe hybrid CDN<->P2P config, passed through to the engine (sdk/player.js).
@@ -95,8 +102,11 @@ export type BackendMessage =
   // streamId names the stream this play() reply is for (absent on dev direct-play and
   // on worklet bundles older than the field) — <AliranVideo> uses it to tell "the served
   // channel just CHANGED under the shared localhost URL" (remount) from a re-resolve of
-  // the channel already playing (keep the mount).
-  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn'; streamId?: string }
+  // the channel already playing (keep the mount). recordType/durationSec (S8a) mirror
+  // the engine's ResolveResult type/durationSec — recordType 'vod' means the url is a
+  // finished VOD playlist: show seek/pause UI and expect no live self-heal events.
+  // (Named recordType because `type` is this union's own discriminant.)
+  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn'; streamId?: string; recordType?: 'live' | 'vod'; durationSec?: number | null }
   | { type: 'status'; peers?: number; state?: string; message?: string }
   | { type: 'error'; message: string }
   | { type: 'fallback'; streamId: string; url: string; reason: 'timeout' | 'stall' }

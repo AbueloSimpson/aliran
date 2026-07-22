@@ -99,10 +99,14 @@ class ReadAhead {
     this._drives = new WeakMap() // drive -> Map(path -> range)
   }
 
-  // Fire-and-forget: prefetch the newest `limit` segments of this playlist body.
-  // Never throws, never blocks the event loop — all awaits are backgrounded.
+  // Fire-and-forget: prefetch the `limit` segments the player will read NEXT off this
+  // playlist body — the newest (tail) for a live playlist, which is consumed at its
+  // moving edge; the FIRST ones for a finished VOD playlist (#EXT-X-ENDLIST, S8a),
+  // which is played top-down from the start (prefetching its tail would warm the end
+  // credits). Never throws, never blocks the event loop — all awaits are backgrounded.
   update (drive, text) {
-    const newest = playlistUris(text).slice(-this._limit)
+    const uris = playlistUris(text)
+    const newest = /#EXT-X-ENDLIST/m.test(String(text)) ? uris.slice(0, this._limit) : uris.slice(-this._limit)
     let ranges = this._drives.get(drive)
     if (!ranges) { ranges = new Map(); this._drives.set(drive, ranges) }
     for (const [path, range] of ranges) {

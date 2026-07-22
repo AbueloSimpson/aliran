@@ -85,6 +85,26 @@ The keyless regional super-peer — see the [repeater appliance page](repeater.m
 | `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
 | `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes |
 
+## Library (`library/.env`) — VOD (S8a)
+
+The standalone VOD service — see [library/README.md](https://github.com/AbueloSimpson/aliran/blob/main/library/README.md)
+and the [reference](reference.md#library-control-api--ui-control_enabled1-s8a).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATA_DIR` | `./data` | Titles registry + per-title encryption keys (`secrets/`, 0600) + the encrypted title stores. Disk = the sum of title sizes; reclaimed only by delete-title |
+| `PANEL_PUBKEY` | — (required to register) | The panel to register titles with |
+| `PUBLISHER_NAME` / `PUBLISHER_KEY` | — | Enrolled publisher identity (S26). ALWAYS enroll the library as its **own** publisher, scoped to its title ids (`add-publisher library1 --scopes 'vod-*'`) — never the live fleet's key |
+| `HLS_TIME` | `4` | VOD segment length (s): shorter = finer seek/demand-paging, more per-request overhead. Per-title override in the API |
+| `INGEST_CONCURRENCY` | `1` | Parallel ingest jobs. A transcode is 0.5–1 core for the burst; the default queues them strictly one at a time |
+| `SWARM_MAX_PEERS` | `256` | Connection budget — one swarm carries every title (seeder economics, like the repeater) |
+| `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `4` / `4` | Swarm UDP socket buffers in MB (`0` = OS default). A seeder is send-dominant — same rationale (and same sysctl pairing) as the repeater's |
+| `CONTROL_ENABLED` | `0` | Control API + minimal UI on `CONTROL_HOST:CONTROL_PORT` (`127.0.0.1:3320`) — the only way to add titles. Admins via `library-cli add-admin` |
+| `CONTROL_SESSION_TTL_HOURS` | `12` | Control session lifetime |
+| `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | `10` / `900` | Control login rate limit |
+| `ARGON2_MEM_KIB` / `ARGON2_TIME` | `65536` / `2` | Control-admin password hashing cost |
+| `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes |
+
 ## Client
 
 Build-time config (`client/config`) or runtime **service descriptor**:

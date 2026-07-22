@@ -9,6 +9,7 @@
     "panel",
     "broadcaster",
     "repeater",
+    "library",
     "sdk",
     "tools"
   ],
@@ -19,6 +20,7 @@
     "panel": "npm --workspace panel start",
     "broadcaster": "npm --workspace broadcaster start",
     "repeater": "npm --workspace repeater start",
+    "library": "npm --workspace library start",
     "viewer": "npm --workspace tools run viewer --",
     "brand": "node tools/brand.mjs",
     "test": "npm run test:core",
@@ -36,6 +38,7 @@
     "test:assets": "node tools/e2e-assets-test.mjs",
     "test:corrupt": "node tools/e2e-corrupt-test.mjs",
     "test:sdk": "node tools/e2e-sdk-test.mjs",
+    "test:vod": "node tools/e2e-vod-test.mjs",
     "test:admin-api": "node tools/e2e-admin-api-test.mjs",
     "test:sources": "node tools/e2e-sources-test.mjs",
     "test:broadcaster-api": "node tools/e2e-broadcaster-api-test.mjs",

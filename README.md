@@ -19,7 +19,7 @@ bandwidth cost.
 
 ## What it is
 
-Four cooperating peer-to-peer components (all serverless in transport — they find
+Five cooperating peer-to-peer components (all serverless in transport — they find
 each other over the Hyperswarm DHT by public key):
 
 | Component | Runs on | Role |
@@ -27,6 +27,7 @@ each other over the Hyperswarm DHT by public key):
 | **[`panel/`](panel/)** | Linux / desktop | Origin of truth: signed account DB + stream catalog, OPRF login (brute-force resistant), entitlement tokens |
 | **[`broadcaster/`](broadcaster/)** | Linux (headless) | Ingests the original stream (OBS/RTSP/HLS/file) → encrypted P2P feed, seeds the swarm |
 | **[`repeater/`](repeater/)** | Linux (headless) | Optional **keyless** regional super-peer (Open-Connect model): mirrors + serves encrypted feeds, absorbs viewer fan-out, cannot watch what it serves |
+| **[`library/`](library/)** | Linux (headless) | Optional **VOD service**: one-shot ingest of video files → encrypted, P2P-seeded on-demand titles with full seek, granted like channels |
 | **[`client/`](client/)** | Android (phone + TV) | The app/APK: logs in, browses an OTT UI, plays the stream, **and re-seeds to other viewers** |
 
 ```

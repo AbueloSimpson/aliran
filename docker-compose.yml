@@ -64,6 +64,27 @@ services:
     # tmpfs:
     #   - /hlstmp:size=512m
 
+  # VOD library (S8a) — OPTIONAL, behind the `vod` profile so a plain
+  # `docker compose up -d` never starts it:
+  #   docker compose --profile vod up -d library
+  # A separate service on purpose (one-shot transcode bursts + static seeding — none
+  # of the live pipeline's lifecycle): many operators run it on a DIFFERENT box than
+  # the live fleet; this entry is for the single-box case. Enroll it as its OWN
+  # publisher (add-publisher library1 --scopes 'vod-*') — see library/.env.example.
+  library:
+    build:
+      context: .
+      dockerfile: library/Dockerfile
+    profiles: [vod]
+    network_mode: host
+    restart: unless-stopped
+    env_file: ./library/.env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - library-data:/data
+
 volumes:
   panel-data:
   broadcaster-data:
+  library-data:

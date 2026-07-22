@@ -172,10 +172,31 @@ only learns the resulting feed identity through the register RPC.
 
 ## Live vs VOD
 
-- **Live** (default): rolling HLS window in a Hyperdrive.
-- **VOD** (optional): store finished media (complete HLS or MP4), `type:'vod'`, with
-  duration/series/episode metadata. Seek works via HTTP Range; any peer serves any
-  range (great fan-out). Optionally auto-record live → VOD for catch-up.
+Two record classes share the catalog, the grant machinery, and the P2P transport:
+
+- **Live** (`type:'live'`, the default): a rolling HLS window in a Hyperdrive, fed
+  by the **broadcaster**. Carries `isLive`; segments rotate out and are reclaimed.
+- **VOD** (`type:'vod'`, S8a): an on-demand **title** served by the standalone
+  **[library](../library/README.md) service** — a finished HLS VOD rendition
+  (`#EXT-X-PLAYLIST-TYPE:VOD`, **all** segments kept) in its own encrypted
+  Hyperdrive. The record carries `durationSec` and **no `isLive` at all** (liveness
+  is not a property a title has); `status` is `'available'` while the library seeds
+  it, `'unavailable'` after the library deletes it. Seek works via HTTP Range — any
+  peer serves any range. Viewers need nothing new: a granted title unseals exactly
+  like a channel.
+
+The split is deliberate: ingest for VOD is a one-shot transcode burst and then a
+static seed, so it runs in a separate service on whatever box has the disk and CPU —
+never inside the live pipeline. Registering a title happens in the **library control
+UI/API** (id, input file/URL, seed metadata); after creation the descriptive metadata
+(title/description/category/art) is **panel-authoritative**, same as channels: edit
+it in the panel dashboard. Grant/revoke, categories/rails, curation and art all work
+identically for both classes. To retire a title: delete it in the library (stops
+seeding + purges its data), then remove the catalog record and grants in the panel.
+
+*Not built yet (v1 candidates): auto-record live → VOD catch-up, series/episode
+metadata, repeater mirroring of titles, multipart upload through the control API
+(v1 ingests a path/URL the library box can reach).*
 
 ## DRM (optional)
 

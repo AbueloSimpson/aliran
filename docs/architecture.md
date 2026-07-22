@@ -1,6 +1,6 @@
 # Architecture
 
-Aliran has **four peer-to-peer components**. Transport, discovery, and replication
+Aliran has **five peer-to-peer components**. Transport, discovery, and replication
 are fully serverless (Hyperswarm DHT); the panel is the *logical* authority for
 accounts + catalog, and is the only online dependency (for new logins only).
 
@@ -13,6 +13,8 @@ flowchart LR
   B -->|encrypted feed<br/>Hyperdrive| SW((Hyperswarm DHT))
   B -->|register stream| P[panel<br/>accounts + catalog + OPRF]
   R[repeater<br/>keyless super-peer] <-->|mirror + serve<br/>ciphertext| SW
+  L[library<br/>VOD titles] -->|encrypted VOD drives<br/>seed| SW
+  L -->|register type:'vod'| P
   P <-->|login / catalog / entitlement| C1[client APK]
   P <-->|login / catalog / entitlement| C2[client APK]
   SW <-->|replicate + re-seed| C1
@@ -48,6 +50,16 @@ mirrors chosen channels' live windows **raw at the block level** (the catalog's
 `feedKey` + panel-published `blobsKey`) and serves that **ciphertext** to viewers,
 absorbing fan-out so the origin broadcaster's per-channel egress drops to roughly
 one stream per repeater. It holds no grants and cannot watch what it serves.
+
+### Library (Linux, optional — VOD)
+The standalone **VOD service** ([library/README.md](../library/README.md)):
+operator-registered video **files** become encrypted, P2P-seeded on-demand titles
+(`type:'vod'` + `durationSec` in the catalog, granted exactly like channels).
+Deliberately separate from the broadcaster: ingest is a one-shot transcode burst
+and then a **static seed** — none of the live pipeline's lifecycle applies, and it
+runs on whatever box has the disk and spare CPU. One Corestore + one Hyperswarm
+carry every title; a title keeps **all** its segments (seek = HTTP Range over
+demand-paged P2P blocks), so disk = title size, reclaimed only by delete.
 
 ## Key data flows
 

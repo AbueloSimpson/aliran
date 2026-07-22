@@ -38,9 +38,9 @@ inject `node:http`/`node:fs` or `bare-http1`/`bare-fs`):
 | Member | Description |
 |---|---|
 | `connect(panelPubKey?)` | Join the panel topic + replicate its signed DB. Emits `ready`. |
-| `login(username, password)` | OPRF login. Returns/emits the **display list** (id, title, description, category, isLive, poster/backdrop/logo as localhost URLs — stream keys stay inside the engine). Throws `not connected to panel` while the swarm is still dialing: retry. |
+| `login(username, password)` | OPRF login. Returns/emits the **display list** (id, title, description, category, isLive, `type`/`durationSec`/`status` for VOD titles, poster/backdrop/logo as localhost URLs — stream keys stay inside the engine). Throws `not connected to panel` while the swarm is still dialing: retry. |
 | `listStreams()` | Last display list. |
-| `resolve(streamId)` | → `{ localUrl, port, feedKey }` — replicates the entitled feed (and re-seeds it) and serves it on localhost. |
+| `resolve(streamId)` | → `{ localUrl, port, feedKey, type, durationSec? }` — replicates the entitled feed (and re-seeds it) and serves it on localhost. `type: 'vod'` = an on-demand library title: a **finished** VOD playlist (seek freely — full Range support — and pause indefinitely, `durationSec` = runtime), served the same way but with **none** of the live self-heal machinery armed (nothing "advances" on a finished playlist, so live health checks would false-fire). Build seek/pause UI off `type`, never off the URL shape. |
 | `serveFeed(feedKey, encKey)` | Low-level direct-play by raw keys (no login). Returns the port. |
 | `assetUrl(path)` | Catalog art path → localhost URL (after login). |
 | `stop()` | Full teardown. |

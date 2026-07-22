@@ -227,20 +227,30 @@ for (let i = 0; ; i++) {
 
 ```js
 const r = await player.resolve(streamId)
-// r = { url, source: 'p2p' | 'cdn', localUrl?, port?, feedKey }
+// r = { url, source: 'p2p' | 'cdn', localUrl?, port?, feedKey, type: 'live' | 'vod', durationSec? }
 ```
 
 - **P2P stream** → `source: 'p2p'`, `url` = `localUrl` =
   `http://127.0.0.1:<port>/index.m3u8`. The feed replicates and is served
   progressively (bytes reach the player as they arrive; playlist requests are held
   briefly instead of 404ing; the live edge is read ahead).
+- **VOD title** (S8a — a library title, `type:'vod'` in the catalog) → same
+  localhost serving, but the playlist is a **finished** VOD rendition
+  (`#EXT-X-PLAYLIST-TYPE:VOD`, every segment listed, `#EXT-X-ENDLIST`): seek freely —
+  any byte of any segment is Range-served and demand-paged over P2P — and pause
+  indefinitely. `type` is `'vod'` and `durationSec` carries the runtime (`null` if
+  the catalog lacks it). **None of the live machinery arms**: no tune watchdog, no
+  zap prefetch, no `feed-changed` follow (a re-ingest applies on the *next*
+  `resolve()`), and no `status`/`error` self-heal events for it — a stalled download
+  is the host player's to surface, with `reconnectActiveFeed()` as the manual
+  redial. Build seek/pause UI off `type === 'vod'`, never off a URL shape.
 - **Redirect channel** → `source: 'cdn'`, `url` is the operator's remote URL
   **verbatim**, `localUrl`/`port` are `undefined`, `feedKey` is `null`. No feed, no
   swarm join, no watchdogs — remote-URL errors belong to the host player.
 - **Not entitled** → throws `not entitled to <id>`.
 - **Entitled but no broadcaster feeding it** (`feedKey` null in the catalog) →
-  throws `channel is not broadcasting right now` — show it as a friendly state, not
-  a crash.
+  throws `channel is not broadcasting right now` (vod: `title is not available
+  right now`) — show it as a friendly state, not a crash.
 
 One localhost URL serves *whatever feed is active*: zapping re-uses the same
 server/port. That's why the RN binding identifies the playing channel by the

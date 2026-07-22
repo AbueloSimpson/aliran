@@ -1,6 +1,6 @@
 {
   "name": "@aliran/player-sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Headless Aliran player engine — P2P OPRF login, catalog, and localhost HLS serving (Node + Bare)",
   "license": "MIT",
   "type": "module",

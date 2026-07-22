@@ -134,6 +134,41 @@ are preserved.
 | `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage control admin accounts |
 | `POST /api/admins/:name/password` | Rotate an admin password (revokes their sessions) |
 
+## Library control API + UI (`CONTROL_ENABLED=1`, S8a)
+
+Served by the **library** process — the standalone VOD service (default
+`127.0.0.1:3320`; put TLS in front if exposed). Opening the address loads the
+minimal control UI (`library/control-ui/`): sign in with a control admin (created
+with `node src/library-cli.js add-admin <name>` — same auth skeleton as the
+broadcaster's) to add titles, watch ingest progress, read logs, re-ingest and
+delete. A **title** is a one-shot ingest (probe → `-c copy` remux when the codecs
+are HLS-compatible, else h264/aac transcode → a finished HLS **VOD** rendition in
+its own encrypted Hyperdrive — all segments kept) that then seeds persistently and
+registers with the panel as `type:'vod'` + `durationSec` under the library's own
+enrolled publisher. Inputs must have a **finite duration** (files, not live
+streams). Disk = the sum of title sizes; reclaimed only by delete.
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /healthz` | **Unauthenticated** liveness → `{ok, titles, ready, ingesting, queued, error, panelLink:{connected,pendingOps,…}}`. Cheap + synchronous — answers even mid-transcode |
+| `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
+| `GET /api/status` | Titles summary, publisher, panel key, swarm connections |
+| `GET/POST /api/titles` | List (+ ingest progress/peers/registered) / add + queue ingest (`{id, input, title?, description?, category?, protection?, mode?, hlsTime?}` — `mode`: `auto`(default)/`copy`/`transcode`; `input`: a path on the library box or any URL ffmpeg reads) |
+| `GET /api/titles/:id` | Registry view: `state` (`queued·ingesting·ready·error`), `ingest:{phase,pct}`, `feedKey`, `durationSec`, `segments`, `bytes`, `peers`, `registered`, `registerError` |
+| `PATCH /api/titles/:id` | `input`/`mode`/`hlsTime` only — descriptive metadata is panel-owned after creation (S27e) |
+| `POST /api/titles/:id/ingest` | Re-ingest (optional `{input}`): mints the next feed generation (fresh `feedKey`, old cores purged); viewers pick it up on their next tune |
+| `DELETE /api/titles/:id` | Stop seeding + **purge the title's cores and key from this box** (refused mid-ingest). Registers `status:'unavailable'`; remove the catalog record + grants in the panel |
+| `GET /api/titles/:id/logs?lines=N` | The ingest's ffmpeg/log ring → `{lines, state, ingest}` |
+| `GET/POST /api/admins` · `DELETE /api/admins/:name` · `POST /api/admins/:name/password` | Manage control admins (same shapes as the broadcaster's) |
+
+Env config (`library/.env`): `DATA_DIR`, `PANEL_PUBKEY`, `PUBLISHER_NAME` +
+`PUBLISHER_KEY` (enroll the library as its **own** publisher, scoped to its title
+ids), `HLS_TIME` (VOD segment length, default 4 s), `INGEST_CONCURRENCY` (default
+1 — transcodes are 0.5–1 core each), `SWARM_MAX_PEERS` (default 256),
+`SWARM_RCVBUF_MB`/`SWARM_SNDBUF_MB` (default 4/4 — a seeder is send-dominant),
+`CONTROL_ENABLED`/`CONTROL_HOST`/`CONTROL_PORT`/`CONTROL_SESSION_TTL_HOURS`,
+`LOCKOUT_*`, `ARGON2_*`, `BOOTSTRAP`.
+
 ## Panel RPC (over Hyperswarm)
 
 - `hello` → proof-of-work challenge + difficulty (pre-login).
@@ -152,10 +187,11 @@ are preserved.
   `publisher` verifies against the legacy shared key from `init` (implicit scope
   `*`) while `LEGACY_PUBLISHER=1` (the default); set `0` after enrolling every site.
   **Descriptive metadata is panel-authoritative**: a register only sets `feedKey` +
-  `isLive` on an existing channel; it **seeds** `title`/`description`/`category` only
-  when it first creates the record and never overwrites them after — the admin owns
-  them (as with art, EPG, curation and the redirect class). Rename/recategorize a P2P
-  channel in the panel, not the broadcaster config.
+  `isLive` (live) or `feedKey` + `durationSec` (vod) on an existing record; it
+  **seeds** `title`/`description`/`category` only when it first creates the record
+  and never overwrites them after — the admin owns them (as with art, EPG, curation
+  and the redirect class). Rename/recategorize a P2P channel or a title in the
+  panel, not the broadcaster/library config.
 
 ## Schemas
 
@@ -165,10 +201,11 @@ are preserved.
   "title": "News 24",
   "description": "...",
   "category": ["news"],
-  "type": "live",              // live | vod
+  "type": "live",              // live | vod (record class — see the vod note below)
   "protection": "self",        // self | drm
   "allowedRegions": null,      // or ["US","CA"]
-  "isLive": true,
+  "isLive": true,              // live records ONLY — a vod record omits the field entirely
+  "durationSec": null,         // vod records ONLY — title runtime in seconds
   "viewerCount": null,         // derived, not durable
   "order": 0,                  // curation: rail sort 0-9999, or null (unordered)
   "featured": false,           // curation: hero-pick hint for client UIs
@@ -187,6 +224,16 @@ are preserved.
   "status": "live"
 }
 ```
+
+> **VOD titles** (S8a): a record with `type:'vod'` is a **library** title — a finished
+> HLS VOD rendition in its own encrypted drive, registered over the same `register`
+> RPC with `durationSec` in the payload. The class differs in exactly two fields:
+> `durationSec` (payload-owned, like `feedKey` — the library measures it at ingest)
+> and **no `isLive`** (liveness is not a property a title has; clients must not read
+> liveness into vod records). `status` vocabulary: `'available'` (seeding) /
+> `'unavailable'` (the library deleted the title; the record is admin-owned and
+> stays until removed in the panel). Grants, sealing, blobsKey enrichment, art,
+> curation and categories work identically for both classes.
 
 > **Redirect channels** (S23): a record with `{redirect: true, url: "https://…"}` is a
 > different *class* of entry — viewers play the operator's URL **directly** instead of

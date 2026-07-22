@@ -64,6 +64,9 @@ export async function login (call, db, username, password, { deviceId, deviceLab
         url: cat.value.url ?? null,
         epgUrl: cat.value.epgUrl ?? null, // S27 EPG pointers (carried into _display)
         epgId: cat.value.epgId ?? null,
+        type: cat.value.type ?? null, // S8a record class: 'vod' (library title) | 'live'
+        durationSec: cat.value.durationSec ?? null, // vod only — a live record never carries it
+        status: cat.value.status ?? null, // 'live'/'idle'; vod: 'available'/'unavailable'
         encryptionKey: b4a.toString(enc, 'hex')
       })
     }

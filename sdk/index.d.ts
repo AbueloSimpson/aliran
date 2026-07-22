@@ -21,6 +21,15 @@ export interface Stream {
   epgUrl?: string
   /** This channel's id INSIDE the epgUrl feed (matches feed `channels[].id`). */
   epgId?: string
+  /**
+   * Record class (S8a): 'vod' = an on-demand library title (show seek/pause UI, no
+   * live-edge machinery — isLive does not apply); 'live' (or absent on old records).
+   */
+  type?: 'live' | 'vod'
+  /** Title duration in seconds — vod records only. */
+  durationSec?: number | null
+  /** Catalog status ('live'/'idle'; vod: 'available'/'unavailable' — gray out the latter). */
+  status?: string
 }
 
 /**
@@ -113,6 +122,15 @@ export interface ResolveResult {
   port?: number
   /** Current feed key (hex) — null for redirect channels. */
   feedKey: string | null
+  /**
+   * Record class of what resolved (S8a). 'vod': the url is a finished VOD playlist —
+   * seek freely (Range-served), pause indefinitely, and expect NO live self-heal
+   * events for it (no feed:retune/'feed-changed'; a stalled download is the host
+   * player's to surface, with reconnectActiveFeed() as the manual redial).
+   */
+  type: 'live' | 'vod'
+  /** Title duration in seconds (vod; null when the catalog lacks it) — undefined for live. */
+  durationSec?: number | null
 }
 
 export interface SourceInfo {

@@ -200,6 +200,34 @@ Android phone + Android TV).
   absorbs viewer fan-out off the origin. It holds no grants and cannot watch what it
   serves. Ships with its own deploy pack and testnet-proven e2e.
 
+**Library (`library/`) — VOD (S8a)**
+- Standalone VOD service (deliberately NOT the broadcaster — no live-pipeline
+  lifecycle applies to a static seed; runs on separate hardware so ingest bursts
+  never touch a loaded live box): operator-registered video **files** become
+  encrypted, P2P-seeded on-demand **titles**. One-shot ingest (ffprobe → `-c copy`
+  remux for HLS-compatible codecs, else h264/aac transcode → finished
+  `#EXT-X-PLAYLIST-TYPE:VOD` rendition, ALL segments kept) into a per-title
+  encrypted Hyperdrive on one shared Corestore/Hyperswarm (repeater storage model);
+  per-title encryption keys survive re-ingest so grants stay valid; re-ingest mints
+  the next feed generation and purges the old; delete purges the title from disk.
+  Registers over the existing `register` RPC as **`type:'vod'` + `durationSec`**
+  under its own enrolled publisher. Own authed control API + minimal UI
+  (`127.0.0.1:3320`: titles CRUD, ingest progress, logs, admins) + unauthenticated
+  `/healthz`, Dockerfile + compose service behind the `vod` profile, `.env.example`.
+- Panel: the catalog gains the **vod record class** — `durationSec`
+  (payload-owned, like `feedKey`), **no `isLive`** (liveness is not a property a
+  title has), status `'available'`/`'unavailable'` — additively beside `'live'`
+  (byte-identical live records, so S29 idempotence is unaffected); grants/sealing,
+  panel-authoritative metadata and blobsKey enrichment apply to titles unchanged.
+- SDK: `resolve()` returns `type`/`durationSec` and for vod arms **none** of the
+  live machinery (tune watchdog, zap-prefetch gate, hybrid probes, `feed-changed`
+  follow — all key on the playlist ADVANCING, which a finished playlist never
+  does); vod titles are never segment-warmed as zap neighbors; the localhost
+  read-ahead prefetches a VOD playlist's **head** (a live one's tail); display list
+  + RN mirror types carry `type`/`durationSec`/`status`. New required-lane
+  **`test:vod`** e2e proves the whole chain on a local testnet, including that the
+  watchdog provably does NOT arm for vod and DOES for live across zaps.
+
 **Networking (all components)**
 - Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes
   every peer stream of a swarm onto one socket pair, so under viewer fan-out the socket

@@ -1,0 +1,24 @@
+{
+  "name": "@aliran/library",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Aliran library — standalone VOD service: ingest video files into encrypted, P2P-seeded on-demand titles",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@aliran/core": "file:../core",
+    "b4a": "^1.6.6",
+    "corestore": "^6.18.0",
+    "hypercore-crypto": "^3.4.0",
+    "hyperdrive": "^11.13.0",
+    "hyperswarm": "^4.8.0",
+    "protomux-rpc": "^1.5.0",
+    "rache": "^1.0.0",
+    "sodium-native": "^4.3.0"
+  },
+  "comment": "Requires ffmpeg + ffprobe on PATH (one-shot ingest transcode/remux). Deliberately SEPARATE from the broadcaster: a title is a static seed with no live-pipeline lifecycle (no watchdogs, no rolling window, no feed rotation), and operators must be able to run the library on different hardware than the live fleet."
+}
