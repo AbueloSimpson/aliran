@@ -26,7 +26,7 @@ flowchart LR
 
 ### Broadcaster (Linux)
 Ingests an existing stream (OBS RTMP push, or pull from RTSP/HLS/file), transcodes to
-**live HLS** (or CENC/CMAF for DRM), writes the encrypted segments into a
+**live HLS**, writes the encrypted segments into a
 **Hyperdrive**, and seeds it over Hyperswarm. Registers the stream + metadata with the
 panel. Playback "live" is handled by HLS semantics; the P2P layer just moves bytes.
 
@@ -73,8 +73,6 @@ demand-paged P2P blocks), so disk = title size, reclaimed only by delete.
 - **Redirect channels:** a catalog entry can instead carry `{redirect: true, url}` —
   the client plays the operator's https HLS URL **directly** (no feed, no swarm
   join). See [content-management.md](content-management.md).
-- **DRM (optional):** encrypted CENC bytes flow P2P; the license request goes to the
-  DRM vendor with a panel-issued entitlement JWT.
 
 ## Sequence diagrams
 
@@ -115,17 +113,3 @@ sequenceDiagram
   B-->>V: decrypted HLS bytes → live playback
 ```
 
-### DRM license (optional)
-
-```mermaid
-sequenceDiagram
-  participant C as Client (ExoPlayer/Widevine)
-  participant P as Panel
-  participant L as DRM license server (vendor)
-  C->>P: entitlement(username, streamId, sessionToken)
-  P->>P: check authorization (+ geo, if enabled)
-  P-->>C: signed entitlement JWT
-  C->>L: license request (CDM challenge) + JWT header
-  L-->>C: license (content key) — decrypt in secure path
-  Note over C: encrypted CENC media still arrives via P2P
-```

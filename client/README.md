@@ -54,4 +54,5 @@ a **phone** and an **Android TV** target. See [`../docs/client-build.md`](../doc
 - [ ] Localhost Range server mapping to the decrypting Hyperdrive + `/assets`
 - [ ] Live catalog `bee.watch()` → stream list; peer-count status
 - [ ] Dual phone+TV manifest (leanback + touchscreen-optional), cleartext localhost
-- [ ] Optional: DRM `drm` prop + entitlement token; runtime service-descriptor QR
+- [ ] Optional: runtime service-descriptor QR (one generic APK connects to any
+      operator — the desktop player already ships this as its Connect screen)

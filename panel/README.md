@@ -58,7 +58,6 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
 - [x] Dashboard UI for all of the above (Admins + Overview tabs, search/load-more,
       confirm-guarded deletes, curation controls, device revoke ✕)
 - [ ] HA / threshold OPRF across replicas
-- [ ] Optional geo (GeoIP) + DRM entitlement endpoints
 
 See [`../docs/security-model.md`](../docs/security-model.md). Prefer vetted crypto
 libraries over hand-rolled primitives.

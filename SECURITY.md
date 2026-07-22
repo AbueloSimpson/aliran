@@ -1,6 +1,6 @@
 # Security Policy
 
-Aliran handles authentication, encryption, and (optionally) DRM. Security is a
+Aliran handles authentication, encryption, and entitlements. Security is a
 first-class concern — see [`docs/security-model.md`](docs/security-model.md) for the
 full threat model and honest limitations.
 
@@ -18,11 +18,12 @@ reproduction steps, and impact. We aim to acknowledge within 72 hours.
 ## Scope highlights
 
 - **Do** report: auth bypass, key/secret leakage, OPRF/brute-force weaknesses,
-  session/device-limit bypass, entitlement/geo bypass, remote code execution.
+  session/device-limit bypass, entitlement bypass, remote code execution.
 - **Out of scope / known by design:** you cannot prevent peers from *connecting* to a
   public swarm topic (content confidentiality is enforced by encryption, not by
-  blocking connections); IP-based geo-locking is defeatable by VPN (true of all
-  streaming). These are documented in the security model.
+  blocking connections); an entitled user can always capture what they are entitled
+  to decrypt (there is no DRM, deliberately). These are documented in the security
+  model.
 
 ## For operators
 

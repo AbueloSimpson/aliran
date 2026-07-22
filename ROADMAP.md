@@ -91,15 +91,25 @@ following only the docs.
 
 ## v1.x — Optional modules (opt-in, provider-pluggable)
 
-- 🚧 **VOD** (S8a server side ✅): the standalone `library/` service ships — file →
-  HLS-VOD ingest (copy/transcode) into per-title encrypted Hyperdrives, `type:'vod'`
-  + `durationSec` catalog class, unchanged grants, SDK serves with full seek and no
-  live machinery (`test:vod` in the required CI lane). Remaining: the app's Library
-  rail + seek UI + on-device verify (S8a stage 2), then resume positions / Continue
-  Watching / live→VOD recording as later options
-- ⬜ **Commercial DRM**: CENC/CMAF packaging + BuyDRM/KeyOS, EZDRM, Axinom… via CPIX;
-  panel-issued entitlement JWTs; Widevine on Android/TV
-- ⬜ **Geo-locking**: MaxMind GeoIP at entitlement time + vendor license geo policy
+- ✅ **VOD**: the standalone `library/` service — file → HLS-VOD ingest
+  (copy/transcode) into per-title encrypted Hyperdrives, `type:'vod'` +
+  `durationSec` catalog class, unchanged grants, SDK serves with full seek and no
+  live machinery (`test:vod` in the required CI lane) — and the apps play titles
+  with a seek/pause transport on the live surface (verified on-device). Later
+  options: resume positions / Continue Watching / live→VOD recording
+- ✅ **Windows desktop player** (`desktop/`): an Electron app consuming the
+  published SDK — the same OTT interface as the Android app, packaged as an NSIS
+  installer + portable exe in two flavors (operator build with the descriptor
+  baked in, public build with first-run panel-key entry). See
+  [docs/desktop-player.md](docs/desktop-player.md)
+- ❌ **Commercial DRM & geo-locking — dropped (2026-07), deliberately.** They were
+  listed here as provider-pluggable options; the decision is that they don't fit
+  the platform's model and won't be built. What stands instead is honest access
+  control: encrypted feeds, per-user sealed keys, cooperative sessions, and
+  stream-key rotation as the real revocation boundary — with its limits stated
+  plainly in [docs/security-model.md](docs/security-model.md). Operators with
+  territorial-licensing obligations must satisfy them contractually / at the
+  content source rather than expecting the platform to enforce borders
 - ⬜ **GPU transcode pack** (separate package): a dedicated bare-metal deploy pack for
   hardware-encode hosts — NVIDIA driver + NVENC setup (VAAPI/QSV variants), systemd
   units, capability-probe verification recipe; optionally a Docker variant via
@@ -124,7 +134,8 @@ following only the docs.
   in the Info panel (one ETag-revalidated fetch per category, works on any channel;
   no per-client store growth, no fabricated data)
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
-- ⬜ Concurrency limits, HDCP/output protection, rental windows, blackout dates
+  (the desktop player already ships this as the public build's Connect screen)
+- ⬜ Concurrency limits, rental windows, blackout dates (entitlement-time features)
 
 ---
 
@@ -135,7 +146,7 @@ following only the docs.
   chosen channels' **encrypted** feeds and absorbs viewer fan-out while holding no keys
   and unable to watch what it serves. Remaining follow-ups: panel-ASSIGNED repeater
   fleets and locality pinning
-- ⬜ iOS / Apple TV client (FairPlay + HLS)
+- ⬜ iOS / Apple TV client (native HLS)
 - ⬜ **Web player via an HTTP gateway** — a hosted page that plays the service in any
   browser. Browsers cannot join the Hyperswarm DHT (no UDP), so the honest design is
   a **gateway node** that runs the P2P engine server-side (the existing player SDK,

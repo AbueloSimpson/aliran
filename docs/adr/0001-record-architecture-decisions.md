@@ -22,7 +22,10 @@ numbered sequentially. Key decisions already made (to be written up as their own
 - **0005** — Session policy: returning users offline, new logins online; reject
   fully-offline login.
 - **0006** — HLS-over-Hyperdrive for live (lean on native HLS live playback).
-- **0007** — DRM and geo-locking as optional, provider-pluggable modules.
+- **0007** — ~~DRM and geo-locking as optional, provider-pluggable modules.~~
+  **Superseded (2026-07):** both were dropped from the roadmap. The platform ships
+  honest access control (encrypted feeds, per-user sealed keys, key rotation) and
+  deliberately no DRM or geo-restriction — see the security model.
 
 ## Consequences
 

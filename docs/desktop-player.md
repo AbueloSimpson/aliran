@@ -1,7 +1,7 @@
 # Desktop player (Windows)
 
 The Aliran desktop player (`desktop/`) is the Windows sibling of the Android app:
-one Electron application that logs in over the DHT, browses the same S18 interface
+one Electron application that logs in over the DHT, browses the same TV interface
 (menu hub, category rail, numbered channel list, detail panel with the program
 guide), plays live P2P channels and redirect channels, and re-seeds to other
 viewers — a full viewer node on a PC.
@@ -52,8 +52,8 @@ Electron MAIN process                     Electron RENDERER (sandboxed)
 
 ### Playback contracts (ported from `<AliranVideo>`)
 
-The renderer's `HlsVideo` component reimplements the RN binding's S22-proven
-behaviors on hls.js, and they matter for any custom host:
+The renderer's `HlsVideo` component reimplements the RN binding's
+device-proven behaviors on hls.js, and they matter for any custom host:
 
 - **Tune lifecycle from engine confirmations, not player events.** ONE localhost
   URL serves every P2P channel, so after a zap the previous channel keeps playing
@@ -65,7 +65,7 @@ behaviors on hls.js, and they matter for any custom host:
 - **Frozen-live-edge ladder**: a playhead still for 12 s while "playing" forces a
   reload at the live edge; a second consecutive failed resync calls
   `reconnectActiveFeed()` (wedged-transport teardown) first.
-- **VOD (S8a)**: a `type:'vod'` title disarms the ladder (a paused/seeking/finished
+- **VOD**: a `type:'vod'` title disarms the ladder (a paused/seeking/finished
   playhead is by design) and the bottom bar grows a seek/pause transport. The
   desktop transport is implemented against the same contracts as the phone app's;
   its live-VPS pass is pending an operator library deployment with granted titles.

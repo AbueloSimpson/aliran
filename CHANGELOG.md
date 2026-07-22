@@ -13,8 +13,8 @@ milestone with its verification narrative — lives in
 
 The cumulative pre-1.0 state (no version has been cut yet). Every item below is
 implemented, covered by an e2e or unit suite, and — where it touches the runtime —
-verified on real infrastructure (a 1 GB VPS over the public DHT, and a physical
-Android phone + Android TV).
+verified on real infrastructure (a VPS over the public DHT, a physical Android
+phone + Android TV, and the Windows desktop player).
 
 ### Added
 
@@ -64,8 +64,8 @@ Android phone + Android TV).
   sticks, channels that leave the feed are purged, and `autoGrant` seals every
   imported channel to every user — reconciled on each sync and at user creation.
   Unchanged feeds (or ETag 304s) append **nothing** to the replicated catalog. EPG
-  stays out of the bee; imported records carry `epgUrl`/`epgId` pointers for a
-  future on-demand client fetch. P2P channels tagged with the same category share
+  stays out of the bee; imported records carry `epgUrl`/`epgId` pointers the apps
+  fetch on demand (the guide bullet below). P2P channels tagged with the same category share
   the rail — zero SDK/app changes. Individual entries can be **deselected** per
   source (dashboard channels-dialog checkboxes / `--exclude`): an excluded channel
   is purged and skipped on every sync — exclusion changes reset the ETag so a 304
@@ -359,4 +359,6 @@ Android phone + Android TV).
 ### To do (see [ROADMAP.md](ROADMAP.md) and per-package READMEs)
 - GPU transcode pack — a separately-packaged bare-metal deploy pack (NVIDIA
   drivers + NVENC; VAAPI/QSV variants) for hardware-encode hosts.
-- Optional (v1.x): multi-DRM, geo-locking, VOD; panel HA replica set.
+- Panel HA replica set; the pre-1.0 hardening/security-review pass.
+- (DRM and geo-locking were dropped from the roadmap in 2026-07 — deliberately
+  not built; see the security model's no-DRM stance.)

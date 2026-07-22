@@ -57,7 +57,7 @@ infrastructure: the deploy pack on a VPS, live channels (pull and push ingest), 
 the Android app (phone + TV) playing P2P over the public DHT. Every subsystem has an
 e2e suite (`npm run test:sdk`, `test:admin-api`, `test:broadcaster-api`,
 `test:repeater`, …) and `tools/acceptance-remote.mjs` proves a deployment from any
-machine. Remaining before 1.0 (white-label packaging, DRM/VOD/geo options, panel HA):
+machine. Remaining before 1.0 (panel HA, the hardening/security-review pass):
 see the [Roadmap](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md).
 
 ## Next steps

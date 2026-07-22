@@ -234,7 +234,7 @@ const r = await player.resolve(streamId)
   `http://127.0.0.1:<port>/index.m3u8`. The feed replicates and is served
   progressively (bytes reach the player as they arrive; playlist requests are held
   briefly instead of 404ing; the live edge is read ahead).
-- **VOD title** (S8a — a library title, `type:'vod'` in the catalog) → same
+- **VOD title** (a library title, `type:'vod'` in the catalog) → same
   localhost serving, but the playlist is a **finished** VOD rendition
   (`#EXT-X-PLAYLIST-TYPE:VOD`, every segment listed, `#EXT-X-ENDLIST`): seek freely —
   any byte of any segment is Range-served and demand-paged over P2P — and pause
@@ -321,7 +321,7 @@ Chrome-free video surface; overlays belong to the host app via callbacks
 | `onStall` | Fired when the frozen-live-edge self-heal kicks in (playhead still for `stallTimeoutMs` while "playing" → resync remount at the live edge → escalate to `backend.reconnect()` if a resync mount doesn't play within another window). |
 | `stallTimeoutMs` | Default 12 000 — the freeze detector above. |
 | `bufferConfig` | Merged over the zap-tuned ExoPlayer defaults (playback starts at ~1 s buffered instead of ~2.5 s). Raise if your feeds need more headroom. |
-| `selectedAudioTrack`, `selectedTextTrack`, `onAudioTracks`, `onTextTracks` | In-stream audio/subtitle track selection (S27k). |
+| `selectedAudioTrack`, `selectedTextTrack`, `onAudioTracks`, `onTextTracks` | In-stream audio/subtitle track selection. |
 | `videoProps` | Escape hatch: extra props onto the underlying `react-native-video`. |
 
 ### EPG (program guide)

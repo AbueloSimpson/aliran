@@ -29,10 +29,6 @@ Copy each component's `.env.example` to `.env`.
 | `SOURCES_MAX_CHANNELS` | `500` | Entries imported per source beyond which the feed is truncated |
 | `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `2` / `2` | Swarm UDP socket buffers in MB (`0` = OS default). Every client replicates the catalog over this one swarm. **Only takes effect if the host allows it:** clamped to `net.core.{r,w}mem_max` — optional `deploy/sysctl/install.sh` raises it. See [KB](kb/network-tuning.md) |
 | `BOOTSTRAP` | *(empty)* | Custom DHT bootstrap nodes (optional) |
-| `GEOIP_DB` | *(empty)* | Path to MaxMind GeoLite2 mmdb (enables geo) |
-| `DRM_PROVIDER` | *(empty)* | `keyos` \| `ezdrm` \| `axinom` … (enables DRM) |
-| `DRM_LICENSE_URL` | *(empty)* | Vendor license server URL |
-| `DRM_API_KEY` | *(empty)* | Vendor API/CPIX credential (secret) |
 
 ## Broadcaster (`broadcaster/.env`)
 
@@ -62,7 +58,6 @@ Copy each component's `.env.example` to `.env`.
 | `SLATE_RETRY_MS` | `30000` | How often a slated channel drops the slate to re-probe its real source — also how it returns automatically (a working source clears the failure streak and stays; a still-dead one re-slates on the next failure), and the worst-case extra time bars keep showing after the source is already back. Lower = faster recovery; higher = the bars glitch less often during a long outage. Raise it (e.g. `60000`) for smoother bars; below ~20000 is discouraged. See [KB](kb/offline-slate.md) |
 | `SWARM_MAX_PEERS` | *(unset)* | Optional **per-channel** swarm connection budget (each channel runs its own swarm; hyperswarm's own default is 64, also per channel). Connections beyond the budget are dropped at accept time. Leave headroom for non-viewer peers (repeaters, the panel's blobsKey probe) |
 | `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `2` / `2` | Swarm UDP socket buffers in MB (`0` = OS default). UDX carries every peer stream over one socket pair, so this is what overflows under fan-out — silently, as kernel packet drops. **Only takes effect if the host allows it:** `setsockopt` is clamped to `net.core.{r,w}mem_max` (212992 on stock Linux) — optional `deploy/sysctl/install.sh` raises it. See [KB](kb/network-tuning.md) |
-| `PROTECTION` | `self` | `self` (encrypted Hyperdrive) or `drm` (CENC via packager) |
 | `CONTROL_ENABLED` | `false` | Serve the channel control HTTP API |
 | `CONTROL_HOST` | `127.0.0.1` | Control API bind address (use TLS in front if not loopback) |
 | `CONTROL_PORT` | `3310` | Control API port |
@@ -85,16 +80,16 @@ The keyless regional super-peer — see the [repeater appliance page](repeater.m
 | `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
 | `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes |
 
-## Library (`library/.env`) — VOD (S8a)
+## Library (`library/.env`) — VOD
 
 The standalone VOD service — see [library/README.md](https://github.com/AbueloSimpson/aliran/blob/main/library/README.md)
-and the [reference](reference.md#library-control-api-ui-control_enabled1-s8a).
+and the [reference](reference.md#library-control-api-ui-control_enabled1).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATA_DIR` | `./data` | Titles registry + per-title encryption keys (`secrets/`, 0600) + the encrypted title stores. Disk = the sum of title sizes; reclaimed only by delete-title |
 | `PANEL_PUBKEY` | — (required to register) | The panel to register titles with |
-| `PUBLISHER_NAME` / `PUBLISHER_KEY` | — | Enrolled publisher identity (S26). ALWAYS enroll the library as its **own** publisher, scoped to its title ids (`add-publisher library1 --scopes 'vod-*'`) — never the live fleet's key |
+| `PUBLISHER_NAME` / `PUBLISHER_KEY` | — | Enrolled publisher identity. ALWAYS enroll the library as its **own** publisher, scoped to its title ids (`add-publisher library1 --scopes 'vod-*'`) — never the live fleet's key |
 | `HLS_TIME` | `4` | VOD segment length (s): shorter = finer seek/demand-paging, more per-request overhead. Per-title override in the API |
 | `INGEST_CONCURRENCY` | `1` | Parallel ingest jobs. A transcode is 0.5–1 core for the burst; the default queues them strictly one at a time |
 | `SWARM_MAX_PEERS` | `256` | Connection budget — one swarm carries every title (seeder economics, like the repeater) |

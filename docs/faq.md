@@ -32,8 +32,12 @@ panel's OPRF key, so guesses can't be tested offline. Returning users work offli
 cached sessions; new logins require the panel.
 
 **Does it support DRM / geo-blocking?**
-Optionally. Commercial multi-DRM (BuyDRM/KeyOS, EZDRM, Axinom…) and geo-locking are
-opt-in modules. See [content-management.md](content-management.md).
+No — deliberately, and it isn't planned. Content protection is encrypted feeds +
+per-user sealed keys + stream-key rotation (honest access control, with its limits
+stated in the [security model](security-model.md#no-drm-no-geo-locking-deliberately)).
+There is no geo-restriction; territorial obligations are the operator's to satisfy
+contractually. If your content requires studio DRM, this platform is the wrong tool
+for it.
 
 ## Troubleshooting
 

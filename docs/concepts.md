@@ -28,7 +28,7 @@ each other, so distribution capacity grows with the audience instead of costing 
 | **Panel** | Origin of truth: signed account DB + catalog + OPRF login |
 | **Broadcaster** | Node that ingests a source and seeds the encrypted feed |
 | **Client** | The Android app; plays and re-seeds |
-| **Feed** | The encrypted Hyperdrive carrying a stream's HLS/CENC segments |
+| **Feed** | The encrypted Hyperdrive carrying a stream's HLS segments |
 | **OPRF** | Oblivious PRF — makes password login brute-force-resistant |
-| **Entitlement token** | Panel-signed JWT proving a user may play a stream (DRM/geo) |
+| **Session token** | Panel-signed token from login — device limits, cooperative revocation |
 | **Service descriptor** | Config bundle (panel pubkey + branding) a client connects to |

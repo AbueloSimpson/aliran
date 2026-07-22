@@ -19,8 +19,6 @@ re-seed each other. A $5 VPS behind a strict firewall works.
 - Docker + Docker Compose plugin (`apt-get install docker.io docker-compose-v2`),
   **or** Node.js 20+ and `ffmpeg` for the bare-metal path.
 - (Optional) two DNS A-records pointing at the box, for HTTPS dashboards via Caddy.
-- (Optional, DRM) an account with a multi-DRM vendor (BuyDRM/KeyOS, EZDRM, Axinom…).
-- (Optional, geo) a MaxMind GeoLite2 database file.
 
 ## A. Docker Compose (recommended)
 

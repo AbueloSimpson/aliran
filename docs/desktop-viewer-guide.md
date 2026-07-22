@@ -20,7 +20,7 @@ also shares pieces of the stream you've already received with other viewers of
 the same service — that's what lets a small operator serve many viewers without
 a big server. It uses upload bandwidth while a channel plays (roughly comparable
 to the channel's own bitrate at most), and stops when you close the app. See
-[§7](#7-privacy--bandwidth-honestly) for exactly what is and isn't shared.
+[§7](#7-privacy-bandwidth-honestly) for exactly what is and isn't shared.
 
 ## 2. Install
 

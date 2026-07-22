@@ -176,7 +176,7 @@ Two record classes share the catalog, the grant machinery, and the P2P transport
 
 - **Live** (`type:'live'`, the default): a rolling HLS window in a Hyperdrive, fed
   by the **broadcaster**. Carries `isLive`; segments rotate out and are reclaimed.
-- **VOD** (`type:'vod'`, S8a): an on-demand **title** served by the standalone
+- **VOD** (`type:'vod'`): an on-demand **title** served by the standalone
   **[library](https://github.com/AbueloSimpson/aliran/tree/main/library) service** — a finished HLS VOD rendition
   (`#EXT-X-PLAYLIST-TYPE:VOD`, **all** segments kept) in its own encrypted
   Hyperdrive. The record carries `durationSec` and **no `isLive` at all** (liveness
@@ -198,15 +198,9 @@ seeding + purges its data), then remove the catalog record and grants in the pan
 metadata, repeater mirroring of titles, multipart upload through the control API
 (v1 ingests a path/URL the library box can reach).*
 
-## DRM (optional)
+## Content protection
 
-Package as **CENC/CMAF** using a multi-DRM packager (Nimble Streamer, Unified
-Streaming, shaka-packager) with vendor CPIX keys. Set `protection:'drm'` on the stream.
-Distribution stays P2P; the license request goes to the vendor with a panel-issued
-entitlement JWT. Android target: **DASH+Widevine** (or CMAF HLS+Widevine).
-
-## Geo-locking (optional)
-
-Set `allowedRegions`/`blockedRegions` on a stream. Enforced at entitlement time (panel
-GeoIP) and/or by the DRM vendor's license geo policy. IP GeoIP is VPN-defeatable —
-document expectations.
+There is no DRM and no geo-restriction — deliberately. Access control is encrypted
+feeds + per-user sealed keys + stream-key rotation; the
+[security model](security-model.md#no-drm-no-geo-locking-deliberately) states
+exactly what that defends against and what it doesn't.

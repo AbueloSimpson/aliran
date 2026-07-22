@@ -134,7 +134,7 @@ are preserved.
 | `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage control admin accounts |
 | `POST /api/admins/:name/password` | Rotate an admin password (revokes their sessions) |
 
-## Library control API + UI (`CONTROL_ENABLED=1`, S8a)
+## Library control API + UI (`CONTROL_ENABLED=1`)
 
 Served by the **library** process — the standalone VOD service (default
 `127.0.0.1:3320`; put TLS in front if exposed). Opening the address loads the
@@ -155,7 +155,7 @@ streams). Disk = the sum of title sizes; reclaimed only by delete.
 | `GET /api/status` | Titles summary, publisher, panel key, swarm connections |
 | `GET/POST /api/titles` | List (+ ingest progress/peers/registered) / add + queue ingest (`{id, input, title?, description?, category?, protection?, mode?, hlsTime?}` — `mode`: `auto`(default)/`copy`/`transcode`; `input`: a path on the library box or any URL ffmpeg reads) |
 | `GET /api/titles/:id` | Registry view: `state` (`queued·ingesting·ready·error`), `ingest:{phase,pct}`, `feedKey`, `durationSec`, `segments`, `bytes`, `peers`, `registered`, `registerError` |
-| `PATCH /api/titles/:id` | `input`/`mode`/`hlsTime` only — descriptive metadata is panel-owned after creation (S27e) |
+| `PATCH /api/titles/:id` | `input`/`mode`/`hlsTime` only — descriptive metadata is panel-owned after creation |
 | `POST /api/titles/:id/ingest` | Re-ingest (optional `{input}`): mints the next feed generation (fresh `feedKey`, old cores purged); viewers pick it up on their next tune |
 | `DELETE /api/titles/:id` | Stop seeding + **purge the title's cores and key from this box** (refused mid-ingest). Registers `status:'unavailable'`; remove the catalog record + grants in the panel |
 | `GET /api/titles/:id/logs?lines=N` | The ingest's ffmpeg/log ring → `{lines, state, ingest}` |
@@ -202,8 +202,7 @@ ids), `HLS_TIME` (VOD segment length, default 4 s), `INGEST_CONCURRENCY` (defaul
   "description": "...",
   "category": ["news"],
   "type": "live",              // live | vod (record class — see the vod note below)
-  "protection": "self",        // self | drm
-  "allowedRegions": null,      // or ["US","CA"]
+  "protection": "self",        // reserved — only 'self' exists (no DRM, by design)
   "isLive": true,              // live records ONLY — a vod record omits the field entirely
   "durationSec": null,         // vod records ONLY — title runtime in seconds
   "viewerCount": null,         // derived, not durable
@@ -217,15 +216,14 @@ ids), `HLS_TIME` (VOD segment length, default 4 s), `INGEST_CONCURRENCY` (defaul
   "redirect": false,           // redirect channel class — see below
   "url": null,                 // redirect channels: https HLS the client plays directly
   "origin": null,              // enrolled publisher that made the LAST register (audit), or null
-  "source": "anime",           // imported by this channel source (S27), absent on manual channels
+  "source": "anime",           // imported by this channel source, absent on manual channels
   "epgUrl": "https://…",       // source imports: the feed URL carrying this channel's schedule
   "epgId": "plutotv.es.629…",  // source imports: this channel's id INSIDE that feed
-  "drm": null,                 // or { scheme, licenseServerRef }
   "status": "live"
 }
 ```
 
-> **VOD titles** (S8a): a record with `type:'vod'` is a **library** title — a finished
+> **VOD titles**: a record with `type:'vod'` is a **library** title — a finished
 > HLS VOD rendition in its own encrypted drive, registered over the same `register`
 > RPC with `durationSec` in the payload. The class differs in exactly two fields:
 > `durationSec` (payload-owned, like `feedKey` — the library measures it at ingest)
@@ -235,18 +233,19 @@ ids), `HLS_TIME` (VOD segment length, default 4 s), `INGEST_CONCURRENCY` (defaul
 > stays until removed in the panel). Grants, sealing, blobsKey enrichment, art,
 > curation and categories work identically for both classes.
 
-> **Redirect channels** (S23): a record with `{redirect: true, url: "https://…"}` is a
+> **Redirect channels**: a record with `{redirect: true, url: "https://…"}` is a
 > different *class* of entry — viewers play the operator's URL **directly** instead of
 > a P2P feed (`feedKey` stays `null`; the panel rejects mixing the two). Set or clear
 > it via the `url` field on `POST`/`PATCH /api/streams` or the dashboard's "Redirect
 > URL" input (the CLI does not expose it); a broadcaster re-register never erases the
 > class. Details: [content-management.md](content-management.md).
 
-> **`source` / `epgUrl` / `epgId`** (S27): stamped on records imported by a remote
+> **`source` / `epgUrl` / `epgId`**: stamped on records imported by a remote
 > channel source. `source` is the ownership mark — a sync may only touch records
 > carrying **its** name, and detaching/removing the source strips or purges them.
 > The epg fields point back to the feed so a client can fetch the schedule over
-> https on demand (clients currently ignore them). Registry (nothing secret) lives
+> https on demand — the apps render it as the Info panel's Now/Next guide (the
+> shared EPG layer in `@aliran/react-native`). Registry (nothing secret) lives
 > in `DATA_DIR/sources.json`; see [content-management.md](content-management.md).
 
 > The stream's content **encryption key is not in the catalog**. It is kept in a
@@ -260,7 +259,7 @@ ids), `HLS_TIME` (VOD segment length, default 4 s), `INGEST_CONCURRENCY` (defaul
 > `DATA_DIR/secrets/publishers.json` (public keys + scopes only — the site keeps its
 > secret); see [security-model.md](security-model.md).
 
-> **`blobsKey`** (S20a): the feed drive's blobs-core key, published so keyless
+> **`blobsKey`**: the feed drive's blobs-core key, published so keyless
 > repeater/seed nodes can mirror the **encrypted** video blocks (the blobs core is a
 > named core whose key lives inside the drive's encrypted header, so it is not
 > derivable from `feedKey` alone). The panel fills it **asynchronously** after a

@@ -234,13 +234,13 @@ So the thing to watch on the panel is **write rate**, not record count. What wri
 
 | Writer | Cost | Notes |
 |---|---|---|
-| Broadcaster `register` | **0 when nothing changed** | The 5-min heartbeat re-asserts every running stream. Since S29 an unchanged re-assert is compared and skipped, so steady-state heartbeat traffic is free. |
+| Broadcaster `register` | **0 when nothing changed** | The 5-min heartbeat re-asserts every running stream. An unchanged re-assert is compared and skipped, so steady-state heartbeat traffic is free. |
 | `register` with a real change | 1 block (~490 B) | feedKey rotation, `isLive`/`status` flip, new `origin`. Rotation is the one that recurs — see `FEED_ROTATE_TREE_MB`/`FEED_ROTATE_HOURS` in [feed-buffer.md](feed-buffer.md): rotating harder bounds *broadcaster* disk but adds *panel* writes. |
 | Viewer `session` | 1 block per session | Rewrites the whole user record, including its `wrapped` grant map — so this scales with **grants per user**, not with channel count alone. |
 | Admin edits / grants | 1 block each | `grant` re-puts the full user record per channel, so granting *n* channels one at a time is O(n²) in bytes. Bulk/auto-grant paths matter at 300 channels. |
 | Source sync | 0 for unchanged entries | [`sources.js`](https://github.com/AbueloSimpson/aliran/blob/main/panel/src/sources.js) compares before it puts; a 304 or an unchanged feed appends nothing. |
 
-Measured, on the register path before the S29 fix: **43 channels × 288 heartbeats/day = 12,384
+Measured, on the register path before the idempotent-register fix: **43 channels × 288 heartbeats/day = 12,384
 redundant appends/day ≈ 5.8 MiB/day**, forever, growing linearly with the lineup. Small per day
 — but monotonic, with no compaction to ever give it back, which is what makes it a planning
 item rather than a rounding error.
@@ -295,7 +295,7 @@ mints a **fresh feedKey per rotation**, which re-enqueues the enricher, so the p
     - only directories named like a full discovery key are considered — files, `primary-key`
       and the rest of `DATA_DIR` are never touched.
 
-    The sweep is the same one the broadcaster has used since S28 to drop retired feed
+    The sweep is the same one the broadcaster uses to drop retired feed
     generations (`@aliran/core/store-gc.js`). Nothing to enable, and no downtime beyond the
     restart itself; a second start reports nothing left to do.
 

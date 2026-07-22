@@ -85,7 +85,12 @@ path — pinned ffmpeg/Node, auto-restart, host networking pre-configured) — s
   directly — no P2P feed behind them
 - Self-healing playback: tune watchdog, wedged-connection teardown, live-edge stall
   resync — plus optional keyless **repeater** super-peers to absorb fan-out
-- **Optional** modules: commercial multi-DRM (BuyDRM/KeyOS, EZDRM, Axinom…), geo-locking, VOD
+- **VOD**: the optional `library/` service — file → encrypted, P2P-seeded on-demand
+  titles with full seek, granted like channels
+- **No DRM, by design**: content protection is transport encryption + per-user sealed
+  keys + key rotation — honest access control, not studio-grade DRM. The
+  [security model](docs/security-model.md) spells out exactly what that does and
+  doesn't defend against
 
 ## Documentation
 
@@ -102,7 +107,7 @@ Browse online at **<https://abuelosimpson.github.io/aliran/>**, or start at
 ## Roadmap
 
 See [`ROADMAP.md`](ROADMAP.md) for the path from alpha to a production-ready 1.0
-(streaming → auth/OTT UI → HA/hardening) and the optional modules (VOD, DRM, geo).
+(streaming → auth/OTT UI → HA/hardening) and what's deliberately out of scope.
 
 ## Support
 
@@ -111,13 +116,13 @@ its development, you can buy me a coffee:
 
 [![Support on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/abuelosimpson)
 
-Every contribution is appreciated and goes toward building the Android app and the
-optional modules on the [Roadmap](ROADMAP.md).
+Every contribution is appreciated and goes toward the work on the
+[Roadmap](ROADMAP.md).
 
 ## ⚠️ Content-rights disclaimer
 
 Aliran is neutral infrastructure. **Operators are solely responsible** for holding
-the rights to any content they stream and for complying with DRM licensing and
+the rights to any content they stream and for complying with content-licensing and
 regional/legal requirements in the territories they serve. See
 [`docs/legal-compliance.md`](docs/legal-compliance.md).
 

@@ -21,8 +21,8 @@ A **single-writer, panel-signed Hyperbee**. Clients replicate it read-only and p
 panel public key, so records are provably authentic. Namespaces:
 
 - `catalog/<streamId>` → OTT metadata `{ title, description, category[], type,
-  protection, allowedRegions?, isLive, poster, backdrop, logo, feedKey, blobsKey,
-  drm?, status }`
+  protection, isLive, poster, backdrop, logo, feedKey, blobsKey, status }`
+  (`protection` is a reserved field that always reads `'self'` in current builds)
   — **note:** the stream's content encryption key is **not** in the catalog. It is held
   in a panel-private, non-replicated secrets file and delivered per-user (below).
   `blobsKey` (the feed drive's blobs-core key, published by the panel for keyless
@@ -116,19 +116,23 @@ for multi-admin trust.
 - A directly connected peer can observe the panel's public IP; not anonymous unless
   relay/VPN.
 
-## Optional DRM & geo
+## No DRM, no geo-locking — deliberately
 
-- **DRM** (BuyDRM/KeyOS, EZDRM, Axinom, …): P2P distribution of CENC bytes + commercial
-  license server; panel issues entitlement JWTs. Provides hardware-enforced protection.
-- **Geo-locking** enforced at license/entitlement time (panel GeoIP claims and/or vendor
-  license geo policy). IP GeoIP is VPN-defeatable (true of all streaming).
+Aliran does **not** implement DRM or geo-restriction, and neither is planned. The
+content-protection model is honest access control: feeds are encrypted end to end,
+each user's stream keys are sealed individually at grant time, sessions are
+cooperative, and the real revocation boundary is **stream-key rotation** (rotate the
+channel's encryption key and old keys stop decrypting new segments for everyone).
+That protects against non-entitled parties; it does not — and does not claim to —
+stop an *entitled* viewer from capturing what they can lawfully decrypt. Commercial
+DRM makes the same admission behind more machinery. Operators whose licensing
+demands hardware-enforced DRM or territorial enforcement should recognize that this
+platform is the wrong tool for that content.
 
 ## What this does NOT protect against
 
 - Blocking peers from *connecting* to a public swarm topic (confidentiality is via
   encryption, not connection-gating).
 - Offline brute-force **if** you enable a fully-offline login fallback (we did not).
-- A user retaining self-managed-decrypted content (no hardware DRM unless the DRM
-  module is enabled).
-- VPN-based geo evasion.
+- An entitled user retaining decrypted content (no DRM, see above).
 - Panel OPRF-key compromise (re-enables offline attack) — protect and back it up.

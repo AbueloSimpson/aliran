@@ -13,7 +13,7 @@ the **integration map**: which surface changes what, and when the SDK sees it.
 |---|---|---|---|---|
 | **Panel admin API + dashboard** | HTTP/JSON | `127.0.0.1:3210` (`ADMIN_ENABLED=1`) | Admin login → panel-signed Bearer token (Argon2id verifiers in panel-private `secrets/admins.json`) | Operators: accounts, grants, catalog curation, publishers, sources, categories |
 | **Broadcaster control API + UI** | HTTP/JSON | `127.0.0.1:3310` (`CONTROL_ENABLED=1`) | Control login → broadcaster-local Bearer token | Operators: channels, ingest, transcode, start/stop/rotate, logs, incidents. Plus **unauthenticated `GET /healthz`** for monitoring |
-| **Library control API + UI** (S8a) | HTTP/JSON | `127.0.0.1:3320` (`CONTROL_ENABLED=1`) | Control login → library-local Bearer token | Operators: VOD titles — add/ingest/re-ingest/delete, progress, logs. Plus **unauthenticated `GET /healthz`** |
+| **Library control API + UI** | HTTP/JSON | `127.0.0.1:3320` (`CONTROL_ENABLED=1`) | Control login → library-local Bearer token | Operators: VOD titles — add/ingest/re-ingest/delete, progress, logs. Plus **unauthenticated `GET /healthz`** |
 | **Panel RPC** | DHT (Hyperswarm), not TCP/HTTP | reachable by key, worldwide | Proof-of-work + per-method crypto (OPRF login; Ed25519 for `register`) | **The SDK** (`hello`/`login`/`session`) and **broadcasters + the library** (`register` — the library registers titles as `type:'vod'`) |
 
 Two deliberate consequences:
@@ -89,7 +89,7 @@ viewer-visible effect:
 | Remove source | `DELETE /api/sources/:name` (`?keepChannels=1` detaches) | Its channels purge (or detach and stay) | **Live push** |
 | EPG pointers | carried per-record (`epgUrl`/`epgId`) from the source feed | The app fetches the schedule **directly over https** — never through the panel ([guide](sdk-guide.md#epg-program-guide)) | Next fetch |
 
-### Publishers (multi-broadcaster security — S26)
+### Publishers (multi-broadcaster security)
 
 | Operator action | Endpoint(s) | SDK effect |
 |---|---|---|
@@ -111,7 +111,7 @@ The broadcaster never talks to viewers. Every effect flows **broadcaster →
 | Diagnostics | `GET /api/status`, `/api/capabilities`, `/api/channels/:id/logs`, `GET /api/incidents` (fleet-wide correlated respawn bursts) | Ops-only | None |
 | Liveness | **`GET /healthz` (unauthenticated)** — `{up, resuming, resumed, total, …}` | Point uptime checks here | None (but during a boot resume, channels come live in waves — viewers see `isLive` flips as each registers) |
 
-## 5a. Library control API → SDK effects (VOD, S8a)
+## 5a. Library control API → SDK effects (VOD)
 
 Same shape as the broadcaster's: the library never talks to viewers — every effect
 flows **library → `register` RPC (`type:'vod'` + `durationSec`) → panel catalog →
@@ -125,7 +125,7 @@ replication**. Run it as its **own enrolled publisher** scoped to its title ids.
 | Delete a title | `DELETE /api/titles/:id` | Stops seeding, purges the title's cores + key from the library box, registers `status:'unavailable'` | `streams` live-push (status flip — gray it out); a tune now stalls/errors. Finish cleanup in the **panel**: remove the record + grants |
 | Liveness | **`GET /healthz` (unauthenticated)** — `{ok, titles, ready, ingesting, queued, error, panelLink}` | Point uptime checks here | None |
 
-Descriptive metadata follows the same S27e rule as channels: the library **seeds**
+Descriptive metadata follows the same rule as channels: the library **seeds**
 title/description/category at creation; after that they are edited in the panel.
 
 ## 6. Panel RPC → the SDK's own calls
