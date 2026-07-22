@@ -1,11 +1,16 @@
 // Channel-list overlay panel (the reference's LISTA DE CANALES): dark translucent
 // panel of channel rows over the playing video. Selecting a row switches the stream
 // IN PLACE — playback never stops while browsing. Keyboard-first (the D-pad model):
-// the list owns Arrow/Enter/Escape while mounted; the mouse gets the same rows.
+// the list owns Arrow/Enter/Escape while mounted; the mouse gets the same rows plus
+// right-click for channel detail. Rows show the airing EPG program as their
+// now-playing line when the channel carries a guide (one cached fetch covers every
+// row sharing the feed URL), else the catalog synopsis; vod titles (S8a) swap the
+// LIVE badge for their runtime and never take a channel number.
 
 import React, { useEffect, useRef, useState } from 'react'
 import type { Stream } from '../types'
-import { formatChannelNumber } from '../catalog'
+import { formatChannelNumber, formatDuration, isVod } from '../catalog'
+import { useEpg } from '../../../../sdk/react-native/src/useEpg'
 
 export interface ChannelListProps {
   streams: Stream[]
@@ -14,14 +19,17 @@ export interface ChannelListProps {
   playingId: string | null
   favorites: string[]
   onSelect: (s: Stream) => void
-  /** Open channel detail (the 'i' key / right-click; Stage B surface). */
+  /** Open channel detail (the 'i' key / right-click). */
   onInfo?: (s: Stream) => void
   onClose: () => void
   /** Any interaction (defers the auto-hide timer). */
   onActivity?: () => void
+  /** Keyboard ownership: false while a sibling pane (the category rail) has it —
+   *  the mouse keeps working either way. Default true. */
+  active?: boolean
 }
 
-export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onClose, onActivity }: ChannelListProps) {
+export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onClose, onActivity, active = true }: ChannelListProps) {
   const [focus, setFocus] = useState(() => {
     const i = streams.findIndex((s) => s.id === playingId)
     return i >= 0 ? i : 0
@@ -39,7 +47,10 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
   }, [focus])
 
   useEffect(() => {
+    if (!active) return
     const onKey = (e: KeyboardEvent) => {
+      // A text input above the list (Search) owns the keyboard while focused.
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return
       if (e.key === 'ArrowDown') { e.preventDefault(); onActivity?.(); setFocus((i) => Math.min(streams.length - 1, i + 1)) }
       else if (e.key === 'ArrowUp') { e.preventDefault(); onActivity?.(); setFocus((i) => Math.max(0, i - 1)) }
       else if (e.key === 'PageDown') { e.preventDefault(); onActivity?.(); setFocus((i) => Math.min(streams.length - 1, i + 10)) }
@@ -50,7 +61,7 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [streams, focus, onSelect, onInfo, onClose, onActivity])
+  }, [streams, focus, onSelect, onInfo, onClose, onActivity, active])
 
   return (
     <div className="channel-list" onScroll={onActivity}>
@@ -71,7 +82,7 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
           />
         ))}
       </div>
-      <div className="panel-hint">↑↓ browse · Enter watch{onInfo ? ' · i info' : ''} · Esc close</div>
+      <div className="panel-hint">↑↓ browse · Enter watch{onInfo ? ' · i / right-click info' : ''} · Esc close</div>
     </div>
   )
 }
@@ -90,7 +101,15 @@ interface RowProps {
 const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRow (
   { stream, number, playing, focused, favorite, onHover, onClick, onContextMenu }, ref
 ) {
-  const dimmed = stream.isLive === false
+  // Off-air channel, or a vod title the library took down (vod records carry no
+  // isLive — their availability signal is status 'available'/'unavailable').
+  const vod = isVod(stream)
+  const dimmed = vod ? stream.status === 'unavailable' : stream.isLive === false
+  const duration = vod ? formatDuration(stream.durationSec) : ''
+  // Now-playing line: the airing EPG program when the channel has a guide, else the
+  // catalog synopsis. Guide-less channels never fetch.
+  const { data } = useEpg(stream.epgUrl, stream.epgId)
+  const nowText = data?.now?.title || stream.description
   return (
     <div
       ref={ref}
@@ -104,12 +123,13 @@ const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRo
         <span className="row-title-line">
           <span className={'row-title' + (dimmed ? ' dimmed' : '')}>{stream.title || stream.id}</span>
           {stream.isLive && <span className="badge-live">LIVE</span>}
+          {duration && <span className="row-duration">{duration}</span>}
           {favorite && <span className="row-star">★</span>}
         </span>
-        {stream.description && <span className="row-now">{stream.description}</span>}
+        {nowText && <span className="row-now">{nowText}</span>}
       </span>
       {stream.logo
-        ? <img className="row-logo" src={stream.logo} alt="" />
+        ? <img className="row-logo" src={stream.logo} alt="" loading="lazy" />
         : <span className="row-logo row-logo-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</span>}
     </div>
   )
