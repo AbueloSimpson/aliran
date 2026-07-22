@@ -1558,7 +1558,7 @@ so a channel works through every configured fallback URL before it gives up. Whe
 mutated, so `status()` and a `PATCH` still show what the operator configured (same contract as
 the backup-URL swap). Three subtleties: a looped file never exits or stalls, so every
 exit-driven watchdog path is dead while slated — the watchdog kills the slate every
-`SLATE_RETRY_MS` (60 s) purely to re-probe, **which is the return mechanism**; `failures` is
+`SLATE_RETRY_MS` (default 30 s) purely to re-probe, **which is the return mechanism**; `failures` is
 not reset when leaving to probe, so a still-dead source re-slates on its single failed attempt
 rather than blanking for another `SLATE_AFTER` window; and profile detection is skipped while
 slated, or the channel would learn the *slate's* profile and pin itself to the fallback.
