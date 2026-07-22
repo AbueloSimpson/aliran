@@ -16,6 +16,9 @@ Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
 - [Configuration](configuration.md) — full config reference for every component
 - [Content management](content-management.md) — catalog, metadata, assets, redirect channels, VOD
 - [Client build](client-build.md) — build the Android (phone + TV) app
+- [Android app — viewer guide](android-viewer-guide.md) — install the public APK, connect, watch (phone + TV/D-pad)
+- [Desktop player (Windows)](desktop-player.md) — the Electron player, for operators/developers
+- [Desktop player — viewer guide](desktop-viewer-guide.md) — install and use the public desktop build
 - [User management](user-management.md) — accounts, passwords, devices, sessions
 - [Reference](reference.md) — admin-cli, panel RPC, schemas
 - [Development log](devlog.md) — the detailed, chronological build history (the concise summary is [CHANGELOG.md](https://github.com/AbueloSimpson/aliran/blob/main/CHANGELOG.md))

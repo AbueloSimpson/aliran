@@ -1918,3 +1918,54 @@ installers + portables staged in `aliran-ops/s35-build/`. One diagnosis from the
 earlier session upgraded: the portable exe's "instant exit" was the
 single-instance lock against the still-running dev app (shared userData), not a
 packaging fault.
+
+### S36 — public Android APK: runtime service descriptor, phone + TV (verified)
+
+The Android analogue of the desktop player's public flavor: one keyless APK
+(phone + Android TV — the manifest has declared both since S7) that connects to
+any operator's service at runtime. `config/service.json` still decides the
+flavor at build time; the new committed keyless `config/service.public.json`
+(`panelPubKey: ""` as the deliberate marker — `REPLACE_` still throws) routes
+first run to a **Connect screen**: panel public key (64 hex) + username +
+password, the exact three artifacts an operator hands out, no URLs. Both persist
+in the worklet prefs (beside credentials/favorites, surviving store purges)
+**only after a successful sign-in** — a typo'd key or password never sticks, and
+retry happens in place. Later launches auto-authorize through Splash; *Settings
+→ Change service…* (keyless flavor only) forgets service + sign-in and returns
+to Connect. A baked key always wins, ignores any persisted service, and is
+never changeable at runtime.
+
+**Engine/worklet:** prefs grew a validated `service` field
+(`service-save`/`service-clear`), and the `{panelPubKey}` connect dispatch now
+swaps the engine wholesale (`player.stop()` → fresh player) when a different
+key arrives — a wrong-key retry or a service switch never reuses the old
+panel's swarm/bee/feeds. The RN binding got optional `StartOptions.panelPubKey`
+(boot idle, read prefs first), `connect()`, `saveService()`/`clearService()`
+and a `service` mirror; the ConnectScreen waits for the fresh `{type:'ready'}`
+before logging in so nothing races a teardown. Bundle regenerated and
+validated: main + 15 addons, **zero `builtin:` refs**.
+
+**Verification — the public x86_64 release APK against a LOCAL rights-clean
+demo stack** (offline admin-cli init/user/grants/set-meta, control-API channels
+on the built-in colour-bars `test` input, the committed `docs/demo/epg.json`
+re-centered and fetched from its raw.githubusercontent URL). On the Pixel 8 Pro
+AVD (phone) and an Android TV AVD, each from a fresh install: Connect (the
+64-hex validation caught a genuinely truncated key mid-test), connect → ready →
+login, Menu, category rails with live EPG now-lines, **P2P colour-bars playback**
+(`P2P · 1-2 peers` in diagnostics; the second peer was a host-side headless-SDK
+viewer), D-pad zap + channel list + program guide on TV (leanback IME entry,
+focus traversal to every control), force-stop → relaunch auto-authorize, and
+*Change service…* → clean Connect on both (with the cleared state surviving
+another force-stop). Client jest 12 suites / 55 tests green, tsc clean,
+`mkdocs build --strict` green. Docs: `docs/android-viewer-guide.md` (install/
+"unknown sources", Connect, separate phone and TV/D-pad sections, honest
+privacy/bandwidth incl. the S25 cellular no-reseed behavior, troubleshooting)
+with rights-clean captures in `docs/img/android/`.
+
+Two emulator-lab gotchas worth keeping: QEMU's user-mode NAT + router hairpin
+makes the FIRST DHT holepunch to host-local peers slow (~1–3 min) — the
+Connect screen's in-place retry absorbs it (the guide says "press Connect
+again") — and bulk P2P segment flow through that relayed path only sustains
+low bitrates, so the demo channels were patched to 300 kbps for the video
+verification (real devices on a LAN or against a remote host don't hit
+either; the S22 + VPS combination never has).
