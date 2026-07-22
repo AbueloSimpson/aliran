@@ -164,7 +164,8 @@ Android phone + Android TV).
   and the app's `file:` graph still resolve it locally), hand-maintained TypeScript
   definitions (`sdk/index.d.ts`) for the whole engine surface, a `@aliran/core`
   README, a runnable headless example (`examples/headless-player.mjs`), and a
-  Player SDK page on the docs site.
+  Player SDK page on the docs site. **Published to the npm registry as `0.1.0`**
+  (first release, 2026-07-22 UTC; cold-install verified).
 
 **React Native binding (`sdk/react-native/`, `@aliran/react-native`)**
 - `AliranBackend` (worklet host, IPC protocol, prefs) + `<AliranVideo>`: tune

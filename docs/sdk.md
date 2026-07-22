@@ -88,7 +88,13 @@ the video URL — video travels P2P, metadata stays yours. At the other extreme,
 
 ## Publishing status
 
-The packages are publish-ready (`npm pack` produces clean tarballs, MIT license
-text included) and the `@aliran` npm scope is registered to the project. Until the
-first registry release is cut, consume them from the monorepo — npm workspaces
-(`sdk/`) inside the repo, or a git dependency from outside.
+**Live on the npm registry** — first release `0.1.0` (2026-07-22 UTC) for all
+three packages:
+
+```sh
+npm install @aliran/player-sdk     # or @aliran/react-native for RN apps
+```
+
+A cold install resolves the whole dependency chain from the registry. Inside the
+monorepo, the npm workspace (`sdk/`) still links the local copies for development,
+and the Android app's worklet keeps consuming them via `file:`.
