@@ -52,6 +52,9 @@ export type BackendMessage =
   | { type: 'zap-prefetch'; enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }
   | { type: 'upload-policy'; policy: 'reseed' | 'client-only'; reason?: string }
   | { type: 'prefs'; creds: SavedIdentity | null; favorites: string[]; smoothZapping?: boolean | null }
+  // The runtime descriptor was accepted ('set-service', public flavor) — the engine
+  // is booting on it; theme/branding may re-apply.
+  | { type: 'service'; descriptor: ServiceDescriptor }
 
 // Brandable color token set — same contract as the phone app's service descriptor
 // (client/src/config.ts). Anything omitted falls back to the theme defaults.
@@ -109,8 +112,10 @@ export interface EngineState {
   creds: SavedIdentity | null
   favorites: string[]
   smoothZapping: boolean | null
-  /** null when desktop/config/service.json is missing/unconfigured — show setup help. */
+  /** null when no descriptor is baked OR stored — the app shows the Connect screen. */
   descriptor: ServiceDescriptor | null
+  /** 'baked' (operator build) | 'runtime' (entered on the Connect screen) | null. */
+  descriptorSource: 'baked' | 'runtime' | null
 }
 
 // The preload surface (main/preload.cjs).

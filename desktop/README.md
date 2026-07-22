@@ -11,6 +11,11 @@ re-seeds to other viewers.
   behind a narrow IPC bridge (the worklet message protocol).
 - Saved credentials are wrapped with Electron `safeStorage` (DPAPI); the password
   never returns to the renderer.
+- **Two flavors from one codebase**: package with `config/service.json` present
+  for an **operator build** (panel key baked in), or without it for the **public
+  build** — first run shows a Connect screen where the viewer enters their
+  operator's panel public key + account, and it persists (*Settings → Change
+  service…* forgets it).
 - Private package — never published to npm.
 
 Quick start (from the repo root):

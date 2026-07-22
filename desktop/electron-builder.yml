@@ -22,8 +22,13 @@ files:
   - package.json
 extraResources:
   # The operator service descriptor (gitignored — per-deployment, never in the repo).
-  - from: config/service.json
-    to: config/service.json
+  # Directory+filter form so a PUBLIC build — packaged with NO config/service.json —
+  # simply bakes nothing and the app opens on the Connect screen (runtime key entry);
+  # with the file present this is the operator build (key baked, no Connect screen).
+  - from: config
+    to: config
+    filter:
+      - service.json
 # The engine's native modules (sodium-native, udx-native, …) are N-API prebuilds:
 # no rebuild against Electron needed, but .node files cannot load from inside asar.
 asarUnpack:

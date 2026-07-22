@@ -47,8 +47,12 @@ export class EngineHost {
    * @param {object} opts.safeStorage Electron safeStorage (DPAPI credential wrap)
    * @param {(msg: object) => void} opts.onMessage  out-message sink (broadcast to windows)
    */
-  constructor ({ descriptor, userData, safeStorage, onMessage }) {
+  constructor ({ descriptor, descriptorSource = descriptor ? 'baked' : null, userData, safeStorage, onMessage }) {
     this.descriptor = descriptor
+    // 'baked' (operator build: config shipped in the artifact) or 'runtime' (public
+    // build: the Connect screen persisted it) — Settings offers "Change service"
+    // only for the runtime kind.
+    this.descriptorSource = descriptorSource
     this.userData = userData
     this.safeStorage = safeStorage
     this.send = (msg) => { try { onMessage(msg) } catch {} }
@@ -181,7 +185,8 @@ export class EngineHost {
       creds: p.credsUser ? { username: p.credsUser } : null,
       favorites: p.favorites,
       smoothZapping: p.smoothZapping,
-      descriptor: publicDescriptor(this.descriptor)
+      descriptor: this.descriptor ? publicDescriptor(this.descriptor) : null,
+      descriptorSource: this.descriptorSource
     }
   }
 

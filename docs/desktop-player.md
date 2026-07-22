@@ -66,7 +66,27 @@ behaviors on hls.js, and they matter for any custom host:
 
 ---
 
-## 2. Run from the repo (development)
+## 2. Two flavors, one codebase
+
+The app resolves its service descriptor from two sources, which is the whole
+difference between the distribution flavors (mirroring the phone app's
+baked-vs-runtime descriptor paths):
+
+1. **Operator build** — `config/service.json` exists at build time and is baked
+   into the artifact. The app boots straight to splash/login; viewers never see a
+   key. One build per deployment, like a branded APK.
+2. **Public build** — packaged with **no** `service.json`. First run opens a
+   **Connect screen**: the viewer enters the three things any Aliran operator
+   hands out — the **panel public key**, a **username**, and a **password** — and
+   the app connects over the DHT, signs in, and persists the key in the user
+   profile (`aliran-service.json` under the app's user-data dir). Every later
+   launch auto-authorizes like an operator build. *Settings → Change service…*
+   forgets the key + saved sign-in and restarts to the Connect screen.
+
+A baked descriptor always wins over a runtime-entered one, so an operator build
+ignores any previously stored key on the machine.
+
+## 3. Run from the repo (development)
 
 ```sh
 npm install                     # repo root — desktop/ is a workspace member
@@ -79,7 +99,7 @@ npx electron .
 `config/service.json` is the same operator service-descriptor contract as the
 phone app (panel public key + optional branding colors/wallpaper/logo + section
 toggles) and is gitignored — one descriptor per deployment. Without it the app
-starts to a setup hint.
+opens on the Connect screen (i.e. dev runs behave like the public flavor).
 
 Keyboard map (the D-pad patterns on desktop keys):
 
@@ -93,15 +113,17 @@ The browse overlay auto-hides after 6 s idle (playback is never interrupted by
 browsing); the bottom bar and the mouse cursor fade over clean video and return on
 any activity.
 
-## 3. Package (installer + portable)
+## 4. Package (installer + portable)
 
 ```sh
 cd desktop
 npm run dist        # electron-builder → dist/Aliran Setup <v>.exe + Aliran-<v>-portable.exe
 ```
 
-- Packaging **bakes `config/service.json` into the artifact** (an extra resource,
-  like the phone APK bundles its descriptor) — a build is per-deployment. The
+- The flavor is decided by what's on disk when you package: with
+  `config/service.json` present you get an **operator build** (the descriptor is
+  baked as an extra resource, like the phone APK bundles its descriptor); with it
+  absent you get the **public build** (Connect screen on first run). The
   installer is per-user (no admin prompt); the portable exe runs from anywhere.
 - **The builds are unsigned.** There is no code-signing certificate, so Windows
   SmartScreen will show "Windows protected your PC" with an unknown publisher on
@@ -114,7 +136,7 @@ npm run dist        # electron-builder → dist/Aliran Setup <v>.exe + Aliran-<v
   `desktop/electron-builder.yml` and the colors/name flow from the descriptor at
   runtime.
 
-## 4. Codecs (what this player can decode)
+## 5. Codecs (what this player can decode)
 
 The engine passes streams through untouched (`copy` end to end), so playback is
 bounded by what Chromium/MSE on the *host machine* can decode:
@@ -135,13 +157,13 @@ In-stream **subtitle/CC and audio tracks** are selectable from the `CC` button /
 `c` key (hls.js reports the tracks; selection is by index — flat and reliable,
 unlike the ExoPlayer group-index pitfall the phone app works around).
 
-## 5. Troubleshooting
+## 6. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| Setup hint at start | No `config/service.json` beside the app (dev) or baked into it (packaged build with the descriptor missing at build time). |
-| Login spins ~1 min then "Cannot reach the service" | The DHT is still unreachable — check the network; the main process already retried the transient window for you. |
-| SmartScreen blocks first run | Unsigned build (see §3): *More info → Run anyway*. |
+| Connect screen at start | The build has no baked descriptor (public flavor / dev without `config/service.json`) — enter the operator's panel key + account; it persists. |
+| Login/Connect spins ~1 min then "Cannot reach the service" | The DHT is unreachable — check the network — or (public flavor) the panel key is wrong/mistyped; the main process already retried the transient window for you. |
+| SmartScreen blocks first run | Unsigned build (see §4): *More info → Run anyway*. |
 | A channel shows the codec error | The host GPU can't decode that channel's codec (usually HEVC on an older PC) — every other channel keeps working. |
 | Frequent `store:reset` status lines | The disposable replica cache self-healed after unclean exits; if constant, check disk health/space under the app's user-data dir. |
 | Two copies fight over the store | The app is single-instance per user-data dir by design; a second launch focuses the first window. |

@@ -1893,3 +1893,28 @@ extraction silently produced only `locales/` on this box (manual
 pinned when electron is hoisted to the workspace root; the packaged and dev apps
 share `%APPDATA%\aliran-desktop` (userData follows package.json `name`), so the
 single-instance lock spans them — close one before launching the other.
+
+### S35 follow-up — the PUBLIC flavor: runtime panel-key entry (verified)
+
+Same-day user decision: the baked-descriptor build is the *operator* ("aliran
+ops") flavor; the public distribution must let anyone running their own
+panel+broadcaster enter **their** panel public key + account in the app itself.
+Implemented as the desktop version of the phone app's documented
+runtime-descriptor path, one codebase: descriptor resolution is now baked
+(resource/dev config, always wins) → runtime (`aliran-service.json` in userData,
+persisted by the new **Connect screen**) → none (the Connect screen: panel key +
+username + password — the exact three artifacts §2 of the SDK guide says an
+operator hands out). `set-service` validates the key (64 hex), persists, boots
+the engine, and the normal main-side retried login takes over; *Settings →
+Change service…* (runtime flavor only) forgets the key + credentials and
+relaunches clean. Packaging tolerates the missing `service.json` via the
+directory+filter `extraResources` form — `npm run dist` with the file = operator
+build, without = public build. Verified in dev and on the packaged build:
+first-run Connect → key+creds → live playback; relaunch → auto-authorize
+straight to live; Change service → clean Connect with both files gone; the
+operator build untouched (boots to sign-in, never shows Connect). Screenshot 13
+(public Connect screen) added to `aliran-ops/s35-screenshots/`; both flavors'
+installers + portables staged in `aliran-ops/s35-build/`. One diagnosis from the
+earlier session upgraded: the portable exe's "instant exit" was the
+single-instance lock against the still-running dev app (shared userData), not a
+packaging fault.

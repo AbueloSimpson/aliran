@@ -81,6 +81,16 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
 
       <button className="signout" onClick={signOut}>Sign out</button>
       <div className="signout-hint">Sign out forgets the saved sign-in on this device. · Esc back</div>
+
+      {/* Public build only (the runtime-entered service): forget the panel key +
+          credentials and restart to the Connect screen. Operator builds bake their
+          descriptor into the artifact — nothing to change. */}
+      {backend.descriptorSource === 'runtime' && (
+        <>
+          <button className="change-service" onClick={() => backend.clearService()}>Change service…</button>
+          <div className="signout-hint">Forgets this service's panel key and sign-in, then restarts the app.</div>
+        </>
+      )}
     </div>
   )
 }

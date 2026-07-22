@@ -208,8 +208,11 @@ Android phone + Android TV).
   remounts, the frozen-live-edge resync ladder with `reconnectActiveFeed()`
   escalation, and a clean per-channel error for codecs the host GPU can't decode
   (HEVC support = platform hardware decode). electron-builder packaging: NSIS
-  installer + portable exe, the service descriptor baked as a resource (unsigned —
-  the SmartScreen reality is documented). Guide:
+  installer + portable exe (unsigned — the SmartScreen reality is documented), in
+  **two flavors from one codebase**: the operator build bakes `service.json` as a
+  resource; the public build ships keyless and opens on a **Connect screen**
+  (panel public key + account, persisted in the profile, with *Settings → Change
+  service…* to forget it). Guide:
   [docs/desktop-player.md](docs/desktop-player.md).
 
 **Repeater (`repeater/`)**

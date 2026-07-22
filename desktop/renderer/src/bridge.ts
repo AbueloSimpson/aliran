@@ -23,6 +23,7 @@ class DesktopBackend {
   prefsLoaded = false
   ready = false
   descriptor: ServiceDescriptor | null = null
+  descriptorSource: 'baked' | 'runtime' | null = null
 
   private listeners = new Set<(m: BackendMessage) => void>()
 
@@ -43,6 +44,7 @@ class DesktopBackend {
     this.smoothZapping = s.smoothZapping
     this.prefsLoaded = true
     this.descriptor = s.descriptor
+    this.descriptorSource = s.descriptorSource ?? (s.descriptor ? 'baked' : null)
   }
 
   onMessage (fn: (m: BackendMessage) => void) {
@@ -53,6 +55,13 @@ class DesktopBackend {
   login (username: string, password: string) { this.send({ username, password }) }
   /** Sign in with the credentials the main process has saved (splash auto-auth). */
   autoLogin () { this.send({ type: 'auto-login' }) }
+  /** Public flavor: submit the operator's panel key (Connect screen). Main validates,
+   *  persists it in userData, boots the engine, and answers with {type:'service'}
+   *  (or a {type:'login-error'} for an invalid key). */
+  setService (panelPubKey: string, name?: string) { this.send({ type: 'set-service', panelPubKey, name }) }
+  /** Forget the runtime-entered service + saved credentials and relaunch clean.
+   *  No-op on operator builds (the baked descriptor is not clearable). */
+  clearService () { this.send({ type: 'service-clear' }) }
   play (streamId: string) { this.send({ streamId }) }
   /** Tear down the active feed's swarm connections and dial fresh (stall-ladder
    *  escalation — see HlsVideo). */
@@ -75,6 +84,7 @@ class DesktopBackend {
 
   private dispatch (msg: BackendMessage) {
     if (msg.type === 'ready') this.ready = true
+    if (msg.type === 'service') { this.descriptor = msg.descriptor; this.descriptorSource = 'runtime' }
     if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.prefsLoaded = true }
     if (msg.type === 'streams') this.streams = msg.streams
     if (msg.type === 'port') {
