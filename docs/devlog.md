@@ -1969,3 +1969,37 @@ again") — and bulk P2P segment flow through that relayed path only sustains
 low bitrates, so the demo channels were patched to 300 kbps for the video
 verification (real devices on a LAN or against a remote host don't hit
 either; the S22 + VPS combination never has).
+
+### Desktop player on macOS — configuration-only packaging, built on hosted CI
+
+An Apple-platform feasibility audit of the installed dependency tree settled
+three questions at once. **macOS: yes, with zero engine work** — every native
+module the engine loads in the Electron main process (both sodium-native
+majors, udx-native, fs-native-extensions, crc/quickbit/rabin/simdle) already
+ships darwin arm64 + x64 N-API prebuilds, and the app code was already
+platform-clean (`safeStorage` is Keychain on macOS, DPAPI on Windows; the
+build script is plain esbuild). **Apple TV: no** — the Bare runtime and its
+addon toolchain have no tvOS targets at all (no `tvos-*` prebuilds anywhere,
+no tvOS slice in the bare-kit xcframework, and the linker rejects tvOS hosts),
+so a tvOS app could only be a CDN-only shell and is not pursued. **iOS: the
+engine is fully portable** (bare-kit ships an iOS xcframework and all twenty
+runtime addons carry complete `ios-*` prebuilds) — but iPhone distribution is
+App-Store-only with its own review and account costs, and the project decided
+not to pursue it for now.
+
+The macOS half shipped immediately because it is configuration only:
+`electron-builder.yml` gained a mac block (dmg + zip targets, the video app
+category, the `.icns` derived from the existing 512-px icon) with
+`identity: null` — there is no Apple Developer certificate, so builds carry
+only the ad-hoc signature arm64 requires and Gatekeeper blocks the first
+launch (*right-click → Open*), the macOS analogue of the SmartScreen note.
+A `dist:mac` script covers Macs locally, and a new manual-dispatch
+**`desktop-mac` workflow** builds on a hosted macOS runner — the repo carries
+no `config/service.json`, so CI artifacts are always the keyless **public**
+flavor by construction. First dispatch ran green end to end: root `npm ci`
+resolved the workspace SDK and every darwin prebuild with nothing compiling,
+and the runner produced all four artifacts (`Aliran-0.1.0-arm64.dmg`,
+`Aliran-0.1.0.dmg`, and the matching `-mac.zip` pair) with checksums in the
+run log. Honest scope note: the artifacts are CI-built and the packaging path
+is proven, but a first-launch pass on physical Apple hardware (Gatekeeper
+flow, login, P2P playback) is still pending access to a Mac.
