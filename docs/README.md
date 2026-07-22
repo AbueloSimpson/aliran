@@ -16,6 +16,7 @@ Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
 - [Configuration](configuration.md) — full config reference for every component
 - [Content management](content-management.md) — catalog, metadata, assets, redirect channels, VOD
 - [Client build](client-build.md) — build the Android (phone + TV) app
+- [Operator build walkthrough](operator-build-walkthrough.md) — end to end: your key + branding → custom APK and Windows exe
 - [Android app — viewer guide](android-viewer-guide.md) — install the public APK, connect, watch (phone + TV/D-pad)
 - [Desktop player (Windows)](desktop-player.md) — the Electron player, for operators/developers
 - [Desktop player — viewer guide](desktop-viewer-guide.md) — install and use the public desktop build

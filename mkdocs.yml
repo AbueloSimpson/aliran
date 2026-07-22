@@ -49,6 +49,7 @@ nav:
   - SDK installation & configuration: sdk-guide.md
   - Operator APIs & the SDK: ops-sdk-integration.md
   - White-label branding: white-label.md
+  - Operator build walkthrough: operator-build-walkthrough.md
   - User management: user-management.md
   - Reference: reference.md
   - Development log: devlog.md
