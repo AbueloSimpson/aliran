@@ -1756,7 +1756,7 @@ different hardware.
   `test:core`/`corrupt`/`args`/`retention`/`nettune`/`sources` PASS. Stage 2 (the
   app: Library rail, seek UI, S22 on-device) is a follow-up card.
 
-### S8a stage 2 — VOD in the app: Library rail, transport UI, live machinery interplay (verified on-emulator against production)
+### S8a stage 2 — VOD in the app: Library rail, transport UI, live machinery interplay (verified on the S22 over the live VPS)
 
 The app half of the on-demand library. The worklet (`client/backend/backend.mjs`)
 now forwards the engine's ResolveResult `type`/`durationSec` as
@@ -1788,21 +1788,35 @@ top. TV renders the row display-only — nothing focusable enters the D-pad zap
 path (the S7 lesson).
 
 Verified end-to-end against **production infrastructure** (the live VPS panel +
-its ~84-channel lineup) with the emulator (x86_64 release build; the S22 was
-off-network overnight — same APK, arm64, pending a phone spot-check): the panel
-image was updated to the stage-1 code (the vod record class predates deployment —
-a pre-update register would have landed in the old responder), a **library
-instance on the dev desktop** (the separate-hardware operator model) enrolled as
-publisher `library1` scoped `vod-*`, ingested a 3-minute h264/aac clip with a
-burnt-in running clock, registered `vod-clock-demo` (`type:'vod'`,
-`durationSec:180`, blobsKey enriched) and seeded it over the public DHT. On
-device: the Library rail + `3:00` badge rendered, the title played P2P from the
-desktop seed, and the burnt-in clock made the transport provable frame-exactly —
-elapsed `0:58` over frame `00:00:57.000`, **seek forward** to `00:02:07.840`,
-**seek back** to `00:00:32.120`, **pause held 36 s on the identical frame** with
-zero stall/resync/error lines (the old ladder would have fired at 12 s), resume
-from position, and a zap out to a live channel flipping the reply to
-`recordType:'live'` with the numbered tuning pill and no transport row. Client
+its ~84-channel lineup), first on the emulator and then **on the S22 itself**:
+the panel image was updated to the stage-1 code (the vod record class predates
+deployment — a pre-update register would have landed in the old responder), a
+**library instance on the dev desktop** (the separate-hardware operator model)
+enrolled as publisher `library1` scoped `vod-*`, ingested a 3-minute h264/aac
+clip with a burnt-in running clock, registered `vod-clock-demo` (`type:'vod'`,
+`durationSec:180`, blobsKey enriched) and seeded it over the public DHT. On the
+emulator (x86_64 release build): the Library rail + `3:00` badge rendered, the
+title played P2P from the desktop seed, and the burnt-in clock made the
+transport provable frame-exactly — elapsed `0:58` over frame `00:00:57.000`,
+**seek forward** to `00:02:07.840`, **seek back** to `00:00:32.120`, **pause
+held 36 s on the identical frame** with zero stall/resync/error lines (the old
+ladder would have fired at 12 s), resume from position, and a zap out to a live
+channel flipping the reply to `recordType:'live'` with the numbered tuning pill
+and no transport row. On the **physical S22** (arm64 release APK, chunked-push
+install over a USB link that flapped `authorizing→device→gone` all night — the
+detached-`pm install` and one-command-per-window lore carried it): the title
+played P2P from the desktop seed, transport elapsed `0:54` over frame
+`00:00:54.480`, **seek 0:54→2:27 frame-exact**, a missed tap let the title PLAY
+OUT — end-of-title parked on ▶ at `3:00/3:00` on the LAST frame with the bar
+held sticky and **no resync restart after 30+ s of a still playhead** (the
+strongest possible disarm proof), **replay-from-end** via the seek handle,
+**pause held 31 s frozen** + resume, and the logcat chain
+`chv-cl recordType:"live"` → `vod-clock-demo recordType:"vod"` → espn-east
+playing live — the full live→vod→live interplay on real hardware. Client
 suites: jest 11/11 (43 tests, incl. the new `AliranVideoVod` group pinning
 disarm/re-arm/seek and the catalog/row/bar vod cases), `tsc` clean, bundle
-regenerated and validated (main + 15 linked addons, zero `builtin:` refs).
+regenerated and validated (main + 15 linked addons, zero `builtin:` refs). The
+test title, its grants, and the session's temp admins were purged from the
+production panel afterwards (stop the library BEFORE the purge — its register
+heartbeat resurrects a purged record); publisher `library1` stays enrolled for
+future library deployments.
