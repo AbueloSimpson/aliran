@@ -166,6 +166,10 @@ ask; this patch is the app-side half of exactly that design).
 
 ### Native Android (Kotlin) — `aliran-kit`, one APK from Android 5.0
 
+> **Step-by-step version:** the [Kotlin SDK walkthrough](kotlin-sdk-walkthrough.md)
+> builds the whole host app — the incompatibility hook, the notice, the
+> dev-side CDN switch with complete code, and the P2P path.
+
 For apps that don't use React Native — or fleets below RN's own Android 7
 floor — **`sdk/android/`** in the repo is a native Kotlin SDK with the same
 engine and the same contracts, one APK, **minSdk 21 (Android 5.0)**:

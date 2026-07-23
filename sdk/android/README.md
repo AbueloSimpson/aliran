@@ -36,5 +36,6 @@ The demo needs a service descriptor: copy `demo/service.example.json` to
 `demo/src/main/assets/service.json` (gitignored) and fill in your panel public key
 and dev credentials.
 
-Full walkthrough, usage example, and the old-device TLS caveat:
-[SDK guide — Native Android (Kotlin)](https://abuelosimpson.github.io/aliran/sdk-guide/).
+Step-by-step host-app walkthrough (the incompatibility hook, the notice, the
+dev-side CDN switch with complete code, the P2P path, the old-device TLS
+caveat): **[Kotlin SDK walkthrough](https://abuelosimpson.github.io/aliran/kotlin-sdk-walkthrough/)**.

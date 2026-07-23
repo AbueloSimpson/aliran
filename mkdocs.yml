@@ -48,6 +48,7 @@ nav:
   - Desktop player — viewer guide: desktop-viewer-guide.md
   - Player SDK: sdk.md
   - SDK installation & configuration: sdk-guide.md
+  - Kotlin SDK walkthrough: kotlin-sdk-walkthrough.md
   - Operator APIs & the SDK: ops-sdk-integration.md
   - White-label branding: white-label.md
   - Operator build walkthrough: operator-build-walkthrough.md
