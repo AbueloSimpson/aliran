@@ -116,6 +116,12 @@ Windows. Start Metro **after** the build finishes.
   below 29 before ever touching the module. Sanity checks after a build:
   `aapt … | grep sdkVer` = 24, `unzip -l | grep libbare-kit` shows the engine
   aboard, `llvm-readelf -d libappmodules.so | grep NEEDED` has NO libbare-kit.
+  On-device proof: a Fire TV Stick 4K Max 1st gen (Fire OS 7.7 / Android 9 /
+  armeabi-v7a) runs the single APK silent-with-notice — the first Aliran build
+  that installs on that hardware class at all. ⚠ Stick storage: the ~300 MB
+  universal (4-ABI) APK fails `INSTALL_FAILED_INSUFFICIENT_STORAGE` even with
+  1.3 GB free — sideload sticks with the per-ABI build
+  (`-PreactNativeArchitectures=armeabi-v7a`, ~72 MB), which installs fine.
 - **Optional engine-less lean flavor (`ALIRAN_LEGACY=1`):** excludes
   `react-native-bare-kit` from autolinking (`client/react-native.config.js`)
   for old-device-only fleets (~55 MB/ABI smaller). Same minSdk 24.
