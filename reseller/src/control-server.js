@@ -260,6 +260,21 @@ export function startControlServer (ctx, opts = {}) {
       return sendJson(res, 201, await ctx.mutex(() => ctx.accounts.trial(me, b)))
     }
 
+    if (r1 === 'ops' && seg.length === 3 && ctx.sweeps) {
+      if (r2 === 'sweep' && req.method === 'POST') {
+        requireCap(me, 'ops:sweep')
+        return sendJson(res, 200, await ctx.sweeps.sweepNow())
+      }
+      if (r2 === 'reconcile' && req.method === 'POST') {
+        requireCap(me, 'ops:reconcile')
+        return sendJson(res, 200, await ctx.sweeps.reconcileNow())
+      }
+      if (r2 === 'reconcile' && req.method === 'GET') {
+        requireCap(me, 'ops:reconcile')
+        return sendJson(res, 200, ctx.sweeps.lastReport() || { never: true })
+      }
+    }
+
     if (r1 === 'credits' && seg.length === 3 && req.method === 'POST' && ctx.ledger) {
       const b = await readJson(req)
       if (r2 === 'mint') return sendJson(res, 200, await ctx.mutex(() => mint(ctx, me, b)))

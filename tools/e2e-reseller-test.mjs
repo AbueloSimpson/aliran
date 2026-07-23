@@ -55,6 +55,8 @@ try {
     argon2: fastArgon,
     daysPerMonth: 31,
     trialHours: 24,
+    reconcileRepair: true,
+    noSweeps: true, // driven through the ops routes, not wall-clock timers
     control: { host: '127.0.0.1', port: 0 },
     lockout: { threshold: 4, seconds: 60 },
     panel: { url: `http://127.0.0.1:${panelPort}`, username: 'reseller-svc', password: SVC_PASSWORD, timeoutMs: 4000 }
@@ -255,7 +257,48 @@ try {
   assert.strictEqual(r.status, 200, '401→re-login→retry path: ' + JSON.stringify(r.body))
   log('I: outage 502 fail-closed; same-port recovery; transparent re-login ✓')
 
-  log('\nPASS: reseller e2e (panel + hierarchy + credits + lifecycle + outage)')
+  // ===== J: the subscription clock (expiry sweep) + reconcile =====
+  r = await api('POST', '/api/ops/sweep', null, res1b)
+  assert.strictEqual(r.status, 403, 'sweep is admin-tier only')
+
+  // Trial from resx (fresh cap) + force-lapse it AND the paid loyal account.
+  r = await api('POST', '/api/trials', { name: 'shortlived', password: 'trial-pass-12', maxDevices: 1 }, resx)
+  assert.strictEqual(r.status, 201)
+  const records = svc.ctx.accounts.records()
+  records['rs.r1.loyal'].expiresAt = Date.now() - 1000
+  records['rs.rx.shortlived'].expiresAt = Date.now() - 1000
+  svc.ctx.accounts.save()
+
+  r = await api('POST', '/api/ops/sweep', null, boss)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.disabled, 2, `sweep disabled both lapsed accounts: ${JSON.stringify(r.body)}`)
+  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'disabled', 'paid lapse disabled panel-side')
+  assert.strictEqual((await pops.getUser(pctx, 'rs.rx.shortlived')).status, 'disabled', 'trial lapse disabled panel-side')
+
+  // Resume of a lapsed account is refused; renew re-activates with fresh coverage.
+  r = await api('POST', '/api/accounts/rs.r1.loyal/status', { status: 'active' }, res1b)
+  assert.strictEqual(r.status, 400, 'lapsed resume refused (renew instead)')
+  r = await api('POST', '/api/accounts/rs.r1.loyal/renew', { months: 1 }, res1b)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.status, 'active')
+  assert.ok(r.body.expiresAt > Date.now() + 30 * 86400000, 'renewal coverage from now')
+  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'active', 'panel re-activated by renew')
+
+  // Reconcile: an orphan panel user under our prefix gets flagged + disabled
+  // (never deleted); a status divergence heals toward the local clock.
+  await pops.createUser(pctx, 'rs.r1.ghost', 'ghost-pass-123')
+  await pops.setUserStatus(pctx, 'rs.r1.loyal', 'disabled') // divergence: local active+unlapsed
+  r = await api('POST', '/api/ops/reconcile', null, boss)
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.orphanPanel.includes('rs.r1.ghost'), 'orphan flagged')
+  assert.ok(r.body.statusFixed.some((f) => f.account === 'rs.r1.loyal' && f.to === 'active'), 'divergence detected')
+  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.ghost')).status, 'disabled', 'orphan disabled, not deleted')
+  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'active', 'local clock won')
+  r = await api('GET', '/api/ops/reconcile', null, boss)
+  assert.ok(r.body.ts && r.body.orphanPanel, 'report persisted + retrievable')
+  log('J: expiry sweep (paid + trial), lapsed-renew, reconcile orphan/divergence ✓')
+
+  log('\nPASS: reseller e2e (panel + hierarchy + credits + lifecycle + outage + sweeps)')
   await cleanup()
   process.exit(0)
 } catch (err) {

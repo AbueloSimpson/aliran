@@ -10,6 +10,7 @@ import { makeMutex } from './store.js'
 import { openLedger } from './ledger.js'
 import { makePanelClient } from './panel-client.js'
 import { makeAccounts } from './accounts.js'
+import { makeSweeps } from './sweeps.js'
 import { startControlServer } from './control-server.js'
 
 // Nested-aware config merge for tests/embedders: top-level scalars replace, the
@@ -32,6 +33,7 @@ export async function startReseller (overrides = {}) {
   ctx.ledger = openLedger(config.dataDir)
   ctx.panel = makePanelClient(config)
   ctx.accounts = makeAccounts(ctx)
+  ctx.sweeps = makeSweeps(ctx)
 
   const control = await startControlServer(ctx, {
     host: config.control.host,
@@ -41,11 +43,15 @@ export async function startReseller (overrides = {}) {
     loginVerifyTimeoutMs: overrides.loginVerifyTimeoutMs
   })
 
+  // Tests drive the sweeps through the ops routes instead of wall-clock timers.
+  if (!overrides.noSweeps) ctx.sweeps.start()
+
   return {
     config,
     ctx,
     control,
     async close () {
+      ctx.sweeps.stop()
       await control.close()
     }
   }
