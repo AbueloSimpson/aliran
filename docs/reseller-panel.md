@@ -42,8 +42,32 @@ only ever act within its own subtree.
 
 Credits are **months**: **1 credit = 1 month**, flat (the month length is
 `DAYS_PER_MONTH`, default 31). The number of devices an account allows
-(`maxDevices`) is a setting within each reseller's limit — it does **not** change
-the price.
+(`maxDevices`) does **not** change the price — and it is not a reseller choice
+at all: see the device policy below.
+
+## Device policy — admin-set, inherited
+
+How many simultaneous devices an account allows is **policy, owned by the admin
+tiers**, and it **inherits down the hierarchy**: a principal without an
+explicitly set `maxDevicesLimit` uses its parent's effective value (the root's
+fallback is `MAX_DEVICES_LIMIT_DEFAULT`). Resolution is **live** — change a
+super's value and every reseller under it that has no explicit value of its own
+follows instantly, no cascade writes — so a subtree stays consistent by
+construction.
+
+- **Admins/co-admins** set (or clear back to *inherit*) the value per principal
+  in the **Limits** dialog or via the API (`maxDevicesLimit: null` = inherit).
+  Supers see it read-only there; they still tune trial caps.
+- **New accounts and trials simply receive** the creator's effective policy
+  value — resellers cannot pass `maxDevices` (the API rejects it loudly).
+  Every principal view reports the effective value plus a
+  `maxDevicesLimitInherited` flag.
+- **Admin tiers keep a per-account override** (`POST
+  /api/accounts/:acct/max-devices`, or `maxDevices` on their own activations) —
+  an operator exception, not part of the reseller flow.
+- A policy change applies to **future** activations; existing accounts keep
+  their value until an admin overrides them (the reconcile sweep keeps the
+  panel matching each account's registry value either way).
 
 - **Minting** — only admins and co-admins create credits (from nothing). Even an
   admin's *transfer* debits their own balance, so the ledger always shows where

@@ -25,6 +25,10 @@ export const CAPS = {
   'principal:create:reseller': { roles: ['admin', 'co-admin', 'super'] },
   'principal:manage': { roles: ['admin', 'co-admin', 'super'] }, // scope via canManage
   'principal:limits': { roles: ['admin', 'co-admin', 'super'] },
+  // The device policy is ADMIN territory (user decision 2026-07-23): supers may
+  // still tune trial caps via principal:limits, but maxDevicesLimit is set only
+  // by admin tiers and INHERITED by everyone below (effectiveMaxDevices).
+  'principal:limits:devices': { roles: ['admin', 'co-admin'] },
   'credits:mint': { roles: ['admin', 'co-admin'] },
   'credits:adjust': { roles: ['admin', 'co-admin'] },
   'credits:transfer': { roles: ['admin', 'co-admin', 'super'] },
@@ -105,4 +109,22 @@ export function accountScope (principals, record) {
 
 export function inAccountScope (scope, ownerName) {
   return scope === '*' || scope.has(ownerName)
+}
+
+// The effective device policy for a principal: its own EXPLICIT maxDevicesLimit
+// if an admin set one, else the nearest ancestor's, else the configured default.
+// Dynamic — changing a super's value instantly applies to every reseller below
+// that has no explicit value of its own, so a subtree stays consistent without
+// cascade writes. The visited set guards a corrupted parent cycle.
+export function effectiveMaxDevices (principals, name, fallback) {
+  const visited = new Set()
+  let cur = name
+  while (cur != null && !visited.has(cur)) {
+    const p = principals[cur]
+    if (!p) break
+    if (Number.isInteger(p.maxDevicesLimit)) return p.maxDevicesLimit
+    visited.add(cur)
+    cur = p.parent
+  }
+  return fallback
 }

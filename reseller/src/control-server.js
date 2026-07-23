@@ -27,7 +27,7 @@ import {
   addPrincipal, removePrincipal, listPrincipals, getPrincipal, principalSummary,
   setPrincipalPassword, setPrincipalStatus, setPrincipalLimits
 } from './control-auth.js'
-import { can, requireCap, requireManage, canManage, accountScope, inAccountScope, ROLES } from './roles.js'
+import { can, requireCap, requireManage, canManage, accountScope, inAccountScope, effectiveMaxDevices, ROLES } from './roles.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
@@ -126,9 +126,11 @@ export function startControlServer (ctx, opts = {}) {
           const b = await readJson(req)
           if (!ROLES.includes(b.role)) throw new ControlError('bad-request', `invalid role (one of: ${ROLES.join(', ')})`)
           requireCap(me, 'principal:create:' + b.role)
-          // A super can never hand a child more room than it has itself.
+          // The device policy is admin-set + inherited — non-admin creators
+          // cannot seed an explicit value; their children simply inherit.
+          if (b.maxDevicesLimit !== undefined) requireCap(me, 'principal:limits:devices')
+          // A super can never hand a child more trial room than it has itself.
           if (me.role === 'super') {
-            if (b.maxDevicesLimit !== undefined && b.maxDevicesLimit > me.maxDevicesLimit) throw new ControlError('forbidden', 'child maxDevicesLimit may not exceed your own')
             if (b.trialDailyCap !== undefined && b.trialDailyCap > me.trialDailyCap) throw new ControlError('forbidden', 'child trialDailyCap may not exceed your own')
           }
           const created = await ctx.mutex(() => addPrincipal(ctx, {
@@ -141,7 +143,7 @@ export function startControlServer (ctx, opts = {}) {
             createdBy: me.name,
             note: b.note
           }))
-          return sendJson(res, 201, created)
+          return sendJson(res, 201, decoratePrincipal(ctx, created))
         }
       }
       if (seg.length === 3) {
@@ -168,11 +170,12 @@ export function startControlServer (ctx, opts = {}) {
         requireCap(me, 'principal:limits')
         requireManage(loadPrincipals(ctx.dataDir), me, r2)
         const b = await readJson(req)
+        // Supers tune trial caps only; the device policy is admin-set.
+        if (b.maxDevicesLimit !== undefined) requireCap(me, 'principal:limits:devices')
         if (me.role === 'super') {
-          if (b.maxDevicesLimit !== undefined && b.maxDevicesLimit > me.maxDevicesLimit) throw new ControlError('forbidden', 'child maxDevicesLimit may not exceed your own')
           if (b.trialDailyCap !== undefined && b.trialDailyCap > me.trialDailyCap) throw new ControlError('forbidden', 'child trialDailyCap may not exceed your own')
         }
-        return sendJson(res, 200, setPrincipalLimits(ctx, r2, b))
+        return sendJson(res, 200, decoratePrincipal(ctx, setPrincipalLimits(ctx, r2, b)))
       }
     }
 
@@ -363,9 +366,24 @@ function balanceOf (ctx, name) {
 
 function meView (ctx, me) {
   return {
-    ...principalSummary(me.name, me),
+    ...devicePolicyView(ctx, principalSummary(me.name, me)),
     balance: balanceOf(ctx, me.name),
     trialsUsedToday: ctx.ledger ? ctx.ledger.trialsToday(me.name) : 0
+  }
+}
+
+// Every principal view reports the EFFECTIVE device policy (resolved up the
+// parent chain), whether it is inherited, and what clearing the explicit value
+// WOULD resolve to (the Limits dialog's "inherit (N)" placeholder) — the raw
+// record keeps null for "inherit", an implementation detail callers never see.
+function devicePolicyView (ctx, summary) {
+  const principals = loadPrincipals(ctx.dataDir)
+  const fallback = ctx.config.maxDevicesLimitDefault
+  return {
+    ...summary,
+    maxDevicesLimit: effectiveMaxDevices(principals, summary.name, fallback),
+    maxDevicesLimitInherited: !Number.isInteger(summary.maxDevicesLimit),
+    maxDevicesLimitIfInherited: summary.parent ? effectiveMaxDevices(principals, summary.parent, fallback) : fallback
   }
 }
 
@@ -436,7 +454,7 @@ async function systemView (ctx) {
 
 function decoratePrincipal (ctx, summary) {
   return {
-    ...summary,
+    ...devicePolicyView(ctx, summary),
     balance: balanceOf(ctx, summary.name),
     accounts: ctx.accounts ? ctx.accounts.countOwnedBy(summary.name) : 0
   }

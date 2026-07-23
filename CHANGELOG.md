@@ -326,8 +326,12 @@ phone + Android TV, and the Windows desktop player).
   that the panel does not: the hierarchy (**admin → co-admin → super reseller →
   reseller**; the panel has no admin roles) and the **subscription clock** (the
   panel has no account expiry).
-- **Credits are months** (1 credit = 1 month, flat; device cap is a per-account
-  setting, not priced). Append-only JSONL ledger (the durable audit trail —
+- **Credits are months** (1 credit = 1 month, flat; devices are not priced —
+  the device count is an **admin-set policy inherited down the hierarchy**:
+  accounts receive their creator's effective `maxDevicesLimit`, resolved live up
+  the parent chain (`null` = inherit, root fallback = the env default); supers
+  and resellers cannot set it, and only admin tiers hold a per-account
+  override). Append-only JSONL ledger (the durable audit trail —
   the panel's activity feed is in-memory) with a global monotonic sequence and
   balances always **derived**, never stored: only admins/co-admins mint (even an
   admin's transfer debits their own balance), supers fund their resellers from

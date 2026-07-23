@@ -109,11 +109,14 @@
             <label>Months
               <input id="acct-months" type="number" min="1" max="120" value="1" style="width:80px">
             </label>
-            <label>Max devices
+            <!-- Admin tiers only — everyone else's accounts inherit the admin-set
+                 device policy (the note below shows the effective value). -->
+            <label id="acct-devices-label" hidden>Max devices
               <input id="acct-devices" type="number" min="1" value="1" style="width:90px">
             </label>
             <button class="btn primary" type="submit">Activate</button>
             <button class="btn" type="button" id="acct-trial-btn">Start trial</button>
+            <span class="form-note muted" id="acct-devices-note" hidden></span>
           </form>
         </details>
         <div class="card table-card">

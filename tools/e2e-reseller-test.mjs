@@ -126,12 +126,17 @@ try {
   log('C: mint/transfer + role gates + balances ✓')
 
   // ===== D: activation — fail-closed both ways =====
+  // Device policy: maxDevices is ADMIN-SET + inherited — a reseller cannot pass
+  // it (rejected before any panel/ledger effect), and an account simply receives
+  // the creator's effective policy value.
   r = await api('POST', '/api/accounts', { name: 'bob', password: 'bob-secret-99', months: 2, maxDevices: 2, grants: ['movie-night'] }, res1)
+  assert.strictEqual(r.status, 403, 'reseller-supplied maxDevices → 403 (admin-set policy)')
+  r = await api('POST', '/api/accounts', { name: 'bob', password: 'bob-secret-99', months: 2, grants: ['movie-night'] }, res1)
   assert.strictEqual(r.status, 201, 'activate: ' + JSON.stringify(r.body))
   assert.strictEqual(r.body.account, 'bob')
   const bobPanel = await pops.getUser(pctx, 'bob')
   assert.ok(bobPanel.grants.includes('movie-night'), 'panel user carries the extra grant')
-  assert.strictEqual(bobPanel.maxDevices, 2, 'panel maxDevices set')
+  assert.strictEqual(bobPanel.maxDevices, 3, 'panel maxDevices = inherited policy (root fallback 3)')
   r = await api('GET', '/api/me', null, res1)
   assert.strictEqual(r.body.balance, 4, 'activation debited 2')
 
@@ -142,9 +147,16 @@ try {
   r = await api('GET', '/api/me', null, res1)
   assert.strictEqual(r.body.balance, 4, '402 left the balance alone')
 
-  // maxDevices over the reseller's limit
-  r = await api('POST', '/api/accounts', { name: 'many', password: 'many-pass-1234', months: 1, maxDevices: 99 }, res1)
-  assert.strictEqual(r.status, 400, 'maxDevices over limit → 400')
+  // The policy chain is admin-owned and LIVE: supers cannot touch it, and an
+  // admin change on sup1 instantly flows to res1 (no cascade writes).
+  r = await api('POST', '/api/principals/res1/limits', { maxDevicesLimit: 5 }, sup1)
+  assert.strictEqual(r.status, 403, 'super cannot set the device policy')
+  r = await api('POST', '/api/principals/sup1/limits', { maxDevicesLimit: 2 }, boss)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.maxDevicesLimit, 2, 'explicit policy on sup1')
+  r = await api('GET', '/api/me', null, res1)
+  assert.strictEqual(r.body.maxDevicesLimit, 2, 'reseller inherits the new policy through sup1')
+  assert.strictEqual(r.body.maxDevicesLimitInherited, true, 'inheritance flagged')
   // scope: a fresh reseller under boss can't see res1's account
   r = await api('POST', '/api/principals', { username: 'resx', password: 'resx-pass-123', role: 'reseller' }, boss)
   const resx = await login('resx', 'resx-pass-123')
@@ -176,6 +188,11 @@ try {
   r = await api('GET', '/api/accounts/bob/devices', null, res1)
   assert.strictEqual(r.status, 200)
   assert.ok(Array.isArray(r.body), 'devices passthrough')
+  r = await api('POST', '/api/accounts/bob/max-devices', { maxDevices: 1 }, res1)
+  assert.strictEqual(r.status, 403, 'per-account maxDevices override is admin-only')
+  r = await api('POST', '/api/accounts/bob/max-devices', { maxDevices: 2 }, boss)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual((await pops.getUser(pctx, 'bob')).maxDevices, 2, 'admin per-account override applied')
   r = await api('POST', '/api/accounts/bob/password', { password: 'bob-newpass-1' }, res1)
   assert.strictEqual(r.status, 200, 'password passthrough')
   r = await api('POST', '/api/accounts/bob/grants', { streamId: 'sports-plus' }, res1)
@@ -188,6 +205,7 @@ try {
   r = await api('POST', '/api/trials', { name: 'taster', password: 'taster-pass-1' }, res1)
   assert.strictEqual(r.status, 201, 'trial: ' + JSON.stringify(r.body))
   assert.strictEqual(r.body.kind, 'trial')
+  assert.strictEqual((await pops.getUser(pctx, 'taster')).maxDevices, 2, 'trial received the inherited policy (sup1=2)')
   r = await api('GET', '/api/me', null, res1)
   assert.strictEqual(r.body.balance, 3, 'trial is free')
   assert.strictEqual(r.body.trialsUsedToday, 1)
@@ -213,9 +231,10 @@ try {
   const balAfterRefund = (await api('GET', '/api/me', null, res1)).body.balance
   assert.strictEqual(balAfterRefund, 2 + r.body.refunded, 'refund landed on the owner')
   // Admin-tier account ops are free and refundless.
-  r = await api('POST', '/api/accounts', { name: 'house', password: 'house-pass-12', months: 3 }, boss)
+  r = await api('POST', '/api/accounts', { name: 'house', password: 'house-pass-12', months: 3, maxDevices: 5 }, boss)
   assert.strictEqual(r.status, 201)
   assert.strictEqual(r.body.account, 'house', 'admin accounts are plain names too')
+  assert.strictEqual((await pops.getUser(pctx, 'house')).maxDevices, 5, 'admins may still set an explicit per-account value')
   assert.strictEqual((await api('GET', '/api/me', null, boss)).body.balance, 0, 'admin activation is free')
   r = await api('DELETE', '/api/accounts/house', null, boss)
   assert.strictEqual(r.body.refunded, 0, 'admin delete refunds nothing')
@@ -274,7 +293,7 @@ try {
   assert.strictEqual(r.status, 403, 'sweep is admin-tier only')
 
   // Trial from resx (fresh cap) + force-lapse it AND the paid loyal account.
-  r = await api('POST', '/api/trials', { name: 'shortlived', password: 'trial-pass-12', maxDevices: 1 }, resx)
+  r = await api('POST', '/api/trials', { name: 'shortlived', password: 'trial-pass-12' }, resx)
   assert.strictEqual(r.status, 201)
   const records = svc.ctx.accounts.records()
   records['loyal'].expiresAt = Date.now() - 1000

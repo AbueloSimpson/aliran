@@ -113,7 +113,10 @@ export function addPrincipal (ctx, { username, password, role, parent = null, ma
     role,
     root: !!root,
     parent,
-    maxDevicesLimit: Number.isInteger(maxDevicesLimit) ? maxDevicesLimit : ctx.config.maxDevicesLimitDefault,
+    // null = INHERIT the parent chain's device policy (roles.js
+    // effectiveMaxDevices; the root's fallback is maxDevicesLimitDefault).
+    // Only admin tiers may pass an explicit value — the routes gate that.
+    maxDevicesLimit: Number.isInteger(maxDevicesLimit) ? maxDevicesLimit : null,
     trialDailyCap: Number.isInteger(trialDailyCap) ? trialDailyCap : ctx.config.trialDailyCapDefault,
     createdAt: Date.now(),
     createdBy,
@@ -186,8 +189,13 @@ export function setPrincipalLimits (ctx, name, { maxDevicesLimit, trialDailyCap 
   const p = principals[name]
   if (!p) throw new ControlError('not-found', `no such principal: ${name}`)
   if (maxDevicesLimit !== undefined) {
-    if (!Number.isInteger(maxDevicesLimit) || maxDevicesLimit < 1 || maxDevicesLimit > 1000) bad('maxDevicesLimit must be an integer 1-1000')
-    p.maxDevicesLimit = maxDevicesLimit
+    // null clears the explicit value → the principal inherits again.
+    if (maxDevicesLimit === null) {
+      p.maxDevicesLimit = null
+    } else {
+      if (!Number.isInteger(maxDevicesLimit) || maxDevicesLimit < 1 || maxDevicesLimit > 1000) bad('maxDevicesLimit must be an integer 1-1000 (or null to inherit)')
+      p.maxDevicesLimit = maxDevicesLimit
+    }
   }
   if (trialDailyCap !== undefined) {
     if (!Number.isInteger(trialDailyCap) || trialDailyCap < 0 || trialDailyCap > 1000) bad('trialDailyCap must be an integer 0-1000')

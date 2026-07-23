@@ -24,6 +24,8 @@
 import path from 'path'
 import { ControlError } from './errors.js'
 import { readJsonFile, writeJsonFile } from './store.js'
+import { loadPrincipals } from './control-auth.js'
+import { effectiveMaxDevices } from './roles.js'
 
 // Same shape the panel itself enforces (panel/src/ops.js NAME_RE).
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
@@ -100,13 +102,22 @@ export function makeAccounts (ctx) {
     }
   }
 
-  function checkDeviceCap (me, maxDevices) {
-    if (maxDevices === undefined) return undefined
-    const cap = isAdminTier(me) ? 1000 : me.maxDevicesLimit
-    if (!Number.isInteger(maxDevices) || maxDevices < 1 || maxDevices > cap) {
-      throw new ControlError('bad-request', `maxDevices must be an integer 1-${cap}`)
+  // Device policy (user decision 2026-07-23): maxDevices is ADMIN-SET and
+  // inherited down the hierarchy — an account receives its creator's effective
+  // policy value, so every account in a subtree is consistent by construction.
+  // Only admin tiers may pass an explicit per-account value (an operator
+  // exception, not a reseller choice); anyone else supplying one is rejected
+  // loudly rather than silently corrected.
+  function resolveDevices (me, requested) {
+    const policy = effectiveMaxDevices(loadPrincipals(ctx.dataDir), me.name, ctx.config.maxDevicesLimitDefault)
+    if (requested === undefined) return policy
+    if (!isAdminTier(me)) {
+      throw new ControlError('forbidden', `maxDevices is set by your admin (your accounts get ${policy}) — omit it`)
     }
-    return maxDevices
+    if (!Number.isInteger(requested) || requested < 1 || requested > 1000) {
+      throw new ControlError('bad-request', 'maxDevices must be an integer 1-1000')
+    }
+    return requested
   }
 
   // Paid activation. Debits the ACTOR unless they're an admin tier (free, and
@@ -118,7 +129,7 @@ export function makeAccounts (ctx) {
     if (!Array.isArray(grants) || grants.some((g) => typeof g !== 'string')) throw new ControlError('bad-request', 'grants must be an array of streamIds')
     const acct = checkName(name)
     if (registry[acct] && registry[acct].status !== 'deleted') throw new ControlError('exists', `account "${acct}" already exists`)
-    const devices = checkDeviceCap(me, maxDevices)
+    const devices = resolveDevices(me, maxDevices)
     const pays = !isAdminTier(me)
     if (pays && ctx.ledger.balance(me.name) < months) {
       throw new ControlError('insufficient-credits', `balance ${ctx.ledger.balance(me.name)} < ${months}`)
@@ -140,7 +151,7 @@ export function makeAccounts (ctx) {
       kind: 'paid',
       status: 'active',
       expiresAt: now + months * monthMs(),
-      maxDevices: 1,
+      maxDevices: devices,
       extraGrants: [],
       createdAt: now,
       createdBy: me.name,
@@ -172,7 +183,7 @@ export function makeAccounts (ctx) {
     }
     const acct = checkName(name)
     if (registry[acct] && registry[acct].status !== 'deleted') throw new ControlError('exists', `account "${acct}" already exists`)
-    const devices = checkDeviceCap(me, maxDevices)
+    const devices = resolveDevices(me, maxDevices)
 
     openIntent(acct, me.name)
     try {
@@ -188,7 +199,7 @@ export function makeAccounts (ctx) {
       kind: 'trial',
       status: 'active',
       expiresAt: now + ctx.config.trialHours * 3600000,
-      maxDevices: 1,
+      maxDevices: devices,
       extraGrants: [],
       createdAt: now,
       createdBy: me.name,
@@ -258,10 +269,12 @@ export function makeAccounts (ctx) {
     return { account: acct, passwordChanged: true }
   }
 
+  // Per-account override — admin tiers only (the policy exception path; a
+  // reseller's accounts always carry the inherited policy value).
   async function setMaxDevices (me, acct, maxDevices) {
     const r = mustGet(acct)
-    const devices = checkDeviceCap(me, maxDevices)
-    if (devices === undefined) throw new ControlError('bad-request', 'maxDevices required')
+    if (maxDevices === undefined) throw new ControlError('bad-request', 'maxDevices required')
+    const devices = resolveDevices(me, maxDevices)
     await ctx.panel.req('POST', `/api/users/${encodeURIComponent(acct)}/max-devices`, { maxDevices: devices })
     r.maxDevices = devices
     r.panel = { lastSyncAt: Date.now(), lastError: null }

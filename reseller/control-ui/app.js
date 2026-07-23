@@ -187,6 +187,12 @@ async function boot () {
   $('#sys-block').hidden = !IS_ADMIN(me.role)
   $('#mint-panel').hidden = !IS_ADMIN(me.role)
   $('#ops-card').hidden = !IS_ADMIN(me.role)
+  // Device policy: admin-set + inherited. Admins get the field (prefilled with
+  // the policy); everyone else sees the read-only value their accounts receive.
+  $('#acct-devices-label').hidden = !IS_ADMIN(me.role)
+  $('#acct-devices-note').hidden = IS_ADMIN(me.role)
+  if (IS_ADMIN(me.role)) $('#acct-devices').value = me.maxDevicesLimit
+  else $('#acct-devices-note').textContent = `devices per account: ${me.maxDevicesLimit} (set by your admin)`
   setupPrincipalForm()
   showView('overview')
 }
@@ -405,19 +411,26 @@ $('#account-form').onsubmit = guard(async (e) => {
     name: $('#acct-name').value,
     password: $('#acct-pass').value,
     months: +$('#acct-months').value,
-    maxDevices: +$('#acct-devices').value
+    // Non-admins omit maxDevices — the account receives the inherited policy.
+    ...(IS_ADMIN(me.role) ? { maxDevices: +$('#acct-devices').value } : {})
   }
   const r = await api('POST', '/accounts', body)
   toast(`Activated ${r.account} (${r.expiresInDays}d)`)
   $('#account-form').reset()
+  if (IS_ADMIN(me.role)) $('#acct-devices').value = me.maxDevicesLimit
   await Promise.all([loadAccounts(acctQuery.page), refreshBalance()])
 })
 $('#acct-trial-btn').onclick = guard(async () => {
   const name = $('#acct-name').value
   if (!name) return toast('Enter a name first', true)
-  const r = await api('POST', '/trials', { name, password: $('#acct-pass').value || 'trial-' + Math.random().toString(36).slice(2, 10), maxDevices: +$('#acct-devices').value })
+  const r = await api('POST', '/trials', {
+    name,
+    password: $('#acct-pass').value || 'trial-' + Math.random().toString(36).slice(2, 10),
+    ...(IS_ADMIN(me.role) ? { maxDevices: +$('#acct-devices').value } : {})
+  })
   toast(`Trial ${r.account} started`)
   $('#account-form').reset()
+  if (IS_ADMIN(me.role)) $('#acct-devices').value = me.maxDevicesLimit
   await loadAccounts(acctQuery.page)
 })
 
@@ -542,10 +555,34 @@ function reclaimDialog (p) {
   }, { okLabel: 'Reclaim' })
 }
 function limitsDialog (p) {
-  const dev = inputEl({ type: 'number', min: '1', value: p.maxDevicesLimit })
   const trial = inputEl({ type: 'number', min: '0', value: p.trialDailyCap })
-  dialog(`Limits — ${p.name}`, [field('Max devices per account', dev), field('Trials per day', trial)], async () => {
-    await api('POST', `/principals/${encodeURIComponent(p.name)}/limits`, { maxDevicesLimit: +dev.value, trialDailyCap: +trial.value })
+  // The device policy is admin-set + inherited: supers see it read-only and can
+  // only tune the trial cap; admins set an explicit value or blank = inherit.
+  if (!IS_ADMIN(me.role)) {
+    dialog(`Limits — ${p.name}`, [
+      el('p', { className: 'dlg-note', textContent: `Devices per account: ${p.maxDevicesLimit}${p.maxDevicesLimitInherited ? ' (inherited)' : ''} — set by the admin.` }),
+      field('Trials per day', trial)
+    ], async () => {
+      await api('POST', `/principals/${encodeURIComponent(p.name)}/limits`, { trialDailyCap: +trial.value })
+      toast('Limits updated'); await loadPrincipals()
+    }, { okLabel: 'Save' })
+    return
+  }
+  const dev = inputEl({
+    type: 'number',
+    min: '1',
+    value: p.maxDevicesLimitInherited ? '' : p.maxDevicesLimit,
+    placeholder: `inherit (${p.maxDevicesLimitIfInherited})`
+  })
+  dialog(`Limits — ${p.name}`, [
+    field('Devices per account — blank = inherit' + (p.parent ? ` from ${p.parent}` : ''), dev),
+    el('p', { className: 'dlg-note', textContent: 'Inherited by every principal under this one; their new accounts receive this device count.' }),
+    field('Trials per day', trial)
+  ], async () => {
+    await api('POST', `/principals/${encodeURIComponent(p.name)}/limits`, {
+      maxDevicesLimit: dev.value === '' ? null : +dev.value,
+      trialDailyCap: +trial.value
+    })
     toast('Limits updated'); await loadPrincipals()
   }, { okLabel: 'Save' })
 }

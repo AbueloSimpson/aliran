@@ -6,7 +6,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import assert from 'assert'
-import { CAPS, ROLES, can, inSubtree, canManage, accountScope, inAccountScope } from '../reseller/src/roles.js'
+import { CAPS, ROLES, can, inSubtree, canManage, accountScope, inAccountScope, effectiveMaxDevices } from '../reseller/src/roles.js'
 import { openLedger } from '../reseller/src/ledger.js'
 import { makeMutex, readJsonFile, writeJsonFile } from '../reseller/src/store.js'
 import { addPrincipal } from '../reseller/src/control-auth.js'
@@ -60,6 +60,20 @@ console.log('A. roles')
   ok(scope instanceof Set && scope.has('sup1') && scope.has('res1') && !scope.has('res2'), 'accountScope = self + descendants')
   ok(accountScope(P, actorCo) === '*', 'admin tiers scope everything')
   ok(inAccountScope('*', 'anyone') && inAccountScope(scope, 'res1') && !inAccountScope(scope, 'res2'), 'inAccountScope')
+
+  // Device policy: admin-set + inherited (user decision 2026-07-23).
+  ok(!can(sup, 'principal:limits:devices') && can(co, 'principal:limits:devices'), 'device policy is admin-tier only')
+  const D = {
+    boss: { parent: null, maxDevicesLimit: null },
+    sup1: { parent: 'boss', maxDevicesLimit: 2 },
+    res1: { parent: 'sup1', maxDevicesLimit: null },
+    res2: { parent: 'boss', maxDevicesLimit: null }
+  }
+  ok(effectiveMaxDevices(D, 'sup1', 3) === 2, 'explicit value wins')
+  ok(effectiveMaxDevices(D, 'res1', 3) === 2, 'null inherits the nearest ancestor')
+  ok(effectiveMaxDevices(D, 'res2', 3) === 3, 'no explicit anywhere → configured fallback')
+  ok(effectiveMaxDevices(D, 'ghost', 3) === 3, 'unknown principal → fallback')
+  ok(effectiveMaxDevices({ a: { parent: 'b', maxDevicesLimit: null }, b: { parent: 'a', maxDevicesLimit: null } }, 'a', 7) === 7, 'parent cycle terminates → fallback')
 }
 
 // ---- B. ledger ----
