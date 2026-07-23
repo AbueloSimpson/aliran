@@ -97,21 +97,39 @@ older before any JS runs. Two pieces fix it:
    returns `false` by OS version alone — the SDK never consults, constructs,
    or loads the native module there — and the whole backend is inert:
    `start()` and every other method are safe no-ops, nothing throws, nothing
-   queues, no `onMessage` listener ever fires. Branch there:
+   queues, no `onMessage` listener ever fires. Branch there, and use the
+   SDK's ready-made **`<EngineNotice>`** screen in the unsupported branch —
+   brandable copy/colors, and an optional action button that is *your* seam
+   for offering the viewer an alternative method (your own CDN/HLS playback,
+   a help page — the SDK ships the notice and the switch, never the
+   delivery):
 
    ```tsx
+   import { AliranBackend, EngineNotice } from '@aliran/react-native'
+
    if (AliranBackend.isSupported()) {
      backend.start(bundle, { panelPubKey })   // full P2P path (Android 10+)
    } else {
-     mountYourLegacyMode()                    // your own CDN/HLS delivery
+     return (
+       <EngineNotice
+         title="Acme TV"
+         colors={{ background: '#0B1220', accent: '#0EA5E9' }}
+         actionLabel="Watch over the internet"
+         onAction={() => mountYourFallbackPlayer()}  // your own delivery
+       />
+     )
    }
    ```
 
+   Omit `onAction` and it's a plain informational screen (that's what the
+   shipped app does — it has no non-P2P delivery). The action `Pressable` is
+   D-pad focusable for TV.
+
 The shipped app is the working reference: `client/android/build.gradle`
-(`minSdk 24`), the patch in `client/patches/`, and the `isSupported()` branch
-in `client/src/App.tsx`. Verified with one APK on an Android 7 emulator
-(installs, runs, engine silent) and a modern one (engine boots to `ready`
-through the dlopen path).
+(`minSdk 24`), the patch in `client/patches/`, and the `isSupported()` +
+`<EngineNotice>` branch in `client/src/App.tsx`. Verified with one APK on an
+Android 7 emulator (installs, runs, engine silent) and a modern one (engine
+boots to `ready` through the dlopen path).
 
 **Optional lean flavor:** if you want a smaller APK for old-device-only fleets
 (the engine libraries are ~55 MB per ABI), excluding

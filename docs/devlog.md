@@ -2079,3 +2079,21 @@ Windows (silent crash on the package's `.cxx`/`build` junk; `--include`
 never matches, its internal paths are backslashed) — the patch was hand-rolled
 from an `npm pack` pristine tree with `git diff --no-index`, and the apply
 path verified by restoring pristine files and re-applying.
+
+### `<EngineNotice>` — the unsupported-device screen becomes an SDK export (verified)
+
+With single APKs installing on Android 7–9, every embedding app faces the
+same moment: `isSupported()` is false and the viewer needs to be told
+something — ideally with a way out. The SDK now exports **`EngineNotice`**, a
+purely presentational, brandable screen (title/message/colors/children) whose
+optional action button is the host's fallback seam: wire `onAction` to your
+own alternative method (your CDN/HLS playback, a help flow) and the button
+renders D-pad-focusable for TV; omit it and the screen is informational. The
+component is deliberately content-agnostic — per the project's standing rule
+the SDK ships the notice and the switch, never the delivery. The shipped app
+dogfoods it (its `EngineUnavailable` now just brands `EngineNotice` from the
+service theme), the SDK guide's single-APK recipe shows the pattern, and four
+new jest tests pin the contract (default copy, branding, seam-only-with-
+handler, default action label). Verified on the Android 7 emulator: the
+single APK renders the SDK-exported notice identically to the previous
+inline screen.

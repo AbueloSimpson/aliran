@@ -217,6 +217,13 @@ phone + Android TV, and the Windows desktop player).
   for old-device-only fleets. Android 6 is unreachable on this RN generation —
   RN 0.76+ prebuilds are built for API 24 and the build rejects a lower
   minSdk. Recipe: [docs/sdk-guide.md](docs/sdk-guide.md).
+- **`<EngineNotice>`** (`@aliran/react-native`) — ready-made, brandable
+  "engine can't run here" screen for the `!isSupported()` branch: honest
+  default copy about the Android 10+ floor, per-brand colors/copy/children,
+  and an optional D-pad-focusable action button as the host app's seam for
+  offering the viewer an alternative method (the SDK ships the notice and the
+  switch, never the delivery). The shipped app dogfoods it on its
+  unsupported-device screen.
 
 **Desktop player (`desktop/`)**
 - Windows desktop player (Electron): the engine (`@aliran/player-sdk`) runs in the

@@ -161,13 +161,14 @@ following only the docs.
   `AliranBackend.isSupported()` is false.
   True in-browser P2P (WebRTC/WebTransport swarm bridge) stays a separate research
   item on top of this.
-- ⬜ **SDK unsupported-device hook** — a first-class way for embedding apps to
-  surface the "engine can't run here" state (single-APK installs on Android
-  7–9) and offer the viewer an alternative: an exported, brandable
-  `<EngineNotice>`-style component plus a documented `isSupported()` seam and
-  example of switching to a dev-provided fallback method (their own CDN/HLS
-  path — or the web gateway above once it exists). The SDK stays
-  content-agnostic: it provides the notice and the switch, never the delivery.
+- ✅ **SDK unsupported-device hook** — `@aliran/react-native` exports
+  **`<EngineNotice>`**: a brandable "engine can't run here" screen for the
+  `!isSupported()` branch of single-APK builds (Android 7–9), with an optional
+  D-pad-focusable action button as the host's seam for offering the viewer an
+  alternative method (their own CDN/HLS path — or the web gateway above once
+  it exists). The SDK stays content-agnostic: it provides the notice and the
+  switch, never the delivery. The shipped app dogfoods it
+  ([guide](https://abuelosimpson.github.io/aliran/sdk-guide/)).
 - ⬜ Chat / interactivity alongside live streams
 - ⬜ **Multi-admin (Autobase) catalogs** — fully independent catalog writers, beyond
   the scoped-publisher model above

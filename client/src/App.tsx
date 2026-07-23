@@ -15,10 +15,9 @@
 // every color/string flows from the service descriptor via theme.ts).
 
 import React, { useEffect, useState } from 'react'
-import { StyleSheet, Text, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
-import { AliranBackend } from '@aliran/react-native'
+import { AliranBackend, EngineNotice } from '@aliran/react-native'
 import { backend } from './worklet'
 import { hasBakedKey, loadServiceDescriptor } from './config'
 import { theme } from './theme'
@@ -58,37 +57,23 @@ try { NetInfo = require('@react-native-community/netinfo').default } catch { Net
 // isSupported() and mount your own legacy/CDN mode in the unsupported branch.
 const engineSupported = AliranBackend.isSupported()
 
+// The SDK's ready-made notice, branded from the service theme (dogfooding the
+// exported component; hosts with a fallback method also pass actionLabel/onAction —
+// this app has no non-P2P delivery, so it shows the notice alone).
 function EngineUnavailable () {
   return (
-    <View style={styles.unsupportedRoot}>
-      <Text style={styles.unsupportedTitle}>{loadServiceDescriptor().name}</Text>
-      <Text style={styles.unsupportedBody}>
-        This device can't run the P2P engine — Android 10 or newer is required.
-      </Text>
-    </View>
+    <EngineNotice
+      title={loadServiceDescriptor().name}
+      colors={{
+        background: theme.colors.background,
+        text: theme.colors.text,
+        textDim: theme.colors.textDim,
+        accent: theme.colors.primary,
+        onAccent: theme.colors.onPrimary
+      }}
+    />
   )
 }
-
-const styles = StyleSheet.create({
-  unsupportedRoot: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.safeX,
-    backgroundColor: theme.colors.background
-  },
-  unsupportedTitle: {
-    color: theme.colors.text,
-    fontSize: theme.type.title,
-    fontWeight: '700',
-    marginBottom: theme.spacing(1)
-  },
-  unsupportedBody: {
-    color: theme.colors.textDim,
-    fontSize: theme.type.body,
-    textAlign: 'center'
-  }
-})
 
 export default function App () {
   const [ready, setReady] = useState(false)
