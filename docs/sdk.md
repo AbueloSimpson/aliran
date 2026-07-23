@@ -8,7 +8,7 @@ dogfoods.
 | Package | What it is | Runs in |
 |---|---|---|
 | [`@aliran/player-sdk`](https://github.com/AbueloSimpson/aliran/tree/main/sdk) | Headless player engine: DHT connect, OPRF login, catalog replication, entitled-feed serving on a localhost HLS URL | Node ≥ 20 and the Bare runtime |
-| [`@aliran/react-native`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/react-native) | Drop-in `<AliranVideo>` + `AliranBackend` worklet host on `react-native-video` / `react-native-bare-kit` | React Native — phone + TV, Android 7+ (P2P engine active on Android 10+; silent below) |
+| [`@aliran/react-native`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/react-native) | Drop-in `<AliranVideo>` + `AliranBackend` worklet host on `react-native-video` / `react-native-bare-kit`, plus `<EngineNotice>` for the unsupported-device branch | React Native — phone + TV, Android 7+ (P2P engine active on Android 10+; silent below, with a ready-made notice + fallback seam) |
 | [`@aliran/core`](https://github.com/AbueloSimpson/aliran/tree/main/core) | The shared crypto both sit on (OPRF, Argon2id verifiers, key sealing, tokens) | Node + Bare |
 
 All three are MIT, ship from the monorepo, and are packaged for the npm registry

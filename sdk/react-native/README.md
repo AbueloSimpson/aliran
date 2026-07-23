@@ -87,9 +87,42 @@ bare-kit lazy-load patch (ships in the reference app,
 `libbare-kit.so` dependency into an API-29-gated `dlopen`), set `minSdk 24`,
 and gate on `AliranBackend.isSupported()`: `true` on Android 10+ (full P2P),
 `false` below — where the backend stays **silently inactive** (`start()` and
-every method are safe no-ops; no message ever fires) and your app mounts its
-own legacy/CDN mode. Below Android 10 no P2P data is reachable at all. Recipe +
-details in the [SDK guide](https://abuelosimpson.github.io/aliran/sdk-guide/).
+every method are safe no-ops; no message ever fires). Below Android 10 no P2P
+data is reachable at all, so in that branch your app offers its own method —
+and the SDK ships the screen for it, **`<EngineNotice>`**:
+
+```tsx
+import React, { useState } from 'react'
+import { AliranBackend, EngineNotice } from '@aliran/react-native'
+import Video from 'react-native-video'
+
+export default function App () {
+  const [fallback, setFallback] = useState(false)
+
+  if (!AliranBackend.isSupported()) {
+    // Engine can't run here (Android 7-9). Offer your own delivery instead —
+    // e.g. plain HLS from your CDN via ExoPlayer; the SDK never provides content.
+    if (fallback) {
+      return <Video source={{ uri: 'https://cdn.example.com/live/main.m3u8' }} style={{ flex: 1 }} />
+    }
+    return (
+      <EngineNotice
+        title="Acme TV"
+        colors={{ background: '#0B1220', accent: '#0EA5E9' }}   // your brand
+        actionLabel="Watch over the internet"                    // omit both to
+        onAction={() => setFallback(true)}                       // hide the button
+      />
+    )
+  }
+
+  return <YourNormalP2PApp />  // backend.start(...) etc — full engine (Android 10+)
+}
+```
+
+The action button is D-pad focusable for TV. This exact pattern — notice →
+button → plain-HLS fallback — is verified on a Fire OS 7 stick (Android 9).
+Recipe + details in the
+[SDK guide](https://abuelosimpson.github.io/aliran/sdk-guide/).
 Ships TypeScript source (Metro consumes it
 directly); if the package lives outside your app root (monorepo / `file:` dep), add
 its path to Metro `watchFolders` and map its peers in `tsconfig` paths — see

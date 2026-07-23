@@ -104,26 +104,42 @@ older before any JS runs. Two pieces fix it:
    a help page — the SDK ships the notice and the switch, never the
    delivery):
 
-   ```tsx
-   import { AliranBackend, EngineNotice } from '@aliran/react-native'
+   Complete working example — this exact pattern (notice → button → plain-HLS
+   fallback via ExoPlayer) is verified on a Fire OS 7 stick (Android 9):
 
-   if (AliranBackend.isSupported()) {
-     backend.start(bundle, { panelPubKey })   // full P2P path (Android 10+)
-   } else {
-     return (
-       <EngineNotice
-         title="Acme TV"
-         colors={{ background: '#0B1220', accent: '#0EA5E9' }}
-         actionLabel="Watch over the internet"
-         onAction={() => mountYourFallbackPlayer()}  // your own delivery
-       />
-     )
+   ```tsx
+   import React, { useState } from 'react'
+   import { AliranBackend, EngineNotice } from '@aliran/react-native'
+   import Video from 'react-native-video'
+
+   export default function App () {
+     const [fallback, setFallback] = useState(false)
+
+     if (!AliranBackend.isSupported()) {
+       // Engine can't run here (Android 7-9): offer YOUR delivery instead —
+       // e.g. plain HLS from your CDN. The SDK never provides the content.
+       if (fallback) {
+         return <Video source={{ uri: 'https://cdn.example.com/live/main.m3u8' }} style={{ flex: 1 }} />
+       }
+       return (
+         <EngineNotice
+           title="Acme TV"                                      // your brand
+           colors={{ background: '#0B1220', accent: '#0EA5E9' }}
+           actionLabel="Watch over the internet"
+           onAction={() => setFallback(true)}                   // the seam
+         />
+       )
+     }
+
+     // Full P2P path (Android 10+): backend.start(bundle, { panelPubKey }), etc.
+     return <YourNormalP2PApp />
    }
    ```
 
-   Omit `onAction` and it's a plain informational screen (that's what the
-   shipped app does — it has no non-P2P delivery). The action `Pressable` is
-   D-pad focusable for TV.
+   Omit `actionLabel`/`onAction` and it's a plain informational screen (that's
+   what the shipped app does — it has no non-P2P delivery). The action
+   `Pressable` is D-pad focusable for TV, and `message`/`children` let you
+   replace or extend the copy per brand.
 
 The shipped app is the working reference: `client/android/build.gradle`
 (`minSdk 24`), the patch in `client/patches/`, and the `isSupported()` +
