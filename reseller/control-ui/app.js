@@ -163,12 +163,12 @@ $('#login-form').onsubmit = guard(async (e) => {
 // ---- navigation ----
 function showView (name) {
   closeRowMenu(false)
-  clearInterval(sysTimer) // the System poller runs only while its view is open
+  clearInterval(sysTimer) // the system poller runs only while Overview is open
   $$('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.view === name))
   $$('.view').forEach((v) => { v.hidden = v.dataset.view !== name })
-  $('#view-title').textContent = { overview: 'Overview', accounts: 'Accounts', resellers: 'Resellers', ledger: 'Ledger', system: 'System', settings: 'Settings' }[name]
+  $('#view-title').textContent = { overview: 'Overview', accounts: 'Accounts', resellers: 'Resellers', ledger: 'Ledger', settings: 'Settings' }[name]
   $('#app-view').classList.remove('side-open')
-  const loaders = { overview: loadOverview, accounts: loadAccounts, resellers: loadPrincipals, ledger: () => loadLedger(true), system: startSystem }
+  const loaders = { overview: loadOverview, accounts: loadAccounts, resellers: loadPrincipals, ledger: () => loadLedger(true) }
   if (loaders[name]) loaders[name]()
 }
 $$('.nav-item').forEach((n) => { n.onclick = () => showView(n.dataset.view) })
@@ -184,7 +184,7 @@ async function boot () {
   $('#who-avatar').textContent = (me.name[0] || '?').toUpperCase()
   $('#bal').textContent = me.balance
   $$('.nav-item[data-cap="manage"]').forEach((n) => { n.hidden = !CAN_MANAGE.has(me.role) })
-  $$('.nav-item[data-cap="admin"]').forEach((n) => { n.hidden = !IS_ADMIN(me.role) })
+  $('#sys-block').hidden = !IS_ADMIN(me.role)
   $('#mint-panel').hidden = !IS_ADMIN(me.role)
   $('#ops-card').hidden = !IS_ADMIN(me.role)
   setupPrincipalForm()
@@ -229,6 +229,9 @@ async function loadOverview () {
     $('#reconcile-summary').textContent =
       `${new Date(r.ts).toLocaleString()} — checked ${r.checked}, orphans ${r.orphanPanel}, missing ${r.missingPanel}, status fixed ${r.statusFixed}, errors ${r.errors}`
   } else rc.hidden = true
+  // Admin tiers get the system diagnostics on the same landing view — one ops
+  // dashboard on login. (Non-admins never call /api/system: it would 403.)
+  if (IS_ADMIN(me.role)) startSystem()
 }
 
 // ---- accounts (server-driven: search/filter/sort/paging all happen in the API,
@@ -611,9 +614,10 @@ $('#mint-form').onsubmit = guard(async (e) => {
   toast('Minted'); $('#mint-form').reset(); await Promise.all([loadLedger(true), refreshBalance()])
 })
 
-// ---- system (admin tiers): panel link + service process + host machine.
-// Polled every 5 s while the view is open; the poller dies on first error so a
-// dropped session can't drum the toast. ----
+// ---- system diagnostics (admin tiers) — the Overview's System section: panel
+// link + service process + host machine. Polled every 5 s while Overview is
+// open; the poller dies on first error so a dropped session can't drum the
+// toast. ----
 let sysTimer
 function startSystem () {
   guard(loadSystem)()

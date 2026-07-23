@@ -34,7 +34,6 @@
       <a class="nav-item" data-view="accounts">Accounts</a>
       <a class="nav-item" data-view="resellers" data-cap="manage" hidden>Resellers</a>
       <a class="nav-item" data-view="ledger">Ledger</a>
-      <a class="nav-item" data-view="system" data-cap="admin" hidden>System</a>
       <a class="nav-item" data-view="settings">Settings</a>
     </nav>
     <!-- Account block: identity + balance as aligned text rows (no chip pills). -->
@@ -64,9 +63,32 @@
     </header>
 
     <main>
-      <!-- Overview -->
+      <!-- Overview: business KPIs, then (admin tiers) the system diagnostics —
+           one ops dashboard on login instead of a separate System page. -->
       <section class="view" data-view="overview">
         <div class="tiles" id="tiles"></div>
+        <div id="sys-block" hidden>
+          <h3 class="section-head">System</h3>
+          <div class="tiles" id="sys-tiles"></div>
+          <div class="sys-grid">
+            <div class="card pad sys-card">
+              <h3>Panel connection</h3>
+              <div class="kv" id="sys-panel"></div>
+            </div>
+            <div class="card pad sys-card">
+              <h3>Service process</h3>
+              <div class="kv" id="sys-service"></div>
+            </div>
+            <div class="card pad sys-card">
+              <h3>Host machine</h3>
+              <div class="kv" id="sys-host"></div>
+            </div>
+          </div>
+          <p class="hint muted sys-foot">
+            <span id="sys-updated"></span> · refreshes every 5 s while open
+            <button class="btn ghost small" id="sys-refresh">Refresh now</button>
+          </p>
+        </div>
         <div class="card table-card" id="reconcile-card" hidden>
           <div class="table-toolbar"><h3>Last reconcile</h3></div>
           <div class="pad" id="reconcile-summary"></div>
@@ -228,29 +250,6 @@
             <button class="btn small" id="ledger-more">Load more</button>
           </div>
         </div>
-      </section>
-
-      <!-- System (admin tiers): panel link, service process, host machine -->
-      <section class="view" data-view="system" hidden>
-        <div class="tiles" id="sys-tiles"></div>
-        <div class="sys-grid">
-          <div class="card pad sys-card">
-            <h3>Panel connection</h3>
-            <div class="kv" id="sys-panel"></div>
-          </div>
-          <div class="card pad sys-card">
-            <h3>Service process</h3>
-            <div class="kv" id="sys-service"></div>
-          </div>
-          <div class="card pad sys-card">
-            <h3>Host machine</h3>
-            <div class="kv" id="sys-host"></div>
-          </div>
-        </div>
-        <p class="hint muted sys-foot">
-          <span id="sys-updated"></span> · refreshes every 5 s while open
-          <button class="btn ghost small" id="sys-refresh">Refresh now</button>
-        </p>
       </section>
 
       <!-- Settings -->

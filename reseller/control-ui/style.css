@@ -273,7 +273,11 @@ thead th:last-child, tbody td:last-child { padding-right: 12px; }
 .pager-jump { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pager-jump select { padding: 3px 6px; font-size: 12px; }
 
-/* ---- system view: kv cards ---- */
+/* ---- system section (Overview, admin tiers): kv cards ---- */
+.section-head {
+  margin: 22px 0 10px; font-size: 11px; font-weight: 600; letter-spacing: .7px;
+  text-transform: uppercase; color: var(--muted);
+}
 .sys-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
 .sys-card { padding: 14px 16px; }
 .sys-card h3 { margin: 0 0 10px; font-size: 13px; }
