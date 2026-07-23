@@ -28,7 +28,8 @@ Your operator gives you the right file for your computer — or you can download
 the generic public build yourself from the project's
 [releases page](https://github.com/AbueloSimpson/aliran/releases/latest).
 
-**Windows** (either file; both behave identically once running):
+**Windows** — needs Windows 10 or newer, 64-bit (either file; both behave
+identically once running):
 
 - **`Aliran Setup <version>.exe`** — a normal installer: run it, and the app
   lands in your Start menu. It installs per-user, so no administrator prompt.
@@ -41,8 +42,8 @@ because community builds aren't code-signed (signing certificates are paid,
 per-publisher). If you got the file from your operator, click **More info →
 Run anyway**. If you got it from somewhere you don't trust — don't.
 
-**macOS** — pick the file for your Mac's chip (Apple menu →
-*About This Mac*): **`…-arm64…`** for Apple silicon (M-series),
+**macOS** — needs macOS 13 Ventura or newer. Pick the file for your Mac's chip
+(Apple menu → *About This Mac*): **`…-arm64…`** for Apple silicon (M-series),
 **`…-intel…`** for an Intel Mac. The **`.dmg`** is the normal route: open it
 and drag **Aliran** into *Applications* (the `.zip` is the same app, just
 unpacked by double-click).

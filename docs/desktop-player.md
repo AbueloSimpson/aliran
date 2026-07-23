@@ -143,6 +143,8 @@ npm run dist:mac    # macOS (run on a Mac): electron-builder → dist/Aliran-<v>
   unsigned distribution; operators shipping to real users should countersign with
   their own certificate (electron-builder's `win.signtoolOptions`), which also
   builds SmartScreen reputation over time.
+- **OS floors** (Electron 37): Windows 10 or newer (x64), macOS 13 Ventura or
+  newer (Apple silicon + Intel).
 - **macOS.** The engine's native modules all ship darwin (arm64 + x64) N-API
   prebuilds, so the same package step works on a Mac — `npm run dist:mac` — and
   the repo's `desktop-mac` GitHub Actions workflow (manual dispatch) produces the

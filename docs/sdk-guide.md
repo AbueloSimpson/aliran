@@ -19,11 +19,14 @@ npm install @aliran/player-sdk
 ```
 
 - **Node ≥ 20.** The package is ESM (`"type": "module"`).
+- **Host platforms with prebuilt natives:** Linux (x64, arm64), Windows 10+
+  (x64, arm64), macOS 13+ (Apple silicon + Intel). `npm install` never compiles —
+  the native stack (libsodium, the UDP transport, …) lands as prebuilds. If your
+  platform/arch isn't in that list, there is no prebuild and the engine won't load;
+  a Raspberry Pi 4/5 on a 64-bit OS is `linux-arm64` and works, a 32-bit OS is not.
 - TypeScript definitions ship in the package (`index.d.ts`) — no `@types` needed.
 - Nothing else is required to *serve* video; to *watch* it you point any HLS-capable
   player (ffplay, VLC, mpv, hls.js, ExoPlayer) at the localhost URL the SDK returns.
-- Native modules (`sodium-native` via `@aliran/core`) install from prebuilds on
-  Linux/macOS/Windows — no toolchain needed on mainstream platforms.
 
 Smoke test (prints usage, proves the install resolves):
 
@@ -49,6 +52,16 @@ Peer requirements and platform notes:
 | `react-native-video` | ^6 | Renders the HLS. |
 | `react-native-bare-kit` | ≥ 0.13.3 | Hosts the engine worklet. **Requires `minSdkVersion` 29.** |
 | `b4a` | ^1.6.6 | Buffer shim shared with the engine. |
+
+**Device floor: Android 10 (API level 29), 64-bit.** `react-native-bare-kit`
+sets `minSdkVersion 29`, so your app's `minSdkVersion` must be ≥ 29 and the
+engine worklet simply cannot load on Android 9 or older — this is a hard floor
+of the native P2P stack, not a preference. It applies identically to phones,
+tablets, Android TV, and Fire TV: Fire OS 8 devices (Android 11 base) work,
+**Fire OS 7 sticks (Android 9 base) do not**. The shipped prebuilds cover
+`arm64-v8a` and `x86_64` (emulators) plus 32-bit ABIs for custom builds, but the
+public APKs are 64-bit. The binding is exercised on Android (phone + TV);
+iOS is not currently a supported target of the shipped stack.
 
 Three things the host app must provide:
 

@@ -8,7 +8,7 @@ dogfoods.
 | Package | What it is | Runs in |
 |---|---|---|
 | [`@aliran/player-sdk`](https://github.com/AbueloSimpson/aliran/tree/main/sdk) | Headless player engine: DHT connect, OPRF login, catalog replication, entitled-feed serving on a localhost HLS URL | Node ≥ 20 and the Bare runtime |
-| [`@aliran/react-native`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/react-native) | Drop-in `<AliranVideo>` + `AliranBackend` worklet host on `react-native-video` / `react-native-bare-kit` | React Native (phone + TV) |
+| [`@aliran/react-native`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/react-native) | Drop-in `<AliranVideo>` + `AliranBackend` worklet host on `react-native-video` / `react-native-bare-kit` | React Native — Android 10+ (API 29), phone + TV |
 | [`@aliran/core`](https://github.com/AbueloSimpson/aliran/tree/main/core) | The shared crypto both sit on (OPRF, Argon2id verifiers, key sealing, tokens) | Node + Bare |
 
 All three are MIT, ship from the monorepo, and are packaged for the npm registry
@@ -19,6 +19,24 @@ under the `@aliran` scope. TypeScript definitions are included (`player-sdk` shi
 complete manual (every install path, option, event, and troubleshooting), and
 [Operator APIs & the SDK](ops-sdk-integration.md) maps the operator control plane
 to what your app observes.
+
+## Minimum requirements
+
+The floors below come from the native P2P stack — the engine loads prebuilt
+native modules (libsodium, the UDP transport, …) and those prebuilds exist for
+exactly these targets. They are hard requirements, not recommendations: on
+anything older the engine does not degrade, it simply cannot load.
+
+| Surface | Minimum | Why / notes |
+|---|---|---|
+| Node host (`@aliran/player-sdk`) | **Node ≥ 20** (ESM-only package) on Linux x64/arm64 · Windows 10+ x64/arm64 · macOS 13+ (Apple silicon + Intel) | `npm install` places prebuilt natives — no compiler, no build step. If your platform/arch isn't listed, there is no prebuild for it |
+| React Native app (`@aliran/react-native`) | **Android 10 (API level 29)** or newer, 64-bit device; peers: `react ≥ 18`, `react-native-bare-kit ≥ 0.13.3`, `react-native-video` v6. Tested against `react-native-tvos` 0.83 (New Architecture) | `react-native-bare-kit` sets `minSdkVersion 29` — the engine worklet cannot load on Android 9 or older, so your app's `minSdkVersion` must be ≥ 29 |
+| Android TV / Fire TV | Same **Android 10 / API 29** floor | Android TV 10+ and Fire OS 8 devices (Android 11 base) work; **Fire OS 7 sticks (Android 9 base) cannot run the engine** |
+| Desktop player (`desktop/`) | **Windows 10 or newer** (x64) · **macOS 13 Ventura or newer** (Apple silicon + Intel) | Electron 37 platform floors. HEVC channels additionally need platform hardware decode ([codecs](desktop-player.md#5-codecs-what-this-player-can-decode)) |
+| Bare / custom runtimes | The Bare runtime + the addon set `react-native-bare-kit` 0.13.x links | See the [Bare section of the install guide](sdk-guide.md#bare-custom-runtimes) |
+
+(Android "SDK level"/"API level" mapping, since device spec sheets use both:
+**API 29 = Android 10**, 30 = 11, 31/32 = 12, 33 = 13, 34 = 14, 35 = 15.)
 
 ## Headless quickstart (Node)
 
