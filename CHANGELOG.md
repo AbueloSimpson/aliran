@@ -355,11 +355,13 @@ phone + Android TV, and the Windows desktop player).
   Docs: [reseller panel guide](docs/reseller-panel.md) + reference API section.
 - **Built for large account lists**: the accounts query runs server-side over
   the in-memory registry — case-insensitive search across name *and* owner,
-  status filters (active/disabled/expiring/trial), sortable columns, offset
-  paging with a `total` — and the dashboard pages it with *Load more* + a
-  "Showing X of Y" count, debounced search, and click-an-owner drill-down for
-  admins/supers. Verified against a synthetic 5,000-account registry (unit) and
-  a 394-account live demo stack (browser).
+  status filters (active/disabled/expiring/trial), sorting by name / expiry /
+  created date / status / owner (asc or desc), offset paging with a `total`.
+  The dashboard shows **50 per page** with prev/next + a jump-to-page selector
+  and a sort dropdown, debounced search, click-an-owner drill-down for
+  admins/supers, and **reflows into stacked cards on phones** (the wide table on
+  desktop). Verified against a synthetic 5,000-account registry (unit) and a
+  394-account live demo at both desktop and mobile widths (browser).
 
 **Networking (all components)**
 - Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes

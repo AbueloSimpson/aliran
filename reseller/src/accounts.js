@@ -378,13 +378,13 @@ export function makeAccounts (ctx) {
   // page drift a concurrent create/delete can cause between two Load-More clicks
   // is acceptable for an ops table.
   const LIST_FILTERS = new Set(['active', 'disabled', 'expiring', 'trial'])
-  const LIST_SORTS = new Set(['name', 'expires', 'owner'])
+  const LIST_SORTS = new Set(['name', 'expires', 'owner', 'created', 'status'])
 
   function list ({ q, owner, filter, sort, dir, offset, limit, expiringDays } = {}, scope = '*') {
     if (filter !== undefined && !LIST_FILTERS.has(filter)) throw new ControlError('bad-request', `filter must be one of: ${[...LIST_FILTERS].join(', ')}`)
     if (sort !== undefined && !LIST_SORTS.has(sort)) throw new ControlError('bad-request', `sort must be one of: ${[...LIST_SORTS].join(', ')}`)
     if (dir !== undefined && dir !== 'asc' && dir !== 'desc') throw new ControlError('bad-request', 'dir must be "asc" or "desc"')
-    const cap = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 100
+    const cap = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 50
     const from = Number.isInteger(offset) && offset > 0 ? offset : 0
     const needle = typeof q === 'string' && q.trim() ? q.trim().toLowerCase() : null
     const soonest = Date.now() + (Number.isInteger(expiringDays) && expiringDays > 0 ? expiringDays : 7) * 86400000
@@ -406,7 +406,10 @@ export function makeAccounts (ctx) {
     matched.sort((a, b) => {
       let cmp = 0
       if (sort === 'expires') cmp = registry[a].expiresAt - registry[b].expiresAt
+      else if (sort === 'created') cmp = (registry[a].createdAt || 0) - (registry[b].createdAt || 0)
       else if (sort === 'owner') cmp = registry[a].owner < registry[b].owner ? -1 : registry[a].owner > registry[b].owner ? 1 : 0
+      // status asc groups active first ('active' < 'disabled'), desc the reverse.
+      else if (sort === 'status') cmp = registry[a].status < registry[b].status ? -1 : registry[a].status > registry[b].status ? 1 : 0
       if (cmp === 0) cmp = a < b ? -1 : a > b ? 1 : 0 // name tiebreak keeps the order total
       return cmp * sign
     })

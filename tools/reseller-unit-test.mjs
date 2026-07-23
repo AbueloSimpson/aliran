@@ -163,7 +163,7 @@ console.log('E. accounts query engine (synthetic 5k registry)')
       expiresAt: now + ((i % 40) - 5) * day, // some lapsed, some expiring, some far out
       maxDevices: 1 + (i % 3),
       extraGrants: [],
-      createdAt: now,
+      createdAt: now - (i % 90) * day, // varied ages for the created sort
       createdBy: owners[i % 3],
       panel: { lastSyncAt: now, lastError: null }
     }
@@ -174,8 +174,8 @@ console.log('E. accounts query engine (synthetic 5k registry)')
 
   const live = Object.values(registry).filter((r) => r.status !== 'deleted')
   const r0 = accounts.list()
-  ok(r0.items && Number.isInteger(r0.total) && r0.offset === 0 && r0.limit === 100, 'envelope shape {items,total,offset,limit}')
-  ok(r0.total === live.length && r0.items.length === 100, `total counts non-deleted (${r0.total}), page = 100`)
+  ok(r0.items && Number.isInteger(r0.total) && r0.offset === 0 && r0.limit === 50, 'envelope shape {items,total,offset,limit}')
+  ok(r0.total === live.length && r0.items.length === 50, `total counts non-deleted (${r0.total}), default page = 50`)
 
   ok(accounts.list({ q: 'ZEBRA' }).items[0].account === 'zebra-special', 'ci-search matches account name')
   ok(accounts.list({ q: 'FINDME' }).items[0].account === 'zebra-special', 'ci-search matches OWNER too')
@@ -193,6 +193,12 @@ console.log('E. accounts query engine (synthetic 5k registry)')
   ok(desc[0].expiresAt >= asc[0].expiresAt && desc.every((v, i) => i === 0 || desc[i - 1].expiresAt >= v.expiresAt), 'expires desc ordered')
   const byOwner = accounts.list({ sort: 'owner', limit: 500 }).items
   ok(byOwner.every((v, i) => i === 0 || byOwner[i - 1].owner <= v.owner), 'owner sort groups')
+  const byCreated = accounts.list({ sort: 'created', dir: 'desc', limit: 500 }).items
+  ok(byCreated.every((v, i) => i === 0 || byCreated[i - 1].createdAt >= v.createdAt), 'created desc = newest first')
+  const byStatus = accounts.list({ sort: 'status', limit: 500 }).items
+  ok(byStatus[0].status === 'active' && byStatus.every((v, i) => i === 0 || byStatus[i - 1].status <= v.status), 'status asc = active first')
+  const byStatusD = accounts.list({ sort: 'status', dir: 'desc' }).items
+  ok(byStatusD[0].status === 'disabled', 'status desc = inactive first')
 
   // Offset walk covers the whole filtered set exactly once.
   const seen = new Set()

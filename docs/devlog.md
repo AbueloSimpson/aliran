@@ -2254,3 +2254,21 @@ filter/owner-search assertions — and in the browser against a 394-account demo
 "Showing 100 of 334" → Load More → 300, a needle name deep past page one found
 by server search, lapsed rows first under expires-sort, and the admin drilling
 into one reseller's 60 accounts via the owner chip.
+
+**Follow-up (same day): numbered pagination + more sorts + phone layout.** The
+Load-more/auto-scroll list was replaced with real pagination on user request:
+**50 per page** with prev/next and a jump-to-page `<select>` ("Page 4 of 8"),
+plus a range count ("151–200 of 394"). Sorting gained **created** and **status**
+keys (so: name, expiring soonest/latest, newest/oldest created, active-first/
+inactive-first) — surfaced both as clickable headers and a toolbar sort dropdown
+kept in sync with the header arrows. A subtle correctness fix landed here: page
+loads are now **latest-wins** (each carries a sequence token; only the newest
+response renders) instead of a busy-flag that silently *dropped* a rapid second
+action — verified that hammering Next three times advances exactly three pages
+with the combo and count agreeing. On phones (≤700 px) the table reflows into
+**stacked cards**: headers hidden, each row a block, `data-l` cells self-label
+("expires: 25d", "devices: 2"), and the redundant Owner-dupe and Created columns
+drop out — no horizontal scroll at 375 px, the wide 7-column table returns at
+desktop widths. Server default limit is now 50 (cap unchanged at 500). Unit +
+e2e cover the new sorts and the 50 default; browser-verified both widths on the
+394-account demo.

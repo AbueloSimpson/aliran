@@ -94,6 +94,16 @@
             </div>
             <span id="acct-owner-chip" class="chip owner-chip" title="Clear owner filter" hidden></span>
             <span class="spacer"></span>
+            <select id="acct-sort" title="Sort">
+              <option value="name:asc">Name A→Z</option>
+              <option value="name:desc">Name Z→A</option>
+              <option value="expires:asc">Expiring soonest</option>
+              <option value="expires:desc">Expiring latest</option>
+              <option value="created:desc">Newest created</option>
+              <option value="created:asc">Oldest created</option>
+              <option value="status:asc">Active first</option>
+              <option value="status:desc">Inactive first</option>
+            </select>
             <span id="acct-count" class="chip" hidden></span>
             <button class="btn small" id="acct-refresh">Refresh</button>
           </div>
@@ -102,8 +112,9 @@
               <thead><tr>
                 <th class="sortable sorted-asc" data-k="name">Account</th>
                 <th class="sortable" data-k="owner" data-col="owner">Owner</th>
-                <th>Status</th>
+                <th class="sortable" data-k="status">Status</th>
                 <th class="sortable num" data-k="expires">Expires</th>
+                <th class="sortable num" data-k="created">Created</th>
                 <th class="num">Devices</th>
                 <th class="actions-col"></th>
               </tr></thead>
@@ -111,7 +122,14 @@
             </table>
           </div>
           <div class="empty" id="acct-empty" hidden>No accounts yet.</div>
-          <div class="table-foot"><button class="btn small" id="acct-more" hidden>Load more</button></div>
+          <div class="table-foot pager" id="acct-pager" hidden>
+            <button class="btn small" id="acct-prev">‹ Prev</button>
+            <label class="pager-jump">Page
+              <select id="acct-page"></select>
+              of <span id="acct-pages"></span>
+            </label>
+            <button class="btn small" id="acct-next">Next ›</button>
+          </div>
         </div>
       </section>
 

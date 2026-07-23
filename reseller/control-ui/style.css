@@ -177,13 +177,17 @@ tbody tr.hidden-row { display: none; }
 .row-actions { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 .actions-col { width: 1%; }
 .empty { padding: 20px 16px; color: var(--muted); }
-.table-foot { display: flex; justify-content: center; padding: 6px 0 10px; }
-.table-foot button[hidden] { display: none; }
 .owner-sub { font-size: 11px; }
 .owner-link { cursor: pointer; }
 .owner-link:hover { color: var(--accent); text-decoration: underline; }
 .owner-chip { cursor: pointer; }
 .owner-chip:hover { border-color: var(--danger); }
+
+/* ---- pager ---- */
+.pager { display: flex; gap: 10px; align-items: center; justify-content: center; padding: 10px 8px 12px; flex-wrap: wrap; }
+.pager[hidden] { display: none; }
+.pager-jump { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.pager-jump select { padding: 4px 8px; }
 
 /* ---- dialog ---- */
 dialog {
@@ -220,4 +224,22 @@ dialog h2 { margin: 0 0 14px; font-size: 16px; }
   #sidebar { display: none; height: auto; position: static; }
   #app-view.side-open #sidebar { display: flex; }
   #side-toggle { display: inline-block; }
+}
+
+/* ---- phones: the accounts table becomes stacked cards ----
+   Headers disappear (sorting lives in the toolbar combo), each row renders as a
+   block, and data-l cells label themselves ("expires: 31d"). Low-value columns
+   (Owner dupe, Created) drop out via .hide-mobile. */
+@media (max-width: 700px) {
+  .table-toolbar input[type=search] { min-width: 0; flex: 1 1 100%; }
+  .hide-mobile { display: none !important; }
+  #acct-table thead { display: none; }
+  #acct-table, #acct-table tbody { display: block; width: 100%; }
+  #acct-table tr { display: block; border-bottom: 1px solid var(--border); padding: 10px 12px 12px; }
+  #acct-table tr:hover > td { background: none; }
+  #acct-table td { display: inline-block; border: 0; padding: 2px 10px 2px 0; text-align: left; vertical-align: middle; }
+  #acct-table td.cell-main { display: block; padding-bottom: 4px; }
+  #acct-table td.cell-actions { display: block; padding-top: 6px; }
+  #acct-table .row-actions { justify-content: flex-start; }
+  #acct-table td[data-l]::before { content: attr(data-l) ': '; color: var(--muted); font-size: 12px; }
 }

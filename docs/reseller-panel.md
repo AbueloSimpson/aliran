@@ -80,10 +80,12 @@ operate on accounts the registry says are theirs. Operator-created panel users
 are invisible to the reseller panel entirely.
 
 The accounts list is built for density: search (name **or** owner,
-case-insensitive), status filters, and sorting all run **server-side**, and the
-dashboard pages results with a *Load more* button and a "Showing X of Y" count —
-so the table behaves identically at 10 accounts or 10,000. Admins and super
-resellers can click any owner to drill into just that reseller's accounts.
+case-insensitive), status filters, and sorting (name, expiry, created date,
+status, owner — ascending or descending) all run **server-side**. The dashboard
+shows **50 per page** with prev/next and a jump-to-page selector, so the table
+behaves identically at 10 accounts or 10,000, and its rows reflow into stacked
+cards on a phone. Admins and super resellers can click any owner to drill into
+just that reseller's accounts.
 
 ## Keeping panel and ledger in sync
 

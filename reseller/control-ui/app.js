@@ -11,6 +11,7 @@ const el = (tag, props = {}, kids = []) => {
   return n
 }
 const fmtDays = (d) => d == null ? '—' : d < 0 ? `${-d}d ago` : d === 0 ? 'today' : `${d}d`
+const fmtDate = (ts) => ts ? new Date(ts).toLocaleDateString() : '—'
 const CAN_MANAGE = new Set(['admin', 'co-admin', 'super'])
 const IS_ADMIN = (r) => r === 'admin' || r === 'co-admin'
 
@@ -144,53 +145,40 @@ async function loadOverview () {
 
 // ---- accounts (server-driven: search/filter/sort/paging all happen in the API,
 // so the table works the same at 10 accounts or 10,000) ----
-const PAGE = 100
+const PAGE = 50
 let acctRows = []
 let acctTotal = 0
-let acctQuery = { q: '', filter: '', owner: '', sort: 'name', dir: 'asc' }
+let acctQuery = { q: '', filter: '', owner: '', sort: 'name', dir: 'asc', page: 0 }
 let acctDebounce
 
-function acctParams (offset) {
-  const p = new URLSearchParams({ limit: String(PAGE), offset: String(offset), sort: acctQuery.sort, dir: acctQuery.dir })
+function acctParams () {
+  const p = new URLSearchParams({ limit: String(PAGE), offset: String(acctQuery.page * PAGE), sort: acctQuery.sort, dir: acctQuery.dir })
   if (acctQuery.q) p.set('q', acctQuery.q)
   if (acctQuery.filter) p.set('filter', acctQuery.filter)
   if (acctQuery.owner) p.set('owner', acctQuery.owner)
   return p
 }
 
-// append=true fetches the NEXT page and concatenates (Load more / auto-scroll);
-// otherwise the query changed and the list restarts from offset 0.
-let acctLoading = false
-async function loadAccounts (append) {
-  if (acctLoading) return
-  acctLoading = true
-  try {
-    const r = await api('GET', '/accounts?' + acctParams(append ? acctRows.length : 0))
-    acctRows = append ? acctRows.concat(r.items) : r.items
-    acctTotal = r.total
-    renderAccounts()
-  } finally {
-    acctLoading = false
+// Latest-wins: every call gets a token, and only the newest response renders —
+// so rapid clicks (page, sort, filter) never drop a user action or let a slow
+// response clobber a newer one. A NULL gotoPage means "reload the current page"
+// (post-mutation refresh); a number navigates.
+let acctSeq = 0
+async function loadAccounts (gotoPage = 0) {
+  const seq = ++acctSeq
+  acctQuery.page = gotoPage == null ? acctQuery.page : Math.max(0, gotoPage)
+  let r = await api('GET', '/accounts?' + acctParams())
+  // A deletion can leave the current page past the end — snap back once.
+  const pages = Math.max(1, Math.ceil(r.total / PAGE))
+  if (acctQuery.page >= pages && r.total > 0) {
+    acctQuery.page = pages - 1
+    r = await api('GET', '/accounts?' + acctParams())
   }
+  if (seq !== acctSeq) return // a newer request superseded this one
+  acctRows = r.items
+  acctTotal = r.total
+  renderAccounts()
 }
-
-// Scrolling near the bottom auto-loads the next page — the whole list unrolls
-// without clicking; the Load More button stays as the visible affordance. Plain
-// scroll math on purpose: IntersectionObserver callbacks ride the rendering
-// pipeline and silently never fire in degraded/embedded viewers, and a silent
-// auto-loader is worse than none.
-let acctScrollPending = false
-function maybeAutoLoad () {
-  const btn = $('#acct-more')
-  if (btn.hidden || btn.offsetParent === null) return // exhausted, or view not shown
-  if (acctRows.length >= acctTotal) return
-  if (btn.getBoundingClientRect().top < innerHeight + 600) guard(() => loadAccounts(true))()
-}
-window.addEventListener('scroll', () => {
-  if (acctScrollPending) return
-  acctScrollPending = true
-  setTimeout(() => { acctScrollPending = false; maybeAutoLoad() }, 120)
-}, { passive: true })
 
 function renderAccounts () {
   const tb = $('#acct-table tbody')
@@ -198,13 +186,33 @@ function renderAccounts () {
   const filtered = !!(acctQuery.q || acctQuery.filter || acctQuery.owner)
   $('#acct-empty').textContent = filtered ? 'No matches.' : 'No accounts yet.'
   $('#acct-empty').hidden = acctRows.length > 0
-  $('#acct-count').textContent = `Showing ${acctRows.length} of ${acctTotal}`
+
+  const start = acctQuery.page * PAGE
+  $('#acct-count').textContent = acctTotal ? `${start + 1}–${start + acctRows.length} of ${acctTotal}` : ''
   $('#acct-count').hidden = acctTotal === 0
-  $('#acct-more').hidden = acctRows.length >= acctTotal
+
+  // Pager: prev/next + a jump-to-page combo (rebuilt when the page count moves).
+  const pages = Math.max(1, Math.ceil(acctTotal / PAGE))
+  $('#acct-pager').hidden = pages <= 1
+  $('#acct-prev').disabled = acctQuery.page === 0
+  $('#acct-next').disabled = acctQuery.page >= pages - 1
+  $('#acct-pages').textContent = pages
+  const sel = $('#acct-page')
+  if (sel.options.length !== pages) {
+    sel.replaceChildren(...Array.from({ length: pages }, (_, i) => el('option', { value: i, textContent: i + 1 })))
+  }
+  sel.value = String(acctQuery.page)
+
+  // Keep the toolbar sort combo and the header arrows in agreement.
+  $('#acct-sort').value = `${acctQuery.sort}:${acctQuery.dir}`
+  $$('#acct-table th').forEach((x) => x.classList.remove('sorted-asc', 'sorted-desc'))
+  const th = $(`#acct-table th[data-k="${acctQuery.sort}"]`)
+  if (th) th.classList.add(acctQuery.dir === 'asc' ? 'sorted-asc' : 'sorted-desc')
+
   const chip = $('#acct-owner-chip')
   chip.hidden = !acctQuery.owner
   if (acctQuery.owner) chip.innerHTML = `owner <b>${acctQuery.owner}</b> ✕`
-  $$('#acct-table th[data-col="owner"]').forEach((th) => { th.style.display = IS_ADMIN(me.role) || me.role === 'super' ? '' : 'none' })
+  $$('#acct-table th[data-col="owner"]').forEach((h) => { h.style.display = IS_ADMIN(me.role) || me.role === 'super' ? '' : 'none' })
 }
 
 const canDrillOwner = () => IS_ADMIN(me.role) || me.role === 'super'
@@ -233,20 +241,29 @@ function accountRow (r) {
     onclick: canDrillOwner() ? () => drillOwner(r.owner) : null,
     title: canDrillOwner() ? `Show only ${r.owner}'s accounts` : ''
   })
+  // data-l labels surface as "expires: 31d" prefixes in the phone card layout,
+  // where the column headers are hidden.
+  const tdExpires = el('td', { className: 'num', textContent: fmtDays(r.expiresInDays) })
+  tdExpires.dataset.l = 'expires'
+  const tdCreated = el('td', { className: 'num hide-mobile', textContent: fmtDate(r.createdAt) })
+  const tdDevices = el('td', { className: 'num', textContent: r.maxDevices })
+  tdDevices.dataset.l = 'devices'
   return el('tr', {}, [
-    el('td', {}, el('div', { className: 'cell-name' }, [
+    el('td', { className: 'cell-main' }, el('div', { className: 'cell-name' }, [
       el('span', { className: 't mono', textContent: r.account }),
       ownerLink('muted owner-sub')
     ])),
     tdColOwner(ownerLink('')),
-    el('td', {}, el('span', { className: 'chips' }, [statusBadge, kindBadge].filter(Boolean))),
-    el('td', { className: 'num', textContent: fmtDays(r.expiresInDays) }),
-    el('td', { className: 'num', textContent: r.maxDevices }),
-    el('td', {}, actions)
+    el('td', { className: 'cell-status' }, el('span', { className: 'chips' }, [statusBadge, kindBadge].filter(Boolean))),
+    tdExpires,
+    tdCreated,
+    tdDevices,
+    el('td', { className: 'cell-actions' }, actions)
   ])
 }
 function tdColOwner (child) {
-  const td = el('td', {}, child)
+  // Hidden on phones too (the owner already shows under the account name).
+  const td = el('td', { className: 'hide-mobile' }, child)
   if (!canDrillOwner()) td.style.display = 'none'
   return td
 }
@@ -254,16 +271,24 @@ const btn = (label, onClick, cls = '') => el('button', { className: 'btn small' 
 
 $('#acct-search').oninput = () => {
   clearTimeout(acctDebounce)
-  acctDebounce = setTimeout(guard(() => { acctQuery.q = $('#acct-search').value.trim(); return loadAccounts() }), 250)
+  acctDebounce = setTimeout(guard(() => { acctQuery.q = $('#acct-search').value.trim(); return loadAccounts(0) }), 250)
 }
-$('#acct-refresh').onclick = guard(() => loadAccounts())
-$('#acct-more').onclick = guard(() => loadAccounts(true))
-$('#acct-owner-chip').onclick = () => { acctQuery.owner = ''; guard(loadAccounts)() }
+$('#acct-refresh').onclick = guard(() => loadAccounts(acctQuery.page))
+$('#acct-owner-chip').onclick = () => { acctQuery.owner = ''; guard(() => loadAccounts(0))() }
+$('#acct-prev').onclick = guard(() => loadAccounts(acctQuery.page - 1))
+$('#acct-next').onclick = guard(() => loadAccounts(acctQuery.page + 1))
+$('#acct-page').onchange = () => guard(() => loadAccounts(parseInt($('#acct-page').value, 10) || 0))()
+$('#acct-sort').onchange = () => {
+  const [sort, dir] = $('#acct-sort').value.split(':')
+  acctQuery.sort = sort
+  acctQuery.dir = dir
+  guard(() => loadAccounts(0))()
+}
 $$('#acct-filter button').forEach((b) => {
   b.onclick = () => {
     acctQuery.filter = b.dataset.f === 'all' ? '' : b.dataset.f
     $$('#acct-filter button').forEach((x) => x.classList.toggle('active', x === b))
-    guard(loadAccounts)()
+    guard(() => loadAccounts(0))()
   }
 })
 $$('#acct-table th.sortable').forEach((th) => {
@@ -271,9 +296,7 @@ $$('#acct-table th.sortable').forEach((th) => {
     const k = th.dataset.k
     acctQuery.dir = acctQuery.sort === k && acctQuery.dir === 'asc' ? 'desc' : 'asc'
     acctQuery.sort = k
-    $$('#acct-table th').forEach((x) => x.classList.remove('sorted-asc', 'sorted-desc'))
-    th.classList.add(acctQuery.dir === 'asc' ? 'sorted-asc' : 'sorted-desc')
-    guard(loadAccounts)()
+    guard(() => loadAccounts(0))()
   }
 })
 
@@ -288,7 +311,7 @@ $('#account-form').onsubmit = guard(async (e) => {
   const r = await api('POST', '/accounts', body)
   toast(`Activated ${r.account} (${r.expiresInDays}d)`)
   $('#account-form').reset()
-  await Promise.all([loadAccounts(), refreshBalance()])
+  await Promise.all([loadAccounts(acctQuery.page), refreshBalance()])
 })
 $('#acct-trial-btn').onclick = guard(async () => {
   const name = $('#acct-name').value
@@ -296,7 +319,7 @@ $('#acct-trial-btn').onclick = guard(async () => {
   const r = await api('POST', '/trials', { name, password: $('#acct-pass').value || 'trial-' + Math.random().toString(36).slice(2, 10), maxDevices: +$('#acct-devices').value })
   toast(`Trial ${r.account} started`)
   $('#account-form').reset()
-  await loadAccounts()
+  await loadAccounts(acctQuery.page)
 })
 
 function renewDialog (r) {
@@ -307,13 +330,13 @@ function renewDialog (r) {
   ], async () => {
     const out = await api('POST', `/accounts/${encodeURIComponent(r.account)}/renew`, { months: +months.value })
     toast(`Renewed to ${out.expiresInDays}d`)
-    await Promise.all([loadAccounts(), refreshBalance()])
+    await Promise.all([loadAccounts(acctQuery.page), refreshBalance()])
   }, { okLabel: 'Renew' })
 }
 async function accountStatus (r, status) {
   await api('POST', `/accounts/${encodeURIComponent(r.account)}/status`, { status })
   toast(`${r.account} ${status === 'disabled' ? 'suspended' : 'resumed'}`)
-  await loadAccounts()
+  await loadAccounts(acctQuery.page)
 }
 function passwordDialog (r) {
   const pw = inputEl({ type: 'password', minLength: 8 })
@@ -342,7 +365,7 @@ function deleteAccountDialog (r) {
     if (confirm.value !== r.account) { toast('Name does not match', true); return false }
     const out = await api('DELETE', `/accounts/${encodeURIComponent(r.account)}`)
     toast(`Deleted (refunded ${out.refunded})`)
-    await Promise.all([loadAccounts(), refreshBalance()])
+    await Promise.all([loadAccounts(acctQuery.page), refreshBalance()])
   }, { okLabel: 'Delete', danger: true })
 }
 
