@@ -1,46 +1,79 @@
-# Cloudflare Tunnel for the reseller panel — publish a loopback-only dashboard
-# through Cloudflare's edge (their TLS, CDN and WAF) with NO inbound firewall
-# port. cloudflared makes an OUTBOUND-only connection to Cloudflare, so this
-# works behind NAT/CGNAT or a corporate firewall where Caddy + a public IP
-# (deploy/Caddyfile.example) is not an option.
+# Cloudflare Tunnel for the reseller panel — the ISOLATED-NETWORK topology.
 #
-# Full walkthrough + the security notes that make this safe:
-#   docs/reseller-panel.md → "Exposing the dashboard safely"
+# Publishes the dashboard through Cloudflare's edge (their TLS, CDN and WAF)
+# with NO inbound firewall port AND no host port at all: the reseller service
+# and cloudflared share this compose file's private bridge network, the
+# reseller's port is never published to the host, and cloudflared dials OUT to
+# Cloudflare. The only road to the panel is the tunnel — which is what makes
+# TRUST_PROXY_HEADER unconditionally trustworthy here (nothing that isn't on
+# this docker network can even attempt to spoof the header; Cloudflare's edge
+# overwrites CF-Connecting-IP on every proxied request, so it can't be smuggled
+# through the front door either). Works behind NAT/CGNAT or a firewall you
+# cannot open, where Caddy + a public IP (deploy/Caddyfile.example) is not an
+# option. Everything used here — the tunnel and the CF-Connecting-IP header —
+# is available on Cloudflare's FREE plan.
+#
+# Full walkthrough + security notes: docs/reseller-panel.md → "Exposing the
+# dashboard safely".
 #
 # One-time setup in the Cloudflare dashboard (Zero Trust → Networks → Tunnels):
 #   1. Create a tunnel (remotely-managed), copy its TOKEN.
 #   2. Add a public hostname, e.g. resellers.example.com, with service
-#      http://localhost:3330  (this compose runs cloudflared in the host network
-#      namespace, same as the reseller service — localhost IS the reseller panel).
+#      http://reseller:3330   ← the compose service name; cloudflared resolves
+#      it on this file's private network.
 #   3. Put the token in reseller/.env as TUNNEL_TOKEN=...  (cloudflared's own
 #      variable name — it picks it up from the environment).
-#   4. In reseller/.env set TRUST_PROXY_HEADER=cf-connecting-ip — behind the
-#      tunnel every connection carries cloudflared's socket address, and without
-#      this the username|ip login lockout would treat ALL your resellers as one
-#      client (one abuser could lock a victim's username for everybody).
 #
-# Keep CONTROL_HOST=127.0.0.1 — the whole point is that the panel port is never
-# reachable except through the tunnel. If the port were also reachable directly,
-# clients could spoof the header and mint fresh lockout keys.
+# Run from the repo root, INSTEAD OF `--profile reseller` (same image, same
+# named volume, so switching topologies keeps the data):
+#   docker compose --project-directory . -f deploy/cloudflared.compose.example.yml up -d --build
+# Seed the root admin the same way (once):
+#   docker compose --project-directory . -f deploy/cloudflared.compose.example.yml \
+#     run --rm reseller node src/reseller-cli.js add-admin <name>
 #
-# Run it together with the reseller profile from the repo root:
-#   docker compose -f docker-compose.yml -f deploy/cloudflared.compose.example.yml \
-#     --profile reseller up -d
-#
-# IP allowlists move to Cloudflare when you use this (the origin only ever sees
-# the tunnel): use a WAF rule, or put Cloudflare Access in front of the hostname.
-# Access authenticates browsers with its own cookie — unlike HTTP basic_auth it
-# does NOT collide with the dashboard's `Authorization: Bearer` API login, so it
-# can cover /api/* too. The dashboard's own argon2 + lockout login remains the
-# application gate either way.
+# IP allowlists move to Cloudflare in this topology (the origin only ever sees
+# the tunnel): a WAF rule, or Cloudflare Access in front of the hostname (free
+# tier covers up to 50 users). Access authenticates browsers with its own
+# cookie — unlike HTTP basic_auth it does NOT collide with the dashboard's
+# `Authorization: Bearer` API login, so it can cover /api/* too. The
+# dashboard's own argon2 + lockout login remains the application gate.
 
 services:
+  reseller:
+    build:
+      context: .
+      dockerfile: reseller/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: ./reseller/.env
+        required: false # panel creds + TUNNEL_TOKEN live here in a real deploy
+    environment:
+      DATA_DIR: /data
+      # The port is NOT published to the host — only containers on this compose
+      # network can reach it — so binding the container's interfaces is both
+      # safe and required (cloudflared connects by service name).
+      CONTROL_HOST: 0.0.0.0
+      # Always trustworthy here: the tunnel is the only ingress (see header).
+      TRUST_PROXY_HEADER: cf-connecting-ip
+    volumes:
+      - reseller-data:/data
+    # Single-box topology: the panel runs with host networking, so its admin API
+    # lives on the HOST's loopback — this maps host.docker.internal to the host
+    # gateway so reseller/.env can say
+    #   PANEL_ADMIN_URL=http://host.docker.internal:3210
+    # (Two-box topology: PANEL_ADMIN_URL is an https URL — drop this block.)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   cloudflared:
     image: cloudflare/cloudflared:latest
-    profiles: [reseller]
-    network_mode: host
     restart: unless-stopped
     command: tunnel --no-autoupdate run
-    # Relative to the project directory (the repo root when run as shown above).
-    # Provides TUNNEL_TOKEN; the reseller service ignores the extra variable.
-    env_file: ./reseller/.env
+    env_file:
+      - path: ./reseller/.env # provides TUNNEL_TOKEN
+        required: false
+    depends_on:
+      - reseller
+
+volumes:
+  reseller-data:

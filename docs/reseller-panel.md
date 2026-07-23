@@ -160,26 +160,42 @@ but your resellers still need to reach their accounts from the internet —
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
 is the supported alternative to Caddy. `cloudflared` runs next to the service
 and makes an **outbound-only** connection to Cloudflare's edge; Cloudflare
-terminates TLS on your hostname and proxies requests down the tunnel to
-`http://localhost:3330`. No inbound port ever opens, and the origin IP is never
-published. `deploy/cloudflared.compose.example.yml` carries the worked compose
-service; the flow is: create a remotely-managed tunnel in Zero Trust → copy its
-token into `reseller/.env` as `TUNNEL_TOKEN` → add a public hostname pointing at
-`http://localhost:3330` → bring the profile up with both compose files.
+terminates TLS on your hostname and proxies requests down the tunnel. No
+inbound port ever opens, and the origin IP is never published. Everything this
+setup uses — the tunnel itself and the `CF-Connecting-IP` header — is on
+Cloudflare's **free plan** (a free account with your domain on it is enough;
+the optional extras below are free-tier too: Access up to 50 users, and the
+free allowance of WAF custom rules).
 
-Three notes keep it as secure as the Caddy path:
+`deploy/cloudflared.compose.example.yml` is the worked example, and it uses an
+**isolated compose network**: the reseller service and `cloudflared` share a
+private bridge network, and the dashboard port is **never published to the
+host** — the tunnel is structurally the only way in. The flow is: create a
+remotely-managed tunnel in Zero Trust → copy its token into `reseller/.env` as
+`TUNNEL_TOKEN` → add a public hostname pointing at `http://reseller:3330` (the
+compose service name) → `docker compose --project-directory . -f
+deploy/cloudflared.compose.example.yml up -d --build` (instead of
+`--profile reseller`; same image and data volume).
 
-- **Set `TRUST_PROXY_HEADER=cf-connecting-ip`.** Behind the tunnel every
-  connection reaches the service from cloudflared's socket address, so the
-  login lockout's `username|ip` key would treat all your resellers as one
-  client — one abuser could lock a victim's username for everybody. With the
-  header declared, the throttle keys on the real client IP that Cloudflare
-  stamps on each request. (Behind Caddy/nginx the same option takes
-  `x-forwarded-for`; the rightmost list entry — the one the trusted proxy
-  appended — is used.) Never set it when the port is also reachable directly:
-  a direct client could spoof the header and mint fresh throttle keys.
-- **Keep `CONTROL_HOST=127.0.0.1`.** The tunnel is supposed to be the only way
-  in; binding wider defeats it and breaks the header trust above.
+What makes it as secure as the Caddy path:
+
+- **`TRUST_PROXY_HEADER=cf-connecting-ip`** (preset in the example). Behind any
+  proxy every connection reaches the service from the proxy's socket address,
+  so the login lockout's `username|ip` key would treat all your resellers as
+  one client — one abuser could lock a victim's username for everybody. With
+  the header declared, the throttle keys on the real client IP that Cloudflare
+  stamps on each request. The usual caveat — never trust the header if the
+  port is also reachable directly — is satisfied **by construction** here:
+  nothing outside the compose network can reach the port to spoof it, and
+  Cloudflare's edge overwrites `CF-Connecting-IP` on every proxied request, so
+  it cannot be smuggled through the front door either. (Running behind
+  Caddy/nginx instead? The same option takes `x-forwarded-for`; the rightmost
+  list entry — the one the trusted proxy appended — is used, and the
+  direct-reachability caveat is then yours to enforce.)
+- **`CONTROL_HOST=0.0.0.0` is correct *inside this topology*** (also preset):
+  it binds the container's interfaces on the private network, which is not
+  reachable from the host's LAN because no port is published. On any topology
+  where the port IS published, keep the loopback default.
 - **IP allowlists move to Cloudflare.** The origin only ever sees the tunnel,
   so `remote_ip`-style rules belong in a Cloudflare WAF rule — or put
   **Cloudflare Access** in front of the hostname. Access authenticates the
