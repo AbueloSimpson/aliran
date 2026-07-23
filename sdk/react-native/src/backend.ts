@@ -2,9 +2,49 @@
 // protocol (line-delimited JSON; see client/backend/backend.mjs). The host app
 // supplies the worklet bundle (bare-pack output, base64 string or raw bytes) — the
 // binding stays free of build-time coupling to any one backend build.
+//
+// The bare-kit binding is loaded lazily, on first start(): a legacy Android build
+// (minSdk < 29 with react-native-bare-kit excluded from autolinking — see
+// docs/sdk-guide.md "Older Android") ships this SDK without the native module. On
+// such builds the backend stays SILENTLY inactive — start() and every other method
+// are safe no-ops, no message ever fires — and AliranBackend.isSupported() reports
+// false so the host can run its own legacy mode instead.
 
-import { Worklet } from 'react-native-bare-kit'
+import { TurboModuleRegistry } from 'react-native'
 import b4a from 'b4a'
+
+declare const require: (id: string) => any // Metro/CJS both provide it; typed locally so hosts need no @types/node
+
+type WorkletInstance = import('react-native-bare-kit').Worklet
+type WorkletCtor = new () => WorkletInstance
+
+// Cached availability verdict + (when the probe had to construct one) the Worklet it
+// built, consumed by the first start() so no native handle is ever wasted.
+let engineKnown: boolean | undefined
+let probeWorklet: WorkletInstance | null = null
+
+function engineAvailable (): boolean {
+  if (engineKnown !== undefined) return engineKnown
+  // The registered native module is the authoritative on-device signal. Checked via
+  // react-native — NEVER by whether require('react-native-bare-kit') throws: release
+  // bundles inline-require the package's native spec, deferring its "TurboModule
+  // missing" throw from package require time into the Worklet constructor, so a bare
+  // require() "succeeds" even in an engine-less build.
+  try {
+    if (TurboModuleRegistry.get('BareKit') != null) return (engineKnown = true)
+  } catch { /* fall through to the constructor probe */ }
+  // No registered module: an engine-less build/device — or a test env whose bare-kit
+  // is a jest stub with no TurboModule behind it. Constructing a Worklet settles it:
+  // on an engine-less device the deferred spec require throws right here, before
+  // NativeBareKit.init, so the failed probe has no native side effects.
+  try {
+    const W = require('react-native-bare-kit').Worklet as WorkletCtor
+    probeWorklet = new W()
+    return (engineKnown = true)
+  } catch {
+    return (engineKnown = false)
+  }
+}
 
 export interface Stream {
   id: string
@@ -190,7 +230,10 @@ export class AliranBackend {
   service: SavedService | null = null
   prefsLoaded = false
 
-  private worklet = new Worklet()
+  private worklet: WorkletInstance | null = null
+  // Flips when start() finds no engine in this build/device: every later send()
+  // becomes a silent no-op (nothing queues, nothing throws, no listener ever fires).
+  private inactive = false
   private ipc: any
   private buf = ''
   private debug = false
@@ -203,6 +246,17 @@ export class AliranBackend {
   private engineOpts: Omit<StartOptions, 'panelPubKey' | 'debug'> = {}
 
   /**
+   * Whether this build/device can run the P2P engine. False when the app was built
+   * without the bare-kit native module (the legacy Android flavor — the engine's
+   * hard floor is Android 10 / API 29, see docs/sdk.md "Minimum requirements").
+   * When false the whole backend is silently inactive: start() and every other
+   * method are safe no-ops and no message ever fires. This is the host app's
+   * switch for its own legacy mode (e.g. operator-provided CDN playback outside
+   * this SDK) — below Android 10 no P2P data is reachable at all.
+   */
+  static isSupported (): boolean { return engineAvailable() }
+
+  /**
    * Boot the worklet with a bare-pack bundle (base64 string or raw bytes) and connect
    * to the panel. Bytes are passed via startBytes so the binary bundle is preserved
    * intact; the filename extension must be `.bundle`. Omit opts.panelPubKey to boot
@@ -210,9 +264,14 @@ export class AliranBackend {
    * once the host knows which one (persisted runtime service, or the Connect screen).
    */
   start (bundle: string | Uint8Array, opts: StartOptions) {
+    if (!engineAvailable()) { this.inactive = true; this.pending = []; return } // no engine here — stay silent
     this.debug = !!opts.debug
     this.engineOpts = { hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch, swarm: opts.swarm, uploadPolicy: opts.uploadPolicy }
     const bytes = typeof bundle === 'string' ? b4a.from(bundle, 'base64') : bundle
+    if (!this.worklet) {
+      if (probeWorklet) { this.worklet = probeWorklet; probeWorklet = null } // reuse the probe's handle
+      else this.worklet = new (require('react-native-bare-kit').Worklet as WorkletCtor)()
+    }
     this.worklet.start('/app.bundle', bytes as any)
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
@@ -275,6 +334,7 @@ export class AliranBackend {
   isFavorite (streamId: string) { return this.favorites.includes(streamId) }
 
   private send (obj: unknown) {
+    if (this.inactive) return // engine-less build/device: drop silently, never queue
     if (!this.ipc) { this.pending.push(obj); return }
     this.ipc.write(b4a.from(JSON.stringify(obj) + '\n'))
   }

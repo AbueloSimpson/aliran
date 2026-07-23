@@ -25,15 +25,18 @@ to what your app observes.
 The floors below come from the native P2P stack — the engine loads prebuilt
 native modules (libsodium, the UDP transport, …) and those prebuilds exist for
 exactly these targets. They are hard requirements, not recommendations: on
-anything older the engine does not degrade, it simply cannot load.
+anything older the engine does not degrade, it simply cannot load. (The SDK's
+*JavaScript* is a separate story — on Android it degrades **silently** below
+the engine floor; see the last row.)
 
 | Surface | Minimum | Why / notes |
 |---|---|---|
 | Node host (`@aliran/player-sdk`) | **Node ≥ 20** (ESM-only package) on Linux x64/arm64 · Windows 10+ x64/arm64 · macOS 13+ (Apple silicon + Intel) | `npm install` places prebuilt natives — no compiler, no build step. If your platform/arch isn't listed, there is no prebuild for it |
-| React Native app (`@aliran/react-native`) | **Android 10 (API level 29)** or newer, 64-bit device; peers: `react ≥ 18`, `react-native-bare-kit ≥ 0.13.3`, `react-native-video` v6. Tested against `react-native-tvos` 0.83 (New Architecture) | `react-native-bare-kit` sets `minSdkVersion 29` — the engine worklet cannot load on Android 9 or older, so your app's `minSdkVersion` must be ≥ 29 |
-| Android TV / Fire TV | Same **Android 10 / API 29** floor | Android TV 10+ and Fire OS 8 devices (Android 11 base) work; **Fire OS 7 sticks (Android 9 base) cannot run the engine** |
+| React Native app (`@aliran/react-native`), P2P engine | **Android 10 (API level 29)** or newer, 64-bit device; peers: `react ≥ 18`, `react-native-bare-kit ≥ 0.13.3`, `react-native-video` v6. Tested against `react-native-tvos` 0.83 (New Architecture) | `react-native-bare-kit` sets `minSdkVersion 29` — the engine worklet cannot load on Android 9 or older (libc ELF-TLS dependency, not a pin), so an app that ships the engine must set `minSdkVersion ≥ 29` |
+| Android TV / Fire TV | Same **Android 10 / API 29** engine floor | Android TV 10+ and Fire OS 8 devices (Android 11 base) work; **Fire OS 7 sticks (Android 9 base) cannot run the engine** |
 | Desktop player (`desktop/`) | **Windows 10 or newer** (x64) · **macOS 13 Ventura or newer** (Apple silicon + Intel) | Electron 37 platform floors. HEVC channels additionally need platform hardware decode ([codecs](desktop-player.md#5-codecs-what-this-player-can-decode)) |
 | Bare / custom runtimes | The Bare runtime + the addon set `react-native-bare-kit` 0.13.x links | See the [Bare section of the install guide](sdk-guide.md#bare-custom-runtimes) |
+| React Native app, **legacy build** (engine excluded) | **Android 7 (API 24)** — React Native 0.76+'s own hard floor (its prebuilds are built for 24; the build rejects lower) | A build flavor that excludes `react-native-bare-kit` from autolinking installs on Android 7–9; the SDK is then **silently inactive** (`AliranBackend.isSupported()` → `false`, every call a safe no-op) and the app provides its own content path. No P2P data is reachable below Android 10, and Android 6 can't run a current-RN app at all. [Recipe](sdk-guide.md#older-android-79-legacy-builds--the-sdk-goes-silent) |
 
 (Android "SDK level"/"API level" mapping, since device spec sheets use both:
 **API 29 = Android 10**, 30 = 11, 31/32 = 12, 33 = 13, 34 = 14, 35 = 15.)

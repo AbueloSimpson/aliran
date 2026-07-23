@@ -1,7 +1,15 @@
 buildscript {
     ext {
         buildToolsVersion = "36.0.0"
-        minSdkVersion = 29 // react-native-bare-kit requires minSdk 29
+        // react-native-bare-kit requires minSdk 29: its libbare-kit.so needs ELF TLS,
+        // a libc feature added in Android 10 (docs/kb/android-build.md). The legacy
+        // flavor (ALIRAN_LEGACY=1) excludes bare-kit from autolinking entirely
+        // (../react-native.config.js) so the APK installs down to Android 7 — the
+        // engine is then absent and the SDK stays silently inactive. 24 is RN 0.83's
+        // own hard floor: its prebuilds are built for API 24 and prefab REJECTS a
+        // lower minSdk at build time ("library was built for 24"), so Android 6 is
+        // out of reach for any app on this RN generation.
+        minSdkVersion = System.getenv("ALIRAN_LEGACY") == "1" ? 24 : 29
         compileSdkVersion = 36
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"

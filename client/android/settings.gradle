@@ -1,5 +1,20 @@
 pluginManagement { includeBuild("../node_modules/@react-native/gradle-plugin") }
 plugins { id("com.facebook.react.settings") }
+
+// Legacy flavor (ALIRAN_LEGACY=1, docs/sdk-guide.md "Older Android"): the autolink
+// command honours react-native.config.js (which drops react-native-bare-kit), but its
+// output is CACHED keyed on lock-file hashes only — an env flip alone would silently
+// reuse the other mode's module set. Deleting the cached JSON when the recorded mode
+// differs forces the command to re-run.
+def autolinkDir = new File(rootDir, "build/generated/autolinking")
+def modeFile = new File(autolinkDir, "aliran-mode")
+def mode = System.getenv("ALIRAN_LEGACY") == "1" ? "legacy" : "full"
+if (!modeFile.exists() || modeFile.text != mode) {
+    new File(autolinkDir, "autolinking.json").delete()
+    autolinkDir.mkdirs()
+    modeFile.text = mode
+}
+
 extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
 rootProject.name = 'AliranClient'
 include ':app'

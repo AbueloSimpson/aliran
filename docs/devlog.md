@@ -2003,3 +2003,45 @@ and the runner produced all four artifacts (`Aliran-0.1.0-arm64.dmg`,
 run log. Honest scope note: the artifacts are CI-built and the packaging path
 is proven, but a first-launch pass on physical Apple hardware (Gatekeeper
 flow, login, P2P playback) is still pending access to a Mac.
+
+### Legacy Android builds — the SDK goes silent below the engine floor (verified on an Android 7 emulator)
+
+Operators still run Android 6–9 set-top boxes, and the app hard-capped at
+`minSdk 29` — the engine's `libbare-kit.so` needs ELF TLS, a libc feature
+Android added in 10, so the floor is physical. The decided contract: the SDK
+must work in every build and simply be **silent** where the engine can't
+exist; the host app detects that and mounts its own legacy/CDN mode.
+
+Two build-system discoveries shaped the implementation. First, bare-kit is a
+C++ TurboModule **statically linked into `libappmodules.so`** — on an old
+device the dlopen failure hits at React init, before any JS, so no JS gate
+can save an APK that still links it. The legacy flavor (`ALIRAN_LEGACY=1`)
+therefore **excludes** `react-native-bare-kit` from autolinking
+(`client/react-native.config.js`) and drops `minSdk`; `settings.gradle`
+dirties the autolinking cache when the mode flips, because that cache keys on
+lock-file hashes and would otherwise silently reuse the other mode's module
+set. Second, the obvious JS gate — "does `require('react-native-bare-kit')`
+throw?" — is defeated by Metro's release-mode **inline requires**, which
+defer the package's native-spec require (and its "TurboModule missing" throw)
+from package load into the `Worklet` constructor; the first on-emulator run
+crashed exactly there. `AliranBackend.isSupported()` now checks
+`TurboModuleRegistry.get('BareKit')` directly (authoritative on-device) with
+a construct-a-Worklet probe as the fallback for mocked test environments —
+on an engine-less device the deferred throw lands inside the caught probe,
+before `NativeBareKit.init`, so it has no native side effects. When the
+verdict is "absent", `start()` flips the backend inactive: every method is a
+safe no-op, nothing queues, no listener ever fires.
+
+The plan's Android 6 hope died honestly: RN 0.76+ prebuilds are **built for
+API 24**, and gradle rejects `minSdk 23` at configure time (prefab:
+*"library was built for 24"*) — so the legacy floor is **Android 7**, and
+Android 6 boxes cannot run any current-RN app at all. Verified: 54 client
+jest tests green (incl. new engineless-contract tests), the legacy APK
+carries zero `bare`/`sodium`/`udx` libraries and `sdkVersion 24`
+(`libappmodules.so` readelf shows no bare-kit `DT_NEEDED`), it boots on an
+Android 7 emulator to the branded "this device can't run the P2P engine"
+notice with zero exceptions over a sustained window, and the rebuilt modern
+flavor still boots the engine to `{"type":"ready"}` against the production
+panel (the lazy Worklet construction is the only shared-path change). A
+physical pass on the old Fire OS 7 stick is pending it being reachable over
+adb.

@@ -15,10 +15,13 @@
 // every color/string flows from the service descriptor via theme.ts).
 
 import React, { useEffect, useState } from 'react'
+import { StyleSheet, Text, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
+import { AliranBackend } from '@aliran/react-native'
 import { backend } from './worklet'
 import { hasBakedKey, loadServiceDescriptor } from './config'
+import { theme } from './theme'
 import { SplashScreen } from './screens/SplashScreen'
 import { ConnectScreen } from './screens/ConnectScreen'
 import { LoginScreen } from './screens/LoginScreen'
@@ -47,10 +50,51 @@ const Stack = createNativeStackNavigator<RootStackParamList>()
 let NetInfo: { addEventListener: (fn: (s: any) => void) => () => void } | null = null
 try { NetInfo = require('@react-native-community/netinfo').default } catch { NetInfo = null }
 
+// A build either ships the bare-kit native module or not — resolved once. False in
+// the legacy flavor (ALIRAN_LEGACY=1: bare-kit excluded so the APK can install below
+// Android 10; the engine's native runtime cannot load there — see docs/sdk-guide.md
+// "Older Android"). The backend is then silently inactive, so instead of an eternal
+// splash the app says so plainly. This is also the reference for SDK hosts: gate on
+// isSupported() and mount your own legacy/CDN mode in the unsupported branch.
+const engineSupported = AliranBackend.isSupported()
+
+function EngineUnavailable () {
+  return (
+    <View style={styles.unsupportedRoot}>
+      <Text style={styles.unsupportedTitle}>{loadServiceDescriptor().name}</Text>
+      <Text style={styles.unsupportedBody}>
+        This device can't run the P2P engine — Android 10 or newer is required.
+      </Text>
+    </View>
+  )
+}
+
+const styles = StyleSheet.create({
+  unsupportedRoot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.safeX,
+    backgroundColor: theme.colors.background
+  },
+  unsupportedTitle: {
+    color: theme.colors.text,
+    fontSize: theme.type.title,
+    fontWeight: '700',
+    marginBottom: theme.spacing(1)
+  },
+  unsupportedBody: {
+    color: theme.colors.textDim,
+    fontSize: theme.type.body,
+    textAlign: 'center'
+  }
+})
+
 export default function App () {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
+    if (!engineSupported) return // nothing to boot — the backend would no-op anyway
     const service = loadServiceDescriptor()
     const off = backend.onMessage((m) => {
       if (m.type === 'ready') setReady(true)
@@ -69,6 +113,8 @@ export default function App () {
     } catch { /* native module absent (stale APK / jest) — expensive-network gate just stays off */ }
     return () => { off(); if (offNet) offNet() }
   }, [])
+
+  if (!engineSupported) return <EngineUnavailable />
 
   return (
     <NavigationContainer>

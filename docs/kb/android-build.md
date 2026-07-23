@@ -93,11 +93,32 @@ Windows. Start Metro **after** the build finishes.
   (`LIBC_Q`=29, `R`=30, …). Zero hits = the manifest pin is conservative and may be
   overridable; a GLOBAL hit = hard floor.
 - **Fire TV consequence:** Fire OS 7 devices (Android 9 — every 2018–2021 stick,
-  incl. Fire TV Stick 4K Max 1st gen) **cannot run the client**. Fire OS 8 devices
+  incl. Fire TV Stick 4K Max 1st gen) **cannot run the engine**. Fire OS 8 devices
   (Android 11 — 2023 4K/4K Max, Cube 3rd gen, Omni/4-Series TVs) work. Most sticks
   are **32-bit** (`armeabi-v7a` only) — probe with
   `adb shell getprop ro.product.cpu.abilist` and build with
   `-PreactNativeArchitectures=armeabi-v7a` (bare-kit ships armv7 prebuilds).
+- **Legacy flavor (`ALIRAN_LEGACY=1`) — the app below the floor, engine silent:**
+  building with that env var set excludes `react-native-bare-kit` from
+  autolinking (`client/react-native.config.js`) and drops `minSdkVersion` to 24,
+  so the APK installs on Android 7–9 with the SDK **silently inactive**
+  (`AliranBackend.isSupported()` → false; the app shows its unsupported notice
+  instead of the eternal splash). Exclusion is what makes this safe: bare-kit is
+  statically linked into `libappmodules.so`, so lowering minSdk while still
+  linking it crashes at React init, before any JS. `client/android/settings.gradle`
+  dirties the autolinking cache when the mode flips (the cache keys on lock-file
+  hashes, NOT env — without that, flipping the env silently reuses the other
+  mode's module set). After building, sanity-check the flavor:
+  `unzip -l app-release.apk | grep bare` must be EMPTY for legacy, and
+  `aapt dump badging app-release.apk | grep sdkVer` must say 24.
+- **Why 24, not lower: React Native's own floor, enforced at build time.**
+  Attempting minSdk 23 fails `:app:configureCMakeRelWithDebInfo` with prefab's
+  `NoMatchingLibraryException: … User has minSdkVersion 23 but library was
+  built for 24 [//ReactAndroid/hermestooling]` — RN 0.76+ ships all Android
+  prebuilds built for API 24. So **Android 6 (API 23) cannot run any app on a
+  current RN generation**, with or without the engine. The only path that could
+  ever bring P2P itself below API 29 is upstream: Holepunch shipping
+  pre-Android-10 bare-kit prebuilds without the ELF-TLS dependency.
 
 ## Debug builds on a physical device: point Metro over the LAN, skip `adb reverse`
 

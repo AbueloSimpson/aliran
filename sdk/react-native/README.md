@@ -78,6 +78,15 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
 Requirements: peers `react-native-bare-kit` (min SDK 29) and `react-native-video`;
 Android release builds need cleartext-to-loopback permitted for the local media
 server (see the [client build guide](https://abuelosimpson.github.io/aliran/client-build/)).
+
+**Older Android (below 10 / API 29):** the engine's native runtime cannot load
+there — that floor is a libc symbol dependency, not a pin. The SDK itself still
+works in such builds: exclude `react-native-bare-kit` from Android autolinking in
+your legacy flavor, and the backend stays **silently inactive** (`start()` and every
+method are safe no-ops; no message ever fires). Gate on
+`AliranBackend.isSupported()` to switch your app into its own legacy/CDN mode —
+below Android 10 no P2P data is reachable at all. Recipe + details in the
+[SDK guide](https://abuelosimpson.github.io/aliran/sdk-guide/).
 Ships TypeScript source (Metro consumes it
 directly); if the package lives outside your app root (monorepo / `file:` dep), add
 its path to Metro `watchFolders` and map its peers in `tsconfig` paths — see

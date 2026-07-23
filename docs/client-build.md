@@ -24,6 +24,31 @@ Consequences for TV hardware:
   (`adb connect <tv-ip>:5555`); the manifest already declares
   `LEANBACK_LAUNCHER` + a TV banner, so the app appears in the TV launcher.
 
+### Legacy flavor for Android 7–9 (engine excluded, SDK silent)
+
+The floor above is the **engine's**. For fleets on older devices (Android 7+
+set-top boxes, Fire OS 7 sticks) build the **legacy flavor**: set
+`ALIRAN_LEGACY=1` in the environment for the whole build (bundle + gradle):
+
+```bash
+# Windows PowerShell:  $env:ALIRAN_LEGACY = '1'
+ALIRAN_LEGACY=1 ./gradlew :app:assembleRelease
+```
+
+This excludes `react-native-bare-kit` from autolinking
+(`client/react-native.config.js`) and drops `minSdkVersion` to 24, so the APK
+installs down to Android 7. On such devices the SDK is **silently inactive**
+(`AliranBackend.isSupported()` returns false) and the app shows a plain
+"engine unavailable" notice — there is no P2P playback path below Android 10,
+period (the catalog itself only exists over the swarm). Android 7 is React
+Native's own floor, not ours: RN 0.76+ prebuilds are built for API 24 and the
+build rejects a lower minSdk, so **Android 6 devices can't run a current-RN
+app at all**. Sanity-check the output:
+`unzip -l app-release.apk | grep bare` must be empty, `aapt dump badging … |
+grep sdkVer` must say 24. Don't ship a legacy APK to Android 10+ users — it has
+no engine. Details and the why in the
+[Android build KB](kb/android-build.md#device-floor-android-10--the-bare-runtime-needs-elf-tls).
+
 ## Prerequisites (the main hurdle)
 
 Install in order:

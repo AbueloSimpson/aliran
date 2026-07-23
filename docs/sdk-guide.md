@@ -53,15 +53,71 @@ Peer requirements and platform notes:
 | `react-native-bare-kit` | ≥ 0.13.3 | Hosts the engine worklet. **Requires `minSdkVersion` 29.** |
 | `b4a` | ^1.6.6 | Buffer shim shared with the engine. |
 
-**Device floor: Android 10 (API level 29), 64-bit.** `react-native-bare-kit`
-sets `minSdkVersion 29`, so your app's `minSdkVersion` must be ≥ 29 and the
-engine worklet simply cannot load on Android 9 or older — this is a hard floor
-of the native P2P stack, not a preference. It applies identically to phones,
-tablets, Android TV, and Fire TV: Fire OS 8 devices (Android 11 base) work,
-**Fire OS 7 sticks (Android 9 base) do not**. The shipped prebuilds cover
-`arm64-v8a` and `x86_64` (emulators) plus 32-bit ABIs for custom builds, but the
-public APKs are 64-bit. The binding is exercised on Android (phone + TV);
-iOS is not currently a supported target of the shipped stack.
+**Engine floor: Android 10 (API level 29), 64-bit.** `react-native-bare-kit`
+sets `minSdkVersion 29`, and the engine worklet simply cannot load on Android 9
+or older — this is a hard floor of the native P2P stack, not a preference
+(`libbare-kit.so` needs ELF TLS, a libc feature added in Android 10 — the full
+forensics are in the [Android build KB](kb/android-build.md)). It applies
+identically to phones, tablets, Android TV, and Fire TV: Fire OS 8 devices
+(Android 11 base) work, **Fire OS 7 sticks (Android 9 base) do not**. The
+shipped prebuilds cover `arm64-v8a` and `x86_64` (emulators) plus 32-bit ABIs
+for custom builds, but the public APKs are 64-bit. The binding is exercised on
+Android (phone + TV); iOS is not currently a supported target of the shipped
+stack. The **SDK itself** runs below that floor — silently inactive — see the
+next section.
+
+#### Older Android (7–9): legacy builds — the SDK goes silent
+
+Fleets still run Android 7–9 set-top boxes. On those devices **no P2P data is
+reachable at all** — swarm, catalog, and login all live inside the native
+runtime that cannot load there — so the SDK's contract is *silent inactivity*,
+and your app supplies its own content path (its "legacy mode", e.g. plain
+CDN/HLS URLs you deliver outside this SDK).
+
+Two things make a legacy build work:
+
+1. **Exclude `react-native-bare-kit` from your legacy flavor's autolinking.**
+   This is mandatory, not an optimization: bare-kit is a C++ TurboModule
+   statically linked into your app's `libappmodules.so`, so an APK that merely
+   lowers `minSdkVersion` while still linking it **crashes at React init on
+   Android 9 and older** — before any JS runs. In `react-native.config.js`:
+
+   ```js
+   // legacy flavor only (e.g. gated on an env var):
+   module.exports = {
+     dependencies: { 'react-native-bare-kit': { platforms: { android: null } } }
+   }
+   ```
+
+   and drop your `minSdkVersion` in the same gate. The shipped app's
+   `client/react-native.config.js` + `client/android/build.gradle` +
+   `client/android/settings.gradle` are the working reference (the settings
+   script also dirties the autolinking cache when the flavor flips — the cache
+   keys on lock files, not env). Build both flavors from one codebase; ship the
+   modern APK to Android 10+ and the legacy APK to older devices.
+
+2. **Gate on `AliranBackend.isSupported()`.** In a legacy build (or any build
+   where the native module is missing) it returns `false`, and the whole
+   backend is inert: `start()` and every other method are safe no-ops, nothing
+   throws, nothing queues, and no `onMessage` listener ever fires. Branch there:
+
+   ```tsx
+   if (AliranBackend.isSupported()) {
+     backend.start(bundle, { panelPubKey })   // full P2P path
+   } else {
+     mountYourLegacyMode()                    // your own CDN/HLS delivery
+   }
+   ```
+
+Practical floor: **Android 7 (API 24)** — that one is React Native's, not
+ours. RN 0.76+ prebuilds (incl. the 0.83 the shipped app uses) are built for
+API 24, and the build system rejects a lower `minSdkVersion` outright
+(prefab: *"User has minSdkVersion 23 but library was built for 24"*). So
+**Android 6 devices cannot run any app on a current RN generation**, engine or
+no engine — a fleet stuck on Android 6 needs a non-RN app or newer boxes. And
+the only thing that could ever bring *P2P itself* below Android 10 is
+Holepunch shipping pre-API-29 `bare-kit` prebuilds (an upstream ask, not an
+app-side fix).
 
 Three things the host app must provide:
 
