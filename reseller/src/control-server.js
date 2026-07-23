@@ -26,7 +26,7 @@ import {
   addPrincipal, removePrincipal, listPrincipals, getPrincipal, principalSummary,
   setPrincipalPassword, setPrincipalStatus, setPrincipalLimits
 } from './control-auth.js'
-import { requireCap, requireManage, canManage, accountScope, inAccountScope, ROLES } from './roles.js'
+import { can, requireCap, requireManage, canManage, accountScope, ROLES } from './roles.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
@@ -175,6 +175,28 @@ export function startControlServer (ctx, opts = {}) {
       }
     }
 
+    if (r1 === 'credits' && seg.length === 3 && req.method === 'POST' && ctx.ledger) {
+      const b = await readJson(req)
+      if (r2 === 'mint') return sendJson(res, 200, await ctx.mutex(() => mint(ctx, me, b)))
+      if (r2 === 'transfer') return sendJson(res, 200, await ctx.mutex(() => transfer(ctx, me, b)))
+      if (r2 === 'reclaim') return sendJson(res, 200, await ctx.mutex(() => reclaim(ctx, me, b)))
+      if (r2 === 'adjust') return sendJson(res, 200, await ctx.mutex(() => adjust(ctx, me, b)))
+    }
+
+    if (r1 === 'ledger' && seg.length === 2 && req.method === 'GET' && ctx.ledger) {
+      const q = url.searchParams
+      const scope = can(me, 'ledger:view-all') ? '*' : accountScope(loadPrincipals(ctx.dataDir), me)
+      const before = q.get('before') ? parseInt(q.get('before'), 10) : undefined
+      const limit = q.get('limit') ? parseInt(q.get('limit'), 10) : undefined
+      return sendJson(res, 200, ctx.ledger.list({
+        principal: q.get('principal') || undefined,
+        account: q.get('account') || undefined,
+        type: q.get('type') || undefined,
+        before: Number.isInteger(before) ? before : undefined,
+        limit: Number.isInteger(limit) ? limit : undefined
+      }, scope))
+    }
+
     sendJson(res, 404, { error: 'not found' })
   }
 
@@ -258,6 +280,74 @@ function deletePrincipal (ctx, me, name) {
     if (bal > 0) ctx.ledger.append({ type: 'RECLAIM', actor: me.name, entries: [{ principal: name, delta: -bal }, { principal: me.name, delta: bal }], note: `reclaim on delete of ${name}` })
   }
   return removePrincipal(ctx, name)
+}
+
+// --- credits (all called under the service mutex: check-then-append can't race) ---
+
+const AMOUNT_MAX = 1000000
+
+function checkAmount (n) {
+  if (!Number.isInteger(n) || n <= 0 || n > AMOUNT_MAX) throw new ControlError('bad-request', `amount must be an integer 1-${AMOUNT_MAX}`)
+}
+
+function mustExist (ctx, name) {
+  const p = loadPrincipals(ctx.dataDir)[name]
+  if (!p) throw new ControlError('not-found', `no such principal: ${name}`)
+  return p
+}
+
+// Credits come from nothing exactly here (and the CLI's offline mint).
+function mint (ctx, me, { to, amount, note }) {
+  requireCap(me, 'credits:mint')
+  checkAmount(amount)
+  const target = to || me.name
+  mustExist(ctx, target)
+  const line = ctx.ledger.append({ type: 'MINT', actor: me.name, entries: [{ principal: target, delta: amount }], note: noteStr(note) })
+  return { seq: line.seq, to: target, amount, balance: ctx.ledger.balance(target) }
+}
+
+// Downward allocation: strict zero-sum pair, and the payer's balance must cover it
+// (admins included — an admin wanting free credits mints first; the ledger stays
+// honest about where every credit came from).
+function transfer (ctx, me, { to, amount, note }) {
+  requireCap(me, 'credits:transfer')
+  checkAmount(amount)
+  const principals = loadPrincipals(ctx.dataDir)
+  const target = principals[to]
+  if (!target) throw new ControlError('not-found', `no such principal: ${to}`)
+  if (to === me.name) throw new ControlError('bad-request', 'cannot transfer to yourself')
+  if (me.role === 'super' && target.parent !== me.name) throw new ControlError('forbidden', 'a super reseller funds only its own resellers')
+  if (ctx.ledger.balance(me.name) < amount) throw new ControlError('insufficient-credits', `balance ${ctx.ledger.balance(me.name)} < ${amount}`)
+  const line = ctx.ledger.append({ type: 'TRANSFER', actor: me.name, entries: [{ principal: me.name, delta: -amount }, { principal: to, delta: amount }], note: noteStr(note) })
+  return { seq: line.seq, to, amount, balance: ctx.ledger.balance(me.name) }
+}
+
+// Pull-back, capped at whatever the child still holds.
+function reclaim (ctx, me, { from, amount }) {
+  requireCap(me, 'credits:reclaim')
+  checkAmount(amount)
+  const principals = loadPrincipals(ctx.dataDir)
+  const source = principals[from]
+  if (!source) throw new ControlError('not-found', `no such principal: ${from}`)
+  if (from === me.name) throw new ControlError('bad-request', 'cannot reclaim from yourself')
+  if (me.role === 'super' && source.parent !== me.name) throw new ControlError('forbidden', 'a super reseller reclaims only from its own resellers')
+  const held = ctx.ledger.balance(from)
+  const take = Math.min(amount, held)
+  if (take <= 0) throw new ControlError('insufficient-credits', `"${from}" holds no credits`)
+  const line = ctx.ledger.append({ type: 'RECLAIM', actor: me.name, entries: [{ principal: from, delta: -take }, { principal: me.name, delta: take }], note: '' })
+  return { seq: line.seq, from, amount: take, balance: ctx.ledger.balance(me.name) }
+}
+
+function adjust (ctx, me, { principal, delta, note }) {
+  requireCap(me, 'credits:adjust')
+  if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > AMOUNT_MAX) throw new ControlError('bad-request', `delta must be a non-zero integer within ±${AMOUNT_MAX}`)
+  mustExist(ctx, principal)
+  const line = ctx.ledger.append({ type: 'ADJUST', actor: me.name, entries: [{ principal, delta }], note: noteStr(note) })
+  return { seq: line.seq, principal, delta, balance: ctx.ledger.balance(principal) }
+}
+
+function noteStr (note) {
+  return typeof note === 'string' ? note.slice(0, 200) : ''
 }
 
 // Suspend/reactivate with the optional with-accounts mode (bulk panel disable) —

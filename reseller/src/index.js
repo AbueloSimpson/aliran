@@ -7,6 +7,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { config as baseConfig } from './config.js'
 import { makeMutex } from './store.js'
+import { openLedger } from './ledger.js'
 import { startControlServer } from './control-server.js'
 
 // Nested-aware config merge for tests/embedders: top-level scalars replace, the
@@ -26,6 +27,7 @@ export async function startReseller (overrides = {}) {
     dataDir: config.dataDir,
     mutex: makeMutex()
   }
+  ctx.ledger = openLedger(config.dataDir)
 
   const control = await startControlServer(ctx, {
     host: config.control.host,
