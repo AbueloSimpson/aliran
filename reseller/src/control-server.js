@@ -26,7 +26,7 @@ import {
   addPrincipal, removePrincipal, listPrincipals, getPrincipal, principalSummary,
   setPrincipalPassword, setPrincipalStatus, setPrincipalLimits
 } from './control-auth.js'
-import { can, requireCap, requireManage, canManage, accountScope, ROLES } from './roles.js'
+import { can, requireCap, requireManage, canManage, accountScope, inAccountScope, ROLES } from './roles.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
@@ -175,6 +175,91 @@ export function startControlServer (ctx, opts = {}) {
       }
     }
 
+    if (r1 === 'panel' && seg.length === 3 && r2 === 'status' && req.method === 'GET' && ctx.panel) {
+      requireCap(me, 'panel:status')
+      return sendJson(res, 200, await ctx.panel.status())
+    }
+
+    // Catalog passthrough for the grants picker — any role, 60 s server cache so a
+    // busy dashboard never hammers the panel.
+    if (r1 === 'streams' && seg.length === 2 && req.method === 'GET' && ctx.panel) {
+      if (!streamsCache.data || Date.now() - streamsCache.at > 60000) {
+        streamsCache.data = await ctx.panel.streams()
+        streamsCache.at = Date.now()
+      }
+      return sendJson(res, 200, streamsCache.data)
+    }
+
+    if (r1 === 'accounts' && ctx.accounts) {
+      requireCap(me, 'accounts:manage')
+      if (seg.length === 2) {
+        if (req.method === 'GET') {
+          const q = url.searchParams
+          const scope = accountScope(loadPrincipals(ctx.dataDir), me)
+          return sendJson(res, 200, ctx.accounts.list({
+            owner: q.get('owner') || undefined,
+            status: q.get('status') || undefined,
+            q: q.get('q') || undefined,
+            after: q.get('after') || undefined,
+            limit: q.get('limit') ? parseInt(q.get('limit'), 10) : undefined
+          }, scope))
+        }
+        if (req.method === 'POST') {
+          const b = await readJson(req)
+          return sendJson(res, 201, await ctx.mutex(() => ctx.accounts.activate(me, b)))
+        }
+      }
+      if (seg.length >= 3) {
+        const acct = r2
+        requireAccountScope(ctx, me, acct)
+        if (seg.length === 3) {
+          if (req.method === 'GET') {
+            const out = ctx.accounts.get(acct)
+            try {
+              const live = await ctx.panel.req('GET', `/api/users/${encodeURIComponent(acct)}`)
+              out.live = { status: live.status, grants: live.grants, maxDevices: live.maxDevices, devices: live.devices }
+            } catch { out.live = null }
+            return sendJson(res, 200, out)
+          }
+          if (req.method === 'DELETE') return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.remove(me, acct)))
+        }
+        if (seg.length === 4) {
+          if (r3 === 'renew' && req.method === 'POST') {
+            const b = await readJson(req)
+            return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.renew(me, acct, b.months)))
+          }
+          if (r3 === 'status' && req.method === 'POST') {
+            const b = await readJson(req)
+            return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.setStatus(me, acct, b.status)))
+          }
+          if (r3 === 'password' && req.method === 'POST') {
+            const b = await readJson(req)
+            return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.setPassword(me, acct, b.password)))
+          }
+          if (r3 === 'max-devices' && req.method === 'POST') {
+            const b = await readJson(req)
+            return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.setMaxDevices(me, acct, b.maxDevices)))
+          }
+          if (r3 === 'grants' && req.method === 'POST') {
+            const b = await readJson(req)
+            return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.addGrant(me, acct, b.streamId)))
+          }
+          if (r3 === 'devices' && req.method === 'GET') return sendJson(res, 200, await ctx.accounts.devices(me, acct))
+          if (r3 === 'logout-all' && req.method === 'POST') return sendJson(res, 200, await ctx.accounts.logoutAll(me, acct))
+        }
+        if (seg.length === 5) {
+          if (r3 === 'grants' && req.method === 'DELETE') return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.removeGrant(me, acct, seg[4])))
+          if (r3 === 'devices' && req.method === 'DELETE') return sendJson(res, 200, await ctx.accounts.revokeDevice(me, acct, seg[4]))
+        }
+      }
+    }
+
+    if (r1 === 'trials' && seg.length === 2 && req.method === 'POST' && ctx.accounts) {
+      requireCap(me, 'trials:create')
+      const b = await readJson(req)
+      return sendJson(res, 201, await ctx.mutex(() => ctx.accounts.trial(me, b)))
+    }
+
     if (r1 === 'credits' && seg.length === 3 && req.method === 'POST' && ctx.ledger) {
       const b = await readJson(req)
       if (r2 === 'mint') return sendJson(res, 200, await ctx.mutex(() => mint(ctx, me, b)))
@@ -280,6 +365,18 @@ function deletePrincipal (ctx, me, name) {
     if (bal > 0) ctx.ledger.append({ type: 'RECLAIM', actor: me.name, entries: [{ principal: name, delta: -bal }, { principal: me.name, delta: bal }], note: `reclaim on delete of ${name}` })
   }
   return removePrincipal(ctx, name)
+}
+
+// One per-process catalog cache is enough — a single service instance.
+const streamsCache = { at: 0, data: null }
+
+// Account ops need the record's OWNER inside the caller's scope. 404 for a name
+// that doesn't exist, 403 for one that exists outside the scope.
+function requireAccountScope (ctx, me, acct) {
+  const rec = ctx.accounts.records()[acct]
+  if (!rec || rec.status === 'deleted') throw new ControlError('not-found', `no such account: ${acct}`)
+  const scope = accountScope(loadPrincipals(ctx.dataDir), me)
+  if (!inAccountScope(scope, rec.owner)) throw new ControlError('forbidden', `account "${acct}" is outside your scope`)
 }
 
 // --- credits (all called under the service mutex: check-then-append can't race) ---

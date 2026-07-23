@@ -8,6 +8,8 @@ import { fileURLToPath } from 'url'
 import { config as baseConfig } from './config.js'
 import { makeMutex } from './store.js'
 import { openLedger } from './ledger.js'
+import { makePanelClient } from './panel-client.js'
+import { makeAccounts } from './accounts.js'
 import { startControlServer } from './control-server.js'
 
 // Nested-aware config merge for tests/embedders: top-level scalars replace, the
@@ -28,6 +30,8 @@ export async function startReseller (overrides = {}) {
     mutex: makeMutex()
   }
   ctx.ledger = openLedger(config.dataDir)
+  ctx.panel = makePanelClient(config)
+  ctx.accounts = makeAccounts(ctx)
 
   const control = await startControlServer(ctx, {
     host: config.control.host,
