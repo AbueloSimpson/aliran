@@ -39,9 +39,12 @@ Android asks you to allow the install:
   same "unknown sources" question, same **Install**. The app then appears in
   the TV launcher's app row like any other channel app.
 
-The app needs **Android 10 or newer** — that's a hard floor of the P2P engine,
-not a preference (older devices, including all Fire OS 7 sticks, cannot load
-it). Most TVs and phones from 2020 on are fine.
+Playback needs **Android 10 or newer** — that's a hard floor of the P2P
+engine, not a preference (older devices, including all Fire OS 7 sticks,
+cannot load it). Most TVs and phones from 2020 on are fine. The current
+downloads only install on Android 10+; newer operator-distributed builds may
+install from Android 7 but show an "engine unavailable" notice on anything
+below 10 — either way, older devices cannot play.
 
 **Why the "unknown sources" warning?** Community builds are distributed
 directly, not through Play. The warning is Android's standard gate for that.

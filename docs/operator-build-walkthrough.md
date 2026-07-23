@@ -95,7 +95,10 @@ on [White-label branding](white-label.md).
 keystore by default — generate your own keystore and wire it into
 `client/android/app/build.gradle` first
 ([signing guide](https://reactnative.dev/docs/signed-apk-android)). One APK
-covers phones **and** Android TV; Android 10 is the floor.
+covers phones **and** Android TV, and installs from **Android 7** — the P2P
+engine activates on Android 10+ and stays silent below (the app shows an
+"engine unavailable" notice there; see the
+[client build guide](client-build.md)).
 
 ## 4. Custom Windows exe
 

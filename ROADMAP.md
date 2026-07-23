@@ -154,10 +154,20 @@ following only the docs.
   with viewer auth via a panel HTTP endpoint. Trade-off to state up front: gateway
   viewers don't re-seed — for them the gateway is a mini-CDN, so it re-centralizes
   bandwidth for exactly that audience. Big synergy: the same gateway unlocks
-  **legacy devices below the Android 10 Bare floor** (e.g. Fire OS 7 sticks — see
-  [client build](docs/client-build.md)) as CDN-only clients of their own service.
+  **legacy devices below the Android 10 Bare floor** (Android 7–9 boxes, Fire
+  OS 7 sticks — the single APK already installs and runs there with the engine
+  silent, see [client build](docs/client-build.md)) as CDN-only clients of
+  their own service: it is the natural "other method" an app offers when
+  `AliranBackend.isSupported()` is false.
   True in-browser P2P (WebRTC/WebTransport swarm bridge) stays a separate research
   item on top of this.
+- ⬜ **SDK unsupported-device hook** — a first-class way for embedding apps to
+  surface the "engine can't run here" state (single-APK installs on Android
+  7–9) and offer the viewer an alternative: an exported, brandable
+  `<EngineNotice>`-style component plus a documented `isSupported()` seam and
+  example of switching to a dev-provided fallback method (their own CDN/HLS
+  path — or the web gateway above once it exists). The SDK stays
+  content-agnostic: it provides the notice and the switch, never the delivery.
 - ⬜ Chat / interactivity alongside live streams
 - ⬜ **Multi-admin (Autobase) catalogs** — fully independent catalog writers, beyond
   the scoped-publisher model above

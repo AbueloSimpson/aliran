@@ -4,19 +4,23 @@ The client is a **React Native** app using **`react-native-tvos`** so one codeba
 targets phone/tablet and Android TV. It embeds **Bare** via `react-native-bare-kit`
 and will **not** run in Expo Go — it needs a real native build.
 
-## Device requirements — Android 10+ is a hard floor
+## Device requirements — the APK installs from Android 7; P2P needs Android 10+
 
 `react-native-bare-kit`'s Bare runtime is built with native ELF TLS
 (`__tls_get_addr`, added to Android's libc in **Android 10 / API 29**), so the
 dynamic linker on Android 9 and older **cannot load the P2P engine at all** —
-minSdk 29 is a real floor, not a conservative pin (verified: the loader needs
-`__tls_get_addr@LIBC_Q`, a hard GLOBAL import in `libbare-kit.so`).
+that is a real floor, not a conservative pin (verified: the loader needs
+`__tls_get_addr@LIBC_Q`, a hard GLOBAL import in `libbare-kit.so`). The **app**
+is no longer capped by it: the standard build is a single `minSdk 24` APK that
+loads the engine only where it can run (next section).
 
 Consequences for TV hardware:
 
-- **Fire TV**: Fire OS 8 devices work (Android 11 — Fire TV Stick 4K / 4K Max
-  **2nd gen, 2023**, Fire TV Cube 3rd gen, Omni/4-Series TVs). **Fire OS 7 devices
-  do not** (Android 9 — every 2018–2021 stick, including the 4K Max 1st gen).
+- **Fire TV**: Fire OS 8 devices get full P2P (Android 11 — Fire TV Stick 4K /
+  4K Max **2nd gen, 2023**, Fire TV Cube 3rd gen, Omni/4-Series TVs). **Fire
+  OS 7 devices** (Android 9 — every 2018–2021 stick, including the 4K Max
+  1st gen) install and run the app, but the engine stays silent there
+  (verified on a 4K Max 1st gen).
 - Most Fire TV sticks expose a **32-bit userland** (`armeabi-v7a` only — check with
   `adb shell getprop ro.product.cpu.abilist`): build with
   `gradlew :app:assembleRelease -PreactNativeArchitectures=armeabi-v7a`

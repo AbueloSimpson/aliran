@@ -50,7 +50,7 @@ Peer requirements and platform notes:
 | `react` | ≥ 18 | |
 | `react-native` | `*` | Deliberately unpinned: TV apps install it as an npm **alias of `react-native-tvos`**, whose prerelease versions fail any strict semver range. With those, install with `--legacy-peer-deps`. |
 | `react-native-video` | ^6 | Renders the HLS. |
-| `react-native-bare-kit` | ≥ 0.13.3 | Hosts the engine worklet. **Requires `minSdkVersion` 29.** |
+| `react-native-bare-kit` | ≥ 0.13.3 | Hosts the engine worklet. Stock package **requires `minSdkVersion` 29**; the [lazy-load patch](#older-android-79-one-apk-the-engine-gates-itself-at-runtime) lowers it to 24 for single-APK builds. |
 | `b4a` | ^1.6.6 | Buffer shim shared with the engine. |
 
 **Engine floor: Android 10 (API level 29), 64-bit.** `react-native-bare-kit`
