@@ -80,8 +80,11 @@ Shipped:
 
 Open:
 
-- ⬜ Panel **HA / threshold OPRF** across replicas; documented backup & key-rotation runbooks
-- ⬜ Hardening pass + **independent security review** of the crypto paths
+- ⬜ Panel **backup & restore tooling** + documented key-rotation and hot-standby
+  failover runbooks — operational HA only: no login-protocol changes, deployed
+  players/SDKs unaffected
+- ⬜ **Hardening pass** over the shipped crypto paths — implementation audit, fixes and
+  regression tests; wire-compatible, no redesign
 - ⬜ Config validation, structured logging, health/metrics endpoints
 
 **Exit criteria:** a new operator can go from clone → live service in under an hour,
