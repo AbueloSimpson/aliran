@@ -1,8 +1,7 @@
-/* Aliran broadcaster control UI — dark, lean, no framework (panel/admin-ui sibling).
-   Layout follows an operations-dashboard shape: fixed sidebar, KPI tiles fed only by
-   real control-API values, and a dense sortable channel table (the card stack did not
-   survive 69 channels). Brand colours stay in :root so a white-label build (S19) can
-   restyle the whole UI from this block alone. */
+/* Aliran reseller panel — dark, lean, no framework (panel/admin-ui + broadcaster/
+   control-ui sibling). Ops-dashboard shape: fixed sidebar, KPI tiles fed only by
+   real API values, dense sortable tables, one shared dialog. Brand colours stay in
+   :root so a white-label build restyles the whole UI from the shared block alone. */
 
 /* ---- ALIRAN SHARED THEME — canonical palette -------------------------------
    Derived from client/src/theme.ts DEFAULT_COLORS, which S18 makes the single
@@ -44,13 +43,11 @@ body {
 .brand span { color: var(--accent); font-weight: 400; }
 .muted { color: var(--muted); }
 .error { color: var(--danger); margin: 8px 0 0; }
-.spacer { flex: 1; }
 .pad { padding: 14px 16px; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 .num { text-align: right; }
 
 /* ---- login ---- */
-/* [hidden] must beat the display:flex below (UA's [hidden] rule loses to an id selector). */
 #login-view[hidden] { display: none; }
 #login-view { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .login-card { width: 320px; display: flex; flex-direction: column; gap: 12px; }
@@ -69,10 +66,11 @@ body {
 .side-nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-item {
   color: var(--muted); text-decoration: none; padding: 7px 10px;
-  border-radius: 6px; border-left: 2px solid transparent; font-size: 13px;
+  border-radius: 6px; border-left: 2px solid transparent; font-size: 13px; cursor: pointer;
 }
 .nav-item:hover { background: var(--panel-2); color: var(--text); }
 .nav-item.active { background: var(--panel-2); color: var(--text); border-left-color: var(--accent); }
+.nav-item[hidden] { display: none; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; font-size: 12px; }
 
 #content { min-width: 0; display: flex; flex-direction: column; }
@@ -82,11 +80,8 @@ body {
 }
 .topbar h2 { margin: 0; font-size: 16px; font-weight: 600; }
 #side-toggle { display: none; }
-.banner { font-size: 12px; color: var(--muted); }
-.banner.ok { color: var(--ok); }
-.banner.warn { color: var(--warn); }
-.banner.err { color: var(--danger); }
 main { padding: 16px 20px 60px; min-width: 0; }
+.view[hidden] { display: none; }
 
 /* ---- KPI tiles ---- */
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -103,8 +98,10 @@ main { padding: 16px 20px 60px; min-width: 0; }
 .add-panel { padding: 0 0 2px; margin-bottom: 14px; }
 .add-panel summary { padding: 12px 16px; cursor: pointer; font-weight: 600; }
 .add-panel summary::marker { color: var(--accent); }
-.row-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0 16px 4px; }
+.row-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; padding: 0 16px 12px; }
+.row-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .hint { font-size: 12px; margin: 8px 16px 12px; }
+.preview { font-size: 12px; color: var(--accent); }
 
 input, textarea, select {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
@@ -133,29 +130,23 @@ input:invalid { border-color: #7f1d1d; }
   padding: 2px 10px; font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px;
 }
 .chip b { color: var(--text); }
+.chip.ok { color: var(--ok); border-color: var(--ok); }
 .chip.warn { color: var(--warn); border-color: var(--warn); }
+.chip.err { color: var(--danger); border-color: var(--danger); }
 .badge { border-radius: 4px; padding: 1px 7px; font-size: 11px; font-weight: 700; letter-spacing: .4px; white-space: nowrap; }
-.badge.live { background: #7f1d1d; color: #fecaca; }
-.badge.idle { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
 .badge.ok { background: #064e3b; color: #a7f3d0; }
 .badge.err { background: #3f1d1d; color: #fca5a5; }
 .badge.dim { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); font-weight: 400; }
 .badge.warn { background: #78350f; color: #fde68a; }
-.badge.legacy { background: var(--panel-2); color: var(--warn); border: 1px solid var(--warn); font-weight: 400; }
-
-/* ---- incidents timeline ---- */
-.incidents { padding: 12px 16px 14px; margin-bottom: 14px; }
-.incidents-head { font-size: 11px; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
-.incidents ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.incidents li { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
-.incidents .when { color: var(--muted); font-size: 12px; white-space: nowrap; min-width: 96px; }
-.incidents .what { color: var(--text); }
-.incidents .what b { color: var(--warn); }
+.badge.trial { background: var(--panel-2); color: var(--accent); border: 1px solid var(--accent-dim); }
+.badge.role { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); font-weight: 600; text-transform: capitalize; }
 
 /* ---- table ---- */
-.table-card { overflow: hidden; }
+.table-card { overflow: hidden; margin-bottom: 14px; }
 .table-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .table-toolbar input[type=search] { min-width: 240px; }
+.table-toolbar h3 { margin: 0; font-size: 14px; }
+.spacer { flex: 1; }
 .segmented { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .segmented button {
   background: var(--panel-2); color: var(--muted); border: 0; border-right: 1px solid var(--border);
@@ -181,23 +172,11 @@ th.sorted-desc::after { content: " \25BC"; color: var(--accent); font-size: 9px;
 tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 tbody tr:hover > td { background: var(--panel-2); }
 tbody tr.hidden-row { display: none; }
-.cell-chan { display: flex; flex-direction: column; gap: 1px; min-width: 150px; }
-.cell-chan .t { font-weight: 600; }
-.cell-input { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cell-health { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; min-width: 130px; }
-.row-actions { display: flex; gap: 5px; justify-content: flex-end; }
+.cell-name { display: flex; flex-direction: column; gap: 1px; min-width: 150px; }
+.cell-name .t { font-weight: 600; }
+.row-actions { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 .actions-col { width: 1%; }
-
-/* the "why is it unhealthy" tail — its own row under the channel it belongs to */
-tr.log-row > td { padding: 0 12px 8px; border-bottom: 1px solid var(--border); }
-tr.log-row[hidden] { display: none; }
-.log-inline {
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 6px 8px; margin: 0; color: var(--muted);
-  white-space: pre-wrap; word-break: break-all; max-height: 72px; overflow-y: auto;
-}
-.push-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
-.push-row .push-url { word-break: break-all; }
+.empty { padding: 20px 16px; color: var(--muted); }
 
 /* ---- dialog ---- */
 dialog {
@@ -208,19 +187,15 @@ dialog::backdrop { background: rgba(10, 7, 3, .7); }
 dialog h2 { margin: 0 0 14px; font-size: 16px; }
 #dlg-body { display: flex; flex-direction: column; gap: 10px; max-height: 62vh; overflow-y: auto; }
 #dlg-body label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-/* [hidden] must beat the display:flex above (kind-dependent ingest/transcode fields) */
 #dlg-body label[hidden] { display: none; }
-/* logs dialog */
-.logbox {
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
-  padding: 8px 10px; margin: 0; min-width: min(560px, 84vw);
-  white-space: pre-wrap; word-break: break-all; max-height: 48vh; overflow-y: auto;
-}
-.logmeta { font-size: 11px; margin-bottom: 6px; }
+#dlg-body .radio-row { flex-direction: row; gap: 12px; align-items: center; }
+.dlg-note { font-size: 12px; color: var(--muted); }
+.dlg-note.warn { color: var(--warn); }
 .dlg-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-.keybox {
-  background: var(--panel-2); border: 1px solid var(--warn); border-radius: 6px;
-  padding: 10px; word-break: break-all;
+.report-box {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; margin: 0; white-space: pre-wrap; word-break: break-word;
+  max-height: 48vh; overflow-y: auto; font-size: 12px;
 }
 
 /* ---- toast ---- */
@@ -229,13 +204,13 @@ dialog h2 { margin: 0 0 14px; font-size: 16px; }
   background: var(--panel-2); border: 1px solid var(--accent-dim); color: var(--text);
   border-radius: 8px; padding: 10px 18px; box-shadow: 0 6px 24px rgba(0,0,0,.5); z-index: 10;
 }
+#toast[hidden] { display: none; }
 #toast.err { border-color: var(--danger); color: #fecaca; }
 
-/* ---- narrow screens: sidebar collapses to a toggle ---- */
+/* ---- narrow screens ---- */
 @media (max-width: 860px) {
   #app-view { grid-template-columns: 1fr; }
   #sidebar { display: none; height: auto; position: static; }
   #app-view.side-open #sidebar { display: flex; }
   #side-toggle { display: inline-block; }
-  .cell-input { max-width: 150px; }
 }

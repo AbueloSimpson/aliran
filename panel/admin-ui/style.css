@@ -6,7 +6,8 @@
    dashboard must read as ONE product, so this block is kept BYTE-IDENTICAL in:
        panel/admin-ui/style.css
        broadcaster/control-ui/style.css
-   Change it in both or not at all (npm run test:theme asserts they match).
+       reseller/control-ui/style.css
+   Change it in all of them or none (npm run test:theme asserts they match).
    White-label (S19): an operator rebrands by overriding these 11 tokens. The
    status-badge fills further down are deliberately NOT brand-tinted — red/green/
    amber must keep meaning the same thing under every brand. */

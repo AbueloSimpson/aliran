@@ -21,7 +21,8 @@ import path from 'path'
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SHEETS = [
   'panel/admin-ui/style.css',
-  'broadcaster/control-ui/style.css'
+  'broadcaster/control-ui/style.css',
+  'reseller/control-ui/style.css'
 ]
 const START = '/* ---- ALIRAN SHARED THEME'
 const END = '/* ---- end shared theme ---- */'
@@ -46,18 +47,22 @@ function tokens (block) {
 
 console.log('theme: shared palette')
 
-// ---- A. the two stylesheets carry the same block, byte for byte
+// ---- A. every stylesheet carries the same block, byte for byte (each compared
+// to the first — so this holds for 2 sheets or 20).
 const blocks = SHEETS.map((rel) => [rel, sharedBlock(rel)])
-if (blocks[0][1] === blocks[1][1]) {
-  ok(`shared block byte-identical across ${SHEETS.length} stylesheets`)
-} else {
-  fail('shared theme block DIFFERS between:\n         ' + SHEETS.join('\n         ') +
-       '\n         Edit both, or neither — see the comment at the top of each block.')
-  const a = tokens(blocks[0][1]); const b = tokens(blocks[1][1])
+const [refRel, refBlock] = blocks[0]
+let allMatch = true
+for (const [rel, block] of blocks.slice(1)) {
+  if (block === refBlock) continue
+  allMatch = false
+  fail(`shared theme block in ${rel} DIFFERS from ${refRel}` +
+       '\n         Edit every sheet, or none — see the comment at the top of each block.')
+  const a = tokens(refBlock); const b = tokens(block)
   for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
-    if (a[k] !== b[k]) console.error(`         --${k}: ${blocks[0][0]}=${a[k] ?? '(absent)'}  ${blocks[1][0]}=${b[k] ?? '(absent)'}`)
+    if (a[k] !== b[k]) console.error(`         --${k}: ${refRel}=${a[k] ?? '(absent)'}  ${rel}=${b[k] ?? '(absent)'}`)
   }
 }
+if (allMatch) ok(`shared block byte-identical across ${SHEETS.length} stylesheets`)
 
 // ---- B. the palette still tracks the product's own colours
 const theme = readFileSync(path.join(root, 'client/src/theme.ts'), 'utf8')
