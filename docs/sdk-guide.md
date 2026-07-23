@@ -66,48 +66,59 @@ Android (phone + TV); iOS is not currently a supported target of the shipped
 stack. The **SDK itself** runs below that floor — silently inactive — see the
 next section.
 
-#### Older Android (7–9): legacy builds — the SDK goes silent
+#### Older Android (7–9): one APK, the engine gates itself at runtime
 
 Fleets still run Android 7–9 set-top boxes. On those devices **no P2P data is
 reachable at all** — swarm, catalog, and login all live inside the native
-runtime that cannot load there — so the SDK's contract is *silent inactivity*,
-and your app supplies its own content path (its "legacy mode", e.g. plain
-CDN/HLS URLs you deliver outside this SDK).
+runtime that cannot load there (its ELF-TLS floor) — so the SDK's contract is
+*silent inactivity*, and your app supplies its own content path (its "legacy
+mode", e.g. plain CDN/HLS URLs you deliver outside this SDK).
 
-Two things make a legacy build work:
+**A single APK covers Android 7 → current.** Out of the box that is impossible:
+`react-native-bare-kit` is a C++ TurboModule statically linked into your app's
+`libappmodules.so`, so `libbare-kit.so` is resolved **at React init on every
+device** — an APK that merely lowers `minSdkVersion` crashes on Android 9 and
+older before any JS runs. Two pieces fix it:
 
-1. **Exclude `react-native-bare-kit` from your legacy flavor's autolinking.**
-   This is mandatory, not an optimization: bare-kit is a C++ TurboModule
-   statically linked into your app's `libappmodules.so`, so an APK that merely
-   lowers `minSdkVersion` while still linking it **crashes at React init on
-   Android 9 and older** — before any JS runs. In `react-native.config.js`:
+1. **Apply the bare-kit lazy-load patch** (patch-package):
+   [`client/patches/react-native-bare-kit+0.13.3.patch`](https://github.com/AbueloSimpson/aliran/blob/main/client/patches/react-native-bare-kit+0.13.3.patch)
+   — copy it into your app's `patches/` and add the standard `patch-package`
+   postinstall. It rewrites the module's 22 `bare_*` calls to go through a
+   `dlopen("libbare-kit.so")`/`dlsym` table resolved lazily — **and only on
+   API 29+** — so no `DT_NEEDED` survives into `libappmodules.so`, and it drops
+   the package's `minSdk` to 24. The engine still ships in the APK
+   (`jniLibs` are untouched); below Android 10 it is simply never loaded, and a
+   stray `init` throws a clean JS error instead of a native crash. Set your
+   app's `minSdkVersion` to 24. (Until this behavior lands upstream in
+   `react-native-bare-kit`, the patch is version-pinned — regenerate it when
+   you bump the package.)
 
-   ```js
-   // legacy flavor only (e.g. gated on an env var):
-   module.exports = {
-     dependencies: { 'react-native-bare-kit': { platforms: { android: null } } }
-   }
-   ```
-
-   and drop your `minSdkVersion` in the same gate. The shipped app's
-   `client/react-native.config.js` + `client/android/build.gradle` +
-   `client/android/settings.gradle` are the working reference (the settings
-   script also dirties the autolinking cache when the flavor flips — the cache
-   keys on lock files, not env). Build both flavors from one codebase; ship the
-   modern APK to Android 10+ and the legacy APK to older devices.
-
-2. **Gate on `AliranBackend.isSupported()`.** In a legacy build (or any build
-   where the native module is missing) it returns `false`, and the whole
-   backend is inert: `start()` and every other method are safe no-ops, nothing
-   throws, nothing queues, and no `onMessage` listener ever fires. Branch there:
+2. **Gate on `AliranBackend.isSupported()`.** On any Android below 10 it
+   returns `false` by OS version alone — the SDK never consults, constructs,
+   or loads the native module there — and the whole backend is inert:
+   `start()` and every other method are safe no-ops, nothing throws, nothing
+   queues, no `onMessage` listener ever fires. Branch there:
 
    ```tsx
    if (AliranBackend.isSupported()) {
-     backend.start(bundle, { panelPubKey })   // full P2P path
+     backend.start(bundle, { panelPubKey })   // full P2P path (Android 10+)
    } else {
      mountYourLegacyMode()                    // your own CDN/HLS delivery
    }
    ```
+
+The shipped app is the working reference: `client/android/build.gradle`
+(`minSdk 24`), the patch in `client/patches/`, and the `isSupported()` branch
+in `client/src/App.tsx`. Verified with one APK on an Android 7 emulator
+(installs, runs, engine silent) and a modern one (engine boots to `ready`
+through the dlopen path).
+
+**Optional lean flavor:** if you want a smaller APK for old-device-only fleets
+(the engine libraries are ~55 MB per ABI), excluding
+`react-native-bare-kit` from autolinking builds an engine-less APK at the same
+floor — `client/react-native.config.js` (`ALIRAN_LEGACY=1`) shows how, and
+`client/android/settings.gradle` dirties the autolinking cache when the flavor
+flips (the cache keys on lock files, not env).
 
 Practical floor: **Android 7 (API 24)** — that one is React Native's, not
 ours. RN 0.76+ prebuilds (incl. the 0.83 the shipped app uses) are built for
@@ -116,8 +127,8 @@ API 24, and the build system rejects a lower `minSdkVersion` outright
 **Android 6 devices cannot run any app on a current RN generation**, engine or
 no engine — a fleet stuck on Android 6 needs a non-RN app or newer boxes. And
 the only thing that could ever bring *P2P itself* below Android 10 is
-Holepunch shipping pre-API-29 `bare-kit` prebuilds (an upstream ask, not an
-app-side fix).
+Holepunch shipping pre-API-29 `bare-kit` prebuilds (an upstream ask; this
+patch is the app-side half of exactly that design).
 
 Three things the host app must provide:
 

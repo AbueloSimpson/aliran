@@ -81,12 +81,15 @@ server (see the [client build guide](https://abuelosimpson.github.io/aliran/clie
 
 **Older Android (below 10 / API 29):** the engine's native runtime cannot load
 there — that floor is a libc symbol dependency, not a pin. The SDK itself still
-works in such builds: exclude `react-native-bare-kit` from Android autolinking in
-your legacy flavor, and the backend stays **silently inactive** (`start()` and every
-method are safe no-ops; no message ever fires). Gate on
-`AliranBackend.isSupported()` to switch your app into its own legacy/CDN mode —
-below Android 10 no P2P data is reachable at all. Recipe + details in the
-[SDK guide](https://abuelosimpson.github.io/aliran/sdk-guide/).
+works below it, and **one APK can cover Android 7 → current**: apply the
+bare-kit lazy-load patch (ships in the reference app,
+`client/patches/react-native-bare-kit+0.13.3.patch` — turns the link-time
+`libbare-kit.so` dependency into an API-29-gated `dlopen`), set `minSdk 24`,
+and gate on `AliranBackend.isSupported()`: `true` on Android 10+ (full P2P),
+`false` below — where the backend stays **silently inactive** (`start()` and
+every method are safe no-ops; no message ever fires) and your app mounts its
+own legacy/CDN mode. Below Android 10 no P2P data is reachable at all. Recipe +
+details in the [SDK guide](https://abuelosimpson.github.io/aliran/sdk-guide/).
 Ships TypeScript source (Metro consumes it
 directly); if the package lives outside your app root (monorepo / `file:` dep), add
 its path to Metro `watchFolders` and map its peers in `tsconfig` paths — see

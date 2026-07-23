@@ -2045,3 +2045,37 @@ flavor still boots the engine to `{"type":"ready"}` against the production
 panel (the lazy Worklet construction is the only shared-path change). A
 physical pass on the old Fire OS 7 stick is pending it being reachable over
 adb.
+
+### One APK for all of it — bare-kit behind a runtime dlopen (verified: same APK silent on Android 7, full engine on 16)
+
+The two-flavor answer didn't survive contact with the requirement: operators
+want **one APK** that installs on everything from Android 7 and simply runs
+legacy mode below 10. The blocker was a single link edge — bare-kit is a C++
+TurboModule statically linked into `libappmodules.so`, so `libbare-kit.so`
+was a `DT_NEEDED` resolved at React init on every device. The fix is a
+patch-package patch on `react-native-bare-kit`
+(`client/patches/react-native-bare-kit+0.13.3.patch`): the module's 22
+`bare_*` calls now go through a `dlopen("libbare-kit.so",
+RTLD_NOW|RTLD_GLOBAL)`/`dlsym` table resolved at first worklet init and only
+when `android_get_device_api_level() >= 29`; the package CMake drops the
+imported link (killing the `DT_NEEDED`); the package `minSdk` falls to 24.
+Packaging is untouched — the engine still ships via `jniLibs`; `RTLD_GLOBAL`
+keeps bare symbols visible to the runtime's addon dlopens exactly as before.
+Two belts back it up: `BareKitModule::init` throws a clean JSError where the
+table is unavailable, and the SDK now refuses by `Platform.Version < 29`
+before ever consulting — or constructing — the native module. The client
+builds one `minSdk 24` APK by default; `ALIRAN_LEGACY=1` remains as an
+optional engine-less lean flavor.
+
+Verified with the SAME 300 MB universal APK: structure (sdkVersion 24,
+`libbare-kit.so` aboard in all four ABIs, readelf shows no bare-kit `NEEDED`
+in `libappmodules.so`), an Android 7 emulator (installs — previously
+impossible with the engine aboard — runs silent to the branded notice, zero
+linker errors), and an Android 16 emulator (engine boots through the dlopen
+path to `{"type":"ready"}` against the production panel — the full dlsym
+table exercised live: worklet alloc/init/start plus IPC both directions).
+Tooling note for the KB: patch-package could not GENERATE the patch on
+Windows (silent crash on the package's `.cxx`/`build` junk; `--include`
+never matches, its internal paths are backslashed) — the patch was hand-rolled
+from an `npm pack` pristine tree with `git diff --no-index`, and the apply
+path verified by restoring pristine files and re-applying.

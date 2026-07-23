@@ -98,19 +98,40 @@ Windows. Start Metro **after** the build finishes.
   are **32-bit** (`armeabi-v7a` only) — probe with
   `adb shell getprop ro.product.cpu.abilist` and build with
   `-PreactNativeArchitectures=armeabi-v7a` (bare-kit ships armv7 prebuilds).
-- **Legacy flavor (`ALIRAN_LEGACY=1`) — the app below the floor, engine silent:**
-  building with that env var set excludes `react-native-bare-kit` from
-  autolinking (`client/react-native.config.js`) and drops `minSdkVersion` to 24,
-  so the APK installs on Android 7–9 with the SDK **silently inactive**
-  (`AliranBackend.isSupported()` → false; the app shows its unsupported notice
-  instead of the eternal splash). Exclusion is what makes this safe: bare-kit is
-  statically linked into `libappmodules.so`, so lowering minSdk while still
-  linking it crashes at React init, before any JS. `client/android/settings.gradle`
-  dirties the autolinking cache when the mode flips (the cache keys on lock-file
-  hashes, NOT env — without that, flipping the env silently reuses the other
-  mode's module set). After building, sanity-check the flavor:
-  `unzip -l app-release.apk | grep bare` must be EMPTY for legacy, and
-  `aapt dump badging app-release.apk | grep sdkVer` must say 24.
+- **Single APK below the floor — the lazy-load patch:**
+  `client/patches/react-native-bare-kit+0.13.3.patch` rewrites
+  `shared/BareKitModule.cc`'s 22 `bare_*` calls to go through a
+  `dlopen("libbare-kit.so", RTLD_NOW|RTLD_GLOBAL)`/`dlsym` table resolved on
+  first worklet init and **only when `android_get_device_api_level() >= 29`**,
+  drops the `bare-kit` IMPORTED link from the package CMake (that link was the
+  `DT_NEEDED` in `libappmodules.so` that crashed React init below Android 10),
+  and lowers the package `minSdk` to 24. `jniLibs` packaging is untouched, so
+  the engine still ships in the APK; `RTLD_GLOBAL` keeps bare symbols visible
+  to the runtime's addon dlopens exactly as the old link-time load did. With
+  the app at `minSdk 24`, ONE APK installs from Android 7 and the engine
+  activates itself only where it can run (verified: same APK → API 24 emulator
+  runs silent with the notice; API 36 emulator boots the engine to `ready`
+  through the dlopen path). Belt: `BareKitModule::init` throws a clean JSError
+  when the table is unavailable, and the JS SDK refuses by `Platform.Version`
+  below 29 before ever touching the module. Sanity checks after a build:
+  `aapt … | grep sdkVer` = 24, `unzip -l | grep libbare-kit` shows the engine
+  aboard, `llvm-readelf -d libappmodules.so | grep NEEDED` has NO libbare-kit.
+- **Optional engine-less lean flavor (`ALIRAN_LEGACY=1`):** excludes
+  `react-native-bare-kit` from autolinking (`client/react-native.config.js`)
+  for old-device-only fleets (~55 MB/ABI smaller). Same minSdk 24.
+  `client/android/settings.gradle` dirties the autolinking cache when the mode
+  flips (the cache keys on lock-file hashes, NOT env — without that, flipping
+  the env silently reuses the other mode's module set). For this flavor
+  `unzip -l app-release.apk | grep bare` must be EMPTY.
+- ⚠ **patch-package on Windows failed to GENERATE this patch** (silent
+  `error: null` crash on the package's huge `.cxx`/`build` trees; `--include`
+  filters never match because its internal paths use backslashes). Recipe that
+  works: `npm pack react-native-bare-kit@<ver>`, extract, lay out
+  `orig/node_modules/<pkg>/…` and `mod/node_modules/<pkg>/…` trees with just
+  the changed files, `git -c core.autocrlf=false diff --no-index orig mod`,
+  then `sed 's|a/orig/|a/|g; s|b/mod/|b/|g'` into `patches/<pkg>+<ver>.patch`.
+  The APPLY side (`npx patch-package`, postinstall) works fine — always verify
+  by restoring pristine files and re-applying.
 - **Why 24, not lower: React Native's own floor, enforced at build time.**
   Attempting minSdk 23 fails `:app:configureCMakeRelWithDebInfo` with prefab's
   `NoMatchingLibraryException: … User has minSdkVersion 23 but library was

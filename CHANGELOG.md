@@ -202,16 +202,21 @@ phone + Android TV, and the Windows desktop player).
   different panel key arrives). A baked operator key always wins and is never
   changeable at runtime. Viewer guide:
   [docs/android-viewer-guide.md](docs/android-viewer-guide.md).
-- **Legacy flavor (Android 7–9)** — `ALIRAN_LEGACY=1` builds the app with
-  `react-native-bare-kit` excluded from autolinking and `minSdk 24`, for device
-  fleets below the engine's Android 10 floor: `AliranBackend.isSupported()`
-  reports `false` and the SDK stays **silently inactive** (every call a safe
-  no-op — the engine's floor is physical: `libbare-kit.so` needs ELF TLS, added
-  to Android's libc in 10), and the app shows a plain unsupported-device notice
-  instead of an eternal splash. SDK hosts get the same seam: gate on
-  `isSupported()` and mount their own legacy/CDN mode. Android 6 is unreachable
-  on this RN generation — RN 0.76+ prebuilds are built for API 24 and the build
-  rejects a lower minSdk. Recipe: [docs/sdk-guide.md](docs/sdk-guide.md).
+- **One APK from Android 7 up — the engine gates itself at runtime.** A
+  patch-package patch on `react-native-bare-kit` turns its link-time dependency
+  on `libbare-kit.so` into a lazy `dlopen`/`dlsym` resolved only on API 29+
+  (the engine's floor is physical: ELF TLS, added to Android's libc in 10), so
+  the standard build is a single `minSdk 24` APK that installs on Android 7–9
+  with the SDK **silently inactive** (`AliranBackend.isSupported()` → `false`,
+  every call a safe no-op, a plain unsupported-device notice instead of an
+  eternal splash) and boots the full P2P engine on Android 10+ — verified with
+  the same APK on an Android 7 emulator (silent) and a modern one (engine
+  `ready` through the dlopen path). SDK hosts get the same seam: apply the
+  patch, gate on `isSupported()`, mount their own legacy/CDN mode below 10.
+  An optional `ALIRAN_LEGACY=1` flavor still builds an engine-less lean APK
+  for old-device-only fleets. Android 6 is unreachable on this RN generation —
+  RN 0.76+ prebuilds are built for API 24 and the build rejects a lower
+  minSdk. Recipe: [docs/sdk-guide.md](docs/sdk-guide.md).
 
 **Desktop player (`desktop/`)**
 - Windows desktop player (Electron): the engine (`@aliran/player-sdk`) runs in the

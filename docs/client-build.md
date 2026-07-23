@@ -24,30 +24,39 @@ Consequences for TV hardware:
   (`adb connect <tv-ip>:5555`); the manifest already declares
   `LEANBACK_LAUNCHER` + a TV banner, so the app appears in the TV launcher.
 
-### Legacy flavor for Android 7–9 (engine excluded, SDK silent)
+### One APK from Android 7 up (engine gates itself at runtime)
 
-The floor above is the **engine's**. For fleets on older devices (Android 7+
-set-top boxes, Fire OS 7 sticks) build the **legacy flavor**: set
-`ALIRAN_LEGACY=1` in the environment for the whole build (bundle + gradle):
+The floor above is the **engine's**, not the APK's. The standard build is a
+**single APK with `minSdk 24`** that carries the engine and decides per device:
+on Android 10+ the engine loads and runs in full; on Android 7–9 it is never
+loaded, the SDK is **silently inactive** (`AliranBackend.isSupported()`
+returns false) and the app shows a plain "engine unavailable" notice — there
+is no P2P playback path below Android 10, period (the catalog itself only
+exists over the swarm).
+
+What makes this possible is
+`client/patches/react-native-bare-kit+0.13.3.patch` (applied automatically by
+the `patch-package` postinstall): it turns the module's link-time dependency on
+`libbare-kit.so` into a lazy `dlopen`/`dlsym` resolved only on API 29+, so
+React init no longer pulls the engine library on old devices. Just build:
 
 ```bash
-# Windows PowerShell:  $env:ALIRAN_LEGACY = '1'
-ALIRAN_LEGACY=1 ./gradlew :app:assembleRelease
+./gradlew :app:assembleRelease
 ```
 
-This excludes `react-native-bare-kit` from autolinking
-(`client/react-native.config.js`) and drops `minSdkVersion` to 24, so the APK
-installs down to Android 7. On such devices the SDK is **silently inactive**
-(`AliranBackend.isSupported()` returns false) and the app shows a plain
-"engine unavailable" notice — there is no P2P playback path below Android 10,
-period (the catalog itself only exists over the swarm). Android 7 is React
-Native's own floor, not ours: RN 0.76+ prebuilds are built for API 24 and the
-build rejects a lower minSdk, so **Android 6 devices can't run a current-RN
-app at all**. Sanity-check the output:
-`unzip -l app-release.apk | grep bare` must be empty, `aapt dump badging … |
-grep sdkVer` must say 24. Don't ship a legacy APK to Android 10+ users — it has
-no engine. Details and the why in the
-[Android build KB](kb/android-build.md#device-floor-android-10--the-bare-runtime-needs-elf-tls).
+Sanity-check the output: `aapt dump badging … | grep sdkVer` says 24,
+`unzip -l app-release.apk | grep libbare-kit` shows the engine aboard, and
+readelf on `libappmodules.so` shows **no** `libbare-kit.so` `NEEDED` entry.
+Android 7 is React Native's own floor, not ours: RN 0.76+ prebuilds are built
+for API 24 and the build rejects a lower minSdk, so **Android 6 devices can't
+run a current-RN app at all**.
+
+Optional: `ALIRAN_LEGACY=1 ./gradlew :app:assembleRelease` builds an
+**engine-less lean APK** (~55 MB/ABI smaller; `react-native-bare-kit` excluded
+from autolinking via `client/react-native.config.js`) for old-device-only
+fleets — same minSdk 24, same silent-SDK behavior everywhere. Details and the
+why in the
+[Android build KB](kb/android-build.md#device-floor-android-10-the-bare-runtime-needs-elf-tls).
 
 ## Prerequisites (the main hurdle)
 

@@ -1,15 +1,16 @@
 buildscript {
     ext {
         buildToolsVersion = "36.0.0"
-        // react-native-bare-kit requires minSdk 29: its libbare-kit.so needs ELF TLS,
-        // a libc feature added in Android 10 (docs/kb/android-build.md). The legacy
-        // flavor (ALIRAN_LEGACY=1) excludes bare-kit from autolinking entirely
-        // (../react-native.config.js) so the APK installs down to Android 7 — the
-        // engine is then absent and the SDK stays silently inactive. 24 is RN 0.83's
-        // own hard floor: its prebuilds are built for API 24 and prefab REJECTS a
-        // lower minSdk at build time ("library was built for 24"), so Android 6 is
-        // out of reach for any app on this RN generation.
-        minSdkVersion = System.getenv("ALIRAN_LEGACY") == "1" ? 24 : 29
+        // ONE APK from Android 7 up: the patched react-native-bare-kit
+        // (patches/react-native-bare-kit+0.13.3.patch) dlopens libbare-kit.so at
+        // first use — API 29+ only, its ELF-TLS floor (docs/kb/android-build.md) —
+        // instead of link time, so no DT_NEEDED forces Android 10 at install. On
+        // Android 7-9 the engine never loads and the SDK is silently inactive
+        // (AliranBackend.isSupported() false). 24 is RN 0.83's own hard floor
+        // (prefab rejects lower: "library was built for 24") — Android 6 is out of
+        // reach for any app on this RN generation. The optional ALIRAN_LEGACY=1
+        // flavor still builds an engine-less lean APK at the same floor.
+        minSdkVersion = 24
         compileSdkVersion = 36
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"

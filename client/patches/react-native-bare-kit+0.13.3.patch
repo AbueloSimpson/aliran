@@ -1,0 +1,188 @@
+diff --git a/node_modules/react-native-bare-kit/android/CMakeLists.txt b/node_modules/react-native-bare-kit/android/CMakeLists.txt
+index 79ad22a..20594ca 100644
+--- a/node_modules/react-native-bare-kit/android/CMakeLists.txt
++++ b/node_modules/react-native-bare-kit/android/CMakeLists.txt
+@@ -2,14 +2,9 @@ cmake_minimum_required(VERSION 3.22)
+ 
+ project(react-native-bare-kit)
+ 
+-add_library(bare-kit SHARED IMPORTED)
+-
+-set_target_properties(
+-  bare-kit
+-  PROPERTIES
+-  IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/libs/bare-kit/jni/${ANDROID_ABI}/libbare-kit.so"
+-)
+-
++# libbare-kit.so is deliberately NOT linked here: BareKitModule.cc dlopens it at
++# first use, on API 29+ only, so libappmodules.so carries no DT_NEEDED on it and a
++# single APK can install below Android 10 (the .so still ships via jniLibs).
+ add_library(react-native-bare-kit STATIC)
+ 
+ set_target_properties(
+@@ -34,6 +29,5 @@ target_include_directories(
+ 
+ target_link_libraries(
+   react-native-bare-kit
+-  bare-kit
+   react_codegen_BareKitSpec
+ )
+diff --git a/node_modules/react-native-bare-kit/android/build.gradle b/node_modules/react-native-bare-kit/android/build.gradle
+index ba19d58..861e4c4 100644
+--- a/node_modules/react-native-bare-kit/android/build.gradle
++++ b/node_modules/react-native-bare-kit/android/build.gradle
+@@ -17,7 +17,10 @@ android {
+   compileSdk 34
+ 
+   defaultConfig {
+-    minSdk 29
++    // 24, not 29: libbare-kit.so is dlopen'd lazily (API 29+ only) by the patched
++    // BareKitModule.cc, so the package no longer imposes the engine's floor on the
++    // app — a single APK installs from Android 7 and gates the engine at runtime.
++    minSdk 24
+     targetSdk 34
+ 
+     externalNativeBuild {
+diff --git a/node_modules/react-native-bare-kit/shared/BareKitModule.cc b/node_modules/react-native-bare-kit/shared/BareKitModule.cc
+index 133de01..0dc0f4e 100644
+--- a/node_modules/react-native-bare-kit/shared/BareKitModule.cc
++++ b/node_modules/react-native-bare-kit/shared/BareKitModule.cc
+@@ -144,6 +144,122 @@ int
+ bare_ipc_poll_stop(bare_ipc_poll_t *poll);
+ }
+ 
++#if defined(__ANDROID__)
++
++// libbare-kit.so needs ELF TLS, which Android's dynamic linker only supports from
++// API 29 (Android 10). Resolving it lazily here — instead of at link time — keeps
++// this glue free of a DT_NEEDED on libbare-kit.so, so a single APK can set
++// minSdk 24, install on Android 7-9, and simply never load the engine there. The
++// library is only opened on the first worklet init, and only on API 29+.
++
++#include <dlfcn.h>
++
++#include <android/api-level.h>
++
++extern "C" {
++
++typedef struct bare_api_s {
++  int (*worklet_alloc)(bare_worklet_t **);
++  int (*worklet_init)(bare_worklet_t *, const bare_worklet_options_t *);
++  void (*worklet_destroy)(bare_worklet_t *);
++  void *(*worklet_get_data)(bare_worklet_t *);
++  void (*worklet_set_data)(bare_worklet_t *, void *);
++  int (*worklet_start)(bare_worklet_t *, const char *, const uv_buf_t *, int, const char *[]);
++  int (*worklet_suspend)(bare_worklet_t *, int);
++  int (*worklet_resume)(bare_worklet_t *);
++  int (*worklet_wakeup)(bare_worklet_t *, int);
++  int (*worklet_terminate)(bare_worklet_t *);
++  int (*ipc_alloc)(bare_ipc_t **);
++  int (*ipc_init)(bare_ipc_t *, bare_worklet_t *);
++  void (*ipc_destroy)(bare_ipc_t *);
++  int (*ipc_read)(bare_ipc_t *, void **, size_t *);
++  int (*ipc_write)(bare_ipc_t *, const void *, size_t);
++  int (*ipc_poll_alloc)(bare_ipc_poll_t **);
++  int (*ipc_poll_init)(bare_ipc_poll_t *, bare_ipc_t *);
++  void (*ipc_poll_destroy)(bare_ipc_poll_t *);
++  void *(*ipc_poll_get_data)(bare_ipc_poll_t *);
++  void (*ipc_poll_set_data)(bare_ipc_poll_t *, void *);
++  int (*ipc_poll_start)(bare_ipc_poll_t *, int, bare_ipc_poll_cb);
++  int (*ipc_poll_stop)(bare_ipc_poll_t *);
++} bare_api_s;
++}
++
++static bare_api_s *
++bare_api() {
++  static bare_api_s *api = []() -> bare_api_s * {
++    if (android_get_device_api_level() < 29) return nullptr;
++
++    // RTLD_GLOBAL: the runtime's addons resolve bare symbols from the global scope,
++    // exactly as they did when libbare-kit.so loaded as a DT_NEEDED of the app.
++    void *handle = dlopen("libbare-kit.so", RTLD_NOW | RTLD_GLOBAL);
++
++    if (handle == nullptr) return nullptr;
++
++    static bare_api_s table;
++
++#define BARE_API_LOAD(field, symbol) \
++  table.field = reinterpret_cast<decltype(table.field)>(dlsym(handle, symbol)); \
++  if (table.field == nullptr) return nullptr;
++
++    BARE_API_LOAD(worklet_alloc, "bare_worklet_alloc")
++    BARE_API_LOAD(worklet_init, "bare_worklet_init")
++    BARE_API_LOAD(worklet_destroy, "bare_worklet_destroy")
++    BARE_API_LOAD(worklet_get_data, "bare_worklet_get_data")
++    BARE_API_LOAD(worklet_set_data, "bare_worklet_set_data")
++    BARE_API_LOAD(worklet_start, "bare_worklet_start")
++    BARE_API_LOAD(worklet_suspend, "bare_worklet_suspend")
++    BARE_API_LOAD(worklet_resume, "bare_worklet_resume")
++    BARE_API_LOAD(worklet_wakeup, "bare_worklet_wakeup")
++    BARE_API_LOAD(worklet_terminate, "bare_worklet_terminate")
++    BARE_API_LOAD(ipc_alloc, "bare_ipc_alloc")
++    BARE_API_LOAD(ipc_init, "bare_ipc_init")
++    BARE_API_LOAD(ipc_destroy, "bare_ipc_destroy")
++    BARE_API_LOAD(ipc_read, "bare_ipc_read")
++    BARE_API_LOAD(ipc_write, "bare_ipc_write")
++    BARE_API_LOAD(ipc_poll_alloc, "bare_ipc_poll_alloc")
++    BARE_API_LOAD(ipc_poll_init, "bare_ipc_poll_init")
++    BARE_API_LOAD(ipc_poll_destroy, "bare_ipc_poll_destroy")
++    BARE_API_LOAD(ipc_poll_get_data, "bare_ipc_poll_get_data")
++    BARE_API_LOAD(ipc_poll_set_data, "bare_ipc_poll_set_data")
++    BARE_API_LOAD(ipc_poll_start, "bare_ipc_poll_start")
++    BARE_API_LOAD(ipc_poll_stop, "bare_ipc_poll_stop")
++
++#undef BARE_API_LOAD
++
++    return &table;
++  }();
++
++  return api;
++}
++
++// Route every call site below through the lazily resolved table. The extern
++// declarations above stay for the types; nothing references them after this
++// point, so no undefined bare_* symbol survives into the linked object.
++#define bare_worklet_alloc bare_api()->worklet_alloc
++#define bare_worklet_init bare_api()->worklet_init
++#define bare_worklet_destroy bare_api()->worklet_destroy
++#define bare_worklet_get_data bare_api()->worklet_get_data
++#define bare_worklet_set_data bare_api()->worklet_set_data
++#define bare_worklet_start bare_api()->worklet_start
++#define bare_worklet_suspend bare_api()->worklet_suspend
++#define bare_worklet_resume bare_api()->worklet_resume
++#define bare_worklet_wakeup bare_api()->worklet_wakeup
++#define bare_worklet_terminate bare_api()->worklet_terminate
++#define bare_ipc_alloc bare_api()->ipc_alloc
++#define bare_ipc_init bare_api()->ipc_init
++#define bare_ipc_destroy bare_api()->ipc_destroy
++#define bare_ipc_read bare_api()->ipc_read
++#define bare_ipc_write bare_api()->ipc_write
++#define bare_ipc_poll_alloc bare_api()->ipc_poll_alloc
++#define bare_ipc_poll_init bare_api()->ipc_poll_init
++#define bare_ipc_poll_destroy bare_api()->ipc_poll_destroy
++#define bare_ipc_poll_get_data bare_api()->ipc_poll_get_data
++#define bare_ipc_poll_set_data bare_api()->ipc_poll_set_data
++#define bare_ipc_poll_start bare_api()->ipc_poll_start
++#define bare_ipc_poll_stop bare_api()->ipc_poll_stop
++
++#endif // __ANDROID__
++
+ namespace facebook::react {
+ 
+ namespace {
+@@ -479,6 +595,15 @@ BareKitModule::BareKitModule(std::shared_ptr<CallInvoker> jsInvoker) : NativeBar
+ 
+ Object
+ BareKitModule::init(Runtime &rt, std::optional<String> id, double memoryLimit, std::optional<String> assets, Function on_terminate, Function on_poll) {
++#if defined(__ANDROID__)
++  // Every other method needs a handle only this call can create, so this is the
++  // single gate: a clean JS exception instead of an unresolvable native load on
++  // devices below the Bare runtime's floor.
++  if (bare_api() == nullptr) {
++    throw JSError(rt, "BareKit is unavailable on this device — the Bare runtime needs Android 10 (API 29) or newer");
++  }
++#endif
++
+   auto worklet = std::make_shared<BareKitWorklet>(rt, std::move(id), int(memoryLimit), std::move(assets), std::move(on_terminate), std::move(on_poll), jsInvoker_);
+ 
+   return Object::createFromHostObject(rt, std::move(worklet));

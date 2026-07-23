@@ -10,7 +10,7 @@
 // are safe no-ops, no message ever fires — and AliranBackend.isSupported() reports
 // false so the host can run its own legacy mode instead.
 
-import { TurboModuleRegistry } from 'react-native'
+import { Platform, TurboModuleRegistry } from 'react-native'
 import b4a from 'b4a'
 
 declare const require: (id: string) => any // Metro/CJS both provide it; typed locally so hosts need no @types/node
@@ -25,6 +25,11 @@ let probeWorklet: WorkletInstance | null = null
 
 function engineAvailable (): boolean {
   if (engineKnown !== undefined) return engineKnown
+  // Below Android 10 (API 29) the engine's native runtime cannot load AT ALL (its
+  // ELF-TLS libc dependency) — regardless of what this build packaged. A single-APK
+  // build (minSdk 24, bare-kit aboard behind a runtime dlopen) relies on this check
+  // to never touch — or even construct — the native module on older devices.
+  if (Platform.OS === 'android' && Number(Platform.Version) < 29) return (engineKnown = false)
   // The registered native module is the authoritative on-device signal. Checked via
   // react-native — NEVER by whether require('react-native-bare-kit') throws: release
   // bundles inline-require the package's native spec, deferring its "TurboModule

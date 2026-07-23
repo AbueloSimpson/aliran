@@ -70,3 +70,24 @@ describe('legacy build (no bare-kit native module)', () => {
     })
   })
 })
+
+describe('single-APK build on old Android (bare-kit ABOARD, device below API 29)', () => {
+  // A minSdk-24 single APK ships the engine behind a runtime dlopen. Below Android
+  // 10 the SDK must refuse by OS version alone — before consulting or constructing
+  // the native module, which would throw (or worse) there.
+  test('Platform.Version < 29 wins even with the module present', () => {
+    jest.isolateModules(() => {
+      // Mock the internal Platform module (not 'react-native' wholesale — spreading
+      // the root module trips its lazy getters on files jest can't parse).
+      jest.doMock('react-native/Libraries/Utilities/Platform', () => ({
+        __esModule: true,
+        default: { OS: 'android', Version: 28, select: (obj: any) => obj?.android }
+      }))
+      const { AliranBackend: B } = require('@aliran/react-native')
+      expect(B.isSupported()).toBe(false) // the jest bare-kit mock exists and would construct fine — the OS gate must short-circuit first
+      const b = new B()
+      b.start('QQquébec', { panelPubKey: 'ab'.repeat(32) })
+      expect((b as any).worklet).toBeNull()
+    })
+  })
+})
