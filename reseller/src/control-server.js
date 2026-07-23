@@ -46,6 +46,7 @@ export function startControlServer (ctx, opts = {}) {
   const host = opts.host || '127.0.0.1'
   const sessionTtlMs = opts.sessionTtlMs || 12 * 3600000
   const lockout = opts.lockout || { threshold: 10, seconds: 900 }
+  const trustProxyHeader = (opts.trustProxyHeader || '').trim().toLowerCase()
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
   const loginVerifier = makePrincipalVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
   const keys = controlKeys(ctx.dataDir)
@@ -78,7 +79,7 @@ export function startControlServer (ctx, opts = {}) {
 
     if (r1 === 'login' && req.method === 'POST' && seg.length === 2) {
       const body = await readJson(req)
-      const ip = req.socket.remoteAddress || 'unknown'
+      const ip = clientIp(req, trustProxyHeader)
       const t = throttle((body.username || '') + '|' + ip)
       if (t.locked) return sendJson(res, 429, { error: 'locked', retryAfter: t.retryAfter })
       // Worker-thread verify; throws 503 immediately if one is already in flight.
@@ -326,6 +327,23 @@ export function startControlServer (ctx, opts = {}) {
 }
 
 // --- views + business ops that span stores ---
+
+// Login-throttle identity. With TRUST_PROXY_HEADER set (Cloudflare Tunnel:
+// cf-connecting-ip; Caddy/nginx: x-forwarded-for) the key is the header's
+// RIGHTMOST list entry — the one appended by the nearest trusted hop; earlier
+// entries are client-supplied and spoofable. Unset (the default), the socket
+// address is the identity, exactly as before.
+function clientIp (req, trustProxyHeader) {
+  if (trustProxyHeader) {
+    const v = req.headers[trustProxyHeader]
+    if (typeof v === 'string' && v.trim()) {
+      const parts = v.split(',')
+      const last = parts[parts.length - 1].trim()
+      if (last) return last
+    }
+  }
+  return req.socket.remoteAddress || 'unknown'
+}
 
 function health (ctx) {
   const principals = loadPrincipals(ctx.dataDir)

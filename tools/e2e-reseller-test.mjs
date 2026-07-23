@@ -329,6 +329,37 @@ try {
   assert.ok(typeof r.body.panel.latencyMs === 'number' && r.body.panel.reachable === true, 'panel probe timed + reachable')
   log('K: /api/system 403 for resellers; host+service+panel stats for admins ✓')
 
+  // ===== L: TRUST_PROXY_HEADER — behind a tunnel/proxy the lockout keys on the
+  // proxy-supplied client IP, not the (shared) socket address. A second tiny
+  // instance runs with the Cloudflare header declared; the main instance keeps
+  // the default (socket-keyed) behavior, which A already covered.
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'e2er-rsl2-'))
+  cleanups.push(() => fs.rmSync(dir2, { recursive: true, force: true }))
+  addPrincipal({ dataDir: dir2, config: { argon2: fastArgon, maxDevicesLimitDefault: 3, trialDailyCapDefault: 3 } },
+    { username: 'boss2', password: 'boss2-pass-12', role: 'admin', root: true, createdBy: 'cli' })
+  const svc2 = await startReseller({
+    dataDir: dir2,
+    argon2: fastArgon,
+    noSweeps: true,
+    control: { host: '127.0.0.1', port: 0, trustProxyHeader: 'cf-connecting-ip' },
+    lockout: { threshold: 2, seconds: 60 },
+    panel: { url: `http://127.0.0.1:${panelPort}`, username: 'reseller-svc', password: SVC_PASSWORD, timeoutMs: 4000 }
+  })
+  cleanups.push(() => svc2.close())
+  const proxied = async (ipHeader) => {
+    const res = await fetch(`http://127.0.0.1:${svc2.control.port}/api/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': ipHeader },
+      body: JSON.stringify({ username: 'victim', password: 'x'.repeat(12) })
+    })
+    return res.status
+  }
+  for (let i = 0; i < 2; i++) await proxied('198.51.100.7')
+  assert.strictEqual(await proxied('198.51.100.7'), 429, 'same proxied client IP → locked')
+  assert.strictEqual(await proxied('203.0.113.9'), 401, 'different proxied client IP → own fresh counter')
+  assert.strictEqual(await proxied('6.6.6.6, 198.51.100.7'), 429, 'rightmost (proxy-appended) list entry is the key')
+  log('L: TRUST_PROXY_HEADER keys the lockout on the proxied client IP ✓')
+
   log('\nPASS: reseller e2e (panel + hierarchy + credits + lifecycle + outage + sweeps)')
   await cleanup()
   process.exit(0)

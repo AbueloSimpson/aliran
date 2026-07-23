@@ -46,7 +46,15 @@ export const config = {
     // exists to be used by THIRD PARTIES — see deploy/Caddyfile.example.
     host: process.env.CONTROL_HOST || '127.0.0.1',
     port: int(process.env.CONTROL_PORT, 3330),
-    sessionTtlHours: int(process.env.CONTROL_SESSION_TTL_HOURS, 12)
+    sessionTtlHours: int(process.env.CONTROL_SESSION_TTL_HOURS, 12),
+    // Behind a trusted proxy every connection carries the PROXY's socket IP, so
+    // the username|ip login lockout would let one abuser lock a victim's username
+    // for everybody. Name the proxy's client-IP header here (Cloudflare Tunnel:
+    // cf-connecting-ip; Caddy/nginx: x-forwarded-for) and the throttle keys on
+    // the real client instead. Set ONLY when the port is reachable exclusively
+    // through that proxy — a directly reachable port lets clients spoof the
+    // header and mint fresh throttle keys.
+    trustProxyHeader: (process.env.TRUST_PROXY_HEADER || '').trim().toLowerCase()
   },
   lockout: {
     threshold: int(process.env.LOCKOUT_THRESHOLD, 10),

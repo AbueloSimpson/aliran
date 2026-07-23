@@ -210,7 +210,10 @@ Env config (`reseller/.env`): `DATA_DIR`, `PANEL_ADMIN_URL` + `PANEL_ADMIN_USER`
 `DAYS_PER_MONTH`, `TRIAL_HOURS`, `TRIAL_DAILY_CAP_DEFAULT`,
 `MAX_DEVICES_LIMIT_DEFAULT`, `SWEEP_INTERVAL_SEC`, `RECONCILE_INTERVAL_SEC`,
 `RECONCILE_REPAIR`, `CONTROL_HOST`/`CONTROL_PORT`/`CONTROL_SESSION_TTL_HOURS`,
-`LOCKOUT_*`, `ARGON2_*`.
+`LOCKOUT_*`, `TRUST_PROXY_HEADER` (behind a trusted proxy/tunnel only — e.g.
+`cf-connecting-ip` for Cloudflare Tunnel, `x-forwarded-for` for Caddy/nginx —
+keys the login lockout on the proxied client IP instead of the proxy's socket),
+`ARGON2_*`.
 
 ## Panel RPC (over Hyperswarm)
 

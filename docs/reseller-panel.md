@@ -153,6 +153,46 @@ header, and the dashboard already uses it for its own Bearer login, so a Caddy
 example handles this; an IP allowlist is the layer that actually protects the
 API.
 
+### No public IP? Cloudflare Tunnel
+
+When the reseller box sits behind NAT/CGNAT or a firewall you cannot open —
+but your resellers still need to reach their accounts from the internet —
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+is the supported alternative to Caddy. `cloudflared` runs next to the service
+and makes an **outbound-only** connection to Cloudflare's edge; Cloudflare
+terminates TLS on your hostname and proxies requests down the tunnel to
+`http://localhost:3330`. No inbound port ever opens, and the origin IP is never
+published. `deploy/cloudflared.compose.example.yml` carries the worked compose
+service; the flow is: create a remotely-managed tunnel in Zero Trust → copy its
+token into `reseller/.env` as `TUNNEL_TOKEN` → add a public hostname pointing at
+`http://localhost:3330` → bring the profile up with both compose files.
+
+Three notes keep it as secure as the Caddy path:
+
+- **Set `TRUST_PROXY_HEADER=cf-connecting-ip`.** Behind the tunnel every
+  connection reaches the service from cloudflared's socket address, so the
+  login lockout's `username|ip` key would treat all your resellers as one
+  client — one abuser could lock a victim's username for everybody. With the
+  header declared, the throttle keys on the real client IP that Cloudflare
+  stamps on each request. (Behind Caddy/nginx the same option takes
+  `x-forwarded-for`; the rightmost list entry — the one the trusted proxy
+  appended — is used.) Never set it when the port is also reachable directly:
+  a direct client could spoof the header and mint fresh throttle keys.
+- **Keep `CONTROL_HOST=127.0.0.1`.** The tunnel is supposed to be the only way
+  in; binding wider defeats it and breaks the header trust above.
+- **IP allowlists move to Cloudflare.** The origin only ever sees the tunnel,
+  so `remote_ip`-style rules belong in a Cloudflare WAF rule — or put
+  **Cloudflare Access** in front of the hostname. Access authenticates the
+  browser with its own cookie, so unlike HTTP `basic_auth` it does **not**
+  collide with the dashboard's `Authorization: Bearer` API login and can cover
+  `/api/*` too. Either way the dashboard's own argon2 + lockout login remains
+  the application gate.
+
+The same pattern works for the panel/broadcaster dashboards, but those are
+single-operator surfaces — the SSH tunnel or Caddy answers are usually enough.
+The reseller panel is the one built for third parties, which is why the tunnel
+option is documented here.
+
 ## Bootstrap walkthrough
 
 1. **On the panel host**, create the dedicated admin the service signs in as

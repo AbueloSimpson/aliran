@@ -40,6 +40,7 @@ export async function startReseller (overrides = {}) {
     port: config.control.port,
     sessionTtlMs: config.control.sessionTtlHours * 3600000,
     lockout: config.lockout,
+    trustProxyHeader: config.control.trustProxyHeader,
     loginVerifyTimeoutMs: overrides.loginVerifyTimeoutMs
   })
 

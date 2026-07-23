@@ -362,6 +362,19 @@ phone + Android TV, and the Windows desktop player).
   admins/supers, and **reflows into stacked cards on phones** (the wide table on
   desktop). Verified against a synthetic 5,000-account registry (unit) and a
   394-account live demo at both desktop and mobile widths (browser).
+- **Ops dashboard on login**: the Overview shows the business KPIs and, for
+  admin tiers, a **System** section fed by `GET /api/system` — host stats
+  (cpu/load/memory/uptime + data-dir disk), the service process (node, memory,
+  ledger/sweep health) and a **live timed probe** of the panel admin API
+  relaying its user/stream/admin counts; polls every 5 s while the view is
+  open, and a panel outage becomes data on screen instead of an error.
+- **Cloudflare Tunnel deployment option** for boxes behind NAT/CGNAT or a
+  closed firewall: `deploy/cloudflared.compose.example.yml` publishes the
+  loopback-bound dashboard through Cloudflare's edge (their TLS/CDN/WAF,
+  outbound-only — no inbound port), and `TRUST_PROXY_HEADER` (e.g.
+  `cf-connecting-ip`, or `x-forwarded-for` behind Caddy/nginx) keys the login
+  lockout on the proxied client IP instead of the proxy's shared socket — set
+  only when the port is reachable exclusively through the proxy.
 
 **Networking (all components)**
 - Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes

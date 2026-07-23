@@ -160,6 +160,25 @@ the same way. For a genuine second layer on the API use an **IP allowlist** (`re
 or mTLS — neither touches the `Authorization` header. See `deploy/Caddyfile.example` for
 an allowlist block.
 
+## No public IP or open ports? Cloudflare Tunnel
+
+Everything above assumes a box with a public IP and ports 80/443 open. Behind
+NAT/CGNAT or a firewall you cannot open, the alternative is a **Cloudflare
+Tunnel**: `cloudflared` runs on the host, dials **out** to Cloudflare's edge,
+and Cloudflare terminates TLS on your hostname and proxies requests down the
+tunnel to the loopback-bound dashboard. No inbound port, no published origin IP;
+DNS, certificates and renewal all become Cloudflare's problem.
+
+The worked example targets the reseller panel — the one dashboard built for
+third-party users — in `deploy/cloudflared.compose.example.yml`, with the
+security notes (the `TRUST_PROXY_HEADER=cf-connecting-ip` lockout keying, why
+`CONTROL_HOST` stays loopback, where IP allowlists move) in
+[Reseller panel → Exposing the dashboard safely](../reseller-panel.md#no-public-ip-cloudflare-tunnel).
+One difference from basic auth worth knowing: **Cloudflare Access** fronts a
+hostname using its own cookie, so it does *not* collide with the dashboards'
+`Authorization: Bearer` logins — it is the rare second gate that can cover
+`/api/*` too.
+
 ## Certificate renewal
 
 Caddy renews automatically and `systemd` restarts it on boot — confirm both:

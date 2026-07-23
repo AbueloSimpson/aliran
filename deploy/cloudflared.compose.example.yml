@@ -1,0 +1,46 @@
+# Cloudflare Tunnel for the reseller panel — publish a loopback-only dashboard
+# through Cloudflare's edge (their TLS, CDN and WAF) with NO inbound firewall
+# port. cloudflared makes an OUTBOUND-only connection to Cloudflare, so this
+# works behind NAT/CGNAT or a corporate firewall where Caddy + a public IP
+# (deploy/Caddyfile.example) is not an option.
+#
+# Full walkthrough + the security notes that make this safe:
+#   docs/reseller-panel.md → "Exposing the dashboard safely"
+#
+# One-time setup in the Cloudflare dashboard (Zero Trust → Networks → Tunnels):
+#   1. Create a tunnel (remotely-managed), copy its TOKEN.
+#   2. Add a public hostname, e.g. resellers.example.com, with service
+#      http://localhost:3330  (this compose runs cloudflared in the host network
+#      namespace, same as the reseller service — localhost IS the reseller panel).
+#   3. Put the token in reseller/.env as TUNNEL_TOKEN=...  (cloudflared's own
+#      variable name — it picks it up from the environment).
+#   4. In reseller/.env set TRUST_PROXY_HEADER=cf-connecting-ip — behind the
+#      tunnel every connection carries cloudflared's socket address, and without
+#      this the username|ip login lockout would treat ALL your resellers as one
+#      client (one abuser could lock a victim's username for everybody).
+#
+# Keep CONTROL_HOST=127.0.0.1 — the whole point is that the panel port is never
+# reachable except through the tunnel. If the port were also reachable directly,
+# clients could spoof the header and mint fresh lockout keys.
+#
+# Run it together with the reseller profile from the repo root:
+#   docker compose -f docker-compose.yml -f deploy/cloudflared.compose.example.yml \
+#     --profile reseller up -d
+#
+# IP allowlists move to Cloudflare when you use this (the origin only ever sees
+# the tunnel): use a WAF rule, or put Cloudflare Access in front of the hostname.
+# Access authenticates browsers with its own cookie — unlike HTTP basic_auth it
+# does NOT collide with the dashboard's `Authorization: Bearer` API login, so it
+# can cover /api/* too. The dashboard's own argon2 + lockout login remains the
+# application gate either way.
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: [reseller]
+    network_mode: host
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    # Relative to the project directory (the repo root when run as shown above).
+    # Provides TUNNEL_TOKEN; the reseller service ignores the extra variable.
+    env_file: ./reseller/.env
