@@ -169,6 +169,14 @@ following only the docs.
   it exists). The SDK stays content-agnostic: it provides the notice and the
   switch, never the delivery. The shipped app dogfoods it
   ([guide](https://abuelosimpson.github.io/aliran/sdk-guide/)).
+- ✅ **Native Kotlin SDK (`aliran-kit`)** — the RN binding's twin for any Android
+  app without React Native: same engine bundle + IPC protocol via BareKit's
+  plain-Java API, `AliranPlayerView` (Media3) with the `<AliranVideo>` playback
+  contracts, `EngineNotice` — **one APK from Android 5.0** (P2P active on 10+,
+  silently off below), covering fleets RN itself can't reach (Android 5/6 STBs,
+  Fire OS 5 sticks). Verified on an Android 5.1 emulator (notice + fallback) and
+  a modern one (full P2P against a production panel). `sdk/android/` in-repo;
+  Maven publishing is a future item.
 - ⬜ Chat / interactivity alongside live streams
 - ⬜ **Multi-admin (Autobase) catalogs** — fully independent catalog writers, beyond
   the scoped-publisher model above

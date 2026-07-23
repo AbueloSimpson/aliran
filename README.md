@@ -60,6 +60,7 @@ each other over the Hyperswarm DHT by public key):
 | **[`client/`](client/)** | Android (phone + TV) | The app/APK: logs in, browses an OTT UI, plays the stream, **and re-seeds to other viewers** |
 | **[`desktop/`](desktop/)** | Windows & macOS | The desktop player (Electron): the same OTT interface and P2P engine on a PC — Windows installer/portable exe, macOS dmg/zip |
 | **[`sdk/`](sdk/)** | anywhere Node runs | The published engine — [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) (with `@aliran/core` and `@aliran/react-native`): build your own client or headless viewer on the exact engine the apps run |
+| **[`sdk/android/`](sdk/android/)** | any Android app (no React Native) | **`aliran-kit`** — native Kotlin SDK: the same engine + player contracts, one APK from **Android 5.0** (P2P active on 10+, silently off below with a ready-made notice + fallback seam) |
 
 ```
  ORIGIN (OBS/RTSP/HLS)      Hyperswarm DHT (find peers by public key)

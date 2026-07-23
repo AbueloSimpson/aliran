@@ -195,6 +195,9 @@ The app's worklet (`client/backend/backend.mjs`) is a thin IPC shell over `playe
 
 For React Native apps, see
 **[`@aliran/react-native`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/react-native)** —
-a drop-in `<AliranVideo>` component + worklet host built on this engine. A runnable
-headless example lives in
+a drop-in `<AliranVideo>` component + worklet host built on this engine. For native
+(non-RN) Android apps, see
+**[`aliran-kit`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/android)** — the
+Kotlin twin (same engine + player contracts, one APK from Android 5.0, P2P on 10+).
+A runnable headless example lives in
 [`examples/headless-player.mjs`](https://github.com/AbueloSimpson/aliran/tree/main/examples).

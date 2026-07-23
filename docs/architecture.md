@@ -36,7 +36,10 @@ panel. Playback "live" is handled by HLS semantics; the P2P layer just moves byt
 A React Native (`react-native-tvos`) app embedding **Bare** via `react-native-bare-kit`.
 Inside Bare: Hyperswarm + Hyperdrive replica + a **localhost HTTP server** with Range
 support. `react-native-video` plays `http://127.0.0.1:<port>/index.m3u8`. The client
-**both downloads and re-seeds** — distribution scales with viewers.
+**both downloads and re-seeds** — distribution scales with viewers. (The same
+engine also ships as **`aliran-kit`**, a native Kotlin SDK for non-RN Android
+apps — one APK from Android 5.0, engine active on 10+; see the
+[SDK guide](sdk-guide.md#native-android-kotlin-aliran-kit-one-apk-from-android-50).)
 
 ### Panel (Linux/desktop)
 A single-writer, **panel-signed** Hyperbee holding the **account DB** and **stream
