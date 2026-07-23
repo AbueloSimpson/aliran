@@ -102,10 +102,10 @@ try {
   assert.strictEqual(r.status, 403, 'co-admin creating co-admin → 403 (root-only)')
   r = await api('DELETE', '/api/principals/boss', null, dep)
   assert.strictEqual(r.status, 403, 'root undeletable')
-  r = await api('POST', '/api/principals', { username: 'sup1', password: 'sup1-pass-123', role: 'super', prefix: 's1' }, dep)
+  r = await api('POST', '/api/principals', { username: 'sup1', password: 'sup1-pass-123', role: 'super' }, dep)
   assert.strictEqual(r.status, 201)
   const sup1 = await login('sup1', 'sup1-pass-123')
-  r = await api('POST', '/api/principals', { username: 'res1', password: 'res1-pass-123', role: 'reseller', prefix: 'r1', trialDailyCap: 1 }, sup1)
+  r = await api('POST', '/api/principals', { username: 'res1', password: 'res1-pass-123', role: 'reseller', trialDailyCap: 1 }, sup1)
   assert.strictEqual(r.status, 201)
   assert.strictEqual(r.body.parent, 'sup1')
   const res1 = await login('res1', 'res1-pass-123')
@@ -128,8 +128,8 @@ try {
   // ===== D: activation — fail-closed both ways =====
   r = await api('POST', '/api/accounts', { name: 'bob', password: 'bob-secret-99', months: 2, maxDevices: 2, grants: ['movie-night'] }, res1)
   assert.strictEqual(r.status, 201, 'activate: ' + JSON.stringify(r.body))
-  assert.strictEqual(r.body.account, 'rs.r1.bob')
-  const bobPanel = await pops.getUser(pctx, 'rs.r1.bob')
+  assert.strictEqual(r.body.account, 'bob')
+  const bobPanel = await pops.getUser(pctx, 'bob')
   assert.ok(bobPanel.grants.includes('movie-night'), 'panel user carries the extra grant')
   assert.strictEqual(bobPanel.maxDevices, 2, 'panel maxDevices set')
   r = await api('GET', '/api/me', null, res1)
@@ -138,7 +138,7 @@ try {
   // Over-balance: NOTHING happens anywhere.
   r = await api('POST', '/api/accounts', { name: 'greedy', password: 'greedy-pass-1', months: 100 }, res1)
   assert.strictEqual(r.status, 402, 'over-balance → 402')
-  await assert.rejects(() => pops.getUser(pctx, 'rs.r1.greedy'), /no such user/, '402 left no panel user')
+  await assert.rejects(() => pops.getUser(pctx, 'greedy'), /no such user/, '402 left no panel user')
   r = await api('GET', '/api/me', null, res1)
   assert.strictEqual(r.body.balance, 4, '402 left the balance alone')
 
@@ -146,35 +146,35 @@ try {
   r = await api('POST', '/api/accounts', { name: 'many', password: 'many-pass-1234', months: 1, maxDevices: 99 }, res1)
   assert.strictEqual(r.status, 400, 'maxDevices over limit → 400')
   // scope: a fresh reseller under boss can't see res1's account
-  r = await api('POST', '/api/principals', { username: 'resx', password: 'resx-pass-123', role: 'reseller', prefix: 'rx' }, boss)
+  r = await api('POST', '/api/principals', { username: 'resx', password: 'resx-pass-123', role: 'reseller' }, boss)
   const resx = await login('resx', 'resx-pass-123')
-  r = await api('GET', '/api/accounts/rs.r1.bob', null, resx)
+  r = await api('GET', '/api/accounts/bob', null, resx)
   assert.strictEqual(r.status, 403, 'foreign account → 403')
   r = await api('GET', '/api/accounts', null, res1)
   assert.strictEqual(r.body.length, 1, 'reseller lists own accounts only')
   log('D: fail-closed activation (panel + ledger + registry agree) ✓')
 
   // ===== E: renew / suspend / resume / passthroughs =====
-  const beforeRenew = (await api('GET', '/api/accounts/rs.r1.bob', null, res1)).body.expiresAt
-  r = await api('POST', '/api/accounts/rs.r1.bob/renew', { months: 1 }, res1)
+  const beforeRenew = (await api('GET', '/api/accounts/bob', null, res1)).body.expiresAt
+  r = await api('POST', '/api/accounts/bob/renew', { months: 1 }, res1)
   assert.strictEqual(r.status, 200)
   assert.strictEqual(r.body.expiresAt, beforeRenew + 31 * 86400000, 'renew extends from current expiry')
   r = await api('GET', '/api/me', null, res1)
   assert.strictEqual(r.body.balance, 3)
-  r = await api('POST', '/api/accounts/rs.r1.bob/status', { status: 'disabled' }, res1)
+  r = await api('POST', '/api/accounts/bob/status', { status: 'disabled' }, res1)
   assert.strictEqual(r.status, 200)
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.bob')).status, 'disabled', 'panel disabled')
-  r = await api('POST', '/api/accounts/rs.r1.bob/status', { status: 'active' }, res1)
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.bob')).status, 'active', 'panel re-enabled')
-  r = await api('GET', '/api/accounts/rs.r1.bob/devices', null, res1)
+  assert.strictEqual((await pops.getUser(pctx, 'bob')).status, 'disabled', 'panel disabled')
+  r = await api('POST', '/api/accounts/bob/status', { status: 'active' }, res1)
+  assert.strictEqual((await pops.getUser(pctx, 'bob')).status, 'active', 'panel re-enabled')
+  r = await api('GET', '/api/accounts/bob/devices', null, res1)
   assert.strictEqual(r.status, 200)
   assert.ok(Array.isArray(r.body), 'devices passthrough')
-  r = await api('POST', '/api/accounts/rs.r1.bob/password', { password: 'bob-newpass-1' }, res1)
+  r = await api('POST', '/api/accounts/bob/password', { password: 'bob-newpass-1' }, res1)
   assert.strictEqual(r.status, 200, 'password passthrough')
-  r = await api('POST', '/api/accounts/rs.r1.bob/grants', { streamId: 'sports-plus' }, res1)
-  assert.ok((await pops.getUser(pctx, 'rs.r1.bob')).grants.includes('sports-plus'), 'extra grant added')
-  r = await api('DELETE', '/api/accounts/rs.r1.bob/grants/sports-plus', null, res1)
-  assert.ok(!(await pops.getUser(pctx, 'rs.r1.bob')).grants.includes('sports-plus'), 'grant revoked')
+  r = await api('POST', '/api/accounts/bob/grants', { streamId: 'sports-plus' }, res1)
+  assert.ok((await pops.getUser(pctx, 'bob')).grants.includes('sports-plus'), 'extra grant added')
+  r = await api('DELETE', '/api/accounts/bob/grants/sports-plus', null, res1)
+  assert.ok(!(await pops.getUser(pctx, 'bob')).grants.includes('sports-plus'), 'grant revoked')
   log('E: renew math, suspend/resume, device/password/grant passthroughs ✓')
 
   // ===== F: trials — cap, no debit, renew converts =====
@@ -186,7 +186,7 @@ try {
   assert.strictEqual(r.body.trialsUsedToday, 1)
   r = await api('POST', '/api/trials', { name: 'taster2', password: 'taster-pass-1' }, res1)
   assert.strictEqual(r.status, 403, 'trial daily cap (1) → 403')
-  r = await api('POST', '/api/accounts/rs.r1.taster/renew', { months: 1 }, res1)
+  r = await api('POST', '/api/accounts/taster/renew', { months: 1 }, res1)
   assert.strictEqual(r.status, 200)
   assert.strictEqual(r.body.kind, 'paid', 'renew converts trial → paid')
   r = await api('GET', '/api/me', null, res1)
@@ -194,18 +194,18 @@ try {
   log('F: trial cap + free + renew-converts ✓')
 
   // ===== G: delete + refund rules =====
-  r = await api('DELETE', '/api/accounts/rs.r1.bob', null, res1)
+  r = await api('DELETE', '/api/accounts/bob', null, res1)
   assert.strictEqual(r.status, 200)
   assert.ok(r.body.refunded >= 2, `refund floor(remaining) (got ${r.body.refunded})`)
-  await assert.rejects(() => pops.getUser(pctx, 'rs.r1.bob'), /no such user/, 'panel user gone')
+  await assert.rejects(() => pops.getUser(pctx, 'bob'), /no such user/, 'panel user gone')
   const balAfterRefund = (await api('GET', '/api/me', null, res1)).body.balance
   assert.strictEqual(balAfterRefund, 2 + r.body.refunded, 'refund landed on the owner')
   // Admin-tier account ops are free and refundless.
   r = await api('POST', '/api/accounts', { name: 'house', password: 'house-pass-12', months: 3 }, boss)
   assert.strictEqual(r.status, 201)
-  assert.strictEqual(r.body.account, 'rs.house', 'admin accounts live under the global prefix')
+  assert.strictEqual(r.body.account, 'house', 'admin accounts are plain names too')
   assert.strictEqual((await api('GET', '/api/me', null, boss)).body.balance, 0, 'admin activation is free')
-  r = await api('DELETE', '/api/accounts/rs.house', null, boss)
+  r = await api('DELETE', '/api/accounts/house', null, boss)
   assert.strictEqual(r.body.refunded, 0, 'admin delete refunds nothing')
   log('G: delete refund to owner; admin free/refundless ✓')
 
@@ -216,9 +216,9 @@ try {
   assert.strictEqual(r.status, 200)
   r = await api('GET', '/api/me', null, res1)
   assert.strictEqual(r.status, 401, 'suspended reseller token dead')
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'disabled', 'with-accounts disabled panel-side')
+  assert.strictEqual((await pops.getUser(pctx, 'loyal')).status, 'disabled', 'with-accounts disabled panel-side')
   r = await api('POST', '/api/principals/res1/status', { status: 'active', mode: 'with-accounts' }, boss)
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'active', 'resume restored unlapsed account')
+  assert.strictEqual((await pops.getUser(pctx, 'loyal')).status, 'active', 'resume restored unlapsed account')
   r = await api('DELETE', '/api/principals/res1', null, boss)
   assert.strictEqual(r.status, 400, 'delete blocked while accounts exist')
   r = await api('DELETE', '/api/principals/sup1', null, boss)
@@ -253,7 +253,7 @@ try {
   // tokenVersion bumped → the cached panel token dies; the next op must
   // transparently re-login once.
   pops.setAdminPassword(pctx, 'reseller-svc', SVC_PASSWORD)
-  r = await api('POST', '/api/accounts/rs.r1.phoenix/status', { status: 'disabled' }, res1b)
+  r = await api('POST', '/api/accounts/phoenix/status', { status: 'disabled' }, res1b)
   assert.strictEqual(r.status, 200, '401→re-login→retry path: ' + JSON.stringify(r.body))
   log('I: outage 502 fail-closed; same-port recovery; transparent re-login ✓')
 
@@ -265,35 +265,42 @@ try {
   r = await api('POST', '/api/trials', { name: 'shortlived', password: 'trial-pass-12', maxDevices: 1 }, resx)
   assert.strictEqual(r.status, 201)
   const records = svc.ctx.accounts.records()
-  records['rs.r1.loyal'].expiresAt = Date.now() - 1000
-  records['rs.rx.shortlived'].expiresAt = Date.now() - 1000
+  records['loyal'].expiresAt = Date.now() - 1000
+  records['shortlived'].expiresAt = Date.now() - 1000
   svc.ctx.accounts.save()
 
   r = await api('POST', '/api/ops/sweep', null, boss)
   assert.strictEqual(r.status, 200)
   assert.strictEqual(r.body.disabled, 2, `sweep disabled both lapsed accounts: ${JSON.stringify(r.body)}`)
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'disabled', 'paid lapse disabled panel-side')
-  assert.strictEqual((await pops.getUser(pctx, 'rs.rx.shortlived')).status, 'disabled', 'trial lapse disabled panel-side')
+  assert.strictEqual((await pops.getUser(pctx, 'loyal')).status, 'disabled', 'paid lapse disabled panel-side')
+  assert.strictEqual((await pops.getUser(pctx, 'shortlived')).status, 'disabled', 'trial lapse disabled panel-side')
 
   // Resume of a lapsed account is refused; renew re-activates with fresh coverage.
-  r = await api('POST', '/api/accounts/rs.r1.loyal/status', { status: 'active' }, res1b)
+  r = await api('POST', '/api/accounts/loyal/status', { status: 'active' }, res1b)
   assert.strictEqual(r.status, 400, 'lapsed resume refused (renew instead)')
-  r = await api('POST', '/api/accounts/rs.r1.loyal/renew', { months: 1 }, res1b)
+  r = await api('POST', '/api/accounts/loyal/renew', { months: 1 }, res1b)
   assert.strictEqual(r.status, 200)
   assert.strictEqual(r.body.status, 'active')
   assert.ok(r.body.expiresAt > Date.now() + 30 * 86400000, 'renewal coverage from now')
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'active', 'panel re-activated by renew')
+  assert.strictEqual((await pops.getUser(pctx, 'loyal')).status, 'active', 'panel re-activated by renew')
 
-  // Reconcile: an orphan panel user under our prefix gets flagged + disabled
-  // (never deleted); a status divergence heals toward the local clock.
-  await pops.createUser(pctx, 'rs.r1.ghost', 'ghost-pass-123')
-  await pops.setUserStatus(pctx, 'rs.r1.loyal', 'disabled') // divergence: local active+unlapsed
+  // Reconcile. Orphan detection is INTENT-driven now (names carry no marker):
+  // simulate a crash between the panel create and the local commit — a panel
+  // user exists, a stale intent exists, no registry entry. Also: a status
+  // divergence heals toward the local clock, and an operator-created panel user
+  // with NO intent must be invisible to the reseller service entirely.
+  await pops.createUser(pctx, 'ghost', 'ghost-pass-123')
+  svc.ctx.accounts.pendingIntents().ghost = { owner: 'res1', ts: Date.now() - 120000 }
+  await pops.createUser(pctx, 'operator-joe', 'joe-pass-12345') // NOT ours, no intent
+  await pops.setUserStatus(pctx, 'loyal', 'disabled') // divergence: local active+unlapsed
   r = await api('POST', '/api/ops/reconcile', null, boss)
   assert.strictEqual(r.status, 200)
-  assert.ok(r.body.orphanPanel.includes('rs.r1.ghost'), 'orphan flagged')
-  assert.ok(r.body.statusFixed.some((f) => f.account === 'rs.r1.loyal' && f.to === 'active'), 'divergence detected')
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.ghost')).status, 'disabled', 'orphan disabled, not deleted')
-  assert.strictEqual((await pops.getUser(pctx, 'rs.r1.loyal')).status, 'active', 'local clock won')
+  assert.ok(r.body.orphanPanel.includes('ghost'), 'stale-intent orphan flagged')
+  assert.ok(!r.body.orphanPanel.includes('operator-joe'), 'operator-created user untouched (no intent)')
+  assert.strictEqual((await pops.getUser(pctx, 'operator-joe')).status, 'active', 'operator user left active')
+  assert.ok(r.body.statusFixed.some((f) => f.account === 'loyal' && f.to === 'active'), 'divergence detected')
+  assert.strictEqual((await pops.getUser(pctx, 'ghost')).status, 'disabled', 'orphan disabled, not deleted')
+  assert.strictEqual((await pops.getUser(pctx, 'loyal')).status, 'active', 'local clock won')
   r = await api('GET', '/api/ops/reconcile', null, boss)
   assert.ok(r.body.ts && r.body.orphanPanel, 'report persisted + retrievable')
   log('J: expiry sweep (paid + trial), lapsed-renew, reconcile orphan/divergence ✓')

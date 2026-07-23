@@ -35,8 +35,8 @@ only ever act within its own subtree.
 |---|---|---|
 | **Admin** | Everything. Mints credits. The only role that can create/delete **co-admins**. | Exactly one *root* admin, seeded by the CLI, undeletable. |
 | **Co-admin** | A full admin clone — including minting — so you can hand out a second all-powers login with its own audit trail. | Cannot manage other co-admins or the root (root-only territory). |
-| **Super reseller** | Creates resellers under itself, funds them from its **own** balance, manages only its own subtree. | Needs a unique prefix. |
-| **Reseller** | Activates / renews / suspends / deletes viewer accounts under its own prefix, spending its own balance. | Needs a unique prefix. |
+| **Super reseller** | Creates resellers under itself, funds them from its **own** balance, manages only its own subtree. | |
+| **Reseller** | Activates / renews / suspends / deletes its own viewer accounts, spending its own balance. | |
 
 ## Credits
 
@@ -69,13 +69,15 @@ account with a short expiry; the expiry sweep disables it like any lapsed
 account. **Renewing a trial converts it to paid** — same username and password,
 coverage starting from now — the natural upsell.
 
-## Account namespacing
+## Account names and ownership
 
-Every viewer account a reseller creates is named
-`<GLOBAL_PREFIX>.<resellerPrefix>.<name>` (admins, having no prefix, create
-directly under `<GLOBAL_PREFIX>.<name>`). This guarantees a reseller's accounts
-can never collide with operator-created panel users or with another reseller's —
-and the reseller only ever sees and manages accounts inside its own namespace.
+Viewer account names are **plain panel usernames** — no prefixes. Names are a
+global, first-come-first-served space: if a reseller picks a name an existing
+panel user already has, the panel's own "exists" error surfaces and they pick
+another. Ownership never depends on the name — the reseller panel's registry
+records which principal owns each account, and a reseller can only ever see and
+operate on accounts the registry says are theirs. Operator-created panel users
+are invisible to the reseller panel entirely.
 
 ## Keeping panel and ledger in sync
 
@@ -90,11 +92,15 @@ Two background loops keep the two sides aligned:
   whose subscription has lapsed. Its work list is derived from expiry each tick,
   so if the panel is briefly unreachable it simply retries next tick (and backs
   off to 15-minute checks until the panel returns).
-- **Reconcile sweep** (`RECONCILE_INTERVAL_SEC`, default 1 h) — diffs the panel's
-  users under your prefix against the local registry and reports divergences
-  (an orphaned panel account, a status mismatch). With `RECONCILE_REPAIR=1` it
-  also fixes them, always letting the local subscription clock win; with the
-  default `0` it only reports (to `state/reconcile.json` and the dashboard).
+- **Reconcile sweep** (`RECONCILE_INTERVAL_SEC`, default 1 h) — checks every
+  account in the registry against the panel and reports divergences (a status
+  mismatch, an account missing panel-side). Creates are additionally bracketed
+  by an **intent journal** — recorded before the panel call, cleared after the
+  local commit — so a crash in that window leaves a stale intent the sweep
+  chases: if the panel user exists but was never committed locally, that orphan
+  is disabled (never deleted) and reported. With `RECONCILE_REPAIR=1` repairs
+  apply, always letting the local subscription clock win; with the default `0`
+  it only reports (to `state/reconcile.json` and the dashboard).
 
 ## Deployment topologies
 
@@ -149,7 +155,7 @@ API.
    ```
 
 2. **Configure** `reseller/.env` — `PANEL_ADMIN_URL`, `PANEL_ADMIN_USER=reseller-svc`,
-   `PANEL_ADMIN_PASS`, and your `GLOBAL_PREFIX`.
+   and `PANEL_ADMIN_PASS`.
 
 3. **Seed the root admin** and start:
 

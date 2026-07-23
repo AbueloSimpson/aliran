@@ -135,16 +135,13 @@ console.log('D. principal validation')
   const dir = tmp()
   const ctx = { dataDir: dir, config: { argon2: { memKiB: 8192, time: 1 }, maxDevicesLimitDefault: 3, trialDailyCapDefault: 3 } }
   const boss = addPrincipal(ctx, { username: 'boss', password: 'boss-pass-123', role: 'admin', root: true })
-  ok(boss.root === true && boss.prefix === null, 'root admin seeded, no prefix')
+  ok(boss.root === true, 'root admin seeded')
   throws(() => addPrincipal(ctx, { username: 'b2', password: 'boss-pass-123', role: 'admin', root: true }), /root admin already exists/, 'second root refused')
-  throws(() => addPrincipal(ctx, { username: 'x y', password: 'boss-pass-123', role: 'reseller', prefix: 'xy' }), /invalid principal name/, 'bad name rejected')
-  throws(() => addPrincipal(ctx, { username: 'r1', password: 'short', role: 'reseller', prefix: 'r1' }), /at least 8/, 'short password rejected')
-  throws(() => addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller' }), /prefix required/, 'reseller without prefix rejected')
-  throws(() => addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller', prefix: 'R1' }), /prefix required/, 'uppercase prefix rejected')
-  throws(() => addPrincipal(ctx, { username: 'c1', password: 'coad-pass-123', role: 'co-admin', prefix: 'c1' }), /does not take a prefix/, 'admin-tier prefix rejected')
-  addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller', prefix: 'r1', parent: 'boss' })
-  throws(() => addPrincipal(ctx, { username: 'r2', password: 'res2-pass-123', role: 'reseller', prefix: 'r1', parent: 'boss' }), /already taken/, 'duplicate prefix rejected')
-  throws(() => addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller', prefix: 'zz' }), /already exists/, 'duplicate name rejected')
+  throws(() => addPrincipal(ctx, { username: 'x y', password: 'boss-pass-123', role: 'reseller' }), /invalid principal name/, 'bad name rejected')
+  throws(() => addPrincipal(ctx, { username: 'r1', password: 'short', role: 'reseller' }), /at least 8/, 'short password rejected')
+  throws(() => addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'bogus' }), /invalid role/, 'unknown role rejected')
+  addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller', parent: 'boss' })
+  throws(() => addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller' }), /already exists/, 'duplicate name rejected')
 }
 
 if (failures > 0) { console.error(`\n${failures} FAILURE(S)`); process.exit(1) }

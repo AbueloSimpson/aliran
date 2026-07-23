@@ -30,9 +30,6 @@ export const config = {
     password: process.env.PANEL_ADMIN_PASS || null,
     timeoutMs: int(process.env.PANEL_TIMEOUT_MS, 10000)
   },
-  // Viewer accounts are namespaced <globalPrefix>.<resellerPrefix>.<name> so they can
-  // never collide with operator-created panel users (or another reseller's accounts).
-  globalPrefix: process.env.GLOBAL_PREFIX || 'rs',
   // 1 credit = 1 month = this many days, flat (locked pricing decision).
   daysPerMonth: int(process.env.DAYS_PER_MONTH, 31),
   trialHours: int(process.env.TRIAL_HOURS, 24),

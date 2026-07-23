@@ -104,19 +104,8 @@ async function boot () {
   $$('.nav-item[data-cap="manage"]').forEach((n) => { n.hidden = !CAN_MANAGE.has(me.role) })
   $('#mint-panel').hidden = !IS_ADMIN(me.role)
   $('#ops-card').hidden = !IS_ADMIN(me.role)
-  $('#acct-hint').textContent = me.prefix
-    ? `Accounts are created as ${globalName('')}<name>.`
-    : 'Accounts are created directly under the global prefix.'
   setupPrincipalForm()
   showView('overview')
-}
-
-// global.<prefix>. preview needs the global prefix — /api/me doesn't carry it, so
-// derive it lazily from the first account we see, else fall back to a placeholder.
-let GLOBAL_PREFIX = null
-function globalName (name) {
-  const g = GLOBAL_PREFIX || 'rs'
-  return me.prefix ? `${g}.${me.prefix}.${name}` : `${g}.${name}`
 }
 
 // ---- overview ----
@@ -160,13 +149,7 @@ let acctSort = { k: 'account', dir: 1 }
 
 async function loadAccounts () {
   accountRows = await api('GET', '/accounts?limit=500')
-  if (accountRows[0]) {
-    // Learn the global prefix from a real account name (…prefix injected server-side).
-    const parts = accountRows[0].account.split('.')
-    if (parts.length >= 2) GLOBAL_PREFIX = parts[0]
-  }
   renderAccounts()
-  updatePreview()
 }
 function renderAccounts () {
   const q = $('#acct-search').value.trim().toLowerCase()
@@ -223,9 +206,6 @@ $('#acct-refresh').onclick = guard(loadAccounts)
 $$('#acct-filter button').forEach((b) => { b.onclick = () => { acctFilter = b.dataset.f; $$('#acct-filter button').forEach((x) => x.classList.toggle('active', x === b)); renderAccounts() } })
 $$('#acct-table th.sortable').forEach((th) => { th.onclick = () => { const k = th.dataset.k; acctSort = { k, dir: acctSort.k === k ? -acctSort.dir : 1 }; $$('#acct-table th').forEach((x) => x.classList.remove('sorted-asc', 'sorted-desc')); th.classList.add(acctSort.dir === 1 ? 'sorted-asc' : 'sorted-desc'); renderAccounts() } })
 
-function updatePreview () { $('#acct-preview').textContent = globalName($('#acct-name').value || '<name>') }
-$('#acct-name').oninput = updatePreview
-
 $('#account-form').onsubmit = guard(async (e) => {
   e.preventDefault()
   const body = {
@@ -236,7 +216,7 @@ $('#account-form').onsubmit = guard(async (e) => {
   }
   const r = await api('POST', '/accounts', body)
   toast(`Activated ${r.account} (${r.expiresInDays}d)`)
-  $('#account-form').reset(); updatePreview()
+  $('#account-form').reset()
   await Promise.all([loadAccounts(), refreshBalance()])
 })
 $('#acct-trial-btn').onclick = guard(async () => {
@@ -244,7 +224,7 @@ $('#acct-trial-btn').onclick = guard(async () => {
   if (!name) return toast('Enter a name first', true)
   const r = await api('POST', '/trials', { name, password: $('#acct-pass').value || 'trial-' + Math.random().toString(36).slice(2, 10), maxDevices: +$('#acct-devices').value })
   toast(`Trial ${r.account} started`)
-  $('#account-form').reset(); updatePreview()
+  $('#account-form').reset()
   await loadAccounts()
 })
 
@@ -303,9 +283,6 @@ function setupPrincipalForm () {
   if (IS_ADMIN(me.role)) opts.push('super')
   if (CAN_MANAGE.has(me.role)) opts.push('reseller')
   roleSel.replaceChildren(...opts.map((r) => el('option', { value: r, textContent: r })))
-  const syncPrefix = () => { const needs = roleSel.value === 'super' || roleSel.value === 'reseller'; $('#p-prefix-label').hidden = !needs; $('#p-prefix').required = needs }
-  roleSel.onchange = syncPrefix
-  syncPrefix()
 }
 async function loadPrincipals () {
   const list = await api('GET', '/principals')
@@ -325,8 +302,7 @@ function principalRow (p) {
   ].filter(Boolean))
   return el('tr', {}, [
     el('td', {}, el('div', { className: 'cell-name' }, [
-      el('span', { className: 't', textContent: p.name }),
-      p.prefix ? el('span', { className: 'muted mono', style: 'font-size:11px', textContent: p.prefix }) : null
+      el('span', { className: 't', textContent: p.name })
     ])),
     el('td', {}, el('span', { className: 'badge role', textContent: p.role })),
     el('td', { textContent: p.parent || '—' }),
@@ -345,7 +321,6 @@ $('#p-refresh').onclick = guard(loadPrincipals)
 $('#principal-form').onsubmit = guard(async (e) => {
   e.preventDefault()
   const body = { username: $('#p-name').value, password: $('#p-pass').value, role: $('#p-role').value }
-  if ($('#p-prefix').required) body.prefix = $('#p-prefix').value
   await api('POST', '/principals', body)
   toast(`Created ${body.username}`)
   $('#principal-form').reset(); setupPrincipalForm()

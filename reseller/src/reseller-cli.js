@@ -60,7 +60,7 @@ async function main () {
     const ledger = openLedger(ctx.dataDir)
     for (const p of listPrincipals(ctx)) {
       if (opts.role && p.role !== opts.role) continue
-      console.log(p.name, '->', JSON.stringify({ role: p.role, root: p.root || undefined, parent: p.parent, prefix: p.prefix, status: p.status, balance: ledger.balance(p.name) }))
+      console.log(p.name, '->', JSON.stringify({ role: p.role, root: p.root || undefined, parent: p.parent, status: p.status, balance: ledger.balance(p.name) }))
     }
     return
   }

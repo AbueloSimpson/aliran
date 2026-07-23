@@ -134,7 +134,6 @@ export function startControlServer (ctx, opts = {}) {
             password: b.password,
             role: b.role,
             parent: me.name,
-            prefix: b.prefix,
             maxDevicesLimit: b.maxDevicesLimit,
             trialDailyCap: b.trialDailyCap,
             createdBy: me.name,

@@ -57,7 +57,7 @@ live.
 ## Data (`DATA_DIR`, default `./data`)
 
 ```
-secrets/principals.json   the hierarchy (Argon2id verifiers, roles, prefixes) — 0600
+secrets/principals.json   the hierarchy (Argon2id verifiers, roles, parents) — 0600
 keys/control.json         the token-signing keypair — 0600
 ledger/ledger.jsonl       append-only credit ledger (the durable audit trail)
 accounts.json             viewer-account registry = the subscription clock

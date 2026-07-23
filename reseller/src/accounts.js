@@ -11,34 +11,50 @@
 // the reconcile sweep finishes the decoration rather than stranding a paid-for
 // account half-made.
 //
-// Account naming: <globalPrefix>.<ownerPrefix>.<name> (admin tiers, having no
-// prefix, create directly under <globalPrefix>.<name>). The name part allows no
-// dots, so ownership parses unambiguously and no reseller can spoof another's
-// namespace. Viewer passwords are pass-through only — never stored here.
+// Account names are PLAIN panel usernames — no prefixes (user decision: names are
+// a global first-come-first-served space; a clash with an existing panel user
+// surfaces as the panel's own `exists` error). Ownership and scoping never depend
+// on the name: the registry's `owner` field is authoritative, and a reseller can
+// only ever operate on accounts the registry says are theirs. Because nothing in a
+// panel username marks it as reseller-created, crash recovery uses an INTENT
+// JOURNAL instead: the intent is recorded before the panel call and cleared after
+// the registry commit, so a crash in between leaves a stale intent the reconcile
+// sweep can chase. Viewer passwords are pass-through only — never stored here.
 
 import path from 'path'
 import { ControlError } from './errors.js'
 import { readJsonFile, writeJsonFile } from './store.js'
 
-const NAME_PART_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$/
-const PANEL_NAME_MAX = 64
+// Same shape the panel itself enforces (panel/src/ops.js NAME_RE).
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
 const MONTHS_MAX = 120
 
 export function makeAccounts (ctx) {
   const file = path.join(ctx.dataDir, 'accounts.json')
+  const intentsFile = path.join(ctx.dataDir, 'state', 'intents.json')
   const registry = readJsonFile(file, {})
+  const intents = readJsonFile(intentsFile, {})
   const monthMs = () => ctx.config.daysPerMonth * 86400000
 
   function save () { writeJsonFile(file, registry) }
+  function saveIntents () { writeJsonFile(intentsFile, intents) }
 
-  function fullName (me, name) {
-    if (typeof name !== 'string' || !NAME_PART_RE.test(name)) {
-      throw new ControlError('bad-request', 'account name: letters, digits, _ - (no dots), max 41 chars')
+  function checkName (name) {
+    if (typeof name !== 'string' || !NAME_RE.test(name)) {
+      throw new ControlError('bad-request', 'account name: letters, digits, _ . - ; max 64 chars')
     }
-    const parts = me.prefix ? [ctx.config.globalPrefix, me.prefix, name] : [ctx.config.globalPrefix, name]
-    const full = parts.join('.')
-    if (full.length > PANEL_NAME_MAX) throw new ControlError('bad-request', `full username "${full}" exceeds the panel's ${PANEL_NAME_MAX}-char limit`)
-    return full
+    return name
+  }
+
+  // Crash-window bookkeeping: an intent exists exactly while a panel create is in
+  // flight but not yet committed locally. A stale one means we may have created a
+  // panel user we lost track of — reconcile checks and repairs.
+  function openIntent (acct, owner) {
+    intents[acct] = { owner, ts: Date.now() }
+    saveIntents()
+  }
+  function closeIntent (acct) {
+    if (intents[acct]) { delete intents[acct]; saveIntents() }
   }
 
   function mustGet (acct) {
@@ -100,7 +116,7 @@ export function makeAccounts (ctx) {
     if (!Number.isInteger(months) || months < 1 || months > MONTHS_MAX) throw new ControlError('bad-request', `months must be an integer 1-${MONTHS_MAX}`)
     if (typeof password !== 'string' || password.length < 8) throw new ControlError('bad-request', 'account password must be at least 8 characters')
     if (!Array.isArray(grants) || grants.some((g) => typeof g !== 'string')) throw new ControlError('bad-request', 'grants must be an array of streamIds')
-    const acct = fullName(me, name)
+    const acct = checkName(name)
     if (registry[acct] && registry[acct].status !== 'deleted') throw new ControlError('exists', `account "${acct}" already exists`)
     const devices = checkDeviceCap(me, maxDevices)
     const pays = !isAdminTier(me)
@@ -108,8 +124,15 @@ export function makeAccounts (ctx) {
       throw new ControlError('insufficient-credits', `balance ${ctx.ledger.balance(me.name)} < ${months}`)
     }
 
-    // Panel first — its create auto-grants the autoGrant-source baseline.
-    await ctx.panel.req('POST', '/api/users', { username: acct, password })
+    // Panel first — its create auto-grants the autoGrant-source baseline. The
+    // intent brackets the crash window between panel create and registry commit.
+    openIntent(acct, me.name)
+    try {
+      await ctx.panel.req('POST', '/api/users', { username: acct, password })
+    } catch (err) {
+      closeIntent(acct) // the panel refused — nothing was created anywhere
+      throw err
+    }
 
     const now = Date.now()
     const r = registry[acct] = {
@@ -136,6 +159,7 @@ export function makeAccounts (ctx) {
       })
     }
     save()
+    closeIntent(acct)
     return view(acct)
   }
 
@@ -146,11 +170,17 @@ export function makeAccounts (ctx) {
     if (!isAdminTier(me) && ctx.ledger.trialsToday(me.name) >= me.trialDailyCap) {
       throw new ControlError('forbidden', `trial daily cap reached (${me.trialDailyCap}/day)`)
     }
-    const acct = fullName(me, name)
+    const acct = checkName(name)
     if (registry[acct] && registry[acct].status !== 'deleted') throw new ControlError('exists', `account "${acct}" already exists`)
     const devices = checkDeviceCap(me, maxDevices)
 
-    await ctx.panel.req('POST', '/api/users', { username: acct, password })
+    openIntent(acct, me.name)
+    try {
+      await ctx.panel.req('POST', '/api/users', { username: acct, password })
+    } catch (err) {
+      closeIntent(acct)
+      throw err
+    }
 
     const now = Date.now()
     const r = registry[acct] = {
@@ -167,6 +197,7 @@ export function makeAccounts (ctx) {
     await decorate(acct, r, { grants: [], maxDevices: devices })
     ctx.ledger.append({ type: 'TRIAL', actor: me.name, entries: [], account: acct })
     save()
+    closeIntent(acct)
     return view(acct)
   }
 
@@ -364,9 +395,10 @@ export function makeAccounts (ctx) {
 
   // Raw record access for the sweeps (same process, same mutex discipline).
   function records () { return registry }
+  function pendingIntents () { return intents }
 
   return {
-    fullName,
+    checkName,
     activate,
     trial,
     renew,
@@ -387,6 +419,8 @@ export function makeAccounts (ctx) {
     get,
     view,
     records,
+    pendingIntents,
+    closeIntent,
     save
   }
 }

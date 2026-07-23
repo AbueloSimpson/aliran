@@ -337,12 +337,15 @@ phone + Android TV, and the Windows desktop player).
   renewing a trial converts it to paid with the same credentials.
 - **Fail-closed** account ops (panel first, local ledger + registry only on OK —
   a rejected activation leaves nothing behind) run under one process mutex.
-  Accounts are namespaced `<globalPrefix>.<resellerPrefix>.<name>` so they can't
-  collide with panel users or another reseller. The **expiry sweep** disables
-  lapsed accounts on the panel (backs off while the panel is unreachable; the
-  work list re-derives each tick), and a **reconcile sweep** diffs the panel
-  against the registry, reporting (and, with `RECONCILE_REPAIR=1`, repairing)
-  divergences with the local clock winning.
+  Account names are **plain panel usernames** (first come, first served — a
+  clash surfaces as the panel's own error); ownership lives in the registry,
+  never in the name, and creates are bracketed by an **intent journal** so a
+  crash between the panel create and the local commit is found later. The
+  **expiry sweep** disables lapsed accounts on the panel (backs off while the
+  panel is unreachable; the work list re-derives each tick), and a **reconcile
+  sweep** checks every registered account (and stale intents) against the panel,
+  reporting (and, with `RECONCILE_REPAIR=1`, repairing) divergences with the
+  local clock winning — operator-created panel users stay invisible to it.
 - Own worker-thread single-flight Argon2id login (the 2026-07-16 flood lesson),
   role never trusted from the token (the live record is re-read each request, so
   a suspension bites immediately), a no-build four-role dashboard on the shared

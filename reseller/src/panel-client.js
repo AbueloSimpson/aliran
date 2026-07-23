@@ -101,21 +101,6 @@ export function makePanelClient (config) {
     throw new PanelError('panel-rejected', msg, r.status)
   }
 
-  // Page the panel's user listing under our namespace (reconcile's view).
-  async function listAllUsers (prefix) {
-    const out = []
-    let after
-    for (;;) {
-      const q = new URLSearchParams({ prefix, limit: '200' })
-      if (after) q.set('after', after)
-      const page = await req('GET', `/api/users?${q}`)
-      const users = (page && page.users) || []
-      out.push(...users)
-      if (!page || !page.next) return out
-      after = page.next
-    }
-  }
-
   function healthInfo () {
     const reachable = lastOkAt !== null && (!lastError || lastOkAt >= lastError.at)
     return { reachable: lastOkAt === null && lastError === null ? null : reachable, lastOkAt, lastError: lastError ? lastError.message : null }
@@ -124,7 +109,6 @@ export function makePanelClient (config) {
   return {
     req,
     login,
-    listAllUsers,
     status: () => req('GET', '/api/status'),
     streams: () => req('GET', '/api/streams'),
     healthInfo

@@ -29,9 +29,6 @@ import { readJsonFile, writeJsonFile } from './store.js'
 
 const bad = (m) => { throw new ControlError('bad-request', m) }
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-// Prefixes end up inside panel usernames (<global>.<prefix>.<name>), so they are
-// deliberately narrower than principal names: lowercase, no dots.
-const PREFIX_RE = /^[a-z0-9][a-z0-9-]{0,15}$/
 
 // Argon2id cost from config, clamped to the sodium minimums (config.argon2 is
 // { memKiB, time }, matching the panel's env knobs).
@@ -87,7 +84,6 @@ export function principalSummary (name, p) {
     role: p.role,
     root: !!p.root,
     parent: p.parent || null,
-    prefix: p.prefix || null,
     status: p.status || 'active',
     maxDevicesLimit: p.maxDevicesLimit,
     trialDailyCap: p.trialDailyCap,
@@ -98,23 +94,14 @@ export function principalSummary (name, p) {
 }
 
 // Create a principal. Capability/hierarchy checks are the CALLER's job (roles.js) —
-// this validates shape only: name, password, role, and the prefix rules (super and
-// reseller MUST carry a unique prefix; admin tiers must not, their accounts live
-// directly under the global prefix).
-export function addPrincipal (ctx, { username, password, role, parent = null, prefix = null, maxDevicesLimit, trialDailyCap, root = false, createdBy = null, note = '' }) {
+// this validates shape only: name, password, role.
+export function addPrincipal (ctx, { username, password, role, parent = null, maxDevicesLimit, trialDailyCap, root = false, createdBy = null, note = '' }) {
   if (typeof username !== 'string' || !NAME_RE.test(username)) bad('invalid principal name (allowed: letters, digits, _ . - ; max 64)')
   if (typeof password !== 'string' || password.length < 8) bad('password must be at least 8 characters')
   if (!ROLES.includes(role)) bad(`invalid role (one of: ${ROLES.join(', ')})`)
   const principals = loadPrincipals(ctx.dataDir)
   if (principals[username]) throw new ControlError('exists', `principal "${username}" already exists`)
   if (root && Object.values(principals).some((p) => p.root)) throw new ControlError('exists', 'a root admin already exists')
-  const needsPrefix = role === 'super' || role === 'reseller'
-  if (needsPrefix) {
-    if (typeof prefix !== 'string' || !PREFIX_RE.test(prefix)) bad('prefix required for super/reseller (lowercase letters, digits, - ; max 16)')
-    if (Object.values(principals).some((p) => p.prefix === prefix)) throw new ControlError('exists', `prefix "${prefix}" is already taken`)
-  } else if (prefix) {
-    bad(`role "${role}" does not take a prefix`)
-  }
   const salt = randomSalt()
   const argon = argonOpts(ctx.config)
   principals[username] = {
@@ -126,7 +113,6 @@ export function addPrincipal (ctx, { username, password, role, parent = null, pr
     role,
     root: !!root,
     parent,
-    prefix: needsPrefix ? prefix : null,
     maxDevicesLimit: Number.isInteger(maxDevicesLimit) ? maxDevicesLimit : ctx.config.maxDevicesLimitDefault,
     trialDailyCap: Number.isInteger(trialDailyCap) ? trialDailyCap : ctx.config.trialDailyCapDefault,
     createdAt: Date.now(),

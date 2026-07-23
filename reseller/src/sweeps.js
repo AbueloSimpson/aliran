@@ -11,12 +11,16 @@
 // succeeds again.
 //
 // RECONCILE SWEEP — heals the divergence a crash or partial failure can leave
-// between the panel and the local registry. Pages the panel's users under our
-// global prefix and diffs. Rules (mutations only when RECONCILE_REPAIR=1;
-// everything is ALWAYS reported):
-//   - panel user under our prefix, unknown locally → DISABLE panel-side (never
-//     delete — that would destroy the only copy of the evidence), report for
-//     operator adoption/cleanup.
+// between the panel and the local registry. Account names carry no prefix, so
+// "which panel users are ours" cannot be answered by listing — instead the sweep
+// is REGISTRY-DRIVEN (check each account we know about against the panel) plus
+// INTENT-DRIVEN (chase stale create-intents from accounts.js — the crash window
+// between a panel create and its local commit). Rules (mutations only when
+// RECONCILE_REPAIR=1; everything is ALWAYS reported):
+//   - stale intent whose panel user EXISTS but has no registry entry → that is
+//     OUR orphan: DISABLE panel-side (never delete — that would destroy the only
+//     copy of the evidence) and report for operator adoption/cleanup; an intent
+//     whose panel user does NOT exist just gets cleared (the create never landed).
 //   - local non-deleted account missing panel-side → report only: viewer
 //     passwords are never stored here, so it cannot be recreated automatically.
 //   - status divergence → THE LOCAL CLOCK WINS, both directions: desired panel
@@ -83,38 +87,42 @@ export function makeSweeps (ctx) {
   async function reconcileNow () {
     const repair = !!ctx.config.reconcileRepair
     const report = { ts: Date.now(), repair, checked: 0, orphanPanel: [], missingPanel: [], statusFixed: [], maxDevicesFixed: [], errors: [] }
-    let panelUsers
-    try {
-      panelUsers = await ctx.panel.listAllUsers(ctx.config.globalPrefix + '.')
-    } catch (err) {
-      report.errors.push({ error: String(err.message || err) })
-      lastReconcile = report
-      writeJsonFile(reportFile, report)
-      return report
-    }
     const records = ctx.accounts.records()
-    const byName = new Map(panelUsers.map((u) => [u.username, u]))
-    report.checked = panelUsers.length
 
-    for (const u of panelUsers) {
-      const local = records[u.username]
-      if (!local || local.status === 'deleted') {
-        report.orphanPanel.push(u.username)
-        if (repair && u.status !== 'disabled') {
-          try {
-            await ctx.mutex(() => ctx.panel.req('POST', `/api/users/${encodeURIComponent(u.username)}/status`, { status: 'disabled' }))
-          } catch (err) {
-            report.errors.push({ account: u.username, error: String(err.message || err) })
-          }
+    // Chase stale create-intents (only ones older than a minute — a live request
+    // may legitimately be mid-flight). Committed accounts clear their intent on
+    // the spot; a panel user with an intent but no registry entry is OUR orphan.
+    const staleBefore = Date.now() - 60000
+    for (const [acct, intent] of Object.entries(ctx.accounts.pendingIntents())) {
+      if (intent.ts > staleBefore) continue
+      if (records[acct] && records[acct].status !== 'deleted') { ctx.accounts.closeIntent(acct); continue }
+      try {
+        await ctx.panel.req('GET', `/api/users/${encodeURIComponent(acct)}`)
+        report.orphanPanel.push(acct)
+        if (repair) {
+          await ctx.mutex(async () => {
+            await ctx.panel.req('POST', `/api/users/${encodeURIComponent(acct)}/status`, { status: 'disabled' })
+            ctx.accounts.closeIntent(acct)
+          })
         }
+      } catch (err) {
+        if (err.httpStatus === 404) { ctx.accounts.closeIntent(acct); continue } // create never landed
+        report.errors.push({ account: acct, error: String(err.message || err) })
       }
     }
 
     for (const [acct, r] of Object.entries(records)) {
       if (r.status === 'deleted') continue
-      const live = byName.get(acct)
-      if (!live) {
-        report.missingPanel.push(acct)
+      report.checked++
+      let live
+      try {
+        live = await ctx.panel.req('GET', `/api/users/${encodeURIComponent(acct)}`)
+      } catch (err) {
+        if (err.httpStatus === 404) {
+          report.missingPanel.push(acct)
+        } else {
+          report.errors.push({ account: acct, error: String(err.message || err) })
+        }
         continue
       }
       const desired = r.status === 'active' && r.expiresAt > Date.now() ? 'active' : 'disabled'

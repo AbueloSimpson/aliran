@@ -2214,3 +2214,21 @@ in-process demo stack — a reseller login showing role-correct nav and a renew
 round-tripping through to the admin's hierarchy view. Docker image builds from
 the repo root behind the `reseller` compose profile and smokes via
 `reseller-cli list-principals` in CI.
+
+**Follow-up (same day): account-name prefixes removed.** The
+`<global>.<prefix>.<name>` namespacing above was dropped by decision — resellers'
+viewer accounts get **plain panel usernames** (a global first-come-first-served
+space; a clash with an existing panel user surfaces as the panel's own error).
+Nothing about safety depended on the name: ownership and scoping always came
+from the registry's `owner` field, and that stays. The one job the prefix really
+did — recognizing OUR orphaned panel user after a crash between the panel create
+and the local commit — moved to an **intent journal**: the intent is written
+before the panel call and cleared after the commit, and the reconcile sweep
+chases stale intents (panel user exists + no registry entry = our orphan →
+disabled and reported; no panel user = the create never landed, intent cleared).
+Reconcile itself became registry-driven (per-account panel GETs instead of
+prefix-paged listing), which also means operator-created panel users are now
+completely invisible to the reseller service — the e2e asserts exactly that
+(`operator-joe` with no intent survives a repair-mode reconcile untouched).
+Principals lost their prefix field; the create form, docs, env (`GLOBAL_PREFIX`
+gone) and reference followed. Both suites re-run green end to end.
