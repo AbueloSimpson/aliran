@@ -132,25 +132,17 @@ webhook is enabled.
 
 ## White-labeling
 
-The dashboard white-labels without touching the source:
+The dashboard white-labels at runtime, entirely from env — no build step:
+`BRAND_NAME` (login card / sidebar / tab title), `BRAND_LOGO_FILE` (replaces
+the brand text with your logo), `BRAND_FAVICON_FILE`, and `BRAND_THEME_FILE`
+(JSON overriding any of the 11 shared theme tokens, e.g.
+`{ "accent": "#F59E0B", "accent-dim": "#B45309" }`). Overrides are served as
+`/branding.css` layered **after** the stylesheet's shared theme block, so the
+byte-identical block the theme test enforces is untouched.
 
-- **`BRAND_NAME`** — replaces "Aliran reseller" in the login card, the sidebar
-  and the page title (first word bold, the rest in the accent tone, same as the
-  stock brand).
-- **`BRAND_THEME_FILE`** — path to a JSON file overriding any of the **11
-  shared theme tokens** (`bg`, `panel`, `panel-2`, `border`, `text`, `muted`,
-  `accent`, `accent-dim`, `danger`, `ok`, `warn`) with 6-digit hex values:
-
-  ```json
-  { "accent": "#F59E0B", "accent-dim": "#B45309" }
-  ```
-
-The overrides are served as `/branding.css` and layered **after** the
-stylesheet's shared theme block, so the byte-identical block the theme test
-enforces is untouched — this is the S19 white-label seam, wired up. The
-favicon dot follows the (possibly overridden) accent automatically. Unknown
-tokens and non-hex values in the file are ignored; edits apply on the next
-page load, no restart needed.
+**The full manual — every variable, image formats and sizes, and what each of
+the 11 colour tokens paints — is in
+[White-label branding → Reseller panel dashboard](white-label.md#reseller-panel-dashboard).**
 
 ## Trials
 

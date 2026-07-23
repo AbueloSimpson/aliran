@@ -140,21 +140,28 @@ function kebabBtn (label, items) {
 }
 
 // ---- white-label branding (public endpoint; silent fallback to defaults) ----
-// First word renders bold, the rest in the accent tone — "Acme TV" reads like
-// "Aliran reseller" does. The favicon dot follows the (possibly overridden)
-// accent token.
+// A logo file replaces the text brand outright; otherwise the first word
+// renders bold and the rest in the accent tone — "Acme TV" reads like
+// "Aliran reseller" does. The favicon is the operator's file when set, else a
+// dot in the (possibly overridden) accent token. Manual: docs/white-label.md.
 async function applyBranding () {
   try {
     const b = await (await fetch('branding.json')).json()
     if (!b || !b.name) return
     document.title = b.name
-    const parts = b.name.split(' ')
     $$('.brand').forEach((h) => {
+      if (b.logo) {
+        h.replaceChildren(el('img', { className: 'brand-logo', src: 'branding/logo', alt: b.name }))
+        return
+      }
+      const parts = b.name.split(' ')
       const kids = [parts[0] + (parts.length > 1 ? ' ' : '')]
       if (parts.length > 1) kids.push(el('span', { textContent: parts.slice(1).join(' ') }))
       h.replaceChildren(...kids)
     })
-    if (b.accent && /^#[0-9a-fA-F]{6}$/.test(b.accent)) {
+    if (b.favicon) {
+      $('link[rel="icon"]').href = 'branding/favicon'
+    } else if (b.accent && /^#[0-9a-fA-F]{6}$/.test(b.accent)) {
       $('link[rel="icon"]').href = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23${b.accent.slice(1)}'/%3E%3C/svg%3E`
     }
   } catch {}

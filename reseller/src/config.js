@@ -65,12 +65,16 @@ export const config = {
     memKiB: int(process.env.ARGON2_MEM_KIB, 65536),
     time: int(process.env.ARGON2_TIME, 2)
   },
-  // White-label: the dashboard's brand name + an optional JSON file overriding
+  // White-label: brand name, optional logo/favicon image files (served at
+  // /branding/logo + /branding/favicon), and an optional JSON file overriding
   // any of the 11 shared theme tokens (served as /branding.css ON TOP of the
-  // byte-identical shared block — test:theme is untouched).
+  // byte-identical shared block — test:theme is untouched). Full manual:
+  // docs/white-label.md → "Reseller panel dashboard".
   branding: {
     name: process.env.BRAND_NAME || '',
-    themeFile: process.env.BRAND_THEME_FILE || ''
+    themeFile: process.env.BRAND_THEME_FILE || '',
+    logoFile: process.env.BRAND_LOGO_FILE || '',
+    faviconFile: process.env.BRAND_FAVICON_FILE || ''
   },
   // Automated credit top-ups: setting a secret enables POST /api/webhooks/credits
   // (HMAC-SHA256-signed, idempotent). Use a long random value (32+ chars) — it is

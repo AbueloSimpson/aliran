@@ -360,13 +360,15 @@ try {
   const WH_SECRET = 'whsec-e2e-0123456789abcdef'
   const theme2 = path.join(dir2, 'brand-theme.json')
   fs.writeFileSync(theme2, JSON.stringify({ accent: '#FF8800', bogus: '#123456', bg: 'not-a-color' }))
+  const logo2 = path.join(dir2, 'brand-logo.svg')
+  fs.writeFileSync(logo2, '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="32"><text x="0" y="24" fill="#FF8800">ACME</text></svg>')
   const svc2 = await startReseller({
     dataDir: dir2,
     argon2: fastArgon,
     noSweeps: true,
     control: { host: '127.0.0.1', port: 0, trustProxyHeader: 'cf-connecting-ip' },
     lockout: { threshold: 2, seconds: 60 },
-    branding: { name: 'Acme TV', themeFile: theme2 },
+    branding: { name: 'Acme TV', themeFile: theme2, logoFile: logo2 },
     webhook: { secret: WH_SECRET },
     panel: { url: `http://127.0.0.1:${panelPort}`, username: 'reseller-svc', password: SVC_PASSWORD, timeoutMs: 4000 }
   })
@@ -390,6 +392,11 @@ try {
   let wj = await (await fetch(base2 + '/branding.json')).json()
   assert.strictEqual(wj.name, 'Acme TV', 'brand name served')
   assert.strictEqual(wj.accent, '#FF8800', 'accent follows the theme override')
+  assert.ok(wj.logo === true && wj.favicon === false, 'image flags reflect configured files')
+  const logoRes = await fetch(base2 + '/branding/logo')
+  assert.ok(logoRes.status === 200 && logoRes.headers.get('content-type') === 'image/svg+xml', 'logo served with its type')
+  assert.strictEqual((await fetch(base2 + '/branding/favicon')).status, 404, 'unset favicon → 404')
+  assert.strictEqual((await fetch(base + '/branding/logo')).status, 404, 'unbranded instance has no logo route')
   const brandCss = await (await fetch(base2 + '/branding.css')).text()
   assert.ok(brandCss.includes('--accent: #FF8800'), 'theme override css emitted')
   assert.ok(!brandCss.includes('bogus') && !brandCss.includes('not-a-color'), 'unknown tokens + junk values filtered')

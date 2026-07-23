@@ -82,6 +82,9 @@ export function startControlServer (ctx, opts = {}) {
     if (seg.length === 1 && req.method === 'GET' && seg[0] === 'branding.css') {
       return sendBrandingCss(ctx, res)
     }
+    if (seg.length === 2 && seg[0] === 'branding' && req.method === 'GET' && (seg[1] === 'logo' || seg[1] === 'favicon')) {
+      return sendBrandingImage(ctx, res, seg[1])
+    }
     if (seg[0] !== 'api') {
       if (req.method !== 'GET') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
       return serveStatic(res, url.pathname)
@@ -365,12 +368,49 @@ function brandingTokens (ctx) {
   } catch { return {} } // unreadable/invalid file = no overrides, never a 500
 }
 
+// Image files: extension whitelist doubles as the content-type map — anything
+// else is refused rather than sniffed.
+const BRAND_IMAGE_TYPES = {
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon'
+}
+
+function brandImageFile (ctx, kind) {
+  const b = ctx.config.branding || {}
+  const file = kind === 'logo' ? b.logoFile : b.faviconFile
+  if (!file || !BRAND_IMAGE_TYPES[path.extname(file).toLowerCase()]) return null
+  return fs.existsSync(file) ? file : null
+}
+
 function brandingInfo (ctx) {
   const tokens = brandingTokens(ctx)
   return {
     name: (ctx.config.branding && ctx.config.branding.name) || 'Aliran reseller',
-    accent: tokens.accent || '#22D3EE'
+    accent: tokens.accent || '#22D3EE',
+    logo: !!brandImageFile(ctx, 'logo'),
+    favicon: !!brandImageFile(ctx, 'favicon')
   }
+}
+
+function sendBrandingImage (ctx, res, kind) {
+  const file = brandImageFile(ctx, kind)
+  if (!file) return sendJson(res, 404, { error: 'not found' })
+  let data
+  try { data = fs.readFileSync(file) } catch { return sendJson(res, 404, { error: 'not found' }) }
+  if (res.destroyed || res.writableEnded || res.headersSent) return
+  try {
+    res.writeHead(200, {
+      'content-type': BRAND_IMAGE_TYPES[path.extname(file).toLowerCase()],
+      'content-length': data.length,
+      'cache-control': 'no-cache',
+      'x-content-type-options': 'nosniff'
+    })
+    res.end(data)
+  } catch {}
 }
 
 function sendBrandingCss (ctx, res) {

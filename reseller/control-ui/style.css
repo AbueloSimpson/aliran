@@ -55,6 +55,10 @@ body {
 
 .brand { font-size: 17px; font-weight: 700; letter-spacing: .2px; margin: 0; }
 .brand span { color: var(--accent); font-weight: 400; }
+/* White-label logo: constrained boxes — supply SVG (or PNG at 2×), see
+   docs/white-label.md for the size table. */
+.brand-logo { display: block; max-height: 30px; max-width: 176px; width: auto; height: auto; }
+.login-card .brand-logo { margin: 0 auto 4px; max-height: 44px; max-width: 250px; }
 .muted { color: var(--muted); }
 .error { color: var(--danger); margin: 8px 0 0; }
 .pad { padding: 14px 16px; }
