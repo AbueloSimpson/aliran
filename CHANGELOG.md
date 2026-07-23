@@ -379,13 +379,16 @@ phone + Android TV, and the Windows desktop player).
   `cf-connecting-ip`, or `x-forwarded-for` behind Caddy/nginx) keys the login
   lockout on the proxied client IP instead of the proxy's shared socket — set
   only when the port is reachable exclusively through the proxy.
-- **White-label**: `BRAND_NAME`, `BRAND_LOGO_FILE`, `BRAND_FAVICON_FILE` and
-  `BRAND_THEME_FILE` (JSON overriding any of the 11 shared theme tokens)
-  rebrand the dashboard with no source edits — served as public
-  `/branding.json`/`.css` + `/branding/logo|favicon`, layered after the
-  byte-identical shared theme block (the S19 seam, wired up); without a
-  favicon file the tab dot follows the accent. Full manual (variables, image
-  formats/sizes, what each token paints): docs/white-label.md.
+- **White-label**: `BRAND_NAME`, `BRAND_LOGO_FILE`, `BRAND_FAVICON_FILE`,
+  `BRAND_LOGIN_BG_FILE` (full-viewport login backdrop with an automatic
+  readability scrim), `BRAND_LOGIN_STYLE` (built-in token-derived login
+  patterns: glow/plain/grid/dots/stripes) and `BRAND_THEME_FILE` (JSON
+  overriding any of the 11 shared theme tokens) rebrand the dashboard with no
+  source edits — served as public `/branding.json`/`.css` +
+  `/branding/logo|favicon|login-bg`, layered after the byte-identical shared
+  theme block (the S19 seam, wired up); without a favicon file the tab dot
+  follows the accent. Full manual (variables, image formats/sizes, what each
+  token paints): docs/white-label.md.
 - **Automated credit top-ups**: `WEBHOOK_SECRET` enables
   `POST /api/webhooks/credits` — HMAC-SHA256-signed (`"<ts>.<raw body>"`,
   constant-time compare, ±300 s replay window), **idempotent by event id**

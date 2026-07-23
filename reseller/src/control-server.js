@@ -82,7 +82,7 @@ export function startControlServer (ctx, opts = {}) {
     if (seg.length === 1 && req.method === 'GET' && seg[0] === 'branding.css') {
       return sendBrandingCss(ctx, res)
     }
-    if (seg.length === 2 && seg[0] === 'branding' && req.method === 'GET' && (seg[1] === 'logo' || seg[1] === 'favicon')) {
+    if (seg.length === 2 && seg[0] === 'branding' && req.method === 'GET' && (seg[1] === 'logo' || seg[1] === 'favicon' || seg[1] === 'login-bg')) {
       return sendBrandingImage(ctx, res, seg[1])
     }
     if (seg[0] !== 'api') {
@@ -381,18 +381,25 @@ const BRAND_IMAGE_TYPES = {
 
 function brandImageFile (ctx, kind) {
   const b = ctx.config.branding || {}
-  const file = kind === 'logo' ? b.logoFile : b.faviconFile
+  const file = { logo: b.logoFile, favicon: b.faviconFile, 'login-bg': b.loginBgFile }[kind]
   if (!file || !BRAND_IMAGE_TYPES[path.extname(file).toLowerCase()]) return null
   return fs.existsSync(file) ? file : null
 }
 
+// Built-in login backdrop patterns — server-validated so the client only ever
+// applies class names it ships CSS for.
+const LOGIN_STYLES = ['glow', 'plain', 'grid', 'dots', 'stripes']
+
 function brandingInfo (ctx) {
+  const b = ctx.config.branding || {}
   const tokens = brandingTokens(ctx)
   return {
-    name: (ctx.config.branding && ctx.config.branding.name) || 'Aliran reseller',
+    name: b.name || 'Aliran reseller',
     accent: tokens.accent || '#22D3EE',
     logo: !!brandImageFile(ctx, 'logo'),
-    favicon: !!brandImageFile(ctx, 'favicon')
+    favicon: !!brandImageFile(ctx, 'favicon'),
+    loginBg: !!brandImageFile(ctx, 'login-bg'),
+    loginStyle: LOGIN_STYLES.includes(b.loginStyle) ? b.loginStyle : 'glow'
   }
 }
 

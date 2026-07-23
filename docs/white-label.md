@@ -129,6 +129,8 @@ third-party resellers see, so it is usually the first thing to rebrand.
 | `BRAND_NAME` | Brand text in the login card, the sidebar and the browser-tab title. Without a logo it renders like the stock brand: **first word bold**, the rest in the accent tone ("Acme TV" ⇒ **Acme** `TV`). | `/branding.json` |
 | `BRAND_LOGO_FILE` | Path to a logo image. When set, it **replaces the brand text** in the sidebar and on the login card (the name still titles the tab and is the image's alt text). | `/branding/logo` |
 | `BRAND_FAVICON_FILE` | Path to a favicon image for the browser tab. Without it the tab shows a dot in the accent colour (which follows your theme override automatically). | `/branding/favicon` |
+| `BRAND_LOGIN_BG_FILE` | Path to a **login-page backdrop image**, rendered full-viewport (cover) behind the login card with an automatic dark scrim so the card stays readable. Wins over `BRAND_LOGIN_STYLE`. | `/branding/login-bg` |
+| `BRAND_LOGIN_STYLE` | Built-in login backdrop pattern when you have no artwork: `glow` (default — a soft accent radial), `plain` (flat background), `grid`, `dots`, `stripes`. All patterns derive from the theme tokens, so they follow a colour rebrand automatically. Unknown values fall back to `glow`. | `/branding.json` |
 | `BRAND_THEME_FILE` | Path to a JSON file overriding any of the **11 colour tokens** (next section). | `/branding.css` |
 
 All four are optional and independent — set only what you need. A typical
@@ -157,6 +159,7 @@ at every zoom level; if you use a raster, supply it at **2× the rendered size**
 | Logo — sidebar | **30 px tall × 176 px wide** | SVG, or PNG ≥ 60 px tall. **Transparent background** (it sits on the `panel` colour). Wide wordmarks work best; the image scales down proportionally to fit the box. |
 | Logo — login card | **44 px tall × 250 px wide** | Same file — the login card just allows it larger. |
 | Favicon | browser tab (16–32 px) | 32×32 PNG or ICO, or an SVG. |
+| Login backdrop | full viewport, `cover`, centre-anchored | **1920×1080 or larger** (or an SVG). It is dimmed by a background-tinted scrim automatically, so mid-tone photography works — but keep the centre third calm (the card sits there) and the file lean (≤ ~500 KB; it loads on every login view). |
 
 There is one logo slot; the same file is used everywhere it appears. Files are
 read per request (`cache-control: no-cache`), so replacing the file on disk

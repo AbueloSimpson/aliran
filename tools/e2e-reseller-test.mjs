@@ -362,13 +362,15 @@ try {
   fs.writeFileSync(theme2, JSON.stringify({ accent: '#FF8800', bogus: '#123456', bg: 'not-a-color' }))
   const logo2 = path.join(dir2, 'brand-logo.svg')
   fs.writeFileSync(logo2, '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="32"><text x="0" y="24" fill="#FF8800">ACME</text></svg>')
+  const loginBg2 = path.join(dir2, 'brand-login-bg.svg')
+  fs.writeFileSync(loginBg2, '<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080"><rect width="1920" height="1080" fill="#1a1208"/></svg>')
   const svc2 = await startReseller({
     dataDir: dir2,
     argon2: fastArgon,
     noSweeps: true,
     control: { host: '127.0.0.1', port: 0, trustProxyHeader: 'cf-connecting-ip' },
     lockout: { threshold: 2, seconds: 60 },
-    branding: { name: 'Acme TV', themeFile: theme2, logoFile: logo2 },
+    branding: { name: 'Acme TV', themeFile: theme2, logoFile: logo2, loginBgFile: loginBg2, loginStyle: 'BOGUS-style' },
     webhook: { secret: WH_SECRET },
     panel: { url: `http://127.0.0.1:${panelPort}`, username: 'reseller-svc', password: SVC_PASSWORD, timeoutMs: 4000 }
   })
@@ -393,10 +395,14 @@ try {
   assert.strictEqual(wj.name, 'Acme TV', 'brand name served')
   assert.strictEqual(wj.accent, '#FF8800', 'accent follows the theme override')
   assert.ok(wj.logo === true && wj.favicon === false, 'image flags reflect configured files')
+  assert.ok(wj.loginBg === true && wj.loginStyle === 'glow', 'login backdrop flagged; junk style falls back to glow')
   const logoRes = await fetch(base2 + '/branding/logo')
   assert.ok(logoRes.status === 200 && logoRes.headers.get('content-type') === 'image/svg+xml', 'logo served with its type')
+  assert.strictEqual((await fetch(base2 + '/branding/login-bg')).status, 200, 'login backdrop served')
   assert.strictEqual((await fetch(base2 + '/branding/favicon')).status, 404, 'unset favicon → 404')
   assert.strictEqual((await fetch(base + '/branding/logo')).status, 404, 'unbranded instance has no logo route')
+  const mainBrand = await (await fetch(base + '/branding.json')).json()
+  assert.ok(mainBrand.loginBg === false && mainBrand.loginStyle === 'glow', 'unbranded login defaults')
   const brandCss = await (await fetch(base2 + '/branding.css')).text()
   assert.ok(brandCss.includes('--accent: #FF8800'), 'theme override css emitted')
   assert.ok(!brandCss.includes('bogus') && !brandCss.includes('not-a-color'), 'unknown tokens + junk values filtered')

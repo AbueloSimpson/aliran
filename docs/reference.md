@@ -188,7 +188,7 @@ credits, `404`/`409` as the panel, and panel failures surface `PANEL:`-prefixed
 | Endpoint | Description |
 |----------|-------------|
 | `GET /healthz` | **Unauthenticated** liveness → `{ok, principals, accounts, panel:{reachable,lastOkAt}, sweep, ledger:{seq,invariantOk}}` |
-| `GET /branding.json` · `GET /branding.css` · `GET /branding/logo\|favicon` | **Public** white-label surface: `{name, accent, logo, favicon}`, the operator's theme-token overrides (layered after the shared theme block), and the logo/favicon images (`BRAND_NAME`/`BRAND_THEME_FILE`/`BRAND_LOGO_FILE`/`BRAND_FAVICON_FILE`) — manual: [white-label.md](white-label.md#reseller-panel-dashboard) |
+| `GET /branding.json` · `GET /branding.css` · `GET /branding/logo\|favicon\|login-bg` | **Public** white-label surface: `{name, accent, logo, favicon, loginBg, loginStyle}`, the operator's theme-token overrides (layered after the shared theme block), and the logo/favicon/login-backdrop images (`BRAND_*` env vars incl. `BRAND_LOGIN_BG_FILE` + `BRAND_LOGIN_STYLE` glow\|plain\|grid\|dots\|stripes) — manual: [white-label.md](white-label.md#reseller-panel-dashboard) |
 | `POST /api/webhooks/credits` | **HMAC-authenticated** (no Bearer) automated top-up: `{id, to, amount, note?}` signed as `x-topup-signature` = hex HMAC-SHA256(`WEBHOOK_SECRET`, `"<ts>.<raw body>"`) + `x-topup-timestamp` (±300 s). Idempotent by `id` (retry → `{duplicate:true}`); mints a `MINT` line with actor `webhook`; 404 when no secret is configured |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt, role}`; rate-limited + single-flight |
 | `GET /api/me` · `POST /api/me/password` | Own record + balance + trials-used-today / rotate own password |
@@ -215,8 +215,9 @@ Env config (`reseller/.env`): `DATA_DIR`, `PANEL_ADMIN_URL` + `PANEL_ADMIN_USER`
 `LOCKOUT_*`, `TRUST_PROXY_HEADER` (behind a trusted proxy/tunnel only — e.g.
 `cf-connecting-ip` for Cloudflare Tunnel, `x-forwarded-for` for Caddy/nginx —
 keys the login lockout on the proxied client IP instead of the proxy's socket),
-`BRAND_NAME`/`BRAND_LOGO_FILE`/`BRAND_FAVICON_FILE`/`BRAND_THEME_FILE`
-(white-label — see [the manual](white-label.md#reseller-panel-dashboard)),
+`BRAND_NAME`/`BRAND_LOGO_FILE`/`BRAND_FAVICON_FILE`/`BRAND_LOGIN_BG_FILE`/
+`BRAND_LOGIN_STYLE`/`BRAND_THEME_FILE` (white-label — see
+[the manual](white-label.md#reseller-panel-dashboard)),
 `WEBHOOK_SECRET` (enables the top-up webhook), `ARGON2_*`.
 
 ## Panel RPC (over Hyperswarm)

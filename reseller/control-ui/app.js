@@ -164,6 +164,16 @@ async function applyBranding () {
     } else if (b.accent && /^#[0-9a-fA-F]{6}$/.test(b.accent)) {
       $('link[rel="icon"]').href = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23${b.accent.slice(1)}'/%3E%3C/svg%3E`
     }
+    // Login backdrop: an image (with a bg-tinted scrim keeping the card
+    // readable) beats a pattern; the style name is server-validated.
+    const lv = $('#login-view')
+    if (b.loginBg) {
+      lv.classList.add('login-has-bg')
+      lv.style.backgroundImage =
+        'linear-gradient(color-mix(in srgb, var(--bg) 55%, transparent), color-mix(in srgb, var(--bg) 82%, transparent)), url("branding/login-bg")'
+    } else if (b.loginStyle && b.loginStyle !== 'glow') {
+      lv.classList.add('login-style-' + b.loginStyle)
+    }
   } catch {}
 }
 applyBranding()

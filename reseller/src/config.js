@@ -74,7 +74,12 @@ export const config = {
     name: process.env.BRAND_NAME || '',
     themeFile: process.env.BRAND_THEME_FILE || '',
     logoFile: process.env.BRAND_LOGO_FILE || '',
-    faviconFile: process.env.BRAND_FAVICON_FILE || ''
+    faviconFile: process.env.BRAND_FAVICON_FILE || '',
+    // Login landing page: a full-viewport backdrop image (auto-scrimmed so the
+    // card stays readable), or one of the built-in token-derived patterns
+    // (glow — the default — plain, grid, dots, stripes). The image wins.
+    loginBgFile: process.env.BRAND_LOGIN_BG_FILE || '',
+    loginStyle: (process.env.BRAND_LOGIN_STYLE || '').trim().toLowerCase()
   },
   // Automated credit top-ups: setting a secret enables POST /api/webhooks/credits
   // (HMAC-SHA256-signed, idempotent). Use a long random value (32+ chars) — it is

@@ -72,6 +72,35 @@ body {
   background: radial-gradient(1100px 520px at 50% -10%,
               color-mix(in srgb, var(--accent) 7%, transparent), transparent), var(--bg);
 }
+
+/* White-label login backdrops (docs/white-label.md). Patterns derive from the
+   theme tokens, so they follow a rebrand automatically; class names are
+   server-validated (branding.json loginStyle). */
+#login-view.login-style-plain { background: var(--bg); }
+#login-view.login-style-grid {
+  background:
+    linear-gradient(color-mix(in srgb, var(--border) 36%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 36%, transparent) 1px, transparent 1px),
+    radial-gradient(1100px 520px at 50% -10%, color-mix(in srgb, var(--accent) 7%, transparent), transparent),
+    var(--bg);
+  background-size: 34px 34px, 34px 34px, auto, auto;
+}
+#login-view.login-style-dots {
+  background:
+    radial-gradient(color-mix(in srgb, var(--muted) 26%, transparent) 1px, transparent 1.4px),
+    radial-gradient(1100px 520px at 50% -10%, color-mix(in srgb, var(--accent) 8%, transparent), transparent),
+    var(--bg);
+  background-size: 24px 24px, auto, auto;
+}
+#login-view.login-style-stripes {
+  background:
+    repeating-linear-gradient(45deg, color-mix(in srgb, var(--panel-2) 55%, transparent) 0 2px, transparent 2px 16px),
+    radial-gradient(1100px 520px at 50% -10%, color-mix(in srgb, var(--accent) 7%, transparent), transparent),
+    var(--bg);
+}
+/* Backdrop image (inline background-image set by applyBranding, scrim included) */
+#login-view.login-has-bg { background-size: cover; background-position: center; background-repeat: no-repeat; }
+#login-view.login-has-bg .login-card { box-shadow: var(--shadow); }
 .login-card { width: 340px; display: flex; flex-direction: column; gap: 13px; padding: 26px 24px 24px; border-radius: 14px; }
 .login-card h1 { text-align: center; margin-bottom: 8px; }
 .login-card label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
