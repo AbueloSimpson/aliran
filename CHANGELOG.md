@@ -379,6 +379,16 @@ phone + Android TV, and the Windows desktop player).
   `cf-connecting-ip`, or `x-forwarded-for` behind Caddy/nginx) keys the login
   lockout on the proxied client IP instead of the proxy's shared socket — set
   only when the port is reachable exclusively through the proxy.
+- **White-label**: `BRAND_NAME` + `BRAND_THEME_FILE` (JSON overriding any of
+  the 11 shared theme tokens) rebrand the dashboard with no source edits —
+  served as public `/branding.json` + `/branding.css`, layered after the
+  byte-identical shared theme block (the S19 seam, wired up); the favicon
+  follows the accent.
+- **Automated credit top-ups**: `WEBHOOK_SECRET` enables
+  `POST /api/webhooks/credits` — HMAC-SHA256-signed (`"<ts>.<raw body>"`,
+  constant-time compare, ±300 s replay window), **idempotent by event id**
+  (provider retries mint nothing), landing as a normal `MINT` ledger line with
+  actor `webhook` so the audit trail stays complete; 404 without a secret.
 
 **Networking (all components)**
 - Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes

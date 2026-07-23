@@ -64,6 +64,19 @@ export const config = {
   argon2: {
     memKiB: int(process.env.ARGON2_MEM_KIB, 65536),
     time: int(process.env.ARGON2_TIME, 2)
+  },
+  // White-label: the dashboard's brand name + an optional JSON file overriding
+  // any of the 11 shared theme tokens (served as /branding.css ON TOP of the
+  // byte-identical shared block — test:theme is untouched).
+  branding: {
+    name: process.env.BRAND_NAME || '',
+    themeFile: process.env.BRAND_THEME_FILE || ''
+  },
+  // Automated credit top-ups: setting a secret enables POST /api/webhooks/credits
+  // (HMAC-SHA256-signed, idempotent). Use a long random value (32+ chars) — it is
+  // the ONLY thing authenticating a mint.
+  webhook: {
+    secret: process.env.WEBHOOK_SECRET || ''
   }
 }
 

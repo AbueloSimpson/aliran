@@ -139,6 +139,28 @@ function kebabBtn (label, items) {
   return b
 }
 
+// ---- white-label branding (public endpoint; silent fallback to defaults) ----
+// First word renders bold, the rest in the accent tone — "Acme TV" reads like
+// "Aliran reseller" does. The favicon dot follows the (possibly overridden)
+// accent token.
+async function applyBranding () {
+  try {
+    const b = await (await fetch('branding.json')).json()
+    if (!b || !b.name) return
+    document.title = b.name
+    const parts = b.name.split(' ')
+    $$('.brand').forEach((h) => {
+      const kids = [parts[0] + (parts.length > 1 ? ' ' : '')]
+      if (parts.length > 1) kids.push(el('span', { textContent: parts.slice(1).join(' ') }))
+      h.replaceChildren(...kids)
+    })
+    if (b.accent && /^#[0-9a-fA-F]{6}$/.test(b.accent)) {
+      $('link[rel="icon"]').href = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23${b.accent.slice(1)}'/%3E%3C/svg%3E`
+    }
+  } catch {}
+}
+applyBranding()
+
 // ---- auth ----
 function showLogin () {
   $('#app-view').hidden = true
@@ -729,7 +751,8 @@ async function loadSystem () {
     ['Heap used', fmtBytes(sv.heapUsedBytes)],
     ['Data dir', sv.dataDir, { mono: true }],
     ...(sv.ledger ? [['Ledger', statusEl(sv.ledger.invariantOk ? 'ok' : 'err', `seq ${sv.ledger.seq} · ${sv.ledger.invariantOk ? 'consistent' : 'INVARIANT BROKEN'}`)]] : []),
-    ...(sv.sweeps ? [['Last sweep', fmtAgo(sv.sweeps.lastRunAt)]] : [])
+    ...(sv.sweeps ? [['Last sweep', fmtAgo(sv.sweeps.lastRunAt)]] : []),
+    ...(sv.webhook ? [['Top-up webhook', sv.webhook.enabled ? 'enabled' : 'disabled']] : [])
   ]))
 
   $('#sys-host').replaceChildren(...kvRows([

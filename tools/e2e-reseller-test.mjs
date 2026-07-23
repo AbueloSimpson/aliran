@@ -7,6 +7,7 @@ import assert from 'assert'
 import os from 'os'
 import fs from 'fs'
 import path from 'path'
+import { createHmac } from 'crypto'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
 import { makeRing } from '../panel/src/activity.js'
@@ -356,12 +357,17 @@ try {
   cleanups.push(() => fs.rmSync(dir2, { recursive: true, force: true }))
   addPrincipal({ dataDir: dir2, config: { argon2: fastArgon, maxDevicesLimitDefault: 3, trialDailyCapDefault: 3 } },
     { username: 'boss2', password: 'boss2-pass-12', role: 'admin', root: true, createdBy: 'cli' })
+  const WH_SECRET = 'whsec-e2e-0123456789abcdef'
+  const theme2 = path.join(dir2, 'brand-theme.json')
+  fs.writeFileSync(theme2, JSON.stringify({ accent: '#FF8800', bogus: '#123456', bg: 'not-a-color' }))
   const svc2 = await startReseller({
     dataDir: dir2,
     argon2: fastArgon,
     noSweeps: true,
     control: { host: '127.0.0.1', port: 0, trustProxyHeader: 'cf-connecting-ip' },
     lockout: { threshold: 2, seconds: 60 },
+    branding: { name: 'Acme TV', themeFile: theme2 },
+    webhook: { secret: WH_SECRET },
     panel: { url: `http://127.0.0.1:${panelPort}`, username: 'reseller-svc', password: SVC_PASSWORD, timeoutMs: 4000 }
   })
   cleanups.push(() => svc2.close())
@@ -378,6 +384,44 @@ try {
   assert.strictEqual(await proxied('203.0.113.9'), 401, 'different proxied client IP → own fresh counter')
   assert.strictEqual(await proxied('6.6.6.6, 198.51.100.7'), 429, 'rightmost (proxy-appended) list entry is the key')
   log('L: TRUST_PROXY_HEADER keys the lockout on the proxied client IP ✓')
+
+  // ===== M: white-label branding + HMAC-signed idempotent credit top-ups =====
+  const base2 = `http://127.0.0.1:${svc2.control.port}`
+  let wj = await (await fetch(base2 + '/branding.json')).json()
+  assert.strictEqual(wj.name, 'Acme TV', 'brand name served')
+  assert.strictEqual(wj.accent, '#FF8800', 'accent follows the theme override')
+  const brandCss = await (await fetch(base2 + '/branding.css')).text()
+  assert.ok(brandCss.includes('--accent: #FF8800'), 'theme override css emitted')
+  assert.ok(!brandCss.includes('bogus') && !brandCss.includes('not-a-color'), 'unknown tokens + junk values filtered')
+  assert.ok((await (await fetch(base + '/branding.css')).text()).includes('no white-label'), 'unbranded instance = empty overrides')
+  assert.strictEqual((await (await fetch(base + '/branding.json')).json()).name, 'Aliran reseller', 'unbranded default name')
+
+  const whPost = async (body, { ts = Math.floor(Date.now() / 1000), sig } = {}) => {
+    const raw = JSON.stringify(body)
+    const s = sig ?? createHmac('sha256', WH_SECRET).update(ts + '.' + raw).digest('hex')
+    const res = await fetch(base2 + '/api/webhooks/credits', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-topup-timestamp': String(ts), 'x-topup-signature': s },
+      body: raw
+    })
+    let json = null
+    try { json = await res.json() } catch {}
+    return { status: res.status, body: json }
+  }
+  r = await whPost({ id: 'evt-1', to: 'boss2', amount: 25 }, { sig: 'deadbeef' })
+  assert.strictEqual(r.status, 401, 'bad signature → 401')
+  r = await whPost({ id: 'evt-1', to: 'boss2', amount: 25 }, { ts: Math.floor(Date.now() / 1000) - 4000 })
+  assert.strictEqual(r.status, 401, 'stale timestamp (replay) → 401')
+  r = await whPost({ id: 'evt-1', to: 'boss2', amount: 25, note: 'order #1001' })
+  assert.strictEqual(r.status, 200, 'signed top-up: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.balance, 25, 'credits landed')
+  r = await whPost({ id: 'evt-1', to: 'boss2', amount: 25 })
+  assert.ok(r.status === 200 && r.body.duplicate === true && r.body.balance === 25, 'provider retry of the same event id mints nothing')
+  r = await whPost({ id: 'evt-2', to: 'nobody9', amount: 5 })
+  assert.strictEqual(r.status, 404, 'unknown principal → 404')
+  const mainWh = await fetch(base + '/api/webhooks/credits', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+  assert.strictEqual(mainWh.status, 404, 'no WEBHOOK_SECRET → route indistinguishable from absent')
+  log('M: branding endpoints + HMAC top-ups (sig, replay, idempotency, audit MINT) ✓')
 
   log('\nPASS: reseller e2e (panel + hierarchy + credits + lifecycle + outage + sweeps)')
   await cleanup()

@@ -85,6 +85,73 @@ The ledger is an **append-only** file — it is the durable audit trail (the
 panel's own activity feed is in-memory and cleared on restart). Balances are
 always derived from it, never stored, so they can never drift.
 
+## Automated credit top-ups (payment webhook)
+
+Minting by hand does not scale to selling credits. Set `WEBHOOK_SECRET` (a long
+random value, 32+ chars — it is the *only* thing authenticating a mint) and the
+service enables `POST /api/webhooks/credits`: your payment provider's success
+handler (or your own shop backend) posts
+
+```json
+{ "id": "<unique event id>", "to": "<principal>", "amount": 10, "note": "order #1001" }
+```
+
+and the credits land as a normal `MINT` ledger line with actor `webhook` and the
+event id in the note — the audit trail stays complete. The security model is
+the Stripe-webhook shape:
+
+- **Signed**: `x-topup-signature` = hex `HMAC-SHA256(secret, "<timestamp>.<raw body>")`
+  with `x-topup-timestamp` (unix seconds). Constant-time comparison; a
+  timestamp outside ±5 minutes is rejected, which kills replays outside the
+  window.
+- **Idempotent**: `id` is the delivery key. Payment providers *retry* webhooks
+  on timeouts — a repeated `id` answers `200 {duplicate:true}` and mints
+  nothing, so a retry can never double-credit.
+- **Fail-dark**: without `WEBHOOK_SECRET` the route answers 404,
+  indistinguishable from not existing.
+
+Signing example (node — the same five lines work in any language):
+
+```js
+const ts = Math.floor(Date.now() / 1000)
+const body = JSON.stringify({ id: payment.id, to: buyer, amount: months })
+const sig = crypto.createHmac('sha256', process.env.WEBHOOK_SECRET)
+  .update(`${ts}.${body}`).digest('hex')
+await fetch('https://resellers.example.com/api/webhooks/credits', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', 'x-topup-timestamp': String(ts), 'x-topup-signature': sig },
+  body
+})
+```
+
+Use your payment provider's *own* event id (e.g. the Stripe `event.id`) as
+`id`, and only fire on a **final** payment state. Expose the endpoint the same
+way as the dashboard (TLS via Caddy or the Cloudflare Tunnel — never plain
+HTTP across the internet); the System card on the Overview shows whether the
+webhook is enabled.
+
+## White-labeling
+
+The dashboard white-labels without touching the source:
+
+- **`BRAND_NAME`** — replaces "Aliran reseller" in the login card, the sidebar
+  and the page title (first word bold, the rest in the accent tone, same as the
+  stock brand).
+- **`BRAND_THEME_FILE`** — path to a JSON file overriding any of the **11
+  shared theme tokens** (`bg`, `panel`, `panel-2`, `border`, `text`, `muted`,
+  `accent`, `accent-dim`, `danger`, `ok`, `warn`) with 6-digit hex values:
+
+  ```json
+  { "accent": "#F59E0B", "accent-dim": "#B45309" }
+  ```
+
+The overrides are served as `/branding.css` and layered **after** the
+stylesheet's shared theme block, so the byte-identical block the theme test
+enforces is untouched — this is the S19 white-label seam, wired up. The
+favicon dot follows the (possibly overridden) accent automatically. Unknown
+tokens and non-hex values in the file are ignored; edits apply on the next
+page load, no restart needed.
+
 ## Trials
 
 Resellers can start **free, time-boxed trial accounts** (`TRIAL_HOURS`, default

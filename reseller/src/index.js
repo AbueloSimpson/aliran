@@ -17,7 +17,7 @@ import { startControlServer } from './control-server.js'
 // known nested objects merge key-by-key.
 function mergeConfig (base, overrides) {
   const out = { ...base, ...overrides }
-  for (const k of ['panel', 'control', 'lockout', 'argon2']) {
+  for (const k of ['panel', 'control', 'lockout', 'argon2', 'branding', 'webhook']) {
     out[k] = { ...base[k], ...(overrides[k] || {}) }
   }
   return out

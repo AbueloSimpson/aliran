@@ -19,9 +19,11 @@ import http from 'http'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
 import { ControlError } from './errors.js'
+import { readJsonFile, writeJsonFile } from './store.js'
 import {
   makeThrottle, controlKeys, makePrincipalVerifier, principalTokenLive, loadPrincipals,
   addPrincipal, removePrincipal, listPrincipals, getPrincipal, principalSummary,
@@ -71,6 +73,15 @@ export function startControlServer (ctx, opts = {}) {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
       return sendJson(res, 200, health(ctx))
     }
+    // White-label endpoints — public like the static files: the brand name and
+    // the operator's theme-token overrides (layered AFTER style.css's shared
+    // block, so the byte-identity the theme test enforces is untouched).
+    if (seg.length === 1 && req.method === 'GET' && seg[0] === 'branding.json') {
+      return sendJson(res, 200, brandingInfo(ctx))
+    }
+    if (seg.length === 1 && req.method === 'GET' && seg[0] === 'branding.css') {
+      return sendBrandingCss(ctx, res)
+    }
     if (seg[0] !== 'api') {
       if (req.method !== 'GET') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
       return serveStatic(res, url.pathname)
@@ -89,6 +100,12 @@ export function startControlServer (ctx, opts = {}) {
       const payload = { role: 'principal', principalId: who.name, issuedAt: now, expiresAt: now + sessionTtlMs, tokenVersion: who.tokenVersion }
       const record = loadPrincipals(ctx.dataDir)[who.name]
       return sendJson(res, 200, { token: signToken(keys.secretKey, payload), expiresAt: payload.expiresAt, role: record ? record.role : null })
+    }
+
+    // Machine-to-machine: HMAC-authenticated credit top-ups (payment webhooks).
+    // Sits BEFORE the Bearer gate — the signature is its own authentication.
+    if (r1 === 'webhooks' && r2 === 'credits' && seg.length === 3 && req.method === 'POST') {
+      return handleTopupWebhook(ctx, req, res)
     }
 
     const auth = req.headers.authorization || ''
@@ -329,6 +346,113 @@ export function startControlServer (ctx, opts = {}) {
   })
 }
 
+// --- white-label branding ---
+
+// Only the 11 shared theme tokens, only 6-digit hex — the file is operator-
+// controlled, but validating keeps a typo from injecting arbitrary CSS.
+const THEME_TOKENS = ['bg', 'panel', 'panel-2', 'border', 'text', 'muted', 'accent', 'accent-dim', 'danger', 'ok', 'warn']
+
+function brandingTokens (ctx) {
+  const file = ctx.config.branding && ctx.config.branding.themeFile
+  if (!file) return {}
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const out = {}
+    for (const k of THEME_TOKENS) {
+      if (typeof raw[k] === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw[k])) out[k] = raw[k]
+    }
+    return out
+  } catch { return {} } // unreadable/invalid file = no overrides, never a 500
+}
+
+function brandingInfo (ctx) {
+  const tokens = brandingTokens(ctx)
+  return {
+    name: (ctx.config.branding && ctx.config.branding.name) || 'Aliran reseller',
+    accent: tokens.accent || '#22D3EE'
+  }
+}
+
+function sendBrandingCss (ctx, res) {
+  const tokens = brandingTokens(ctx)
+  const body = Object.keys(tokens).length
+    ? ':root {\n' + Object.entries(tokens).map(([k, v]) => `  --${k}: ${v};`).join('\n') + '\n}\n'
+    : '/* no white-label theme configured */\n'
+  if (res.destroyed || res.writableEnded || res.headersSent) return
+  try {
+    res.writeHead(200, {
+      'content-type': 'text/css; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-cache',
+      'x-content-type-options': 'nosniff'
+    })
+    res.end(body)
+  } catch {}
+}
+
+// --- credit top-up webhook (payment-provider integration) ---
+//
+// POST /api/webhooks/credits — the automation path for selling credits: the
+// operator's payment success handler signs and posts { id, to, amount, note? }
+// and the credits land as a normal MINT ledger line (actor "webhook", the note
+// carries the event id — the audit trail stays complete).
+//
+// Security model (the Stripe webhook shape):
+//   - HMAC-SHA256 over `${timestamp}.${rawBody}` with WEBHOOK_SECRET, sent as
+//     x-topup-signature (hex) + x-topup-timestamp (unix seconds); constant-time
+//     compare; ±5 min tolerance kills replays outside the window.
+//   - IDEMPOTENT by event id: a retried delivery (providers retry on timeouts)
+//     answers 200 {duplicate:true} and mints nothing. Seen ids persist in
+//     state/webhook-events.json, pruned oldest-first past 5000 entries.
+//   - No secret configured → 404, indistinguishable from an absent route.
+const WEBHOOK_TOLERANCE_SEC = 300
+const WEBHOOK_EVENTS_MAX = 5000
+
+async function handleTopupWebhook (ctx, req, res) {
+  const secret = ctx.config.webhook && ctx.config.webhook.secret
+  if (!secret || !ctx.ledger) return sendJson(res, 404, { error: 'not found' })
+  const raw = await readRaw(req)
+  const ts = String(req.headers['x-topup-timestamp'] || '')
+  const sig = String(req.headers['x-topup-signature'] || '')
+  if (!/^\d+$/.test(ts) || !sig) return sendJson(res, 401, { error: 'missing x-topup-timestamp / x-topup-signature' })
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > WEBHOOK_TOLERANCE_SEC) {
+    return sendJson(res, 401, { error: `timestamp outside the ${WEBHOOK_TOLERANCE_SEC}s tolerance` })
+  }
+  const expect = createHmac('sha256', secret).update(ts + '.').update(raw).digest()
+  let given = Buffer.alloc(0)
+  try { given = Buffer.from(sig, 'hex') } catch {}
+  if (given.length !== expect.length || !timingSafeEqual(expect, given)) {
+    return sendJson(res, 401, { error: 'bad signature' })
+  }
+
+  let b
+  try { b = JSON.parse(raw.toString('utf8')) } catch { return sendJson(res, 400, { error: 'invalid JSON body' }) }
+  if (typeof b.id !== 'string' || !b.id || b.id.length > 128) return sendJson(res, 400, { error: 'id (the unique event id) is required' })
+  checkAmount(b.amount)
+  if (!loadPrincipals(ctx.dataDir)[b.to]) return sendJson(res, 404, { error: `no such principal: ${b.to}` })
+
+  const out = await ctx.mutex(() => {
+    const file = path.join(ctx.dataDir, 'state', 'webhook-events.json')
+    const seen = readJsonFile(file, {})
+    if (seen[b.id]) return { duplicate: true, to: b.to, amount: b.amount, balance: ctx.ledger.balance(b.to) }
+    const line = ctx.ledger.append({
+      type: 'MINT',
+      actor: 'webhook',
+      entries: [{ principal: b.to, delta: b.amount }],
+      note: `top-up ${b.id}` + (typeof b.note === 'string' && b.note ? ` — ${b.note.slice(0, 120)}` : '')
+    })
+    seen[b.id] = Date.now()
+    const ids = Object.keys(seen)
+    if (ids.length > WEBHOOK_EVENTS_MAX) {
+      ids.sort((x, y) => seen[x] - seen[y])
+      for (const old of ids.slice(0, ids.length - WEBHOOK_EVENTS_MAX)) delete seen[old]
+    }
+    writeJsonFile(file, seen)
+    return { seq: line.seq, to: b.to, amount: b.amount, balance: ctx.ledger.balance(b.to) }
+  })
+  return sendJson(res, 200, out)
+}
+
 // --- views + business ops that span stores ---
 
 // Login-throttle identity. With TRUST_PROXY_HEADER set (Cloudflare Tunnel:
@@ -420,7 +544,8 @@ async function systemView (ctx) {
       heapUsedBytes: mem.heapUsed,
       dataDir: path.resolve(ctx.dataDir),
       sweeps: ctx.sweeps ? ctx.sweeps.healthInfo() : null,
-      ledger: ctx.ledger ? ctx.ledger.healthInfo() : null
+      ledger: ctx.ledger ? ctx.ledger.healthInfo() : null,
+      webhook: { enabled: !!(ctx.config.webhook && ctx.config.webhook.secret) }
     },
     host: {
       hostname: os.hostname(),
@@ -632,6 +757,22 @@ function readJson (req) {
       if (buf.length === 0) return resolve({})
       try { resolve(JSON.parse(buf.toString('utf8'))) } catch { reject(httpError(400, 'invalid JSON body')) }
     })
+    req.on('error', reject)
+  })
+}
+
+// Raw bytes, unparsed — the webhook signature covers the EXACT body as sent
+// (parsing-then-restringifying would break byte-for-byte HMAC verification).
+function readRaw (req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (c) => {
+      size += c.length
+      if (size > JSON_BODY_LIMIT) { req.destroy(); return reject(httpError(413, 'payload too large')) }
+      chunks.push(c)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
     req.on('error', reject)
   })
 }
