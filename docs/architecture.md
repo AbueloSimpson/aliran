@@ -1,8 +1,10 @@
 # Architecture
 
 Aliran has **five peer-to-peer components**. Transport, discovery, and replication
-are fully serverless (Hyperswarm DHT); the panel is the *logical* authority for
-accounts + catalog, and is the only online dependency (for new logins only).
+are fully serverless (Hyperswarm DHT — the mechanics are in
+[How peers find each other](concepts.md#how-peers-find-each-other)); the panel is
+the *logical* authority for accounts + catalog, and is the only online dependency
+(for new logins only).
 
 ```mermaid
 flowchart LR

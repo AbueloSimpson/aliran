@@ -44,7 +44,9 @@ for it.
 **Client can't find the panel.**
 Confirm `panelPubKey` in `client/config/service.json` matches the panel's printed key.
 Both must be able to reach the DHT (outbound UDP). Very restrictive networks (double
-symmetric NAT) may need relay/bootstrap tuning.
+symmetric NAT) may need relay/bootstrap tuning — the discovery mechanics (topics,
+bootstrap overrides, hole-punching and its relay fallback) are explained in
+[How peers find each other](concepts.md#how-peers-find-each-other).
 
 **Playback never starts / spinner forever.**
 Check the broadcaster is seeding (feed key printed, ffmpeg producing segments) and that
