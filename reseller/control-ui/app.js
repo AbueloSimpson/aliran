@@ -158,14 +158,39 @@ function acctParams (offset) {
   return p
 }
 
-// append=true fetches the NEXT page and concatenates (Load more); otherwise the
-// query changed and the list restarts from offset 0.
+// append=true fetches the NEXT page and concatenates (Load more / auto-scroll);
+// otherwise the query changed and the list restarts from offset 0.
+let acctLoading = false
 async function loadAccounts (append) {
-  const r = await api('GET', '/accounts?' + acctParams(append ? acctRows.length : 0))
-  acctRows = append ? acctRows.concat(r.items) : r.items
-  acctTotal = r.total
-  renderAccounts()
+  if (acctLoading) return
+  acctLoading = true
+  try {
+    const r = await api('GET', '/accounts?' + acctParams(append ? acctRows.length : 0))
+    acctRows = append ? acctRows.concat(r.items) : r.items
+    acctTotal = r.total
+    renderAccounts()
+  } finally {
+    acctLoading = false
+  }
 }
+
+// Scrolling near the bottom auto-loads the next page — the whole list unrolls
+// without clicking; the Load More button stays as the visible affordance. Plain
+// scroll math on purpose: IntersectionObserver callbacks ride the rendering
+// pipeline and silently never fire in degraded/embedded viewers, and a silent
+// auto-loader is worse than none.
+let acctScrollPending = false
+function maybeAutoLoad () {
+  const btn = $('#acct-more')
+  if (btn.hidden || btn.offsetParent === null) return // exhausted, or view not shown
+  if (acctRows.length >= acctTotal) return
+  if (btn.getBoundingClientRect().top < innerHeight + 600) guard(() => loadAccounts(true))()
+}
+window.addEventListener('scroll', () => {
+  if (acctScrollPending) return
+  acctScrollPending = true
+  setTimeout(() => { acctScrollPending = false; maybeAutoLoad() }, 120)
+}, { passive: true })
 
 function renderAccounts () {
   const tb = $('#acct-table tbody')
