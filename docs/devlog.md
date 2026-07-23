@@ -2080,6 +2080,44 @@ never matches, its internal paths are backslashed) — the patch was hand-rolled
 from an `npm pack` pristine tree with `git diff --no-index`, and the apply
 path verified by restoring pristine files and re-applying.
 
+### aliran-kit — the native Kotlin SDK: one APK from Android 5.0, P2P self-activating on 10+ (verified on 5.1 + a modern emulator)
+
+The question that started it: with pure Java/Kotlin, how far down does Android
+go — and does the P2P floor move? Verified from the binaries: the floor does
+NOT move (the 32-bit `libbare-kit.so` carries the same `__tls_get_addr@LIBC_Q`
+import — Android 10, framework-independent), but the APP floor drops to
+**Android 5.0**, because Holepunch ships BareKit as a **plain Java API**
+(`to.holepunch.bare.kit.Worklet`/`IPC` — the RN package merely wraps it) and
+nothing else in a Kotlin stack imposes React Native's API-24 prebuild floor.
+Best discovery: `System.loadLibrary("bare-kit")` sits in the Worklet class's
+STATIC INITIALIZER, and Java classes initialize on first active use — so in
+Kotlin the Android-10 gate is simply "don't touch the class below API 29".
+**No native patch at all**, where the RN edition needed the dlopen rewrite.
+
+`sdk/android/` is a standalone Gradle project: `:aliran-kit` (library, minSdk
+21) + `:demo` (the reference host). The library vendors the engine from the RN
+package's checkout (bare-kit prebuilds + the linked addon set + `classes.jar`),
+adds `libc++_shared.so` from the NDK (the one packaging item RN did implicitly
+— its absence was the only crash of the bring-up), and converts
+`client/backend/app.bundle.js` into a binary asset at build time — the SAME
+engine bundle the RN app runs. `AliranBackend.kt` ports backend.ts (line-JSON
+IPC over BareKit's poll-and-drain reads and direct-buffer writes; caches;
+main-thread dispatch; the silent-inert contract below 29, JVM-tested).
+`AliranPlayerView` ports the `<AliranVideo>` contracts onto Media3.
+
+Verified with ONE demo APK (81 MB, sdkVersion 21, engine aboard ×4 ABIs):
+an **Android 5.1 emulator** installs and runs it — EngineNotice + the
+"watch demo stream" fallback playing plain HLS via ExoPlayer, zero linker
+errors, an OS no Aliran build has ever touched — and a **modern emulator**
+runs the FULL P2P path: worklet boot, OPRF login over the public DHT against
+the production panel (after teaching the demo the S5b lesson: `ready` precedes
+the panel link, so login retries on "not connected"), the real catalog, and a
+live channel rendering through the ported player. Lore for the KB: the old
+Android 5.1 default emulator image balloons its AVD to ~4.3 GB regardless of
+`disk.dataPartition.size`, and the fallback-CDN TLS caveat stands (below
+Android 7.1.1 there is no Let's Encrypt root — the Mux test stream's classic
+chain worked on 5.1).
+
 ### `<EngineNotice>` — the unsupported-device screen becomes an SDK export (verified)
 
 With single APKs installing on Android 7–9, every embedding app faces the

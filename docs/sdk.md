@@ -9,6 +9,7 @@ dogfoods.
 |---|---|---|
 | [`@aliran/player-sdk`](https://github.com/AbueloSimpson/aliran/tree/main/sdk) | Headless player engine: DHT connect, OPRF login, catalog replication, entitled-feed serving on a localhost HLS URL | Node ≥ 20 and the Bare runtime |
 | [`@aliran/react-native`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/react-native) | Drop-in `<AliranVideo>` + `AliranBackend` worklet host on `react-native-video` / `react-native-bare-kit`, plus `<EngineNotice>` for the unsupported-device branch | React Native — phone + TV, Android 7+ (P2P engine active on Android 10+; silent below, with a ready-made notice + fallback seam) |
+| [`aliran-kit`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/android) | **Native Kotlin** twin of the RN binding — `AliranBackend` on BareKit's plain-Java API, `AliranPlayerView` (Media3/ExoPlayer, same playback contracts), `EngineNotice` | Any Android app, no React Native — **Android 5.0+** (engine active on 10+; silent below) |
 | [`@aliran/core`](https://github.com/AbueloSimpson/aliran/tree/main/core) | The shared crypto both sit on (OPRF, Argon2id verifiers, key sealing, tokens) | Node + Bare |
 
 All three are MIT, ship from the monorepo, and are packaged for the npm registry
@@ -37,6 +38,7 @@ the engine floor; see the last row.)
 | Desktop player (`desktop/`) | **Windows 10 or newer** (x64) · **macOS 13 Ventura or newer** (Apple silicon + Intel) | Electron 37 platform floors. HEVC channels additionally need platform hardware decode ([codecs](desktop-player.md#5-codecs-what-this-player-can-decode)) |
 | Bare / custom runtimes | The Bare runtime + the addon set `react-native-bare-kit` 0.13.x links | See the [Bare section of the install guide](sdk-guide.md#bare-custom-runtimes) |
 | React Native app, **single APK** (runtime engine gate) | **Android 7 (API 24)** — React Native 0.76+'s own hard floor (its prebuilds are built for 24; the build rejects lower) | With the bare-kit lazy-load patch, **one APK installs from Android 7 and carries the engine**: on Android 10+ the engine loads and runs in full; below, the SDK is **silently inactive** (`AliranBackend.isSupported()` → `false`, every call a safe no-op) and the app provides its own content path. No P2P data is reachable below Android 10, and Android 6 can't run a current-RN app at all. [Recipe](sdk-guide.md#older-android-79-one-apk-the-engine-gates-itself-at-runtime) |
+| Native Kotlin app (`aliran-kit`), single APK | **Android 5.0 (API 21)** — the Media3/AndroidX floor; no RN floor applies | The Kotlin SDK hosts the same engine via BareKit's plain-Java API: full P2P on Android 10+, silently inert below (same `isSupported()` contract, no native patch needed — the gate is Java class-loading). Covers fleets even RN can't reach (Android 5/6 boxes, Fire OS 5 sticks). [Guide](sdk-guide.md#native-android-kotlin-aliran-kit-one-apk-from-android-50) |
 
 (Android "SDK level"/"API level" mapping, since device spec sheets use both:
 **API 29 = Android 10**, 30 = 11, 31/32 = 12, 33 = 13, 34 = 14, 35 = 15.)

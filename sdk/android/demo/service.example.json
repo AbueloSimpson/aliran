@@ -1,0 +1,5 @@
+{
+  "name": "Example Service",
+  "panelPubKey": "REPLACE_WITH_64_HEX_PANEL_PUBLIC_KEY",
+  "dev": { "username": "viewer", "password": "secret" }
+}

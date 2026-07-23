@@ -225,6 +225,24 @@ phone + Android TV, and the Windows desktop player).
   switch, never the delivery). The shipped app dogfoods it on its
   unsupported-device screen.
 
+**Native Android SDK (`sdk/android` — `aliran-kit`, Kotlin)**
+- A React-Native-free twin of the RN binding for any Android app, **one APK
+  from Android 5.0 (minSdk 21)**: `AliranBackend` hosts the same bare-pack
+  engine bundle via BareKit's plain-Java `Worklet`/`IPC` API and speaks the
+  identical line-JSON IPC protocol; `AliranPlayerView` (Media3/ExoPlayer)
+  ports the `<AliranVideo>` playback contracts — 1 s zap buffer,
+  engine-driven tune lifecycle, frozen-live-edge resync ladder with
+  `reconnect()` escalation, feed-rotation rebuild, vod transport; and
+  `EngineNotice` mirrors the RN component. On Android 10+ the engine runs in
+  full; below, it is never even class-loaded (BareKit's `loadLibrary` lives
+  in the Worklet static initializer, so the gate is plain Java class-loading
+  — no native patch) and the SDK is silently inert. Covers fleets React
+  Native itself cannot reach (Android 5/6 STBs, Fire OS 5 sticks). Verified
+  with one demo APK on an Android 5.1 emulator (notice + plain-HLS fallback)
+  and a modern emulator (full P2P: OPRF login over the DHT against the
+  production panel, catalog, live playback). JVM-tested protocol layer;
+  `sdk/android/demo/` is the reference host.
+
 **Desktop player (`desktop/`)**
 - Windows desktop player (Electron): the engine (`@aliran/player-sdk`) runs in the
   main process on the stock N-API prebuilds; the sandboxed React renderer plays the

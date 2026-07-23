@@ -159,10 +159,58 @@ ours. RN 0.76+ prebuilds (incl. the 0.83 the shipped app uses) are built for
 API 24, and the build system rejects a lower `minSdkVersion` outright
 (prefab: *"User has minSdkVersion 23 but library was built for 24"*). So
 **Android 6 devices cannot run any app on a current RN generation**, engine or
-no engine — a fleet stuck on Android 6 needs a non-RN app or newer boxes. And
-the only thing that could ever bring *P2P itself* below Android 10 is
-Holepunch shipping pre-API-29 `bare-kit` prebuilds (an upstream ask; this
-patch is the app-side half of exactly that design).
+no engine — for those fleets use the **native Kotlin SDK below**, whose floor
+is Android 5.0. And the only thing that could ever bring *P2P itself* below
+Android 10 is Holepunch shipping pre-API-29 `bare-kit` prebuilds (an upstream
+ask; this patch is the app-side half of exactly that design).
+
+### Native Android (Kotlin) — `aliran-kit`, one APK from Android 5.0
+
+For apps that don't use React Native — or fleets below RN's own Android 7
+floor — **`sdk/android/`** in the repo is a native Kotlin SDK with the same
+engine and the same contracts, one APK, **minSdk 21 (Android 5.0)**:
+
+- On **Android 10+** it hosts the full P2P engine via Holepunch's plain-Java
+  BareKit API (`to.holepunch.bare.kit.Worklet`/`IPC` — no RN anywhere), runs
+  the *same* bare-pack engine bundle, and speaks the same line-JSON IPC
+  protocol as the RN binding.
+- Below Android 10 the engine never loads — BareKit's `System.loadLibrary`
+  sits in the Worklet class's static initializer, and the SDK simply never
+  touches that class below API 29, so **no native patch is needed at all** —
+  and `AliranBackend.isSupported()` is `false` with every call a silent no-op.
+
+The pieces mirror the RN surface: `AliranBackend` (worklet host + protocol),
+`AliranPlayerView` (Media3/ExoPlayer with the `<AliranVideo>` contracts — ~1 s
+zap buffer, engine-driven tune lifecycle, frozen-live-edge resync ladder with
+`reconnect()` escalation, feed-rotation rebuild, vod transport), and
+`EngineNotice` (the fallback seam). Usage:
+
+```kotlin
+if (AliranBackend.isSupported()) {
+  backend.start(context, StartOptions().apply { panelPubKey = SERVICE_KEY })
+  backend.onMessage { m -> when (m) {
+    is BackendMessage.Ready -> backend.login(user, pass) // retry on "not connected" — ready can precede the panel link
+    is BackendMessage.Streams -> showChannels(m.streams)
+    else -> {}
+  } }
+  // then: playerView.attach(backend, streamId) — video renders via ExoPlayer
+} else {
+  // Android 5-9: your own delivery (plain HLS plays on ExoPlayer down to 5.0)
+  setContentView(EngineNotice(context, title = "Acme TV",
+    actionLabel = "Watch over the internet", onAction = { mountYourFallback() }))
+}
+```
+
+Build notes: the library vendors the engine from the RN package's checkout
+(`client/node_modules/react-native-bare-kit` — run `npm install` in `client/`
+first) plus `libc++_shared.so` from the NDK, and packages the engine bundle
+from `client/backend/app.bundle.js`; `sdk/android/demo/` is the working
+reference host (copy `service.example.json` → `src/main/assets/service.json`).
+Verified with one demo APK: **Android 5.1 emulator** (installs, notice +
+plain-HLS fallback plays) and a **modern emulator** (full P2P: OPRF login over
+the DHT against a production panel, catalog, live channel playing). Old-device
+TLS caveat for your fallback CDN: **Android < 7.1.1 doesn't trust Let's
+Encrypt's root** — use a classic certificate chain there.
 
 Three things the host app must provide:
 

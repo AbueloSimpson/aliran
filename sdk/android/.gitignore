@@ -1,0 +1,5 @@
+.gradle/
+build/
+local.properties
+# Baked demo service descriptor (panel key + dev credentials) — local only.
+demo/src/main/assets/service.json

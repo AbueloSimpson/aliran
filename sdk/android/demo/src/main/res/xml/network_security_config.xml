@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The engine serves feeds on loopback over plain HTTP; Android blocks cleartext
+     by default since API 28. Permit it ONLY to loopback — everything else keeps the
+     platform HTTPS-only default. (Same policy as the RN app.) -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
