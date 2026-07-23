@@ -1,7 +1,8 @@
 /* Aliran reseller panel UI — no framework, no build. Talks only to this service's
    /api (which fronts the panel admin API server-side); the token lives in
    sessionStorage and any 401 drops back to the login view. Sections are shown/
-   hidden by the signed-in principal's role. */
+   hidden by the signed-in principal's role. Row actions follow the business-tool
+   pattern: one quick action (the everyday op) + a kebab menu for the rest. */
 
 const $ = (s, r = document) => r.querySelector(s)
 const $$ = (s, r = document) => [...r.querySelectorAll(s)]
@@ -62,6 +63,67 @@ function dialog (title, rows, onOk, { okLabel = 'OK', danger = false } = {}) {
 const field = (label, input) => el('label', {}, [label, input])
 const inputEl = (props) => el('input', props)
 
+// ---- row menu (kebab): one floating singleton, keyboard-complete ----
+// Opens below its anchor (flips up near the viewport edge), closes on outside
+// press / scroll / resize / Escape, and arrow keys walk the items.
+let menuEl = null
+let menuAnchor = null
+function closeRowMenu (refocus) {
+  if (!menuEl) return
+  menuEl.remove()
+  menuEl = null
+  document.removeEventListener('pointerdown', onMenuOutside, true)
+  window.removeEventListener('scroll', onMenuScroll, true)
+  window.removeEventListener('resize', onMenuAway)
+  if (refocus && menuAnchor) menuAnchor.focus()
+  menuAnchor = null
+}
+const onMenuOutside = (e) => { if (menuEl && !menuEl.contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeRowMenu(false) }
+const onMenuScroll = (e) => { if (menuEl && !menuEl.contains(e.target)) closeRowMenu(false) }
+const onMenuAway = () => closeRowMenu(false)
+function onMenuKeys (e) {
+  const items = $$('.menu-item', menuEl)
+  const i = items.indexOf(document.activeElement)
+  if (e.key === 'Escape') { e.preventDefault(); closeRowMenu(true) } else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus() } else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus() } else if (e.key === 'Home') { e.preventDefault(); items[0].focus() } else if (e.key === 'End') { e.preventDefault(); items[items.length - 1].focus() } else if (e.key === 'Tab') { closeRowMenu(false) }
+}
+function openRowMenu (anchor, items) {
+  if (menuEl && menuAnchor === anchor) return closeRowMenu(false) // second press toggles
+  closeRowMenu(false)
+  menuAnchor = anchor
+  menuEl = el('div', { className: 'menu', onkeydown: onMenuKeys })
+  menuEl.setAttribute('role', 'menu')
+  for (const it of items) {
+    if (it === '-') { menuEl.append(el('div', { className: 'menu-sep' })); continue }
+    const item = el('button', {
+      className: 'menu-item' + (it.danger ? ' danger' : ''),
+      type: 'button',
+      textContent: it.label,
+      onclick: () => { closeRowMenu(false); it.onClick() }
+    })
+    item.setAttribute('role', 'menuitem')
+    menuEl.append(item)
+  }
+  document.body.append(menuEl)
+  const a = anchor.getBoundingClientRect()
+  const m = menuEl.getBoundingClientRect()
+  const x = Math.max(8, Math.min(a.right - m.width, window.innerWidth - m.width - 8))
+  let y = a.bottom + 4
+  if (y + m.height > window.innerHeight - 8) y = Math.max(8, a.top - m.height - 4)
+  menuEl.style.left = x + 'px'
+  menuEl.style.top = y + 'px'
+  document.addEventListener('pointerdown', onMenuOutside, true)
+  window.addEventListener('scroll', onMenuScroll, true)
+  window.addEventListener('resize', onMenuAway)
+  const first = $('.menu-item', menuEl)
+  if (first) first.focus()
+}
+function kebabBtn (label, items) {
+  const b = el('button', { className: 'btn icon', type: 'button', textContent: '⋯', title: label, onclick: () => openRowMenu(b, items) })
+  b.setAttribute('aria-haspopup', 'menu')
+  b.setAttribute('aria-label', label)
+  return b
+}
+
 // ---- auth ----
 function showLogin () {
   $('#app-view').hidden = true
@@ -85,6 +147,7 @@ $('#login-form').onsubmit = guard(async (e) => {
 
 // ---- navigation ----
 function showView (name) {
+  closeRowMenu(false)
   $$('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.view === name))
   $$('.view').forEach((v) => { v.hidden = v.dataset.view !== name })
   $('#view-title').textContent = { overview: 'Overview', accounts: 'Accounts', resellers: 'Resellers', ledger: 'Ledger', settings: 'Settings' }[name]
@@ -100,8 +163,10 @@ async function boot () {
   me = await api('GET', '/me')
   $('#login-view').hidden = true
   $('#app-view').hidden = false
-  $('#who').textContent = `${me.name} · ${me.role}`
-  $('#bal').innerHTML = `balance <b>${me.balance}</b>`
+  $('#who-name').textContent = me.name
+  $('#who-role').textContent = me.role
+  $('#who-avatar').textContent = (me.name[0] || '?').toUpperCase()
+  $('#bal').textContent = me.balance
   $$('.nav-item[data-cap="manage"]').forEach((n) => { n.hidden = !CAN_MANAGE.has(me.role) })
   $('#mint-panel').hidden = !IS_ADMIN(me.role)
   $('#ops-card').hidden = !IS_ADMIN(me.role)
@@ -187,6 +252,7 @@ async function loadAccounts (gotoPage = 0) {
 }
 
 function renderAccounts () {
+  closeRowMenu(false)
   const tb = $('#acct-table tbody')
   tb.replaceChildren(...acctRows.map(accountRow))
   const filtered = !!(acctQuery.q || acctQuery.filter || acctQuery.owner)
@@ -227,19 +293,26 @@ function drillOwner (owner) {
   acctQuery.owner = owner
   guard(loadAccounts)()
 }
+const statusEl = (cls, text) => el('span', { className: 'status ' + cls, title: text }, [el('span', { className: 'dot' }), text])
 function accountRow (r) {
-  const statusBadge = r.status === 'active'
-    ? el('span', { className: 'badge ok', textContent: r.expiresInDays <= 7 ? 'expiring' : 'active' })
-    : el('span', { className: 'badge err', textContent: r.status })
+  const status = r.status === 'active'
+    ? (r.expiresInDays <= 7 ? statusEl('warn', 'expiring') : statusEl('ok', 'active'))
+    : statusEl('err', r.status)
   const kindBadge = r.kind === 'trial' ? el('span', { className: 'badge trial', textContent: 'trial' }) : null
+  // One quick action (Renew — the everyday op on a subscription clock) + the
+  // rest behind a kebab. Suspend/Resume stays contextual to the row's state.
+  const menuItems = [
+    r.status === 'active'
+      ? { label: 'Suspend', onClick: guard(() => accountStatus(r, 'disabled')) }
+      : (r.expiresInDays > 0 ? { label: 'Resume', onClick: guard(() => accountStatus(r, 'active')) } : null),
+    { label: 'Devices…', onClick: guard(() => devicesDialog(r)) },
+    { label: 'Change password…', onClick: () => passwordDialog(r) },
+    '-',
+    { label: 'Delete…', danger: true, onClick: () => deleteAccountDialog(r) }
+  ].filter(Boolean)
   const actions = el('div', { className: 'row-actions' }, [
     btn('Renew', () => renewDialog(r)),
-    r.status === 'active'
-      ? btn('Suspend', guard(() => accountStatus(r, 'disabled')))
-      : (r.expiresInDays > 0 ? btn('Resume', guard(() => accountStatus(r, 'active'))) : null),
-    btn('Devices', () => devicesDialog(r)),
-    btn('Password', () => passwordDialog(r)),
-    btn('Delete', () => deleteAccountDialog(r), 'danger')
+    kebabBtn(`More actions — ${r.account}`, menuItems)
   ])
   const ownerLink = (cls) => el('span', {
     className: cls + (canDrillOwner() ? ' owner-link' : ''),
@@ -260,7 +333,7 @@ function accountRow (r) {
       ownerLink('muted owner-sub')
     ])),
     tdColOwner(ownerLink('')),
-    el('td', { className: 'cell-status' }, el('span', { className: 'chips' }, [statusBadge, kindBadge].filter(Boolean))),
+    el('td', { className: 'cell-status' }, el('span', { className: 'chips' }, [status, kindBadge].filter(Boolean))),
     tdExpires,
     tdCreated,
     tdDevices,
@@ -354,9 +427,12 @@ function passwordDialog (r) {
 async function devicesDialog (r) {
   const list = await api('GET', `/accounts/${encodeURIComponent(r.account)}/devices`)
   const rows = list.length
-    ? list.map((d) => el('div', { className: 'chips' }, [
-        el('span', { className: 'chip', innerHTML: `<b>${d.label || d.deviceId.slice(0, 8)}</b>${d.expired ? ' (expired)' : ''}` }),
-        btn('Revoke', guard(async () => { await api('DELETE', `/accounts/${encodeURIComponent(r.account)}/devices/${encodeURIComponent(d.deviceId)}`); toast('Device revoked'); }), 'danger')
+    ? list.map((d) => el('div', { className: 'dlg-list-row' }, [
+        el('span', { className: 'meta' }, [
+          el('b', { textContent: d.label || d.deviceId.slice(0, 8) }),
+          d.expired ? el('span', { className: 'muted', textContent: ' (expired)' }) : null
+        ].filter(Boolean)),
+        btn('Revoke', guard(async () => { await api('DELETE', `/accounts/${encodeURIComponent(r.account)}/devices/${encodeURIComponent(d.deviceId)}`); toast('Device revoked') }), 'danger')
       ]))
     : [el('p', { className: 'muted', textContent: 'No devices enrolled.' })]
   dialog(`Devices — ${r.account}`, rows, () => {}, { okLabel: 'Done' })
@@ -386,19 +462,24 @@ function setupPrincipalForm () {
 }
 async function loadPrincipals () {
   const list = await api('GET', '/principals')
+  closeRowMenu(false)
   const tb = $('#p-table tbody')
   const q = $('#p-search').value.trim().toLowerCase()
   const rows = list.filter((p) => !q || p.name.toLowerCase().includes(q))
   tb.replaceChildren(...rows.map(principalRow))
 }
 function principalRow (p) {
+  const menuItems = [
+    can('credits:transfer') ? { label: 'Reclaim credits…', onClick: () => reclaimDialog(p) } : null,
+    { label: 'Limits…', onClick: () => limitsDialog(p) },
+    { label: p.status === 'active' ? 'Suspend…' : 'Resume…', onClick: () => suspendDialog(p) },
+    { label: 'Change password…', onClick: () => principalPasswordDialog(p) },
+    '-',
+    { label: 'Delete…', danger: true, onClick: () => deletePrincipalDialog(p) }
+  ].filter(Boolean)
   const actions = el('div', { className: 'row-actions' }, [
     CAN_MANAGE.has(me.role) && can('credits:transfer') ? btn('Fund', () => transferDialog(p)) : null,
-    can('credits:transfer') ? btn('Reclaim', () => reclaimDialog(p)) : null,
-    btn('Limits', () => limitsDialog(p)),
-    btn(p.status === 'active' ? 'Suspend' : 'Resume', () => suspendDialog(p)),
-    btn('Password', () => principalPasswordDialog(p)),
-    btn('Delete', () => deletePrincipalDialog(p), 'danger')
+    kebabBtn(`More actions — ${p.name}`, menuItems)
   ].filter(Boolean))
   return el('tr', {}, [
     el('td', {}, el('div', { className: 'cell-name' }, [
@@ -408,7 +489,7 @@ function principalRow (p) {
     el('td', { textContent: p.parent || '—' }),
     el('td', { className: 'num', textContent: p.balance }),
     el('td', { className: 'num', textContent: p.accounts }),
-    el('td', {}, el('span', { className: 'badge ' + (p.status === 'active' ? 'ok' : 'err'), textContent: p.status })),
+    el('td', {}, statusEl(p.status === 'active' ? 'ok' : 'err', p.status)),
     el('td', {}, actions)
   ])
 }
@@ -496,7 +577,10 @@ function ledgerRow (tx) {
     el('td', { className: 'num muted', textContent: tx.seq }),
     el('td', { textContent: new Date(tx.ts).toLocaleString() }),
     el('td', {}, el('span', { className: 'badge dim', textContent: tx.type })),
-    el('td', { className: 'num', textContent: delta > 0 ? '+' + delta : (delta || '') , style: delta > 0 ? 'color:var(--ok)' : delta < 0 ? 'color:var(--danger)' : '' }),
+    el('td', { className: 'num' }, el('span', {
+      className: 'delta' + (delta > 0 ? ' pos' : delta < 0 ? ' neg' : ''),
+      textContent: delta > 0 ? '+' + delta : (delta || '')
+    })),
     el('td', { textContent: other }),
     el('td', { className: 'mono', textContent: tx.account || '' }),
     el('td', { className: 'muted', textContent: tx.note || '' })
@@ -525,7 +609,7 @@ $('#op-reconcile').onclick = guard(async () => {
 
 async function refreshBalance () {
   me = await api('GET', '/me')
-  $('#bal').innerHTML = `balance <b>${me.balance}</b>`
+  $('#bal').textContent = me.balance
 }
 
 // ---- start ----

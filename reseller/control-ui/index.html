@@ -36,10 +36,20 @@
       <a class="nav-item" data-view="ledger">Ledger</a>
       <a class="nav-item" data-view="settings">Settings</a>
     </nav>
+    <!-- Account block: identity + balance as aligned text rows (no chip pills). -->
     <div class="side-foot">
-      <div id="bal" class="chip"></div>
-      <div id="who" class="muted"></div>
-      <button class="btn ghost small" id="logout-btn">Sign out</button>
+      <div class="side-balance">
+        <span class="k">Credits</span>
+        <span class="v" id="bal"></span>
+      </div>
+      <div class="side-user" id="who">
+        <div class="side-avatar" id="who-avatar" aria-hidden="true"></div>
+        <div class="side-user-meta">
+          <div class="n" id="who-name"></div>
+          <div class="r" id="who-role"></div>
+        </div>
+      </div>
+      <button class="btn ghost small block" id="logout-btn">Sign out</button>
     </div>
   </aside>
 
@@ -105,7 +115,7 @@
               <option value="status:asc">Active first</option>
               <option value="status:desc">Inactive first</option>
             </select>
-            <span id="acct-count" class="chip" hidden></span>
+            <span id="acct-count" class="count" hidden></span>
             <button class="btn small" id="acct-refresh">Refresh</button>
           </div>
           <div class="table-wrap">
@@ -203,8 +213,6 @@
               <button data-t="REFUND">Refund</button>
               <button data-t="TRIAL">Trial</button>
             </div>
-            <span class="spacer"></span>
-            <button class="btn small" id="ledger-more">Load more</button>
           </div>
           <div class="table-wrap">
             <table id="ledger-table">
@@ -215,22 +223,25 @@
               <tbody></tbody>
             </table>
           </div>
+          <div class="table-foot">
+            <button class="btn small" id="ledger-more">Load more</button>
+          </div>
         </div>
       </section>
 
       <!-- Settings -->
       <section class="view" data-view="settings" hidden>
-        <div class="card pad" style="margin-bottom:14px">
-          <h3 style="margin-top:0">Change your password</h3>
-          <form class="row-form" id="pw-form" style="padding-left:0">
+        <div class="card pad settings-card">
+          <h3>Change your password</h3>
+          <form class="row-form" id="pw-form">
             <label>New password
               <input id="pw-new" type="password" required minlength="8">
             </label>
             <button class="btn primary" type="submit">Update</button>
           </form>
         </div>
-        <div class="card pad" id="ops-card" hidden>
-          <h3 style="margin-top:0">Operations</h3>
+        <div class="card pad settings-card" id="ops-card" hidden>
+          <h3>Operations</h3>
           <div class="chips">
             <button class="btn small" id="op-sweep">Run expiry sweep now</button>
             <button class="btn small" id="op-reconcile">Run reconcile now</button>
