@@ -40,6 +40,10 @@ jobs:
         run: npm run test:corrupt
       - name: ffmpeg argument builders (test:args)
         run: npm run test:args
+      # Subprocess probes of every service's fail-fast env validation + the
+      # LOG_FORMAT=json structured-logging contract. No network — deterministic.
+      - name: Config validation + structured logging (test:config)
+        run: npm run test:config
       # Loopback UDP + a 1-node local testnet — deterministic, never touches the public
       # DHT. Runners ship the stock net.core.wmem_max, so this also exercises the
       # clamp-detection path against a real undersized kernel ceiling.

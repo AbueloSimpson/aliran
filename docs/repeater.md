@@ -98,6 +98,8 @@ Configuration (see `repeater/.env.example` for the full comments):
 | `SWARM_MAX_PEERS` | `256` | Connection budget; a repeater exists to absorb fan-out |
 | `DATA_DIR` | `./data` | Ciphertext store — a disposable cache, safe to wipe |
 | `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
+| `STATUS_PORT` | `0` (off) | Opt-in `GET /healthz` + Prometheus `GET /metrics` server. Off by default — a stock repeater opens **no listening sockets**, and that stays true unless the operator turns this on |
+| `STATUS_HOST` | `127.0.0.1` | Status-server bind address (unauthenticated endpoints — widen only on a network you control) |
 | `BOOTSTRAP` | public DHT | Custom DHT bootstrap (tests / private DHT) |
 
 ## Sizing (pure I/O — no ffmpeg, no transcoding, no crypto)

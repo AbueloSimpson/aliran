@@ -22,6 +22,9 @@ import { makeRing } from './activity.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
+import { initLogging } from './log.js'
+
+initLogging('panel')
 
 export async function startPanel () {
   const keys = openKeys(config.dataDir)

@@ -77,6 +77,11 @@ Shipped:
   one codebase (`tools/brand.mjs`; see `docs/white-label.md`)
 - ✅ **Docs site** (GitHub Pages) and **CI** (required deterministic lane + best-effort
   real-DHT e2e lane)
+- ✅ **Observability & config hygiene**: fail-fast env validation on every service
+  (a typo is a boot error naming the variable), opt-in JSON structured logs
+  (`LOG_FORMAT=json`), unauthenticated `/healthz` on every HTTP surface (panel
+  included) + Prometheus `/metrics`, and an opt-in repeater status port
+  (`STATUS_PORT` — the stock repeater stays socket-free)
 
 Open:
 
@@ -85,7 +90,6 @@ Open:
   players/SDKs unaffected
 - ⬜ **Hardening pass** over the shipped crypto paths — implementation audit, fixes and
   regression tests; wire-compatible, no redesign
-- ⬜ Config validation, structured logging, health/metrics endpoints
 
 **Exit criteria:** a new operator can go from clone → live service in under an hour,
 following only the docs.

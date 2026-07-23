@@ -73,6 +73,13 @@ export function startControlServer (ctx, opts = {}) {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
       return sendJson(res, 200, health(ctx))
     }
+    // Prometheus metrics — same unauthenticated, cheap-and-synchronous contract as
+    // /healthz (a scrape must never queue behind channel or store I/O).
+    if (seg[0] === 'metrics' && seg.length === 1) {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
+      return res.end(renderMetrics(ctx))
+    }
     // White-label endpoints — public like the static files: the brand name and
     // the operator's theme-token overrides (layered AFTER style.css's shared
     // block, so the byte-identity the theme test enforces is untouched).
@@ -773,6 +780,25 @@ function serveStatic (res, pathname) {
     })
     res.end(data)
   } catch {}
+}
+
+// Prometheus text exposition (0.0.4), from the same cheap synchronous sources as
+// /healthz (principal/account counts, panel reachability, ledger invariants).
+function renderMetrics (ctx) {
+  const mem = process.memoryUsage()
+  const h = health(ctx)
+  return [
+    '# HELP aliran_up 1 while the service is serving.', '# TYPE aliran_up gauge', 'aliran_up 1',
+    '# HELP aliran_uptime_seconds Seconds since the service started.', '# TYPE aliran_uptime_seconds gauge', `aliran_uptime_seconds ${Math.round(process.uptime())}`,
+    '# HELP aliran_process_resident_memory_bytes Node process RSS.', '# TYPE aliran_process_resident_memory_bytes gauge', `aliran_process_resident_memory_bytes ${mem.rss}`,
+    '# HELP aliran_process_heap_used_bytes V8 heap used.', '# TYPE aliran_process_heap_used_bytes gauge', `aliran_process_heap_used_bytes ${mem.heapUsed}`,
+    '# HELP aliran_reseller_principals Reseller-panel principals (admins + resellers).', '# TYPE aliran_reseller_principals gauge', `aliran_reseller_principals ${h.principals}`,
+    '# HELP aliran_reseller_accounts Managed viewer accounts.', '# TYPE aliran_reseller_accounts gauge', `aliran_reseller_accounts ${h.accounts}`,
+    '# HELP aliran_reseller_panel_reachable 1 while the upstream panel admin API answers.', '# TYPE aliran_reseller_panel_reachable gauge', `aliran_reseller_panel_reachable ${h.panel && h.panel.reachable ? 1 : 0}`,
+    '# HELP aliran_reseller_ledger_seq Credit-ledger sequence number.', '# TYPE aliran_reseller_ledger_seq counter', `aliran_reseller_ledger_seq ${h.ledger ? h.ledger.seq : 0}`,
+    '# HELP aliran_reseller_ledger_invariant_ok 1 while the incremental balance map equals a recompute.', '# TYPE aliran_reseller_ledger_invariant_ok gauge', `aliran_reseller_ledger_invariant_ok ${h.ledger && h.ledger.invariantOk === false ? 0 : 1}`,
+    ''
+  ].join('\n')
 }
 
 function sendJson (res, status, obj) {

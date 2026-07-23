@@ -71,4 +71,48 @@ export const config = {
   }
 }
 
+// --- Fail-fast validation ---
+// A typo'd env var must be a clear boot error naming the variable — never a silent
+// default, and never a NaN that resurfaces later as a weird timeout or port error.
+const problems = []
+const chkInt = (name, v, min, max) => {
+  if (!Number.isInteger(v)) problems.push(`${name} must be an integer (got "${process.env[name]}")`)
+  else if (min !== undefined && v < min) problems.push(`${name} must be >= ${min} (got ${v})`)
+  else if (max !== undefined && v > max) problems.push(`${name} must be <= ${max} (got ${v})`)
+}
+const chkBool = (name) => {
+  const v = process.env[name]
+  if (v !== undefined && v !== '' && !/^(1|true|yes|0|false|no)$/i.test(v)) {
+    problems.push(`${name} must be one of 1/true/yes/0/false/no (got "${v}")`)
+  }
+}
+const chkBootstrap = (name, list) => {
+  for (const e of list) {
+    const m = e.match(/^(.+):(\d+)$/)
+    if (!m || +m[2] < 1 || +m[2] > 65535) problems.push(`${name} entries must be host:port (got "${e}")`)
+  }
+}
+
+chkBool('RELAY_ONLY'); chkBool('ADMIN_ENABLED'); chkBool('LEGACY_PUBLISHER')
+chkInt('ARGON2_MEM_KIB', config.argon2.memKiB, 8)
+chkInt('ARGON2_TIME', config.argon2.time, 1)
+chkInt('MAX_DEVICES_DEFAULT', config.maxDevicesDefault, 1)
+chkInt('SESSION_TTL_DAYS', config.sessionTtlDays, 1)
+chkInt('POW_DIFFICULTY', config.pow.difficulty, 0, 32)
+chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
+chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
+chkInt('ADMIN_PORT', config.admin.port, 0, 65535)
+chkInt('ADMIN_SESSION_TTL_HOURS', config.admin.sessionTtlHours, 1)
+chkInt('SOURCES_TICK_MS', config.sources.tickMs, 1000)
+chkInt('SOURCES_BOOT_DELAY_MS', config.sources.bootDelayMs, 0)
+chkInt('SOURCES_SYNC_INTERVAL_MS', config.sources.defaultIntervalMs, 60000)
+chkInt('SOURCES_FETCH_TIMEOUT_MS', config.sources.fetchTimeoutMs, 1000)
+chkInt('SOURCES_MAX_BYTES', config.sources.maxBytes, 1024)
+chkInt('SOURCES_MAX_CHANNELS', config.sources.maxChannels, 1)
+chkBootstrap('BOOTSTRAP', config.bootstrap)
+
+if (problems.length) {
+  throw new Error('panel: invalid configuration —\n  - ' + problems.join('\n  - '))
+}
+
 export default config

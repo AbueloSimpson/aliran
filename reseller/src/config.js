@@ -89,4 +89,52 @@ export const config = {
   }
 }
 
+// --- Fail-fast validation ---
+// A typo'd env var must be a clear boot error naming the variable — never a silent
+// default, and never a NaN that resurfaces later as a weird timeout or port error.
+// Branding values stay permissive by design (a junk BRAND_LOGIN_STYLE falls back to
+// glow; a missing image file 404s) — cosmetics must never stop the service.
+const problems = []
+const chkInt = (name, v, min, max) => {
+  if (!Number.isInteger(v)) problems.push(`${name} must be an integer (got "${process.env[name]}")`)
+  else if (min !== undefined && v < min) problems.push(`${name} must be >= ${min} (got ${v})`)
+  else if (max !== undefined && v > max) problems.push(`${name} must be <= ${max} (got ${v})`)
+}
+const chkBool = (name) => {
+  const v = process.env[name]
+  if (v !== undefined && v !== '' && !/^(1|true|yes|0|false|no)$/i.test(v)) {
+    problems.push(`${name} must be one of 1/true/yes/0/false/no (got "${v}")`)
+  }
+}
+
+try {
+  const u = new URL(config.panel.url)
+  if (!/^https?:$/.test(u.protocol)) problems.push(`PANEL_ADMIN_URL must be http(s) (got "${config.panel.url}")`)
+} catch {
+  problems.push(`PANEL_ADMIN_URL is not a valid URL (got "${config.panel.url}")`)
+}
+chkInt('PANEL_TIMEOUT_MS', config.panel.timeoutMs, 1000)
+chkInt('DAYS_PER_MONTH', config.daysPerMonth, 1)
+chkInt('TRIAL_HOURS', config.trialHours, 1)
+chkInt('TRIAL_DAILY_CAP_DEFAULT', config.trialDailyCapDefault, 0)
+chkInt('MAX_DEVICES_LIMIT_DEFAULT', config.maxDevicesLimitDefault, 1)
+chkInt('SWEEP_INTERVAL_SEC', config.sweepIntervalSec, 10)
+chkInt('RECONCILE_INTERVAL_SEC', config.reconcileIntervalSec, 60)
+chkBool('RECONCILE_REPAIR')
+chkInt('CONTROL_PORT', config.control.port, 0, 65535)
+chkInt('CONTROL_SESSION_TTL_HOURS', config.control.sessionTtlHours, 1)
+chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
+chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
+chkInt('ARGON2_MEM_KIB', config.argon2.memKiB, 8)
+chkInt('ARGON2_TIME', config.argon2.time, 1)
+// The webhook secret is the ONLY thing authenticating a credit mint — a short one
+// is a config mistake, not a preference.
+if (config.webhook.secret && config.webhook.secret.length < 16) {
+  problems.push('WEBHOOK_SECRET must be at least 16 characters (32+ recommended)')
+}
+
+if (problems.length) {
+  throw new Error('reseller: invalid configuration —\n  - ' + problems.join('\n  - '))
+}
+
 export default config

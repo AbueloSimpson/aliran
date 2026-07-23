@@ -72,6 +72,13 @@ export function startControlServer (ctx, opts = {}) {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
       return sendJson(res, 200, ctx.manager.health())
     }
+    // Prometheus metrics — same unauthenticated, cheap-and-synchronous contract as
+    // /healthz (a scrape must never queue behind channel or store I/O).
+    if (seg[0] === 'metrics' && seg.length === 1) {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
+      return res.end(renderMetrics(ctx))
+    }
     if (seg[0] !== 'api') {
       if (req.method !== 'GET') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
       return serveStatic(res, url.pathname)
@@ -188,6 +195,28 @@ function serveStatic (res, pathname) {
     })
     res.end(data)
   } catch {}
+}
+
+// Prometheus text exposition (0.0.4), from the same cheap synchronous sources as
+// /healthz (title-state counters + the panel-link health).
+function renderMetrics (ctx) {
+  const mem = process.memoryUsage()
+  const h = ctx.manager.health()
+  const link = h.panelLink || {}
+  return [
+    '# HELP aliran_up 1 while the service is serving.', '# TYPE aliran_up gauge', 'aliran_up 1',
+    '# HELP aliran_uptime_seconds Seconds since the service started.', '# TYPE aliran_uptime_seconds gauge', `aliran_uptime_seconds ${Math.round(process.uptime())}`,
+    '# HELP aliran_process_resident_memory_bytes Node process RSS.', '# TYPE aliran_process_resident_memory_bytes gauge', `aliran_process_resident_memory_bytes ${mem.rss}`,
+    '# HELP aliran_process_heap_used_bytes V8 heap used.', '# TYPE aliran_process_heap_used_bytes gauge', `aliran_process_heap_used_bytes ${mem.heapUsed}`,
+    '# HELP aliran_library_titles VOD titles known to this library.', '# TYPE aliran_library_titles gauge', `aliran_library_titles ${h.titles}`,
+    '# HELP aliran_library_titles_ready Titles in state ready.', '# TYPE aliran_library_titles_ready gauge', `aliran_library_titles_ready ${h.ready}`,
+    '# HELP aliran_library_titles_ingesting Titles currently ingesting.', '# TYPE aliran_library_titles_ingesting gauge', `aliran_library_titles_ingesting ${h.ingesting}`,
+    '# HELP aliran_library_titles_queued Titles waiting for an ingest slot.', '# TYPE aliran_library_titles_queued gauge', `aliran_library_titles_queued ${h.queued}`,
+    '# HELP aliran_library_titles_error Titles whose last ingest failed.', '# TYPE aliran_library_titles_error gauge', `aliran_library_titles_error ${h.error}`,
+    '# HELP aliran_library_panel_link_connected 1 while the panel link has a live socket.', '# TYPE aliran_library_panel_link_connected gauge', `aliran_library_panel_link_connected ${link.connected ? 1 : 0}`,
+    '# HELP aliran_library_panel_link_pending_ops Catalog ops queued for redelivery.', '# TYPE aliran_library_panel_link_pending_ops gauge', `aliran_library_panel_link_pending_ops ${link.pendingOps || 0}`,
+    ''
+  ].join('\n')
 }
 
 function sendJson (res, status, obj) {

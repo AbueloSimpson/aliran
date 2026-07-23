@@ -51,6 +51,10 @@ import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { config } from './config.js'
 import { tuneSwarm, logSwarmTuning } from './net-tune.js'
+import { initLogging } from './log.js'
+import { startStatusServer } from './status-server.js'
+
+initLogging('repeater')
 
 const HEX64 = /^[0-9a-f]{64}$/i
 
@@ -491,7 +495,14 @@ export async function startRepeater (overrides = {}) {
   console.log('Ciphertext-only mirror: this box holds NO encryption keys and cannot watch what it serves.')
   console.log('=======================')
   await repeater.start()
-  const shutdown = async () => { await repeater.close(); process.exit(0) }
+  // Opt-in status endpoint (STATUS_PORT>0). Default off — a stock repeater opens
+  // no listening sockets at all.
+  let status = null
+  if (repeater.config.statusPort > 0) {
+    status = await startStatusServer(repeater, { host: repeater.config.statusHost, port: repeater.config.statusPort })
+    console.log(`[repeater] status endpoint on http://${status.host}:${status.port} (GET /healthz, /metrics)`)
+  }
+  const shutdown = async () => { if (status) await status.close(); await repeater.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
   return repeater
 }

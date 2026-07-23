@@ -45,8 +45,42 @@ export const config = {
   swarmSndBuf: mib(process.env.SWARM_SNDBUF_MB, 4),
   // Periodic one-line status log per channel. 0 disables it.
   statusIntervalSeconds: int(process.env.STATUS_INTERVAL_SECONDS, 60),
+  // Opt-in health/metrics HTTP server. Default OFF (0) — a stock repeater opens NO
+  // listening sockets, and that property is part of its co-tenancy/trust story. Set
+  // STATUS_PORT to serve GET /healthz + /metrics; loopback-only unless STATUS_HOST
+  // is widened (do that only on a network you control — the endpoints are unauthenticated).
+  statusHost: process.env.STATUS_HOST || '127.0.0.1',
+  statusPort: int(process.env.STATUS_PORT, 0),
   bootstrap: (process.env.BOOTSTRAP || '')
     .split(',').map(s => s.trim()).filter(Boolean)
+}
+
+// --- Fail-fast validation ---
+// A typo'd env var must be a clear boot error naming the variable (the Repeater
+// constructor re-validates what it consumes — this catches the rest at boot).
+// mib() stays permissive by design (tuning must never stop boot).
+const problems = []
+const chkInt = (name, v, min, max) => {
+  if (!Number.isInteger(v)) problems.push(`${name} must be an integer (got "${process.env[name]}")`)
+  else if (min !== undefined && v < min) problems.push(`${name} must be >= ${min} (got ${v})`)
+  else if (max !== undefined && v > max) problems.push(`${name} must be <= ${max} (got ${v})`)
+}
+const chkBootstrap = (name, list) => {
+  for (const e of list) {
+    const m = e.match(/^(.+):(\d+)$/)
+    if (!m || +m[2] < 1 || +m[2] > 65535) problems.push(`${name} entries must be host:port (got "${e}")`)
+  }
+}
+if (config.panelPubKey && !/^[0-9a-f]{64}$/i.test(config.panelPubKey)) {
+  problems.push(`PANEL_PUBKEY must be 64 hex chars (got ${config.panelPubKey.length} chars)`)
+}
+chkInt('RETENTION_SECONDS', config.retentionSeconds, 1)
+chkInt('SWARM_MAX_PEERS', config.swarmMaxPeers, 1)
+chkInt('STATUS_INTERVAL_SECONDS', config.statusIntervalSeconds, 0)
+chkInt('STATUS_PORT', config.statusPort, 0, 65535)
+chkBootstrap('BOOTSTRAP', config.bootstrap)
+if (problems.length) {
+  throw new Error('repeater: invalid configuration —\n  - ' + problems.join('\n  - '))
 }
 
 export default config

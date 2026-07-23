@@ -74,6 +74,13 @@ export function startControlServer (ctx, opts = {}) {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
       return sendJson(res, 200, ctx.manager.health())
     }
+    // Prometheus metrics — same unauthenticated, cheap-and-synchronous contract as
+    // /healthz (a scrape must never queue behind channel or store I/O).
+    if (seg[0] === 'metrics' && seg.length === 1) {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
+      return res.end(renderMetrics(ctx))
+    }
     if (seg[0] !== 'api') {
       if (req.method !== 'GET') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
       return serveStatic(res, url.pathname)
@@ -206,6 +213,26 @@ function serveStatic (res, pathname) {
     })
     res.end(data)
   } catch {}
+}
+
+// Prometheus text exposition (0.0.4), from the same cheap synchronous sources as
+// /healthz. Channel detail stays in the authenticated status API — metrics are the
+// aggregate health signals a scraper alerts on.
+function renderMetrics (ctx) {
+  const mem = process.memoryUsage()
+  const h = ctx.manager.health()
+  return [
+    '# HELP aliran_up 1 while the service is serving.', '# TYPE aliran_up gauge', 'aliran_up 1',
+    '# HELP aliran_uptime_seconds Seconds since the service started.', '# TYPE aliran_uptime_seconds gauge', `aliran_uptime_seconds ${h.uptimeSec}`,
+    '# HELP aliran_process_resident_memory_bytes Node process RSS.', '# TYPE aliran_process_resident_memory_bytes gauge', `aliran_process_resident_memory_bytes ${mem.rss}`,
+    '# HELP aliran_process_heap_used_bytes V8 heap used.', '# TYPE aliran_process_heap_used_bytes gauge', `aliran_process_heap_used_bytes ${mem.heapUsed}`,
+    '# HELP aliran_broadcaster_channels Channels this broadcaster currently manages.', '# TYPE aliran_broadcaster_channels gauge', `aliran_broadcaster_channels ${ctx.manager.channels.size}`,
+    '# HELP aliran_broadcaster_boot_resumed Channels brought up by the boot-resume.', '# TYPE aliran_broadcaster_boot_resumed gauge', `aliran_broadcaster_boot_resumed ${h.resumed}`,
+    '# HELP aliran_broadcaster_boot_failed Channels the boot-resume could not start.', '# TYPE aliran_broadcaster_boot_failed gauge', `aliran_broadcaster_boot_failed ${h.failed}`,
+    '# HELP aliran_broadcaster_resuming 1 while the boot-resume is still running.', '# TYPE aliran_broadcaster_resuming gauge', `aliran_broadcaster_resuming ${h.resuming ? 1 : 0}`,
+    '# HELP aliran_broadcaster_incidents Correlated incidents held in the in-memory ring.', '# TYPE aliran_broadcaster_incidents gauge', `aliran_broadcaster_incidents ${ctx.manager.incidents ? ctx.manager.incidents.list().length : 0}`,
+    ''
+  ].join('\n')
 }
 
 function sendJson (res, status, obj) {

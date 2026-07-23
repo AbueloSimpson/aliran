@@ -2297,3 +2297,32 @@ test:repeater`, which passed beforehand. Everything captured (anonymized) in the
 new KB page `docs/kb/repeater-production-example.md`, linked from the repeater page
 and the network-tuning KB. The box was fully reverted afterwards — this deployment
 was a test rig, not a standing repeater.
+
+### Observability & config hygiene (verified)
+The last v1.0 ops checkbox: **config validation, structured logging, health/
+metrics** across all five services, with zero wire-protocol changes. Config
+first: every `config.js` now ends in a fail-fast validation pass — a typo'd env
+var (bad integer, out-of-range port, malformed hex key/URL, `FEED_BUFFER=rma`)
+throws at import with an error naming the exact variable, and every problem in
+the file is reported in one shot. The NaN class this kills was real: `parseInt`
+garbage previously flowed into timeouts and ports and surfaced as unrelated
+failures. Deliberately preserved permissiveness: socket-buffer MBs still degrade
+to "off" (tuning must never stop boot) and branding stays graceful. Logging:
+`LOG_FORMAT=json` patches console once at startup and emits one
+`{ts,level,svc,msg}` object per line (errors keep stderr); default output is
+byte-identical, proven by the test. Endpoints: the panel admin API — previously
+the only surface without one — gained unauthenticated `/healthz` (served before
+the auth gate, same "answers while a login flood chews the API" contract as the
+broadcaster's), and every control/admin server gained Prometheus-text
+`GET /metrics` built strictly from the same cheap synchronous sources as its
+healthz (channel + boot-resume + incident gauges on the broadcaster; title
+states + panel-link on the library; principals/accounts/panel-reachability/
+ledger-invariant on the reseller). The repeater keeps its no-listening-sockets
+property: `STATUS_PORT` (default 0/off) opt-ins a loopback status server with
+the same two endpoints, including per-core `held_blocks`/`peers` series labeled
+by streamId. Verified by the new `test:config` (subprocess probes: 10 bad-env
+rejections naming their variable, 5 clean-env boots, JSON-line shape + default-
+untouched proof) added to the REQUIRED CI lane, plus new assertions in the
+reseller e2e (reseller + in-process REAL panel healthz/metrics), the vod e2e
+(library metrics), the repeater e2e (status server against a live mirror), and
+the broadcaster-api e2e (metrics before login).

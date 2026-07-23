@@ -92,6 +92,37 @@ export function startAdminServer (ctx, opts = {}) {
   const lockout = opts.lockout || { threshold: 10, seconds: 900 }
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
   const loginVerifier = ops.makeAdminVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
+  const startedAt = Date.now()
+
+  // Liveness + Prometheus metrics, both from cheap SYNCHRONOUS sources only (same
+  // contract as the broadcaster's /healthz: answers as long as the loop turns).
+  const health = () => ({
+    up: true,
+    uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+    swarmConnections: ctx.swarm ? ctx.swarm.connections.size : null
+  })
+  const renderMetrics = () => {
+    const mem = process.memoryUsage()
+    const h = health()
+    return [
+      '# HELP aliran_up 1 while the service is serving.',
+      '# TYPE aliran_up gauge',
+      'aliran_up 1',
+      '# HELP aliran_uptime_seconds Seconds since the admin server started.',
+      '# TYPE aliran_uptime_seconds gauge',
+      `aliran_uptime_seconds ${h.uptimeSec}`,
+      '# HELP aliran_process_resident_memory_bytes Node process RSS.',
+      '# TYPE aliran_process_resident_memory_bytes gauge',
+      `aliran_process_resident_memory_bytes ${mem.rss}`,
+      '# HELP aliran_process_heap_used_bytes V8 heap used.',
+      '# TYPE aliran_process_heap_used_bytes gauge',
+      `aliran_process_heap_used_bytes ${mem.heapUsed}`,
+      '# HELP aliran_panel_swarm_connections Connected swarm peers (clients replicating the catalog + login RPC).',
+      '# TYPE aliran_panel_swarm_connections gauge',
+      `aliran_panel_swarm_connections ${h.swarmConnections ?? 0}`,
+      ''
+    ].join('\n')
+  }
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
@@ -108,6 +139,17 @@ export function startAdminServer (ctx, opts = {}) {
   async function handle (req, res) {
     const url = new URL(req.url, 'http://x')
     const seg = url.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+    // Liveness + metrics. Unauthenticated and handled FIRST — monitoring must work
+    // while a login flood keeps the authenticated API busy.
+    if (seg[0] === 'healthz' && seg.length === 1) {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      return sendJson(res, 200, health())
+    }
+    if (seg[0] === 'metrics' && seg.length === 1) {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'GET only' })
+      res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4; charset=utf-8' })
+      return res.end(renderMetrics())
+    }
     if (seg[0] !== 'api') {
       if (req.method !== 'GET') return sendJson(res, 404, { error: 'not found (API lives under /api)' })
       return serveStatic(res, url.pathname)

@@ -56,6 +56,7 @@ expose it). The API, under `Authorization: Bearer <token>` from `POST /api/login
 | `DELETE /api/titles/:id` | Stop seeding + purge from disk. The catalog record flips `status:'unavailable'`; remove the record + grants in the panel. |
 | `GET /api/titles/:id/logs` | The ingest's ffmpeg log ring. |
 | `GET /healthz` | Unauthenticated liveness (`{ok, titles, ready, ingesting, …}`). |
+| `GET /metrics` | Unauthenticated Prometheus text (process stats + title-state and panel-link gauges). |
 
 Granting works exactly like channels: `node src/admin-cli.js grant <user> <titleId>`
 on the panel. Viewers see the title in their catalog with `type:'vod'` and play it

@@ -21,6 +21,9 @@ import { config } from './config.js'
 import { TitleManager } from './titles.js'
 import { startControlServer } from './control-server.js'
 import { loadAdmins } from './control-auth.js'
+import { initLogging } from './log.js'
+
+initLogging('library')
 
 export { TitleManager } from './titles.js'
 export { ControlError } from './titles.js'

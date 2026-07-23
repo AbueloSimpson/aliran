@@ -85,6 +85,20 @@ try {
   let r = await api('GET', '/healthz')
   assert.strictEqual(r.status, 200)
   assert.strictEqual(r.body.ok, true)
+  // S40 observability: unauthenticated Prometheus /metrics on the reseller, and the
+  // panel's new /healthz + /metrics — asserted HERE because this suite runs a REAL
+  // panel admin server in-process and sits in the required CI lane.
+  {
+    const mres = await fetch(base + '/metrics')
+    const mtext = await mres.text()
+    assert.ok(mres.status === 200 && mtext.includes('aliran_up 1') && mtext.includes('aliran_reseller_principals'), 'reseller /metrics exposition')
+    const ph = await fetch(`http://127.0.0.1:${panelPort}/healthz`)
+    const phj = await ph.json()
+    assert.ok(ph.status === 200 && phj.up === true && Number.isInteger(phj.uptimeSec), 'panel /healthz unauthenticated liveness')
+    const pm = await fetch(`http://127.0.0.1:${panelPort}/metrics`)
+    const pmt = await pm.text()
+    assert.ok(pm.status === 200 && pmt.includes('aliran_panel_swarm_connections'), 'panel /metrics exposition')
+  }
   r = await api('GET', '/api/me')
   assert.strictEqual(r.status, 401, 'no token → 401')
   r = await api('POST', '/api/login', { username: 'boss', password: 'wrong-password' })

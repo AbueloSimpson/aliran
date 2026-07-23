@@ -19,6 +19,9 @@ import { config } from './config.js'
 import { ChannelManager, isPushInput, pushUrl } from './channel.js'
 import { startControlServer } from './control-server.js'
 import { loadAdmins } from './control-auth.js'
+import { initLogging } from './log.js'
+
+initLogging('broadcaster')
 
 async function main () {
   const manager = new ChannelManager(config)

@@ -32,6 +32,7 @@ import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { makeBlobsKeyEnricher } from '../panel/src/blobs-key.js'
 import { panelClient as pubRpc, registerWithPanel } from '../broadcaster/src/register.js'
 import { Repeater, parseSelection, selects } from '../repeater/src/index.js'
+import { startStatusServer } from '../repeater/src/status-server.js'
 import { createPlayer } from '../sdk/index.js'
 
 const log = (...a) => console.log(...a)
@@ -213,6 +214,19 @@ try {
   assert.ok(beeCache.globalSize > 0, 'the budget is actually in use (caches linked, not disabled)')
   assert.ok(beeCache.globalSize <= beeCache.maxSize, 'bee cache stays within its bound')
   log('repeater: panel bee caches share the bounded global budget (globalSize ' + beeCache.globalSize + ' <= ' + beeCache.maxSize + ') ✓')
+
+  // ===== S40: opt-in status endpoint (STATUS_PORT) — healthz + Prometheus metrics
+  // off the synchronous status(); the DEFAULT stays "no listening sockets at all".
+  const statusSrv = await startStatusServer(repeater, { port: 0 })
+  cleanups.push(() => statusSrv.close())
+  const hzRes = await fetch(`http://127.0.0.1:${statusSrv.port}/healthz`)
+  const hz = await hzRes.json()
+  assert.ok(hzRes.status === 200 && hz.up === true && hz.channels === 1 && hz.tailsArmed >= 1, 'status /healthz serves live mirror counts')
+  const mzRes = await fetch(`http://127.0.0.1:${statusSrv.port}/metrics`)
+  const mzText = await mzRes.text()
+  assert.ok(mzRes.status === 200 && mzText.includes('aliran_repeater_channels 1'), 'status /metrics exposition')
+  assert.ok(mzText.includes('aliran_repeater_held_blocks{stream_id="ch1"'), 'per-core held-blocks series present')
+  log('repeater: opt-in status endpoint (healthz + metrics) ✓')
 
   // ===== (1) viewer plays ENTIRELY off the repeater; origin egress = repeater only =====
   const repeaterPub = repeater.status().swarm.publicKey

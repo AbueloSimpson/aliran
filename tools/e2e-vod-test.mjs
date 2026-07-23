@@ -164,7 +164,11 @@ try {
   const login = await httpReq('POST', cport, '/api/login', { body: { username: 'op', password: 'password123' } })
   assert.strictEqual(login.status, 200, 'control login')
   const auth = { authorization: 'Bearer ' + jbody(login).token, 'content-type': 'application/json' }
-  log('library: /healthz unauthenticated, /api gated, login OK ✓')
+  // S40: unauthenticated Prometheus /metrics beside /healthz (same contract).
+  const mz = await httpReq('GET', cport, '/metrics')
+  assert.strictEqual(mz.status, 200, '/metrics answers')
+  assert.ok(mz.body.toString().includes('aliran_library_titles'), 'library /metrics exposition')
+  log('library: /healthz unauthenticated, /api gated, /metrics exposition, login OK ✓')
 
   // ===== Ingest a title over the control API =====
   const add = await httpReq('POST', cport, '/api/titles', { headers: auth, body: { id: 'movie-1', input: movieFile, title: 'Test Movie', description: 'A test film', category: ['Movies'] } })

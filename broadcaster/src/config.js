@@ -187,4 +187,77 @@ export const config = {
   }
 }
 
+// --- Fail-fast validation ---
+// A typo'd env var must be a clear boot error naming the variable — never a silent
+// default (FEED_BUFFER=rma quietly meaning disk), and never a NaN that resurfaces
+// later as a weird timeout or port error. mib() stays permissive by design.
+const problems = []
+const chkInt = (name, v, min, max) => {
+  if (!Number.isInteger(v)) problems.push(`${name} must be an integer (got "${process.env[name]}")`)
+  else if (min !== undefined && v < min) problems.push(`${name} must be >= ${min} (got ${v})`)
+  else if (max !== undefined && v > max) problems.push(`${name} must be <= ${max} (got ${v})`)
+}
+const chkBool = (name) => {
+  const v = process.env[name]
+  if (v !== undefined && v !== '' && !/^(1|true|yes|0|false|no)$/i.test(v)) {
+    problems.push(`${name} must be one of 1/true/yes/0/false/no (got "${v}")`)
+  }
+}
+const chkHex = (name, v, lengths) => {
+  if (v && !(lengths.includes(v.length) && /^[0-9a-f]+$/i.test(v))) {
+    problems.push(`${name} must be ${lengths.join(' or ')} hex chars (got ${v.length} chars)`)
+  }
+}
+const chkBootstrap = (name, list) => {
+  for (const e of list) {
+    const m = e.match(/^(.+):(\d+)$/)
+    if (!m || +m[2] < 1 || +m[2] > 65535) problems.push(`${name} entries must be host:port (got "${e}")`)
+  }
+}
+
+chkHex('PANEL_PUBKEY', config.panelPubKey, [64])
+chkHex('PUBLISHER_KEY', config.publisherKey, [64, 128])
+chkBool('CONTROL_ENABLED'); chkBool('SLATE_ENABLED'); chkBool('RESUME_PACE')
+if (process.env.FEED_BUFFER && !['disk', 'ram'].includes(process.env.FEED_BUFFER)) {
+  problems.push(`FEED_BUFFER must be "disk" or "ram" (got "${process.env.FEED_BUFFER}")`)
+}
+chkInt('RTMP_PORT', config.rtmpPort, 1, 65535)
+chkInt('INGEST_PORT_BASE', config.ingest.portBase, 1, 65535)
+chkInt('INGEST_PORT_MAX', config.ingest.portMax, 1, 65535)
+if (Number.isInteger(config.ingest.portBase) && Number.isInteger(config.ingest.portMax) &&
+    config.ingest.portBase > config.ingest.portMax) {
+  problems.push(`INGEST_PORT_BASE (${config.ingest.portBase}) must be <= INGEST_PORT_MAX (${config.ingest.portMax})`)
+}
+chkInt('HLS_TIME', config.hls.time, 1, 30)
+chkInt('HLS_LIST_SIZE', config.hls.listSize, 2, 64)
+chkInt('FEED_ROTATE_HOURS', config.feedRotate.hours, 0)
+chkInt('FEED_ROTATE_TREE_MB', config.feedRotate.treeMb, 0)
+chkInt('FEED_ROTATE_GRACE_MS', config.feedRotate.graceMs, 0)
+chkInt('FEED_CACHE_MAX', config.feedCacheMax, 256)
+chkInt('FFMPEG_MAX_RSS_MB', config.ffmpegMaxRssMb, 0)
+chkInt('SLATE_AFTER', config.slate.after, 1)
+chkInt('SLATE_RETRY_MS', config.slate.retryMs, 1000)
+chkInt('RESUME_PACE_MIN', config.resumePacing.minChannels, 1)
+chkInt('RESUME_PACE_TARGET_MS', config.resumePacing.targetLagMs, 1)
+chkInt('RESUME_PACE_MAX_MS', config.resumePacing.maxWaitMs, 1)
+chkInt('RESUME_CONCURRENCY', config.resumePacing.concurrency, 1)
+// swarmMaxPeers folds NaN into null ("unset") above, so probe the raw env for garbage.
+if (process.env.SWARM_MAX_PEERS !== undefined && process.env.SWARM_MAX_PEERS !== '' &&
+    !Number.isInteger(parseInt(process.env.SWARM_MAX_PEERS, 10))) {
+  problems.push(`SWARM_MAX_PEERS must be an integer (got "${process.env.SWARM_MAX_PEERS}")`)
+} else if (config.swarmMaxPeers !== null) {
+  chkInt('SWARM_MAX_PEERS', config.swarmMaxPeers, 1)
+}
+chkInt('CONTROL_PORT', config.control.port, 0, 65535)
+chkInt('CONTROL_SESSION_TTL_HOURS', config.control.sessionTtlHours, 1)
+chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
+chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
+chkInt('ARGON2_MEM_KIB', config.argon2.memKiB, 8)
+chkInt('ARGON2_TIME', config.argon2.time, 1)
+chkBootstrap('BOOTSTRAP', config.bootstrap)
+
+if (problems.length) {
+  throw new Error('broadcaster: invalid configuration —\n  - ' + problems.join('\n  - '))
+}
+
 export default config

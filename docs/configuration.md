@@ -3,6 +3,16 @@
 All operator-specific values are configuration (env / config files), never hardcoded.
 Copy each component's `.env.example` to `.env`.
 
+Two behaviors shared by **every** service:
+
+- **Fail-fast validation** — a typo'd value (bad integer, out-of-range port,
+  malformed key/URL) is a startup error naming the exact variable, never a silent
+  fallback. If a service exits immediately after a config change, read its first
+  log lines.
+- **`LOG_FORMAT=json`** — opt-in structured logs: one `{ts, level, svc, msg}` JSON
+  object per line for log shippers (Loki, ELK, CloudWatch). Unset keeps the
+  human-readable lines unchanged.
+
 ## Panel (`panel/.env`)
 
 | Key | Default | Description |
@@ -78,6 +88,8 @@ The keyless regional super-peer — see the [repeater appliance page](repeater.m
 | `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `4` / `4` | Swarm UDP socket buffers in MB (`0` = OS default). Higher than the broadcaster's: absorbing fan-out is this box's entire job, so it is the most likely to hit a buffer wall. Worth pairing with the optional `deploy/sysctl/install.sh` — otherwise the request is silently clamped. See [KB](kb/network-tuning.md) |
 | `DATA_DIR` | `./data` | Ciphertext block store (disposable cache) |
 | `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
+| `STATUS_PORT` | `0` (off) | Opt-in health/metrics HTTP server: `GET /healthz` + Prometheus `GET /metrics`. Default off — a stock repeater opens **no listening sockets at all** |
+| `STATUS_HOST` | `127.0.0.1` | Status-server bind address (endpoints are unauthenticated — widen beyond loopback only on a network you control) |
 | `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes |
 
 ## Library (`library/.env`) — VOD

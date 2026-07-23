@@ -118,6 +118,14 @@ try {
   addAdmin({ config: bcConfig, dataDir: dirs.bc }, 'op', ADMIN_PASSWORD)
 
   const { port, close } = await startControlServer({ config: bcConfig, manager, dataDir: dirs.bc }, { host: '127.0.0.1', port: 0, sessionTtlMs: 3600000, lockout: { threshold: 5, seconds: 60 } })
+  // S40: /healthz + Prometheus /metrics are unauthenticated and answer before login.
+  {
+    const hz = await fetch(`http://127.0.0.1:${port}/healthz`)
+    assert.strictEqual(hz.status, 200, '/healthz answers unauthenticated')
+    const mz = await fetch(`http://127.0.0.1:${port}/metrics`)
+    const mt = await mz.text()
+    assert.ok(mz.status === 200 && mt.includes('aliran_broadcaster_channels'), 'broadcaster /metrics exposition')
+  }
   cleanups.push(close)
   const base = `http://127.0.0.1:${port}`
   const api = async (method, p, body, token) => {

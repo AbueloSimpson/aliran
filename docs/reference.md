@@ -62,6 +62,8 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /healthz` | **Unauthenticated** liveness → `{up, uptimeSec, swarmConnections}`. Cheap + synchronous, served before the auth gate — point uptime checks here |
+| `GET /metrics` | **Unauthenticated** Prometheus text (uptime, RSS/heap, swarm connections) |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
 | `GET /api/status` | Counts: users, streams, live, admins |
 | `GET /api/observability` | Uptime, memory, swarm peers, data size/disk free + last-200 activity ring (in-memory — cleared by a restart) |
@@ -121,6 +123,7 @@ are preserved.
 |----------|-------------|
 | `GET /healthz` | **Unauthenticated** liveness + boot-resume progress → `{up, uptimeSec, resuming, resumed, total, failed, resumeSec}`. Cheap and served before the auth gate, so monitoring can tell "up, resuming 45/83" from "dead" even while a mass resume keeps the rest of the API busy. Point uptime checks here, not at `/api/status` (which needs a token and does real work) |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
+| `GET /metrics` | **Unauthenticated** Prometheus text: process stats + channel count, boot-resume progress, incidents gauge |
 | `GET /api/status` | Channels, running count, panel configured |
 | `GET /api/capabilities` | ffmpeg probe: input protocols + deep-verified encoders (`{listed,verified,error?}`) |
 | `GET/POST /api/channels` | List (+ live status) / add (`{id,title,category,input,transcode,buffer,…}`) |
@@ -152,6 +155,7 @@ streams). Disk = the sum of title sizes; reclaimed only by delete.
 |----------|-------------|
 | `GET /healthz` | **Unauthenticated** liveness → `{ok, titles, ready, ingesting, queued, error, panelLink:{connected,pendingOps,…}}`. Cheap + synchronous — answers even mid-transcode |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
+| `GET /metrics` | **Unauthenticated** Prometheus text: process stats + title-state counters, panel-link connected/pending |
 | `GET /api/status` | Titles summary, publisher, panel key, swarm connections |
 | `GET/POST /api/titles` | List (+ ingest progress/peers/registered) / add + queue ingest (`{id, input, title?, description?, category?, protection?, mode?, hlsTime?}` — `mode`: `auto`(default)/`copy`/`transcode`; `input`: a path on the library box or any URL ffmpeg reads) |
 | `GET /api/titles/:id` | Registry view: `state` (`queued·ingesting·ready·error`), `ingest:{phase,pct}`, `feedKey`, `durationSec`, `segments`, `bytes`, `peers`, `registered`, `registerError` |
@@ -192,6 +196,7 @@ credits, `404`/`409` as the panel, and panel failures surface `PANEL:`-prefixed
 | `POST /api/webhooks/credits` | **HMAC-authenticated** (no Bearer) automated top-up: `{id, to, amount, note?}` signed as `x-topup-signature` = hex HMAC-SHA256(`WEBHOOK_SECRET`, `"<ts>.<raw body>"`) + `x-topup-timestamp` (±300 s). Idempotent by `id` (retry → `{duplicate:true}`); mints a `MINT` line with actor `webhook`; 404 when no secret is configured |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt, role}`; rate-limited + single-flight |
 | `GET /api/me` · `POST /api/me/password` | Own record + balance + trials-used-today / rotate own password |
+| `GET /metrics` | **Unauthenticated** Prometheus text: process stats + principals/accounts, panel reachability, ledger seq + invariant gauge |
 | `GET /api/status` | Role-scoped KPIs (balance, active/expiring/trial counts; admins also get principals, outstanding credits, panel reachability, last reconcile) |
 | `GET /api/panel/status` · `GET /api/streams` | Passthrough of the panel status / catalog (admins; streams cached 60 s for the grants picker) |
 | `GET /api/system` | Admin tiers: operator diagnostics for the **System** section of the UI's Overview — `{service:{node,pid,uptimeSec,rssBytes,heapUsedBytes,dataDir,sweeps,ledger}, host:{hostname,platform,release,arch,cpuModel,cpuCount,loadavg,totalMemBytes,freeMemBytes,uptimeSec,disk:{totalBytes,freeBytes}}, panel:{url,reachable,lastOkAt,lastError,latencyMs,stats:{panelKey,users,streams,live,admins},error}}`. The panel block is a **live timed probe**; a down panel fills `error` instead of failing the request |

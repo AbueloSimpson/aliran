@@ -69,4 +69,50 @@ export const config = {
   }
 }
 
+// --- Fail-fast validation ---
+// A typo'd env var must be a clear boot error naming the variable — never a silent
+// default, and never a NaN that resurfaces later as a weird timeout or port error.
+// mib() stays permissive by design (tuning must never stop boot).
+const problems = []
+const chkInt = (name, v, min, max) => {
+  if (!Number.isInteger(v)) problems.push(`${name} must be an integer (got "${process.env[name]}")`)
+  else if (min !== undefined && v < min) problems.push(`${name} must be >= ${min} (got ${v})`)
+  else if (max !== undefined && v > max) problems.push(`${name} must be <= ${max} (got ${v})`)
+}
+const chkBool = (name) => {
+  const v = process.env[name]
+  if (v !== undefined && v !== '' && !/^(1|true|yes|0|false|no)$/i.test(v)) {
+    problems.push(`${name} must be one of 1/true/yes/0/false/no (got "${v}")`)
+  }
+}
+const chkHex = (name, v, lengths) => {
+  if (v && !(lengths.includes(v.length) && /^[0-9a-f]+$/i.test(v))) {
+    problems.push(`${name} must be ${lengths.join(' or ')} hex chars (got ${v.length} chars)`)
+  }
+}
+const chkBootstrap = (name, list) => {
+  for (const e of list) {
+    const m = e.match(/^(.+):(\d+)$/)
+    if (!m || +m[2] < 1 || +m[2] > 65535) problems.push(`${name} entries must be host:port (got "${e}")`)
+  }
+}
+
+chkHex('PANEL_PUBKEY', config.panelPubKey, [64])
+chkHex('PUBLISHER_KEY', config.publisherKey, [64, 128])
+chkBool('CONTROL_ENABLED')
+chkInt('HLS_TIME', config.hls.time, 1, 30)
+chkInt('INGEST_CONCURRENCY', config.ingestConcurrency, 1)
+chkInt('SWARM_MAX_PEERS', config.swarmMaxPeers, 1)
+chkInt('CONTROL_PORT', config.control.port, 0, 65535)
+chkInt('CONTROL_SESSION_TTL_HOURS', config.control.sessionTtlHours, 1)
+chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
+chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
+chkInt('ARGON2_MEM_KIB', config.argon2.memKiB, 8)
+chkInt('ARGON2_TIME', config.argon2.time, 1)
+chkBootstrap('BOOTSTRAP', config.bootstrap)
+
+if (problems.length) {
+  throw new Error('library: invalid configuration —\n  - ' + problems.join('\n  - '))
+}
+
 export default config

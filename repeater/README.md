@@ -57,6 +57,8 @@ Docker (from the repo root): `docker compose -f deploy/docker-compose.repeater.y
 | `SWARM_MAX_PEERS` | `256` | Connection budget — a repeater exists to absorb fan-out |
 | `DATA_DIR` | `./data` | Ciphertext block store (disposable cache) |
 | `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
+| `STATUS_PORT` | `0` (off) | Opt-in `GET /healthz` + Prometheus `GET /metrics` server — default off, a stock repeater opens **no listening sockets** |
+| `STATUS_HOST` | `127.0.0.1` | Status-server bind address (unauthenticated — widen only on a network you control) |
 | `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes (tests / private DHT) |
 
 ## Sizing (pure I/O — no ffmpeg, no transcoding)

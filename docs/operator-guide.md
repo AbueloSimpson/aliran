@@ -327,6 +327,38 @@ stored per user record, so changing them later only affects new enrollments/pass
 [Scaling & capacity planning](kb/scaling.md) for the per-channel numbers, a hardware table, the
 `tools/scale-bench.mjs` measurement tool, and the arm64 Raspberry Pi build.
 
+## Monitoring
+
+Every HTTP surface serves two **unauthenticated** endpoints with one contract —
+cheap and synchronous, so they answer as long as the event loop turns, even while
+the authenticated API is busy:
+
+- `GET /healthz` — JSON liveness with the service's own vitals: the broadcaster
+  reports boot-resume progress ("up, resuming 45/83" vs "dead"), the library its
+  title states, the reseller its ledger invariant, the panel its swarm connections.
+- `GET /metrics` — Prometheus text exposition: `aliran_up`, uptime, RSS/heap, plus
+  per-service gauges (channel counts, title states, principals/accounts, …).
+
+They live on the existing control/admin ports — panel `:3210`, broadcaster
+`:3310`, library `:3320`, reseller `:3330` — which bind loopback by default; scrape
+locally or expose them deliberately (see [publishing the
+dashboards](kb/public-dashboards.md)). The repeater stays **port-free by default**;
+setting `STATUS_PORT` gives it the same two endpoints.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: aliran
+    static_configs:
+      - targets: ['127.0.0.1:3210', '127.0.0.1:3310', '127.0.0.1:3320', '127.0.0.1:3330']
+```
+
+Two related knobs shared by every service: `LOG_FORMAT=json` switches the logs to
+one `{ts, level, svc, msg}` JSON object per line for log shippers (default output
+is unchanged), and configuration is **validated at boot** — a typo'd env var is a
+startup error naming the exact variable, so a service that exits immediately after
+a config change is telling you which line to fix.
+
 ## Operations
 
 - **Backups:** the data dirs (keys + cores). `DATA_DIR/keys` and

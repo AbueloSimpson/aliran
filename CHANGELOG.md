@@ -18,6 +18,19 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Observability & config hygiene**: every service fails fast on a typo'd env
+  var — the boot error names the exact variable (no silent defaults, no NaN
+  timeouts); opt-in structured logs (`LOG_FORMAT=json` emits one
+  `{ts,level,svc,msg}` JSON object per line, default output unchanged);
+  unauthenticated `GET /healthz` on every HTTP surface (now including the panel
+  admin API) plus Prometheus-text `GET /metrics` everywhere (process stats +
+  per-service gauges: channels/boot-resume/incidents, title states + panel-link,
+  principals/accounts + ledger invariant, panel swarm connections); and an
+  opt-in repeater status server (`STATUS_PORT`, default off — a stock repeater
+  still opens no listening sockets). Covered by `npm run test:config` in the
+  required CI lane + new assertions in the reseller/vod/repeater/broadcaster
+  suites.
+
 **Core crypto (`core/`, `@aliran/core`)**
 - OPRF login (ristretto255) with Argon2id verifiers and proof-of-work + throttling —
   the panel never sees passwords; X25519 sealed per-user stream grants; per-user

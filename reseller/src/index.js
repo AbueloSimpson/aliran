@@ -12,6 +12,9 @@ import { makePanelClient } from './panel-client.js'
 import { makeAccounts } from './accounts.js'
 import { makeSweeps } from './sweeps.js'
 import { startControlServer } from './control-server.js'
+import { initLogging } from './log.js'
+
+initLogging('reseller')
 
 // Nested-aware config merge for tests/embedders: top-level scalars replace, the
 // known nested objects merge key-by-key.
