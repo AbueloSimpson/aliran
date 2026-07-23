@@ -13,6 +13,21 @@ const el = (tag, props = {}, kids = []) => {
 }
 const fmtDays = (d) => d == null ? '—' : d < 0 ? `${-d}d ago` : d === 0 ? 'today' : `${d}d`
 const fmtDate = (ts) => ts ? new Date(ts).toLocaleDateString() : '—'
+const fmtBytes = (n) => {
+  if (n == null) return '—'
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++ }
+  return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${u[i]}`
+}
+const fmtDur = (s) => {
+  if (s == null) return '—'
+  if (s < 60) return `${Math.round(s)}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
+}
+const fmtAgo = (ts) => ts == null ? 'never' : fmtDur((Date.now() - ts) / 1000) + ' ago'
 const CAN_MANAGE = new Set(['admin', 'co-admin', 'super'])
 const IS_ADMIN = (r) => r === 'admin' || r === 'co-admin'
 
@@ -148,11 +163,12 @@ $('#login-form').onsubmit = guard(async (e) => {
 // ---- navigation ----
 function showView (name) {
   closeRowMenu(false)
+  clearInterval(sysTimer) // the System poller runs only while its view is open
   $$('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.view === name))
   $$('.view').forEach((v) => { v.hidden = v.dataset.view !== name })
-  $('#view-title').textContent = { overview: 'Overview', accounts: 'Accounts', resellers: 'Resellers', ledger: 'Ledger', settings: 'Settings' }[name]
+  $('#view-title').textContent = { overview: 'Overview', accounts: 'Accounts', resellers: 'Resellers', ledger: 'Ledger', system: 'System', settings: 'Settings' }[name]
   $('#app-view').classList.remove('side-open')
-  const loaders = { overview: loadOverview, accounts: loadAccounts, resellers: loadPrincipals, ledger: () => loadLedger(true) }
+  const loaders = { overview: loadOverview, accounts: loadAccounts, resellers: loadPrincipals, ledger: () => loadLedger(true), system: startSystem }
   if (loaders[name]) loaders[name]()
 }
 $$('.nav-item').forEach((n) => { n.onclick = () => showView(n.dataset.view) })
@@ -168,6 +184,7 @@ async function boot () {
   $('#who-avatar').textContent = (me.name[0] || '?').toUpperCase()
   $('#bal').textContent = me.balance
   $$('.nav-item[data-cap="manage"]').forEach((n) => { n.hidden = !CAN_MANAGE.has(me.role) })
+  $$('.nav-item[data-cap="admin"]').forEach((n) => { n.hidden = !IS_ADMIN(me.role) })
   $('#mint-panel').hidden = !IS_ADMIN(me.role)
   $('#ops-card').hidden = !IS_ADMIN(me.role)
   setupPrincipalForm()
@@ -593,6 +610,99 @@ $('#mint-form').onsubmit = guard(async (e) => {
   await api('POST', '/credits/mint', { to: $('#mint-to').value || undefined, amount: +$('#mint-amount').value, note: $('#mint-note').value })
   toast('Minted'); $('#mint-form').reset(); await Promise.all([loadLedger(true), refreshBalance()])
 })
+
+// ---- system (admin tiers): panel link + service process + host machine.
+// Polled every 5 s while the view is open; the poller dies on first error so a
+// dropped session can't drum the toast. ----
+let sysTimer
+function startSystem () {
+  guard(loadSystem)()
+  clearInterval(sysTimer)
+  sysTimer = setInterval(async () => {
+    try { await loadSystem() } catch (e) { clearInterval(sysTimer); toast(e.message, true) }
+  }, 5000)
+}
+$('#sys-refresh').onclick = guard(loadSystem)
+
+// kv accepts a string or a prebuilt node; strings get a hover title so
+// ellipsized values (paths, keys, CPU models) stay readable.
+const kvRows = (pairs) => pairs.flatMap(([label, val, opts = {}]) => [
+  el('div', { className: 'k', textContent: label }),
+  val instanceof Node
+    ? el('div', { className: 'v' }, val)
+    : el('div', { className: 'v' + (opts.mono ? ' mono' : ''), textContent: val, title: opts.title ?? String(val) })
+])
+
+async function loadSystem () {
+  const s = await api('GET', '/system')
+  const h = s.host
+  const p = s.panel
+  const memUsed = h.totalMemBytes - h.freeMemBytes
+  const hasLoad = Array.isArray(h.loadavg) && h.loadavg.some((x) => x > 0)
+  const disk = h.disk
+
+  const tiles = [
+    ['Panel link',
+      p ? (p.reachable === false ? 'down' : p.latencyMs != null ? `${p.latencyMs} ms` : '—') : 'n/a',
+      p && p.reachable === false ? 'unreachable' : 'round-trip',
+      p ? (p.reachable === false ? 'err' : p.latencyMs != null ? 'ok' : '') : ''],
+    ['Host memory', fmtBytes(memUsed), `of ${fmtBytes(h.totalMemBytes)}`,
+      memUsed / h.totalMemBytes > 0.9 ? 'warn' : ''],
+    ['Load (1m)', hasLoad ? h.loadavg[0].toFixed(2) : '—', `${h.cpuCount} core${h.cpuCount === 1 ? '' : 's'}`,
+      hasLoad && h.loadavg[0] > h.cpuCount ? 'warn' : ''],
+    ['Disk free', disk ? fmtBytes(disk.freeBytes) : '—', disk ? `of ${fmtBytes(disk.totalBytes)}` : 'unavailable',
+      disk && disk.freeBytes / disk.totalBytes < 0.1 ? 'warn' : '']
+  ]
+  $('#sys-tiles').replaceChildren(...tiles.map(([k, v, sub, cls]) =>
+    el('div', { className: 'tile' + (cls ? ' ' + cls : '') }, [
+      el('div', { className: 'k', textContent: k }),
+      el('div', { className: 'v', textContent: v }),
+      el('div', { className: 's', textContent: sub })
+    ])))
+
+  const panelRows = p
+    ? [
+        ['State', statusEl(p.reachable === false ? 'err' : p.reachable ? 'ok' : '', p.reachable === false ? 'unreachable' : p.reachable ? 'reachable' : 'unknown')],
+        ['URL', p.url, { mono: true }],
+        ['Latency', p.latencyMs != null ? `${p.latencyMs} ms` : '—'],
+        ['Last OK', fmtAgo(p.lastOkAt)],
+        ['Last error', p.lastError || p.error || '—', { title: p.lastError || p.error || '' }],
+        ...(p.stats
+          ? [
+              ['Viewer users', p.stats.users],
+              ['Streams', `${p.stats.streams} (${p.stats.live} live)`],
+              ['Panel admins', p.stats.admins],
+              ['Panel key', `${String(p.stats.panelKey).slice(0, 16)}…`, { mono: true, title: p.stats.panelKey }]
+            ]
+          : [])
+      ]
+    : [['State', 'no panel configured']]
+  $('#sys-panel').replaceChildren(...kvRows(panelRows))
+
+  const sv = s.service
+  $('#sys-service').replaceChildren(...kvRows([
+    ['Node', sv.node],
+    ['PID', sv.pid],
+    ['Uptime', fmtDur(sv.uptimeSec)],
+    ['Memory (RSS)', fmtBytes(sv.rssBytes)],
+    ['Heap used', fmtBytes(sv.heapUsedBytes)],
+    ['Data dir', sv.dataDir, { mono: true }],
+    ...(sv.ledger ? [['Ledger', statusEl(sv.ledger.invariantOk ? 'ok' : 'err', `seq ${sv.ledger.seq} · ${sv.ledger.invariantOk ? 'consistent' : 'INVARIANT BROKEN'}`)]] : []),
+    ...(sv.sweeps ? [['Last sweep', fmtAgo(sv.sweeps.lastRunAt)]] : [])
+  ]))
+
+  $('#sys-host').replaceChildren(...kvRows([
+    ['Hostname', h.hostname],
+    ['OS', `${h.platform} ${h.release} (${h.arch})`],
+    ['CPU', `${h.cpuModel} × ${h.cpuCount}`],
+    ['Load avg', hasLoad ? h.loadavg.map((x) => x.toFixed(2)).join(' / ') : '—'],
+    ['Memory', `${fmtBytes(memUsed)} / ${fmtBytes(h.totalMemBytes)}`],
+    ['Disk', disk ? `${fmtBytes(disk.totalBytes - disk.freeBytes)} / ${fmtBytes(disk.totalBytes)}` : '—'],
+    ['Uptime', fmtDur(h.uptimeSec)]
+  ]))
+
+  $('#sys-updated').textContent = `updated ${new Date(s.now).toLocaleTimeString()}`
+}
 
 // ---- settings ----
 $('#pw-form').onsubmit = guard(async (e) => {

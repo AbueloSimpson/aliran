@@ -273,6 +273,19 @@ thead th:last-child, tbody td:last-child { padding-right: 12px; }
 .pager-jump { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pager-jump select { padding: 3px 6px; font-size: 12px; }
 
+/* ---- system view: kv cards ---- */
+.sys-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.sys-card { padding: 14px 16px; }
+.sys-card h3 { margin: 0 0 10px; font-size: 13px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 7px 18px; font-size: 12.5px; align-items: baseline; }
+.kv .k { color: var(--muted); white-space: nowrap; }
+.kv .v {
+  text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.kv .v .status { font-size: 12.5px; }
+.sys-foot { display: flex; gap: 10px; align-items: center; color: var(--muted); }
+
 /* ---- row menu (kebab) ---- */
 .menu {
   position: fixed; z-index: 40; min-width: 185px; padding: 5px;

@@ -317,6 +317,18 @@ try {
   assert.ok(r.body.ts && r.body.orphanPanel, 'report persisted + retrievable')
   log('J: expiry sweep (paid + trial), lapsed-renew, reconcile orphan/divergence ✓')
 
+  // ===== K: system diagnostics (host + service + live panel probe) =====
+  r = await api('GET', '/api/system', null, res1b)
+  assert.strictEqual(r.status, 403, 'system view is admin-tier only')
+  r = await api('GET', '/api/system', null, boss)
+  assert.strictEqual(r.status, 200, 'system: ' + JSON.stringify(r.body))
+  assert.ok(typeof r.body.host.hostname === 'string' && r.body.host.cpuCount >= 1, 'host block populated')
+  assert.strictEqual(r.body.service.node, process.version, 'service block reports this node')
+  assert.ok(r.body.service.ledger && r.body.service.ledger.invariantOk === true, 'ledger health relayed')
+  assert.ok(r.body.panel && r.body.panel.stats && r.body.panel.stats.users >= 1, 'live panel stats relayed')
+  assert.ok(typeof r.body.panel.latencyMs === 'number' && r.body.panel.reachable === true, 'panel probe timed + reachable')
+  log('K: /api/system 403 for resellers; host+service+panel stats for admins ✓')
+
   log('\nPASS: reseller e2e (panel + hierarchy + credits + lifecycle + outage + sweeps)')
   await cleanup()
   process.exit(0)

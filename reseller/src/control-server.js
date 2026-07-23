@@ -17,6 +17,7 @@
 
 import http from 'http'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
@@ -177,6 +178,14 @@ export function startControlServer (ctx, opts = {}) {
     if (r1 === 'panel' && seg.length === 3 && r2 === 'status' && req.method === 'GET' && ctx.panel) {
       requireCap(me, 'panel:status')
       return sendJson(res, 200, await ctx.panel.status())
+    }
+
+    // Operator diagnostics: host + service process + a LIVE panel-link probe (the
+    // one place a panel round-trip is timed). Admin tiers only — host paths and
+    // machine stats are operator information.
+    if (r1 === 'system' && seg.length === 2 && req.method === 'GET') {
+      requireCap(me, 'system:view')
+      return sendJson(res, 200, await systemView(ctx))
     }
 
     // Catalog passthrough for the grants picker — any role, 60 s server cache so a
@@ -353,6 +362,58 @@ function statusView (ctx, me) {
     if (ctx.sweeps) base.reconcile = ctx.sweeps.lastReconcileSummary()
   }
   return base
+}
+
+// GET /api/system — never throws for a down panel: the probe failure is data
+// (panel.error), so the dashboard can render host/service rows during an outage.
+async function systemView (ctx) {
+  const mem = process.memoryUsage()
+  let disk = null
+  try {
+    const s = await fs.promises.statfs(ctx.dataDir)
+    disk = { totalBytes: s.bsize * s.blocks, freeBytes: s.bsize * s.bavail }
+  } catch {} // statfs can be unavailable on exotic filesystems — the UI shows "—"
+  const cpus = os.cpus()
+  const out = {
+    now: Date.now(),
+    service: {
+      node: process.version,
+      pid: process.pid,
+      uptimeSec: Math.round(process.uptime()),
+      rssBytes: mem.rss,
+      heapUsedBytes: mem.heapUsed,
+      dataDir: path.resolve(ctx.dataDir),
+      sweeps: ctx.sweeps ? ctx.sweeps.healthInfo() : null,
+      ledger: ctx.ledger ? ctx.ledger.healthInfo() : null
+    },
+    host: {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      release: os.release(),
+      arch: os.arch(),
+      cpuModel: cpus.length ? cpus[0].model : 'unknown',
+      cpuCount: cpus.length,
+      loadavg: os.loadavg(), // all zeros on Windows — the UI shows "—"
+      totalMemBytes: os.totalmem(),
+      freeMemBytes: os.freemem(),
+      uptimeSec: Math.round(os.uptime()),
+      disk
+    },
+    panel: null
+  }
+  if (ctx.panel) {
+    const p = { url: ctx.config.panel.url, latencyMs: null, stats: null, error: null }
+    const t0 = Date.now()
+    try {
+      p.stats = await ctx.panel.status() // { panelKey, users, streams, live, admins }
+      p.latencyMs = Date.now() - t0
+    } catch (err) {
+      p.error = String((err && err.message) || err)
+    }
+    Object.assign(p, ctx.panel.healthInfo()) // reachable/lastOkAt/lastError, post-probe
+    out.panel = p
+  }
+  return out
 }
 
 function decoratePrincipal (ctx, summary) {

@@ -33,6 +33,7 @@ export const CAPS = {
   'trials:create': { roles: ['admin', 'co-admin', 'super', 'reseller'] },
   'ledger:view-all': { roles: ['admin', 'co-admin'] },
   'panel:status': { roles: ['admin', 'co-admin'] },
+  'system:view': { roles: ['admin', 'co-admin'] },
   'ops:reconcile': { roles: ['admin', 'co-admin'] },
   'ops:sweep': { roles: ['admin', 'co-admin'] }
 }
