@@ -370,22 +370,53 @@ export function makeAccounts (ctx) {
     return out
   }
 
-  function list ({ owner, status, q, after, limit } = {}, scope = '*') {
+  // The list query engine — built for HIGH-DENSITY registries. The registry is
+  // one in-memory object, so a full filter → sort → slice pass per request costs
+  // a few ms even at ~100k accounts; no index is needed, and `total` (the
+  // filtered count before slicing) is what lets the UI say "Showing X of Y".
+  // Paging is offset-based because it composes with every sort order; the tiny
+  // page drift a concurrent create/delete can cause between two Load-More clicks
+  // is acceptable for an ops table.
+  const LIST_FILTERS = new Set(['active', 'disabled', 'expiring', 'trial'])
+  const LIST_SORTS = new Set(['name', 'expires', 'owner'])
+
+  function list ({ q, owner, filter, sort, dir, offset, limit, expiringDays } = {}, scope = '*') {
+    if (filter !== undefined && !LIST_FILTERS.has(filter)) throw new ControlError('bad-request', `filter must be one of: ${[...LIST_FILTERS].join(', ')}`)
+    if (sort !== undefined && !LIST_SORTS.has(sort)) throw new ControlError('bad-request', `sort must be one of: ${[...LIST_SORTS].join(', ')}`)
+    if (dir !== undefined && dir !== 'asc' && dir !== 'desc') throw new ControlError('bad-request', 'dir must be "asc" or "desc"')
     const cap = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 100
-    const names = Object.keys(registry).sort()
-    const out = []
-    for (const acct of names) {
-      if (out.length >= cap) break
-      const r = registry[acct]
+    const from = Number.isInteger(offset) && offset > 0 ? offset : 0
+    const needle = typeof q === 'string' && q.trim() ? q.trim().toLowerCase() : null
+    const soonest = Date.now() + (Number.isInteger(expiringDays) && expiringDays > 0 ? expiringDays : 7) * 86400000
+
+    const matched = []
+    for (const [acct, r] of Object.entries(registry)) {
       if (r.status === 'deleted') continue
       if (scope !== '*' && !scope.has(r.owner)) continue
       if (owner && r.owner !== owner) continue
-      if (status && r.status !== status) continue
-      if (q && !acct.includes(q)) continue
-      if (after && acct <= after) continue
-      out.push(view(acct))
+      if (filter === 'active' && r.status !== 'active') continue
+      if (filter === 'disabled' && r.status !== 'disabled') continue
+      if (filter === 'trial' && r.kind !== 'trial') continue
+      if (filter === 'expiring' && !(r.status === 'active' && r.expiresAt <= soonest)) continue
+      if (needle && !acct.toLowerCase().includes(needle) && !r.owner.toLowerCase().includes(needle)) continue
+      matched.push(acct)
     }
-    return out
+
+    const sign = dir === 'desc' ? -1 : 1
+    matched.sort((a, b) => {
+      let cmp = 0
+      if (sort === 'expires') cmp = registry[a].expiresAt - registry[b].expiresAt
+      else if (sort === 'owner') cmp = registry[a].owner < registry[b].owner ? -1 : registry[a].owner > registry[b].owner ? 1 : 0
+      if (cmp === 0) cmp = a < b ? -1 : a > b ? 1 : 0 // name tiebreak keeps the order total
+      return cmp * sign
+    })
+
+    return {
+      items: matched.slice(from, from + cap).map(view),
+      total: matched.length,
+      offset: from,
+      limit: cap
+    }
   }
 
   function get (acct) {

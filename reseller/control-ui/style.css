@@ -177,6 +177,13 @@ tbody tr.hidden-row { display: none; }
 .row-actions { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
 .actions-col { width: 1%; }
 .empty { padding: 20px 16px; color: var(--muted); }
+.table-foot { display: flex; justify-content: center; padding: 6px 0 10px; }
+.table-foot button[hidden] { display: none; }
+.owner-sub { font-size: 11px; }
+.owner-link { cursor: pointer; }
+.owner-link:hover { color: var(--accent); text-decoration: underline; }
+.owner-chip { cursor: pointer; }
+.owner-chip:hover { border-color: var(--danger); }
 
 /* ---- dialog ---- */
 dialog {

@@ -142,31 +142,51 @@ async function loadOverview () {
   } else rc.hidden = true
 }
 
-// ---- accounts ----
-let accountRows = []
-let acctFilter = 'all'
-let acctSort = { k: 'account', dir: 1 }
+// ---- accounts (server-driven: search/filter/sort/paging all happen in the API,
+// so the table works the same at 10 accounts or 10,000) ----
+const PAGE = 100
+let acctRows = []
+let acctTotal = 0
+let acctQuery = { q: '', filter: '', owner: '', sort: 'name', dir: 'asc' }
+let acctDebounce
 
-async function loadAccounts () {
-  accountRows = await api('GET', '/accounts?limit=500')
+function acctParams (offset) {
+  const p = new URLSearchParams({ limit: String(PAGE), offset: String(offset), sort: acctQuery.sort, dir: acctQuery.dir })
+  if (acctQuery.q) p.set('q', acctQuery.q)
+  if (acctQuery.filter) p.set('filter', acctQuery.filter)
+  if (acctQuery.owner) p.set('owner', acctQuery.owner)
+  return p
+}
+
+// append=true fetches the NEXT page and concatenates (Load more); otherwise the
+// query changed and the list restarts from offset 0.
+async function loadAccounts (append) {
+  const r = await api('GET', '/accounts?' + acctParams(append ? acctRows.length : 0))
+  acctRows = append ? acctRows.concat(r.items) : r.items
+  acctTotal = r.total
   renderAccounts()
 }
+
 function renderAccounts () {
-  const q = $('#acct-search').value.trim().toLowerCase()
-  const now7 = 7
-  let rows = accountRows.filter((r) => {
-    if (acctFilter === 'active') return r.status === 'active'
-    if (acctFilter === 'disabled') return r.status === 'disabled'
-    if (acctFilter === 'trial') return r.kind === 'trial'
-    if (acctFilter === 'expiring') return r.status === 'active' && r.expiresInDays <= now7
-    return true
-  })
-  if (q) rows = rows.filter((r) => r.account.toLowerCase().includes(q) || r.owner.toLowerCase().includes(q))
-  rows.sort((a, b) => (a[acctSort.k] > b[acctSort.k] ? 1 : -1) * acctSort.dir)
   const tb = $('#acct-table tbody')
-  tb.replaceChildren(...rows.map(accountRow))
-  $('#acct-empty').hidden = rows.length > 0
+  tb.replaceChildren(...acctRows.map(accountRow))
+  const filtered = !!(acctQuery.q || acctQuery.filter || acctQuery.owner)
+  $('#acct-empty').textContent = filtered ? 'No matches.' : 'No accounts yet.'
+  $('#acct-empty').hidden = acctRows.length > 0
+  $('#acct-count').textContent = `Showing ${acctRows.length} of ${acctTotal}`
+  $('#acct-count').hidden = acctTotal === 0
+  $('#acct-more').hidden = acctRows.length >= acctTotal
+  const chip = $('#acct-owner-chip')
+  chip.hidden = !acctQuery.owner
+  if (acctQuery.owner) chip.innerHTML = `owner <b>${acctQuery.owner}</b> ✕`
   $$('#acct-table th[data-col="owner"]').forEach((th) => { th.style.display = IS_ADMIN(me.role) || me.role === 'super' ? '' : 'none' })
+}
+
+const canDrillOwner = () => IS_ADMIN(me.role) || me.role === 'super'
+function drillOwner (owner) {
+  if (!canDrillOwner()) return
+  acctQuery.owner = owner
+  guard(loadAccounts)()
 }
 function accountRow (r) {
   const statusBadge = r.status === 'active'
@@ -182,29 +202,55 @@ function accountRow (r) {
     btn('Password', () => passwordDialog(r)),
     btn('Delete', () => deleteAccountDialog(r), 'danger')
   ])
+  const ownerLink = (cls) => el('span', {
+    className: cls + (canDrillOwner() ? ' owner-link' : ''),
+    textContent: r.owner,
+    onclick: canDrillOwner() ? () => drillOwner(r.owner) : null,
+    title: canDrillOwner() ? `Show only ${r.owner}'s accounts` : ''
+  })
   return el('tr', {}, [
     el('td', {}, el('div', { className: 'cell-name' }, [
       el('span', { className: 't mono', textContent: r.account }),
-      el('span', { className: 'muted', style: 'font-size:11px', textContent: r.owner })
+      ownerLink('muted owner-sub')
     ])),
-    tdCol('owner', r.owner),
+    tdColOwner(ownerLink('')),
     el('td', {}, el('span', { className: 'chips' }, [statusBadge, kindBadge].filter(Boolean))),
     el('td', { className: 'num', textContent: fmtDays(r.expiresInDays) }),
     el('td', { className: 'num', textContent: r.maxDevices }),
     el('td', {}, actions)
   ])
 }
-function tdCol (col, text) {
-  const td = el('td', { textContent: text })
-  if (col === 'owner' && !(IS_ADMIN(me.role) || me.role === 'super')) td.style.display = 'none'
+function tdColOwner (child) {
+  const td = el('td', {}, child)
+  if (!canDrillOwner()) td.style.display = 'none'
   return td
 }
 const btn = (label, onClick, cls = '') => el('button', { className: 'btn small' + (cls ? ' ' + cls : ''), textContent: label, onclick: onClick })
 
-$('#acct-search').oninput = renderAccounts
-$('#acct-refresh').onclick = guard(loadAccounts)
-$$('#acct-filter button').forEach((b) => { b.onclick = () => { acctFilter = b.dataset.f; $$('#acct-filter button').forEach((x) => x.classList.toggle('active', x === b)); renderAccounts() } })
-$$('#acct-table th.sortable').forEach((th) => { th.onclick = () => { const k = th.dataset.k; acctSort = { k, dir: acctSort.k === k ? -acctSort.dir : 1 }; $$('#acct-table th').forEach((x) => x.classList.remove('sorted-asc', 'sorted-desc')); th.classList.add(acctSort.dir === 1 ? 'sorted-asc' : 'sorted-desc'); renderAccounts() } })
+$('#acct-search').oninput = () => {
+  clearTimeout(acctDebounce)
+  acctDebounce = setTimeout(guard(() => { acctQuery.q = $('#acct-search').value.trim(); return loadAccounts() }), 250)
+}
+$('#acct-refresh').onclick = guard(() => loadAccounts())
+$('#acct-more').onclick = guard(() => loadAccounts(true))
+$('#acct-owner-chip').onclick = () => { acctQuery.owner = ''; guard(loadAccounts)() }
+$$('#acct-filter button').forEach((b) => {
+  b.onclick = () => {
+    acctQuery.filter = b.dataset.f === 'all' ? '' : b.dataset.f
+    $$('#acct-filter button').forEach((x) => x.classList.toggle('active', x === b))
+    guard(loadAccounts)()
+  }
+})
+$$('#acct-table th.sortable').forEach((th) => {
+  th.onclick = () => {
+    const k = th.dataset.k
+    acctQuery.dir = acctQuery.sort === k && acctQuery.dir === 'asc' ? 'desc' : 'asc'
+    acctQuery.sort = k
+    $$('#acct-table th').forEach((x) => x.classList.remove('sorted-asc', 'sorted-desc'))
+    th.classList.add(acctQuery.dir === 'asc' ? 'sorted-asc' : 'sorted-desc')
+    guard(loadAccounts)()
+  }
+})
 
 $('#account-form').onsubmit = guard(async (e) => {
   e.preventDefault()

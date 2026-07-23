@@ -197,7 +197,7 @@ credits, `404`/`409` as the panel, and panel failures surface `PANEL:`-prefixed
 | `POST /api/principals/:name/password\|status\|limits` | Rotate password / suspend·resume (`{status, mode:'panel-only'\|'with-accounts'}`) / set `{maxDevicesLimit,trialDailyCap}` |
 | `POST /api/credits/mint\|transfer\|reclaim\|adjust` | Mint (admin tiers) / fund a child / pull back / correction (note required). `402` when a debit exceeds balance |
 | `GET /api/ledger?principal&account&type&before&limit` | Append-only credit ledger, newest-first, `before`=seq cursor, scoped to self+subtree for non-admins |
-| `GET/POST /api/accounts` | List (scoped, filters) / activate `{name,password,months,maxDevices?,grants?}` — plain panel username, first come first served |
+| `GET/POST /api/accounts` | List — server-side query engine built for large registries: `?q` (ci-substring over name **and** owner) `&filter=active\|disabled\|expiring\|trial` `&owner` `&sort=name\|expires\|owner` `&dir` `&offset` `&limit` (default 100, cap 500) → `{items, total, offset, limit}` / activate `{name,password,months,maxDevices?,grants?}` — plain panel username, first come first served |
 | `GET/DELETE /api/accounts/:acct` | View (+ live panel state) / delete (refund `floor(remaining months)` to owner; admin deletes refund nothing) |
 | `POST /api/accounts/:acct/renew\|status\|password\|max-devices\|grants\|logout-all` | Renew from `max(now,expiry)` (converts a trial to paid) / suspend·resume / set password / set devices / add a grant / drop all sessions |
 | `DELETE /api/accounts/:acct/grants/:streamId` · `GET/DELETE /api/accounts/:acct/devices[/:id]` | Remove a grant / list + revoke devices |

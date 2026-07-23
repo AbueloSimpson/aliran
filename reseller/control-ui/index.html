@@ -84,7 +84,7 @@
         </details>
         <div class="card table-card">
           <div class="table-toolbar">
-            <input type="search" id="acct-search" placeholder="Filter accounts…">
+            <input type="search" id="acct-search" placeholder="Search name or owner…">
             <div class="segmented" id="acct-filter">
               <button class="active" data-f="all">All</button>
               <button data-f="active">Active</button>
@@ -92,16 +92,18 @@
               <button data-f="disabled">Disabled</button>
               <button data-f="trial">Trials</button>
             </div>
+            <span id="acct-owner-chip" class="chip owner-chip" title="Clear owner filter" hidden></span>
             <span class="spacer"></span>
+            <span id="acct-count" class="chip" hidden></span>
             <button class="btn small" id="acct-refresh">Refresh</button>
           </div>
           <div class="table-wrap">
             <table id="acct-table">
               <thead><tr>
-                <th class="sortable" data-k="account">Account</th>
-                <th data-col="owner">Owner</th>
+                <th class="sortable sorted-asc" data-k="name">Account</th>
+                <th class="sortable" data-k="owner" data-col="owner">Owner</th>
                 <th>Status</th>
-                <th class="sortable num" data-k="expiresInDays">Expires</th>
+                <th class="sortable num" data-k="expires">Expires</th>
                 <th class="num">Devices</th>
                 <th class="actions-col"></th>
               </tr></thead>
@@ -109,6 +111,7 @@
             </table>
           </div>
           <div class="empty" id="acct-empty" hidden>No accounts yet.</div>
+          <div class="table-foot"><button class="btn small" id="acct-more" hidden>Load more</button></div>
         </div>
       </section>
 

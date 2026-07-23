@@ -353,6 +353,13 @@ phone + Android TV, and the Windows desktop player).
   the `reseller` profile, and the required-lane `test:reseller-unit` +
   `test:reseller` (the latter drives a real in-process panel admin server).
   Docs: [reseller panel guide](docs/reseller-panel.md) + reference API section.
+- **Built for large account lists**: the accounts query runs server-side over
+  the in-memory registry — case-insensitive search across name *and* owner,
+  status filters (active/disabled/expiring/trial), sortable columns, offset
+  paging with a `total` — and the dashboard pages it with *Load more* + a
+  "Showing X of Y" count, debounced search, and click-an-owner drill-down for
+  admins/supers. Verified against a synthetic 5,000-account registry (unit) and
+  a 394-account live demo stack (browser).
 
 **Networking (all components)**
 - Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes

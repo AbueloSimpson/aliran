@@ -10,9 +10,12 @@ import { CAPS, ROLES, can, inSubtree, canManage, accountScope, inAccountScope } 
 import { openLedger } from '../reseller/src/ledger.js'
 import { makeMutex, readJsonFile, writeJsonFile } from '../reseller/src/store.js'
 import { addPrincipal } from '../reseller/src/control-auth.js'
+import { makeAccounts } from '../reseller/src/accounts.js'
 
 let failures = 0
 const ok = (cond, msg) => { if (cond) { console.log('  ok  ', msg) } else { console.error('  FAIL', msg); failures++ } }
+// Silent variant for per-item checks inside big loops (logs only failures).
+const ok2 = (cond) => { if (!cond) { console.error('  FAIL (loop item)'); failures++ } }
 const throws = (fn, re, msg) => {
   try { fn(); ok(false, msg + ' (no throw)') } catch (e) { ok(re.test(e.message || ''), `${msg} (${e.message})`) }
 }
@@ -142,6 +145,72 @@ console.log('D. principal validation')
   throws(() => addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'bogus' }), /invalid role/, 'unknown role rejected')
   addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller', parent: 'boss' })
   throws(() => addPrincipal(ctx, { username: 'r1', password: 'res1-pass-123', role: 'reseller' }), /already exists/, 'duplicate name rejected')
+}
+
+// ---- E. accounts list() — the high-density query engine ----
+console.log('E. accounts query engine (synthetic 5k registry)')
+{
+  const dir = tmp()
+  const now = Date.now()
+  const day = 86400000
+  const registry = {}
+  const owners = ['res1', 'res2', 'sup1']
+  for (let i = 0; i < 5000; i++) {
+    registry[`acct${String(i).padStart(4, '0')}`] = {
+      owner: owners[i % 3],
+      kind: i % 10 === 0 ? 'trial' : 'paid',
+      status: i % 7 === 0 ? 'disabled' : i % 11 === 0 ? 'deleted' : 'active',
+      expiresAt: now + ((i % 40) - 5) * day, // some lapsed, some expiring, some far out
+      maxDevices: 1 + (i % 3),
+      extraGrants: [],
+      createdAt: now,
+      createdBy: owners[i % 3],
+      panel: { lastSyncAt: now, lastError: null }
+    }
+  }
+  registry['zebra-special'] = { owner: 'findme-owner', kind: 'paid', status: 'active', expiresAt: now + 90 * day, maxDevices: 1, extraGrants: [], createdAt: now, createdBy: 'findme-owner', panel: {} }
+  writeJsonFile(path.join(dir, 'accounts.json'), registry)
+  const accounts = makeAccounts({ dataDir: dir, config: { daysPerMonth: 31 } })
+
+  const live = Object.values(registry).filter((r) => r.status !== 'deleted')
+  const r0 = accounts.list()
+  ok(r0.items && Number.isInteger(r0.total) && r0.offset === 0 && r0.limit === 100, 'envelope shape {items,total,offset,limit}')
+  ok(r0.total === live.length && r0.items.length === 100, `total counts non-deleted (${r0.total}), page = 100`)
+
+  ok(accounts.list({ q: 'ZEBRA' }).items[0].account === 'zebra-special', 'ci-search matches account name')
+  ok(accounts.list({ q: 'FINDME' }).items[0].account === 'zebra-special', 'ci-search matches OWNER too')
+
+  const count = (pred) => live.filter(pred).length
+  ok(accounts.list({ filter: 'trial' }).total === count((r) => r.kind === 'trial'), 'trial filter total')
+  ok(accounts.list({ filter: 'disabled' }).total === count((r) => r.status === 'disabled'), 'disabled filter total')
+  ok(accounts.list({ filter: 'active' }).total === count((r) => r.status === 'active'), 'active filter total')
+  ok(accounts.list({ filter: 'expiring' }).total === count((r) => r.status === 'active' && r.expiresAt <= now + 7 * day), 'expiring filter total (7d window)')
+  ok(accounts.list({ owner: 'res2' }).total === count((r) => r.owner === 'res2'), 'owner param total')
+
+  const asc = accounts.list({ sort: 'expires', dir: 'asc', limit: 500 }).items
+  ok(asc.every((v, i) => i === 0 || asc[i - 1].expiresAt <= v.expiresAt), 'expires asc ordered')
+  const desc = accounts.list({ sort: 'expires', dir: 'desc' }).items
+  ok(desc[0].expiresAt >= asc[0].expiresAt && desc.every((v, i) => i === 0 || desc[i - 1].expiresAt >= v.expiresAt), 'expires desc ordered')
+  const byOwner = accounts.list({ sort: 'owner', limit: 500 }).items
+  ok(byOwner.every((v, i) => i === 0 || byOwner[i - 1].owner <= v.owner), 'owner sort groups')
+
+  // Offset walk covers the whole filtered set exactly once.
+  const seen = new Set()
+  for (let off = 0; off < r0.total; off += 500) {
+    for (const it of accounts.list({ offset: off, limit: 500 }).items) {
+      ok2(!seen.has(it.account))
+      seen.add(it.account)
+    }
+  }
+  ok(seen.size === r0.total, `offset walk = whole set once (${seen.size})`)
+
+  ok(accounts.list({ limit: 9999 }).limit === 500, 'limit capped at 500')
+  throws(() => accounts.list({ filter: 'bogus' }), /filter must be/, 'junk filter rejected')
+  throws(() => accounts.list({ sort: 'bogus' }), /sort must be/, 'junk sort rejected')
+  throws(() => accounts.list({ dir: 'sideways' }), /dir must be/, 'junk dir rejected')
+
+  const scoped = accounts.list({ limit: 500 }, new Set(['res1']))
+  ok(scoped.total === count((r) => r.owner === 'res1') && scoped.items.every((it) => it.owner === 'res1'), 'scope restricts to owner set')
 }
 
 if (failures > 0) { console.error(`\n${failures} FAILURE(S)`); process.exit(1) }

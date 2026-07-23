@@ -196,10 +196,12 @@ export function startControlServer (ctx, opts = {}) {
           const q = url.searchParams
           const scope = accountScope(loadPrincipals(ctx.dataDir), me)
           return sendJson(res, 200, ctx.accounts.list({
-            owner: q.get('owner') || undefined,
-            status: q.get('status') || undefined,
             q: q.get('q') || undefined,
-            after: q.get('after') || undefined,
+            owner: q.get('owner') || undefined,
+            filter: q.get('filter') || undefined,
+            sort: q.get('sort') || undefined,
+            dir: q.get('dir') || undefined,
+            offset: q.get('offset') ? parseInt(q.get('offset'), 10) : undefined,
             limit: q.get('limit') ? parseInt(q.get('limit'), 10) : undefined
           }, scope))
         }

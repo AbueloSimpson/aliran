@@ -151,7 +151,14 @@ try {
   r = await api('GET', '/api/accounts/bob', null, resx)
   assert.strictEqual(r.status, 403, 'foreign account → 403')
   r = await api('GET', '/api/accounts', null, res1)
-  assert.strictEqual(r.body.length, 1, 'reseller lists own accounts only')
+  assert.strictEqual(r.body.total, 1, 'reseller lists own accounts only (envelope total)')
+  assert.strictEqual(r.body.items.length, 1)
+  // The high-density query surface: q matches OWNER, server-side filter, paging
+  // envelope, junk sort → 400.
+  r = await api('GET', '/api/accounts?q=RES1', null, boss)
+  assert.ok(r.body.total >= 1 && r.body.items.every((it) => it.owner === 'res1' || it.account.toLowerCase().includes('res1')), 'ci-search matches owner')
+  r = await api('GET', '/api/accounts?sort=bogus', null, boss)
+  assert.strictEqual(r.status, 400, 'junk sort → 400')
   log('D: fail-closed activation (panel + ledger + registry agree) ✓')
 
   // ===== E: renew / suspend / resume / passthroughs =====
@@ -186,6 +193,11 @@ try {
   assert.strictEqual(r.body.trialsUsedToday, 1)
   r = await api('POST', '/api/trials', { name: 'taster2', password: 'taster-pass-1' }, res1)
   assert.strictEqual(r.status, 403, 'trial daily cap (1) → 403')
+  r = await api('GET', '/api/accounts?filter=trial', null, res1)
+  assert.ok(r.body.total === 1 && r.body.items[0].account === 'taster', 'server-side trial filter')
+  const page1 = (await api('GET', '/api/accounts?limit=1&offset=0', null, res1)).body
+  const page2 = (await api('GET', '/api/accounts?limit=1&offset=1', null, res1)).body
+  assert.ok(page1.total === 2 && page2.total === 2 && page1.items[0].account !== page2.items[0].account, 'offset paging walks without dupes')
   r = await api('POST', '/api/accounts/taster/renew', { months: 1 }, res1)
   assert.strictEqual(r.status, 200)
   assert.strictEqual(r.body.kind, 'paid', 'renew converts trial → paid')
@@ -234,7 +246,7 @@ try {
   const balAfterOutage = (await api('GET', '/api/me', null, res1b)).body.balance
   assert.strictEqual(balAfterOutage, balAfterRefund - 1, 'outage left the balance alone (only the earlier loyal activation debited)')
   r = await api('GET', '/api/accounts?q=ghosted', null, res1b)
-  assert.strictEqual(r.body.length, 0, 'no registry entry from the failed activate')
+  assert.strictEqual(r.body.total, 0, 'no registry entry from the failed activate')
 
   // Panel returns on the SAME port (retry the listen — TIME_WAIT can linger).
   for (let i = 0; ; i++) {

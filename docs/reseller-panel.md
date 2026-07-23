@@ -79,6 +79,12 @@ records which principal owns each account, and a reseller can only ever see and
 operate on accounts the registry says are theirs. Operator-created panel users
 are invisible to the reseller panel entirely.
 
+The accounts list is built for density: search (name **or** owner,
+case-insensitive), status filters, and sorting all run **server-side**, and the
+dashboard pages results with a *Load more* button and a "Showing X of Y" count —
+so the table behaves identically at 10 accounts or 10,000. Admins and super
+resellers can click any owner to drill into just that reseller's accounts.
+
 ## Keeping panel and ledger in sync
 
 Every account operation is **fail-closed**: the panel is called first, and the

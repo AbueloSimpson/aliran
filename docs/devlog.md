@@ -2232,3 +2232,25 @@ completely invisible to the reseller service — the e2e asserts exactly that
 (`operator-joe` with no intent survives a repair-mode reconcile untouched).
 Principals lost their prefix field; the create form, docs, env (`GLOBAL_PREFIX`
 gone) and reference followed. Both suites re-run green end to end.
+
+**Follow-up (same day): the accounts list scaled for density.** The dashboard
+fetched a single 500-row snapshot and filtered client-side — past 500 accounts,
+rows were invisible and search silently lied. `list()` is now a server-side query
+engine over the in-memory registry (a full filter → sort → slice pass costs a few
+milliseconds even at ~100k accounts, so no index — just a real query surface):
+case-insensitive search across account name AND owner, status filters
+(active/disabled/expiring/trial — expiring shares the KPI's 7-day window),
+name/expires/owner sorting with a name tiebreak, and offset paging returning
+`{items, total, offset, limit}` so the UI can say "Showing X of Y" (the old name
+cursor is gone; offset composes with every sort, and the tiny page drift a
+concurrent write can cause between two Load-More clicks is fine for an ops
+table). The dashboard is now fully server-driven: 100-row pages behind a
+*Load more* button (the ledger table's idiom), a count chip, 250 ms-debounced
+search, header sorting, and a click-any-owner drill-down chip for admins and
+supers. Verified by a 5,000-account synthetic-registry unit section (envelope,
+ci-search on both fields, every filter and sort, an offset walk covering the
+whole set exactly once, junk-param rejections, scope) plus new e2e paging/
+filter/owner-search assertions — and in the browser against a 394-account demo:
+"Showing 100 of 334" → Load More → 300, a needle name deep past page one found
+by server search, lapsed rows first under expires-sort, and the admin drilling
+into one reseller's 60 accounts via the owner chip.
