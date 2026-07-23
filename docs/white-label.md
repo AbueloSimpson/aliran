@@ -122,6 +122,8 @@ runtime, entirely from environment variables** — no build step, no source
 edits, and changes apply on the next page load. This is the surface your
 third-party resellers see, so it is usually the first thing to rebrand.
 
+![The dashboard fully rebranded from env alone — logo, favicon and a two-token amber theme; every derived tint follows](img/reseller/whitelabel-overview.png)
+
 ### Variables
 
 | Env var | What it does | Served at |
@@ -164,6 +166,16 @@ at every zoom level; if you use a raster, supply it at **2× the rendered size**
 There is one logo slot; the same file is used everywhere it appears. Files are
 read per request (`cache-control: no-cache`), so replacing the file on disk
 rebrands on the next reload — no restart.
+
+The login landing, three ways — stock (the `glow` pattern), an operator
+backdrop image (auto-scrimmed, with the logo), and the built-in `dots`
+pattern:
+
+![The stock login — accent glow](img/reseller/login.png)
+
+![A backdrop image behind the login card, dimmed by the automatic scrim](img/reseller/whitelabel-login-backdrop.png)
+
+![The built-in dots pattern, tinted from the theme tokens](img/reseller/whitelabel-login-dots.png)
 
 ### Colours — the 11 theme tokens
 

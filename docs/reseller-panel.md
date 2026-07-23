@@ -26,6 +26,34 @@ what a reselling business needs on top:
    it records each account's expiry and, when a subscription lapses, disables the
    account on the panel (the **expiry sweep**).
 
+## A tour of the dashboard
+
+Signing in lands on the **Overview** — an ops dashboard: the business KPIs,
+and for admin tiers a live **System** section (panel-link latency, host
+health, the service process, top-up webhook state), polling while the view is
+open:
+
+![The Overview after login — KPI tiles with the admin System section](img/reseller/overview.png)
+
+**Accounts** is built for large books — 50 per page with server-driven search,
+filters and sorting, status dots, and one quick action (Renew) plus a ⋯ menu
+per row:
+
+![The Accounts view — dense table, status dots, Renew + kebab per row](img/reseller/accounts.png)
+
+![The per-row menu — contextual Suspend/Resume, Devices, Password, Delete](img/reseller/accounts-menu.png)
+
+**Resellers** manages the hierarchy (fund, reclaim, limits, suspend, delete),
+and on phones the accounts table reflows into stacked cards:
+
+![The Resellers view](img/reseller/resellers.png)
+
+![The phone layout — accounts as stacked cards](img/reseller/accounts-mobile.png)
+
+The whole surface white-labels from env — name, logo, favicon, login backdrop
+and the full colour theme; see
+[the rebrand manual](white-label.md#reseller-panel-dashboard).
+
 ## Roles
 
 A strict hierarchy, top to bottom. Each principal has a parent; a principal can
