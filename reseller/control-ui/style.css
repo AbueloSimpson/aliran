@@ -160,7 +160,9 @@ input:focus, textarea:focus, select:focus {
   outline: none; border-color: var(--accent-dim);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
-input:invalid { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+/* :user-invalid, not :invalid — a pristine required field is not an error state
+   (a plain :invalid paints the login form red before anyone has typed). */
+input:user-invalid { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
 
 .btn {
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
