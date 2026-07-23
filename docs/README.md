@@ -12,7 +12,7 @@ Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
 - [Security model](security-model.md) — threat model, auth, brute-force, **and honest limits** (incl. the deliberate no-DRM stance)
 - [Operator guide](operator-guide.md) — install, generate keys, run panel + broadcaster, HA
 - [Repeater appliance](repeater.md) — optional keyless regional super-peer (Open-Connect model)
-- [VOD library](https://github.com/AbueloSimpson/aliran/blob/main/library/README.md) — optional standalone service for on-demand titles (`type:'vod'`; API in [Reference](reference.md), ops in the [operator guide](operator-guide.md))
+- [VOD library](vod-library.md) — optional standalone service for on-demand titles (`type:'vod'`; API in [Reference](reference.md), ops in the [operator guide](operator-guide.md))
 - [Configuration](configuration.md) — full config reference for every component
 - [Content management](content-management.md) — catalog, metadata, assets, redirect channels, VOD
 - [Client build](client-build.md) — build the Android (phone + TV) app

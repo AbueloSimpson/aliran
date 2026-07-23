@@ -39,6 +39,7 @@ nav:
   - Security model: security-model.md
   - Operator guide: operator-guide.md
   - Repeater appliance: repeater.md
+  - VOD library: vod-library.md
   - Configuration: configuration.md
   - Content management: content-management.md
   - Client build: client-build.md
