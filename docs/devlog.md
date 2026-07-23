@@ -2272,3 +2272,28 @@ drop out — no horizontal scroll at 375 px, the wide 7-column table returns at
 desktop widths. Server default limit is now 50 (cap unchanged at 500). Unit +
 e2e cover the new sorts and the 50 default; browser-verified both widths on the
 394-account demo.
+
+### Repeater field validation — production worked example (verified)
+A production shakedown of the repeater appliance on a deliberately awkward box: a
+16-core Ubuntu 18.04 VM (kernel 4.15) already running unrelated Apache/MySQL/
+memcached. Docker CE installed fresh (bionic's glibc can't run modern Node bare, so
+the container path is also the *only* path on hosts this old), repo cloned,
+`repeater/.env` scoped to three production channels, stock compose deploy —
+contained as designed: zero listening sockets, co-tenant services untouched. The
+socket-buffer story was captured live in both states for the KB: startup on stock
+ceilings logged the documented clamp warnings (0.2 MiB granted vs 4 MiB asked)
+while mirroring worked anyway — the silent trap — then `deploy/sysctl/install.sh` +
+restart produced the clean `swarm sockets tuned: recv 4 MiB, send 4 MiB` line, and
+the kernel UDP-error counter never moved through the whole test. Serving proven
+with a stock SDK viewer (real login, no repeater config of any kind): over a
+3-minute session its per-connection byte counters split **46 % repeater / 54 %
+origin** — hotswap treating the mirror as just another fast holder — with the
+repeater's watched channel showing `peers 2` for exactly the session and the
+unwatched channels staying at 1. Retention held: block counts flat under climbing
+feed lengths, store plateaued at ~161 MB for 3 channels (the bitrate × retention
+formula on the nose), load average 0.13 on 16 cores. The destructive scenarios
+(origin-kill, slots-full lockout, rotation purge) stayed in `npm run
+test:repeater`, which passed beforehand. Everything captured (anonymized) in the
+new KB page `docs/kb/repeater-production-example.md`, linked from the repeater page
+and the network-tuning KB. The box was fully reverted afterwards — this deployment
+was a test rig, not a standing repeater.

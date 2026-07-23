@@ -62,6 +62,7 @@ nav:
       - P2P feed buffer & tuning: kb/feed-buffer.md
       - Scaling & capacity planning: kb/scaling.md
       - Network tuning (socket buffers): kb/network-tuning.md
+      - Repeater in production (worked example): kb/repeater-production-example.md
       - Viewer bandwidth & battery: kb/viewer-bandwidth.md
       - Source compatibility (pull ingest): kb/source-compatibility.md
       - Operating panel & broadcaster: kb/operator.md

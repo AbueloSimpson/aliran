@@ -14,6 +14,10 @@ a repeater.
 > stalling playback rather than an error. The services log a warning naming the exact
 > sysctl — but by then you are already dropping packets.
 
+Both sides of this — the clamp warning on an untuned host and the clean `swarm sockets
+tuned` line after the fix — were captured live on a real box in the
+[repeater production example](repeater-production-example.md).
+
 ## Why this is different from a normal streaming server
 
 An HTTP HLS origin gives every viewer their own TCP connection, and the kernel sizes each

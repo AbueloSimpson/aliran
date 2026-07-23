@@ -117,6 +117,11 @@ file server:
 - **No inbound firewall ports** are required (P2P is outbound UDP with
   hole-punching); `network_mode: host` avoids double-NAT.
 
+Field-measured on a real co-tenanted box (3 mirrored channels, live viewer):
+store plateaued flat at ~161 MB total, load average 0.13 on 16 cores, and a stock
+viewer pulled 46 % of its stream off the repeater unprompted — the full capture is
+the [production worked example](kb/repeater-production-example.md).
+
 ## Operational notes
 
 - **Warm-up**: a freshly started (or re-targeted) mirror begins at the live edge —
@@ -140,3 +145,8 @@ dies mid-play and both a warm and a *cold* viewer keep playing the buffered wind
 (3) a feedKey rotation re-targets the mirror unattended and purges the old cores;
 (4) retention keeps the store bounded and cleared blocks stay cleared; (5) the
 box's store, config and status contain no key material and no plaintext.
+
+Beyond the testnet proof, a production deployment has been captured end to end —
+including the socket-buffer clamp warning on an untuned host and the byte-counter
+proof of a real viewer served — in the
+[production worked example](kb/repeater-production-example.md).
