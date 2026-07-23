@@ -2097,3 +2097,82 @@ new jest tests pin the contract (default copy, branding, seam-only-with-
 handler, default action label). Verified on the Android 7 emulator: the
 single APK renders the SDK-exported notice identically to the previous
 inline screen.
+
+### Reseller panel — role hierarchy + credit ledger fronting the panel admin API
+
+Operators reselling access needed a way to hand out account-management power
+without handing out real admin power. The panel makes that awkward for two
+deliberate reasons: every panel admin is all-powerful (there is no scoped
+"reseller" role), and panel accounts have no expiry (nothing ends a lapsed
+subscription). Rather than complicate the panel, this is a new standalone
+`reseller/` service that supplies both on top — a pure HTTP service (no P2P, no
+ffmpeg) that fronts the panel admin API and can run on the panel host or a
+different box, authenticating as **one** dedicated panel admin.
+
+**The hierarchy lives here.** Four roles — admin → co-admin → super reseller →
+reseller — as a central capability map (`roles.js`), never scattered role-string
+checks. The seeded root admin is the only one that can create or delete
+co-admins and is itself undeletable; a co-admin is otherwise a full admin clone
+(including minting) so a second all-powers login gets its own audit trail; supers
+and resellers act only within their own subtree, walking parent pointers with a
+cycle guard. The role is never trusted from the session token — the live
+principal record is re-read on every request, so a suspension or role change
+bites on the target's very next call.
+
+**Credits are months, tracked as a ledger.** 1 credit = 1 month, flat (device cap
+is a per-account setting, not priced). The ledger is an append-only JSONL file —
+the durable audit trail, since the panel's own activity feed is in-memory — with
+one global monotonic sequence (appends serialized by the service's single mutex,
+so no per-user id races) and balances always derived from a boot scan, never
+persisted, so they cannot drift; `/healthz` asserts the sum invariant, and a torn
+final line from a crash mid-append is truncated on boot while corruption anywhere
+else refuses to start. Only admins and co-admins mint (from nothing); even an
+admin's *transfer* debits their own balance, so the ledger always shows where a
+credit originated. Supers fund their resellers from their own balance; delete
+refunds `floor(remaining months)` to the account's owner; admin account
+operations are free and write no ledger line.
+
+**The subscription clock is the account registry.** Because the panel has no
+expiry, `accounts.json` is authoritative for it. Every account operation is
+fail-closed — the panel is called first and the ledger + registry commit only on
+its OK, so a rejected activation (out of credits, name taken, panel down) leaves
+nothing behind — and runs inside the process mutex so a balance check and its
+debit can't interleave. Accounts are namespaced
+`<globalPrefix>.<resellerPrefix>.<name>`, which makes ownership unspoofable and
+keeps a reseller's view to its own namespace. Two background loops keep the two
+sides aligned: an **expiry sweep** that disables lapsed accounts on the panel
+(its work list re-derived from expiry each tick, so an unreachable panel just
+means a retry next tick, backing off to 15-minute checks meanwhile), and a
+**reconcile sweep** that pages the panel's users under the prefix and reports —
+or, with `RECONCILE_REPAIR=1`, repairs — divergences, always letting the local
+clock win (an orphaned panel account is disabled, never deleted). The panel
+client caches its Bearer token to disk so a crash-loop never burns the panel's
+login throttle, and transparently re-logins once on a 401.
+
+**Trials** are free time-boxed accounts (default 24 h, per-reseller daily cap
+enforced by counting zero-value TRIAL ledger lines in the current UTC day);
+renewing a trial converts it to paid with the same credentials — the upsell path.
+
+The login path reuses the worker-thread single-flight Argon2id verifier from the
+2026-07-16 flood lesson. The dashboard is the usual no-build four-view page
+(overview / accounts / resellers / ledger / settings) on the shared theme, with
+nav and controls filtered by role — the theme block's byte-identical guard now
+covers three sheets and its test compares each to the first rather than pairwise.
+
+**Verification.** Unit suite (`test:reseller-unit`) covers the capability map,
+subtree walk with cycle guard, the ledger (seq monotonicity, torn-tail
+truncation, mid-file-corruption refusal, derived-balance invariant, scoped
+listing), the store mutex + atomic writes, and principal validation.
+End-to-end (`test:reseller`, required lane) boots a **real** panel admin server
+in-process (loopback HTTP, no DHT) and drives the whole story through it: auth
+and lockout, the co-admin root-only guardrail, credits with role gates,
+fail-closed activation asserted against the panel store itself (a 402 leaves no
+panel user), renew/suspend/passthroughs, the trial cap and conversion, refund
+rules, a suspension biting live tokens and bulk-disabling accounts, delete-block
+rules, a panel outage returning 502 with nothing spent then recovering on the
+same port, the tokenVersion-bump transparent re-login, and the expiry + reconcile
+sweeps. The four-role dashboard was also driven live in a browser against an
+in-process demo stack — a reseller login showing role-correct nav and a renew
+round-tripping through to the admin's hierarchy view. Docker image builds from
+the repo root behind the `reseller` compose profile and smokes via
+`reseller-cli list-principals` in CI.

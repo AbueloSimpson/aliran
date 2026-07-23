@@ -57,6 +57,14 @@ jobs:
       - name: VOD library end-to-end (test:vod)
         timeout-minutes: 10
         run: npm run test:vod
+      # Reseller panel: pure logic (roles, credit ledger, store) …
+      - name: Reseller panel units (test:reseller-unit)
+        run: npm run test:reseller-unit
+      # … then the whole hierarchy → credits → activation → lifecycle → outage story
+      # against a REAL panel admin server booted in-process. Loopback HTTP only, no
+      # DHT at all, so it is fully deterministic — belongs in the required lane.
+      - name: Reseller panel end-to-end (test:reseller)
+        run: npm run test:reseller
 
   docker-build:
     name: docker images build (best effort, non-blocking)
@@ -75,6 +83,9 @@ jobs:
       - name: Build library image
         if: ${{ !cancelled() }}
         run: docker build -f library/Dockerfile -t aliran-library .
+      - name: Build reseller image
+        if: ${{ !cancelled() }}
+        run: docker build -f reseller/Dockerfile -t aliran-reseller .
       # Prove the images actually run: `init` exercises the whole panel dependency
       # graph (sodium-native, @aliran/core) in a throwaway container, and the
       # broadcaster image must ship ffmpeg with SRT protocol support (needed for
@@ -91,6 +102,11 @@ jobs:
         run: |
           docker run --rm --entrypoint ffprobe aliran-library -version | head -1
           docker run --rm aliran-library node src/library-cli.js list-admins
+      # The reseller image needs no ffmpeg; list-principals exercises the whole
+      # dependency graph (sodium-native, @aliran/core) against an empty store.
+      - name: Smoke reseller image (CLI runs)
+        if: ${{ !cancelled() }}
+        run: docker run --rm aliran-reseller node src/reseller-cli.js list-principals
 
   e2e-dht:
     name: e2e over the public DHT (best effort, non-blocking)

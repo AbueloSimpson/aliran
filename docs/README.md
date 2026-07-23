@@ -21,6 +21,7 @@ Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
 - [Desktop player (Windows & macOS)](desktop-player.md) — the Electron player, for operators/developers
 - [Desktop player — viewer guide](desktop-viewer-guide.md) — install and use the public desktop build
 - [User management](user-management.md) — accounts, passwords, devices, sessions
+- [Reseller panel](reseller-panel.md) — optional standalone service: resellers activate/manage viewer accounts via a role hierarchy + credit ledger, fronting the panel admin API
 - [Reference](reference.md) — admin-cli, panel RPC, schemas
 - [Development log](devlog.md) — the detailed, chronological build history (the concise summary is [CHANGELOG.md](https://github.com/AbueloSimpson/aliran/blob/main/CHANGELOG.md))
 - [Knowledge base](kb/index.md) — field-tested symptom→cause→fix entries

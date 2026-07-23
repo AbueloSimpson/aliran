@@ -169,6 +169,48 @@ ids), `HLS_TIME` (VOD segment length, default 4 s), `INGEST_CONCURRENCY` (defaul
 `CONTROL_ENABLED`/`CONTROL_HOST`/`CONTROL_PORT`/`CONTROL_SESSION_TTL_HOURS`,
 `LOCKOUT_*`, `ARGON2_*`, `BOOTSTRAP`.
 
+## Reseller panel API
+
+Served by the **reseller** process — the standalone role-hierarchy + credit
+panel that fronts the panel admin API (default `127.0.0.1:3330`; put TLS in
+front if exposed, and an IP allowlist since it is used by third parties). Opening
+the address loads the control UI (`reseller/control-ui/`); sign in as a principal
+(the root admin is seeded with `node src/reseller-cli.js add-admin <name>`).
+Every account mutation becomes a call to the panel admin API, gated by the
+signed-in principal's role and credit balance. Concepts, topologies and the
+bootstrap walkthrough are in [Reseller panel](reseller-panel.md).
+
+Roles: `admin` (root, mints, sole co-admin manager) → `co-admin` (admin clone) →
+`super` → `reseller`. Errors: `403` capability/scope denial, `402` insufficient
+credits, `404`/`409` as the panel, and panel failures surface `PANEL:`-prefixed
+(`502` when the panel is unreachable).
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /healthz` | **Unauthenticated** liveness → `{ok, principals, accounts, panel:{reachable,lastOkAt}, sweep, ledger:{seq,invariantOk}}` |
+| `POST /api/login` `{username,password}` | → `{token, expiresAt, role}`; rate-limited + single-flight |
+| `GET /api/me` · `POST /api/me/password` | Own record + balance + trials-used-today / rotate own password |
+| `GET /api/status` | Role-scoped KPIs (balance, active/expiring/trial counts; admins also get principals, outstanding credits, panel reachability, last reconcile) |
+| `GET /api/panel/status` · `GET /api/streams` | Passthrough of the panel status / catalog (admins; streams cached 60 s for the grants picker) |
+| `GET/POST /api/principals` | List (scoped) / create `{username,password,role,prefix?,maxDevicesLimit?,trialDailyCap?,note?}` (parent = you) |
+| `GET/DELETE /api/principals/:name` | View / delete (refused while it has child principals or accounts; remaining balance reclaimed to you) |
+| `POST /api/principals/:name/password\|status\|limits` | Rotate password / suspend·resume (`{status, mode:'panel-only'\|'with-accounts'}`) / set `{maxDevicesLimit,trialDailyCap}` |
+| `POST /api/credits/mint\|transfer\|reclaim\|adjust` | Mint (admin tiers) / fund a child / pull back / correction (note required). `402` when a debit exceeds balance |
+| `GET /api/ledger?principal&account&type&before&limit` | Append-only credit ledger, newest-first, `before`=seq cursor, scoped to self+subtree for non-admins |
+| `GET/POST /api/accounts` | List (scoped, filters) / activate `{name,password,months,maxDevices?,grants?}` → `<globalPrefix>.<prefix>.<name>` |
+| `GET/DELETE /api/accounts/:acct` | View (+ live panel state) / delete (refund `floor(remaining months)` to owner; admin deletes refund nothing) |
+| `POST /api/accounts/:acct/renew\|status\|password\|max-devices\|grants\|logout-all` | Renew from `max(now,expiry)` (converts a trial to paid) / suspend·resume / set password / set devices / add a grant / drop all sessions |
+| `DELETE /api/accounts/:acct/grants/:streamId` · `GET/DELETE /api/accounts/:acct/devices[/:id]` | Remove a grant / list + revoke devices |
+| `POST /api/trials` | `{name,password,maxDevices?}` → a free time-boxed trial (per-reseller daily cap) |
+| `POST /api/ops/sweep` · `GET/POST /api/ops/reconcile` | Run the expiry sweep now / read + run the reconcile (admin tiers) |
+
+Env config (`reseller/.env`): `DATA_DIR`, `PANEL_ADMIN_URL` + `PANEL_ADMIN_USER`/
+`PANEL_ADMIN_PASS` (the dedicated panel admin) + `PANEL_TIMEOUT_MS`,
+`GLOBAL_PREFIX`, `DAYS_PER_MONTH`, `TRIAL_HOURS`, `TRIAL_DAILY_CAP_DEFAULT`,
+`MAX_DEVICES_LIMIT_DEFAULT`, `SWEEP_INTERVAL_SEC`, `RECONCILE_INTERVAL_SEC`,
+`RECONCILE_REPAIR`, `CONTROL_HOST`/`CONTROL_PORT`/`CONTROL_SESSION_TTL_HOURS`,
+`LOCKOUT_*`, `ARGON2_*`.
+
 ## Panel RPC (over Hyperswarm)
 
 - `hello` → proof-of-work challenge + difficulty (pre-login).

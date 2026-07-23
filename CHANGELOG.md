@@ -299,6 +299,40 @@ phone + Android TV, and the Windows desktop player).
   paused; end-of-title parks on ▶ and replays from the top. Zapping out of a
   title lands on channel 001 with every live behavior re-armed.
 
+**Reseller panel (`reseller/`)**
+- Standalone service that fronts the panel admin API with a **role hierarchy**
+  and a **credit ledger**, so third-party resellers can activate and manage
+  viewer accounts without holding real admin power. Deliberately a pure HTTP
+  service (no P2P, no ffmpeg) that can run on the panel host or a different box;
+  it authenticates to the panel as **one** dedicated admin. Two things it owns
+  that the panel does not: the hierarchy (**admin → co-admin → super reseller →
+  reseller**; the panel has no admin roles) and the **subscription clock** (the
+  panel has no account expiry).
+- **Credits are months** (1 credit = 1 month, flat; device cap is a per-account
+  setting, not priced). Append-only JSONL ledger (the durable audit trail —
+  the panel's activity feed is in-memory) with a global monotonic sequence and
+  balances always **derived**, never stored: only admins/co-admins mint (even an
+  admin's transfer debits their own balance), supers fund their resellers from
+  their own balance, activation/renewal costs `months` credits, delete refunds
+  `floor(remaining)` to the owner (admin ops are free + refundless).
+- **Trials**: free time-boxed accounts (`TRIAL_HOURS`, per-reseller daily cap);
+  renewing a trial converts it to paid with the same credentials.
+- **Fail-closed** account ops (panel first, local ledger + registry only on OK —
+  a rejected activation leaves nothing behind) run under one process mutex.
+  Accounts are namespaced `<globalPrefix>.<resellerPrefix>.<name>` so they can't
+  collide with panel users or another reseller. The **expiry sweep** disables
+  lapsed accounts on the panel (backs off while the panel is unreachable; the
+  work list re-derives each tick), and a **reconcile sweep** diffs the panel
+  against the registry, reporting (and, with `RECONCILE_REPAIR=1`, repairing)
+  divergences with the local clock winning.
+- Own worker-thread single-flight Argon2id login (the 2026-07-16 flood lesson),
+  role never trusted from the token (the live record is re-read each request, so
+  a suspension bites immediately), a no-build four-role dashboard on the shared
+  theme, a bootstrap CLI, `.env.example`, Dockerfile + compose service behind
+  the `reseller` profile, and the required-lane `test:reseller-unit` +
+  `test:reseller` (the latter drives a real in-process panel admin server).
+  Docs: [reseller panel guide](docs/reseller-panel.md) + reference API section.
+
 **Networking (all components)**
 - Swarm UDP socket buffers are sized at startup instead of inherited. UDX multiplexes
   every peer stream of a swarm onto one socket pair, so under viewer fan-out the socket

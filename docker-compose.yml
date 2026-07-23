@@ -84,7 +84,27 @@ services:
     volumes:
       - library-data:/data
 
+  # Reseller panel — role hierarchy + credit ledger fronting the panel admin API.
+  # Behind the `reseller` profile so a plain `up -d` never starts it. Seed the root
+  # admin once (first run):
+  #   docker compose --profile reseller run --rm reseller node src/reseller-cli.js add-admin <name>
+  # Often run on a DIFFERENT box than the panel — then set PANEL_ADMIN_URL to the
+  # panel's https address (IP-allowlisted to this box) instead of loopback.
+  reseller:
+    build:
+      context: .
+      dockerfile: reseller/Dockerfile
+    profiles: [reseller]
+    network_mode: host
+    restart: unless-stopped
+    env_file: ./reseller/.env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - reseller-data:/data
+
 volumes:
   panel-data:
   broadcaster-data:
   library-data:
+  reseller-data:
