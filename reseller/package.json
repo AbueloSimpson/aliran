@@ -1,0 +1,19 @@
+{
+  "name": "@aliran/reseller",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Aliran reseller panel — role-hierarchy + credit-ledger front for the panel admin API: third parties activate and manage viewer accounts without holding real admin power",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@aliran/core": "file:../core",
+    "b4a": "^1.6.6",
+    "hypercore-crypto": "^3.4.0",
+    "sodium-native": "^4.3.0"
+  },
+  "comment": "Deliberately a pure HTTP service: no corestore/hyperswarm — every account mutation is a call to the panel admin API (PANEL_ADMIN_URL), which may live on another machine. The reseller panel owns what the panel does not: the role hierarchy, the credit ledger, and the subscription clock (the panel has no account expiry)."
+}
