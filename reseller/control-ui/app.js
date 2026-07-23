@@ -100,7 +100,7 @@ async function boot () {
   me = await api('GET', '/me')
   $('#login-view').hidden = true
   $('#app-view').hidden = false
-  $('#who').innerHTML = `<b>${me.name}</b> · ${me.role}`
+  $('#who').textContent = `${me.name} · ${me.role}`
   $('#bal').innerHTML = `balance <b>${me.balance}</b>`
   $$('.nav-item[data-cap="manage"]').forEach((n) => { n.hidden = !CAN_MANAGE.has(me.role) })
   $('#mint-panel').hidden = !IS_ADMIN(me.role)
@@ -128,12 +128,18 @@ async function loadOverview () {
       el('div', { className: 'k', textContent: k }),
       el('div', { className: 'v', textContent: v })
     ])))
-  const chip = $('#panel-chip')
+  // The topbar banner (broadcaster idiom): one colored status line under the
+  // title — panel link state for admins, a personal summary for resellers.
+  const banner = $('#banner')
   if (s.panel) {
     const up = s.panel.reachable
-    chip.className = 'chip ' + (up === false ? 'err' : up ? 'ok' : '')
-    chip.innerHTML = `panel <b>${up === false ? 'unreachable' : up ? 'reachable' : 'unknown'}</b>`
-  } else chip.textContent = ''
+    banner.className = 'banner ' + (up === false ? 'err' : up ? 'ok' : '')
+    banner.textContent = up === false ? 'panel unreachable' : up ? 'panel reachable' : 'panel state unknown'
+    if (s.reconcile) banner.textContent += ` · last reconcile: ${s.reconcile.orphanPanel + s.reconcile.missingPanel + s.reconcile.statusFixed} finding(s), ${s.reconcile.errors} error(s)`
+  } else {
+    banner.className = 'banner'
+    banner.textContent = `${s.accountsActive ?? 0} active account(s) · ${s.accountsExpiring7d ?? 0} expiring ≤ 7d · balance ${s.balance}`
+  }
   const rc = $('#reconcile-card')
   if (s.reconcile) {
     rc.hidden = false

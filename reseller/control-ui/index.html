@@ -37,19 +37,20 @@
       <a class="nav-item" data-view="settings">Settings</a>
     </nav>
     <div class="side-foot">
-      <div id="who" class="chip"></div>
       <div id="bal" class="chip"></div>
+      <div id="who" class="muted"></div>
       <button class="btn ghost small" id="logout-btn">Sign out</button>
     </div>
   </aside>
 
   <div id="content">
-    <div class="topbar">
-      <button class="btn ghost small" id="side-toggle">☰</button>
-      <h2 id="view-title">Overview</h2>
-      <span class="spacer"></span>
-      <span id="panel-chip" class="chip"></span>
-    </div>
+    <header class="topbar">
+      <button class="btn ghost small" id="side-toggle" aria-label="Toggle navigation">☰</button>
+      <div>
+        <h2 id="view-title">Overview</h2>
+        <div id="banner" class="banner">&nbsp;</div>
+      </div>
+    </header>
 
     <main>
       <!-- Overview -->
