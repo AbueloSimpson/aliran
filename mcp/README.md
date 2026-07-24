@@ -60,6 +60,22 @@ omit `url` and this server opens an **SSH local-forward tunnel** to `127.0.0.1:3
 Any of `panel`, `broadcaster`, `ssh` may be omitted; only the tools whose backend is
 configured are registered.
 
+## Check your setup (`--doctor`)
+
+The onboarding self-check: validates the config (and its file mode), probes SSH and
+the panel/broadcaster `/healthz` (add `--login` to also verify credentials with ONE
+real login — the default never spends a login attempt, so a debugging loop cannot
+trip the 10-per-15-min lockout), lists the tool groups the AI client will get, and
+prints the paste-ready `claude_desktop_config.json` snippet:
+
+```bash
+node src/index.js --doctor --config ./config.json
+```
+
+Exit codes: `0` all good · `1` a configured backend failed a probe · `2` the config
+is unusable. The full walkthrough (with sample output, Claude Desktop wiring per OS,
+first prompts, troubleshooting): [docs/mcp-quickstart.md](../docs/mcp-quickstart.md).
+
 ## Run
 
 ```bash

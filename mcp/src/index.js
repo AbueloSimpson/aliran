@@ -52,7 +52,7 @@ function makeHelpers (server) {
 
 async function main () {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
-    process.stderr.write('Aliran MCP server\n  node src/index.js --config <path>\n  (or set ALIRAN_MCP_CONFIG). See mcp/README.md and mcp/config.example.json.\n')
+    process.stderr.write('Aliran MCP server\n  node src/index.js --config <path>              start (stdio MCP server)\n  node src/index.js --doctor [--login] --config <path>   onboarding self-check\n  (or set ALIRAN_MCP_CONFIG). See mcp/README.md, mcp/config.example.json and docs/mcp-quickstart.md.\n')
     return
   }
   if (process.argv.includes('--version')) { process.stderr.write(VERSION + '\n'); return }
@@ -61,8 +61,23 @@ async function main () {
   try {
     config = loadConfig(resolveConfigPath(), { logger: logerr })
   } catch (err) {
-    if (err instanceof ConfigError) { logerr('config error: ' + err.message); process.exitCode = 2; return }
+    if (err instanceof ConfigError) {
+      // Doctor mode reports on stdout — it is run by a human, not an MCP client.
+      const say = process.argv.includes('--doctor') ? (m) => process.stdout.write(m + '\n') : logerr
+      say('[FAIL] config error: ' + err.message)
+      process.exitCode = 2
+      return
+    }
     throw err
+  }
+
+  // Onboarding self-check: validate + probe, print the client wiring, exit.
+  // Never connects the MCP transport, so stdout is safe to use here.
+  if (process.argv.includes('--doctor')) {
+    const { runDoctor } = await import('./doctor.js')
+    const res = await runDoctor(config, { checkLogin: process.argv.includes('--login') })
+    process.exitCode = res.failures ? 1 : 0
+    return
   }
 
   const tunnels = []

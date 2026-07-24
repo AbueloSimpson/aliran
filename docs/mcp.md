@@ -11,6 +11,11 @@ It works because every Aliran admin operation already rides a clean, authenticat
 HTTP API and the deploy path is a documented `docker compose` sequence. The MCP server
 is a thin, credentialed adapter over those, plus an SSH executor for the box itself.
 
+!!! tip "First time? Take the walkthrough"
+    The **[MCP quickstart](mcp-quickstart.md)** is the hands-on onboarding path:
+    clone → config → the built-in **`--doctor`** self-check → Claude Desktop wiring →
+    first prompts, with a troubleshooting table and screenshot capture points.
+
 !!! note "It is the *server* side of MCP"
     This exposes tools/resources **to** an AI client; it does **not** call the Claude
     API. Its only dependency is `@modelcontextprotocol/sdk` (+ `zod`). Transport is

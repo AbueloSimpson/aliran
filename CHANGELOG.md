@@ -35,7 +35,15 @@ phone + Android TV, and the Windows desktop player).
   reached over an explicit TLS `url` or an SSH local-forward tunnel. New `test:mcp`
   suite (in-process panel + broadcaster, driven as an MCP client) in the required CI
   lane. v1 wraps panel + broadcaster + install/maintain + docs (reseller/library/
-  repeater deferred; local stdio only). See [docs/mcp.md](docs/mcp.md).
+  repeater deferred; local stdio only). Onboarding: **`--doctor`** self-check
+  (validates the config + file mode, probes SSH and the unauthenticated `/healthz`
+  of each service — never spending a login attempt unless `--login` is passed —
+  lists the enabled tool groups and prints the paste-ready
+  `claude_desktop_config.json` snippet; exit codes 0/1/2 for scripting) plus a
+  step-by-step **[quickstart walkthrough](docs/mcp-quickstart.md)** (config → doctor
+  → Claude Desktop/Claude Code wiring → first prompts → fresh-server install, with
+  diagrams, a screenshot-capture checklist and a troubleshooting table). See
+  [docs/mcp.md](docs/mcp.md).
 - **Channel packages ("bouquets")** — named channel bundles an admin grants as one
   unit ("Basic", "Sports"), replacing chip-by-chip per-stream grants that stop
   scaling past a few dozen channels. Because a grant is a **sealed key** (not an

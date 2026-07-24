@@ -20,7 +20,9 @@
 import assert from 'assert'
 import os from 'os'
 import fs from 'fs'
+import net from 'net'
 import path from 'path'
+import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
@@ -96,6 +98,20 @@ process.exit(0)
 async function callRaw (client, name, args) {
   return client.callTool({ name, arguments: args || {} })
 }
+// Async CLI runner for the doctor subprocess. MUST be async (never spawnSync): the
+// panel/broadcaster servers live IN THIS test process, so a blocked event loop
+// would leave the doctor's healthz probes hanging until their abort timers fire.
+function runCli (args, { timeoutMs = 60000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, { cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, timeoutMs)
+    child.stdout.on('data', (c) => { stdout += c })
+    child.stderr.on('data', (c) => { stderr += c })
+    child.on('close', (code) => { clearTimeout(timer); resolve({ status: code, stdout, stderr }) })
+  })
+}
 async function callJson (client, name, args) {
   const r = await client.callTool({ name, arguments: args || {} })
   const text = (r.content && r.content[0] && r.content[0].text) || ''
@@ -132,7 +148,7 @@ try {
     docsDir: path.join(REPO, 'docs'),
     panel: { url: `http://127.0.0.1:${panelPort}`, user: PANEL_ADMIN.user, pass: PANEL_ADMIN.pass },
     broadcaster: { url: `http://127.0.0.1:${bcPort}`, user: BC_ADMIN.user, pass: BC_ADMIN.pass },
-    ssh: { host: 'box.example', user: 'root', keyPath: '/dev/null', sshBin: [process.execPath, FAKE_SSH] },
+    ssh: { host: 'box.example', user: 'root', keyPath: FAKE_SSH, sshBin: [process.execPath, FAKE_SSH] },
     install: { repoDir: '/opt/aliran', composeProfiles: [] }
   }, null, 2), { mode: 0o600 })
 
@@ -240,7 +256,50 @@ try {
   assert.ok(Array.isArray(incidents), 'incidents route (missing from the control-server header comment) works')
   log('H: broadcaster tools (health, channel add/list, incidents) ✓')
 
-  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools)')
+  // ===== I: the onboarding doctor (`--doctor`) =====
+  // Happy path: same config (live loopback servers + the fake ssh), WITH --login so
+  // the credential check runs too. A human-run subprocess — stdout is the report.
+  const dr = await runCli([MCP_ENTRY, '--doctor', '--login', '--config', cfgPath])
+  assert.strictEqual(dr.status, 0, 'doctor exits 0 when everything checks out:\n' + dr.stdout + dr.stderr)
+  for (const marker of [
+    'Aliran MCP doctor',
+    'config readable + valid JSON',
+    'ssh: connected to root@box.example',
+    'panel: /healthz answered',
+    'panel: credentials accepted',
+    'broadcaster: /healthz answered',
+    'broadcaster: credentials accepted',
+    'documents indexed',
+    'Enabled tool groups: panel_*  broadcaster_*  server_*  diagnose_*  docs_search',
+    'claude_desktop_config.json',
+    '"mcpServers"',
+    'RESULT: all checks passed'
+  ]) assert.ok(dr.stdout.includes(marker), `doctor output missing: ${marker}\n---\n${dr.stdout}`)
+  assert.ok(!dr.stdout.includes(PANEL_ADMIN.pass) && !dr.stdout.includes(BC_ADMIN.pass), 'doctor never prints a password')
+
+  // Failure path: a panel url nothing listens on → [FAIL] + exit 1.
+  const deadPort = await new Promise((resolve, reject) => {
+    const srv = net.createServer(); srv.once('error', reject)
+    srv.listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)) })
+  })
+  const badCfgPath = path.join(dirs.mcp, 'config-bad.json')
+  fs.writeFileSync(badCfgPath, JSON.stringify({
+    dataDir: path.join(dirs.mcp, 'state-bad'),
+    docsDir: path.join(REPO, 'docs'),
+    panel: { url: `http://127.0.0.1:${deadPort}`, user: 'x', pass: 'xxxxxxxx', timeoutMs: 3000 }
+  }), { mode: 0o600 })
+  const drBad = await runCli([MCP_ENTRY, '--doctor', '--config', badCfgPath])
+  assert.strictEqual(drBad.status, 1, 'doctor exits 1 on a failed probe:\n' + drBad.stdout + drBad.stderr)
+  assert.ok(/\[FAIL\] panel: .*unreachable/.test(drBad.stdout), 'doctor reports the unreachable panel')
+  assert.ok(/RESULT: 1 check\(s\) FAILED/.test(drBad.stdout), 'doctor summarizes the failure')
+
+  // Unusable config → exit 2.
+  const drNone = await runCli([MCP_ENTRY, '--doctor', '--config', path.join(dirs.mcp, 'nope.json')], { timeoutMs: 30000 })
+  assert.strictEqual(drNone.status, 2, 'doctor exits 2 on an unreadable config')
+  assert.ok(drNone.stdout.includes('[FAIL] config error'), 'config error reported on stdout in doctor mode')
+  log('I: doctor — full pass w/ --login exit 0, dead panel [FAIL] exit 1, bad config exit 2, no passwords printed ✓')
+
+  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

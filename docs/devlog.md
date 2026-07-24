@@ -2560,3 +2560,36 @@ was not touched.
   deferred (reseller was mid-change under S45); local stdio only (no remote HTTP mode).
   npm-publish for `npx @aliran/mcp` is a follow-up. **No VPS work** this segment (a real
   install against a throwaway box is optional post-merge validation the user runs).
+
+### S46 follow-up — MCP onboarding: `--doctor` self-check + quickstart walkthrough
+- **Why:** the MCP shipped with reference docs but no guided *onboarding* — the
+  target operator (non-server-literate) needs "am I set up right?" answered by a
+  tool, not by reading. Two pieces close that.
+- **`aliran-mcp --doctor`** (`mcp/src/doctor.js`, wired into `index.js`): a
+  human-run terminal mode (prints to stdout — it never connects the MCP transport,
+  so the stdout-is-protocol rule doesn't apply). Validates the config + its file
+  mode, probes **SSH first** (tunnels depend on it), then each configured service's
+  **unauthenticated `/healthz`** — via the explicit `url` or by opening a real SSH
+  local-forward tunnel and closing it after — so a debugging loop can never trip
+  the 10/900 s login throttle; `--login` opts into ONE real credential check per
+  service. Reports the docs corpus, the enabled tool groups, a **paste-ready
+  `claude_desktop_config.json` snippet** (absolute paths computed from the install
+  location), and next-step prompts. Exit codes `0`/`1`/`2` (ok / probe failure /
+  unusable config) for provisioning scripts. Never prints a password.
+- **`docs/mcp-quickstart.md`** (+ mkdocs nav, cross-links from mcp.md and the
+  package README): the hands-on walkthrough — prereqs, clone/install, config with
+  a mermaid diagram of the two reachability roads, annotated doctor output + a
+  failure-fix table, Claude Desktop wiring (per-OS config paths) + the Claude Code
+  one-liner, five escalating first prompts with example transcripts and a
+  tool-call sequence diagram, the `server_install` conversation, a
+  **screenshot-capture checklist** (six capture points + redaction rules: never
+  capture config/.env; tool results are password-free by design; the panel public
+  key is safe to show), and a troubleshooting table.
+- **Verified:** `test:mcp` grew **section I** — the doctor run as a subprocess
+  against the live in-process servers + the fake ssh, WITH `--login` (exit 0, all
+  markers, credentials accepted, no passwords in the output), a dead-port config
+  (`[FAIL] … unreachable`, exit 1), and a missing config (exit 2). ⚠ The doctor
+  subprocess must be spawned **async** in the test: the panel/broadcaster servers
+  live in the test process, so a `spawnSync` would block the event loop and the
+  doctor's healthz probes would hang until their abort timers — the exact
+  deadlock the first draft hit. `mkdocs build --strict` green.

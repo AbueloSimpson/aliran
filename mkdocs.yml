@@ -39,6 +39,7 @@ nav:
   - Security model: security-model.md
   - Operator guide: operator-guide.md
   - MCP server (AI-operable): mcp.md
+  - MCP quickstart (walkthrough): mcp-quickstart.md
   - Repeater appliance: repeater.md
   - VOD library: vod-library.md
   - Configuration: configuration.md
