@@ -369,6 +369,40 @@ dialog h2 { margin: 0 0 14px; font-size: 15px; }
   max-height: 48vh; overflow-y: auto; font-size: 12px;
 }
 
+/* ---- pickers (S45: packages + extra-channel one-offs) ---- */
+/* Full-width band inside the wrap-flex .row-form; each block is a bordered
+   checkbox list that scrolls past ~6 rows so a 300-channel catalog stays sane. */
+.picker-wrap { flex-basis: 100%; display: flex; gap: 12px; flex-wrap: wrap; }
+.picker-block {
+  flex: 1 1 260px; min-width: 240px; margin: 0;
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 10px;
+}
+.picker-block legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+.picker { display: flex; flex-direction: column; gap: 2px; max-height: 168px; overflow-y: auto; }
+.pick-row {
+  display: flex; gap: 8px; align-items: baseline; font-size: 13px;
+  padding: 3px 6px; border-radius: 6px; cursor: pointer;
+}
+.pick-row:hover { background: var(--panel-2); }
+.pick-row input { accent-color: var(--accent); flex: none; }
+.pick-row .pick-main { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pick-row .sub { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.picker-filter { width: 100%; margin-bottom: 6px; }
+.picker-note { font-size: 11px; margin: 6px 0 0; }
+/* Row-form pickers use column labels; .pick-row must stay a row inside dialogs too. */
+#dlg-body label.pick-row, .row-form label.pick-row { flex-direction: row; color: var(--text); }
+.dlg-picker { border: 1px solid var(--border); border-radius: 8px; padding: 6px; max-height: 40vh; }
+
+/* ---- channels dialog (S45): provenance chips + section heads ---- */
+.badge.pkg { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.badge.auto { color: var(--muted); background: transparent; border: 1px dashed var(--border); }
+.dlg-sect { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
+.dlg-sect-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.chan-dlg { display: flex; flex-direction: column; gap: 8px; }
+.chan-tags { margin-top: 3px; }
+.chan-add { display: flex; gap: 8px; align-items: center; }
+.chan-add-sel { flex: 1 1 auto; min-width: 0; }
+
 /* ---- toast ---- */
 #toast {
   position: fixed; bottom: 20px; right: 20px; max-width: min(420px, calc(100vw - 40px));

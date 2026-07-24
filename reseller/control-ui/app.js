@@ -73,6 +73,7 @@ function dialog (title, rows, onOk, { okLabel = 'OK', danger = false } = {}) {
   const close = () => { dlg.close(); ok.onclick = null }
   $('#dlg-cancel').onclick = close
   ok.onclick = guard(async () => { if (await onOk() !== false) close() })
+  if (dlg.open) dlg.close() // a dialog may swap to another (Channels → Manage packages)
   dlg.showModal()
 }
 const field = (label, input) => el('label', {}, [label, input])
@@ -262,7 +263,7 @@ async function loadOverview () {
     const up = s.panel.reachable
     banner.className = 'banner ' + (up === false ? 'err' : up ? 'ok' : '')
     banner.textContent = up === false ? 'panel unreachable' : up ? 'panel reachable' : 'panel state unknown'
-    if (s.reconcile) banner.textContent += ` · last reconcile: ${s.reconcile.orphanPanel + s.reconcile.missingPanel + s.reconcile.statusFixed} finding(s), ${s.reconcile.errors} error(s)`
+    if (s.reconcile) banner.textContent += ` · last reconcile: ${s.reconcile.orphanPanel + s.reconcile.missingPanel + s.reconcile.statusFixed + (s.reconcile.packagesFixed || 0)} finding(s), ${s.reconcile.errors} error(s)`
   } else {
     banner.className = 'banner'
     banner.textContent = `${s.accountsActive ?? 0} active account(s) · ${s.accountsExpiring7d ?? 0} expiring ≤ 7d · balance ${s.balance}`
@@ -272,7 +273,7 @@ async function loadOverview () {
     rc.hidden = false
     const r = s.reconcile
     $('#reconcile-summary').textContent =
-      `${new Date(r.ts).toLocaleString()} — checked ${r.checked}, orphans ${r.orphanPanel}, missing ${r.missingPanel}, status fixed ${r.statusFixed}, errors ${r.errors}`
+      `${new Date(r.ts).toLocaleString()} — checked ${r.checked}, orphans ${r.orphanPanel}, missing ${r.missingPanel}, status fixed ${r.statusFixed}, packages fixed ${r.packagesFixed ?? 0}, errors ${r.errors}`
   } else rc.hidden = true
   // Admin tiers get the system diagnostics on the same landing view — one ops
   // dashboard on login. (Non-admins never call /api/system: it would 403.)
@@ -370,6 +371,8 @@ function accountRow (r) {
     r.status === 'active'
       ? { label: 'Suspend', onClick: guard(() => accountStatus(r, 'disabled')) }
       : (r.expiresInDays > 0 ? { label: 'Resume', onClick: guard(() => accountStatus(r, 'active')) } : null),
+    { label: 'Channels & packages…', onClick: guard(() => channelsDialog(r)) },
+    { label: 'Manage packages…', onClick: guard(() => managePackagesDialog(r)) },
     { label: 'Devices…', onClick: guard(() => devicesDialog(r)) },
     { label: 'Log out all devices', onClick: guard(async () => { await api('POST', `/accounts/${encodeURIComponent(r.account)}/logout-all`); toast(`${r.account}: every session token revoked`) }) },
     { label: 'Change password…', onClick: () => passwordDialog(r) },
@@ -445,19 +448,95 @@ $$('#acct-table th.sortable').forEach((th) => {
   }
 })
 
+// ---- catalog passthroughs (packages + streams; the server caches 60 s, this
+// session cache just avoids refetching per keystroke/dialog) ----
+let pkgCatalog = null
+let streamCatalog = null
+const getPackagesList = async (fresh) => {
+  if (fresh || !pkgCatalog) pkgCatalog = await api('GET', '/packages')
+  return pkgCatalog
+}
+const getStreamsList = async () => {
+  if (!streamCatalog) streamCatalog = await api('GET', '/streams')
+  return streamCatalog
+}
+const streamTitle = (id) => {
+  const s = (streamCatalog || []).find((x) => x.id === id)
+  return s && s.title ? s.title : id
+}
+// The packages that cover a stream id, out of a package-name list.
+const coveringPackages = (names, id) =>
+  (names || []).filter((n) => {
+    const p = (pkgCatalog || []).find((x) => x.name === n)
+    return p && Array.isArray(p.resolved) && p.resolved.includes(id)
+  })
+const pkgBadge = (name) => el('span', { className: 'badge pkg', textContent: '▣ ' + name, title: `package ${name}` })
+
+// One checkbox row (shared by the activate pickers and the manage dialog).
+function pickRow ({ value, checked, main, sub }) {
+  const cb = el('input', { type: 'checkbox', value, checked: !!checked })
+  return el('label', { className: 'pick-row' }, [
+    cb,
+    el('span', { className: 'pick-main', textContent: main }),
+    sub ? el('span', { className: 'muted sub', textContent: sub }) : null
+  ])
+}
+const pickedValues = (root) => $$('input[type=checkbox]', root).filter((c) => c.checked).map((c) => c.value)
+
+// Activate-form pickers: packages (defaults pre-checked — untick to opt out)
+// and the per-channel one-offs. Loaded when the Add panel first opens; a panel
+// outage degrades to a note, never blocks the form.
+async function loadAcctPickers () {
+  const pkgBox = $('#acct-packages')
+  const exBox = $('#acct-extra')
+  try {
+    const [pkgs] = await Promise.all([getPackagesList(true), getStreamsList()])
+    pkgBox.replaceChildren(...(pkgs.length
+      ? pkgs.map((p) => pickRow({
+          value: p.name,
+          checked: p.default === true,
+          main: p.label || p.name,
+          sub: `${p.name} · ${(p.resolved || []).length} ch${p.default ? ' · default' : ''}`
+        }))
+      : [el('span', { className: 'muted', textContent: 'No packages on the panel yet.' })]))
+    const streams = streamCatalog || []
+    exBox.replaceChildren(...(streams.length
+      ? streams.map((s) => pickRow({ value: s.id, main: s.title || s.id, sub: s.id }))
+      : [el('span', { className: 'muted', textContent: 'No channels on the panel yet.' })]))
+  } catch (e) {
+    const note = () => el('span', { className: 'muted', textContent: `Unavailable (${e.message})` })
+    pkgBox.replaceChildren(note())
+    exBox.replaceChildren(note())
+  }
+}
+$('#acct-add-panel').addEventListener('toggle', () => { if ($('#acct-add-panel').open) guard(loadAcctPickers)() })
+$('#acct-extra-filter').oninput = () => {
+  const q = $('#acct-extra-filter').value.trim().toLowerCase()
+  $$('#acct-extra .pick-row').forEach((row) => {
+    row.hidden = !!q && !row.textContent.toLowerCase().includes(q)
+  })
+}
+
 $('#account-form').onsubmit = guard(async (e) => {
   e.preventDefault()
+  const packages = pickedValues($('#acct-packages'))
+  const grants = pickedValues($('#acct-extra'))
   const body = {
     name: $('#acct-name').value,
     password: $('#acct-pass').value,
     months: +$('#acct-months').value,
+    // Sent only when picked: an empty packages list means the panel's own
+    // default packages apply, and this keeps that path explicit server-side.
+    ...(packages.length ? { packages } : {}),
+    ...(grants.length ? { grants } : {}),
     // Non-admins omit maxDevices — the account receives the inherited policy.
     ...(IS_ADMIN(me.role) ? { maxDevices: +$('#acct-devices').value } : {})
   }
   const r = await api('POST', '/accounts', body)
-  toast(`Activated ${r.account} (${r.expiresInDays}d)`)
+  toast(`Activated ${r.account} (${r.expiresInDays}d${r.packages && r.packages.length ? ' · ' + r.packages.join(', ') : ''})`)
   $('#account-form').reset()
   if (IS_ADMIN(me.role)) $('#acct-devices').value = me.maxDevicesLimit
+  guard(loadAcctPickers)() // reset unchecked everything — restore the default pre-checks
   await Promise.all([loadAccounts(acctQuery.page), refreshBalance()])
 })
 $('#acct-trial-btn').onclick = guard(async () => {
@@ -538,6 +617,129 @@ async function devicesDialog (r) {
   }
   dialog(`Devices — ${r.account}`, rows, () => {}, { okLabel: 'Done' })
 }
+// The account's entitlement view: package chips, then every live channel with
+// its provenance (▣ package / one-off / dashed auto), a Revoke on the rows the
+// reseller can meaningfully act on, and the one-off Add. All state is LIVE from
+// the panel via the account GET — the registry alone can't see panel defaults.
+async function channelsDialog (r) {
+  const body = el('div', { className: 'chan-dlg' })
+  const render = async () => {
+    const [acct] = await Promise.all([
+      api('GET', `/accounts/${encodeURIComponent(r.account)}`),
+      getPackagesList().catch(() => null),
+      getStreamsList().catch(() => null)
+    ])
+    const live = acct.live
+    if (!live) {
+      body.replaceChildren(
+        el('p', { className: 'dlg-note warn', textContent: 'Panel unreachable — live channel state unavailable. Showing the local registry only.' }),
+        el('p', { className: 'muted', textContent: `Assigned packages: ${(acct.packages || []).join(', ') || 'none'} · one-offs: ${(acct.extraGrants || []).join(', ') || 'none'}` })
+      )
+      return
+    }
+    const rows = []
+    // -- packages --
+    rows.push(el('div', { className: 'dlg-sect' }, [
+      el('span', { className: 'dlg-sect-title', textContent: 'Packages' }),
+      btn('Manage…', () => managePackagesDialog(r, { back: true }))
+    ]))
+    rows.push(el('div', { className: 'chips' },
+      live.packages && live.packages.length
+        ? live.packages.map(pkgBadge)
+        : [el('span', { className: 'muted', textContent: 'No packages assigned.' })]))
+    // -- channels --
+    rows.push(el('div', { className: 'dlg-sect' }, [
+      el('span', { className: 'dlg-sect-title', textContent: `Channels (${(live.grants || []).length})` })
+    ]))
+    const manual = new Set(live.manualGrants || [])
+    for (const id of (live.grants || [])) {
+      const covering = coveringPackages(live.packages, id)
+      const tags = [
+        ...covering.map(pkgBadge),
+        manual.has(id) ? el('span', { className: 'badge dim', textContent: 'one-off' }) : null,
+        !covering.length && !manual.has(id) ? el('span', { className: 'badge auto', textContent: 'auto' }) : null
+      ].filter(Boolean)
+      // Pure-auto grants come from the panel's autoGrant sources ("everyone
+      // gets this") — a revoke here would flap back on the next source sync,
+      // so the action is only offered where it sticks.
+      const revocable = manual.has(id) || covering.length > 0
+      rows.push(el('div', { className: 'dlg-list-row' }, [
+        el('div', { className: 'meta' }, [
+          el('div', { className: 'dev-top' }, [
+            el('span', { className: 't', textContent: streamTitle(id) }),
+            el('span', { className: 'mono muted dev-id', textContent: id, title: id })
+          ]),
+          el('div', { className: 'chips chan-tags' }, tags)
+        ]),
+        revocable
+          ? btn('Revoke', guard(async () => {
+              const out = await api('DELETE', `/accounts/${encodeURIComponent(r.account)}/grants/${encodeURIComponent(id)}`)
+              if (out.stillGranted) {
+                const via = coveringPackages(live.packages, id)
+                toast(`Removed the one-off — still granted via package ${via.join(', ') || '(bouquet)'}`)
+              } else {
+                toast(`${streamTitle(id)} revoked`)
+              }
+              await render()
+            }), 'danger')
+          : null
+      ]))
+    }
+    // -- add a one-off --
+    const options = ((streamCatalog || []).filter((s) => !(live.grants || []).includes(s.id)))
+    if (options.length) {
+      const sel = el('select', { className: 'chan-add-sel' },
+        options.map((s) => el('option', { value: s.id, textContent: (s.title || s.id) + ` (${s.id})` })))
+      rows.push(el('div', { className: 'dlg-sect' }, [
+        el('span', { className: 'dlg-sect-title', textContent: 'Add extra channel (one-off)' })
+      ]))
+      rows.push(el('div', { className: 'chan-add' }, [
+        sel,
+        btn('Add', guard(async () => {
+          await api('POST', `/accounts/${encodeURIComponent(r.account)}/grants`, { streamId: sel.value })
+          toast(`${streamTitle(sel.value)} granted`)
+          await render()
+        }))
+      ]))
+    }
+    body.replaceChildren(...rows)
+  }
+  await render()
+  dialog(`Channels — ${r.account}`, [body], () => {}, { okLabel: 'Done' })
+}
+
+// Replace the account's bouquets: every package the panel knows, current ones
+// pre-checked. Packages carry no credit price — assignment is free by design.
+async function managePackagesDialog (r, { back = false } = {}) {
+  const [acct, pkgs] = await Promise.all([
+    api('GET', `/accounts/${encodeURIComponent(r.account)}`),
+    getPackagesList(true)
+  ])
+  const current = new Set((acct.live && acct.live.packages) || acct.packages || [])
+  if (!pkgs.length) {
+    dialog(`Packages — ${r.account}`, [
+      el('p', { className: 'muted', textContent: 'No packages defined on the panel yet — the operator creates them in the panel dashboard.' })
+    ], () => {}, { okLabel: 'Done' })
+    return
+  }
+  const box = el('div', { className: 'picker dlg-picker' },
+    pkgs.map((p) => pickRow({
+      value: p.name,
+      checked: current.has(p.name),
+      main: p.label || p.name,
+      sub: `${p.name} · ${(p.resolved || []).length} ch${p.default ? ' · default' : ''}`
+    })))
+  dialog(`Packages — ${r.account}`, [
+    box,
+    el('p', { className: 'dlg-note', textContent: 'Sets WHAT the account gets — the subscription clock (credits) is unchanged. One-off channels stay as they are.' })
+  ], async () => {
+    const out = await api('POST', `/accounts/${encodeURIComponent(r.account)}/packages`, { packages: pickedValues(box) })
+    toast(`Packages set: ${out.packages.length ? out.packages.join(', ') : 'none'}`)
+    pkgCatalog = null // holder counts moved
+    if (back) setTimeout(() => guard(channelsDialog)(r), 0)
+  }, { okLabel: 'Save' })
+}
+
 function deleteAccountDialog (r) {
   const confirm = inputEl({ placeholder: r.account })
   const refund = IS_ADMIN(me.role) ? 0 : Math.max(0, Math.floor(r.expiresInDays / 31))

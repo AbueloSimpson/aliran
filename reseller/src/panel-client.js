@@ -111,6 +111,7 @@ export function makePanelClient (config) {
     login,
     status: () => req('GET', '/api/status'),
     streams: () => req('GET', '/api/streams'),
+    packages: () => req('GET', '/api/packages'),
     healthInfo
   }
 }

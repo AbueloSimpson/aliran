@@ -229,6 +229,18 @@ export function startControlServer (ctx, opts = {}) {
       return sendJson(res, 200, streamsCache.data)
     }
 
+    // Channel-package passthrough for the bouquet picker (S45) — same contract
+    // as /api/streams above: any authed role, 60 s cache. Packages carry no
+    // credit price and no per-reseller restriction, so the full panel list is
+    // the right answer for every principal.
+    if (r1 === 'packages' && seg.length === 2 && req.method === 'GET' && ctx.panel) {
+      if (!packagesCache.data || Date.now() - packagesCache.at > 60000) {
+        packagesCache.data = await ctx.panel.packages()
+        packagesCache.at = Date.now()
+      }
+      return sendJson(res, 200, packagesCache.data)
+    }
+
     if (r1 === 'accounts' && ctx.accounts) {
       requireCap(me, 'accounts:manage')
       if (seg.length === 2) {
@@ -258,7 +270,7 @@ export function startControlServer (ctx, opts = {}) {
             const out = ctx.accounts.get(acct)
             try {
               const live = await ctx.panel.req('GET', `/api/users/${encodeURIComponent(acct)}`)
-              out.live = { status: live.status, grants: live.grants, maxDevices: live.maxDevices, devices: live.devices }
+              out.live = { status: live.status, grants: live.grants, manualGrants: live.manualGrants, packages: live.packages, maxDevices: live.maxDevices, devices: live.devices }
             } catch { out.live = null }
             return sendJson(res, 200, out)
           }
@@ -284,6 +296,10 @@ export function startControlServer (ctx, opts = {}) {
           if (r3 === 'grants' && req.method === 'POST') {
             const b = await readJson(req)
             return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.addGrant(me, acct, b.streamId)))
+          }
+          if (r3 === 'packages' && req.method === 'POST') {
+            const b = await readJson(req)
+            return sendJson(res, 200, await ctx.mutex(() => ctx.accounts.setPackages(me, acct, b.packages)))
           }
           if (r3 === 'devices' && req.method === 'GET') return sendJson(res, 200, await ctx.accounts.devices(me, acct))
           if (r3 === 'logout-all' && req.method === 'POST') return sendJson(res, 200, await ctx.accounts.logoutAll(me, acct))
@@ -661,6 +677,7 @@ function deletePrincipal (ctx, me, name) {
 
 // One per-process catalog cache is enough — a single service instance.
 const streamsCache = { at: 0, data: null }
+const packagesCache = { at: 0, data: null }
 
 // Account ops need the record's OWNER inside the caller's scope. 404 for a name
 // that doesn't exist, 403 for one that exists outside the scope.

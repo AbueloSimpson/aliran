@@ -78,16 +78,35 @@ export function makeAccounts (ctx) {
       expiresInDays: Math.ceil((r.expiresAt - Date.now()) / 86400000),
       maxDevices: r.maxDevices,
       extraGrants: r.extraGrants,
+      packages: Array.isArray(r.packages) ? r.packages : [],
       createdAt: r.createdAt,
       createdBy: r.createdBy,
       panel: r.panel
     }
   }
 
+  // Packages are a list of panel package NAMES (S45). Same validation posture as
+  // the grants array; trimmed + deduped so the registry value never flaps
+  // against the panel's own normalization.
+  function checkPackages (packages) {
+    if (!Array.isArray(packages) || packages.some((p) => typeof p !== 'string')) {
+      throw new ControlError('bad-request', 'packages must be an array of package names')
+    }
+    return [...new Set(packages.map((p) => p.trim()).filter(Boolean))]
+  }
+
   // Decoration calls after a successful create: best-effort, self-healing via
   // reconcile — a paid-for account is never stranded on a grant hiccup.
-  async function decorate (acct, r, { grants, maxDevices }) {
+  // Packages first (the bouquet baseline the panel materializes), then the
+  // per-stream one-offs, then the device cap. An EMPTY packages list skips the
+  // panel call entirely: the panel's `default` packages were just applied by its
+  // createUser hook, and POSTing [] (a replace) would strip them — no explicit
+  // choice means the panel-side defaults stand.
+  async function decorate (acct, r, { grants, maxDevices, packages }) {
     try {
+      if (Array.isArray(packages) && packages.length > 0) {
+        await ctx.panel.req('POST', `/api/users/${encodeURIComponent(acct)}/packages`, { packages })
+      }
       for (const streamId of grants) {
         await ctx.panel.req('POST', `/api/users/${encodeURIComponent(acct)}/grants`, { streamId })
         if (!r.extraGrants.includes(streamId)) r.extraGrants.push(streamId)
@@ -123,10 +142,11 @@ export function makeAccounts (ctx) {
   // Paid activation. Debits the ACTOR unless they're an admin tier (free, and
   // deliberately no ledger line — admin account ops are operator actions, not
   // credit economy).
-  async function activate (me, { name, password, months, maxDevices, grants = [] }) {
+  async function activate (me, { name, password, months, maxDevices, grants = [], packages = [] }) {
     if (!Number.isInteger(months) || months < 1 || months > MONTHS_MAX) throw new ControlError('bad-request', `months must be an integer 1-${MONTHS_MAX}`)
     if (typeof password !== 'string' || password.length < 8) throw new ControlError('bad-request', 'account password must be at least 8 characters')
     if (!Array.isArray(grants) || grants.some((g) => typeof g !== 'string')) throw new ControlError('bad-request', 'grants must be an array of streamIds')
+    const pkgs = checkPackages(packages)
     const acct = checkName(name)
     if (registry[acct] && registry[acct].status !== 'deleted') throw new ControlError('exists', `account "${acct}" already exists`)
     const devices = resolveDevices(me, maxDevices)
@@ -146,6 +166,8 @@ export function makeAccounts (ctx) {
     }
 
     const now = Date.now()
+    // `packages` is the reseller's CHOSEN bouquets — the subscription truth the
+    // reconcile sweep re-asserts. Empty = no explicit choice (panel-driven).
     const r = registry[acct] = {
       owner: me.name,
       kind: 'paid',
@@ -153,11 +175,12 @@ export function makeAccounts (ctx) {
       expiresAt: now + months * monthMs(),
       maxDevices: devices,
       extraGrants: [],
+      packages: pkgs,
       createdAt: now,
       createdBy: me.name,
       panel: { lastSyncAt: now, lastError: null }
     }
-    await decorate(acct, r, { grants, maxDevices: devices })
+    await decorate(acct, r, { grants, maxDevices: devices, packages: pkgs })
     if (pays) {
       ctx.ledger.append({
         type: 'ACTIVATE',
@@ -293,8 +316,28 @@ export function makeAccounts (ctx) {
 
   async function removeGrant (me, acct, streamId) {
     const r = mustGet(acct)
-    await ctx.panel.req('DELETE', `/api/users/${encodeURIComponent(acct)}/grants/${encodeURIComponent(streamId)}`)
+    const out = await ctx.panel.req('DELETE', `/api/users/${encodeURIComponent(acct)}/grants/${encodeURIComponent(streamId)}`)
     r.extraGrants = r.extraGrants.filter((g) => g !== streamId)
+    save()
+    // Honesty over pretence (the S44 panel contract): the revoke removed the
+    // MANUAL entitlement, but a package the account holds may still cover the
+    // id — the panel re-seals it in the same request and its response reflects
+    // the real post-revoke state. Surface that instead of implying it is gone.
+    const v = view(acct)
+    if (out && Array.isArray(out.grants)) v.stillGranted = out.grants.includes(streamId)
+    return v
+  }
+
+  // Replace the account's bouquets (S45). Panel-first like everything else: the
+  // panel validates the names (a typo 404s and nothing commits), materializes
+  // the grants, and returns the normalized list the registry then records —
+  // the reconcile sweep re-asserts this value if the live record drifts.
+  async function setPackages (me, acct, names) {
+    const r = mustGet(acct)
+    const pkgs = checkPackages(names)
+    const out = await ctx.panel.req('POST', `/api/users/${encodeURIComponent(acct)}/packages`, { packages: pkgs })
+    r.packages = Array.isArray(out && out.packages) ? out.packages : pkgs
+    r.panel = { lastSyncAt: Date.now(), lastError: null }
     save()
     return view(acct)
   }
@@ -454,6 +497,7 @@ export function makeAccounts (ctx) {
     setMaxDevices,
     addGrant,
     removeGrant,
+    setPackages,
     devices,
     revokeDevice,
     logoutAll,

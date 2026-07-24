@@ -99,7 +99,7 @@
 
       <!-- Accounts -->
       <section class="view" data-view="accounts" hidden>
-        <details class="card add-panel">
+        <details class="card add-panel" id="acct-add-panel">
           <summary>Add account</summary>
           <form class="row-form" id="account-form">
             <label>Name
@@ -116,6 +116,21 @@
             <label id="acct-devices-label" hidden>Max devices
               <input id="acct-devices" type="number" min="1" value="1" style="width:90px">
             </label>
+            <!-- S45: what the account GETS. Packages (bouquets) are the product
+                 unit; the streams picker is the per-channel one-off escape hatch.
+                 Credits stay time-only — a package never changes the price. -->
+            <div class="picker-wrap">
+              <fieldset class="picker-block">
+                <legend>Packages</legend>
+                <div class="picker" id="acct-packages"><span class="muted">Loading…</span></div>
+                <p class="picker-note muted">What the account gets — months set for how long. Packages don't change the price.</p>
+              </fieldset>
+              <fieldset class="picker-block">
+                <legend>Extra channels (one-offs)</legend>
+                <input type="search" class="picker-filter" id="acct-extra-filter" placeholder="Filter channels…" autocomplete="off">
+                <div class="picker" id="acct-extra"><span class="muted">Loading…</span></div>
+              </fieldset>
+            </div>
             <button class="btn primary" type="submit">Activate</button>
             <button class="btn" type="button" id="acct-trial-btn">Start trial</button>
             <span class="form-note muted" id="acct-devices-note" hidden></span>

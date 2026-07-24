@@ -26,6 +26,11 @@
 //   - status divergence → THE LOCAL CLOCK WINS, both directions: desired panel
 //     status is (local active AND unlapsed) ? active : disabled.
 //   - maxDevices divergence → local wins.
+//   - packages divergence → the registry's CHOSEN bouquets win (S45), but only
+//     when the record holds a non-empty choice: an absent/empty array means
+//     "panel-driven" (the panel's own `default` packages, operator edits) and
+//     is deliberately left alone — asserting [] would strip the defaults off
+//     every account activated without an explicit package pick.
 
 import path from 'path'
 import { readJsonFile, writeJsonFile } from './store.js'
@@ -86,7 +91,7 @@ export function makeSweeps (ctx) {
 
   async function reconcileNow () {
     const repair = !!ctx.config.reconcileRepair
-    const report = { ts: Date.now(), repair, checked: 0, orphanPanel: [], missingPanel: [], statusFixed: [], maxDevicesFixed: [], errors: [] }
+    const report = { ts: Date.now(), repair, checked: 0, orphanPanel: [], missingPanel: [], statusFixed: [], maxDevicesFixed: [], packagesFixed: [], errors: [] }
     const records = ctx.accounts.records()
 
     // Chase stale create-intents (only ones older than a minute — a live request
@@ -149,6 +154,23 @@ export function makeSweeps (ctx) {
           }
         }
       }
+      // Re-assert the chosen bouquets (see the header rule): non-empty registry
+      // choice vs the live list, order-insensitive.
+      const wantPkgs = Array.isArray(r.packages) ? r.packages : []
+      if (wantPkgs.length > 0) {
+        const livePkgs = Array.isArray(live.packages) ? live.packages : []
+        const sortKey = (a) => [...a].sort().join('\n')
+        if (sortKey(wantPkgs) !== sortKey(livePkgs)) {
+          report.packagesFixed.push({ account: acct, from: livePkgs, to: wantPkgs })
+          if (repair) {
+            try {
+              await ctx.mutex(() => ctx.panel.req('POST', `/api/users/${encodeURIComponent(acct)}/packages`, { packages: wantPkgs }))
+            } catch (err) {
+              report.errors.push({ account: acct, error: String(err.message || err) })
+            }
+          }
+        }
+      }
     }
     if (repair) await ctx.mutex(() => ctx.accounts.save())
     lastReconcile = report
@@ -206,6 +228,8 @@ export function makeSweeps (ctx) {
       missingPanel: lastReconcile.missingPanel.length,
       statusFixed: lastReconcile.statusFixed.length,
       maxDevicesFixed: lastReconcile.maxDevicesFixed.length,
+      // Guard: a report persisted by a pre-S45 build lacks the field.
+      packagesFixed: (lastReconcile.packagesFixed || []).length,
       errors: lastReconcile.errors.length
     }
   }
