@@ -193,3 +193,19 @@ ul.activity li:last-child { border-bottom: none; }
 .act-session { background: #064e3b; color: #a7f3d0; }
 .act-register { background: #1e3a8a; color: #bfdbfe; }
 .act-admin { background: #78350f; color: #fde68a; }
+
+/* ---- sources tab: sync report + error + channels dialog (S27 UI pass) ---- */
+.rep-link {
+  background: none; border: none; padding: 0; color: inherit; cursor: pointer;
+  text-align: left; text-decoration: underline dotted;
+}
+.rep-link:hover { color: var(--text); }
+button.badge { font-family: inherit; cursor: pointer; border: none; }
+ul.report-list { margin: 0; padding-left: 18px; }
+ul.report-list li { margin-bottom: 3px; }
+.dlg-tools { display: flex; gap: 8px; align-items: center; }
+.dlg-tools input { flex: 1; min-width: 0; }
+.ch-list { display: flex; flex-direction: column; gap: 6px; max-height: 38vh; overflow-y: auto; }
+/* #dlg-body label sets display:flex, which outranks the UA sheet's [hidden] —
+   restate it or filtered-out rows stay visible (same pitfall as #login-view). */
+#dlg-body .ch-row[hidden] { display: none; }

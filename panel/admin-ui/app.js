@@ -367,6 +367,15 @@ async function forgetCategory (c) {
   act(() => api('DELETE', '/api/categories', { slug: c.slug }), `"${c.slug}" forgotten`)
 }
 
+// "Every" column: minutes are the operator-facing unit (the edit dialog's input);
+// whole hours/days render compact.
+function fmtInterval (ms) {
+  const m = Math.round((ms || 86400000) / 60000)
+  if (m % 1440 === 0) return (m / 1440) + 'd'
+  if (m % 60 === 0) return (m / 60) + 'h'
+  return m + 'm'
+}
+
 function renderSources () {
   const tbody = $('#sources-table tbody')
   tbody.innerHTML = ''
@@ -378,13 +387,13 @@ function renderSources () {
       <td><b>${esc(s.name)}</b><br><span class="mono muted" title="${esc(s.url)}">${esc(s.url.length > 46 ? s.url.slice(0, 46) + '…' : s.url)}</span></td>
       <td><span class="chip">${esc(s.category)}</span></td>
       <td>${s.channels}</td>
-      <td class="muted">${Math.round((s.intervalMs || 86400000) / 360000) / 10}h</td>
+      <td class="muted">${fmtInterval(s.intervalMs)}</td>
       <td class="muted">${s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never'}${rep
-        ? `<br><span class="mono">+${rep.added} ~${rep.updated} −${rep.removed}${rep.notModified ? ' · not modified' : ''}${rep.skipped ? ` · ${rep.skipped} skipped` : ''}${rep.conflicts ? ` · ${rep.conflicts} conflicts` : ''}</span>`
+        ? `<br><button class="mono rep-link" title="full report of the last sync">+${rep.added} ~${rep.updated} −${rep.removed}${rep.notModified ? ' · not modified' : ''}${rep.skipped ? ` · ${rep.skipped} skipped` : ''}${rep.conflicts ? ` · ${rep.conflicts} conflicts` : ''}${rep.truncated ? ` · <span class="warn-text">${rep.truncated} over cap</span>` : ''}</button>`
         : ''}</td>
       <td>${s.lastError
-        ? `<span class="badge disabled" title="${esc(s.lastError)}">ERROR</span> `
-        : `<span class="badge ${disabled ? 'disabled' : 'active'}">${disabled ? 'paused' : 'enabled'}</span> `}${s.autoGrant === false ? '<span class="chip" title="imported channels are NOT auto-granted — grant per user by hand">no auto-grant</span>' : ''}${(s.exclude || []).length ? `<span class="chip" title="deselected in the channels dialog — skipped on every sync until re-checked">${s.exclude.length} excluded</span>` : ''}</td>
+        ? `<button class="badge disabled err-badge" title="${esc(s.lastError)}">ERROR</button> `
+        : ''}<span class="badge ${disabled ? 'disabled' : 'active'}">${disabled ? 'paused' : 'enabled'}</span> ${s.autoGrant === false ? '<span class="chip" title="imported channels are NOT auto-granted — grant per user by hand">no auto-grant</span>' : ''}${(s.exclude || []).length ? `<span class="chip" title="deselected in the channels dialog — skipped on every sync until re-checked">${s.exclude.length} excluded</span>` : ''}</td>
       <td><div class="row-actions">
         <button class="btn small" data-act="sync">sync now</button>
         <button class="btn small" data-act="channels">channels</button>
@@ -392,6 +401,10 @@ function renderSources () {
         <button class="btn small" data-act="toggle">${disabled ? 'enable' : 'pause'}</button>
         <button class="btn small danger" data-act="remove">remove</button>
       </div></td>`
+    const repBtn = tr.querySelector('.rep-link')
+    if (repBtn) repBtn.addEventListener('click', () => showSyncReport(s))
+    const errBtn = tr.querySelector('.err-badge')
+    if (errBtn) errBtn.addEventListener('click', () => showSourceError(s))
     tr.querySelector('[data-act=sync]').addEventListener('click', () => syncSourceNow(s.name))
     tr.querySelector('[data-act=channels]').addEventListener('click', () => openSourceChannels(s))
     tr.querySelector('[data-act=edit]').addEventListener('click', () => editSource(s))
@@ -446,7 +459,7 @@ async function loadArt (el, ref) {
 
 // ---------------------------------------------------------------- dialog helper
 
-// fields: [{name, label, type='text', value, options?, placeholder?}] → values object or null.
+// fields: [{name, label, type='text', value, options?, placeholder?, min?, max?, step?}] → values object or null.
 // opts.danger styles the OK button destructively.
 function dialog (title, fields, { okLabel = 'Save', body = '', danger = false } = {}) {
   return new Promise((resolve) => {
@@ -474,6 +487,9 @@ function dialog (title, fields, { okLabel = 'Save', body = '', danger = false } 
       if (f.type === 'checkbox') input.checked = !!f.value
       else if (f.value != null) input.value = f.value
       if (f.placeholder) input.placeholder = f.placeholder
+      if (f.min != null) input.min = f.min
+      if (f.max != null) input.max = f.max
+      if (f.step != null) input.step = f.step
       inputs[f.name] = input
       if (f.type === 'checkbox') { label.append(input, f.label) } else { label.append(f.label, input) }
       holder.appendChild(label)
@@ -766,25 +782,109 @@ async function syncSourceNow (name) {
     toast(r.notModified
       ? `"${name}": feed not modified · ${r.granted} grant(s) sealed`
       : `"${name}": +${r.added} added, ~${r.updated} updated, −${r.removed} removed, ${r.granted} grant(s) sealed` +
-        (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : ''))
+        (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : '') +
+        (r.truncated ? ` · ${r.truncated} over the channel cap — dropped` : ''))
     await refresh()
   } catch (err) { toast(err.message, true); await refresh().catch(() => {}) }
+}
+
+// Full last-sync report (opened from the row's report line). The registry keeps a
+// capped detail list (skip reasons, conflicting ids) precisely for this dialog —
+// the toast only ever shows counts.
+function showSyncReport (s) {
+  const rep = s.lastReport
+  if (!rep) return
+  const skipDet = rep.skippedDetail || []
+  const conflictIds = rep.conflictIds || []
+  let body = `<div class="muted">${new Date(rep.at).toLocaleString()}${rep.notModified ? ' · feed not modified (ETag) — nothing re-applied' : ''}</div>
+    <div><span class="mono">+${rep.added} added · ~${rep.updated} updated · −${rep.removed} removed</span> · ${rep.granted} grant(s) sealed</div>`
+  if (rep.truncated) {
+    body += `<p class="warn-text"><b>${rep.truncated} feed entr${rep.truncated === 1 ? 'y' : 'ies'} over the channel cap were dropped.</b>
+      The feed is larger than this panel imports — raise <span class="mono">sources.maxChannels</span> in the panel config to take more.</p>`
+  }
+  if (rep.skipped) {
+    body += `<p class="muted">Skipped (invalid entries — the rest of the feed still imported)${rep.skipped > skipDet.length ? ` — first ${skipDet.length} of ${rep.skipped}` : ''}:</p>`
+    body += skipDet.length
+      ? `<ul class="report-list mono">${skipDet.map((e) => `<li>${esc(e.id)} — ${esc(e.reason)}</li>`).join('')}</ul>`
+      : '<p class="muted">(reasons are recorded from the next sync)</p>'
+  }
+  if (rep.conflicts) {
+    body += `<p class="muted">Conflicts (id already taken by a manual channel or another source — never touched)${rep.conflicts > conflictIds.length ? ` — first ${conflictIds.length} of ${rep.conflicts}` : ''}:</p>`
+    body += conflictIds.length
+      ? `<ul class="report-list mono">${conflictIds.map((id) => `<li>${esc(id)}</li>`).join('')}</ul>`
+      : '<p class="muted">(ids are recorded from the next sync)</p>'
+  }
+  if (rep.excluded) body += `<p class="muted">${rep.excluded} excluded by you (channels dialog).</p>`
+  dialog(`Last sync — ${s.name}`, [], { okLabel: 'Close', body })
+}
+
+// Full error text + when it happened (the row badge only has a hover title, which
+// touch and keyboard users can't reach).
+function showSourceError (s) {
+  dialog(`Sync error — ${s.name}`, [], {
+    okLabel: 'Close',
+    body: `<div class="keybox mono">${esc(s.lastError)}</div>
+      <div class="muted">failed ${s.lastErrorAt ? new Date(s.lastErrorAt).toLocaleString() : '(unknown time)'} ·
+      ${s.lastSync ? 'last good sync ' + new Date(s.lastSync).toLocaleString() : 'never synced successfully'}</div>
+      <div class="muted">The last imported state stays live. ${s.enabled === false
+        ? 'This source is paused — scheduled retries are off; use “sync now” to retry.'
+        : 'The scheduler retries on its next tick; “sync now” retries immediately.'}</div>`
+  })
 }
 
 // Channels dialog: one checkbox per feed entry — imported ones checked, excluded
 // ones unchecked (with the label captured at exclusion time). Saving replaces the
 // source's exclude list and syncs, so deselections take effect immediately.
+// Feeds run to hundreds of entries, so the list is filterable and all/none act on
+// the filtered rows; checkbox state lives in `checked` (indexed like `channels`),
+// kept current by change listeners, so the result never depends on dialog DOM
+// surviving close.
 async function openSourceChannels (s) {
   try {
     const { channels } = await api('GET', `/api/sources/${s.name}/channels`)
     if (!channels.length) return toast('no channels imported yet — sync the source first', true)
-    const fields = channels.map((c, i) => ({ name: 'c' + i, label: c.title + (c.excluded ? ' (excluded)' : ''), type: 'checkbox', value: !c.excluded }))
-    const v = await dialog(`Channels — ${s.name} (${channels.length})`, fields, {
+    const checked = channels.map((c) => !c.excluded)
+    const rows = channels.map((c, i) =>
+      `<label class="inline ch-row"><input type="checkbox" data-i="${i}"${c.excluded ? '' : ' checked'}>
+         <span>${esc(c.title)}</span> <span class="mono muted">${esc(c.feedId)}</span></label>`).join('')
+    const p = dialog(`Channels — ${s.name} (${channels.length})`, [], {
       okLabel: 'Save + sync',
-      body: '<p class="muted">Unchecked = <b>excluded</b>: removed from the catalog (grants included) and skipped on every sync until you re-check it. The feed cannot re-add an excluded channel.</p>'
+      body: `<div class="dlg-tools">
+               <input id="ch-filter" placeholder="filter by name or feed id…">
+               <button type="button" class="btn small" id="ch-all">all</button>
+               <button type="button" class="btn small" id="ch-none">none</button>
+             </div>
+             <div class="ch-list" id="ch-list">${rows}</div>
+             <p class="muted">Unchecked = <b>excluded</b>: removed from the catalog (grants included) and skipped on every sync until you re-check it. The feed cannot re-add an excluded channel. <b>all</b>/<b>none</b> apply to the filtered rows only.</p>`
     })
+    // dialog() has already put the body in the DOM — wire it up (same pattern as showDevices)
+    const list = $('#ch-list')
+    for (const box of list.querySelectorAll('input[type=checkbox]')) {
+      box.addEventListener('change', () => { checked[+box.dataset.i] = box.checked })
+    }
+    const filter = $('#ch-filter')
+    filter.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault() }) // Enter filters, never submits
+    filter.addEventListener('input', () => {
+      const q = filter.value.trim().toLowerCase()
+      for (const row of list.querySelectorAll('.ch-row')) {
+        const c = channels[+row.querySelector('input').dataset.i]
+        row.hidden = q !== '' && !(c.title + ' ' + c.feedId).toLowerCase().includes(q)
+      }
+    })
+    const bulk = (on) => {
+      for (const row of list.querySelectorAll('.ch-row')) {
+        if (row.hidden) continue
+        const box = row.querySelector('input')
+        box.checked = on
+        checked[+box.dataset.i] = on
+      }
+    }
+    $('#ch-all').addEventListener('click', () => bulk(true))
+    $('#ch-none').addEventListener('click', () => bulk(false))
+    filter.focus()
+    const v = await p
     if (!v) return
-    const exclude = channels.filter((c, i) => !v['c' + i]).map((c) => ({ id: c.feedId, title: c.title }))
+    const exclude = channels.filter((c, i) => !checked[i]).map((c) => ({ id: c.feedId, title: c.title }))
     await api('PATCH', `/api/sources/${s.name}`, { exclude })
     await syncSourceNow(s.name)
   } catch (err) { toast(err.message, true) }
@@ -794,16 +894,23 @@ async function editSource (s) {
   const v = await dialog(`Edit source ${s.name}`, [
     { name: 'url', label: 'Feed URL (https://)', value: s.url },
     { name: 'category', label: 'Category label (the rail viewers see)', value: s.category },
-    { name: 'prefix', label: 'Channel id prefix (changing it re-creates every entry under new ids)', value: s.prefix },
-    { name: 'hours', label: 'Sync every (hours)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 360000) / 10 },
+    { name: 'prefix', label: 'Channel id prefix', value: s.prefix },
+    { name: 'minutes', label: 'Sync every (minutes)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 60000), min: 1, max: 43200, step: 1 },
     { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false }
-  ], { body: '<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category) on every sync — manual edits to those don\'t stick on imported channels.</p>' })
+  ], {
+    body: `<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category) on every sync — manual edits to those don't stick on imported channels.</p>
+      <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>`
+  })
   if (!v) return
+  // Validate here, in the field's own unit — the API's error talks milliseconds.
+  const minutes = Math.round(parseFloat(v.minutes))
+  if (!Number.isFinite(minutes) || minutes < 1) return toast('sync interval must be at least 1 minute', true)
+  if (minutes > 43200) return toast('sync interval must be at most 30 days (43200 minutes)', true)
   act(() => api('PATCH', `/api/sources/${s.name}`, {
     url: v.url.trim(),
     category: v.category.trim(),
     prefix: v.prefix.trim(),
-    intervalMs: Math.round(parseFloat(v.hours) * 3600000),
+    intervalMs: minutes * 60000,
     autoGrant: v.autoGrant
   }), `source "${s.name}" updated — applies on its next sync`)
 }

@@ -142,7 +142,9 @@
         <b>category of redirect channels</b> — viewers play each entry's URL, no P2P feed. The feed is data only: entries are
         validated like admin input, and a source can never touch manual channels or another source's ids. Channels that
         <b>leave the feed are removed</b> (grants included). P2P channels tagged with the same category share the rail.
-        Registry lives in <span class="mono">DATA_DIR/sources.json</span>.</p>
+        Oversized feeds are capped (500 channels by default, <span class="mono">sources.maxChannels</span>) and invalid
+        entries skipped — the report line under <b>Last sync</b> opens the full details. Registry lives in
+        <span class="mono">DATA_DIR/sources.json</span>.</p>
     </section>
 
     <section id="categories-section" hidden>

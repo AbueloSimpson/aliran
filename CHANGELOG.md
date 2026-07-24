@@ -113,7 +113,14 @@ phone + Android TV, and the Windows desktop player).
   the rail — zero SDK/app changes. Individual entries can be **deselected** per
   source (dashboard channels-dialog checkboxes / `--exclude`): an excluded channel
   is purged and skipped on every sync — exclusion changes reset the ETag so a 304
-  can never mask them — and re-checking re-imports and re-grants it.
+  can never mask them — and re-checking re-imports and re-grants it. The dashboard
+  surfaces the whole sync story: each row's report line opens the full last-sync
+  report — skip reasons, conflicting ids, and **over-cap truncation** (the capped
+  detail is persisted in the registry precisely for this) — sync errors open a
+  dialog with the full text and timestamp instead of hiding in a hover title (and
+  no longer mask the paused/enabled badge), the channels dialog is filterable with
+  all/none over the filtered rows and shows feed ids, and the sync interval is
+  edited in minutes with the field's own units in every validation message.
 - **Program guide (EPG) — fetched on demand, never in the catalog**: imported (and
   any manually tagged) channels carry `epgUrl`/`epgId` pointers, and the app fetches
   the provider JSON over https to render a live **Now / Up next** guide in the Info

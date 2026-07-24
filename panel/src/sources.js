@@ -507,7 +507,9 @@ async function doSync (ctx, name) {
         updated: report.updated,
         removed: report.removed,
         conflicts: report.conflicts.length,
+        conflictIds: report.conflicts.slice(0, SKIP_REPORT_MAX),
         skipped: report.skippedCount,
+        skippedDetail: report.skipped, // already capped at SKIP_REPORT_MAX
         truncated: report.truncated,
         excluded: report.excluded,
         granted: report.granted
