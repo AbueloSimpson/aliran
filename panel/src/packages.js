@@ -19,7 +19,7 @@
 // reconcile time:
 //
 //   category:<slug>   channels whose category array carries the slug — or a
-//                     child of it ('category:Nacional' covers 'Nacional/Chile')
+//                     child of it ('category:Nacional' covers 'Nacional/Norte')
 //   source:<name>     channels imported by that S27 source
 //
 // Because selectors resolve at RECONCILE time, a newly tagged / imported /
@@ -209,7 +209,7 @@ async function catalogSnapshot (ctx) {
   return catalog
 }
 
-// 'category:Nacional' covers 'Nacional' and 'Nacional/Chile' — same self-or-child
+// 'category:Nacional' covers 'Nacional' and 'Nacional/Norte' — same self-or-child
 // rule as the catmeta rename machinery, so a parent selector means the whole rail.
 const catMatch = (cats, slug) => cats.some((c) => c === slug || (typeof c === 'string' && c.startsWith(slug + '/')))
 

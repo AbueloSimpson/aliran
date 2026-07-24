@@ -29,10 +29,10 @@ afterEach(async () => {
 test('shows the current EPG program on the now-playing line', async () => {
   const now = Date.now()
   jest.spyOn(epg, 'getNowNext').mockResolvedValue({ now: { title: 'El caso del hombre topo (II)', start: now - 6e5, stop: now + 6e5 }, next: [] })
-  const stream: Stream = { id: 'anime.conan', title: 'Detective Conan', isLive: true, description: 'via plutotv', epgUrl: 'https://epg.example/a.json', epgId: 'conan' }
+  const stream: Stream = { id: 'anime.moon-cat', title: 'Moon Cat', isLive: true, description: 'via demotv', epgUrl: 'https://epg.example/a.json', epgId: 'moon-cat' }
   const t = texts(await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />))
   expect(t).toContain('El caso del hombre topo (II)')
-  expect(t).not.toContain('via plutotv')
+  expect(t).not.toContain('via demotv')
 })
 
 test('falls back to the description for a channel with no EPG', async () => {

@@ -795,10 +795,10 @@ the Argon2 grind in that flow runs client-side. Ported one-to-one from
   `test:admin-api` A–N green.
 
 ### Fix: tuning pill lifecycle — tune-scoped completion, honest self-heal labels, slower ramp
-On-device (S22, release of `aa556f6`, 2026-07-16 evening): OAN Plus visibly PLAYING
+On-device (S22, release of `aa556f6`, 2026-07-16 evening): channel 009 visibly PLAYING
 while the pill still said "Tuning 009 — 90%", the stale state bleeding into the next
 zap (pill flashes and dies while the new channel is still tuning), and a slow feed
-(hsn: 113 s time-to-play even from a PC) parking at 90% for a minute with no state
+(one shopping channel: 113 s time-to-play even from a PC) parking at 90% for a minute with no state
 change. Root cause: ONE localhost URL serves every P2P channel, so the pill's old
 completion signals (`onBuffering(false)`/`onReadyForDisplay`) also fire for the
 PREVIOUS channel — which keeps playing under the same URL until the engine flips the
@@ -1210,8 +1210,8 @@ the fallback already spent.
   secret, grants), the dialog endpoint carries the captured label, the standing
   exclusion holds through 304s with the bee version pinned, re-include re-imports
   and re-seals grants; A–J PASS. Live dashboard round-trip against the REAL feed:
-  10 → uncheck Avatar → 9 + "1 excluded" chip + `−1` report → re-check → 10 back
-  with `+1`. (Fun catch during the demo: the provider feed lists Avatar LAST —
+  10 → uncheck one title → 9 + "1 excluded" chip + `−1` report → re-check → 10 back
+  with `+1`. (Fun catch during the demo: the deselected entry sits LAST in the feed —
   it was appended after the alphabetical bulk, which is exactly the kind of feed
   drift the ownership/diff machinery shrugs at.)
 
@@ -1433,10 +1433,10 @@ changed a local copy viewers never saw.
 ### Category presentation registry — bulk rename and merge (verified)
 
 Categories could only be edited one channel at a time as a free-text array. With 300+ channels
-on two-level rails like `Nacional/Chile` there was no list of which categories exist, no
+on two-level rails like `News/Local` there was no list of which categories exist, no
 ordering, no hierarchy, and renaming a rail meant editing every channel by hand. A new
 `catmeta/<slug>` keyspace owns **presentation only** — label, parent, order, hidden — while
-catalog records keep `category: ['Nacional/Chile']` exactly as before, so the RN app, the SDK
+catalog records keep `category: ['News/Local']` exactly as before, so the RN app, the SDK
 and every existing client are untouched (this is why it was chosen over first-class category
 IDs).
 
@@ -1576,7 +1576,7 @@ and `+genpts` is not needed. The loop wrap is pixel-identical (consecutive-frame
 switch is absorbed cleanly (~2–4 s gap, no stall). In **production**: a test channel's source
 was blackholed → it slated after 3 failed respawns with the profile-matched variant (`state`
 went `backoff` → `up`) → the source was repaired with **no restart** → it dropped the slate and
-reconnected by itself within one poll. A real channel (`espn-east`) slated and self-recovered
+reconnected by itself within one poll. A real lineup channel slated and self-recovered
 during the same window. Media is rendered into the image at build time by
 `tools/render-slates.sh`, so it is produced by the exact ffmpeg that later loops it.
 Pure functions (`pickSlate` / `pickSlateFile` / `parseVideoProfile`) covered by `test:args`.
@@ -1669,9 +1669,9 @@ semantics).
   send untouched"}` ~5 s after cold launch — the healthy summary, i.e. the S22's kernel
   granted the 2 MiB receive request. Worklet boots clean (no `builtin:` refs at all in
   the new bundle — the previous shipped bundle carried a stray inert `builtin:fs`, gone
-  now), auto-login lands, `espn-east` plays **P2P** (localhost HLS, `peers: 1` ticker),
+  now), auto-login lands, a lineup channel plays **P2P** (localhost HLS, `peers: 1` ticker),
   and zapping CDN→P2P→P2P→P2P held up with the engine healthy throughout. One lineup
-  channel (`espn-1-arg`) sat in "Tuning" with an advancing progress bar while its
+  channel sat in "Tuning" with an advancing progress bar while its
   upstream IPTV source limped — the engine kept serving (steady peers, `feed:ready`
   fired) and zapping away was instant, which is the flaky-source profile the scale test
   already documented, not a client regression.
@@ -1811,8 +1811,8 @@ OUT — end-of-title parked on ▶ at `3:00/3:00` on the LAST frame with the bar
 held sticky and **no resync restart after 30+ s of a still playhead** (the
 strongest possible disarm proof), **replay-from-end** via the seek handle,
 **pause held 31 s frozen** + resume, and the logcat chain
-`chv-cl recordType:"live"` → `vod-clock-demo recordType:"vod"` → espn-east
-playing live — the full live→vod→live interplay on real hardware. Client
+a live channel (`recordType:"live"`) → `vod-clock-demo recordType:"vod"` → a live channel
+playing again — the full live→vod→live interplay on real hardware. Client
 suites: jest 11/11 (43 tests, incl. the new `AliranVideoVod` group pinning
 disarm/re-arm/seek and the catalog/row/bar vod cases), `tsc` clean, bundle
 regenerated and validated (main + 15 linked addons, zero `builtin:` refs). The
@@ -1876,12 +1876,12 @@ packaging is noted as a follow-up.
 **Verification — against the production VPS (~84 live P2P channels + ~238
 redirects), on the PACKAGED portable/unpacked build,** with a throwaway user
 (`s35test`, deleted after): sign-out → login → the 244-channel lineup; P2P
-playback with the peers badge (espn-east, `P2P · 1 peer`); a zap chain
+playback with the peers badge (`P2P · 1 peer`); a zap chain
 P2P→P2P→P2P→redirect wrapping the numbered ring (241→…→001) with the tuning
-pill; the EPG guide rendering now/next with the elapsed bar (Pluto feeds); track
+pill; the EPG guide rendering now/next with the elapsed bar (provider feeds); track
 selection flipping an English subtitle track to `showing`; the Smooth-zapping
-toggle persisting + echoing; and the **HEVC verdict: the HEVC 1080p channels
-(`cos-pa`, `telemetro-pa`) play at full 1920×1080** on this box (platform
+toggle persisting + echoing; and the **HEVC verdict: two HEVC 1080p lineup
+channels play at full 1920×1080** on this box (platform
 hardware decode; `MediaSource.isTypeSupported('hvc1')` true) — on hosts without
 it the player surfaces the clean codec error. Screenshots:
 `aliran-ops/s35-screenshots/01…12`. The engine logged the S33 socket tuning
@@ -2395,7 +2395,7 @@ POSIX file-mode checks. Four focused fix commits, all wire-compatible; `@aliran/
 was not touched.
 
 ### Channel packages ("bouquets") — entitlements granted as one unit (verified)
-- **Problem:** grants were only ever per-stream (`grant alice espn` × N), and the
+- **Problem:** grants were only ever per-stream (`grant alice sports-1` × N), and the
   Users-tab grant chips stop scaling somewhere past a few dozen channels — a real
   lineup wants "Basic" / "Sports" / "Cine" bundles. The shaping constraint, verified
   in code before designing anything: a grant is **cryptographic, not an ACL** —

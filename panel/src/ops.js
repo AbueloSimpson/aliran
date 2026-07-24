@@ -446,7 +446,7 @@ async function requireStream (ctx, id) {
 // ---------------------------------------------------------------- categories
 //
 // Categories live ON each catalog record as a plain string array
-// (`category: ['Nacional/Chile']`) and that STAYS the wire format — the RN app and the
+// (`category: ['Nacional/Norte']`) and that STAYS the wire format — the RN app and the
 // SDK read those strings, so nothing in here needs a client change. What was missing is
 // a VOCABULARY: no list of which categories exist, no ordering, no hierarchy, and a
 // rename meant editing every channel by hand.
@@ -481,7 +481,7 @@ export function normSlug (s, what = 'category') {
 }
 
 const parentOf = (slug) => (slug.includes('/') ? slug.slice(0, slug.indexOf('/')) : null)
-// Renaming 'Nacional' has to carry 'Nacional/Chile' with it or the children orphan.
+// Renaming 'Nacional' has to carry 'Nacional/Norte' with it or the children orphan.
 const isSelfOrChild = (slug, root) => slug === root || slug.startsWith(root + '/')
 const reslug = (slug, from, to) => (slug === from ? to : to + slug.slice(from.length))
 
@@ -712,7 +712,7 @@ export function setAdminPassword (ctx, name, password) {
 // Enrolled broadcaster identities (S26). Panel-private registry
 // (DATA_DIR/secrets/publishers.json, mode 0600, same pattern as admins.json) —
 // NEVER in the replicated DB. Each entry is one broadcaster site:
-//   { name: { publicKey, scopes: ['east-*','espn2'], status: 'active'|'revoked', addedAt } }
+//   { name: { publicKey, scopes: ['east-*','sports-1'], status: 'active'|'revoked', addedAt } }
 // The keypair is generated PANEL-side; only the PUBLIC key is stored — the secret
 // is returned exactly once by addPublisher for that site's broadcaster .env
 // (PUBLISHER_KEY + PUBLISHER_NAME). The register responder (rpc.js) re-reads the

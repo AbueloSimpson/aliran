@@ -30,7 +30,7 @@ afterEach(() => { jest.useRealTimers() })
 test('ramps slowly toward ~85 and snaps to 100 on completion, then hides', async () => {
   let tree!: RendererInstance
   await ReactTestRenderer.act(async () => {
-    tree = ReactTestRenderer.create(<ChannelChangeIndicator active number={9} title="OAN Plus" />)
+    tree = ReactTestRenderer.create(<ChannelChangeIndicator active number={9} title="News Nine" />)
   })
   expect(texts(tree).join(' ')).toContain('Tuning')
   expect(texts(tree).join(' ')).toContain('009')
@@ -47,7 +47,7 @@ test('ramps slowly toward ~85 and snaps to 100 on completion, then hides', async
   expect(at30s).toBeLessThan(85)
 
   // Completion (active -> false): snap to 100, hold briefly, hide.
-  await ReactTestRenderer.act(async () => { tree.update(<ChannelChangeIndicator active={false} number={9} title="OAN Plus" />) })
+  await ReactTestRenderer.act(async () => { tree.update(<ChannelChangeIndicator active={false} number={9} title="News Nine" />) })
   expect(pct(tree)).toBe(100)
   await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(500) })
   expect(tree.toJSON()).toBeNull()

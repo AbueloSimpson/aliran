@@ -30,17 +30,17 @@ afterEach(async () => {
 test('shows the current EPG program as the subtitle, not the description', async () => {
   const now = Date.now()
   jest.spyOn(epg, 'getNowNext').mockResolvedValue({ now: { title: 'El caso del hombre topo (I)', start: now - 6e5, stop: now + 6e5 }, next: [] })
-  const stream: Stream = { id: 'anime.conan', title: 'Detective Conan', isLive: true, description: 'via plutotv', epgUrl: 'https://epg.example/a.json', epgId: 'conan' }
+  const stream: Stream = { id: 'anime.moon-cat', title: 'Moon Cat', isLive: true, description: 'via demotv', epgUrl: 'https://epg.example/a.json', epgId: 'moon-cat' }
   const t = texts(await createTree(<NowPlayingBar stream={stream} {...props} />))
   expect(t).toContain('El caso del hombre topo (I)')
-  expect(t).not.toContain('via plutotv')
+  expect(t).not.toContain('via demotv')
 })
 
 test('falls back to the description when the channel has no EPG', async () => {
   const spy = jest.spyOn(epg, 'getNowNext')
-  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via plutotv' }
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv' }
   const t = texts(await createTree(<NowPlayingBar stream={stream} {...props} />))
-  expect(t).toContain('via plutotv')
+  expect(t).toContain('via demotv')
   expect(spy).not.toHaveBeenCalled()
 })
 
@@ -58,7 +58,7 @@ test('vod transport: elapsed + runtime render; glyph follows paused', async () =
 })
 
 test('no transport row for live channels', async () => {
-  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via plutotv' }
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv' }
   const t = texts(await createTree(<NowPlayingBar stream={stream} {...props} />))
   expect(t).not.toContain('❚❚')
   expect(t).not.toContain('--:--')

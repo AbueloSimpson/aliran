@@ -82,8 +82,8 @@ $ systemctl stop caddy      # write the config before it serves anything
 $ PW=$(openssl rand -base64 18)
 $ caddy hash-password --plaintext "$PW"
 $2a$14$…
-$ printf 'dashboard operator %s\n' "$PW" >> /root/aliran-credentials.txt
-$ chmod 600 /root/aliran-credentials.txt
+$ printf 'dashboard operator %s\n' "$PW" >> ~/dashboard-password.txt
+$ chmod 600 ~/dashboard-password.txt
 $ unset PW
 ```
 

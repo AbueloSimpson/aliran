@@ -55,8 +55,8 @@ assert.deepStrictEqual(inputArgs({ kind: 'pull', url: 'https://cdn/vod/movie.mp4
 // channels looked like this. -re throttles the reader to 1x on a source that is already
 // realtime, so after any jitter ffmpeg cannot catch up and slow-client drops follow.
 for (const live of [
-  'http://209.222.97.39:81/ESPN1_NORTE/mpegts?token=x',
-  'http://104.238.205.133:81/CH-13-RECTV-STREAM_1',
+  'http://203.0.113.20:81/SPORTS1_NORTE/mpegts?token=x',
+  'http://203.0.113.21:81/CH-9-DEMO-STREAM_1',
   'https://cdn.example/live/feed.ts'
 ]) {
   const a = inputArgs({ kind: 'pull', url: live })
@@ -301,7 +301,7 @@ assert.strictEqual(inc.list().length, 2, 'a later burst is a separate incident')
 assert.strictEqual(inc.list()[0].channels, 5, 'newest first, fresh count')
 
 // discrete events are always recorded on their own
-inc.record('source-failover', { channel: 'espn-2', index: 1, of: 3 })
+inc.record('source-failover', { channel: 'sports-2', index: 1, of: 3 })
 assert.strictEqual(inc.list()[0].type, 'source-failover', 'discrete events land immediately')
 
 // the ring is bounded

@@ -111,7 +111,7 @@ sites — enroll each one (dashboard → Publishers, or the CLI; file-based, pan
 stay running):
 
 ```bash
-node src/admin-cli.js add-publisher east --scopes "east-*,espn2"
+node src/admin-cli.js add-publisher east --scopes "east-*,sports-1"
 ```
 
 Put the printed `PUBLISHER_NAME` + `PUBLISHER_KEY` pair in **that site's**

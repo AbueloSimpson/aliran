@@ -571,23 +571,23 @@ try {
   // ===== Q: category presentation registry =====
   // Membership stays on the catalog records (the wire format the app reads); catmeta/
   // owns only presentation. The two must never overwrite each other.
-  for (const [id, cat] of [['cat-a', 'Nacional/Chile'], ['cat-b', 'Nacional/Peru'], ['cat-c', 'Deportes']]) {
+  for (const [id, cat] of [['cat-a', 'Nacional/Norte'], ['cat-b', 'Nacional/Sur'], ['cat-c', 'Deportes']]) {
     r = await api('POST', '/api/streams', { id, category: cat }, { token })
     assert.strictEqual(r.status, 201, 'create ' + id)
   }
   r = await api('GET', '/api/categories', undefined, { token })
   assert.strictEqual(r.status, 200, 'list categories')
   const byslug = Object.fromEntries(r.body.map((c) => [c.slug, c]))
-  assert.strictEqual(byslug['Nacional/Chile'].channels, 1, 'counts channels in use')
-  assert.strictEqual(byslug['Nacional/Chile'].parent, 'Nacional', 'parent derived from the slug')
-  assert.strictEqual(byslug['Nacional/Chile'].registered, false, 'in use but unregistered still listed')
+  assert.strictEqual(byslug['Nacional/Norte'].channels, 1, 'counts channels in use')
+  assert.strictEqual(byslug['Nacional/Norte'].parent, 'Nacional', 'parent derived from the slug')
+  assert.strictEqual(byslug['Nacional/Norte'].registered, false, 'in use but unregistered still listed')
 
   // presentation upsert, then the S29 idempotency gate: a repeat must cost ZERO appends
-  r = await api('POST', '/api/categories', { slug: 'Nacional/Chile', label: 'Chile', order: 3 }, { token })
+  r = await api('POST', '/api/categories', { slug: 'Nacional/Norte', label: 'Norte', order: 3 }, { token })
   assert.strictEqual(r.status, 200, 'upsert category')
-  assert.strictEqual(r.body.label, 'Chile', 'label stored')
+  assert.strictEqual(r.body.label, 'Norte', 'label stored')
   const lenBefore = db.core.length
-  r = await api('POST', '/api/categories', { slug: 'Nacional/Chile', label: 'Chile', order: 3 }, { token })
+  r = await api('POST', '/api/categories', { slug: 'Nacional/Norte', label: 'Norte', order: 3 }, { token })
   assert.strictEqual(db.core.length, lenBefore, 'redundant upsert appends nothing')
   const lenBeforeNoop = db.core.length
   r = await api('PATCH', '/api/categories', { from: 'Deportes', to: 'Deportes' }, { token })
@@ -599,15 +599,15 @@ try {
   assert.strictEqual(r.body.channels, 2, 'both children rewritten')
   // there is no GET /api/streams/:id — only the list (admin-server.js r1==='streams')
   const cats = async (id) => ((await api('GET', '/api/streams', undefined, { token })).body.find((s) => s.id === id) || {}).category
-  assert.deepStrictEqual(await cats('cat-a'), ['Local/Chile'], 'child a followed the parent')
-  assert.deepStrictEqual(await cats('cat-b'), ['Local/Peru'], 'child b followed the parent')
+  assert.deepStrictEqual(await cats('cat-a'), ['Local/Norte'], 'child a followed the parent')
+  assert.deepStrictEqual(await cats('cat-b'), ['Local/Sur'], 'child b followed the parent')
   assert.deepStrictEqual(await cats('cat-c'), ['Deportes'], 'unrelated category untouched')
   r = await api('GET', '/api/categories', undefined, { token })
-  const moved = r.body.find((c) => c.slug === 'Local/Chile')
-  assert.ok(moved && moved.label === 'Chile', 'hand-written label survived the rename')
+  const moved = r.body.find((c) => c.slug === 'Local/Norte')
+  assert.ok(moved && moved.label === 'Norte', 'hand-written label survived the rename')
 
   // merge many → one, de-duplicating
-  r = await api('PATCH', '/api/categories', { op: 'merge', from: ['Local/Chile', 'Local/Peru'], to: 'Local/All' }, { token })
+  r = await api('PATCH', '/api/categories', { op: 'merge', from: ['Local/Norte', 'Local/Sur'], to: 'Local/All' }, { token })
   assert.strictEqual(r.status, 200, 'merge')
   assert.strictEqual(r.body.channels, 2, 'merged both')
   assert.deepStrictEqual(await cats('cat-a'), ['Local/All'], 'merged into target')

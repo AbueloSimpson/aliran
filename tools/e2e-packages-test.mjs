@@ -83,7 +83,7 @@ try {
 
   // Catalog the selectors resolve against, and a user that PRE-DATES every
   // package (bob must never receive a default).
-  for (const [id, category] of [['news', 'News'], ['espn-east', 'Deportes'], ['espn-west', 'Deportes'], ['kids-tv', 'Kids/Junior']]) {
+  for (const [id, category] of [['news', 'News'], ['sports-east', 'Deportes'], ['sports-west', 'Deportes'], ['kids-tv', 'Kids/Junior']]) {
     const r = await api('POST', '/api/streams', { id, category }, token)
     assert.strictEqual(r.status, 201, 'add stream ' + id)
   }
@@ -120,12 +120,12 @@ try {
 
   // ===== Test B: member selectors resolve against the catalog =====
   await api('POST', '/api/packages', { name: 'sports', members: 'category:Deportes' }, token)
-  await api('POST', '/api/packages', { name: 'globs', members: 'espn-*' }, token)
+  await api('POST', '/api/packages', { name: 'globs', members: 'sports-*' }, token)
   await api('POST', '/api/packages', { name: 'kids', members: 'category:Kids' }, token)
   r = await api('GET', '/api/packages/sports', undefined, token)
-  assert.deepStrictEqual(r.body.resolved, ['espn-east', 'espn-west'], 'category selector resolves')
+  assert.deepStrictEqual(r.body.resolved, ['sports-east', 'sports-west'], 'category selector resolves')
   r = await api('GET', '/api/packages/globs', undefined, token)
-  assert.deepStrictEqual(r.body.resolved, ['espn-east', 'espn-west'], 'id glob resolves (publisher-scope matcher)')
+  assert.deepStrictEqual(r.body.resolved, ['sports-east', 'sports-west'], 'id glob resolves (publisher-scope matcher)')
   r = await api('GET', '/api/packages/kids', undefined, token)
   assert.deepStrictEqual(r.body.resolved, ['kids-tv'], "parent selector covers 'Kids/Junior'")
   r = await api('GET', '/api/packages/nope', undefined, token)
@@ -139,14 +139,14 @@ try {
   assert.strictEqual(r.status, 200, 'assign: ' + JSON.stringify(r.body))
   assert.deepStrictEqual(r.body.packages, ['sports'])
   assert.deepStrictEqual(r.body.manualGrants, [], 'package grants are NOT manual')
-  assert.ok(r.body.grants.includes('espn-east') && r.body.grants.includes('espn-west'), 'both channels granted')
+  assert.ok(r.body.grants.includes('sports-east') && r.body.grants.includes('sports-west'), 'both channels granted')
   const bobRec = (await db.get('user/bob')).value
-  assert.ok(bobRec.wrapped['espn-east'] && bobRec.wrapped['espn-west'], 'sealed entries exist in the record')
+  assert.ok(bobRec.wrapped['sports-east'] && bobRec.wrapped['sports-west'], 'sealed entries exist in the record')
   // The sealed blob is the same shape ops.grant produces — the wire format the
   // client unseals at login is untouched by the packages machinery.
   await api('POST', '/api/users/bob/grants', { streamId: 'news' }, token)
   const bobRec2 = (await db.get('user/bob')).value
-  assert.strictEqual(typeof bobRec2.wrapped['espn-east'], typeof bobRec2.wrapped.news, 'package seal ≡ manual seal shape')
+  assert.strictEqual(typeof bobRec2.wrapped['sports-east'], typeof bobRec2.wrapped.news, 'package seal ≡ manual seal shape')
   r = await api('GET', '/api/packages', undefined, token)
   assert.strictEqual(r.body.find((p) => p.name === 'sports').holders, 1, 'holder count tracks assignment')
   log('C: assignment seals the resolved members; unknown package 404; holder count ✓')
@@ -154,30 +154,30 @@ try {
   // ===== Test D: provenance — revoke removes the MANUAL entitlement =====
   r = await getUser('bob')
   assert.deepStrictEqual(r.manualGrants, ['news'], 'manual grant recorded')
-  await api('POST', '/api/users/bob/grants', { streamId: 'espn-east' }, token) // dual provenance: manual + package
+  await api('POST', '/api/users/bob/grants', { streamId: 'sports-east' }, token) // dual provenance: manual + package
   r = await getUser('bob')
-  assert.ok(r.manualGrants.includes('espn-east'))
-  r = (await api('DELETE', '/api/users/bob/grants/espn-east', undefined, token)).body
-  assert.ok(!r.manualGrants.includes('espn-east'), 'manual entitlement removed')
-  assert.ok(r.grants.includes('espn-east'), 'the covering package re-sealed it — access remains, now package-only')
-  r = (await api('DELETE', '/api/users/bob/grants/espn-west', undefined, token)).body
-  assert.ok(r.grants.includes('espn-west'), 'revoking a pure package grant converges back (the package still covers it)')
+  assert.ok(r.manualGrants.includes('sports-east'))
+  r = (await api('DELETE', '/api/users/bob/grants/sports-east', undefined, token)).body
+  assert.ok(!r.manualGrants.includes('sports-east'), 'manual entitlement removed')
+  assert.ok(r.grants.includes('sports-east'), 'the covering package re-sealed it — access remains, now package-only')
+  r = (await api('DELETE', '/api/users/bob/grants/sports-west', undefined, token)).body
+  assert.ok(r.grants.includes('sports-west'), 'revoking a pure package grant converges back (the package still covers it)')
   r = (await api('POST', '/api/users/bob/packages', { packages: [] }, token)).body
-  assert.ok(!r.grants.includes('espn-east') && !r.grants.includes('espn-west'), 'unassigning the package removes its channels')
+  assert.ok(!r.grants.includes('sports-east') && !r.grants.includes('sports-west'), 'unassigning the package removes its channels')
   assert.deepStrictEqual(r.grants, ['news'], 'the manual grant survives')
   log('D: revoke = remove manual (package re-seals); unassign removes package channels, manual survives ✓')
 
   // ===== Test E: package REMOVAL keeps manual + other-package grants =====
   await api('POST', '/api/users/bob/packages', { packages: ['sports', 'globs'] }, token)
-  await api('POST', '/api/users/bob/grants', { streamId: 'espn-east' }, token) // manual on top
+  await api('POST', '/api/users/bob/grants', { streamId: 'sports-east' }, token) // manual on top
   r = (await api('DELETE', '/api/packages/sports', undefined, token)).body
   assert.strictEqual(r.removed, true)
   r = await getUser('bob')
   assert.deepStrictEqual(r.packages, ['globs'], 'removed package stripped from the user')
-  assert.ok(r.grants.includes('espn-east') && r.grants.includes('espn-west'), "channels survive — still covered by 'globs' + manual")
+  assert.ok(r.grants.includes('sports-east') && r.grants.includes('sports-west'), "channels survive — still covered by 'globs' + manual")
   await api('POST', '/api/users/bob/packages', { packages: [] }, token)
   r = await getUser('bob')
-  assert.deepStrictEqual(r.grants.sort(), ['espn-east', 'news'], 'without any package: manual espn-east + news remain, espn-west gone')
+  assert.deepStrictEqual(r.grants.sort(), ['news', 'sports-east'], 'without any package: manual sports-east + news remain, sports-west gone')
   r = await api('GET', '/api/packages/sports', undefined, token)
   assert.strictEqual(r.status, 404, 'registry entry gone')
   await api('POST', '/api/packages', { name: 'sports', members: 'category:Deportes' }, token) // re-create for later tests
@@ -187,20 +187,20 @@ try {
   await api('POST', '/api/users', { username: 'carol', password: 'carol-secret-1' }, token) // gets default 'basic' (news)
   await api('POST', '/api/users/carol/packages', { packages: ['basic', 'sports'] }, token)
   await api('POST', '/api/users/bob/packages', { packages: ['globs'] }, token)
-  r = await api('POST', '/api/streams', { id: 'espn-new', category: 'Deportes' }, token)
+  r = await api('POST', '/api/streams', { id: 'sports-new', category: 'Deportes' }, token)
   assert.strictEqual(r.status, 201)
-  assert.ok((await getUser('bob')).grants.includes('espn-new'), 'glob member covers a NEWLY ADDED id immediately')
-  assert.ok((await getUser('carol')).grants.includes('espn-new'), 'category member covers it too')
-  await api('PATCH', '/api/streams/espn-new', { category: ['Movies'] }, token)
+  assert.ok((await getUser('bob')).grants.includes('sports-new'), 'glob member covers a NEWLY ADDED id immediately')
+  assert.ok((await getUser('carol')).grants.includes('sports-new'), 'category member covers it too')
+  await api('PATCH', '/api/streams/sports-new', { category: ['Movies'] }, token)
   r = await getUser('carol')
-  assert.ok(!r.grants.includes('espn-new'), 'retag moved it out of the category member — carol loses it')
-  assert.ok((await getUser('bob')).grants.includes('espn-new'), 'the id still matches the glob — bob keeps it')
-  await api('PATCH', '/api/streams/espn-new', { category: ['Deportes'] }, token)
-  assert.ok((await getUser('carol')).grants.includes('espn-new'), 'retag back re-seals for carol')
-  await api('DELETE', '/api/streams/espn-new', undefined, token)
+  assert.ok(!r.grants.includes('sports-new'), 'retag moved it out of the category member — carol loses it')
+  assert.ok((await getUser('bob')).grants.includes('sports-new'), 'the id still matches the glob — bob keeps it')
+  await api('PATCH', '/api/streams/sports-new', { category: ['Deportes'] }, token)
+  assert.ok((await getUser('carol')).grants.includes('sports-new'), 'retag back re-seals for carol')
+  await api('DELETE', '/api/streams/sports-new', undefined, token)
   r = await getUser('bob')
-  assert.ok(!r.grants.includes('espn-new'), 'deleteStream purges the grant')
-  assert.strictEqual(loadSecrets(dir)['espn-new'], undefined, 'secret purged')
+  assert.ok(!r.grants.includes('sports-new'), 'deleteStream purges the grant')
+  assert.strictEqual(loadSecrets(dir)['sports-new'], undefined, 'secret purged')
   // Explicit member for a stream that does not exist yet: seals nothing now,
   // materializes the moment the stream is added.
   await api('POST', '/api/packages', { name: 'future', members: 'later-ch' }, token)
@@ -271,7 +271,7 @@ try {
 
   // ===== Test J: pre-S44 record migration (additive, attribution-correct) =====
   await api('POST', '/api/users', { username: 'erin', password: 'erin-secret-1' }, token)
-  await api('POST', '/api/users/erin/grants', { streamId: 'espn-east' }, token)
+  await api('POST', '/api/users/erin/grants', { streamId: 'sports-east' }, token)
   // Rewrite erin as a LEGACY record: no provenance fields at all (the pre-S44
   // shape) — wrapped keeps the manual grant, the default-package news grant and
   // the anime auto-grants indistinguishably mixed, like a real upgrade.
@@ -283,7 +283,7 @@ try {
   const rec = await packages.reconcilePackages(ctx) // the panel-boot migration path
   const erin = (await db.get('user/erin')).value
   assert.deepStrictEqual(Object.keys(erin.wrapped).sort(), before, 'migration is ADDITIVE — no grant removed')
-  assert.deepStrictEqual(erin.manualGrants.sort(), ['espn-east', 'kids-tv', 'news'], 'non-auto grants adopted as manual (news/kids-tv were package-derived, but a legacy record cannot know that)')
+  assert.deepStrictEqual(erin.manualGrants.sort(), ['kids-tv', 'news', 'sports-east'], 'non-auto grants adopted as manual (news/kids-tv were package-derived, but a legacy record cannot know that)')
   assert.ok(!erin.manualGrants.includes('anime.a1'), 'autoGrant-source grants NOT misattributed as manual')
   assert.deepStrictEqual(erin.packages, [], 'legacy record starts with no packages')
   assert.ok(rec.users >= 1, 'migration wrote the record')

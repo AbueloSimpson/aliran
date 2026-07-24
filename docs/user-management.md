@@ -31,7 +31,7 @@ is a named bundle ("Basic", "Sports") granted as one unit:
 
 ```bash
 admin-cli add-package basic --label "Basic" --members "news-24, kids-tv" --default
-admin-cli add-package sports --members "category:Deportes, espn-*"
+admin-cli add-package sports --members "category:Deportes, sports-*"
 admin-cli set-user-packages alice basic,sports    # replace alice's package list
 admin-cli show-package sports                     # members + the channels they resolve to now
 admin-cli remove-package sports                   # grants only it covered are removed

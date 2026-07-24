@@ -113,9 +113,9 @@ Seven channels are neither 720p nor 1080p. Re-probed 2026-07-21 with pixel aspec
 
 | Raster | SAR | DAR | Channels |
 |---|---|---|---|
-| 852x720 | 3:2 | 71:40 (1.775) | `espn-1-arg`, `espn-2-arg`, `fox-sports-2-arg`, `fox-sports-3-arg` (all **mono**) |
-| 720x480 | 32:27 | 16:9 | `via-x-cl`, `zona-latina-cl` |
-| 1024x576 | 1:1 | 16:9 | `bein-n` |
+| 852x720 | 3:2 | 71:40 (1.775) | `sports-1`, `sports-2`, `sports-3`, `sports-4` (all **mono**) |
+| 720x480 | 32:27 | 16:9 | `music-1`, `music-2` |
+| 1024x576 | 1:1 | 16:9 | `sports-5` |
 
 **The important result: every channel in the fleet displays at 16:9**, including the SD and
 odd rasters — they are anamorphic (non-square pixels), not differently-shaped pictures.
@@ -128,15 +128,15 @@ segments appended as failover would produce them):
 
 | Case | Result |
 |---|---|
-| `via-x-cl` 720x480 stereo → 720p slate | 246 frames, raster `720x480 → 1280x720`, clean |
-| `espn-1-arg` 852x720 **mono** → 720p stereo slate | 246 frames, raster `852x720 → 1280x720`, audio `1ch → 2ch`, clean |
+| `music-1` 720x480 stereo → 720p slate | 246 frames, raster `720x480 → 1280x720`, clean |
+| `sports-1` 852x720 **mono** → 720p stereo slate | 246 frames, raster `852x720 → 1280x720`, audio `1ch → 2ch`, clean |
 
 The only decoder complaints were `Packet corrupt` originating in the *live* segment — a
 pre-existing property of flaky IPTV sources (see `discardCorrupt` in the ingest tuning), not
 caused by the slate.
 
 **Match at selection time, not from a static table.** Source resolutions drift: between two
-probes hours apart, `bein-n` moved to 1024x576 and a 718x480 channel disappeared entirely.
+probes hours apart, `sports-5` moved to 1024x576 and a 718x480 channel disappeared entirely.
 The consuming feature must read the channel's *currently detected* profile.
 
 ## Failover: swap the INPUT, don't just restart ffmpeg

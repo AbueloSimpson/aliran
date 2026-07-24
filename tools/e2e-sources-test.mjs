@@ -123,13 +123,13 @@ try {
   feeds['/anime.json'] = {
     name: 'Anime ES',
     channels: [
-      { id: 'conan', number: 1001175, name: 'Detective Conan', description: 'The great detective', logo: 'https://img.example/conan.png', url: 'https://cdn.example/conan.m3u8', categories: ['Anime'], provider: 'plutotv', epg: [{ title: 'ep1' }] },
-      { id: 'naruto', name: 'Naruto', logo: 'http://insecure.example/naruto.png', url: 'https://cdn.example/naruto.m3u8' },
-      { id: 'one-piece', name: 'One Piece', url: 'https://cdn.example/op.m3u8' },
+      { id: 'moon-cat', number: 1001175, name: 'Moon Cat', description: 'The great detective', logo: 'https://img.example/moon-cat.png', url: 'https://cdn.example/moon-cat.m3u8', categories: ['Anime'], provider: 'demotv', epg: [{ title: 'ep1' }] },
+      { id: 'ninja-run', name: 'Ninja Run', logo: 'http://insecure.example/ninja-run.png', url: 'https://cdn.example/ninja-run.m3u8' },
+      { id: 'star-quest', name: 'Star Quest', url: 'https://cdn.example/op.m3u8' },
       { id: 'manual', name: 'Imposter', url: 'https://cdn.example/imposter.m3u8' },
       { id: 'badurl', name: 'Bad URL', url: 'http://insecure.example/x.m3u8' },
       { id: 'bad id!', name: 'Bad Id', url: 'https://cdn.example/y.m3u8' },
-      { id: 'conan', name: 'Duplicate', url: 'https://cdn.example/dup.m3u8' }
+      { id: 'moon-cat', name: 'Duplicate', url: 'https://cdn.example/dup.m3u8' }
     ]
   }
   r = await api('POST', '/api/sources/anime/sync', undefined, token)
@@ -139,33 +139,33 @@ try {
   assert.strictEqual(r.body.skippedCount, 3, 'bad url + bad id + duplicate skipped')
   assert.strictEqual(r.body.granted, 3, 'bob auto-granted the three channels')
 
-  const conan = (await db.get('catalog/anime.conan')).value
-  assert.strictEqual(conan.title, 'Detective Conan')
-  assert.strictEqual(conan.description, 'The great detective', 'description seeded from the feed field on create')
-  assert.strictEqual((await db.get('catalog/anime.naruto')).value.description, '', 'no feed description -> empty (no more "via provider")')
-  assert.deepStrictEqual(conan.category, ['Anime'], 'category = source label (not the feed\'s)')
-  assert.strictEqual(conan.redirect, true)
-  assert.strictEqual(conan.url, 'https://cdn.example/conan.m3u8')
-  assert.strictEqual(conan.logo, 'https://img.example/conan.png')
-  assert.strictEqual(conan.order, 0)
-  assert.strictEqual(conan.isLive, true)
-  assert.strictEqual(conan.status, 'live')
-  assert.strictEqual(conan.featured, false)
-  assert.strictEqual(conan.source, 'anime')
-  assert.strictEqual(conan.epgUrl, animeUrl, 'epg pointer = the feed url')
-  assert.strictEqual(conan.epgId, 'conan')
-  assert.strictEqual(conan.feedKey, null, 'redirect channel has no P2P feed')
-  const naruto = (await db.get('catalog/anime.naruto')).value
-  assert.strictEqual(naruto.logo, null, 'http logo degrades to no art, channel kept')
-  assert.strictEqual(naruto.order, 1)
+  const mooncat = (await db.get('catalog/anime.moon-cat')).value
+  assert.strictEqual(mooncat.title, 'Moon Cat')
+  assert.strictEqual(mooncat.description, 'The great detective', 'description seeded from the feed field on create')
+  assert.strictEqual((await db.get('catalog/anime.ninja-run')).value.description, '', 'no feed description -> empty (no more "via provider")')
+  assert.deepStrictEqual(mooncat.category, ['Anime'], 'category = source label (not the feed\'s)')
+  assert.strictEqual(mooncat.redirect, true)
+  assert.strictEqual(mooncat.url, 'https://cdn.example/moon-cat.m3u8')
+  assert.strictEqual(mooncat.logo, 'https://img.example/moon-cat.png')
+  assert.strictEqual(mooncat.order, 0)
+  assert.strictEqual(mooncat.isLive, true)
+  assert.strictEqual(mooncat.status, 'live')
+  assert.strictEqual(mooncat.featured, false)
+  assert.strictEqual(mooncat.source, 'anime')
+  assert.strictEqual(mooncat.epgUrl, animeUrl, 'epg pointer = the feed url')
+  assert.strictEqual(mooncat.epgId, 'moon-cat')
+  assert.strictEqual(mooncat.feedKey, null, 'redirect channel has no P2P feed')
+  const ninjarun = (await db.get('catalog/anime.ninja-run')).value
+  assert.strictEqual(ninjarun.logo, null, 'http logo degrades to no art, channel kept')
+  assert.strictEqual(ninjarun.order, 1)
   const manual = (await db.get('catalog/anime.manual')).value
   assert.strictEqual(manual.title, 'Hands Off', 'manual channel untouched by the colliding feed entry')
   assert.strictEqual(manual.source, undefined)
 
   const secrets = loadSecrets(dir)
-  for (const id of ['anime.conan', 'anime.naruto', 'anime.one-piece']) assert.match(secrets[id], /^[0-9a-f]{64}$/, 'secret minted for ' + id)
+  for (const id of ['anime.moon-cat', 'anime.ninja-run', 'anime.star-quest']) assert.match(secrets[id], /^[0-9a-f]{64}$/, 'secret minted for ' + id)
   const bob = (await db.get('user/bob')).value
-  for (const id of ['anime.conan', 'anime.naruto', 'anime.one-piece']) assert.ok(bob.wrapped[id], 'bob sealed grant for ' + id)
+  for (const id of ['anime.moon-cat', 'anime.ninja-run', 'anime.star-quest']) assert.ok(bob.wrapped[id], 'bob sealed grant for ' + id)
   assert.strictEqual(bob.wrapped['anime.manual'], undefined, 'conflict channel NOT granted by the source')
 
   r = await api('GET', '/api/sources', undefined, token)
@@ -191,38 +191,38 @@ try {
   log('C: idempotent — ETag 304 and same-content 200 both leave the bee untouched (version ' + v1 + ') ✓')
 
   // ===== Test D: mutation — update/remove/add; curation survives; feed wins on mapped fields =====
-  await api('PATCH', '/api/streams/anime.conan', { featured: true, description: 'Teen detective in a shrunk body' }, token) // operator-owned fields
+  await api('PATCH', '/api/streams/anime.moon-cat', { featured: true, description: 'A cat detective on the moon' }, token) // operator-owned fields
   feeds['/anime.json'] = {
     channels: [
-      { id: 'conan', name: 'Detective Conan HD', logo: 'https://img.example/conan.png', url: 'https://cdn.example/conan.m3u8', provider: 'plutotv' },
-      { id: 'naruto', name: 'Naruto', url: 'https://cdn.example/naruto-v2.m3u8' },
-      { id: 'bleach', name: 'Bleach', url: 'https://cdn.example/bleach.m3u8' }
+      { id: 'moon-cat', name: 'Moon Cat HD', logo: 'https://img.example/moon-cat.png', url: 'https://cdn.example/moon-cat.m3u8', provider: 'demotv' },
+      { id: 'ninja-run', name: 'Ninja Run', url: 'https://cdn.example/ninja-run-v2.m3u8' },
+      { id: 'robo-kid', name: 'Robo Kid', url: 'https://cdn.example/robo-kid.m3u8' }
     ]
   }
   rev++
   r = await api('POST', '/api/sources/anime/sync', undefined, token)
   assert.strictEqual(r.body.updated, 2, 'title + url changes: ' + JSON.stringify(r.body))
-  assert.strictEqual(r.body.removed, 1, 'one-piece left the feed → REMOVED')
-  assert.strictEqual(r.body.added, 1, 'bleach added')
+  assert.strictEqual(r.body.removed, 1, 'star-quest left the feed → REMOVED')
+  assert.strictEqual(r.body.added, 1, 'robo-kid added')
   assert.deepStrictEqual(r.body.conflicts, [], 'no conflicts this round')
   assert.ok(db.version > v1, 'real changes append')
 
-  assert.strictEqual((await db.get('catalog/anime.one-piece')), null, 'removed channel gone from catalog')
-  assert.strictEqual(loadSecrets(dir)['anime.one-piece'], undefined, 'removed channel secret purged')
+  assert.strictEqual((await db.get('catalog/anime.star-quest')), null, 'removed channel gone from catalog')
+  assert.strictEqual(loadSecrets(dir)['anime.star-quest'], undefined, 'removed channel secret purged')
   const bob2 = (await db.get('user/bob')).value
-  assert.strictEqual(bob2.wrapped['anime.one-piece'], undefined, 'removed channel grant revoked from bob')
-  assert.ok(bob2.wrapped['anime.bleach'], 'new channel granted to bob')
-  const conan2 = (await db.get('catalog/anime.conan')).value
-  assert.strictEqual(conan2.title, 'Detective Conan HD', 'feed wins on mapped fields')
-  assert.strictEqual(conan2.featured, true, 'operator curation on unmapped fields survives the sync')
-  assert.strictEqual(conan2.description, 'Teen detective in a shrunk body', 'operator-edited description survives the sync (not feed-managed)')
-  assert.strictEqual((await db.get('catalog/anime.naruto')).value.url, 'https://cdn.example/naruto-v2.m3u8')
+  assert.strictEqual(bob2.wrapped['anime.star-quest'], undefined, 'removed channel grant revoked from bob')
+  assert.ok(bob2.wrapped['anime.robo-kid'], 'new channel granted to bob')
+  const mooncat2 = (await db.get('catalog/anime.moon-cat')).value
+  assert.strictEqual(mooncat2.title, 'Moon Cat HD', 'feed wins on mapped fields')
+  assert.strictEqual(mooncat2.featured, true, 'operator curation on unmapped fields survives the sync')
+  assert.strictEqual(mooncat2.description, 'A cat detective on the moon', 'operator-edited description survives the sync (not feed-managed)')
+  assert.strictEqual((await db.get('catalog/anime.ninja-run')).value.url, 'https://cdn.example/ninja-run-v2.m3u8')
   log('D: mutation — ~2 updated, -1 removed (grants+secret purged), +1 added, curation survives ✓')
 
   // ===== Test E: create-user hook — fresh accounts converge immediately =====
   r = await api('POST', '/api/users', { username: 'carol', password: 'carol-secret-1' }, token)
   assert.strictEqual(r.status, 201)
-  assert.ok(r.body.grants.includes('anime.conan') && r.body.grants.includes('anime.bleach'), 'create-user response already shows source grants: ' + JSON.stringify(r.body.grants))
+  assert.ok(r.body.grants.includes('anime.moon-cat') && r.body.grants.includes('anime.robo-kid'), 'create-user response already shows source grants: ' + JSON.stringify(r.body.grants))
   assert.strictEqual(r.body.grants.length, 3, 'carol granted exactly the source channels')
   log('E: create-user auto-grant hook — carol got all 3 source channels at creation ✓')
 
@@ -233,7 +233,7 @@ try {
   await api('PATCH', '/api/sources/anime', { autoGrant: true }, token)
   r = await api('POST', '/api/sources/anime/sync', undefined, token)
   assert.strictEqual(r.body.granted, 3, 'reconcile seals the 3 channels for dave')
-  assert.ok((await db.get('user/dave')).value.wrapped['anime.conan'], 'dave granted on reconcile')
+  assert.ok((await db.get('user/dave')).value.wrapped['anime.moon-cat'], 'dave granted on reconcile')
   log('F: autoGrant toggle — off leaves new users empty, re-enable + sync reconciles ✓')
 
   // ===== Test G: caps + failures keep last good state =====

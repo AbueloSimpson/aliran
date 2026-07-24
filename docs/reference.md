@@ -20,7 +20,7 @@
 | `list` | List users and streams |
 | `add-admin <name>` / `remove-admin <name>` | Manage admin accounts for the HTTP admin API |
 | `set-admin-password <name>` / `list-admins` | Rotate an admin password (revokes their sessions) / list admins |
-| `add-publisher <name> [--scopes "east-*,espn2"]` | Enroll a broadcaster site: per-site keypair (secret printed **once** → that site's `PUBLISHER_KEY`/`PUBLISHER_NAME`) + streamId-glob channel scopes |
+| `add-publisher <name> [--scopes "east-*,sports-1"]` | Enroll a broadcaster site: per-site keypair (secret printed **once** → that site's `PUBLISHER_KEY`/`PUBLISHER_NAME`) + streamId-glob channel scopes |
 | `list-publishers` / `remove-publisher <name>` | List enrollments / hard-delete one (revoking keeps the audit trail) |
 | `set-publisher-scopes <name> <globs>` | Replace a site's channel scopes (comma-separated; live from its next register) |
 | `set-publisher-status <name> <active\|revoked>` | Revoke / re-accept a site's key (status flip — no re-keying of other sites) |
@@ -28,7 +28,7 @@
 | `list-sources` / `set-source <name> [--url --category … --exclude "id1,id2"]` | List sources + sync state / edit one (registry-only — safe beside a running panel; `--exclude` deselects feed entries, `""` re-includes all) |
 | `sync-source <name>` | Pull + diff + grant **now** (needs the store: panel stopped — on a live panel use the dashboard/API) |
 | `remove-source <name> [--keep-channels]` | Remove a source; purges its channels unless `--keep-channels` detaches them |
-| `add-package <name> [--label L --members "espn,sports-*,category:Deportes,source:anime" --default]` | Define a channel package (bouquet): members are stream ids, id globs, and `category:`/`source:` selectors resolved at reconcile time; `--default` auto-assigns it to **new** users |
+| `add-package <name> [--label L --members "news-24,sports-*,category:Deportes,source:anime" --default]` | Define a channel package (bouquet): members are stream ids, id globs, and `category:`/`source:` selectors resolved at reconcile time; `--default` auto-assigns it to **new** users |
 | `set-package <name> [--label --members "…" --default true\|false]` / `remove-package <name>` | Edit a package (member edits materialize for every holder; `""` clears members) / remove it (grants only it covered are removed) |
 | `list-packages` / `show-package <name>` | Packages + resolved/holder counts / one package with the channels it resolves to now |
 | `set-user-packages <u> <p1,p2\|"">` | Replace a user's package list — seals/removes grants immediately (package commands need the store: panel stopped, or use the dashboard/API) |
@@ -307,7 +307,7 @@ reach it says so (`server_install` sets it). Secrets minted server-side (the
   "origin": null,              // enrolled publisher that made the LAST register (audit), or null
   "source": "anime",           // imported by this channel source, absent on manual channels
   "epgUrl": "https://…",       // source imports: the feed URL carrying this channel's schedule
-  "epgId": "plutotv.es.629…",  // source imports: this channel's id INSIDE that feed
+  "epgId": "demotv.es.629…",   // source imports: this channel's id INSIDE that feed
   "status": "live"
 }
 ```

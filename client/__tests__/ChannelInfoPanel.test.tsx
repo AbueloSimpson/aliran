@@ -14,7 +14,7 @@ function texts (tree: RendererInstance): string {
   return tree.root.findAllByType(Text).map(t => [t.props.children].flat(9).map(String).join('')).join(' | ')
 }
 
-const baseStream: Stream = { id: 'anime.conan', title: 'Detective Conan', isLive: true, category: ['Anime'] }
+const baseStream: Stream = { id: 'anime.moon-cat', title: 'Moon Cat', isLive: true, category: ['Anime'] }
 const props = { number: 1, favorite: false, playing: false, onWatch: () => {}, onToggleFavorite: () => {} }
 
 // The guide starts a 30 s refresh interval; unmount in afterEach so it doesn't
@@ -35,21 +35,21 @@ afterEach(async () => {
 test('renders now + up-next when the channel has an EPG', async () => {
   const now = Date.now()
   jest.spyOn(epg, 'getNowNext').mockResolvedValue({
-    now: { title: 'Conan A', start: now - 600_000, stop: now + 1_200_000 },
+    now: { title: 'Moon Cat A', start: now - 600_000, stop: now + 1_200_000 },
     next: [
-      { title: 'Conan B', start: now + 1_200_000, stop: now + 4_800_000 },
-      { title: 'Conan C', start: now + 4_800_000, stop: now + 8_400_000 }
+      { title: 'Moon Cat B', start: now + 1_200_000, stop: now + 4_800_000 },
+      { title: 'Moon Cat C', start: now + 4_800_000, stop: now + 8_400_000 }
     ]
   })
-  const stream: Stream = { ...baseStream, epgUrl: 'https://epg.example/anime.json', epgId: 'conan' }
+  const stream: Stream = { ...baseStream, epgUrl: 'https://epg.example/anime.json', epgId: 'moon-cat' }
   const tree = await createTree(<ChannelInfoPanel stream={stream} {...props} />)
   const t = texts(tree)
-  expect(t).toContain('Conan A')
+  expect(t).toContain('Moon Cat A')
   expect(t).toContain('UP NEXT')
-  expect(t).toContain('Conan B')
-  expect(t).toContain('Conan C')
+  expect(t).toContain('Moon Cat B')
+  expect(t).toContain('Moon Cat C')
   expect(t).not.toContain('No program information')
-  expect(epg.getNowNext).toHaveBeenCalledWith('https://epg.example/anime.json', 'conan')
+  expect(epg.getNowNext).toHaveBeenCalledWith('https://epg.example/anime.json', 'moon-cat')
 })
 
 test('keeps the honest placeholder for a channel with no EPG (and never fetches)', async () => {

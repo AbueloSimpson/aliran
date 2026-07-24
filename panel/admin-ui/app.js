@@ -781,7 +781,7 @@ $('#add-publisher-form').addEventListener('submit', async (e) => {
 
 async function editPublisherScopes (p) {
   const v = await dialog(`Channel scopes — ${p.name}`, [
-    { name: 'scopes', label: 'streamId globs, comma-separated (* matches any run; * alone = every channel)', value: p.scopes.join(', '), placeholder: 'east-*,espn2' }
+    { name: 'scopes', label: 'streamId globs, comma-separated (* matches any run; * alone = every channel)', value: p.scopes.join(', '), placeholder: 'east-*,sports-1' }
   ], {
     okLabel: 'Save',
     body: '<p class="muted">The site can only register / take live / update channel ids matching a scope. Applies from its next registration (including the 5-minute heartbeat).</p>'
@@ -1087,7 +1087,7 @@ async function editMeta (s) {
     { name: 'feedKey', label: 'Feed key (hex)', value: s.feedKey || '', placeholder: 'set when the broadcaster registers' },
     { name: 'url', label: 'Redirect URL (https:// — plays this instead of a P2P feed; empty = none)', value: s.url || '', placeholder: 'https://cdn.example.com/ch/index.m3u8' },
     { name: 'epgUrl', label: 'EPG feed URL (https:// program guide the app fetches; empty = none)', value: s.epgUrl || '', placeholder: 'https://provider.example/anime.json' },
-    { name: 'epgId', label: 'EPG channel id (this channel\'s id inside that feed)', value: s.epgId || '', placeholder: 'plutotv.es.629a06…' },
+    { name: 'epgId', label: 'EPG channel id (this channel\'s id inside that feed)', value: s.epgId || '', placeholder: 'demotv.es.629a06…' },
     { name: 'status', label: 'Status', type: 'select', options: ['idle', 'live', 'offline'], value: s.status },
     { name: 'isLive', label: 'Live now', type: 'checkbox', value: s.isLive }
   ])

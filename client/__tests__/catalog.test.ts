@@ -10,20 +10,20 @@ const s = (id: string, category?: string[], extra: Partial<Stream> = {}): Stream
 
 test('All is first and contains every channel; genres follow', () => {
   const streams = [
-    s('nhk', ['News']), // P2P news
-    s('cnn', ['News']), // CDN news (same rail)
-    s('conan', ['Anime']),
-    s('qvc') // uncategorized
+    s('world-news', ['News']), // P2P news
+    s('news-24', ['News']), // CDN news (same rail)
+    s('moon-cat', ['Anime']),
+    s('shop-tv') // uncategorized
   ]
   const groups = groupByCategory(streams)
   const keys = Object.keys(groups)
   expect(keys[0]).toBe('All') // pinned first
-  expect(groups.All.map(x => x.id).sort()).toEqual(['cnn', 'conan', 'nhk', 'qvc']) // everything
-  // P2P (nhk) and CDN (cnn) mix in the same genre rail
-  expect(groups.News.map(x => x.id).sort()).toEqual(['cnn', 'nhk'])
-  expect(groups.Anime.map(x => x.id)).toEqual(['conan'])
+  expect(groups.All.map(x => x.id).sort()).toEqual(['moon-cat', 'news-24', 'shop-tv', 'world-news']) // everything
+  // P2P (world-news) and CDN (news-24) mix in the same genre rail
+  expect(groups.News.map(x => x.id).sort()).toEqual(['news-24', 'world-news'])
+  expect(groups.Anime.map(x => x.id)).toEqual(['moon-cat'])
   // uncategorized channel appears ONLY in All, not as its own bucket
-  expect(keys).not.toContain('qvc')
+  expect(keys).not.toContain('shop-tv')
 })
 
 test('All exists even when every channel is categorized', () => {
@@ -77,17 +77,17 @@ test('formatDuration: h:mm:ss over an hour, m:ss under, empty when unknown', () 
 
 test('categoryModel: parent/sub tree; a channel joins BOTH its parent and sub groups', () => {
   const m = categoryModel([
-    s('conan', ['Anime/Español'], { order: 1 }),
-    s('naruto', ['Anime/English'], { order: 2 }),
-    s('nhk', ['News/English'], { order: 3 }),
-    s('cnn', ['News/Español'], { order: 4 }),
-    s('mbc', ['Entertainment'], { order: 5 }) // no sub
+    s('moon-cat', ['Anime/Español'], { order: 1 }),
+    s('ninja-run', ['Anime/English'], { order: 2 }),
+    s('world-news', ['News/English'], { order: 3 }),
+    s('news-24', ['News/Español'], { order: 4 }),
+    s('variety-1', ['Entertainment'], { order: 5 }) // no sub
   ])
   expect(m.top).toEqual(['All', 'Anime', 'News', 'Entertainment']) // All first, parents in curated order
   expect([...m.subs.Anime].sort()).toEqual(['Anime/English', 'Anime/Español'])
   expect([...m.subs.News].sort()).toEqual(['News/English', 'News/Español'])
   expect(m.subs.Entertainment).toBeUndefined() // parent with no subs
-  expect(m.groups.Anime.map((x) => x.id).sort()).toEqual(['conan', 'naruto']) // parent = union of subs
-  expect(m.groups['Anime/Español'].map((x) => x.id)).toEqual(['conan']) // sub = just that one
+  expect(m.groups.Anime.map((x) => x.id).sort()).toEqual(['moon-cat', 'ninja-run']) // parent = union of subs
+  expect(m.groups['Anime/Español'].map((x) => x.id)).toEqual(['moon-cat']) // sub = just that one
   expect(m.groups.All).toHaveLength(5)
 })

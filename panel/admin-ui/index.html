@@ -87,7 +87,7 @@
         <strong>Add package</strong>
         <input id="npk-name" placeholder="name (e.g. basic)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
         <input id="npk-label" placeholder="display label (blank = name)">
-        <input id="npk-members" placeholder="members: ids, globs, category:/source: — e.g. espn, sports-*, category:Deportes, source:anime">
+        <input id="npk-members" placeholder="members: ids, globs, category:/source: — e.g. news-24, sports-*, category:Deportes, source:anime">
         <label class="inline"><input type="checkbox" id="npk-default"> default for new users</label>
         <button class="btn primary">Add</button>
       </form>
@@ -132,7 +132,7 @@
       <form id="add-publisher-form" class="card row-form">
         <strong>Enroll publisher</strong>
         <input id="np-name" placeholder="site name (e.g. east)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-        <input id="np-scopes" placeholder="channel scopes: streamId globs, comma-separated (e.g. east-*,espn2)">
+        <input id="np-scopes" placeholder="channel scopes: streamId globs, comma-separated (e.g. east-*,sports-1)">
         <button class="btn primary">Enroll</button>
       </form>
       <div class="card table-card">
@@ -178,7 +178,7 @@
     <section id="categories-section" hidden>
       <form id="add-category-form" class="card row-form">
         <strong>Add / edit category</strong>
-        <input id="ncat-slug" placeholder="slug (e.g. Nacional/Chile)" required>
+        <input id="ncat-slug" placeholder="slug (e.g. Nacional/Norte)" required>
         <input id="ncat-label" placeholder="display label (blank = slug)">
         <input id="ncat-order" type="number" min="0" max="9999" placeholder="order">
         <label class="inline"><input type="checkbox" id="ncat-hidden"> hidden</label>

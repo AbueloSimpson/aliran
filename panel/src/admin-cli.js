@@ -474,7 +474,7 @@ function usage () {
   remove-admin <name>                   Delete an admin account
   set-admin-password <name> [--password <pw>]   Rotate an admin password (revokes their sessions)
   list-admins                           List admin accounts
-  add-publisher <name> [--scopes "east-*,espn2"]   Enroll a broadcaster site: per-site keypair
+  add-publisher <name> [--scopes "east-*,sports-1"]   Enroll a broadcaster site: per-site keypair
                                         (secret printed ONCE) + streamId-glob channel scopes
   list-publishers                       List enrolled publishers
   set-publisher-scopes <name> <globs>   Replace a publisher's channel scopes (comma-separated)
@@ -488,7 +488,7 @@ function usage () {
   list-categories                       Category vocabulary in use + per-category channel counts
   rename-category <from> <to>           Rename a rail; children of a parent move with it
   merge-categories <a> <b> … --into <c> Retag several categories onto one
-  add-package <name> [--label L] [--members "espn,sports-*,category:Deportes,source:anime"] [--default]
+  add-package <name> [--label L] [--members "news-24,sports-*,category:Deportes,source:anime"] [--default]
                                         Define a channel package (bouquet); members are stream ids,
                                         id globs, and category:/source: selectors resolved at reconcile
   set-package <name> [--label --members "…" --default true|false]   Edit a package ("" clears members)

@@ -97,11 +97,11 @@ DELETE /api/sources/anime        # purges its channels; ?keepChannels=1 detaches
 **Feed format** — `{"channels": [...]}` (or a bare array), one object per channel:
 
 ```jsonc
-{ "id": "plutotv.es.629a06…",              // → stream id "<prefix><id>" (prefix defaults to "<source>.")
-  "name": "Detective Conan",               // → title
+{ "id": "demotv.es.629a06…",               // → stream id "<prefix><id>" (prefix defaults to "<source>.")
+  "name": "Moon Cat",                      // → title
   "logo": "https://…/logo.png",            // → logo art (https; invalid/http logos degrade to no art)
   "url":  "https://…/index.m3u8",          // → the redirect playback URL (https required — entry skipped otherwise)
-  "provider": "plutotv",                   // → description "via plutotv" (optional)
+  "provider": "demotv",                    // → description "via demotv" (optional)
   "epg": [ { "title": "…", "start": "…", "stop": "…" } ] }   // NOT imported — see EPG below
 ```
 

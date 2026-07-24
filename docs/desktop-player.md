@@ -170,8 +170,8 @@ bounded by what Chromium/MSE on the *host machine* can decode:
 - **H.264 + AAC**: works everywhere; the bulk of a typical lineup.
 - **HEVC (H.265)**: depends on **platform hardware decode**. Chromium exposes HEVC
   only when the GPU/driver decodes it (most Intel/AMD/NVIDIA GPUs from the last
-  decade do). Verified on the reference deployment: the HEVC 1080p channels
-  (`cos-pa`, `telemetro-pa`) play at full 1920×1080 on a machine with hardware
+  decade do). Verified on the reference deployment: two HEVC 1080p channels
+  play at full 1920×1080 on a machine with hardware
   HEVC. On a machine without it, the player surfaces a clean per-channel error
   ("This device can't decode this channel's video format") instead of a black
   screen — the channel list keeps working.
