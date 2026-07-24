@@ -18,6 +18,24 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Security hardening pass** over the shipped crypto/auth paths — wire-compatible
+  (no protocol change; deployed players/SDKs/apps unaffected). Fixes: (1) malformed
+  login-RPC hex fields now fail closed instead of crashing the panel — a non-string
+  `powNonce`/`sig` made `b4a.from(x,'hex')` throw a `TypeError` that `safety-catch`
+  rethrew into an uncaught crash, so `login {"powNonce":{}}` was an **unauthenticated
+  remote panel kill**; (2) the fixed-window login throttle map is now bounded (was
+  unbounded on attacker-chosen usernames/peers — a slow memory-exhaustion DoS), across
+  the panel and all three control servers; (3) key/credential **directories**
+  (`keys/`, `secrets/`) are now created `0700` (the files were already `0600`); (4) the
+  panel warns at boot when `LEGACY_PUBLISHER=1` while named publishers are enrolled,
+  nudging the shared-key sunset. New required-CI regression suite `test:rpc-hardening`
+  (loopback, DHT-free) covers malformed payloads, register replay, throttle
+  boundedness, the legacy predicate and file modes. The audit's verdicts, audited
+  surfaces and an explicit **residual-risk register** are recorded in
+  [`docs/security-model.md`](docs/security-model.md); the crypto dependency set carries
+  no known advisories (the one `npm audit` high-sev is electron, the optional desktop
+  player's build dep, not a shipped crypto path).
+
 - **Backup, restore & key rotation runbooks**: `docs/kb/backup-and-rotation.md`
   — the identity/data/cache model (panel keys are identity and NOT rotatable;
   broadcaster feed stores are cache and not worth backing up), cold-backup and

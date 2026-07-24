@@ -2353,3 +2353,43 @@ exactly the failure an untended co-tenant box hits first; the operator guide's
 Monitoring section documents the journald/daemon.json equivalents. Stale
 threshold-OPRF promises removed from architecture.md and the operator guide
 (rescoped out of the roadmap earlier the same day).
+
+### Hardening pass over the shipped crypto paths (verified)
+The last open v1.0 item: a wire-compatible implementation audit of the crypto/auth
+surfaces — parameters, timing, replay, revocation, resource exhaustion, key hygiene,
+legacy sunset, dependencies. No protocol change, so every deployed player/SDK/app is
+untouched; anything whose fix would break the wire is documented as residual risk
+instead. The audit's parameter verdicts, audited surfaces and the full residual-risk
+register now live in `docs/security-model.md` (the package for any future external
+review). The headline was a **remote, unauthenticated crash**: the login RPC decoded
+client hex fields with `b4a.from(x,'hex')`, which throws a `TypeError` when the field
+survived `JSON.parse` as a non-string (a JSON object/number/bool). protomux-rpc hands a
+thrown responder error to `safety-catch`, and `safety-catch` **rethrows**
+TypeError/RangeError into a microtask — with no `uncaughtException` handler (by design),
+that terminates the process. So `login {"powNonce":{}}` — no account, no proof-of-work —
+killed the panel, and register/session had the same shape behind weaker guards. Proven
+against the real `attachLoginRpc` over a loopback SecretStream pair (a scratch repro
+exited 42 on the uncaught path). Fix: a strict `hexField()` guard (string, even-length
+hex, optional exact byte length) on every attacker-controlled decode, failing closed
+with the existing JSON errors — a real client always sends correct hex, so the wire is
+unchanged. Three more items landed alongside: the fixed-window login throttle map was
+**unbounded** (keyed on attacker-chosen `username|peer`, never pruned — a slow
+memory-exhaustion DoS), now bounded by an expired-window sweep plus oldest-eviction past
+a cap in all four copies (panel + the three control servers); the `keys/` and `secrets/`
+**directories** are now created `0700` (the files were already `0600`); and the panel
+now **warns at boot** when `LEGACY_PUBLISHER=1` while named publishers are enrolled,
+turning the shared-key sunset from a silent doc note into an operator signal. Verdicts
+that needed no change were recorded, not just assumed: Argon2id costs (256 MiB/t=3
+panel, 64 MiB/t=2 control) are at/above the OWASP floor and run single-flight off the
+event loop; every secret comparison is already constant-time (`sodium_memcmp`, libsodium
+verify, `timingSafeEqual`); a captured `register` cannot be replayed to roll a `feedKey`
+back because the per-connection challenge rotates one-shot (a positive test proves the
+replay bounces `unauthorized` while a fresh-challenge re-sign is accepted); revocation
+re-checks the live record (`tokenVersion` + status + role) on every authenticated route;
+and the crypto dependency set is advisory-free (the lone `npm audit` high-sev is
+electron, the desktop player's build dep, not a shipped path). Verified: the new
+`test:rpc-hardening` (required CI lane, loopback/DHT-free) drives object/number/array/
+bad-hex/short values through login/session/register and asserts clean errors with zero
+uncaught exceptions, plus the replay, throttle-boundedness, legacy-predicate and
+POSIX file-mode checks. Four focused fix commits, all wire-compatible; `@aliran/core`
+was not touched.

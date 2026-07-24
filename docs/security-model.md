@@ -136,3 +136,108 @@ platform is the wrong tool for that content.
 - Offline brute-force **if** you enable a fully-offline login fallback (we did not).
 - An entitled user retaining decrypted content (no DRM, see above).
 - Panel OPRF-key compromise (re-enables offline attack) — protect and back it up.
+
+## Implementation audit (hardening pass)
+
+A wire-compatible implementation audit of the shipped crypto/auth paths (no protocol
+change, no redesign — deployed players/SDKs/apps are unaffected). This section is the
+standing record of what was checked, the parameter verdicts, and the residual risks —
+it doubles as the package for any future external review.
+
+### Parameters (verdicts)
+
+All values are deployment-tunable via env; the audit confirmed the **defaults** are
+sound and left them unchanged. Argon2id memory is well above the OWASP 2024 floor
+(19 MiB, t=2) and in RFC 9106 territory.
+
+| Parameter | Default | Verdict |
+| --- | --- | --- |
+| Argon2id — panel login | 256 MiB, t=3 | Strong. Runs in a worker thread, single-flight, so cost cannot stall the loop. |
+| Argon2id — control/reseller admins | 64 MiB, t=2 | Adequate for interactive admin login (≥ OWASP floor); same worker/single-flight protection. |
+| `POW_DIFFICULTY` | 16 leading zero bits | Reasonable admission control; per-attempt, connection-bound (below). |
+| `SESSION_TTL_DAYS` | 30 | Intentional (returning users work offline); revocation is online via `tokenVersion`. |
+| admin/control session TTL | 12 h | Appropriate for a privileged HTTP session. |
+| `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | 10 / 900 s | Reasonable fixed window; the counter map is now bounded (below). |
+
+### Surfaces audited
+
+- **Timing safety.** Every comparison on secret-derived material is constant-time:
+  password verifiers via `sodium_memcmp` (`core/password.js`), session/register
+  signatures via libsodium `crypto_sign_verify_detached`, the reseller top-up webhook
+  via `crypto.timingSafeEqual` with a length pre-check. No `===`/`!==` on secret hex.
+- **Malformed-input safety (fixed).** Every attacker-controlled hex field on the login
+  RPC (`panel/src/rpc.js`) now decodes through a strict `hexField()` guard: a
+  non-string, bad-hex, or wrong-length value fails closed with a JSON error. Before the
+  fix, a non-string field made `b4a.from(x,'hex')` throw a `TypeError`, which
+  protomux-rpc funnels to `safety-catch` — and `safety-catch` **rethrows** TypeErrors
+  into a microtask, crashing the process. `login {"powNonce":{}}` was an unauthenticated
+  remote panel kill. Regression: `npm run test:rpc-hardening`.
+- **Replay.** The `register` and login flows bind their Ed25519/PoW proof to a
+  **per-connection random challenge that rotates one-shot** per use. A captured,
+  validly-signed `register` cannot be replayed on a fresh connection (fresh challenge)
+  or re-submitted on the same one (rotated) — so a channel's `feedKey` cannot be rolled
+  back by replay. The PoW challenge is likewise connection-bound and single-use. The
+  reseller webhook adds a ±300 s timestamp window + event-id idempotency. Regression:
+  `test:rpc-hardening` part B, `test:reseller`.
+- **Revocation.** `tokenValid` checks signature **and** expiry everywhere a token is
+  accepted; every authenticated HTTP route then re-checks the **live** record —
+  `adminTokenLive` (panel/broadcaster/library) and `principalTokenLive` (reseller)
+  confirm the account still exists, is active, and the token's `tokenVersion` matches.
+  A `tokenVersion` bump (password rotate, disable, logout-all) invalidates live sessions
+  on their next online check. User session tokens carry `role`-less payloads and are
+  rejected by the admin gate (`role !== 'admin'`), so a viewer token cannot reach an
+  admin route.
+- **Resource exhaustion.** The fixed-window throttle map is now **bounded** (expired-
+  window sweep + oldest-eviction past a cap) in all four copies, so a flood of junk
+  usernames/peers cannot exhaust memory. JSON bodies are capped (1 MiB; 10 MiB for art)
+  and enforced by destroy-on-exceed; `/healthz` and `/metrics` answer from cheap
+  synchronous sources only; admin login verifies single-flight in a worker (503 on
+  overlap) so a login flood cannot stall the event loop or replication.
+- **Key hygiene.** No secret is logged: the S40 config-validation echoes cover only
+  non-secret ints/bools, hex key env vars print length-only, and error messages carry no
+  key material. Key and credential **files** are `0600`; their **directories**
+  (`keys/`, `secrets/`) are now created `0700`.
+
+### Residual risks (accepted — wire-compatible constraints)
+
+These are inherent to the shipped protocol and would require a breaking change (new
+player/SDK/app builds) to remove, which is explicitly out of scope. They are documented
+rather than implemented:
+
+1. **Bearer session tokens are replayable across devices.** The token embeds a
+   `deviceId` but is not cryptographically bound to the device; anyone holding a valid,
+   unexpired token can present it. This is the deliberate *cooperative-sessions* model —
+   the real revocation boundary for live content is grant-revoke + **stream-key
+   rotation**, not the token. Hardware device-binding (Android Keystore attestation in
+   the proof) would be a protocol change.
+2. **Offline token validity until expiry.** Signed tokens are offline-checkable by
+   design, so for a client that is offline, revocation (`tokenVersion` bump) only bites
+   on its next online check — worst-case latency is the session TTL. Accepted trade for
+   offline playback.
+3. **Legacy shared publisher key.** With `LEGACY_PUBLISHER=1` (the default, for
+   single-broadcaster deployments) unnamed registers verify against the shared init key
+   at implicit scope `*`. The panel now **warns at boot** when this is on while named
+   publishers are enrolled; set `LEGACY_PUBLISHER=0` to close it once every broadcaster
+   carries `PUBLISHER_NAME`.
+4. **In-memory key material is not zeroed.** sodium key buffers live on the JS/GC heap;
+   best-effort wiping is unreliable in a managed runtime and is not attempted. Protect
+   the host; the OPRF/signing keys on disk are the crown jewels (`0600`, backed up
+   encrypted).
+5. **The panel catalog swarm has no connection cap.** Every client replicates the signed
+   catalog over one swarm, so it is intentionally open; confidentiality is via
+   encryption, not connection-gating (see above).
+6. **OPRF construction is not independently certified.** The 2HashDH login follows
+   RFC 9497 over the audited `@noble/curves` ristretto255, but the construction itself
+   has not had a certified third-party review.
+7. **`PANEL_ADMIN_URL` should not embed credentials.** Supply the reseller/library
+   service credentials via `PANEL_ADMIN_USER`/`PANEL_ADMIN_PASS`, never as URL userinfo
+   — the URL is surfaced in diagnostics and would carry embedded credentials with it.
+
+### Dependencies
+
+The shipped crypto path carries no known advisories (`sodium-native` 4.3.3 / 5.1.0,
+`hypercore-crypto` 3.7.0, `protomux-rpc` 1.10.0, `@noble/curves` 1.9.7,
+`@noble/hashes` 1.8.0, `b4a` 1.8.1, `safety-catch` 1.0.3). `npm audit` reports one
+high-severity advisory against **electron** (the optional desktop player's build-time
+dependency, renderer-process CVEs) — not a shipped crypto path; its fix is a breaking
+major bump and is tracked separately from this pass.

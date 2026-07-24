@@ -89,10 +89,15 @@ Shipped:
   rule, full credential rotation matrix), `deploy/backup.sh` (cold
   stop→tar→start), and an automated restore drill (`test:backup`) in the required
   CI lane — operational HA only, deployed players/SDKs unaffected
-
-Open:
-- ⬜ **Hardening pass** over the shipped crypto paths — implementation audit, fixes and
-  regression tests; wire-compatible, no redesign
+- ✅ **Hardening pass** over the shipped crypto paths — a wire-compatible
+  implementation audit (parameters, timing safety, replay, revocation, resource
+  exhaustion, key hygiene, legacy sunset, dependencies) with fixes + fail-closed
+  regression tests (`test:rpc-hardening`, required CI lane): malformed login-RPC
+  payloads now fail closed instead of crashing the panel (was an unauthenticated
+  remote kill), the fixed-window login throttle map is bounded, key/secret
+  directories are created `0700`, and a boot warning nudges the `LEGACY_PUBLISHER`
+  sunset. Guarantees, audited surfaces and an explicit residual-risk register are
+  in [docs/security-model.md](docs/security-model.md).
 
 **Exit criteria:** a new operator can go from clone → live service in under an hour,
 following only the docs.
