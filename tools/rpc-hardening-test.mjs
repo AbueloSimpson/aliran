@@ -14,6 +14,8 @@
 //      one-shot, so the second submission fails signature verification.
 //   C. makeThrottle boundedness: a flood of distinct keys cannot grow the map without
 //      bound; normal fixed-window limiting still triggers.
+//   D. Legacy-publisher sunset predicate: the boot warning fires exactly when the
+//      shared init key is still enabled while named publishers are enrolled.
 //
 // Exits 0 on PASS, 1 on any failure.
 
@@ -26,6 +28,7 @@ import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { blind, powSolve, authKeyPair, authSign } from '@aliran/core'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
+import { legacyPublisherActiveWithNamed } from '../panel/src/ops.js'
 
 let failures = 0
 const ok = (cond, msg) => { if (cond) console.log('  ok  ', msg); else { console.error('  FAIL', msg); failures++ } }
@@ -179,6 +182,15 @@ try {
     const lim = makeThrottle(2, 900)
     const r1 = lim('bob|ip'); const r2 = lim('bob|ip'); const r3 = lim('bob|ip')
     ok(!r1.locked && !r2.locked && r3.locked, 'threshold enforcement intact (3rd hit locks with threshold 2)')
+  }
+
+  // ---------- D. legacy-publisher sunset predicate ----------
+  console.log('D. legacy-publisher boot-warning predicate')
+  {
+    ok(legacyPublisherActiveWithNamed(true, { east: {}, west: {} }) === true, 'warns: legacy on + named publishers enrolled')
+    ok(legacyPublisherActiveWithNamed(true, {}) === false, 'silent: legacy on + no named publishers (single-broadcaster)')
+    ok(legacyPublisherActiveWithNamed(false, { east: {} }) === false, 'silent: legacy already closed')
+    ok(legacyPublisherActiveWithNamed(true, null) === false, 'silent: no publishers file yet')
   }
 
   ok(!crashed, 'no uncaught exception / unhandled rejection fired during the run')

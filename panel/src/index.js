@@ -17,7 +17,7 @@ import { openKeys } from './keys.js'
 import { openStore } from './store.js'
 import { makeThrottle, attachLoginRpc } from './rpc.js'
 import { startAdminServer } from './admin-server.js'
-import { loadAdmins } from './ops.js'
+import { loadAdmins, loadPublishers, legacyPublisherActiveWithNamed } from './ops.js'
 import { makeRing } from './activity.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
@@ -35,6 +35,15 @@ export async function startPanel () {
   console.log('=== Aliran panel ===')
   console.log('Panel public key:', panelPubKey)
   console.log('====================')
+
+  // Legacy-publisher sunset nudge (S42): if named publishers are enrolled but the
+  // shared init key is still accepted, unnamed registers keep verifying against it at
+  // implicit scope '*'. Warn (never fail) so the operator sets LEGACY_PUBLISHER=0 once
+  // every broadcaster carries PUBLISHER_NAME. See docs/security-model.md.
+  if (legacyPublisherActiveWithNamed(config.legacyPublisher, loadPublishers(config.dataDir))) {
+    const n = Object.keys(loadPublishers(config.dataDir)).length
+    console.warn(`[legacy] LEGACY_PUBLISHER=1 while ${n} named publisher(s) are enrolled — the shared init key still accepts UNNAMED registers at implicit scope '*'. Set LEGACY_PUBLISHER=0 to close it once every broadcaster carries PUBLISHER_NAME.`)
+  }
 
   const throttle = makeThrottle(config.lockout.threshold, config.lockout.seconds)
   const activity = makeRing(200) // in-memory observability feed (admin API + RPC events)

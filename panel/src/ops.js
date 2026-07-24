@@ -706,6 +706,16 @@ function savePublishers (dataDir, publishers) {
   fs.writeFileSync(p, JSON.stringify(publishers, null, 2), { mode: 0o600 })
 }
 
+// Advisory boot signal: true when the legacy shared-publisher path is STILL enabled
+// while at least one named publisher (S26) is enrolled — the operator has migrated to
+// per-site keys but left the shared init key open, so unnamed registers still verify
+// against it at implicit scope '*'. index.js warns on this so LEGACY_PUBLISHER=0 gets
+// set once every broadcaster carries PUBLISHER_NAME. Purely advisory — never breaks
+// boot, and a single-broadcaster deployment (no named publishers) is silent by design.
+export function legacyPublisherActiveWithNamed (legacyPublisher, publishers) {
+  return !!legacyPublisher && !!publishers && Object.keys(publishers).length > 0
+}
+
 // Scopes are streamId globs: stream-id characters plus `*` (matches any run,
 // including empty). `*` alone = everything. Accepts an array or a comma string.
 const SCOPE_RE = /^[A-Za-z0-9_.*-]{1,64}$/
