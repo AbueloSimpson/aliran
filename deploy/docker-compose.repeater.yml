@@ -15,6 +15,12 @@ services:
       dockerfile: repeater/Dockerfile
     network_mode: host
     restart: unless-stopped
+    # Bounded logs — Docker's default json-file driver grows forever otherwise.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     env_file: ../repeater/.env
     environment:
       # Data must live on the volume in a container (environment wins over env_file).

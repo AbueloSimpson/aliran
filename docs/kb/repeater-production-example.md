@@ -22,9 +22,11 @@ A rented VM that was **already running unrelated production services** — Apach
   can't run modern Node bare-metal, which makes the Docker path not just tidy but
   necessary on hosts like this.
 - The repeater container adds **no listening sockets at all**: P2P is outbound UDP
-  with hole-punching, and the appliance has no HTTP server. `network_mode: host`
-  avoids double-NAT but cannot port-clash with anything — the co-tenant services
-  were untouched throughout.
+  with hole-punching, and the stock appliance runs no HTTP server (the opt-in
+  `STATUS_PORT` health/metrics endpoint did not exist yet at the time of this
+  capture — and it defaults to off precisely to preserve this property).
+  `network_mode: host` avoids double-NAT but cannot port-clash with anything —
+  the co-tenant services were untouched throughout.
 - The only host-level change the deploy makes is the optional (here: required — see
   below) sysctl drop-in, and that only raises two per-socket buffer *ceilings*.
   Ceilings are not allocations; co-tenant services are unaffected.

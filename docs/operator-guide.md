@@ -359,6 +359,26 @@ is unchanged), and configuration is **validated at boot** — a typo'd env var i
 startup error naming the exact variable, so a service that exits immediately after
 a config change is telling you which line to fix.
 
+### Log growth is bounded (check yours is)
+
+The services log to stdout only — no in-app log files, and the in-app diagnostic
+rings (ffmpeg log ring, incidents, activity) are fixed-size and in-memory. What
+CAN grow forever is whatever captures that stdout:
+
+- **Docker**: the default `json-file` driver has **no size limit** — on a box
+  nobody tends, container logs eventually eat the disk. The shipped compose files
+  cap every service (`json-file`, `max-size: 20m` × `max-file: 5` ≈ 100 MB per
+  service, rotated by Docker itself). The cap applies when a container is
+  **created**, so after pulling the updated compose run `docker compose up -d`
+  (recreates only what changed). Running your own compose/daemon? Set the same
+  `logging:` options, or globally in `/etc/docker/daemon.json` (`log-driver`,
+  `log-opts`).
+- **systemd / bare metal**: journald rotates by default (`SystemMaxUse` caps it —
+  check `journalctl --disk-usage`). Nothing to do unless you redirected stdout to
+  a file yourself; if you did, put it under `logrotate`.
+- `LOG_FORMAT=json` does not change any of this — it changes the line format, not
+  where lines go or how much is kept.
+
 ## Operations
 
 - **Backups:** the data dirs (keys + cores). `DATA_DIR/keys` and

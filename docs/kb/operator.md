@@ -146,6 +146,12 @@ Two things fix this, both on by default:
 If `/healthz` itself is unreachable, the process is genuinely down (or the port is blocked) —
 that is the signal to act on.
 
+Every HTTP surface (panel included) also serves unauthenticated Prometheus-text
+`GET /metrics` beside its `/healthz`, and `LOG_FORMAT=json` switches any service to
+one JSON object per log line — see the [operator guide's Monitoring
+section](../operator-guide.md#monitoring) for the scrape config and the log-growth
+bounds.
+
 ## Latency expectations (healthy system)
 
 - First DHT connect from a fresh client store: **30–90 s**; subsequent logins ~10 s.

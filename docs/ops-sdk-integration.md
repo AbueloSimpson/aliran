@@ -11,9 +11,9 @@ the **integration map**: which surface changes what, and when the SDK sees it.
 
 | Surface | Transport | Default bind | Auth | Who uses it |
 |---|---|---|---|---|
-| **Panel admin API + dashboard** | HTTP/JSON | `127.0.0.1:3210` (`ADMIN_ENABLED=1`) | Admin login → panel-signed Bearer token (Argon2id verifiers in panel-private `secrets/admins.json`) | Operators: accounts, grants, catalog curation, publishers, sources, categories |
-| **Broadcaster control API + UI** | HTTP/JSON | `127.0.0.1:3310` (`CONTROL_ENABLED=1`) | Control login → broadcaster-local Bearer token | Operators: channels, ingest, transcode, start/stop/rotate, logs, incidents. Plus **unauthenticated `GET /healthz`** for monitoring |
-| **Library control API + UI** | HTTP/JSON | `127.0.0.1:3320` (`CONTROL_ENABLED=1`) | Control login → library-local Bearer token | Operators: VOD titles — add/ingest/re-ingest/delete, progress, logs. Plus **unauthenticated `GET /healthz`** |
+| **Panel admin API + dashboard** | HTTP/JSON | `127.0.0.1:3210` (`ADMIN_ENABLED=1`) | Admin login → panel-signed Bearer token (Argon2id verifiers in panel-private `secrets/admins.json`) | Operators: accounts, grants, catalog curation, publishers, sources, categories. Plus **unauthenticated `GET /healthz` + `/metrics`** for monitoring |
+| **Broadcaster control API + UI** | HTTP/JSON | `127.0.0.1:3310` (`CONTROL_ENABLED=1`) | Control login → broadcaster-local Bearer token | Operators: channels, ingest, transcode, start/stop/rotate, logs, incidents. Plus **unauthenticated `GET /healthz` + `/metrics`** for monitoring |
+| **Library control API + UI** | HTTP/JSON | `127.0.0.1:3320` (`CONTROL_ENABLED=1`) | Control login → library-local Bearer token | Operators: VOD titles — add/ingest/re-ingest/delete, progress, logs. Plus **unauthenticated `GET /healthz` + `/metrics`** |
 | **Panel RPC** | DHT (Hyperswarm), not TCP/HTTP | reachable by key, worldwide | Proof-of-work + per-method crypto (OPRF login; Ed25519 for `register`) | **The SDK** (`hello`/`login`/`session`) and **broadcasters + the library** (`register` — the library registers titles as `type:'vod'`) |
 
 Two deliberate consequences:

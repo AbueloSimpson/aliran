@@ -44,6 +44,7 @@ services:
       context: .
       dockerfile: reseller/Dockerfile
     restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
     env_file:
       - path: ./reseller/.env
         required: false # panel creds + TUNNEL_TOKEN live here in a real deploy
@@ -68,6 +69,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
     command: tunnel --no-autoupdate run
     env_file:
       - path: ./reseller/.env # provides TUNNEL_TOKEN

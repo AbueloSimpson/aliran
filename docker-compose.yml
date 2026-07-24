@@ -20,6 +20,18 @@
 #   docker compose run --rm panel node src/admin-cli.js init
 #   docker compose run --rm panel node src/admin-cli.js add-admin <name> <password>
 #   docker compose up -d
+#
+# Container logs are BOUNDED below (json-file, 20 MB x 5 per service). Docker's
+# default json-file driver has NO size limit, and a broadcaster that logs a few
+# lines per channel-event will eventually fill the disk of any box nobody tends.
+# The caps apply when a container is (re)created: `docker compose up -d` after
+# pulling this file is enough.
+x-logging: &bounded-logs
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   panel:
     build:
@@ -27,6 +39,7 @@ services:
       dockerfile: panel/Dockerfile
     network_mode: host
     restart: unless-stopped
+    logging: *bounded-logs
     env_file: ./panel/.env
     environment:
       # The .env examples say ./data (bare-metal); in a container the data MUST live
@@ -41,6 +54,7 @@ services:
       dockerfile: broadcaster/Dockerfile
     network_mode: host
     restart: unless-stopped
+    logging: *bounded-logs
     # Give the graceful shutdown (every channel closing its feed store) time to finish before
     # Docker SIGKILLs it. A kill mid-`store.close()` truncates a disk feed's cores, so a short
     # grace can corrupt the stores of a many-channel box on `docker stop`. 60 s is ample; the
@@ -78,6 +92,7 @@ services:
     profiles: [vod]
     network_mode: host
     restart: unless-stopped
+    logging: *bounded-logs
     env_file: ./library/.env
     environment:
       DATA_DIR: /data
@@ -97,6 +112,7 @@ services:
     profiles: [reseller]
     network_mode: host
     restart: unless-stopped
+    logging: *bounded-logs
     env_file: ./reseller/.env
     environment:
       DATA_DIR: /data
