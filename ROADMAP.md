@@ -159,7 +159,12 @@ following only the docs.
 - ✅ **Repeater appliance** — a keyless regional super-peer (the Open-Connect analog),
   shipped as first-class `repeater/` (see `docs/repeater.md`): a hosted box mirrors
   chosen channels' **encrypted** feeds and absorbs viewer fan-out while holding no keys
-  and unable to watch what it serves. Remaining follow-ups: panel-ASSIGNED repeater
+  and unable to watch what it serves. Offload measured on real 16-core hardware: a
+  stock zero-config viewer pulled **46% of its bytes from the edge repeater** (see
+  `docs/kb/repeater-production-example.md`). The remaining scale-out validation — a
+  bigger origin + repeater under many concurrent viewers, proving origin per-channel
+  egress ≈ 1 stream — is the open item, gated on sustained multi-box hardware.
+  Remaining follow-ups: panel-ASSIGNED repeater
   fleets and locality pinning
 - ⬜ iOS / Apple TV client (native HLS)
 - ⬜ **Web player via an HTTP gateway** — a hosted page that plays the service in any
