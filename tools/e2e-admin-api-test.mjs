@@ -635,7 +635,51 @@ try {
   for (const id of ['cat-a', 'cat-b', 'cat-c']) await api('DELETE', '/api/streams/' + id, undefined, { token })
   log('Q: categories — union list + counts, presentation upsert (idempotent), parent rename cascades, merge, delete keeps membership, slug validation ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry — all land in the signed DB; viewer login works end-to-end)')
+  // ===== R: channel packages / bouquets over the HTTP API (S44) =====
+  // The deep model coverage (selectors, provenance, migration, autoGrant
+  // coexistence) is test:packages in the required lane — this exercises the
+  // endpoint surface end-to-end beside everything else the dashboard uses.
+  for (const id of ['pkg-a', 'pkg-b']) {
+    r = await api('POST', '/api/streams', { id, category: 'Bundle' }, { token })
+    assert.strictEqual(r.status, 201, 'create ' + id)
+  }
+  r = await api('POST', '/api/packages', { name: 'q-pack', label: 'Q Pack', members: 'category:Bundle' }, { token })
+  assert.strictEqual(r.status, 201, 'create package: ' + JSON.stringify(r.body))
+  r = await api('GET', '/api/packages', undefined, { token })
+  const qp = r.body.find((p) => p.name === 'q-pack')
+  assert.ok(qp && qp.resolved.length === 2 && qp.holders === 0, 'list resolves the category member')
+  r = await api('POST', '/api/users', { username: 'quser', password: 'quser-secret-1' }, { token })
+  assert.deepStrictEqual(r.body.packages, [], 'non-default package not auto-assigned')
+  r = await api('POST', '/api/users/quser/packages', { packages: ['q-pack'] }, { token })
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.grants.includes('pkg-a') && r.body.grants.includes('pkg-b'), 'assignment materialized sealed grants')
+  assert.deepStrictEqual(r.body.manualGrants, [], 'package grants are not manual')
+  const quRec = (await db.get('user/quser')).value
+  assert.ok(quRec.wrapped['pkg-a'], 'sealed entry in the signed DB')
+  r = await api('PATCH', '/api/packages/q-pack', { members: 'pkg-b' }, { token })
+  assert.strictEqual(r.status, 200, 'member edit')
+  r = await api('GET', '/api/users/quser', undefined, { token })
+  assert.ok(!r.body.grants.includes('pkg-a') && r.body.grants.includes('pkg-b'), 'member edit materialized for the holder')
+  r = await api('DELETE', '/api/packages/q-pack', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  r = await api('DELETE', '/api/packages/q-pack', undefined, { token })
+  assert.strictEqual(r.status, 404, 'double delete is 404')
+  r = await api('GET', '/api/users/quser', undefined, { token })
+  assert.deepStrictEqual(r.body.packages, [], 'removed package stripped from the user')
+  assert.ok(!r.body.grants.includes('pkg-b'), 'its grants went with it')
+  const homeHtmlR = await (await fetch(base + '/')).text()
+  for (const marker of ['data-tab="packages"', 'add-package-form', 'packages-table']) {
+    assert.ok(homeHtmlR.includes(marker), `dashboard carries the packages tab: ${marker}`)
+  }
+  const appJsR = await (await fetch(base + '/app.js')).text()
+  for (const marker of ['api/packages', 'renderPackages', 'removeUserPackage']) {
+    assert.ok(appJsR.includes(marker), `app.js wires the package flows: ${marker}`)
+  }
+  await api('DELETE', '/api/users/quser', undefined, { token })
+  for (const id of ['pkg-a', 'pkg-b']) await api('DELETE', '/api/streams/' + id, undefined, { token })
+  log('R: packages — CRUD + assignment over HTTP, member edit materializes, delete strips users, UI markers ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages — all land in the signed DB; viewer login works end-to-end)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

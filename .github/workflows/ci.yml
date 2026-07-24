@@ -64,6 +64,11 @@ jobs:
       # no DHT, so it belongs in the required lane.
       - name: Remote channel sources (test:sources)
         run: npm run test:sources
+      # Channel packages / bouquets (S44): CRUD → sealed-grant materialization,
+      # selector resolution, provenance split, pre-S44 migration, autoGrant
+      # coexistence. In-process panel + loopback feed server — no DHT.
+      - name: Channel packages (test:packages)
+        run: npm run test:packages
       # The whole VOD chain (S8a) on a LOCAL DHT testnet — library ingest → panel vod
       # record class → grant → SDK resolve/serve/seek → delete. Loopback UDP + ffmpeg
       # only, never the public DHT, so it is deterministic enough for the required lane.
