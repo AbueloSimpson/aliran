@@ -16,6 +16,8 @@
 //      bound; normal fixed-window limiting still triggers.
 //   D. Legacy-publisher sunset predicate: the boot warning fires exactly when the
 //      shared init key is still enabled while named publishers are enrolled.
+//   E. Key hygiene: the panel keys/ + secrets/ directories are created owner-only
+//      (0700) and the key/verifier files 0600 (POSIX only — Windows has no mode bits).
 //
 // Exits 0 on PASS, 1 on any failure.
 
@@ -29,6 +31,8 @@ import b4a from 'b4a'
 import { blind, powSolve, authKeyPair, authSign } from '@aliran/core'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { legacyPublisherActiveWithNamed } from '../panel/src/ops.js'
+import { initKeys } from '../panel/src/keys.js'
+import { saveSecrets } from '../panel/src/store.js'
 
 let failures = 0
 const ok = (cond, msg) => { if (cond) console.log('  ok  ', msg); else { console.error('  FAIL', msg); failures++ } }
@@ -191,6 +195,23 @@ try {
     ok(legacyPublisherActiveWithNamed(true, {}) === false, 'silent: legacy on + no named publishers (single-broadcaster)')
     ok(legacyPublisherActiveWithNamed(false, { east: {} }) === false, 'silent: legacy already closed')
     ok(legacyPublisherActiveWithNamed(true, null) === false, 'silent: no publishers file yet')
+  }
+
+  // ---------- E. key/secret file + directory modes (POSIX) ----------
+  console.log('E. keys/ + secrets/ directory modes')
+  if (process.platform === 'win32') {
+    console.log('  skip  (Windows has no POSIX mode bits)')
+  } else {
+    const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'rpc-hardening-keys-'))
+    cleanups.push(() => { try { fs.rmSync(dd, { recursive: true, force: true }) } catch {} })
+    initKeys(dd)
+    saveSecrets(dd, { news: '00'.repeat(32) })
+    const mode = (p) => fs.statSync(p).mode & 0o777
+    ok(mode(path.join(dd, 'keys')) === 0o700, 'keys/ dir is 0700')
+    ok(mode(path.join(dd, 'secrets')) === 0o700, 'secrets/ dir is 0700')
+    ok(mode(path.join(dd, 'keys', 'oprf.key')) === 0o600, 'oprf.key is 0600')
+    ok(mode(path.join(dd, 'keys', 'signing.json')) === 0o600, 'signing.json is 0600')
+    ok(mode(path.join(dd, 'secrets', 'streams.json')) === 0o600, 'streams.json is 0600')
   }
 
   ok(!crashed, 'no uncaught exception / unhandled rejection fired during the run')

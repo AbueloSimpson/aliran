@@ -18,7 +18,9 @@ export function readJsonFile (file, fallback) {
 }
 
 export function writeJsonFile (file, obj, { mode } = {}) {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
+  // A restrictive file mode (0600 — principals, control keys) marks a secret; its
+  // directory is created owner-only (0700). Non-secret state dirs keep the default.
+  fs.mkdirSync(path.dirname(file), { recursive: true, ...(mode ? { mode: 0o700 } : {}) })
   const tmp = file + '.tmp'
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), mode ? { mode } : {})
   fs.renameSync(tmp, file)

@@ -62,7 +62,7 @@ export function controlKeys (dataDir) {
     const k = JSON.parse(fs.readFileSync(p, 'utf8'))
     return { publicKey: b4a.from(k.publicKey, 'hex'), secretKey: b4a.from(k.secretKey, 'hex') }
   }
-  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only keys/secrets dir
   const kp = crypto.keyPair()
   fs.writeFileSync(p, JSON.stringify({
     publicKey: b4a.toString(kp.publicKey, 'hex'),
@@ -81,7 +81,7 @@ export function loadAdmins (dataDir) {
 
 function saveAdmins (dataDir, admins) {
   const p = adminsPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only keys/secrets dir
   fs.writeFileSync(p, JSON.stringify(admins, null, 2), { mode: 0o600 })
 }
 

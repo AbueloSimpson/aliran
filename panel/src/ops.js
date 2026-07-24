@@ -620,7 +620,7 @@ export function loadAdmins (dataDir) {
 
 function saveAdmins (dataDir, admins) {
   const p = adminsPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only secrets dir
   fs.writeFileSync(p, JSON.stringify(admins, null, 2), { mode: 0o600 })
 }
 
@@ -702,7 +702,7 @@ export function loadPublishers (dataDir) {
 
 function savePublishers (dataDir, publishers) {
   const p = publishersPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only secrets dir
   fs.writeFileSync(p, JSON.stringify(publishers, null, 2), { mode: 0o600 })
 }
 

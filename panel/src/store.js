@@ -94,6 +94,6 @@ export function loadSecrets (dataDir) {
 
 export function saveSecrets (dataDir, secrets) {
   const p = secretsPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only secrets dir
   fs.writeFileSync(p, JSON.stringify(secrets, null, 2), { mode: 0o600 })
 }

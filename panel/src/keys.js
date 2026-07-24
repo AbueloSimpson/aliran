@@ -20,7 +20,7 @@ function keysDir (dataDir) {
 // Generate and persist panel keys. Throws if they already exist (avoid clobbering).
 export function initKeys (dataDir) {
   const dir = keysDir(dataDir)
-  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 }) // owner-only: this dir holds the crown jewels
 
   const signingPath = path.join(dir, 'signing.json')
   const oprfPath = path.join(dir, 'oprf.key')
