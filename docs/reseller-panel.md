@@ -113,6 +113,41 @@ The ledger is an **append-only** file — it is the durable audit trail (the
 panel's own activity feed is in-memory and cleared on restart). Balances are
 always derived from it, never stored, so they can never drift.
 
+## Channel packages (bouquets)
+
+[Channel packages](user-management.md#channel-packages-bouquets) are defined on
+the **panel** (name, members, `default` flag); the reseller panel consumes them
+as the **product unit**: a package sets **what** the account gets, credits set
+**for how long**. **Packages carry no credit price and no per-reseller
+restriction layer** — every principal that manages accounts sees the full
+package list and may assign any of them, and an activation with three packages
+costs exactly the same `months` credits as one with none.
+
+- **Activation** — the Add-account form has a package multi-select (live
+  resolved-channel counts) beside the per-stream picker, labeled **extra
+  channels (one-offs)**. The panel's `default` packages come **pre-checked**;
+  an explicit pick is the *whole* choice and **replaces** the defaults
+  (unticking one is deliberate), while a package-less activation keeps whatever
+  the panel's defaults granted. The API mirror is `packages` on
+  `POST /api/accounts`.
+- **Account view** — *Channels & packages…* in the row menu shows the **live**
+  entitlement with provenance chips: ▣ package, `one-off`, and dashed `auto`
+  (source auto-grants, which have no revoke here — they come back on the next
+  sync by design). *Manage packages…* replaces the account's bouquet list
+  (`POST /api/accounts/:acct/packages`, panel-validated — a typo is an error,
+  not a silent no-op).
+- **Honest covered revokes** — revoking a one-off on a channel one of the
+  account's packages still covers removes the *manual* entitlement and the
+  panel re-seals the channel in the same request; the response says so
+  (`stillGranted: true`) and the dashboard toasts *"still granted via package
+  …"* instead of pretending it is gone.
+- **The registry remembers the choice** — the chosen bouquets are recorded per
+  account, and the reconcile sweep re-asserts them if the live panel record
+  drifts. An account with *no* explicit choice is left panel-driven: the sweep
+  never strips the panel's default packages.
+- **Trials** are unchanged: the panel applies its `default` packages to them at
+  creation, panel-side.
+
 ## Automated credit top-ups (payment webhook)
 
 Minting by hand does not scale to selling credits. Set `WEBHOOK_SECRET` (a long
@@ -344,10 +379,11 @@ option is documented here.
    create the hierarchy: co-admins for staff, super resellers for distributors,
    resellers for the front line. Fund them, and they activate accounts.
 
-Any channels you want every account to receive automatically should be behind an
-[autoGrant source](content-management.md) on the panel (the panel grants those at
-account creation); a reseller can additionally attach individual channels to an
-account from the dashboard's grants picker.
+Any channels you want every account to receive automatically should be behind a
+`default` [channel package](user-management.md#channel-packages-bouquets) or an
+[autoGrant source](content-management.md) on the panel (the panel grants both at
+account creation); resellers then pick packages per account at activation and
+can attach individual channels from the **extra channels (one-offs)** picker.
 
 ## Reference
 

@@ -416,6 +416,23 @@ phone + Android TV, and the Windows desktop player).
   `floor(remaining)` to the owner (admin ops are free + refundless).
 - **Trials**: free time-boxed accounts (`TRIAL_HOURS`, per-reseller daily cap);
   renewing a trial converts it to paid with the same credentials.
+- **Channel packages are the reseller's product unit**: the panel's bouquets
+  define *what* an account gets, credits *for how long* — **packages carry no
+  credit price and no per-reseller restriction layer** (any account-managing
+  principal lists and assigns them all). A cached `GET /api/packages`
+  passthrough feeds the pickers; `activate` takes `packages` (an explicit pick
+  **replaces** the panel's `default` bouquets — package-less activations stay
+  panel-driven); `POST /api/accounts/:acct/packages` replaces them later
+  (panel-validated); the account view carries live provenance (`packages` +
+  `manualGrants`); and the reconcile sweep re-asserts the chosen bouquets when
+  the live panel record drifts (never stripping defaults off accounts that made
+  no explicit choice). Covered revokes are honest end-to-end — `stillGranted:
+  true` in the API when a package re-seals the channel, *"still granted via
+  package …"* in the dashboard toast. The activate form gains the package
+  multi-select (resolved-channel counts, defaults pre-checked) beside the
+  per-stream picker labeled **extra channels (one-offs)**, and the row menu
+  gains *Channels & packages…* (provenance chips: ▣ package / one-off / dashed
+  auto) and *Manage packages…*.
 - **Fail-closed** account ops (panel first, local ledger + registry only on OK —
   a rejected activation leaves nothing behind) run under one process mutex.
   Account names are **plain panel usernames** (first come, first served — a

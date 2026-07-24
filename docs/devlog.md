@@ -2456,3 +2456,52 @@ was not touched.
   new chip. Docs: user-management (the operator walkthrough), security-model
   (record fields + registry trust note), reference (CLI + API tables + dashboard
   tour), panel README; `mkdocs build --strict` green.
+
+### Reseller × channel packages — bouquets become the reseller's product unit (verified)
+
+- **The S44 follow-up, reseller-side only** (`reseller/` — nothing under `panel/`
+  changed): the reseller panel now consumes the panel's channel packages as the
+  thing a reseller actually sells. **Locked cost model: credits stay purely
+  TIME-based** (1 credit = 1 month, unchanged) — a package carries **no credit
+  price** and there is **no per-reseller restriction layer**: any principal with
+  account management lists every package and may assign any; a package defines
+  WHAT the account gets, credits define FOR HOW LONG. `extraGrants` (per-stream
+  one-offs) stay beside packages.
+- **Surface:** cached `GET /api/packages` passthrough (60 s, any authed role —
+  the streams-picker pattern); `activate` takes `packages: []` (validated like
+  the grants array, recorded on the registry, assigned best-effort in the
+  decoration pass — an explicit pick REPLACES the panel's `default` bouquets,
+  while a package-less activation stays panel-driven so defaults stand);
+  `setPackages` op + `POST /api/accounts/:acct/packages` (mutex-wrapped,
+  panel-first — a typo 404s and nothing commits; the registry records the
+  panel-normalized list); the account `live` view adds `packages` +
+  `manualGrants`; the reconcile sweep re-asserts a record's non-empty chosen
+  bouquets when the live panel record drifts (`packagesFixed` in the report —
+  empty/absent choice is deliberately exempt so the sweep can never strip
+  defaults). Covered revokes are honest: the panel re-seals a package-covered
+  channel in the same request, the reseller response says `stillGranted: true`.
+- **Dashboard:** the Add-account form gains a package multi-select (live
+  resolved-channel counts, `default` packages pre-checked) beside the
+  per-stream picker labeled **"extra channels (one-offs)"** (that picker is new
+  too — the S38-era UI never had one, only the API); the row menu gains
+  *Channels & packages…* — the live entitlement with provenance chips
+  (▣ package / `one-off` / dashed `auto`, matching the panel's Users-tab chip
+  language; auto rows offer no revoke since a source sync would re-seal them) —
+  and *Manage packages…* (replace dialog, current list pre-checked). The
+  covered-revoke toast reads *"still granted via package …"*. Trials unchanged
+  (panel defaults reach them at creation).
+- **Verified:** `test:reseller` (required lane) grew sections **N** (passthrough
+  shape, activate-with-packages replacing defaults, package-less keeping them,
+  validation 400s, typo best-effort + `setPackages` repair, replace semantics
+  both directions incl. un-materialization, live-view provenance, covered vs
+  clean revoke, trials receiving defaults, three activations debiting exactly 3
+  credits — the time-only proof) and **O** (panel-side strip → reconcile
+  `packagesFixed` re-assert; panel-driven accounts exempt; lapse → sweep →
+  renew with bouquets riding along untouched). `test:packages`,
+  `test:reseller-unit`, `test:theme` green. Dashboard browser-verified against
+  an in-process panel + reseller (DOM/text reads): pickers with counts +
+  default pre-check + filter, activation toast naming the package, provenance
+  chips, honest covered-revoke toast, clean revoke, manage-replace
+  re-materializing live, one-off add. Docs: reseller-panel (packages section +
+  the time-only statement), reference (route table), CHANGELOG;
+  `mkdocs build --strict` green.

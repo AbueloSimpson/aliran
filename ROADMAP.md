@@ -104,7 +104,10 @@ Shipped:
   reconcile engine (grants are cryptographic, not ACLs), with grant provenance
   (manual vs package vs source auto-grant), default packages for new accounts,
   admin API/CLI parity and a dashboard Packages tab + Users-tab provenance chips;
-  zero wire/SDK/app change (`test:packages`, required CI lane)
+  zero wire/SDK/app change (`test:packages`, required CI lane). The reseller
+  panel consumes them as its **product unit** — activate picker, per-account
+  package management, provenance view, sweep re-assert — with credits staying
+  purely time-based (packages carry no price)
 
 **Exit criteria:** a new operator can go from clone → live service in under an hour,
 following only the docs.
