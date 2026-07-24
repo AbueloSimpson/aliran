@@ -1,0 +1,27 @@
+{
+  "_comment": "Copy to config.json (chmod 600) and fill in. This file is the ONLY place secrets live. Pass it with --config <path> or ALIRAN_MCP_CONFIG. Give panel/broadcaster an explicit https `url` (a Caddy TLS endpoint) OR omit `url` and the loopback API (:3210 / :3310) is reached over an SSH local-forward tunnel opened with the ssh key below. `user`/`pass` for panel & broadcaster are their DASHBOARD admin logins (created by `add-admin`, or by `server_install`).",
+
+  "panel": {
+    "url": "https://panel.example.com",
+    "user": "admin",
+    "pass": "the-panel-admin-password"
+  },
+
+  "broadcaster": {
+    "url": "https://broadcaster.example.com",
+    "user": "admin",
+    "pass": "the-broadcaster-admin-password"
+  },
+
+  "ssh": {
+    "host": "203.0.113.10",
+    "user": "root",
+    "keyPath": "~/.ssh/aliran_deploy_ed25519",
+    "port": 22
+  },
+
+  "install": {
+    "repoDir": "/opt/aliran",
+    "composeProfiles": []
+  }
+}

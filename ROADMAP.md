@@ -158,6 +158,15 @@ following only the docs.
   pointers drive an on-demand https client fetch that renders a live Now/Up-next guide
   in the Info panel (one ETag-revalidated fetch per category, works on any channel;
   no per-client store growth, no fabricated data)
+- ✅ **MCP server** (`mcp/`, `@aliran/mcp`): a Model Context Protocol *server* (local
+  stdio) that lets an AI client (Claude Desktop, Claude Code) install, configure,
+  maintain and support a deployment for a non-server-literate operator — `panel_*` /
+  `broadcaster_*` tools over the admin APIs, `server_*` over an SSH executor,
+  `diagnose_*`, and the docs as searchable resources. Secrets stay in the operator's
+  local config; the model sees only tool results, and install-minted secrets are
+  written into the box `.env` server-side. `test:mcp` in the required lane. See
+  [docs/mcp.md](docs/mcp.md). Later: npm-publish for `npx @aliran/mcp`, and wrapping
+  the reseller/library/repeater services
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
   (the desktop player already ships this as the public build's Connect screen)
 - ⬜ Concurrency limits, rental windows, blackout dates (entitlement-time features)

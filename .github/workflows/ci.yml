@@ -69,6 +69,13 @@ jobs:
       # coexistence. In-process panel + loopback feed server — no DHT.
       - name: Channel packages (test:packages)
         run: npm run test:packages
+      # The Aliran MCP server (S46): boots an in-process panel admin server + a
+      # broadcaster control server, launches mcp/src/index.js over a stdio pipe and
+      # drives it as an MCP client (tools/resources, a write chain, annotations, docs
+      # search, re-login-on-401, and the SSH executor against a command stub). No DHT,
+      # no ffmpeg, no real sshd — deterministic, so it belongs in the required lane.
+      - name: Aliran MCP server (test:mcp)
+        run: npm run test:mcp
       # The whole VOD chain (S8a) on a LOCAL DHT testnet — library ingest → panel vod
       # record class → grant → SDK resolve/serve/seek → delete. Loopback UDP + ffmpeg
       # only, never the public DHT, so it is deterministic enough for the required lane.

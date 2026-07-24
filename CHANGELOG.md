@@ -18,6 +18,24 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **MCP server (`@aliran/mcp`)** — a [Model Context Protocol](https://modelcontextprotocol.io)
+  **server** (local stdio) so an AI client (Claude Desktop, Claude Code) can install,
+  configure, maintain and support an Aliran deployment for a non-server-literate
+  operator. It is the *server* side of MCP (exposes tools/resources; does **not** call
+  the Claude API — dependency is `@modelcontextprotocol/sdk` only). Tool groups:
+  `panel_*` (users/grants/**packages**/streams/sources/categories/publishers/status),
+  `broadcaster_*` (channels/start/stop/rotate/logs/capabilities/incidents/health),
+  `server_*` (an **SSH executor**: preflight/install/update/status/logs/disk/backup/
+  sysctl), `diagnose_*` (healthz sweep + symptom→KB), plus `docs_search` and every
+  `docs/` file as an `mcp://aliran/*` resource. Reads carry `readOnlyHint`, purges/
+  restarts carry `destructiveHint`. **Secrets stay local**: the panel/broadcaster admin
+  passwords and the SSH key path live only in the operator's `0600` config; the model
+  sees only tool results, and secrets minted server-side (the `PUBLISHER_KEY`) are
+  written into the box `.env` and never returned. Panel/broadcaster loopback APIs are
+  reached over an explicit TLS `url` or an SSH local-forward tunnel. New `test:mcp`
+  suite (in-process panel + broadcaster, driven as an MCP client) in the required CI
+  lane. v1 wraps panel + broadcaster + install/maintain + docs (reseller/library/
+  repeater deferred; local stdio only). See [docs/mcp.md](docs/mcp.md).
 - **Channel packages ("bouquets")** — named channel bundles an admin grants as one
   unit ("Basic", "Sports"), replacing chip-by-chip per-stream grants that stop
   scaling past a few dozen channels. Because a grant is a **sealed key** (not an

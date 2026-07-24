@@ -50,5 +50,10 @@ Thumbs.db
 # Desktop player — per-deployment descriptor is operator-local (see service.example.json)
 desktop/config/service.json
 
+# Aliran MCP server — operator-local config (holds admin passwords + the SSH key
+# path) and its persisted token cache. Only config.example.json is committed.
+mcp/config.json
+**/.aliran-mcp-state/
+
 # Claude Code personal project settings (machine-specific permissions)
 .claude/settings.local.json

@@ -38,6 +38,7 @@ nav:
   - Architecture: architecture.md
   - Security model: security-model.md
   - Operator guide: operator-guide.md
+  - MCP server (AI-operable): mcp.md
   - Repeater appliance: repeater.md
   - VOD library: vod-library.md
   - Configuration: configuration.md

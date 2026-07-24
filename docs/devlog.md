@@ -2505,3 +2505,58 @@ was not touched.
   re-materializing live, one-off add. Docs: reseller-panel (packages section +
   the time-only statement), reference (route table), CHANGELOG;
   `mkdocs build --strict` green.
+
+### S46 — Aliran MCP server (`mcp/`): AI-operable install, config, maintenance & support
+- **Why:** Aliran is self-hostable, but self-hosting assumes server literacy the
+  target operator often lacks. A new **Model Context Protocol** *server* lets any
+  MCP-capable AI client (Claude Desktop, Claude Code) operate a deployment on the
+  operator's behalf — install it on a fresh box, configure it, maintain it, answer
+  usage questions — so a novice never needs a terminal. Feasible because every admin
+  op already rides a clean authed HTTP API and the deploy path is a documented compose
+  sequence: the MCP server is a thin, credentialed adapter, not new platform machinery.
+- **It is the *server* side of MCP** — it exposes tools/resources to an AI client and
+  does **not** call the Claude API. New standalone workspace `mcp/` (`@aliran/mcp`,
+  pattern of `repeater/`/`reseller/`); dependency `@modelcontextprotocol/sdk` (+ `zod`
+  for the tool schemas), **no `@anthropic-ai/*`**. Transport is local **stdio**
+  (`node mcp/src/index.js --config <path>`); added to root `workspaces` + `mcp` /
+  `test:mcp` scripts, **not** wired into the docker-compose stack (it runs on the
+  operator's machine).
+- **Tools** (`src/tools/*.js`, registered on the SDK's `McpServer` with MCP
+  annotations — `readOnlyHint` on GETs, `destructiveHint` on purges/restarts):
+  `panel_*` over the panel admin API `:3210` (users, grants, **channel packages**,
+  streams, sources, categories, publishers, status/observability), `broadcaster_*`
+  over the control API `:3310` (channels create/start/stop/rotate, logs ring,
+  capability probe, **incidents** — the real route missing from that file's header
+  comment, health), `server_*` an **SSH executor** (`preflight`, `install` = the
+  operator-guide §A sequence, `update` = the §3B git-pull→build→up-d recipe, never
+  `--force-recreate`; `status`/`logs`/`disk`/`backup`/`sysctl`), and `diagnose_*` (a
+  `/healthz` sweep + a symptom→KB router).
+- **Reuse:** `src/http-client.js` ports `reseller/src/panel-client.js` in spirit —
+  token cache persisted `0600`, single-flight login, **re-login once on 401**, 503→one
+  jittered retry, 429→`locked`. One helper per Bearer API. Loopback admin APIs are
+  reached over an explicit TLS `url` **or** an SSH local-forward tunnel the MCP opens
+  with the same key (`src/ssh.js`, default when no `url` is set).
+- **Secrets stay local.** The panel/broadcaster admin passwords and the SSH key path
+  live only in the operator's `0600` config; the model driving the server sees only
+  tool **results**. `server_install` runs `admin-cli init` on the box and writes the
+  minted `PUBLISHER_KEY` straight into the box's `broadcaster/.env`, returning only the
+  panel **public** key — a secret never routes through the model. `panel_add_publisher`
+  behaves the same. The SSH key is handed to `ssh` by path, never read into the process.
+- **Resources:** every `docs/` + `docs/kb/` markdown file as an `mcp://aliran/docs/…`
+  resource, a `docs_search` tool, and a top-level `mcp://aliran/guide` (tool catalog +
+  install happy-path) — so usage answers come from the shipped docs, not model memory.
+- **Verified:** new required-lane suite `test:mcp` (`tools/e2e-mcp-test.mjs`,
+  deterministic, no DHT / no ffmpeg / no real sshd): boots an in-process panel admin
+  server **and** a broadcaster control server (fake ChannelManager), launches the MCP
+  over a stdio pipe and drives it **as an MCP client** — `list_tools`/`list_resources`
+  shape (59 tools, 43 resources), a read tool, a write chain (add streams → create user
+  → package → assign → assert the sealed grants in the signed DB), destructive/readOnly
+  annotation presence, a docs resource read + `docs_search` hit, the **re-login-on-401**
+  path (bump the admin `tokenVersion` mid-test), and the SSH executor against a
+  **command-stub seam** (a fake `ssh` binary via `ssh.sshBin`) — asserting the publisher
+  secret never appears in a tool result. Ran `test:core`, `test:packages`,
+  `test:admin-api`, `test:mcp` green + `node --check` + `mkdocs build --strict`.
+- **v1 scope:** panel + broadcaster + install/maintain + docs. Reseller/library/repeater
+  deferred (reseller was mid-change under S45); local stdio only (no remote HTTP mode).
+  npm-publish for `npx @aliran/mcp` is a follow-up. **No VPS work** this segment (a real
+  install against a throwaway box is optional post-merge validation the user runs).
