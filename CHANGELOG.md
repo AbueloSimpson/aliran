@@ -18,6 +18,32 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Channel packages ("bouquets")** — named channel bundles an admin grants as one
+  unit ("Basic", "Sports"), replacing chip-by-chip per-stream grants that stop
+  scaling past a few dozen channels. Because a grant is a **sealed key** (not an
+  ACL), packages cannot be a runtime check: every change is *materialized* into
+  per-user sealed grants by a reconcile engine (`panel/src/packages.js`) — on
+  package CRUD, user assignment, stream add/retag/delete, category rename/merge,
+  every source sync, and panel boot. Members are explicit stream ids, id globs
+  (`sports-*`), or selectors `category:<slug>` (parent covers `Parent/Child`) and
+  `source:<name>`, resolved against the live catalog so newly tagged/imported
+  channels join by themselves. User records gain **grant provenance**
+  (`manualGrants` vs `packages`); revoking a stream now removes the *manual*
+  entitlement (a covering package re-seals it in the same request), removing a
+  package removes only what nothing else covers, and S27 source auto-grants are
+  never touched by package reconciles (with auto-grant OFF, a `source:` member
+  hands that source to package governance). `default` packages are auto-assigned
+  to newly created users beside the source auto-grant hook. Pre-package records
+  migrate additively at first boot (existing grants adopted as manual, source
+  auto-grants correctly left to the source engine — nothing is ever revoked by
+  the upgrade). Ships with `/api/packages` CRUD + `/api/users/:u/packages`,
+  admin-cli parity (`add-package`/`set-package`/`list-packages`/`show-package`/
+  `remove-package`/`set-user-packages`), a dashboard **Packages** tab (members,
+  resolved-channel preview, holder counts) and Users-tab provenance chips
+  (package / manual / auto), plus a new required-CI e2e suite (`test:packages`,
+  deterministic, DHT-free). **Zero wire/SDK/app impact** — clients receive
+  `wrapped` keys at login exactly as before. Registry: `DATA_DIR/packages.json`.
+
 - **Security hardening pass** over the shipped crypto/auth paths — wire-compatible
   (no protocol change; deployed players/SDKs/apps unaffected). Fixes: (1) malformed
   login-RPC hex fields now fail closed instead of crashing the panel — a non-string

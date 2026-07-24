@@ -30,6 +30,8 @@ src/keys.js          panel signing + OPRF + legacy publisher keys (init/load); i
 src/store.js         signed Hyperbee (accounts+catalog) + assets drive + private secrets
 src/rpc.js           login RPC: PoW + throttle + OPRF eval + sessions + register
 src/ops.js           shared admin operations (single implementation for CLI + API)
+src/sources.js       remote channel sources: scheduled provider-feed import + auto-grant
+src/packages.js      channel packages (bouquets): registry + the grant reconcile engine
 src/admin-cli.js     admin commands (users, streams, devices, art, admins, publishers)
 src/admin-server.js  authed admin HTTP+JSON API + static dashboard (ADMIN_ENABLED=1)
 src/index.js         panel node: DB + assets + DHT announce + replication + RPC + admin API
@@ -57,6 +59,11 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
       ring), curation (`order`/`featured`, register-safe), cooperative per-device revoke
 - [x] Dashboard UI for all of the above (Admins + Overview tabs, search/load-more,
       confirm-guarded deletes, curation controls, device revoke ✕)
+- [x] Channel packages / bouquets: named bundles granted as one unit, MATERIALIZED
+      into per-user sealed keys (grants are cryptographic, not ACLs); members =
+      ids / id globs / `category:`+`source:` selectors resolved at reconcile time;
+      grant provenance (`manualGrants` vs `packages`) + dashboard Packages tab +
+      Users-tab provenance chips; zero wire/SDK/app change (`npm run test:packages`)
 - [ ] HA / threshold OPRF across replicas
 
 See [`../docs/security-model.md`](../docs/security-model.md). Prefer vetted crypto

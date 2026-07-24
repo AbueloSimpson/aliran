@@ -98,6 +98,13 @@ Shipped:
   directories are created `0700`, and a boot warning nudges the `LEGACY_PUBLISHER`
   sunset. Guarantees, audited surfaces and an explicit residual-risk register are
   in [docs/security-model.md](docs/security-model.md).
+- ✅ **Channel packages (bouquets)**: named channel bundles granted as one unit —
+  members are stream ids, id globs, and `category:`/`source:` selectors resolved
+  against the live catalog, **materialized into per-user sealed keys** by a
+  reconcile engine (grants are cryptographic, not ACLs), with grant provenance
+  (manual vs package vs source auto-grant), default packages for new accounts,
+  admin API/CLI parity and a dashboard Packages tab + Users-tab provenance chips;
+  zero wire/SDK/app change (`test:packages`, required CI lane)
 
 **Exit criteria:** a new operator can go from clone → live service in under an hour,
 following only the docs.

@@ -119,7 +119,12 @@ source — the feed's own category strings are ignored (a provider never names y
 - **Auto-grant** (default on): every user is granted every imported channel, reconciled
   on **every** sync — and immediately at user creation — so accounts created between
   pulls converge. As with any grant, a device picks new channels up at its next login
-  (app restart). Turn it off per source to gate the category manually.
+  (app restart). Turn it off per source to gate the category: either grant by hand, or
+  put a `source:<name>` member in a **[channel package](user-management.md#channel-packages-bouquets)**
+  so only package holders get the lineup (and follow it as the feed drifts). With
+  auto-grant off, formerly-auto grants that no package or manual grant covers are
+  removed on the next package reconcile — turning it off actually converges access
+  instead of leaving permanent stragglers.
 - **Deselect channels you don't want**: the Sources tab's **channels** button opens a
   checkbox list of every feed entry — unchecking one **excludes** it (removed
   immediately, grants included, and skipped on every future sync; the feed cannot

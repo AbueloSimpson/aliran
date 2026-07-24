@@ -30,7 +30,18 @@ panel public key, so records are provably authentic. Namespaces:
   encrypted video blocks**, nothing more — every block is ciphertext under the
   stream key, which still only travels sealed per-user through a grant.
 - `user/<username>` → `{ salt, verifier, argon, pub, encPriv,
-  wrapped:{ [streamId]: sealedStreamKey }, devices[], tokenVersion, maxDevices, status }`
+  wrapped:{ [streamId]: sealedStreamKey }, manualGrants[], packages[],
+  devices[], tokenVersion, maxDevices, status }`
+  — `manualGrants`/`packages` (S44) record **why** each grant exists (granted by
+  hand vs. via a channel package); they are plain provenance metadata, not
+  secrets, and nothing outside the panel reads them. `wrapped` stays the wire
+  format clients unseal at login: a **package cannot be a runtime check**,
+  because a grant is a sealed key, so package changes are *materialized* into
+  `wrapped` by the panel's reconcile engine (`panel/src/packages.js`). The
+  package registry itself is a plain panel-local file (`DATA_DIR/packages.json`
+  — names and member selectors only, nothing secret). Revocation semantics are
+  unchanged: removing a package deletes sealed keys from the record, and a
+  client that already unsealed a key is only locked out by a stream-key rotation.
 
 ## Login without reading secrets
 

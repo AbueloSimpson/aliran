@@ -2393,3 +2393,66 @@ bad-hex/short values through login/session/register and asserts clean errors wit
 uncaught exceptions, plus the replay, throttle-boundedness, legacy-predicate and
 POSIX file-mode checks. Four focused fix commits, all wire-compatible; `@aliran/core`
 was not touched.
+
+### Channel packages ("bouquets") — entitlements granted as one unit (verified)
+- **Problem:** grants were only ever per-stream (`grant alice espn` × N), and the
+  Users-tab grant chips stop scaling somewhere past a few dozen channels — a real
+  lineup wants "Basic" / "Sports" / "Cine" bundles. The shaping constraint, verified
+  in code before designing anything: a grant is **cryptographic, not an ACL** —
+  `user.wrapped[streamId]` is the stream secret sealed to the user's public key and
+  clients unseal at login, so a package cannot be a runtime membership check. It has
+  to **materialize** into sealed per-stream grants, and the machinery for exactly
+  that already existed in the S27 source auto-grant reconcile. S44 generalizes it.
+- **Model:** a plain registry `DATA_DIR/packages.json` (`{ name: { label, members,
+  default, addedAt } }`); members are explicit stream ids, id globs (`sports-*`,
+  the publisher-scope matcher), or selectors `category:<slug>` (a parent slug
+  covers its `Parent/Child` rails) and `source:<name>`, resolved against the live
+  catalog **at reconcile time** — a newly tagged/imported/created channel joins the
+  bouquet with no package edit; an explicit id may pre-date its stream and
+  materializes when the stream is added. User records gain **grant provenance**
+  (`manualGrants[]` + `packages[]`), with `wrapped` remaining the wire format:
+  `seal(manual ∪ resolved members)`.
+- **The reconcile engine** (`panel/src/packages.js`) converges every user in one
+  pass: lazily migrates pre-S44 records (grants adopted as *manual*, except
+  channels owned by an auto-grant source — the source engine keeps re-sealing
+  those, and adopting them would misattribute whole imported lineups), seals
+  missing entitled keys, and removes wrapped entries no provenance covers —
+  manual, any held package, or an auto-grant source (the carve-out that keeps S27
+  auto-grant behavior byte-identical; without it, a removal would just flap back
+  on the next sync). Runs on package CRUD, user assignment, `createUser` (default
+  packages, beside the untouched source auto-grant hook), stream add/retag/delete,
+  category rename/merge, every source sync, and panel boot (the migration moment —
+  idempotent, zero bee appends when converged). Revoking a single stream now
+  removes the *manual* entitlement: if a held package still covers the id the
+  reconcile re-seals it in the same request, and the CLI/API answer says so
+  instead of pretending a revoke happened. A source with auto-grant OFF gets no
+  carve-out, so a `source:<name>` member hands that source to package governance
+  (only holders get its channels, following feed drift).
+- **Surface:** `/api/packages` CRUD (+ resolved-channel and holder counts, live
+  resolution preview) and `POST /api/users/:u/packages`; admin-cli parity
+  (`add-package` / `set-package` / `list-packages` / `show-package` /
+  `remove-package` / `set-user-packages` — store-needing, panel-stopped like
+  `sync-source`); dashboard **Packages** tab (define, members chips, resolved
+  preview dialog, holder counts, DEFAULT badge) and the Users-tab grants cell
+  rebuilt into provenance chips — package chips (✕ unassigns the bouquet), manual
+  chips, and dashed *auto* chips for source auto-grants — with whole packages
+  offered in the "+ grant" dialog beside single streams. **Zero wire/SDK/app
+  change**: clients receive `wrapped` at login exactly as before; nothing outside
+  the panel reads the provenance fields.
+- **Verified:** new required-lane suite `test:packages` (in-process panel + admin
+  server + loopback feed server, deterministic, DHT-free) — 11 sections covering
+  CRUD validation, selector resolution (incl. parent→child), sealed
+  materialization (seal shape ≡ a manual grant's), provenance union,
+  revoke-with-covering-package, package-removal-keeps-manual, reconcile triggers
+  (add/retag/delete, pre-declared member), default packages beside the S27
+  auto-grant hook, package-governed auto-grant-OFF sources following feed drift
+  with no flap-back, auto-grant coexistence (package ops never touch auto grants;
+  flipping auto-grant off converges them away; re-enable restores), additive
+  pre-S44 migration with correct attribution, and converged-reconcile
+  bee-frugality (zero appends). The admin-api suite grew section R (endpoint
+  surface over real HTTP beside a live-swarm viewer login), A–R green. Dashboard
+  browser-verified against a seeded throwaway panel: Packages tab, provenance
+  chips, live package grant via the dialog folding the covered channels into the
+  new chip. Docs: user-management (the operator walkthrough), security-model
+  (record fields + registry trust note), reference (CLI + API tables + dashboard
+  tour), panel README; `mkdocs build --strict` green.

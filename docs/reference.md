@@ -28,6 +28,10 @@
 | `list-sources` / `set-source <name> [--url --category … --exclude "id1,id2"]` | List sources + sync state / edit one (registry-only — safe beside a running panel; `--exclude` deselects feed entries, `""` re-includes all) |
 | `sync-source <name>` | Pull + diff + grant **now** (needs the store: panel stopped — on a live panel use the dashboard/API) |
 | `remove-source <name> [--keep-channels]` | Remove a source; purges its channels unless `--keep-channels` detaches them |
+| `add-package <name> [--label L --members "espn,sports-*,category:Deportes,source:anime" --default]` | Define a channel package (bouquet): members are stream ids, id globs, and `category:`/`source:` selectors resolved at reconcile time; `--default` auto-assigns it to **new** users |
+| `set-package <name> [--label --members "…" --default true\|false]` / `remove-package <name>` | Edit a package (member edits materialize for every holder; `""` clears members) / remove it (grants only it covered are removed) |
+| `list-packages` / `show-package <name>` | Packages + resolved/holder counts / one package with the channels it resolves to now |
+| `set-user-packages <u> <p1,p2\|"">` | Replace a user's package list — seals/removes grants immediately (package commands need the store: panel stopped, or use the dashboard/API) |
 
 > **Stream deletion caveat:** the purge removes everything the panel can remove, but a
 > client that already unsealed the stream key may have it cached — full revocation of
@@ -41,9 +45,13 @@ Served by the panel process (default `127.0.0.1:3210`; put TLS in front if expos
 Opening the address in a browser loads the **admin dashboard** (`panel/admin-ui/`,
 plain HTML/JS): sign in with an admin account to manage users (create, prefix
 **search** with cursor-paged “Load more”, password, disable, **delete**, grants,
-devices — including per-device revoke ✕ —, limits) and streams (add — the encryption
+devices — including per-device revoke ✕ —, limits; the grants cell splits
+**package chips** / manual chips / source auto-grant chips, and the grant dialog
+offers whole packages beside single streams) and streams (add — the encryption
 key is shown once —, metadata, **curation**: order + featured hero hint, art upload
-with preview, **permanent purge** behind a type-the-id confirmation), plus an
+with preview, **permanent purge** behind a type-the-id confirmation), plus a
+**Packages** tab (define bouquets of channels — members, resolved-channel preview,
+holder counts — granted as one unit and materialized into per-user sealed keys), an
 **Admins** tab (add/remove/rotate passwords — rotating your own signs you out), a
 **Publishers** tab (enroll broadcaster sites with their own keys + channel scopes,
 edit scopes live, revoke/re-activate, remove — the site secret is shown once at
@@ -75,7 +83,8 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `POST /api/users/:u/password` | Rotate password (re-seals grants) |
 | `POST /api/users/:u/status` `{status}` | `active` \| `disabled` |
 | `POST /api/users/:u/logout-all` · `POST /api/users/:u/max-devices` | Session/device controls |
-| `POST /api/users/:u/grants` `{streamId}` · `DELETE /api/users/:u/grants/:id` | Grant / revoke |
+| `POST /api/users/:u/grants` `{streamId}` · `DELETE /api/users/:u/grants/:id` | Grant / revoke — a revoke removes the **manual** entitlement; a package that still covers the id re-seals it in the same request |
+| `POST /api/users/:u/packages` `{packages:['basic',…]}` | Replace the user's package list — materializes sealed grants immediately (user summaries carry `packages` + `manualGrants` provenance) |
 | `GET/POST /api/streams` | List / add (`add-stream` fields + `order`/`featured` + `url` — an https `url` creates a **redirect channel**; returns the encryption key once) |
 | `PATCH /api/streams/:id` | Update catalog metadata (incl. `order` 0–9999 \| null, `featured` bool, `url` — https sets / empty clears the redirect class, `epgUrl`/`epgId` — https program-guide pointers the app fetches, empty clears) |
 | `DELETE /api/streams/:id` | **Full purge** — catalog + private key + grants + art (see the deletion caveat above) |
@@ -91,6 +100,9 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `GET /api/sources/:name/channels` | Imported + excluded entries — the channels-dialog data (`{feedId,id,title,order,excluded}`) |
 | `DELETE /api/sources/:name` | Remove a source — **purges its channels** (`?keepChannels=1` detaches them as manual redirect channels instead) |
 | `POST /api/sources/:name/sync` | Pull + diff + grant now → the sync report (`added/updated/removed/skipped/conflicts/granted/notModified`) |
+| `GET/POST /api/packages` | Channel packages (bouquets): list (+ resolved-channel and holder counts) / add (`{name,label?,members?,default?}` — members: stream ids, id globs, `category:<slug>`, `source:<name>`) |
+| `GET /api/packages/:name` · `PATCH /api/packages/:name` | One package + the ids it resolves to right now / edit label/members/default (member edits materialize for every holder) |
+| `DELETE /api/packages/:name` | Remove a package + strip it from users — grants only it covered are removed; manual grants and auto-grant source channels survive |
 
 ## Broadcaster control API + UI (`CONTROL_ENABLED=1`)
 
