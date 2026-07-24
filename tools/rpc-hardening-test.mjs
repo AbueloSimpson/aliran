@@ -12,6 +12,8 @@
 //   B. Register replay protection: a captured, validly-signed register cannot be
 //      replayed to roll a channel's feedKey back — the per-connection challenge rotates
 //      one-shot, so the second submission fails signature verification.
+//   C. makeThrottle boundedness: a flood of distinct keys cannot grow the map without
+//      bound; normal fixed-window limiting still triggers.
 //
 // Exits 0 on PASS, 1 on any failure.
 
@@ -164,6 +166,19 @@ try {
     const chal2 = (await call('hello')).challenge
     const again = await call('register', { payload, sig: sign(chal2) })
     ok(again && again.ok === true, 're-signing against a fresh challenge is accepted')
+  }
+
+  // ---------- C. throttle map is bounded ----------
+  console.log('C. makeThrottle bounds its key map')
+  {
+    const th = makeThrottle(1000, 900, { maxKeys: 100 })
+    for (let i = 0; i < 10000; i++) th('user' + i + '|peer')
+    ok(th.size <= 100, `10k distinct keys → map stayed bounded (size=${th.size} ≤ 100)`)
+
+    // Fixed-window limiting still works for a hot key.
+    const lim = makeThrottle(2, 900)
+    const r1 = lim('bob|ip'); const r2 = lim('bob|ip'); const r3 = lim('bob|ip')
+    ok(!r1.locked && !r2.locked && r3.locked, 'threshold enforcement intact (3rd hit locks with threshold 2)')
   }
 
   ok(!crashed, 'no uncaught exception / unhandled rejection fired during the run')

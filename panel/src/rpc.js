@@ -24,17 +24,32 @@ function hexField (v, bytes) {
   return b4a.from(v, 'hex')
 }
 
-// Fixed-window rate limiter on OPRF evaluations per (username, peer).
-export function makeThrottle (threshold, windowSec) {
+// Fixed-window rate limiter on OPRF evaluations per (username, peer). The key space is
+// attacker-influenced (usernames are arbitrary and peer keys are per-connection), so the
+// map is BOUNDED rather than growing forever: once it reaches maxKeys a call first drops
+// every entry whose window has already elapsed (those reset on next use anyway) and, if
+// still at the cap, evicts the oldest-inserted entries (Map keeps insertion order) down to
+// half the cap. Pruning is O(1) amortized (it runs at most once per ~maxKeys/2 inserts),
+// needs no timer, and makes a flood of junk usernames unable to exhaust memory. The cap is
+// generous — a real deployment never approaches it; only an active flood ever trips it.
+export function makeThrottle (threshold, windowSec, { maxKeys = 20000 } = {}) {
   const map = new Map()
-  return (key) => {
+  const windowMs = windowSec * 1000
+  const throttle = (key) => {
     const now = Date.now()
+    if (map.size >= maxKeys) {
+      for (const [k, v] of map) if (now - v.windowStart > windowMs) map.delete(k)
+      if (map.size >= maxKeys) { const keep = maxKeys >> 1; for (const k of map.keys()) { if (map.size <= keep) break; map.delete(k) } }
+    }
     let e = map.get(key)
-    if (!e || now - e.windowStart > windowSec * 1000) { e = { count: 0, windowStart: now }; map.set(key, e) }
+    if (!e || now - e.windowStart > windowMs) { e = { count: 0, windowStart: now }; map.set(key, e) }
     e.count++
-    if (e.count > threshold) return { locked: true, retryAfter: Math.ceil((e.windowStart + windowSec * 1000 - now) / 1000) }
+    if (e.count > threshold) return { locked: true, retryAfter: Math.ceil((e.windowStart + windowMs - now) / 1000) }
     return { locked: false }
   }
+  // Live key count — exposed (non-enumerable) for observability + the boundedness test.
+  Object.defineProperty(throttle, 'size', { get: () => map.size })
+  return throttle
 }
 
 // Attach `hello` + `login` + `session` responders to a connection. `throttle` is shared

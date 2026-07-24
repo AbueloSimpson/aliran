@@ -39,17 +39,28 @@ export function argonOpts (config) {
   }
 }
 
-// Fixed-window rate limiter (same as panel/src/rpc.js makeThrottle).
-export function makeThrottle (threshold, windowSec) {
+// Fixed-window rate limiter (same as panel/src/rpc.js makeThrottle). BOUNDED: the key
+// space is attacker-influenced (arbitrary usernames, per-connection/-IP identity), so
+// past maxKeys a call drops expired windows and, if still at the cap, evicts the
+// oldest-inserted entries down to half — O(1) amortized, no timer, memory can't be
+// exhausted by junk keys. `.size` (non-enumerable) exposes the live key count.
+export function makeThrottle (threshold, windowSec, { maxKeys = 20000 } = {}) {
   const map = new Map()
-  return (key) => {
+  const windowMs = windowSec * 1000
+  const throttle = (key) => {
     const now = Date.now()
+    if (map.size >= maxKeys) {
+      for (const [k, v] of map) if (now - v.windowStart > windowMs) map.delete(k)
+      if (map.size >= maxKeys) { const keep = maxKeys >> 1; for (const k of map.keys()) { if (map.size <= keep) break; map.delete(k) } }
+    }
     let e = map.get(key)
-    if (!e || now - e.windowStart > windowSec * 1000) { e = { count: 0, windowStart: now }; map.set(key, e) }
+    if (!e || now - e.windowStart > windowMs) { e = { count: 0, windowStart: now }; map.set(key, e) }
     e.count++
-    if (e.count > threshold) return { locked: true, retryAfter: Math.ceil((e.windowStart + windowSec * 1000 - now) / 1000) }
+    if (e.count > threshold) return { locked: true, retryAfter: Math.ceil((e.windowStart + windowMs - now) / 1000) }
     return { locked: false }
   }
+  Object.defineProperty(throttle, 'size', { get: () => map.size })
+  return throttle
 }
 
 // Load-or-create the Ed25519 keypair that signs control session tokens.
