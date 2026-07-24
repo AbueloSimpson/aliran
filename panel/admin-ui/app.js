@@ -16,6 +16,7 @@ let streams = []
 let admins = []
 let publishers = []
 let channelSources = []
+let channelPackages = [] // S44 bouquets — resolved id arrays double as the Users-tab provenance data
 let categories = []
 let obsTimer = null // 10 s observability poll, runs only while the Overview tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
@@ -78,7 +79,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'admins', 'publishers', 'sources', 'categories', 'overview']
+const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'overview']
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
@@ -91,12 +92,13 @@ for (const tab of document.querySelectorAll('.tab')) {
 // ---------------------------------------------------------------- refresh + render
 
 async function refresh () {
-  const [status, s, a, p, src, cats] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers'), api('GET', '/api/sources'), api('GET', '/api/categories')])
+  const [status, s, a, p, src, cats, pkgs] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers'), api('GET', '/api/sources'), api('GET', '/api/categories'), api('GET', '/api/packages')])
   streams = s
   categories = cats
   admins = a
   publishers = p
   channelSources = src
+  channelPackages = pkgs
   $('#status-chips').innerHTML =
     `<span class="chip"><b>${status.users}</b> users</span>` +
     `<span class="chip"><b>${status.streams}</b> streams</span>` +
@@ -107,6 +109,7 @@ async function refresh () {
   renderAdmins()
   renderPublishers()
   renderSources()
+  renderPackages()
   renderCategories()
   await loadUsers(true) // back to page 1, keeping the current search prefix
   if (!$('#overview-section').hidden) await loadObservability().catch(() => {})
@@ -154,15 +157,34 @@ function renderUsers () {
         <button class="btn small ${u.status === 'active' ? 'danger' : ''}" data-act="toggle">${u.status === 'active' ? 'disable' : 'enable'}</button>
         <button class="btn small danger" data-act="del">delete</button>
       </div></td>`
+    // Provenance split (S44): one chip per assigned PACKAGE (✕ unassigns the whole
+    // bouquet), then per-channel chips — manual grants, then source auto-grants.
+    // A channel covered by a package is folded into its package chip; a channel
+    // that is manual AND package-covered still shows its manual chip.
     const grants = tr.querySelector('.grants')
-    if (u.grants.length === 0) grants.innerHTML = '<span class="muted">—</span>'
-    for (const g of u.grants) {
+    const pkgIds = new Set()
+    for (const name of u.packages || []) {
+      const p = channelPackages.find((x) => x.name === name)
+      for (const id of (p && p.resolved) || []) pkgIds.add(id)
       const chip = document.createElement('span')
-      chip.className = 'chip'
+      chip.className = 'chip pkg'
+      chip.title = `package "${name}"${p ? ` — ${p.resolved.length} channel(s)` : ' (no longer defined)'} · members live on the Packages tab · ✕ removes the package from this user`
+      chip.innerHTML = `▣ <b>${esc(p ? p.label : name)}</b> <button class="x" title="remove package">✕</button>`
+      chip.querySelector('.x').addEventListener('click', () => removeUserPackage(u, name))
+      grants.appendChild(chip)
+    }
+    const manual = new Set(u.manualGrants || [])
+    for (const g of u.grants) {
+      if (pkgIds.has(g) && !manual.has(g)) continue // folded into the package chip
+      const auto = !manual.has(g)
+      const chip = document.createElement('span')
+      chip.className = 'chip' + (auto ? ' auto' : '')
+      if (auto) chip.title = 'auto-granted by a channel source (auto-grant) — a revoke lasts only until that source\'s next sync'
       chip.innerHTML = `${esc(g)} <button class="x" title="revoke">✕</button>`
       chip.querySelector('.x').addEventListener('click', () => revokeGrant(u.username, g))
       grants.appendChild(chip)
     }
+    if (grants.childElementCount === 0) grants.innerHTML = '<span class="muted">—</span>'
     tr.querySelector('[data-act=devices]').addEventListener('click', () => showDevices(u.username))
     tr.querySelector('[data-act=max]').addEventListener('click', () => editMaxDevices(u))
     tr.querySelector('[data-act=grant]').addEventListener('click', () => grantStream(u))
@@ -419,6 +441,34 @@ function renderSources () {
   }
 }
 
+// Channel packages / bouquets (S44): named bundles materialized into sealed
+// per-user grants. The resolved arrays fetched here also feed the Users-tab
+// provenance chips (package vs manual vs auto).
+function renderPackages () {
+  const tbody = $('#packages-table tbody')
+  tbody.innerHTML = ''
+  for (const p of channelPackages) {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td><b>${esc(p.name)}</b>${p.label !== p.name ? `<br><span class="muted">${esc(p.label)}</span>` : ''}</td>
+      <td>${p.members.length ? p.members.map((m) => `<span class="chip mono">${esc(m)}</span>`).join(' ') : '<span class="muted" title="no members — the package grants nothing yet">—</span>'}</td>
+      <td><button class="btn small" data-act="resolved" title="the channels the members resolve to right now">${p.resolved.length} channel${p.resolved.length === 1 ? '' : 's'}</button></td>
+      <td>${p.holders}</td>
+      <td>${p.default ? '<span class="badge active" title="assigned to every NEW user at creation (existing users are not touched)">DEFAULT</span>' : '<span class="muted">—</span>'}</td>
+      <td><div class="row-actions">
+        <button class="btn small" data-act="edit">edit</button>
+        <button class="btn small danger" data-act="remove">remove</button>
+      </div></td>`
+    tr.querySelector('[data-act=resolved]').addEventListener('click', () => showPackageResolved(p))
+    tr.querySelector('[data-act=edit]').addEventListener('click', () => editPackage(p))
+    tr.querySelector('[data-act=remove]').addEventListener('click', () => removePackageEntry(p))
+    tbody.appendChild(tr)
+  }
+  if (channelPackages.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">no packages yet — define a bouquet above, then assign it to users</td></tr>'
+  }
+}
+
 function renderAdmins () {
   const tbody = $('#admins-table tbody')
   tbody.innerHTML = ''
@@ -581,11 +631,36 @@ async function editMaxDevices (u) {
 }
 
 async function grantStream (u) {
-  const available = streams.map((s) => s.id).filter((id) => !u.grants.includes(id))
-  if (available.length === 0) return toast('no streams left to grant (add a stream first)', true)
-  const v = await dialog(`Grant ${u.username} access to`, [{ name: 'streamId', label: 'Stream', type: 'select', options: available }], { okLabel: 'Grant' })
+  // Packages first (S44): granting a bouquet is the common case once they exist.
+  const pkgOptions = channelPackages.filter((p) => !(u.packages || []).includes(p.name))
+    .map((p) => `package: ${p.name} (${p.resolved.length} ch)`)
+  const streamOptions = streams.map((s) => s.id).filter((id) => !u.grants.includes(id))
+  const options = [...pkgOptions, ...streamOptions]
+  if (options.length === 0) return toast('nothing left to grant (add a stream or define a package first)', true)
+  const v = await dialog(`Grant ${u.username} access to`, [{ name: 'what', label: 'Package or stream', type: 'select', options }], {
+    okLabel: 'Grant',
+    body: channelPackages.length ? '<p class="muted">Granting a <b>package</b> assigns the whole bouquet — the user follows its member list from then on. Single streams become <b>manual</b> grants.</p>' : ''
+  })
   if (!v) return
-  act(() => api('POST', `/api/users/${u.username}/grants`, { streamId: v.streamId }), `granted "${v.streamId}" to "${u.username}"`)
+  const m = v.what.match(/^package: (\S+) /)
+  if (m) {
+    return act(() => api('POST', `/api/users/${u.username}/packages`, { packages: [...(u.packages || []), m[1]] }),
+      `package "${m[1]}" assigned to "${u.username}"`)
+  }
+  act(() => api('POST', `/api/users/${u.username}/grants`, { streamId: v.what }), `granted "${v.what}" to "${u.username}"`)
+}
+
+async function removeUserPackage (u, name) {
+  const p = channelPackages.find((x) => x.name === name)
+  const v = await dialog(`Remove package "${name}" from ${u.username}?`, [], {
+    okLabel: 'Remove', danger: true,
+    body: `<p class="muted">Removes the sealed keys of the <b>${p ? p.resolved.length : 0} channel(s)</b> only this package covers —
+           manual grants and auto-granted source channels stay. A client that already unsealed a key needs a
+           stream-key rotation for a hard lockout.</p>`
+  })
+  if (!v) return
+  act(() => api('POST', `/api/users/${u.username}/packages`, { packages: (u.packages || []).filter((n) => n !== name) }),
+    `package "${name}" removed from "${u.username}"`)
 }
 
 async function revokeGrant (username, streamId) {
@@ -926,6 +1001,58 @@ async function removeSourceEntry (s) {
   if (!v) return
   act(() => api('DELETE', `/api/sources/${s.name}` + (v.keep ? '?keepChannels=1' : '')),
     v.keep ? `source "${s.name}" removed — channels detached` : `source "${s.name}" removed — channels purged`)
+}
+
+// ---------------------------------------------------------------- package actions
+
+$('#add-package-form').addEventListener('submit', (e) => {
+  e.preventDefault()
+  const name = $('#npk-name').value.trim()
+  act(async () => {
+    await api('POST', '/api/packages', {
+      name,
+      label: $('#npk-label').value.trim() || undefined,
+      members: $('#npk-members').value,
+      default: $('#npk-default').checked
+    })
+    e.target.reset()
+  }, `package "${name}" created — assign it on the Users tab`)
+})
+
+function showPackageResolved (p) {
+  dialog(`${p.name} — resolves to ${p.resolved.length} channel(s)`, [], {
+    okLabel: 'Close',
+    body: (p.resolved.length
+      ? `<ul class="report-list mono">${p.resolved.map((id) => `<li>${esc(id)}</li>`).join('')}</ul>`
+      : '<p class="muted">No channel matches the members right now — selectors resolve as soon as matching channels exist (a newly imported/tagged channel joins by itself).</p>') +
+      `<p class="muted">Members: ${p.members.length ? p.members.map((m) => esc(m)).join(', ') : '(none)'}</p>`
+  })
+}
+
+async function editPackage (p) {
+  const v = await dialog(`Edit package ${p.name}`, [
+    { name: 'label', label: 'Display label', value: p.label },
+    { name: 'members', label: 'Members (comma-separated: ids, id globs, category:<slug>, source:<name>)', type: 'textarea', value: p.members.join(', ') },
+    { name: 'default', label: 'default for new users (existing users are not touched)', type: 'checkbox', value: !!p.default }
+  ], {
+    body: `<p class="muted">Member edits materialize immediately for the <b>${p.holders} holder(s)</b>: missing keys are sealed, keys only this package covered are removed.</p>`
+  })
+  if (!v) return
+  act(async () => {
+    const r = await api('PATCH', `/api/packages/${p.name}`, { label: v.label.trim(), members: v.members, default: v.default })
+    toast(`"${p.name}" updated — sealed ${r.reconciled.sealed}, removed ${r.reconciled.removed} grant(s)`)
+  })
+}
+
+async function removePackageEntry (p) {
+  const v = await dialog(`Remove package ${p.name}?`, [], {
+    okLabel: 'Remove', danger: true,
+    body: `<p class="warn-text">Unassigns it from its <b>${p.holders} holder(s)</b> and removes the sealed keys only it covered.</p>
+           <p class="muted">Manual grants and auto-granted source channels survive. Viewers that already unsealed a key keep it
+           until a stream-key rotation.</p>`
+  })
+  if (!v) return
+  act(() => api('DELETE', `/api/packages/${p.name}`), `package "${p.name}" removed`)
 }
 
 // ---------------------------------------------------------------- stream actions

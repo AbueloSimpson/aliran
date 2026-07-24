@@ -37,6 +37,7 @@
   <nav>
     <button class="tab active" data-tab="streams">Streams</button>
     <button class="tab" data-tab="users">Users</button>
+    <button class="tab" data-tab="packages">Packages</button>
     <button class="tab" data-tab="admins">Admins</button>
     <button class="tab" data-tab="publishers">Publishers</button>
     <button class="tab" data-tab="sources">Sources</button>
@@ -79,6 +80,33 @@
         </table>
       </div>
       <button class="btn" id="users-more" hidden>Load more</button>
+    </section>
+
+    <section id="packages-section" hidden>
+      <form id="add-package-form" class="card row-form">
+        <strong>Add package</strong>
+        <input id="npk-name" placeholder="name (e.g. basic)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+        <input id="npk-label" placeholder="display label (blank = name)">
+        <input id="npk-members" placeholder="members: ids, globs, category:/source: — e.g. espn, sports-*, category:Deportes, source:anime">
+        <label class="inline"><input type="checkbox" id="npk-default"> default for new users</label>
+        <button class="btn primary">Add</button>
+      </form>
+      <div class="card table-card">
+        <table id="packages-table">
+          <thead><tr>
+            <th>Package</th><th>Members</th><th>Resolves to</th><th>Holders</th><th>Default</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted footnote">A package (bouquet) is a named bundle of channels granted as <b>one unit</b> — assign it on the
+        Users tab (the <b>+ grant</b> dialog or a package chip's ✕). Grants stay <b>cryptographic</b>: every change here is
+        materialized into per-user sealed keys immediately; clients pick new ones up at their next login. Members can be stream
+        ids, id globs (<span class="mono">sports-*</span>), or selectors <span class="mono">category:&lt;slug&gt;</span> /
+        <span class="mono">source:&lt;name&gt;</span> that resolve against the catalog on every change — a newly tagged or
+        imported channel joins the bouquet by itself. Removing a package (or a member) removes the grants only it covered;
+        manual grants and <b>auto-grant</b> source channels are never touched. A viewer that already unsealed a key may have it
+        cached — a hard lockout is a stream-key rotation. Registry lives in <span class="mono">DATA_DIR/packages.json</span>.</p>
     </section>
 
     <section id="admins-section" hidden>
