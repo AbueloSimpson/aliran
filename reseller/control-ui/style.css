@@ -359,6 +359,10 @@ dialog h2 { margin: 0 0 14px; font-size: 15px; }
   background: var(--panel-2); font-size: 13px;
 }
 .dlg-list-row .meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dlg-list-row .dev-top { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.dlg-list-row .dev-top .status { font-weight: 600; }
+.dlg-list-row .dev-id { font-size: 11px; }
+.dlg-list-row .dev-sub { font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .report-box {
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; margin: 0; white-space: pre-wrap; word-break: break-word;

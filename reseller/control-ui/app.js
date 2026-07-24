@@ -371,6 +371,7 @@ function accountRow (r) {
       ? { label: 'Suspend', onClick: guard(() => accountStatus(r, 'disabled')) }
       : (r.expiresInDays > 0 ? { label: 'Resume', onClick: guard(() => accountStatus(r, 'active')) } : null),
     { label: 'Devices…', onClick: guard(() => devicesDialog(r)) },
+    { label: 'Log out all devices', onClick: guard(async () => { await api('POST', `/accounts/${encodeURIComponent(r.account)}/logout-all`); toast(`${r.account}: every session token revoked`) }) },
     { label: 'Change password…', onClick: () => passwordDialog(r) },
     '-',
     { label: 'Delete…', danger: true, onClick: () => deleteAccountDialog(r) }
@@ -496,17 +497,45 @@ function passwordDialog (r) {
     toast('Password changed')
   }, { okLabel: 'Change' })
 }
+// Devices are SELF-ENROLLED: the viewer app registers itself at sign-in (id +
+// label), the panel stamps the dates and enforces the slot cap there. So this
+// dialog reads as slots + sign-in freshness, and is honest about what Revoke
+// does (cooperative: frees the slot; the app drops to login on its next check).
 async function devicesDialog (r) {
   const list = await api('GET', `/accounts/${encodeURIComponent(r.account)}/devices`)
-  const rows = list.length
-    ? list.map((d) => el('div', { className: 'dlg-list-row' }, [
-        el('span', { className: 'meta' }, [
-          el('b', { textContent: d.label || d.deviceId.slice(0, 8) }),
-          d.expired ? el('span', { className: 'muted', textContent: ' (expired)' }) : null
-        ].filter(Boolean)),
-        btn('Revoke', guard(async () => { await api('DELETE', `/accounts/${encodeURIComponent(r.account)}/devices/${encodeURIComponent(d.deviceId)}`); toast('Device revoked') }), 'danger')
-      ]))
-    : [el('p', { className: 'muted', textContent: 'No devices enrolled.' })]
+  const active = () => list.filter((d) => !d.revoked && !d.expired).length
+  const slots = el('p', {
+    className: 'dlg-note',
+    textContent: `${active()} of ${r.maxDevices} device slot${r.maxDevices === 1 ? '' : 's'} in use — devices enroll themselves when the viewer signs in; a new device past the cap evicts the oldest.`
+  })
+  const rows = [slots]
+  if (!list.length) {
+    rows.push(el('p', { className: 'muted', textContent: 'No devices enrolled — nobody has signed in to this account yet.' }))
+  } else {
+    for (const d of list) {
+      const sub = d.expired
+        ? `enrolled ${fmtDate(d.issuedAt)} · session expired ${fmtDate(d.expiresAt)} — not signed in since`
+        : `enrolled ${fmtDate(d.issuedAt)} · session live until ${fmtDate(d.expiresAt)} (renews at sign-in)`
+      const row = el('div', { className: 'dlg-list-row' }, [
+        el('div', { className: 'meta' }, [
+          el('div', { className: 'dev-top' }, [
+            statusEl(d.expired ? '' : 'ok', d.label || 'unnamed device'),
+            el('span', { className: 'mono muted dev-id', textContent: d.deviceId.slice(0, 12) + (d.deviceId.length > 12 ? '…' : ''), title: d.deviceId })
+          ]),
+          el('div', { className: 'muted dev-sub', textContent: sub })
+        ]),
+        btn('Revoke', guard(async () => {
+          await api('DELETE', `/accounts/${encodeURIComponent(r.account)}/devices/${encodeURIComponent(d.deviceId)}`)
+          d.revoked = true
+          row.remove()
+          slots.textContent = slots.textContent.replace(/^\d+/, String(active()))
+          toast('Device revoked — the slot is free; the app signs out on its next check')
+        }), 'danger')
+      ])
+      rows.push(row)
+    }
+    rows.push(el('p', { className: 'dlg-note', textContent: 'Revoke is cooperative — it frees the slot and a well-behaved app drops to login. To cut access hard, use Log out all devices (kills every session token) or suspend the account.' }))
+  }
   dialog(`Devices — ${r.account}`, rows, () => {}, { okLabel: 'Done' })
 }
 function deleteAccountDialog (r) {
