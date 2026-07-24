@@ -29,7 +29,13 @@
 //   POST   /api/users/:u/logout-all
 //   POST   /api/users/:u/max-devices         {maxDevices}
 //   POST   /api/users/:u/grants              {streamId}
-//   DELETE /api/users/:u/grants/:streamId
+//   DELETE /api/users/:u/grants/:streamId    removes the MANUAL entitlement (a package that still covers the id re-seals it)
+//   POST   /api/users/:u/packages            {packages:['basic',…]} replace the user's bouquets (materializes immediately)
+//   GET    /api/packages                     channel packages (S44) + resolved-channel and holder counts
+//   POST   /api/packages                     {name,label?,members?,default?} — members: stream ids, id globs, category:<slug>, source:<name>
+//   GET    /api/packages/:name               one package + the stream ids it resolves to right now
+//   PATCH  /api/packages/:name               edit label/members/default (member edits materialize for every holder)
+//   DELETE /api/packages/:name               remove + strip from users (grants covered only by it are removed; manual ones survive)
 //   GET    /api/streams
 //   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?,url?}
 //                                            url (https) makes it a REDIRECT channel: viewers play the url, no P2P feed
@@ -69,6 +75,7 @@ import { signToken, tokenValid } from '@aliran/core'
 import { makeThrottle } from './rpc.js'
 import * as ops from './ops.js'
 import * as sources from './sources.js'
+import * as packages from './packages.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'admin-ui')
 
@@ -292,10 +299,12 @@ export function startAdminServer (ctx, opts = {}) {
         const b = await readJson(req)
         if (b.op === 'merge') {
           const out = await ops.mergeCategories(ctx, b.from, b.to)
+          await packages.reconcilePackages(ctx) // retagged channels move across category: members (S44)
           act('category-merge', { from: out.from.join(','), to: out.to, channels: out.channels })
           return sendJson(res, 200, out)
         }
         const out = await ops.renameCategory(ctx, b.from, b.to)
+        await packages.reconcilePackages(ctx) // retagged channels move across category: members (S44)
         act('category-rename', { from: out.from, to: out.to, channels: out.channels })
         return sendJson(res, 200, out)
       }
@@ -304,6 +313,35 @@ export function startAdminServer (ctx, opts = {}) {
         const out = await ops.deleteCategory(ctx, b.slug)
         act('category-delete', { category: out.slug })
         return sendJson(res, 200, out)
+      }
+    }
+
+    // Channel packages / bouquets (S44): named channel bundles materialized into
+    // per-user SEALED grants by the reconcile engine (packages.js) — a grant is
+    // cryptographic, so a package cannot be a runtime check. Members are stream
+    // ids, id globs, or category:/source: selectors resolved at reconcile time.
+    if (r1 === 'packages') {
+      if (seg.length === 2) {
+        if (req.method === 'GET') return sendJson(res, 200, await packages.listPackages(ctx))
+        if (req.method === 'POST') {
+          const b = await readJson(req)
+          const out = await packages.addPackage(ctx, b.name, b)
+          act('package-create', { package: b.name, members: out.members.length, default: out.default })
+          return sendJson(res, 201, out)
+        }
+      }
+      if (seg.length === 3) {
+        if (req.method === 'GET') return sendJson(res, 200, await packages.getPackage(ctx, r2))
+        if (req.method === 'PATCH') {
+          const out = await packages.setPackage(ctx, r2, await readJson(req))
+          act('package-update', { package: r2, members: out.members.length, sealed: out.reconciled.sealed, removed: out.reconciled.removed })
+          return sendJson(res, 200, out)
+        }
+        if (req.method === 'DELETE') {
+          const out = await packages.removePackage(ctx, r2)
+          act('package-remove', { package: r2, grantsRemoved: out.reconciled.removed })
+          return sendJson(res, 200, out)
+        }
       }
     }
 
@@ -333,6 +371,12 @@ export function startAdminServer (ctx, opts = {}) {
           try {
             if (await sources.grantSourcesToUser(ctx, b.username) > 0) out = await ops.getUser(ctx, b.username)
           } catch (err) { console.error('sources auto-grant failed for', b.username + ':', err.message || err) }
+          // Default packages (S44) — same best-effort contract: any miss converges
+          // on the next reconcile (boot / any package op).
+          try {
+            const withDefaults = await packages.applyDefaultPackages(ctx, b.username)
+            if (withDefaults) out = withDefaults
+          } catch (err) { console.error('default packages failed for', b.username + ':', err.message || err) }
           act('user-create', { user: b.username })
           return sendJson(res, 201, out)
         }
@@ -355,6 +399,9 @@ export function startAdminServer (ctx, opts = {}) {
         else if (r3 === 'grants') {
           const streamId = ops.checkName((await readJson(req)).streamId, 'stream id')
           out = await ops.grant(ctx, u, streamId); act('grant', { user: u, streamId })
+        } else if (r3 === 'packages') {
+          out = await packages.setUserPackages(ctx, u, (await readJson(req)).packages)
+          act('user-packages', { user: u, packages: out.packages.join(',') || '(none)' })
         }
         if (out) return sendJson(res, 200, out)
       }
@@ -367,7 +414,12 @@ export function startAdminServer (ctx, opts = {}) {
         return sendJson(res, 200, out)
       }
       if (seg.length === 5 && r3 === 'grants' && req.method === 'DELETE') {
-        const out = await ops.revoke(ctx, r2, r4)
+        await ops.revoke(ctx, r2, r4)
+        // Revoke removes the MANUAL entitlement (S44); the per-user reconcile
+        // re-seals the id if one of the user's packages still covers it — the
+        // response reflects the real post-revoke state either way.
+        await packages.reconcilePackages(ctx, { onlyUser: r2 })
+        const out = await ops.getUser(ctx, r2)
         act('revoke', { user: r2, streamId: r4 })
         return sendJson(res, 200, out)
       }
@@ -379,18 +431,23 @@ export function startAdminServer (ctx, opts = {}) {
         if (req.method === 'POST') {
           const b = await readJson(req)
           const out = await ops.addStream(ctx, b.id, b)
+          await packages.reconcilePackages(ctx) // a glob/category/source member may cover the new id (S44)
           act('stream-create', { streamId: b.id })
           return sendJson(res, 201, out)
         }
       }
       if (seg.length === 3) {
         if (req.method === 'PATCH') {
-          const out = await ops.setMeta(ctx, r2, await readJson(req))
+          const b = await readJson(req)
+          const out = await ops.setMeta(ctx, r2, b)
+          // Retagging moves the channel across category: selectors — materialize (S44).
+          if (b.category !== undefined) await packages.reconcilePackages(ctx)
           act('stream-meta', { streamId: r2 })
           return sendJson(res, 200, out)
         }
         if (req.method === 'DELETE') {
           const out = await ops.deleteStream(ctx, r2)
+          await packages.reconcilePackages(ctx) // converge selector state after the purge (S44)
           act('stream-delete', { streamId: r2, grantsRevoked: out.grantsRevoked })
           return sendJson(res, 200, out)
         }

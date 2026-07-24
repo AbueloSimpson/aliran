@@ -16,6 +16,7 @@ import { initKeys, openKeys } from './keys.js'
 import { openStore } from './store.js'
 import * as ops from './ops.js'
 import * as sources from './sources.js'
+import * as packages from './packages.js'
 
 function parseArgs (argv) {
   const pos = []; const opts = {}
@@ -181,7 +182,10 @@ async function main () {
       const username = pos[0]; if (!username) return usage(await done())
       await ops.createUser(ctx, username, await needPassword(username, opts))
       const autoGranted = await sources.grantSourcesToUser(ctx, username).catch(() => 0) // best-effort (S27); next sync reconciles
-      console.log(`Created user "${username}".` + (autoGranted ? ` Auto-granted ${autoGranted} source channel(s).` : ''))
+      // Default packages (S44) — best-effort like the source hook; the next reconcile converges any miss.
+      const withDefaults = await packages.applyDefaultPackages(ctx, username).catch(() => null)
+      console.log(`Created user "${username}".` + (autoGranted ? ` Auto-granted ${autoGranted} source channel(s).` : '') +
+        (withDefaults ? ` Default package(s): ${withDefaults.packages.join(', ')}.` : ''))
       break
     }
 
@@ -209,6 +213,7 @@ async function main () {
     case 'delete-stream': {
       const id = pos[0]; if (!id) return usage(await done())
       const r = await ops.deleteStream(ctx, id)
+      await packages.reconcilePackages(ctx) // converge package selector state after the purge (S44)
       console.log(`Purged stream "${id}": catalog record, private key, art, and ${r.grantsRevoked} grant(s).`)
       console.log('(Clients that already unsealed the key may have it cached; re-adding the id mints a fresh key.)')
       break
@@ -238,9 +243,11 @@ async function main () {
         feedKey: str(opts.feed),
         key: str(opts.key)
       })
+      const rec = await packages.reconcilePackages(ctx) // a glob/category member may cover the new id (S44)
       console.log(`Registered stream "${id}".`)
       console.log('  feedKey:', catalog.feedKey || '(set later with set-meta --feed)')
       console.log('  encKey :', encryptionKey, '(private; give to the broadcaster)')
+      if (rec.sealed) console.log(`  packages: sealed for ${rec.users} package-holding user(s)`)
       break
     }
 
@@ -254,7 +261,15 @@ async function main () {
     case 'revoke': {
       const [username, streamId] = pos; if (!username || !streamId) return usage(await done())
       await ops.revoke(ctx, username, streamId)
-      console.log(`Revoked "${username}" access to "${streamId}". (Full revocation of live content needs a stream-key rotation.)`)
+      // Revoke removes the MANUAL entitlement (S44) — a package that still covers
+      // the id re-seals it in this reconcile; say so instead of lying "revoked".
+      await packages.reconcilePackages(ctx, { onlyUser: username })
+      const after = await ops.getUser(ctx, username)
+      if (after.grants.includes(streamId)) {
+        console.log(`Removed the manual grant, but "${username}" still has "${streamId}" via package(s): ${after.packages.join(', ')} — remove the package or edit its members.`)
+      } else {
+        console.log(`Revoked "${username}" access to "${streamId}". (Full revocation of live content needs a stream-key rotation.)`)
+      }
       break
     }
 
@@ -275,6 +290,7 @@ async function main () {
         epgUrl: opts['epg-url'] != null ? str(opts['epg-url']) || '' : undefined, // '' clears
         epgId: opts['epg-id'] != null ? str(opts['epg-id']) || '' : undefined
       })
+      if (opts.category != null) await packages.reconcilePackages(ctx) // retag moves the id across category: members (S44)
       console.log(`Updated metadata for "${id}".`)
       break
     }
@@ -318,6 +334,7 @@ async function main () {
     case 'rename-category': {
       const [from, to] = pos; if (!from || !to) return usage(await done())
       const r = await ops.renameCategory(ctx, from, to)
+      await packages.reconcilePackages(ctx) // retagged channels move across category: members (S44)
       console.log(`Renamed "${r.from}" → "${r.to}": ${r.channels} channel(s), ${r.registry} registry entr${r.registry === 1 ? 'y' : 'ies'}.`)
       console.log('Note: children of a parent move with it. A SOURCE-owned rail is reasserted on the next sync — rename the source instead (set-source --category).')
       break
@@ -327,7 +344,68 @@ async function main () {
       const to = opts.into; const from = pos
       if (!from.length || !to) return usage(await done())
       const r = await ops.mergeCategories(ctx, from, to)
+      await packages.reconcilePackages(ctx) // retagged channels move across category: members (S44)
       console.log(`Merged ${r.from.map((f) => '"' + f + '"').join(', ')} → "${r.to}": ${r.channels} channel(s) retagged, ${r.registry} registry entr${r.registry === 1 ? 'y' : 'ies'} dropped.`)
+      break
+    }
+
+    // Channel packages / bouquets (S44). These need the store (every change
+    // materializes into sealed grants): run them with the panel STOPPED, or use
+    // the dashboard Packages tab / admin API against the live panel instead.
+    case 'add-package': {
+      const name = pos[0]; if (!name) return usage(await done())
+      const p = await packages.addPackage(ctx, name, {
+        label: str(opts.label),
+        members: str(opts.members),
+        default: opts.default != null ? opts.default : undefined
+      })
+      console.log(`Added package "${name}" (label "${p.label}", ${p.members.length} member(s)${p.default ? ', DEFAULT for new users' : ''}).`)
+      console.log('Members:', p.members.length ? p.members.join(', ') : '(none yet — set-package --members)')
+      break
+    }
+
+    case 'set-package': {
+      const name = pos[0]; if (!name) return usage(await done())
+      const p = await packages.setPackage(ctx, name, {
+        label: str(opts.label),
+        members: opts.members != null && opts.members !== true ? String(opts.members) : undefined, // '' clears
+        default: opts.default != null ? opts.default : undefined
+      })
+      console.log(`Updated package "${name}" (${p.members.length} member(s)${p.default ? ', DEFAULT' : ''}): sealed ${p.reconciled.sealed}, removed ${p.reconciled.removed} grant(s) across ${p.reconciled.users} user(s).`)
+      break
+    }
+
+    case 'list-packages': {
+      const rows = await packages.listPackages(ctx)
+      if (!rows.length) { console.log('(no packages)'); break }
+      for (const p of rows) {
+        console.log(p.name, '->', JSON.stringify({
+          label: p.label, members: p.members, default: !!p.default, resolves: p.resolved.length, holders: p.holders
+        }))
+      }
+      break
+    }
+
+    case 'show-package': {
+      const name = pos[0]; if (!name) return usage(await done())
+      const p = await packages.getPackage(ctx, name)
+      console.log(`${p.name} — "${p.label}"${p.default ? ' (DEFAULT for new users)' : ''}, ${p.holders} holder(s)`)
+      console.log('  members :', p.members.length ? p.members.join(', ') : '(none)')
+      console.log(`  resolves: ${p.resolved.length} channel(s)` + (p.resolved.length ? ' — ' + p.resolved.join(', ') : ''))
+      break
+    }
+
+    case 'remove-package': {
+      const name = pos[0]; if (!name) return usage(await done())
+      const r = await packages.removePackage(ctx, name)
+      console.log(`Removed package "${name}": ${r.reconciled.removed} grant(s) removed across ${r.reconciled.users} user record(s) (manual grants and other packages survive).`)
+      break
+    }
+
+    case 'set-user-packages': {
+      const [username, list] = pos; if (!username || list == null) return usage(await done())
+      const u = await packages.setUserPackages(ctx, username, list === '""' || list === "''" ? '' : list)
+      console.log(`Packages for "${username}" = ${u.packages.length ? u.packages.join(', ') : '(none)'} — ${u.grants.length} effective grant(s).`)
       break
     }
 
@@ -410,6 +488,14 @@ function usage () {
   list-categories                       Category vocabulary in use + per-category channel counts
   rename-category <from> <to>           Rename a rail; children of a parent move with it
   merge-categories <a> <b> … --into <c> Retag several categories onto one
+  add-package <name> [--label L] [--members "espn,sports-*,category:Deportes,source:anime"] [--default]
+                                        Define a channel package (bouquet); members are stream ids,
+                                        id globs, and category:/source: selectors resolved at reconcile
+  set-package <name> [--label --members "…" --default true|false]   Edit a package ("" clears members)
+  list-packages / show-package <name>   Packages + counts / one package with its resolved channels
+  remove-package <name>                 Remove a package (grants it alone covered are removed)
+  set-user-packages <u> <p1,p2|"">      Replace a user's packages ("" clears) — seals/removes immediately
+                                        (package commands need the store: panel stopped, or use the dashboard)
   sync-source <name>                    Pull + apply the feed NOW (panel stopped — or use the dashboard)
   remove-source <name> [--keep-channels]  Remove a source; purges its channels unless --keep-channels
 `)

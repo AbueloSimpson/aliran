@@ -39,6 +39,7 @@ import crypto from 'hypercore-crypto'
 import { sealTo } from '@aliran/core'
 import { loadSecrets, saveSecrets } from './store.js'
 import { OpsError, checkName, deleteStream, normArt, normRedirectUrl } from './ops.js'
+import { reconcilePackages } from './packages.js'
 
 const bad = (m) => { throw new OpsError('bad-request', m) }
 const notFound = (m) => { throw new OpsError('not-found', m) }
@@ -493,6 +494,9 @@ async function doSync (ctx, name) {
     // Grants reconcile on EVERY sync (304 included): users created since the last
     // sync converge without any feed change.
     report.granted = source.autoGrant !== false ? await reconcileGrants(ctx, await ownedIds(ctx, name)) : 0
+    // Package reconcile rides every sync too (S44): a `source:`/`category:`/glob
+    // member may cover channels this sync just imported, retagged or removed.
+    await reconcilePackages(ctx)
 
     // Re-load before persisting — an admin may have edited the registry while we fetched.
     const fresh = loadSources(ctx.dataDir)

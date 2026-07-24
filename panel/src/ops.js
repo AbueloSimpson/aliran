@@ -66,6 +66,8 @@ export async function createUser (ctx, username, password) {
   const record = {
     ...fields,
     wrapped: {},
+    manualGrants: [], // grant provenance (S44): ids granted one-by-one …
+    packages: [], // … and assigned bouquets — wrapped = seal(manual ∪ resolved members)
     devices: [],
     tokenVersion: 1,
     maxDevices: ctx.config.maxDevicesDefault,
@@ -122,6 +124,13 @@ export async function logoutAll (ctx, username) {
   return userSummary(username, user)
 }
 
+// Provenance updates (S44) deliberately touch manualGrants only when the record
+// already HAS the field. A pre-S44 record is migrated in exactly one place —
+// packages.js reconcilePackages (panel boot / any package op), which can tell a
+// hand-granted id from an autoGrant-source one. Updating a still-unmigrated
+// record here stays wrapped-only, and the id is attributed correctly at the next
+// reconcile precisely BECAUSE the field is still absent.
+
 export async function grant (ctx, username, streamId) {
   const user = await requireUser(ctx, username)
   const secrets = loadSecrets(ctx.dataDir)
@@ -129,6 +138,7 @@ export async function grant (ctx, username, streamId) {
   if (!encKeyHex) notFound(`no secret for stream "${streamId}" (add-stream first)`)
   user.wrapped = user.wrapped || {}
   user.wrapped[streamId] = sealTo(b4a.from(user.pub, 'hex'), b4a.from(encKeyHex, 'hex'))
+  if (Array.isArray(user.manualGrants) && !user.manualGrants.includes(streamId)) user.manualGrants.push(streamId)
   await ctx.db.put('user/' + username, user)
   return userSummary(username, user)
 }
@@ -136,10 +146,16 @@ export async function grant (ctx, username, streamId) {
 // NOTE: revoking removes the sealed key from the record, so the user cannot recover
 // it on a future login. A client that already unsealed the key may have it cached —
 // full revocation of live content requires rotating the stream key.
+//
+// With packages (S44) this removes the MANUAL entitlement: if one of the user's
+// packages still covers the id (or an autoGrant source owns it), the API/CLI
+// callers run a per-user package reconcile right after, which re-seals it — the
+// user keeps access, now attributed to the package alone.
 export async function revoke (ctx, username, streamId) {
   const user = await requireUser(ctx, username)
   if (!user.wrapped || !user.wrapped[streamId]) notFound(`user "${username}" has no grant for "${streamId}"`)
   delete user.wrapped[streamId]
+  if (Array.isArray(user.manualGrants)) user.manualGrants = user.manualGrants.filter((id) => id !== streamId)
   await ctx.db.put('user/' + username, user)
   return userSummary(username, user)
 }
@@ -214,11 +230,19 @@ async function requireUser (ctx, username) {
 }
 
 // Public-safe view of a user record: no salt/verifier/wrapped ciphertext blobs.
-function userSummary (username, u) {
+// `grants` stays the EFFECTIVE list (every wrapped id — what the user can open);
+// manualGrants/packages are the provenance split behind it (S44). A record from
+// before S44 has no provenance fields yet — reported as all-manual until the
+// first reconcile persists the real attribution (which excludes autoGrant-source
+// grants); an approximation only ever visible before the upgraded panel's first
+// boot reconcile.
+export function userSummary (username, u) {
   return {
     username,
     status: u.status || 'active',
     grants: Object.keys(u.wrapped || {}),
+    manualGrants: Array.isArray(u.manualGrants) ? u.manualGrants : Object.keys(u.wrapped || {}),
+    packages: Array.isArray(u.packages) ? u.packages : [],
     maxDevices: u.maxDevices,
     devices: (u.devices || []).length,
     tokenVersion: u.tokenVersion || 1
@@ -374,10 +398,13 @@ export async function deleteStream (ctx, id) {
   } catch {} // an empty/never-used assets drive must not block the purge
   let grantsRevoked = 0
   for await (const { key, value } of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) {
-    if (value.wrapped && value.wrapped[id] !== undefined) {
-      delete value.wrapped[id]
+    const hadWrapped = value.wrapped && value.wrapped[id] !== undefined
+    const hadManual = Array.isArray(value.manualGrants) && value.manualGrants.includes(id)
+    if (hadWrapped || hadManual) {
+      if (hadWrapped) delete value.wrapped[id]
+      if (hadManual) value.manualGrants = value.manualGrants.filter((g) => g !== id) // provenance dies with the stream
       await ctx.db.put(key, value)
-      grantsRevoked++
+      if (hadWrapped) grantsRevoked++
     }
   }
   const secrets = loadSecrets(ctx.dataDir)
@@ -441,7 +468,9 @@ const CAT_MAX = 64
 // Mirrors sources.js normCategoryLabel, plus the hierarchy rules: two-level rails
 // (S27h/i) encode parent/child as 'Parent/Child', so a slug must not start with, end
 // with, or double up the separator, or the tree cannot be parsed back out.
-function normSlug (s, what = 'category') {
+// (Exported for packages.js — a `category:<slug>` member is validated with the
+// same vocabulary rules.)
+export function normSlug (s, what = 'category') {
   const v = s == null ? '' : String(s).trim()
   if (!v) bad(`${what} is required`)
   if (v.length > CAT_MAX) bad(`${what} must be at most ${CAT_MAX} characters`)

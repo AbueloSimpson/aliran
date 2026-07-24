@@ -21,6 +21,7 @@ import { loadAdmins, loadPublishers, legacyPublisherActiveWithNamed } from './op
 import { makeRing } from './activity.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
+import { loadPackages, reconcilePackages } from './packages.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 import { initLogging } from './log.js'
 
@@ -44,6 +45,15 @@ export async function startPanel () {
     const n = Object.keys(loadPublishers(config.dataDir)).length
     console.warn(`[legacy] LEGACY_PUBLISHER=1 while ${n} named publisher(s) are enrolled — the shared init key still accepts UNNAMED registers at implicit scope '*'. Set LEGACY_PUBLISHER=0 to close it once every broadcaster carries PUBLISHER_NAME.`)
   }
+
+  // Channel packages (S44): converge every user's sealed grants with the package
+  // registry before serving — the pass that also migrates pre-S44 records to the
+  // provenance fields (manualGrants/packages). Idempotent: a converged deployment
+  // appends nothing, so this is silent and free on every later boot.
+  const pkgCount = Object.keys(loadPackages(config.dataDir)).length
+  const rec = await reconcilePackages({ config, keys, db, assets, dataDir: config.dataDir })
+  if (rec.users > 0) console.log(`[packages] reconciled ${pkgCount} package(s): +${rec.sealed} sealed, -${rec.removed} removed across ${rec.users} user record(s)`)
+  else if (pkgCount > 0) console.log(`[packages] ${pkgCount} package(s) registered — all user grants converged`)
 
   const throttle = makeThrottle(config.lockout.threshold, config.lockout.seconds)
   const activity = makeRing(200) // in-memory observability feed (admin API + RPC events)
