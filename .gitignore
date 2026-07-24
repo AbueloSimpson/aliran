@@ -57,3 +57,7 @@ mcp/config.json
 
 # Claude Code personal project settings (machine-specific permissions)
 .claude/settings.local.json
+
+# Project-scope MCP client wiring for the aliran MCP server (machine-local
+# absolute paths — each operator generates their own via `--doctor`)
+.mcp.json
