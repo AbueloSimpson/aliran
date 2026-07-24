@@ -180,6 +180,12 @@ export const config = {
     threshold: int(process.env.LOCKOUT_THRESHOLD, 10),
     seconds: int(process.env.LOCKOUT_SECONDS, 900)
   },
+  // Privacy-preserving analytics (S48): aggregate-only per-channel rollups under
+  // DATA_DIR/analytics/, pruned to this many days. 0 disables collection entirely
+  // (no files, no per-channel metrics extension) — the one knob.
+  analytics: {
+    retentionDays: int(process.env.ANALYTICS_RETENTION_DAYS, 90)
+  },
   // Argon2id cost for control-admin passwords (interactive-grade defaults).
   argon2: {
     memKiB: int(process.env.ARGON2_MEM_KIB, 65536),
@@ -252,6 +258,7 @@ chkInt('CONTROL_PORT', config.control.port, 0, 65535)
 chkInt('CONTROL_SESSION_TTL_HOURS', config.control.sessionTtlHours, 1)
 chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
 chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
+chkInt('ANALYTICS_RETENTION_DAYS', config.analytics.retentionDays, 0)
 chkInt('ARGON2_MEM_KIB', config.argon2.memKiB, 8)
 chkInt('ARGON2_TIME', config.argon2.time, 1)
 chkBootstrap('BOOTSTRAP', config.bootstrap)

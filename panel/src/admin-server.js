@@ -18,6 +18,7 @@
 //   POST   /api/login                        {username,password} → {token,expiresAt}
 //   GET    /api/status
 //   GET    /api/observability                uptime/mem/swarm/data + activity ring
+//   GET    /api/analytics?days=N             aggregate-only rollups (S48) — counts, no identities
 //   GET    /api/users?prefix&after&limit     → {users,next} (prefix search + cursor)
 //   POST   /api/users                        {username,password}
 //   GET    /api/users/:u
@@ -89,8 +90,9 @@ const CONTENT_EXT = {
   'image/gif': '.gif'
 }
 
-// ctx = { config, keys, db, assets, dataDir, swarm?, activity? } (open panel store;
-// swarm + activity ring are optional — observability degrades gracefully without them).
+// ctx = { config, keys, db, assets, dataDir, swarm?, activity?, analytics? } (open
+// panel store; swarm, activity ring and analytics are optional — observability and
+// /api/analytics degrade gracefully without them).
 // opts = { host, port, sessionTtlMs, lockout: { threshold, seconds }, loginVerifyTimeoutMs }.
 // Resolves to { server, host, port, close } once listening (port 0 → ephemeral).
 export function startAdminServer (ctx, opts = {}) {
@@ -127,8 +129,32 @@ export function startAdminServer (ctx, opts = {}) {
       '# HELP aliran_panel_swarm_connections Connected swarm peers (clients replicating the catalog + login RPC).',
       '# TYPE aliran_panel_swarm_connections gauge',
       `aliran_panel_swarm_connections ${h.swarmConnections ?? 0}`,
+      ...analyticsMetrics(),
       ''
     ].join('\n')
+  }
+  // Analytics extension lines (S48) — same cheap-and-synchronous contract: every
+  // value is an in-memory total or a cached sample; nothing here awaits or scans.
+  // Counts only — no usernames, keys or IPs can appear (the analytics invariant).
+  const analyticsMetrics = () => {
+    const a = ctx.analytics && ctx.analytics.metricsSnapshot()
+    if (!a) return []
+    const lines = [
+      '# HELP aliran_panel_logins_ok_total Successful viewer session proofs since process start.',
+      '# TYPE aliran_panel_logins_ok_total counter',
+      `aliran_panel_logins_ok_total ${a.loginsOk}`,
+      '# HELP aliran_panel_logins_failed_total Failed viewer session proofs since process start.',
+      '# TYPE aliran_panel_logins_failed_total counter',
+      `aliran_panel_logins_failed_total ${a.loginsFailed}`,
+      '# HELP aliran_panel_sessions_issued_total Session tokens issued since process start.',
+      '# TYPE aliran_panel_sessions_issued_total counter',
+      `aliran_panel_sessions_issued_total ${a.sessions}`
+    ]
+    if (a.catalog) {
+      lines.push('# HELP aliran_panel_catalog_channels Catalog composition by channel class (sampled every 30 min).', '# TYPE aliran_panel_catalog_channels gauge')
+      for (const cls of ['live', 'redirect', 'vod']) lines.push(`aliran_panel_catalog_channels{class="${cls}"} ${a.catalog[cls] || 0}`)
+    }
+    return lines
   }
 
   const server = http.createServer((req, res) => {
@@ -194,6 +220,17 @@ export function startAdminServer (ctx, opts = {}) {
 
     if (r1 === 'observability' && req.method === 'GET' && seg.length === 2) {
       return sendJson(res, 200, await observability(ctx))
+    }
+
+    // Aggregate-only analytics rollups (S48). Counts and gauges per hour/day —
+    // never a username, key, IP or device id (the invariant test:analytics scans
+    // this response for seeded needles). Absent/disabled analytics answers the
+    // honest empty shape rather than 404 so the dashboard can always render.
+    if (r1 === 'analytics' && req.method === 'GET' && seg.length === 2) {
+      const days = parseInt(url.searchParams.get('days'), 10)
+      return sendJson(res, 200, ctx.analytics
+        ? ctx.analytics.api(Number.isInteger(days) && days > 0 ? days : 7)
+        : { enabled: false, retentionDays: 0, days: [], current: null })
     }
 
     if (r1 === 'admins') {

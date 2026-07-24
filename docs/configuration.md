@@ -31,6 +31,7 @@ Two behaviors shared by **every** service:
 | `ADMIN_HOST` | `127.0.0.1` | Admin API bind address (use TLS in front if not loopback) |
 | `ADMIN_PORT` | `3210` | Admin API port |
 | `ADMIN_SESSION_TTL_HOURS` | `12` | Admin session token lifetime |
+| `ANALYTICS_RETENTION_DAYS` | `90` | Days of [aggregate-only analytics](analytics.md) rollups kept under `DATA_DIR/analytics/`. **`0` disables collection entirely** (no files, endpoints answer empty) |
 | `SOURCES_SYNC_INTERVAL_MS` | `86400000` | Default per-source pull interval (daily); override per source via `intervalMs` |
 | `SOURCES_TICK_MS` | `3600000` | How often the scheduler checks which sources are due (a check, not a fetch) |
 | `SOURCES_BOOT_DELAY_MS` | `15000` | Delay before the first due-check after panel boot |
@@ -73,6 +74,7 @@ Two behaviors shared by **every** service:
 | `CONTROL_PORT` | `3310` | Control API port |
 | `CONTROL_SESSION_TTL_HOURS` | `12` | Control session token lifetime |
 | `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | `10` / `900` | Control login lockout |
+| `ANALYTICS_RETENTION_DAYS` | `90` | Days of [aggregate-only analytics](analytics.md) rollups (per-channel peers/egress/respawns) kept under `DATA_DIR/analytics/`. **`0` disables collection entirely** |
 | `ARGON2_MEM_KIB` / `ARGON2_TIME` | `65536` / `2` | Argon2id cost for control-admin passwords |
 
 ## Repeater (`repeater/.env`)

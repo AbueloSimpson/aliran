@@ -298,7 +298,14 @@ export class Repeater {
   }
 
   _makeTail (kind, keyHex, core, keepFirst) {
-    return { kind, keyHex, core, keepFirst, armed: false, range: null, headRange: null, clearedUpTo: 0, samples: [] }
+    const tail = { kind, keyHex, core, keepFirst, armed: false, range: null, headRange: null, clearedUpTo: 0, samples: [], served: 0 }
+    // Bytes served to peers from this core (S48 analytics) — hypercore emits
+    // 'upload' per block sent, with its byteLength. A COUNT only: the peer the
+    // block went to is ignored, and nothing is ever written to disk (this box's
+    // zero-state keyless story is unchanged; the counter is surfaced solely via
+    // the opt-in status endpoint and resets with the process).
+    core.on('upload', (_index, byteLength) => { tail.served += byteLength || 0 })
+    return tail
   }
 
   // Arm the live tail: learn the CURRENT remote length (never download history), then
@@ -398,7 +405,8 @@ export class Repeater {
           length: tail.core.length,
           clearedUpTo: tail.clearedUpTo,
           held: tail.armed ? Math.max(0, tail.core.length - tail.clearedUpTo) + (tail.keepFirst ? 1 : 0) : 0,
-          peers: tail.core.peers?.length ?? 0
+          peers: tail.core.peers?.length ?? 0,
+          servedBytes: tail.served
         }
       }
       return { streamId: m.streamId, feedKey: m.feedKey, blobsKey: m.blobsKey, cores }

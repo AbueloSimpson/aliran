@@ -143,6 +143,7 @@ Browse online at **<https://abuelosimpson.github.io/aliran/>**, or start at
 [Security model](docs/security-model.md) ·
 [Operator guide](docs/operator-guide.md) ·
 [Configuration](docs/configuration.md) ·
+[Privacy-preserving analytics](docs/analytics.md) ·
 [Player SDK](docs/sdk.md) ·
 [Desktop viewer guide](docs/desktop-viewer-guide.md) ·
 [Android viewer guide](docs/android-viewer-guide.md) ·

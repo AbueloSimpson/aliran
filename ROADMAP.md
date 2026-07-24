@@ -220,7 +220,19 @@ following only the docs.
 - ⬜ **Multi-admin (Autobase) catalogs** — fully independent catalog writers, beyond
   the scoped-publisher model above
 - ⬜ Adaptive bitrate ladders; low-latency HLS/LL-DASH
-- ⬜ Analytics that respect privacy (aggregate, no per-user tracking)
+- ✅ **Analytics that respect privacy (aggregate, no per-user tracking)** — the
+  panel, broadcaster and repeater aggregate only what they already observe as a
+  side effect of serving (login outcomes, sessions, swarm connection counts,
+  per-channel egress bytes): hourly buckets → per-day rollup JSON under
+  `DATA_DIR/analytics/` (`ANALYTICS_RETENTION_DAYS`, `0` = off entirely), a panel
+  **Analytics** dashboard tab, `GET /api/analytics` on both admin APIs, and
+  Prometheus `/metrics` extensions. Per-user watch tracking remains
+  architecturally impossible (viewers replicate P2P); identities never reach any
+  analytics surface — enforced by a negative identity scan in the required-lane
+  `test:analytics`. Peer counts are labeled as **lower bounds** (viewers serve
+  each other). See [`docs/analytics.md`](docs/analytics.md). A client presence
+  beacon (true concurrent-viewer counts) is deliberately excluded — separate
+  decision, separate privacy story.
 
 ---
 

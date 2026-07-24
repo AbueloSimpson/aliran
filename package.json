@@ -54,6 +54,7 @@
     "test:packages": "node tools/e2e-packages-test.mjs",
     "test:broadcaster-api": "node tools/e2e-broadcaster-api-test.mjs",
     "test:mcp": "node tools/e2e-mcp-test.mjs",
+    "test:analytics": "node tools/e2e-analytics-test.mjs",
     "test:login-flood": "node tools/e2e-login-flood-test.mjs",
     "test:panel-login-flood": "node tools/e2e-panel-login-flood-test.mjs",
     "test:panel-link": "node tools/panel-link-test.mjs",

@@ -2637,3 +2637,68 @@ was not touched.
   Public NSIS + portable re-cut keyless and **verified on the bytes** (no
   `config/` resource, panel-key hex and password needles absent from both exes
   and the asar). tsc clean. Private keyed test builds live outside the repo.
+
+### S48 — Privacy-preserving analytics: aggregate only, server-side only (verified)
+- The ROADMAP privacy-analytics item, built on the core insight that **per-user
+  watch tracking is architecturally impossible here**: viewers replicate P2P and
+  never report playback; the panel sees logins but no viewing, the broadcaster
+  sees anonymous swarm links but no accounts, and nothing joins the two. So
+  analytics = aggregating what the operator's own nodes already observe as a
+  side effect of serving — zero client/SDK changes, zero new wire messages, no
+  presence beacon (deliberately parked as a separate decision).
+- **The invariant** (designed in, then negative-tested): identity-carrying
+  inputs (usernames, hex keys, IPs, device ids) exist only in ephemeral
+  in-memory structures inside the current hour/day; they reduce to COUNTS at
+  rollup and the raw value never reaches any analytics file, `/api/analytics`
+  response, or `/metrics` line. The panel's failed-login counter takes **no
+  argument at all** — an attacker-controlled username from a failed attempt
+  never enters any structure; unique viewers/day is a day-scoped in-memory
+  `Set` reduced to `.size` and discarded.
+- Per-service `src/analytics.js` (the control-auth.js self-contained-copy
+  convention — no @aliran/core bump): in-memory hour bucket → per-day rollup
+  JSON under `DATA_DIR/analytics/` (UTC, atomic tmp+rename, boot reloads
+  today's file; the in-progress hour is deliberately lost on ANY exit — no
+  partial-hour merge logic to get wrong). One knob `ANALYTICS_RETENTION_DAYS`
+  (default 90, fail-fast validated; **0 = off entirely**: no files, no timers,
+  honest `{enabled:false}` endpoints). Rollups never touch the replicated bee.
+- **Panel**: ok/failed counted at the session RPC — the only honest signal,
+  since the OPRF stage is oblivious (a wrong password fails on the client);
+  apps-online gauge = swarm connections on a 5-min tick (labeled approximate —
+  repeaters and broadcaster links count too); catalog composition on a 30-min
+  scan cached for the sync-cheap `/metrics` path. New **Analytics** dashboard
+  tab (hand-rolled inline-SVG bars, no chart dependency, shared theme tokens
+  untouched — test:theme green), `GET /api/analytics?days=N`, and
+  `aliran_panel_logins_{ok,failed}_total` / `sessions_issued_total` /
+  `catalog_channels{class}` metrics.
+- **Broadcaster**: per-channel peer min/mean/max + egress bytes + respawns +
+  incidents per hour. Egress uses the UDX per-connection byte counters via a
+  `makeEgressMeter()` hooked into each channel's swarm: bytes ACCUMULATE when a
+  connection closes and live connections are added at sample time — otherwise
+  closed connections' bytes silently vanish (the trap the brief called out).
+  Deltas are reset-aware (a shrinking cumulative = channel restart). Control
+  API `GET /api/analytics`, `/metrics` per-channel `channel_peers{stream_id}` +
+  `channel_egress_bytes_total{stream_id}` (read from the last in-memory sample,
+  keeping scrapes sync-cheap at any fleet size), and a **24 h** peak-peers +
+  egress column on the ops dashboard table.
+- **Repeater**: `/metrics`-only — `served_bytes_total{stream_id,core}` from
+  hypercore `upload` events, beside `held_blocks`/`core_peers`. NO rollup files
+  (zero-state keyless cache box; the opt-in `STATUS_PORT` default-off /
+  zero-listening-sockets property is unchanged). Reseller: out of scope (its
+  ledger is the business analytics).
+- **The honesty rule** on every surface + `docs/analytics.md`: origin-side peer
+  counts are a LOWER BOUND on audience (viewers serve each other) — labeled
+  "≥ N", never presented as a viewer count (the S38 no-invented-metrics rule).
+- **Verified:** new required-lane **`test:analytics`** — rollup/rollover/
+  boot-reload/prune math on a fake clock; the retention=0 kill switch (no dir
+  ever created); REAL viewer logins over a loopback SecretStream pair through
+  `attachLoginRpc` (ok + unknown-user + bad-signature outcomes counted, ghost
+  usernames excluded from uniques); the broadcaster egress meter, sampler over
+  a fake ChannelManager, reset-aware deltas and incident folding driven through
+  a real control server; repeater metrics rendering; and the **negative
+  identity scan** — 9 surfaces (every rollup file + both API responses + all
+  three `/metrics` bodies) scanned for needle usernames, auth/noise keys,
+  device ids, IPs and any 64-hex run: ZERO hits. `test:config` grew the
+  ANALYTICS_RETENTION_DAYS probes. Full required battery + `mkdocs --strict`
+  green locally. NO VPS work — deploy rides a later user-decided image rebuild
+  (a broadcaster rebuild disturbs the running scale test; the S44 panel-only
+  precedent exists).

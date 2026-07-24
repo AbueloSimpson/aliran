@@ -71,10 +71,11 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | Endpoint | Description |
 |----------|-------------|
 | `GET /healthz` | **Unauthenticated** liveness → `{up, uptimeSec, swarmConnections}`. Cheap + synchronous, served before the auth gate — point uptime checks here |
-| `GET /metrics` | **Unauthenticated** Prometheus text (uptime, RSS/heap, swarm connections) |
+| `GET /metrics` | **Unauthenticated** Prometheus text (uptime, RSS/heap, swarm connections, plus [analytics](analytics.md) counters: `aliran_panel_logins_{ok,failed}_total`, `aliran_panel_sessions_issued_total`, `aliran_panel_catalog_channels{class}`) |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
 | `GET /api/status` | Counts: users, streams, live, admins |
 | `GET /api/observability` | Uptime, memory, swarm peers, data size/disk free + last-200 activity ring (in-memory — cleared by a restart) |
+| `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) (S48) → `{enabled, retentionDays, days:[{date, hours:{H:{logins:{ok,failed}, sessions, onlineApps:{min,max,mean,samples}, catalog?}}, day:{uniqueViewers}}], current}` — UTC day rollups (default 7, capped at retention) + the reduced in-progress hour. Counts only, never an identity |
 | `GET /api/users?prefix&after&limit` | → `{users, next}` — prefix search + cursor paging (`next` is the `after` for the following page) |
 | `POST /api/users` | Create (`{username,password}`) |
 | `GET /api/users/:u` · `DELETE /api/users/:u` | One user / delete the account record |
@@ -135,8 +136,9 @@ are preserved.
 |----------|-------------|
 | `GET /healthz` | **Unauthenticated** liveness + boot-resume progress → `{up, uptimeSec, resuming, resumed, total, failed, resumeSec}`. Cheap and served before the auth gate, so monitoring can tell "up, resuming 45/83" from "dead" even while a mass resume keeps the rest of the API busy. Point uptime checks here, not at `/api/status` (which needs a token and does real work) |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
-| `GET /metrics` | **Unauthenticated** Prometheus text: process stats + channel count, boot-resume progress, incidents gauge |
+| `GET /metrics` | **Unauthenticated** Prometheus text: process stats + channel count, boot-resume progress, incidents gauge, plus per-channel [analytics](analytics.md) lines from the last 5-min sample: `aliran_broadcaster_channel_peers{stream_id}` (a **lower bound** on audience) and `aliran_broadcaster_channel_egress_bytes_total{stream_id}` |
 | `GET /api/status` | Channels, running count, panel configured |
+| `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) (S48) → `{enabled, retentionDays, days:[{date, hours:{H:{channels:{id:{peers:{min,max,mean,samples}, egressBytes, respawns}}, incidents}}}], current}` — per-channel UTC day rollups + the in-progress hour. Stream ids and counts only, never a peer key or IP |
 | `GET /api/capabilities` | ffmpeg probe: input protocols + deep-verified encoders (`{listed,verified,error?}`) |
 | `GET/POST /api/channels` | List (+ live status) / add (`{id,title,category,input,transcode,buffer,…}`) |
 | `GET /api/channels/:id` | Status: `state` (`stopped·starting·up·waiting-input·backoff`), running, ffmpegUp, peers, registered, playlist, watchdog, `slate` (`{slated,file,since,failures}` — `slated:true` means viewers see the offline slate, not the source, even though `state` is `up`), `detectedProfile` (`{codec,width,height}` the slate matches against), `ingest.pushUrl` (push kinds; uses `PUBLIC_HOST`) |

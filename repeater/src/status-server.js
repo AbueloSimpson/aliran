@@ -67,6 +67,15 @@ function renderMetrics (repeater, startedAt) {
       lines.push(`aliran_repeater_core_peers{stream_id="${esc(c.streamId)}",core="${kind}"} ${t.peers}`)
     }
   }
+  // Bytes served per mirrored core (S48) — a count of block bytes uploaded to
+  // peers since the process started; who received them is never recorded. Peer
+  // counts here are a LOWER BOUND on audience (viewers also serve each other).
+  lines.push('# HELP aliran_repeater_served_bytes_total Block bytes uploaded to peers per mirrored core since process start.', '# TYPE aliran_repeater_served_bytes_total counter')
+  for (const c of s.channels) {
+    for (const [kind, t] of Object.entries(c.cores)) {
+      lines.push(`aliran_repeater_served_bytes_total{stream_id="${esc(c.streamId)}",core="${kind}"} ${t.servedBytes || 0}`)
+    }
+  }
   lines.push('')
   return lines.join('\n')
 }

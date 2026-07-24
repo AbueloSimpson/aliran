@@ -19,6 +19,7 @@ import { makeThrottle, attachLoginRpc } from './rpc.js'
 import { startAdminServer } from './admin-server.js'
 import { loadAdmins, loadPublishers, legacyPublisherActiveWithNamed } from './ops.js'
 import { makeRing } from './activity.js'
+import { makeAnalytics } from './analytics.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
 import { loadPackages, reconcilePackages } from './packages.js'
@@ -57,6 +58,10 @@ export async function startPanel () {
 
   const throttle = makeThrottle(config.lockout.threshold, config.lockout.seconds)
   const activity = makeRing(200) // in-memory observability feed (admin API + RPC events)
+  // Privacy-preserving analytics (S48): aggregate-only counters → hourly buckets →
+  // per-day rollups under DATA_DIR/analytics/. ANALYTICS_RETENTION_DAYS=0 turns the
+  // whole thing off (no files, endpoints answer empty).
+  const analytics = makeAnalytics({ dataDir: config.dataDir, retentionDays: config.analytics.retentionDays })
 
   const sessionTtlMs = config.sessionTtlDays * 86400000
   const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
@@ -72,7 +77,7 @@ export async function startPanel () {
   const enrich = makeBlobsKeyEnricher({ store, swarm, db, dataDir: config.dataDir })
   swarm.on('connection', (socket) => {
     store.replicate(socket) // clients replicate the signed account/catalog DB
-    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, enrich, legacyPublisher: config.legacyPublisher })
+    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, analytics, enrich, legacyPublisher: config.legacyPublisher })
   })
 
   const topic = hcrypto.hash(keys.signing.publicKey)
@@ -88,7 +93,7 @@ export async function startPanel () {
     if (Object.keys(loadAdmins(config.dataDir)).length === 0) {
       console.warn('Admin API enabled but no admins exist — create one: node src/admin-cli.js add-admin <name>')
     }
-    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity }, {
+    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity, analytics }, {
       host: config.admin.host,
       port: config.admin.port,
       sessionTtlMs: config.admin.sessionTtlHours * 3600000,
@@ -104,9 +109,35 @@ export async function startPanel () {
   const sourceCount = Object.keys(loadSources(config.dataDir)).length
   if (sourceCount > 0) console.log(`Channel sources: ${sourceCount} registered — due feeds sync ~${Math.round(config.sources.bootDelayMs / 1000)}s after boot, then every tick.`)
 
-  const shutdown = async () => { sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
+  // Analytics sampling (S48). Fast tick (5 min): the swarm connection count — every
+  // open app holds the catalog connection, so this approximates "apps online" (it
+  // also counts non-viewer peers like repeaters; surfaces label it approximate).
+  // Slow tick (30 min + boot): catalog composition, an async bee scan kept OFF the
+  // metrics path — /metrics reads the cached counts synchronously (S40 contract).
+  const analyticsTimers = []
+  if (analytics.enabled) {
+    const scanCatalog = async () => {
+      const counts = { live: 0, redirect: 0, vod: 0 }
+      for await (const { value } of db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+        if (!value) continue
+        if (value.redirect) counts.redirect++
+        else if (value.type === 'vod') counts.vod++
+        else counts.live++
+      }
+      analytics.setCatalog(counts)
+    }
+    analyticsTimers.push(setInterval(() => analytics.tick({ onlineApps: swarm.connections.size }), 300000))
+    analyticsTimers.push(setInterval(() => scanCatalog().catch(() => {}), 1800000))
+    analyticsTimers.push(setTimeout(() => scanCatalog().catch(() => {}), 20000))
+    for (const t of analyticsTimers) t.unref()
+    console.log(`Analytics: aggregate-only rollups in ${config.dataDir}/analytics (retention ${config.analytics.retentionDays}d). No per-user tracking exists — see docs/analytics.md.`)
+  } else {
+    console.log('Analytics: DISABLED (ANALYTICS_RETENTION_DAYS=0) — nothing is collected.')
+  }
+
+  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys, admin, enrich, sourcesSched }
+  return { swarm, store, db, keys, admin, enrich, sourcesSched, analytics }
 }
 
 // Run directly (not when imported by a test).

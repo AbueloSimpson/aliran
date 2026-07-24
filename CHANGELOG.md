@@ -18,6 +18,28 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Privacy-preserving analytics** — aggregate-only, server-side-only usage
+  rollups ([docs/analytics.md](docs/analytics.md)). Per-user watch tracking is
+  architecturally impossible in Aliran (viewers replicate P2P; the panel sees
+  only logins, the broadcaster only anonymous swarm links), so analytics =
+  aggregating what the operator's own nodes already observe: **panel** — logins
+  ok/failed + sessions per hour, unique viewers per day (an in-memory set
+  reduced to a count, never stored), apps-online gauge, catalog composition;
+  **broadcaster** — per-channel peer min/mean/max, egress bytes (UDX
+  per-connection counters, accumulated on close so closed connections' bytes
+  don't vanish), respawns + incidents; **repeater** — `/metrics`-only
+  served-bytes per stream (no rollup files on the keyless cache box). Hourly
+  buckets → per-day JSON under `DATA_DIR/analytics/` (UTC, atomic writes, boot
+  reload; the in-progress hour is deliberately lost on exit). One knob:
+  `ANALYTICS_RETENTION_DAYS` (default 90; **0 = collection off entirely**).
+  Surfaces: a panel **Analytics** dashboard tab (hand-rolled inline-SVG charts),
+  `GET /api/analytics` on the panel + broadcaster APIs, Prometheus `/metrics`
+  extensions, and a 24 h peers/egress column on the broadcaster dashboard. Peer
+  counts are labeled **"≥" lower bounds** everywhere (viewers serve each other).
+  The invariant — no username/key/IP/device id ever reaches an analytics file,
+  API response or metrics line — is enforced by a **negative identity scan** in
+  the new required-lane `test:analytics`. Zero client/SDK/wire changes; no
+  presence beacon (parked as a separate decision).
 - **MCP server (`@aliran/mcp`)** — a [Model Context Protocol](https://modelcontextprotocol.io)
   **server** (local stdio) so an AI client (Claude Desktop, Claude Code) can install,
   configure, maintain and support an Aliran deployment for a non-server-literate

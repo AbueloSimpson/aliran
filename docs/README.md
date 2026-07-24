@@ -15,6 +15,7 @@ Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
 - [VOD library](vod-library.md) — optional standalone service for on-demand titles (`type:'vod'`; API in [Reference](reference.md), ops in the [operator guide](operator-guide.md))
 - [Configuration](configuration.md) — full config reference for every component
 - [Content management](content-management.md) — catalog, metadata, assets, redirect channels, VOD
+- [Privacy-preserving analytics](analytics.md) — aggregate-only counts, why per-user tracking is impossible, what is (and is not) collected
 - [Client build](client-build.md) — build the Android (phone + TV) app
 - [Operator build walkthrough](operator-build-walkthrough.md) — end to end: your key + branding → custom APK and Windows exe
 - [Android app — viewer guide](android-viewer-guide.md) — install the public APK, connect, watch (phone + TV/D-pad)

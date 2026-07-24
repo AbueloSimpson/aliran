@@ -60,6 +60,12 @@ export const config = {
     port: int(process.env.ADMIN_PORT, 3210),
     sessionTtlHours: int(process.env.ADMIN_SESSION_TTL_HOURS, 12)
   },
+  // Privacy-preserving analytics (S48): aggregate-only rollups under
+  // DATA_DIR/analytics/, pruned to this many days. 0 disables collection
+  // entirely (no files written, endpoints answer empty) — the one knob.
+  analytics: {
+    retentionDays: int(process.env.ANALYTICS_RETENTION_DAYS, 90)
+  },
   // Remote channel sources (S27): provider JSON feeds pulled on a schedule.
   sources: {
     tickMs: int(process.env.SOURCES_TICK_MS, 3600000), // registry scan cadence (due-check, not fetch)
@@ -102,6 +108,7 @@ chkInt('POW_DIFFICULTY', config.pow.difficulty, 0, 32)
 chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
 chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
 chkInt('ADMIN_PORT', config.admin.port, 0, 65535)
+chkInt('ANALYTICS_RETENTION_DAYS', config.analytics.retentionDays, 0)
 chkInt('ADMIN_SESSION_TTL_HOURS', config.admin.sessionTtlHours, 1)
 chkInt('SOURCES_TICK_MS', config.sources.tickMs, 1000)
 chkInt('SOURCES_BOOT_DELAY_MS', config.sources.bootDelayMs, 0)

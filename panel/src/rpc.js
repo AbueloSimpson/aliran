@@ -56,11 +56,15 @@ export function makeThrottle (threshold, windowSec, { maxKeys = 20000 } = {}) {
 // across connections. `keys` = { oprf, signing }; `db` is the signed account Hyperbee;
 // `sessionTtlMs` is the token lifetime; `devicePolicy` is 'evict' (default) or 'reject';
 // `activity` is an optional ring (src/activity.js) fed for the observability feed;
+// `analytics` is the optional aggregate-only counter set (src/analytics.js, S48) —
+// it receives login outcomes as COUNTS (the ok path also passes the username, which
+// analytics reduces to an in-memory uniques Set and never stores; the failed path
+// deliberately passes nothing);
 // `enrich` is the optional blobsKey enricher (src/blobs-key.js) nudged by register;
 // `legacyPublisher` (default true) keeps accepting UNNAMED register payloads signed
 // with the shared keys/publisher.json key — set false (LEGACY_PUBLISHER=0) once every
 // broadcaster is enrolled as a named publisher (S26).
-export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, enrich = null, legacyPublisher = true }) {
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, analytics = null, enrich = null, legacyPublisher = true }) {
   const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
@@ -98,13 +102,17 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     const chal = sessionChallenge
     sessionChallenge = null // one-shot
     if (!chal) return json({ error: 'no session challenge (login first)' })
+    // Analytics (S48) counts login OUTCOMES here — the session proof is the panel's
+    // only honest ok/failed signal (the OPRF stage is oblivious: a wrong password
+    // fails on the client). Failed increments carry NO identity on purpose.
     const node = await db.get('user/' + username)
-    if (!node) return json({ error: 'unknown user' })
+    if (!node) { if (analytics) analytics.loginFailed(); return json({ error: 'unknown user' }) }
     const user = node.value
-    if (user.status && user.status !== 'active') return json({ error: 'account disabled' })
+    if (user.status && user.status !== 'active') { if (analytics) analytics.loginFailed(); return json({ error: 'account disabled' }) }
     const sigBuf = hexField(sig, 64) // Ed25519 signature — 64 bytes
     const authPubBuf = hexField(user.authPub, 32) // Ed25519 public key — 32 bytes
     if (!authPubBuf || !sigBuf || !authVerify(authPubBuf, chal, sigBuf)) {
+      if (analytics) analytics.loginFailed()
       return json({ error: 'auth failed' })
     }
     if (!deviceId) return json({ error: 'missing deviceId' })
@@ -117,7 +125,7 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       existing.expiresAt = expiresAt; existing.tokenVersion = user.tokenVersion
     } else {
       if (devices.length >= (user.maxDevices || 2)) {
-        if (devicePolicy === 'reject') return json({ error: 'device-limit', devices: devices.map((d) => ({ deviceId: d.deviceId, label: d.label })) })
+        if (devicePolicy === 'reject') { if (analytics) analytics.loginFailed(); return json({ error: 'device-limit', devices: devices.map((d) => ({ deviceId: d.deviceId, label: d.label })) }) }
         devices.sort((a, b) => (a.issuedAt || 0) - (b.issuedAt || 0))
         devices.shift() // evict oldest
       }
@@ -128,6 +136,7 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
 
     const token = signToken(keys.signing.secretKey, { userId: username, deviceId, issuedAt: now, expiresAt, tokenVersion: user.tokenVersion })
     if (activity) activity.record('session', { user: username, deviceId })
+    if (analytics) analytics.sessionIssued(username) // reduced to counts — see analytics.js
     return json({ token, expiresAt, tokenVersion: user.tokenVersion })
   })
 

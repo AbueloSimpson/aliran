@@ -19,6 +19,7 @@ let channelSources = []
 let channelPackages = [] // S44 bouquets — resolved id arrays double as the Users-tab provenance data
 let categories = []
 let obsTimer = null // 10 s observability poll, runs only while the Overview tab is open
+let anTimer = null // 60 s analytics poll, runs only while the Analytics tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
 
 // ---------------------------------------------------------------- api
@@ -48,6 +49,7 @@ function logout () {
   sessionStorage.removeItem('aliranAdminToken')
   sessionStorage.removeItem('aliranAdminName')
   stopObsPoll()
+  stopAnalyticsPoll()
   for (const url of artCache.values()) URL.revokeObjectURL(url)
   artCache.clear()
   show('login')
@@ -79,13 +81,15 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'overview']
+const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'analytics', 'overview']
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
     for (const name of TAB_NAMES) $('#' + name + '-section').hidden = tab.dataset.tab !== name
     if (tab.dataset.tab === 'overview') startObsPoll()
     else stopObsPoll()
+    if (tab.dataset.tab === 'analytics') startAnalyticsPoll()
+    else stopAnalyticsPoll()
   })
 }
 
@@ -1207,6 +1211,134 @@ function startObsPoll () {
 
 function stopObsPoll () {
   if (obsTimer) { clearInterval(obsTimer); obsTimer = null }
+}
+
+// ---------------------------------------------------------------- analytics (S48)
+// Aggregate-only rollups (GET /api/analytics) rendered with hand-rolled inline
+// SVG — no chart dependency. Every number is a count; peer-derived figures are a
+// LOWER BOUND on audience (viewers serve each other), so they render with "≥".
+
+// Vertical bar chart: series = [{ label, values: [..] }] stacked per slot.
+// colors[] maps series index → CSS color. Missing slots render as gaps.
+function barsSvg (slots, series, colors, { h = 84 } = {}) {
+  const n = slots.length
+  if (!n) return '<p class="muted">no data yet</p>'
+  const bw = 100 / n
+  let max = 0
+  for (let i = 0; i < n; i++) {
+    let sum = 0
+    for (const s of series) sum += s.values[i] || 0
+    if (sum > max) max = sum
+  }
+  if (max === 0) max = 1
+  let rects = ''
+  for (let i = 0; i < n; i++) {
+    let y = h - 12
+    let total = 0
+    for (let si = 0; si < series.length; si++) {
+      const v = series[si].values[i] || 0
+      total += v
+      if (!v) continue
+      const bh = Math.max(1, (v / max) * (h - 16))
+      y -= bh
+      rects += `<rect x="${(i * bw + bw * 0.12).toFixed(2)}%" y="${y.toFixed(1)}" width="${(bw * 0.76).toFixed(2)}%" height="${bh.toFixed(1)}" rx="1" fill="${colors[si]}"></rect>`
+    }
+    rects += `<rect x="${(i * bw).toFixed(2)}%" y="0" width="${bw.toFixed(2)}%" height="${h - 12}" fill="transparent"><title>${esc(slots[i])} — ${series.map((s) => `${s.label} ${s.values[i] || 0}`).join(', ')} (total ${total})</title></rect>`
+  }
+  // Sparse hour labels: first, last, and every 12th slot.
+  let labels = ''
+  for (let i = 0; i < n; i++) {
+    if (i !== 0 && i !== n - 1 && i % 12 !== 0) continue
+    labels += `<text x="${(i * bw + bw / 2).toFixed(2)}%" y="${h - 2}" text-anchor="middle">${esc(slots[i].slice(-3))}</text>`
+  }
+  return `<svg viewBox="0 0 100 ${h}" preserveAspectRatio="none" role="img">` +
+    `<line x1="0" y1="${h - 12}" x2="100%" y2="${h - 12}" stroke="var(--border)" stroke-width="1"></line>` +
+    rects + `<g class="an-labels">${labels}</g></svg>`
+}
+
+// Flatten the API's day rollups into the last `hoursBack` hour slots (UTC),
+// including the in-progress hour from `current`. pick(hourEntry) → number.
+function hourSeries (a, hoursBack, pick) {
+  const byKey = new Map() // 'YYYY-MM-DD H' -> hour entry
+  for (const d of a.days) for (const [h, e] of Object.entries(d.hours || {})) byKey.set(d.date + ' ' + h, e)
+  if (a.current) byKey.set(a.current.date + ' ' + a.current.hour, a.current)
+  const slots = []
+  const values = []
+  const end = a.current ? Date.parse(a.current.date + 'T00:00:00Z') + a.current.hour * 3600000 : Date.now()
+  for (let i = hoursBack - 1; i >= 0; i--) {
+    const t = end - i * 3600000
+    const date = new Date(t).toISOString().slice(0, 10)
+    const hr = new Date(t).getUTCHours()
+    slots.push(date.slice(5) + ' ' + String(hr).padStart(2, '0') + 'h')
+    const e = byKey.get(date + ' ' + hr)
+    values.push(e ? pick(e) : 0)
+  }
+  return { slots, values }
+}
+
+function renderAnalytics (a) {
+  $('#an-retention').textContent = a.retentionDays || 0
+  if (!a.enabled) {
+    $('#an-chips').innerHTML = '<span class="chip">analytics <b>disabled</b> — ANALYTICS_RETENTION_DAYS=0, nothing is collected</span>'
+    $('#an-logins').innerHTML = ''
+    $('#an-online').innerHTML = ''
+    $('#an-days-table tbody').innerHTML = ''
+    return
+  }
+  const today = a.days.find((d) => d.date === (a.current && a.current.date))
+  const sumHours = (d, pick) => Object.values(d?.hours || {}).reduce((n, e) => n + pick(e), 0)
+  const ok = sumHours(today, (e) => e.logins?.ok || 0) + (a.current?.logins?.ok || 0)
+  const failed = sumHours(today, (e) => e.logins?.failed || 0) + (a.current?.logins?.failed || 0)
+  const sessions = sumHours(today, (e) => e.sessions || 0) + (a.current?.sessions || 0)
+  const uniques = Math.max(today?.day?.uniqueViewers || 0, a.current?.uniqueViewersToday || 0)
+  const now = a.current?.onlineAppsNow
+  const cat = a.current?.catalog
+  $('#an-chips').innerHTML =
+    `<span class="chip">logins ok <b>${ok}</b></span>` +
+    `<span class="chip">failed <b>${failed}</b></span>` +
+    `<span class="chip">sessions <b>${sessions}</b></span>` +
+    `<span class="chip" title="unique usernames with a verified session today — a count reduced from an in-memory set, never stored">unique viewers <b>${uniques}</b></span>` +
+    `<span class="chip" title="panel swarm connections (last 5-min sample) — includes non-viewer peers such as repeaters; audience is at least this">apps online <b>${now == null ? '—' : '≥ ' + now}</b></span>` +
+    (cat ? `<span class="chip">catalog <b>${cat.live}</b> live · <b>${cat.redirect}</b> redirect · <b>${cat.vod}</b> vod</span>` : '')
+
+  const okS = hourSeries(a, 48, (e) => e.logins?.ok || 0)
+  const failS = hourSeries(a, 48, (e) => e.logins?.failed || 0)
+  $('#an-logins').innerHTML = barsSvg(okS.slots, [
+    { label: 'ok', values: okS.values },
+    { label: 'failed', values: failS.values }
+  ], ['var(--accent)', 'var(--danger)'])
+
+  const onS = hourSeries(a, 48, (e) => e.onlineApps?.mean ?? 0)
+  $('#an-online').innerHTML = barsSvg(onS.slots, [{ label: 'mean apps', values: onS.values }], ['var(--ok)'])
+
+  const tbody = $('#an-days-table tbody')
+  tbody.innerHTML = ''
+  for (const d of [...a.days].reverse()) {
+    const isToday = d.date === (a.current && a.current.date)
+    const tr = document.createElement('tr')
+    tr.innerHTML = `<td class="mono">${esc(d.date)}${isToday ? ' <span class="muted">(so far)</span>' : ''}</td>` +
+      `<td>${sumHours(d, (e) => e.logins?.ok || 0) + (isToday ? a.current?.logins?.ok || 0 : 0)}</td>` +
+      `<td>${sumHours(d, (e) => e.logins?.failed || 0) + (isToday ? a.current?.logins?.failed || 0 : 0)}</td>` +
+      `<td>${sumHours(d, (e) => e.sessions || 0) + (isToday ? a.current?.sessions || 0 : 0)}</td>` +
+      `<td>${isToday ? uniques : (d.day?.uniqueViewers ?? '—')}</td>` +
+      `<td>≥ ${Math.max(...Object.values(d.hours || {}).map((e) => e.onlineApps?.max || 0), isToday ? (a.current?.onlineApps?.max || 0) : 0)}</td>`
+    tbody.appendChild(tr)
+  }
+  if (!tbody.children.length) tbody.innerHTML = '<tr><td colspan="6" class="muted">no data yet — counts appear as viewers log in</td></tr>'
+}
+
+async function loadAnalytics () {
+  renderAnalytics(await api('GET', '/api/analytics?days=14'))
+}
+
+function startAnalyticsPoll () {
+  stopAnalyticsPoll()
+  loadAnalytics().catch((err) => toast(err.message, true))
+  anTimer = setInterval(() => loadAnalytics().catch(() => {}), 60000)
+}
+
+function stopAnalyticsPoll () {
+  if (anTimer) { clearInterval(anTimer); anTimer = null }
 }
 
 // ---------------------------------------------------------------- boot

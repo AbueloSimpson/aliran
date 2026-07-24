@@ -76,6 +76,13 @@ jobs:
       # no ffmpeg, no real sshd — deterministic, so it belongs in the required lane.
       - name: Aliran MCP server (test:mcp)
         run: npm run test:mcp
+      # Privacy-preserving analytics (S48): rollup/prune math on a fake clock, the
+      # retention=0 kill switch, real loopback logins → aggregate counts, the
+      # broadcaster egress/peer sampler, repeater served-bytes metrics, and the
+      # NEGATIVE IDENTITY SCAN (no username/key/IP may reach any analytics
+      # surface). Loopback SecretStream + HTTP only — no DHT, deterministic.
+      - name: Privacy-preserving analytics (test:analytics)
+        run: npm run test:analytics
       # The whole VOD chain (S8a) on a LOCAL DHT testnet — library ingest → panel vod
       # record class → grant → SDK resolve/serve/seek → delete. Loopback UDP + ffmpeg
       # only, never the public DHT, so it is deterministic enough for the required lane.

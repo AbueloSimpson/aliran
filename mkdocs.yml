@@ -44,6 +44,7 @@ nav:
   - VOD library: vod-library.md
   - Configuration: configuration.md
   - Content management: content-management.md
+  - Privacy-preserving analytics: analytics.md
   - Client build: client-build.md
   - Android app — viewer guide: android-viewer-guide.md
   - Desktop player (Windows & macOS): desktop-player.md

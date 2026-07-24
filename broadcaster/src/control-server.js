@@ -11,6 +11,8 @@
 //
 //   POST   /api/login                    {username,password} → {token,expiresAt}
 //   GET    /api/status
+//   GET    /api/analytics?days=N         aggregate-only per-channel rollups (S48) — counts, no identities
+//   GET    /api/incidents                correlated incident ring (fleet respawn bursts etc.), newest first
 //   GET    /api/capabilities             ffmpeg probe: protocols + deep-verified encoders
 //   GET    /api/channels                 list + live status (state/ffmpeg/peers/registered/ingest)
 //   POST   /api/channels                 {id,title?,description?,category?,input?,transcode?,buffer?,hlsTime?,hlsListSize?}
@@ -40,7 +42,8 @@ import { makeThrottle, controlKeys, makeAdminVerifier, adminTokenLive, addAdmin,
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
 
-// ctx = { config, manager, dataDir }.
+// ctx = { config, manager, dataDir, analytics? } (analytics optional — the S48
+// aggregate rollups; /api/analytics answers the honest empty shape without it).
 // opts = { host, port, sessionTtlMs, lockout: { threshold, seconds }, loginVerifyTimeoutMs }.
 // Resolves to { server, host, port, close } once listening (port 0 → ephemeral).
 export function startControlServer (ctx, opts = {}) {
@@ -109,6 +112,16 @@ export function startControlServer (ctx, opts = {}) {
 
     if (r1 === 'status' && req.method === 'GET' && seg.length === 2) {
       return sendJson(res, 200, await ctx.manager.statusSummary())
+    }
+
+    // Aggregate-only analytics rollups (S48): per-channel peer min/mean/max,
+    // egress bytes and respawns per hour/day — counts and public stream ids only,
+    // never a peer key or IP (the invariant test:analytics scans this response).
+    if (r1 === 'analytics' && req.method === 'GET' && seg.length === 2) {
+      const days = parseInt(url.searchParams.get('days'), 10)
+      return sendJson(res, 200, ctx.analytics
+        ? ctx.analytics.api(Number.isInteger(days) && days > 0 ? days : 7)
+        : { enabled: false, retentionDays: 0, days: [], current: null })
     }
 
     // What the host ffmpeg can actually do (probed once per process, cached). The UI
@@ -217,11 +230,14 @@ function serveStatic (res, pathname) {
 
 // Prometheus text exposition (0.0.4), from the same cheap synchronous sources as
 // /healthz. Channel detail stays in the authenticated status API — metrics are the
-// aggregate health signals a scraper alerts on.
+// aggregate health signals a scraper alerts on. The S48 per-channel lines read the
+// analytics module's LAST 5-min sample from memory (never the live swarm objects),
+// so a scrape stays sync-cheap at any channel count; stream_id labels are public
+// catalog names (the repeater's /metrics precedent), never identities.
 function renderMetrics (ctx) {
   const mem = process.memoryUsage()
   const h = ctx.manager.health()
-  return [
+  const lines = [
     '# HELP aliran_up 1 while the service is serving.', '# TYPE aliran_up gauge', 'aliran_up 1',
     '# HELP aliran_uptime_seconds Seconds since the service started.', '# TYPE aliran_uptime_seconds gauge', `aliran_uptime_seconds ${h.uptimeSec}`,
     '# HELP aliran_process_resident_memory_bytes Node process RSS.', '# TYPE aliran_process_resident_memory_bytes gauge', `aliran_process_resident_memory_bytes ${mem.rss}`,
@@ -230,10 +246,20 @@ function renderMetrics (ctx) {
     '# HELP aliran_broadcaster_boot_resumed Channels brought up by the boot-resume.', '# TYPE aliran_broadcaster_boot_resumed gauge', `aliran_broadcaster_boot_resumed ${h.resumed}`,
     '# HELP aliran_broadcaster_boot_failed Channels the boot-resume could not start.', '# TYPE aliran_broadcaster_boot_failed gauge', `aliran_broadcaster_boot_failed ${h.failed}`,
     '# HELP aliran_broadcaster_resuming 1 while the boot-resume is still running.', '# TYPE aliran_broadcaster_resuming gauge', `aliran_broadcaster_resuming ${h.resuming ? 1 : 0}`,
-    '# HELP aliran_broadcaster_incidents Correlated incidents held in the in-memory ring.', '# TYPE aliran_broadcaster_incidents gauge', `aliran_broadcaster_incidents ${ctx.manager.incidents ? ctx.manager.incidents.list().length : 0}`,
-    ''
-  ].join('\n')
+    '# HELP aliran_broadcaster_incidents Correlated incidents held in the in-memory ring.', '# TYPE aliran_broadcaster_incidents gauge', `aliran_broadcaster_incidents ${ctx.manager.incidents ? ctx.manager.incidents.list().length : 0}`
+  ]
+  const sample = ctx.analytics && ctx.analytics.metricsSnapshot()
+  if (sample && sample.length) {
+    lines.push('# HELP aliran_broadcaster_channel_peers Swarm connections per channel at the last 5-min sample — a LOWER BOUND on audience (viewers also serve each other).', '# TYPE aliran_broadcaster_channel_peers gauge')
+    for (const s of sample) lines.push(`aliran_broadcaster_channel_peers{stream_id="${esc(s.id)}"} ${s.peers}`)
+    lines.push('# HELP aliran_broadcaster_channel_egress_bytes_total Bytes this channel has sent to peers this run (resets on channel restart).', '# TYPE aliran_broadcaster_channel_egress_bytes_total counter')
+    for (const s of sample) lines.push(`aliran_broadcaster_channel_egress_bytes_total{stream_id="${esc(s.id)}"} ${s.egressBytes}`)
+  }
+  lines.push('')
+  return lines.join('\n')
 }
+
+const esc = (v) => String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 
 function sendJson (res, status, obj) {
   if (res.destroyed || res.writableEnded || res.headersSent) return

@@ -214,3 +214,9 @@ ul.report-list li { margin-bottom: 3px; }
 /* #dlg-body label sets display:flex, which outranks the UA sheet's [hidden] —
    restate it or filtered-out rows stay visible (same pitfall as #login-view). */
 #dlg-body .ch-row[hidden] { display: none; }
+
+/* ---- analytics tab (S48): hand-rolled inline-SVG charts, no dependency ---- */
+#analytics-section { display: flex; flex-direction: column; gap: 12px; }
+.an-chart svg { display: block; width: 100%; height: 84px; }
+.an-chart .an-labels text { fill: var(--muted); font-size: 8px; font-family: ui-monospace, Consolas, monospace; }
+#an-days-table td { font-variant-numeric: tabular-nums; }

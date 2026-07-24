@@ -153,6 +153,48 @@ async function refresh () {
   renderChannels()
   renderTiles()
   api('GET', '/api/incidents').then(renderIncidents).catch(() => {})
+  // 24 h trends from the aggregate analytics rollups (S48) — best-effort, the
+  // table renders fine without them (older broadcaster, or analytics disabled).
+  api('GET', '/api/analytics?days=2').then(renderTrends).catch(() => {})
+}
+
+// Per-channel last-24h aggregates: peak/mean peer links + egress bytes. Peer
+// figures render with "≥" — origin-side peer counts are a LOWER BOUND on
+// audience, since viewers also serve each other (see docs/analytics.md).
+function renderTrends (a) {
+  if (!a || !a.enabled) return
+  const cutoff = Date.now() - 24 * 3600000
+  const agg = new Map() // id -> { peak, meanSum, meanN, egress }
+  const fold = (dateStr, hourKey, entry) => {
+    const t = Date.parse(dateStr + 'T00:00:00Z') + (+hourKey) * 3600000
+    if (!(t >= cutoff) || !entry || !entry.channels) return
+    for (const [id, c] of Object.entries(entry.channels)) {
+      let x = agg.get(id)
+      if (!x) { x = { peak: 0, meanSum: 0, meanN: 0, egress: 0 }; agg.set(id, x) }
+      if (c.peers && typeof c.peers.max === 'number') x.peak = Math.max(x.peak, c.peers.max)
+      if (c.peers && typeof c.peers.mean === 'number') { x.meanSum += c.peers.mean; x.meanN++ }
+      x.egress += c.egressBytes || 0
+    }
+  }
+  for (const d of a.days || []) for (const [h, e] of Object.entries(d.hours || {})) fold(d.date, h, e)
+  if (a.current) fold(a.current.date, a.current.hour, a.current)
+  for (const tr of document.querySelectorAll('#chan-rows tr[data-id]')) {
+    const cell = tr.querySelector('.trend-cell')
+    if (!cell) continue
+    const x = agg.get(tr.dataset.id)
+    if (!x) { cell.textContent = '—'; cell.classList.add('muted'); continue }
+    const mean = x.meanN ? Math.round((x.meanSum / x.meanN) * 10) / 10 : 0
+    cell.classList.remove('muted')
+    cell.innerHTML = `<span title="last 24 h — peak ≥${x.peak} / mean ≥${mean} peer links (lower bound: viewers also serve each other) · ${esc(fmtBytes(x.egress))} sent to peers">≥${x.peak} pk · ${esc(fmtBytes(x.egress))}</span>`
+  }
+}
+
+function fmtBytes (n) {
+  if (n == null) return '—'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let i = 0
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++ }
+  return n.toFixed(n >= 10 || i === 0 ? 0 : 1) + ' ' + units[i]
 }
 
 // Correlated events only — a lone ffmpeg respawn never appears here. That is the point:
@@ -282,6 +324,7 @@ function channelRow (c) {
     <td class="cell-health"><span class="muted">stopped</span></td>
     <td class="num peers-cell muted">—</td>
     <td class="num restarts-cell muted">—</td>
+    <td class="num trend-cell muted">—</td>
     <td class="num uptime-cell muted">—</td>
     <td><div class="row-actions">
       <button class="btn small primary" data-act="startstop">Start</button>
@@ -302,7 +345,7 @@ function channelRow (c) {
   logTr.className = 'log-row'
   logTr.dataset.logFor = c.id
   logTr.hidden = true
-  logTr.innerHTML = '<td colspan="8"><pre class="log-inline mono"></pre></td>'
+  logTr.innerHTML = '<td colspan="9"><pre class="log-inline mono"></pre></td>'
 
   frag.appendChild(tr)
   frag.appendChild(logTr)

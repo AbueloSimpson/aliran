@@ -42,6 +42,7 @@
     <button class="tab" data-tab="publishers">Publishers</button>
     <button class="tab" data-tab="sources">Sources</button>
     <button class="tab" data-tab="categories">Categories</button>
+    <button class="tab" data-tab="analytics">Analytics</button>
     <button class="tab" data-tab="overview">Overview</button>
   </nav>
 
@@ -198,6 +199,39 @@
         children with it. <b>Membership vs presentation:</b> a source feed decides <i>which</i> channels carry its category and
         reasserts that on every sync — so to move an imported rail, rename the <b>source's</b> category on the Sources tab.
         Everything here (label / order / hidden) is yours and survives a sync.</p>
+    </section>
+
+    <section id="analytics-section" hidden>
+      <div class="card">
+        <h3 class="card-title">Today <span class="muted">(UTC · aggregate counts only · refreshes every 60 s)</span></h3>
+        <div id="an-chips" class="chips"></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Logins per hour <span class="muted" id="an-logins-note">(last 48 h · ok + failed)</span></h3>
+        <div id="an-logins" class="an-chart"></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Apps online <span class="muted">(hourly mean of 5-min samples, last 48 h)</span></h3>
+        <div id="an-online" class="an-chart"></div>
+      </div>
+      <div class="card table-card">
+        <table id="an-days-table">
+          <thead><tr>
+            <th>Day (UTC)</th><th>Logins ok</th><th>Failed</th><th>Sessions</th><th>Unique viewers</th><th>Apps online (peak)</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="muted footnote"><b>What this is — and is not.</b> Every number here is an <b>aggregate count</b> the panel
+        already observes as a side effect of serving: login outcomes, session tokens issued, and how many peers hold the
+        catalog connection. Per-user watch tracking <b>does not exist</b> in Aliran — viewers replicate streams peer-to-peer
+        and never report what they watch, so there is nothing to show and nothing to leak. "Unique viewers" is the size of an
+        in-memory set that is reduced to a count and discarded — usernames are never written to disk. "Apps online" counts
+        panel swarm connections, which includes non-viewer peers (repeaters, broadcaster links) — treat it as approximate,
+        and treat all peer counts as a <b>lower bound (≥)</b>: viewers also serve each other. Rollups live in
+        <span class="mono">DATA_DIR/analytics/</span> (retention <span id="an-retention"></span> days;
+        <span class="mono">ANALYTICS_RETENTION_DAYS=0</span> disables collection entirely). See
+        <span class="mono">docs/analytics.md</span>.</p>
     </section>
 
     <section id="overview-section" hidden>

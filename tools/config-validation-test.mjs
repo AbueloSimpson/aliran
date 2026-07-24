@@ -22,7 +22,9 @@ function probeImport (url, env) {
 const BAD = [
   ['panel', { LOCKOUT_THRESHOLD: 'abc' }, 'LOCKOUT_THRESHOLD'],
   ['panel', { ADMIN_PORT: '70000' }, 'ADMIN_PORT'],
+  ['panel', { ANALYTICS_RETENTION_DAYS: 'abc' }, 'ANALYTICS_RETENTION_DAYS'],
   ['broadcaster', { FEED_BUFFER: 'rma' }, 'FEED_BUFFER'],
+  ['broadcaster', { ANALYTICS_RETENTION_DAYS: '-1' }, 'ANALYTICS_RETENTION_DAYS'],
   ['broadcaster', { PANEL_PUBKEY: 'nothex' }, 'PANEL_PUBKEY'],
   ['broadcaster', { INGEST_PORT_BASE: '6000', INGEST_PORT_MAX: '5000' }, 'INGEST_PORT_BASE'],
   ['reseller', { PANEL_ADMIN_URL: 'not a url' }, 'PANEL_ADMIN_URL'],

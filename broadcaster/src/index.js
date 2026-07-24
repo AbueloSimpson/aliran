@@ -19,6 +19,7 @@ import { config } from './config.js'
 import { ChannelManager, isPushInput, pushUrl } from './channel.js'
 import { startControlServer } from './control-server.js'
 import { loadAdmins } from './control-auth.js'
+import { makeAnalytics, collectChannelSamples } from './analytics.js'
 import { initLogging } from './log.js'
 
 initLogging('broadcaster')
@@ -32,12 +33,28 @@ async function main () {
   // an outage. Order now: prepare → start control server → (env channel) → paced resume.
   await manager.init({ resume: false })
 
+  // Privacy-preserving analytics (S48): per-channel peer/egress/respawn AGGREGATES
+  // on a 5-min sampling tick → hourly buckets → day rollups in DATA_DIR/analytics/.
+  // Counts only — the broadcaster's swarm links are anonymous and stay that way.
+  // ANALYTICS_RETENTION_DAYS=0 turns collection off entirely.
+  const analytics = makeAnalytics({ dataDir: config.dataDir, retentionDays: config.analytics.retentionDays })
+  let analyticsTimer = null
+  if (analytics.enabled) {
+    analyticsTimer = setInterval(() => {
+      try { analytics.tick(collectChannelSamples(manager), manager.incidents) } catch {}
+    }, 300000)
+    analyticsTimer.unref()
+    console.log(`Analytics: aggregate-only rollups in ${config.dataDir}/analytics (retention ${config.analytics.retentionDays}d). Peer counts are a lower bound — see docs/analytics.md.`)
+  } else {
+    console.log('Analytics: DISABLED (ANALYTICS_RETENTION_DAYS=0) — nothing is collected.')
+  }
+
   let control = null
   if (config.control.enabled) {
     if (Object.keys(loadAdmins(config.dataDir)).length === 0) {
       console.warn('Control API enabled but no admins exist — create one: node src/control-cli.js add-admin <name>')
     }
-    control = await startControlServer({ config, manager, dataDir: config.dataDir }, {
+    control = await startControlServer({ config, manager, dataDir: config.dataDir, analytics }, {
       host: config.control.host,
       port: config.control.port,
       sessionTtlMs: config.control.sessionTtlHours * 3600000,
@@ -84,6 +101,8 @@ async function main () {
 
   const shutdown = async () => {
     console.log('\nShutting down…')
+    if (analyticsTimer) clearInterval(analyticsTimer)
+    analytics.close()
     if (control) { try { await control.close() } catch {} }
     await manager.close()
     process.exit(0)

@@ -36,6 +36,7 @@ import os from 'os'
 import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS, pickSlateFile, parseVideoProfile } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
+import { makeEgressMeter } from './analytics.js'
 import { makeIncidents } from './incidents.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 import { purgeStaleCores } from '@aliran/core/store-gc.js'
@@ -591,8 +592,12 @@ class Channel {
       await tuneSwarm(swarm, { recvBytes: config.swarmRcvBuf, sendBytes: config.swarmSndBuf }),
       (line) => console.log('[net]', line)
     )
+    // Per-channel egress meter (S48 analytics): closed connections' UDX byte counts
+    // accumulate here, live ones are added at read time — counts only, no identities.
+    const egress = makeEgressMeter()
     swarm.on('connection', (socket) => {
       if (maxPeers && swarm.connections.size > maxPeers) { socket.destroy(); return }
+      egress.onConnection(socket)
       // Replicate the whole STORE (equivalent to drive.replicate — hyperdrive.replicate
       // delegates to its corestore), so both the current AND a retired-but-still-draining
       // feed generation (both live in this one store) are served to peers that ask for
@@ -614,6 +619,7 @@ class Channel {
       store,
       drive,
       swarm,
+      egress,
       stopMirror,
       outDir,
       feedKey: feedKeyHex,
