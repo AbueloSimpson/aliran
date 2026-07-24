@@ -12,6 +12,7 @@ import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
 import { makeRing } from '../panel/src/activity.js'
 import * as pops from '../panel/src/ops.js'
+import * as ppkg from '../panel/src/packages.js'
 import { startAdminServer } from '../panel/src/admin-server.js'
 import { startReseller } from '../reseller/src/index.js'
 import { addPrincipal } from '../reseller/src/control-auth.js'
@@ -450,7 +451,141 @@ try {
   assert.strictEqual(mainWh.status, 404, 'no WEBHOOK_SECRET → route indistinguishable from absent')
   log('M: branding endpoints + HMAC top-ups (sig, replay, idempotency, audit MINT) ✓')
 
-  log('\nPASS: reseller e2e (panel + hierarchy + credits + lifecycle + outage + sweeps)')
+  // ===== N: channel packages (S45) — the reseller consumes the S44 panel APIs.
+  // Cost model under test implicitly throughout: credits stay TIME-only — the
+  // package-carrying activations debit exactly `months`, nothing more. =====
+  const sorted = (a) => [...a].sort()
+
+  // Panel-side registry (operator territory): two plain bouquets + a default.
+  await ppkg.addPackage(pctx, 'basic', { label: 'Basic', members: ['movie-night'] })
+  await ppkg.addPackage(pctx, 'sports', { label: 'Sports', members: ['sports-plus'] })
+  await ppkg.addPackage(pctx, 'starter', { label: 'Starter', members: ['movie-night'], default: true })
+
+  // Passthrough: ANY authed role lists every package (no per-reseller layer).
+  r = await api('GET', '/api/packages', null, res1b)
+  assert.strictEqual(r.status, 200, 'packages passthrough for a reseller')
+  const pkgBasic = r.body.find((p) => p.name === 'basic')
+  assert.ok(pkgBasic && pkgBasic.label === 'Basic' && Number.isInteger(pkgBasic.holders), 'passthrough carries label + holder count')
+  assert.deepStrictEqual(pkgBasic.resolved, ['movie-night'], 'passthrough carries resolved channel ids')
+
+  // Fund the rest of the section (mint is admin-tier; co-admin dep still can).
+  r = await api('POST', '/api/credits/mint', { to: 'res1', amount: 10 }, dep)
+  assert.strictEqual(r.status, 200)
+  const balN = (await api('GET', '/api/me', null, res1b)).body.balance
+
+  // Activate WITH packages: explicit choice REPLACES the panel's default
+  // packages (the picker pre-checks defaults, so dropping one is deliberate).
+  r = await api('POST', '/api/accounts', { name: 'pkguser', password: 'pkguser-pass-1', months: 1, packages: ['basic'] }, res1b)
+  assert.strictEqual(r.status, 201, 'activate with packages: ' + JSON.stringify(r.body))
+  assert.deepStrictEqual(r.body.packages, ['basic'], 'registry records the chosen bouquets')
+  assert.strictEqual(r.body.panel.lastError, null, 'decoration clean')
+  let pu = await pops.getUser(pctx, 'pkguser')
+  assert.deepStrictEqual(pu.packages, ['basic'], 'explicit choice replaced the default package')
+  assert.ok(pu.grants.includes('movie-night'), 'package materialized into a sealed grant')
+  assert.ok(!pu.grants.includes('sports-plus'), 'unchosen package grants nothing')
+
+  // Activate WITHOUT packages: the panel-side `default` bouquets stand.
+  r = await api('POST', '/api/accounts', { name: 'pkgfree', password: 'pkgfree-pass-1', months: 1 }, res1b)
+  assert.strictEqual(r.status, 201)
+  assert.deepStrictEqual(r.body.packages, [], 'no explicit choice recorded')
+  assert.deepStrictEqual((await pops.getUser(pctx, 'pkgfree')).packages, ['starter'], 'panel defaults survive a package-less activation')
+
+  // Validation mirrors the grants array; a bad list is rejected BEFORE any
+  // panel/ledger effect.
+  r = await api('POST', '/api/accounts', { name: 'pkgbad', password: 'pkgbad-pass-12', months: 1, packages: 'basic' }, res1b)
+  assert.strictEqual(r.status, 400, 'non-array packages → 400')
+  r = await api('POST', '/api/accounts', { name: 'pkgbad', password: 'pkgbad-pass-12', months: 1, packages: [42] }, res1b)
+  assert.strictEqual(r.status, 400, 'non-string member → 400')
+  await assert.rejects(() => pops.getUser(pctx, 'pkgbad'), /no such user/, '400 left no panel user')
+
+  // A typo package name: the CREATE is panel-first and already succeeded, so the
+  // decoration is best-effort — the account lands with panel.lastError set…
+  r = await api('POST', '/api/accounts', { name: 'pkgtypo', password: 'pkgtypo-pass-1', months: 1, packages: ['nope'] }, res1b)
+  assert.strictEqual(r.status, 201, 'typo package: account still lands (best-effort decoration)')
+  assert.match(r.body.panel.lastError || '', /no such package/i, 'lastError names the miss')
+  // …and setPackages (panel-first, fail-closed) is the repair path.
+  r = await api('POST', '/api/accounts/pkgtypo/packages', { packages: ['basic'] }, res1b)
+  assert.strictEqual(r.status, 200)
+  assert.deepStrictEqual(r.body.packages, ['basic'], 'setPackages repaired the typo')
+  assert.strictEqual((await api('GET', '/api/me', null, res1b)).body.balance, balN - 3, 'three activations debited exactly 3 (packages carry no credit price)')
+
+  // setPackages replace semantics, both directions.
+  r = await api('POST', '/api/accounts/pkguser/packages', { packages: ['basic', 'sports', 'basic'] }, res1b)
+  assert.strictEqual(r.status, 200)
+  assert.deepStrictEqual(sorted(r.body.packages), ['basic', 'sports'], 'deduped + both assigned')
+  pu = await pops.getUser(pctx, 'pkguser')
+  assert.ok(pu.grants.includes('movie-night') && pu.grants.includes('sports-plus'), 'both bouquets materialized')
+  r = await api('POST', '/api/accounts/pkguser/packages', { packages: ['sports'] }, res1b)
+  assert.strictEqual(r.status, 200)
+  pu = await pops.getUser(pctx, 'pkguser')
+  assert.ok(!pu.grants.includes('movie-night'), 'dropped bouquet un-materialized (no other provenance)')
+  assert.ok(pu.grants.includes('sports-plus'), 'kept bouquet still sealed')
+  r = await api('POST', '/api/accounts/pkguser/packages', { packages: ['nope'] }, res1b)
+  assert.strictEqual(r.status, 404, 'typo in setPackages → panel 404 passthrough')
+  assert.deepStrictEqual((await api('GET', '/api/accounts/pkguser', null, res1b)).body.packages, ['sports'], 'failed replace left the registry alone')
+
+  // The live block now carries provenance.
+  r = await api('GET', '/api/accounts/pkguser', null, res1b)
+  assert.deepStrictEqual(r.body.live.packages, ['sports'], 'live view: packages')
+  assert.ok(Array.isArray(r.body.live.manualGrants), 'live view: manualGrants')
+
+  // Covered-revoke honesty: a one-off on a package-covered channel — revoking
+  // it removes the MANUAL entitlement, the panel re-seals via the package, and
+  // the response says so instead of pretending.
+  r = await api('POST', '/api/accounts/pkguser/grants', { streamId: 'sports-plus' }, res1b)
+  assert.strictEqual(r.status, 200)
+  assert.ok((await pops.getUser(pctx, 'pkguser')).manualGrants.includes('sports-plus'), 'dual provenance: manual beside the package')
+  r = await api('DELETE', '/api/accounts/pkguser/grants/sports-plus', null, res1b)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.stillGranted, true, 'covered revoke reports stillGranted')
+  assert.ok(!r.body.extraGrants.includes('sports-plus'), 'one-off gone from the registry')
+  pu = await pops.getUser(pctx, 'pkguser')
+  assert.ok(pu.grants.includes('sports-plus'), 'package re-sealed the channel in the same request')
+  assert.ok(!pu.manualGrants.includes('sports-plus'), 'manual provenance removed')
+  // A genuine one-off (no covering package) revokes clean.
+  await api('POST', '/api/accounts/pkguser/grants', { streamId: 'movie-night' }, res1b)
+  r = await api('DELETE', '/api/accounts/pkguser/grants/movie-night', null, res1b)
+  assert.strictEqual(r.body.stillGranted, false, 'uncovered revoke is final')
+  assert.ok(!(await pops.getUser(pctx, 'pkguser')).grants.includes('movie-night'), 'grant fully gone')
+
+  // Trials stay API-unchanged; the panel defaults reach them panel-side.
+  r = await api('POST', '/api/trials', { name: 'trialpkg', password: 'trialpkg-pass1' }, resx)
+  assert.strictEqual(r.status, 201)
+  assert.deepStrictEqual((await pops.getUser(pctx, 'trialpkg')).packages, ['starter'], 'trial received the default package')
+  log('N: passthrough, activate/setPackages, defaults, covered-revoke honesty ✓')
+
+  // ===== O: sweeps × packages — drift re-assert + expiry flows untouched =====
+  // Panel-side meddling strips pkguser's bouquets; the reconcile re-asserts the
+  // registry's CHOICE. pkgfree (no explicit choice) must be left alone.
+  await ppkg.setUserPackages(pctx, 'pkguser', [])
+  assert.deepStrictEqual((await pops.getUser(pctx, 'pkguser')).packages, [], 'panel-side strip landed')
+  r = await api('POST', '/api/ops/reconcile', null, boss)
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.packagesFixed.some((f) => f.account === 'pkguser'), 'drift detected: ' + JSON.stringify(r.body.packagesFixed))
+  assert.ok(!r.body.packagesFixed.some((f) => f.account === 'pkgfree'), 'panel-driven account not re-asserted')
+  pu = await pops.getUser(pctx, 'pkguser')
+  assert.deepStrictEqual(pu.packages, ['sports'], 'reconcile re-asserted the chosen bouquets')
+  assert.ok(pu.grants.includes('sports-plus'), 're-assert re-materialized the grants')
+  assert.deepStrictEqual((await pops.getUser(pctx, 'pkgfree')).packages, ['starter'], 'defaults untouched by the reconcile')
+  const st = (await api('GET', '/api/status', null, boss)).body
+  assert.ok(st.reconcile && Number.isInteger(st.reconcile.packagesFixed), 'reconcile summary counts packagesFixed')
+
+  // Expiry + renew flow is package-agnostic: lapse → sweep disables; renew →
+  // re-activates; the bouquets and their grants ride along untouched.
+  svc.ctx.accounts.records().pkguser.expiresAt = Date.now() - 1000
+  svc.ctx.accounts.save()
+  r = await api('POST', '/api/ops/sweep', null, boss)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual((await pops.getUser(pctx, 'pkguser')).status, 'disabled', 'lapsed package-holder disabled like any account')
+  r = await api('POST', '/api/accounts/pkguser/renew', { months: 1 }, res1b)
+  assert.strictEqual(r.status, 200)
+  pu = await pops.getUser(pctx, 'pkguser')
+  assert.strictEqual(pu.status, 'active', 'renew re-activated')
+  assert.deepStrictEqual(pu.packages, ['sports'], 'packages survive the lapse/renew cycle')
+  assert.ok(pu.grants.includes('sports-plus'), 'grants survive the lapse/renew cycle')
+  log('O: reconcile re-asserts chosen bouquets (defaults exempt); expiry/renew unaffected ✓')
+
+  log('\nPASS: reseller e2e (panel + hierarchy + credits + lifecycle + outage + sweeps + packages)')
   await cleanup()
   process.exit(0)
 } catch (err) {
