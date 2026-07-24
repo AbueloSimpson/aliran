@@ -16,6 +16,8 @@ re-seeds to other viewers.
   build** — first run shows a Connect screen where the viewer enters their
   operator's panel public key + account, and it persists (*Settings → Change
   service…* forgets it).
+- Test/dev descriptors may carry `"dev": { "username", "password" }` — Login
+  prefill + first-boot auto-login. Never in anything handed to viewers.
 - Private package — never published to npm.
 
 Quick start (from the repo root):

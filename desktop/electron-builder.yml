@@ -13,7 +13,7 @@ appId: app.aliran.desktop
 productName: Aliran
 # Keep in step with devDependencies.electron (hoisted to the workspace root, where
 # electron-builder cannot resolve a semver range on its own).
-electronVersion: 37.10.3
+electronVersion: 43.2.0
 # buildResources deliberately NOT named "build" — the repo's global .gitignore
 # ignores build/ dirs, and the icon must be committed.
 directories:
@@ -42,7 +42,10 @@ win:
   target:
     - nsis
     - portable
-  icon: assets/icon.png
+  # A committed multi-size .ico (derived from icon.png) — handing the builder a
+  # ready .ico skips its WASM png→ico converter, which can die with
+  # "WebAssembly.Memory(): could not allocate memory" on memory-tight build hosts.
+  icon: assets/icon.ico
 nsis:
   oneClick: true
   perMachine: false

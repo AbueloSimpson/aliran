@@ -92,6 +92,14 @@ baked-vs-runtime descriptor paths):
 A baked descriptor always wins over a runtime-entered one, so an operator build
 ignores any previously stored key on the machine.
 
+For internal/test builds the descriptor may carry a **`dev` block**
+(`"dev": { "username": "…", "password": "…" }`): it pre-fills the Login screen
+**and, since the Electron 43 update, signs the app in by itself on first boot**
+(saved credentials, when present, still win). It exists for operator smoke tests
+and dev builds only — never bake a `dev` block into anything you hand to
+viewers, and note the public flavor cannot carry one by construction (it bakes
+no descriptor at all).
+
 Distributing the public build? Hand your viewers the
 **[viewer guide](desktop-viewer-guide.md)** — install + SmartScreen, the Connect
 screen, everyday use, and the honest bandwidth/privacy notes, written for

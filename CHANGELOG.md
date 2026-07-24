@@ -374,6 +374,16 @@ phone + Android TV, and the Windows desktop player).
   (panel public key + account, persisted in the profile, with *Settings → Change
   service…* to forget it). Guide:
   [docs/desktop-player.md](docs/desktop-player.md).
+- **Electron shell upgraded 37 → 43** (desktop 0.2.0) — clears the one `npm audit`
+  high-severity advisory the hardening pass had left tracked (electron ≤39.8.4
+  renderer-process CVEs; a build-time desktop dep, never a shipped crypto path).
+  No API changes were needed — the shell's Electron surface (BrowserWindow,
+  narrow IPC, `safeStorage`, single-instance lock) carried over unchanged; both
+  flavors re-verified (baked boot → live screen against a real panel; keyless
+  boot → Connect screen). Baked *test* descriptors may now carry a
+  `dev: { username, password }` block that auto-signs-in on first boot (Login
+  prefill already existed; saved credentials still win; public builds cannot
+  carry one by construction).
 
 **Repeater (`repeater/`)**
 - Keyless regional super-peer (Open-Connect model): mirrors chosen channels' live

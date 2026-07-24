@@ -128,6 +128,14 @@ export class EngineHost {
     }
   }
 
+  // The descriptor's dev-only credentials (baked/dev builds; see 'auto-login').
+  devCreds () {
+    const d = this.descriptor?.dev
+    return typeof d?.username === 'string' && typeof d?.password === 'string'
+      ? { username: d.username, password: d.password }
+      : null
+  }
+
   // --- engine lifecycle ---
 
   start () {
@@ -229,7 +237,12 @@ export class EngineHost {
       this.writePrefs({ ...this.readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
       this.sendPrefs()
     } else if (msg.type === 'auto-login') {
-      const c = this.readPassword()
+      // Saved (safeStorage-wrapped) credentials win; a baked descriptor's `dev`
+      // block is the fallback so an operator/dev test build signs itself in on the
+      // very first boot (the Login screen already pre-fills from the same block —
+      // this closes the one remaining click). Public builds have no `dev` block by
+      // construction (keyless artifacts bake no descriptor at all).
+      const c = this.readPassword() || this.devCreds()
       if (c) this.login(c.username, c.password, { save: false })
       else this.send({ type: 'login-error', message: 'no saved credentials' })
     } else if (msg.type === 'reconnect') {

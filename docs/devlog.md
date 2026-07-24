@@ -2606,3 +2606,34 @@ was not touched.
   varies — `docs_search` is deliberately a TOOL so docs answers work in
   tools-only clients; large-catalog note); mcp.md + the package README follow.
   test:mcp section I asserts the multi-client markers.
+
+### Desktop Electron shell 37 → 43 + dev-descriptor auto-login (verified)
+
+- **The scheduled hardening follow-up** (the one `npm audit` HIGH the S42 pass left
+  tracked — electron ≤39.8.4 renderer-process CVEs in the desktop build dep, never
+  a shipped crypto path). `desktop/` now builds on **Electron 43.2.0** (+
+  electron-builder 26.15.3), app version 0.2.0. **Zero API changes needed**: the
+  shell's Electron surface (BrowserWindow + narrow IPC + `safeStorage` +
+  single-instance lock + `shell.openExternal`) carried across six majors
+  unchanged, and the engine's N-API prebuilds load as before (ABI-stable by
+  design). `npm audit` no longer reports electron at all.
+- **Dev auto-login:** a baked descriptor's `dev: { username, password }` block —
+  which already pre-filled the Login screen — now completes the sign-in by itself
+  on first boot (`EngineHost.devCreds()` as the `auto-login` fallback; saved
+  safeStorage credentials still win; public builds bake no descriptor so the
+  block cannot exist there). Documented in desktop-player.md with the
+  never-ship-this warning.
+- **Windows icon**: a committed multi-size `assets/icon.ico` now feeds
+  `win.icon` directly — electron-builder's WASM png→ico converter died with
+  `WebAssembly.Memory(): could not allocate memory` on the memory-tight build
+  box; handing it a ready .ico removes that step from every future build (mac
+  keeps deriving its .icns from the PNG on the roomier CI runner).
+- **Verified:** dev boot-smoke over CDP (the S37 pattern, pointed at the real
+  DHT): baked-descriptor run reached `ready` + **329 entitled streams** + a
+  mounted live screen against the **production panel** in ~7 s with no saved
+  credentials on disk (proving the new dev-creds path); keyless run (descriptor
+  moved aside) landed on the Connect screen. The **packaged** artifact repeated
+  the full autologin smoke (baked resource → login → live screen in 9 s).
+  Public NSIS + portable re-cut keyless and **verified on the bytes** (no
+  `config/` resource, panel-key hex and password needles absent from both exes
+  and the asar). tsc clean. Private keyed test builds live outside the repo.
