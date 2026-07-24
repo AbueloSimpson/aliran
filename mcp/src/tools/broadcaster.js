@@ -6,10 +6,120 @@
 //
 // GETs carry readOnlyHint. remove/stop/rotate carry destructiveHint (they take a
 // channel off air or restart its feed generation); start is a normal action.
+//
+// `input` / `transcode` are TYPED (they used to be `z.any()`, which serializes to an
+// empty JSON Schema `{}`): with no type information for a parameter, a client hands
+// objects over as JSON STRINGS. The broadcaster's normalizeInput() then saw a string,
+// failed the url-scheme test, and fell through to its catch-all — storing the whole
+// blob as `{kind:'file', path:'{"kind":"pull",…}'}`. HTTP 200, normal-looking body,
+// sourceCount 0, channel dead. That silently cost four production channels their
+// source on 2026-07-24. Two layers stop it now: the schemas below publish the real
+// shapes, and jsonish() re-parses a stringified object before it is forwarded.
+//
+// The shapes MIRROR broadcaster/src/channel.js (normalizeInput/normalizeTranscode),
+// deliberately duplicated rather than imported: @aliran/mcp ships standalone against a
+// possibly remote broadcaster and depends on the MCP SDK + zod only. The broadcaster
+// stays the authority — it re-validates everything — and test:mcp round-trips these
+// tools through the REAL normalizeInput so the two cannot drift apart silently.
 
 import { z } from 'zod'
 
 const q = (v) => encodeURIComponent(String(v))
+
+// --- typed channel input / transcode -----------------------------------------
+
+const PULL_URL = z.string().min(1).max(512)
+  .regex(/^(https?|rtsp|rtmps?|srt|udp):\/\//i, 'url scheme must be http(s), rtsp, rtmp(s), srt or udp')
+const PORT = z.number().int().min(1024).max(65535)
+
+const CHANNEL_INPUT_OBJECT = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('test') })
+    .describe('the built-in test pattern (colour bars + tone)'),
+  z.strictObject({ kind: z.literal('file'), path: z.string().min(1).max(512) })
+    .describe('a local media file on the broadcaster host, looped'),
+  z.strictObject({ kind: z.literal('pull'), url: PULL_URL, fallbacks: z.array(PULL_URL).max(4).optional() })
+    .describe('pull from a remote url, with up to 4 backup urls tried in order'),
+  z.strictObject({ kind: z.literal('rtmp'), port: PORT.optional(), streamKey: z.string().regex(/^[A-Za-z0-9]{8,64}$/, 'streamKey must be 8-64 letters/digits').optional() })
+    .describe('push: an RTMP listener for an OBS-style encoder (port auto-allocated when omitted)'),
+  z.strictObject({ kind: z.literal('srt'), port: PORT.optional(), latencyMs: z.number().int().min(20).max(5000).optional(), passphrase: z.string().regex(/^[A-Za-z0-9._-]{10,79}$/, 'passphrase must be 10-79 chars of A-Z a-z 0-9 . _ -').nullable().optional() })
+    .describe('push: an SRT listener (passphrase = real encryption/auth)'),
+  z.strictObject({ kind: z.literal('udp'), port: PORT.optional(), timeoutMs: z.number().int().min(1000).max(60000).optional() })
+    .describe('push: raw MPEG-TS over UDP')
+])
+
+// The string branch is the documented shorthand — "test", "rtmp", a pull url, or a
+// file path (normalizeInput upgrades those to the typed form). It is ALSO where a
+// client that stringifies objects lands; jsonish() tells the two apart before the
+// value can reach the API, so a brace-leading string is never taken for a path.
+const CHANNEL_INPUT = z.union([z.string().min(1), CHANNEL_INPUT_OBJECT])
+
+const CHANNEL_TRANSCODE = z.strictObject({
+  encoder: z.enum(['copy', 'libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf']).optional(),
+  resolution: z.enum(['source', '1080p', '720p', '480p', '360p']).optional(),
+  fps: z.union([z.literal('source'), z.literal(24), z.literal(25), z.literal(30), z.literal(50), z.literal(60)]).optional(),
+  videoBitrateKbps: z.number().int().min(100).max(20000).nullable().optional(),
+  audioBitrateKbps: z.number().int().min(64).max(320).optional(),
+  preset: z.enum(['fast', 'balanced', 'quality']).optional()
+})
+// null clears a channel's transcode settings; the string branch is, again, only the
+// carrier for a stringified object (there is no transcode shorthand).
+const TRANSCODE_ARG = z.union([CHANNEL_TRANSCODE, z.null(), z.string().min(1)])
+
+const INPUT_HINT = 'accepted: "test" | "rtmp" | a pull url | a file path | {kind:"test"} | {kind:"file",path} | {kind:"pull",url,fallbacks?} | {kind:"rtmp"|"srt"|"udp",port?,…}'
+const TRANSCODE_HINT = 'accepted: null (clear) | {encoder?,resolution?,fps?,videoBitrateKbps?,audioBitrateKbps?,preset?}'
+
+// An object that arrived as a STRING. A leading `{` is the tell: no shorthand, url or
+// file path starts with a brace. Parse it — or fail LOUDLY. The one thing this must
+// never do is hand a JSON blob onwards to be stored as a file path.
+function jsonish (value, label) {
+  if (typeof value !== 'string' || !value.trimStart().startsWith('{')) return value
+  let parsed
+  try {
+    parsed = JSON.parse(value)
+  } catch (err) {
+    throw new Error(`${label} looks like JSON but did not parse (${err.message}) — pass ${label} as an object, not as a quoted JSON string`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`${label} must be an object — got ${Array.isArray(parsed) ? 'an array' : typeof parsed}`)
+  return parsed
+}
+
+// Validate against the mirrored schema after the string-carrier rescue. Throws a
+// readable message (the def() wrapper turns it into an isError tool result).
+function typed (schema, value, label, hint) {
+  const r = schema.safeParse(jsonish(value, label))
+  if (r.success) return r.data
+  const seen = new Set()
+  for (const issue of flattenIssues(r.error.issues)) {
+    seen.add(issue.path && issue.path.length ? `${label}.${issue.path.join('.')}: ${issue.message}` : `${label}: ${issue.message}`)
+  }
+  throw new Error(`invalid ${label} — ${[...seen].join('; ')} (${hint})`)
+}
+
+// Union failures nest the per-branch issues one level down; surface those instead of
+// a bare "invalid input", so the operator sees WHICH field was wrong.
+function flattenIssues (issues, depth = 0) {
+  const out = []
+  for (const issue of issues || []) {
+    const nested = issue.errors || issue.unionErrors
+    if (nested && depth < 3) {
+      for (const branch of nested) out.push(...flattenIssues(Array.isArray(branch) ? branch : branch.issues, depth + 1))
+    } else out.push(issue)
+  }
+  return out
+}
+
+// Coerce+validate the two footgun fields out of a tool's arguments.
+function channelBody ({ input, transcode, ...rest }) {
+  const body = { ...rest }
+  if (input !== undefined) body.input = typed(CHANNEL_INPUT, input, 'input', INPUT_HINT)
+  if (transcode !== undefined) {
+    body.transcode = typed(TRANSCODE_ARG, transcode, 'transcode', TRANSCODE_HINT)
+    // A string that survived jsonish() is not a stringified object — and unlike
+    // `input`, transcode has no string shorthand at all.
+    if (typeof body.transcode === 'string') throw new Error(`invalid transcode — there is no string shorthand (${TRANSCODE_HINT})`)
+  }
+  return body
+}
 
 export function registerBroadcasterTools (ctx, h) {
   const { def, ok } = h
@@ -40,15 +150,15 @@ export function registerBroadcasterTools (ctx, h) {
   // ---- create / mutate ----
   def('broadcaster_add_channel', {
     title: 'Add a channel',
-    description: 'Add a channel to the broadcaster registry. input: "test" (built-in pattern), a file path, a pull object {kind:"pull",url}, or a push listener {kind:"rtmp"|"srt"|"udp",port?}. transcode: {encoder:"copy"|"libx264"|...}. buffer: "disk" (default) | "ram".',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: z.any().optional(), transcode: z.any().optional(), buffer: z.enum(['disk', 'ram']).optional() }
-  }, async (a) => ok(await b.post('/api/channels', a)))
+    description: 'Add a channel to the broadcaster registry. input: "test" (built-in pattern), a file path, a pull url, or the object form — {kind:"pull",url,fallbacks?} / {kind:"file",path} / a push listener {kind:"rtmp"|"srt"|"udp",port?}. transcode: {encoder:"copy"|"libx264"|...}. buffer: "disk" (default) | "ram". Send input/transcode as real objects, NOT as quoted JSON strings.',
+    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: CHANNEL_INPUT.optional(), transcode: TRANSCODE_ARG.optional(), buffer: z.enum(['disk', 'ram']).optional() }
+  }, async (a) => ok(await b.post('/api/channels', channelBody(a))))
 
   def('broadcaster_update_channel', {
     title: 'Edit a channel',
-    description: 'Patch a channel\'s meta/input/transcode (applied on the next start; a source change rotates the feed identity).',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: z.any().optional(), transcode: z.any().optional() }
-  }, async ({ id, ...body }) => ok(await b.patch('/api/channels/' + q(id), body)))
+    description: 'Patch a channel\'s meta/input/transcode (applied on the next start; a source change rotates the feed identity). Same input/transcode shapes as broadcaster_add_channel — objects, not quoted JSON strings. Omitted fields keep their stored value; transcode:null clears it. Verify afterwards that the channel reports the source you intended.',
+    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: CHANNEL_INPUT.optional(), transcode: TRANSCODE_ARG.optional() }
+  }, async ({ id, ...fields }) => ok(await b.patch('/api/channels/' + q(id), channelBody(fields))))
 
   def('broadcaster_start_channel', { title: 'Start a channel', description: 'Start a channel (spawns ffmpeg, mints/reuses the feed, registers with the panel).', inputSchema: { id: z.string() } },
     async ({ id }) => ok(await b.post('/api/channels/' + q(id) + '/start', {})))

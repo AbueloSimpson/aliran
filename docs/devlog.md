@@ -2702,3 +2702,42 @@ was not touched.
   green locally. NO VPS work — deploy rides a later user-decided image rebuild
   (a broadcaster rebuild disturbs the running scale test; the S44 panel-only
   precedent exists).
+
+### MCP channel tools — typed `input`/`transcode`: the end of the silent source swap (verified)
+- **Why:** repointing four production channels through `broadcaster_update_channel`
+  set no source at all. `input`/`transcode` were declared `z.any()`, which
+  serializes to an **empty JSON Schema `{}`** — a client with no type information
+  for a parameter passes objects through as JSON **strings**. So
+  `{kind:"pull",url}` arrived at the broadcaster as a string, failed
+  `PULL_SCHEME_RE`, and fell into `normalizeInput`'s catch-all, which stores any
+  other string as `{kind:'file', path}`: the entire JSON blob became a file path.
+  HTTP 200, normal-looking body, `sourceCount: 0`, `activeSource: null` — nothing
+  surfaced it but re-reading the returned `input`. The bare-URL string shorthand
+  was a workaround, but it covers only pull urls; `fallbacks` and `transcode` had
+  no string form at all.
+- **Typed schemas** (`mcp/src/tools/broadcaster.js`): `input` is now a union of the
+  shorthand string and a **discriminated union on `kind`** — `test` / `file{path}` /
+  `pull{url,fallbacks?}` / `rtmp{port?,streamKey?}` / `srt{port?,latencyMs?,
+  passphrase?}` / `udp{port?,timeoutMs?}` — and `transcode` a strict object over the
+  `ENCODERS`/`RESOLUTIONS`/`FPS_VALUES`/`PRESETS` sets (or `null` to clear). Clients
+  now receive the real shapes instead of `{}`, which is the actual root-cause fix.
+  The shapes MIRROR `broadcaster/src/channel.js` rather than importing it: the MCP
+  package ships standalone against a possibly remote broadcaster on the SDK + zod
+  only, and the broadcaster stays the authority.
+- **Defense in depth:** a `{`-leading string is re-parsed as JSON before it is
+  forwarded (that is exactly the shape the failing client sent), and anything that
+  does not parse — or parses to the wrong shape — is a loud validation error naming
+  the offending field. Independently, `normalizeInput` now **refuses** a
+  brace-leading string instead of taking it for a path: a `bad()` ControlError, so
+  the control API answers 400. A file path is never a JSON object, and a brace
+  *inside* a path (`/media/{a}/x.mp4`) still resolves as a path.
+- **Verified:** `test:mcp` grew section **J** — driven as an MCP client against a
+  fake ChannelManager that now runs the REAL `normalizeInput`/`normalizeTranscode`
+  (so the mirrored schemas cannot drift): the published `input` schema is non-empty
+  and carries all six `kind` branches; object-valued input round-trips to
+  `kind:"pull"` with `fallbacks` intact on both add and update; a **stringified**
+  object is rescued to the same result; and six malformed forms (no url, truncated
+  JSON, unknown kind, misspelled field, bad scheme, string transcode) are each
+  rejected with the channel's stored source left untouched. `test:args` covers the
+  broadcaster-side refusal. Both new blocks were confirmed to FAIL against the
+  pre-fix sources. Full required lane (15 suites) green.

@@ -640,6 +640,22 @@ phone + Android TV, and the Windows desktop player).
   regardless, so a future fourth core is safe by default. `test:register` plants strays
   (including an unopenable one), restarts, and asserts they are gone while accounts,
   catalog and assets survive — and that the next start reclaims nothing.
+- MCP: **a channel source can no longer be corrupted silently**. `broadcaster_add_channel`
+  / `broadcaster_update_channel` declared `input` and `transcode` as `z.any()`, which
+  publishes an *empty* JSON Schema — a client with no type information for a parameter
+  hands objects over as JSON strings, so `{kind:"pull",url}` reached `normalizeInput()`
+  as a string, failed the url-scheme test, and landed in the catch-all that stores any
+  other string as `{kind:"file", path}`: the whole JSON blob became a file path, behind
+  an HTTP 200 and a normal-looking response body. Four production channels lost their
+  source that way. Both fields are now **typed** (a discriminated union mirroring
+  `normalizeInput`/`normalizeTranscode`, so clients get the real shapes), a stringified
+  object is **parsed back** before it is forwarded, and a malformed one is a loud
+  validation error. `normalizeInput` independently refuses a brace-leading string
+  instead of taking it for a path (`400`, not a dead channel). `test:mcp` drives the
+  server as an MCP client and asserts the published schema is non-empty, that object and
+  stringified-object inputs both round-trip to `kind:"pull"`, and that every malformed
+  form is rejected with the stored source left intact; `test:args` covers the
+  broadcaster-side rejection.
 - Ops: live feeds no longer grow unbounded (~1–2 GB/h/channel → O(window));
   orphan-pin disk reclaim; remote acceptance always ends with a verdict.
 

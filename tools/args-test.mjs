@@ -137,7 +137,14 @@ throws(() => normalizeInput('a\nb', { config: cfg }), /invalid input/)
 throws(() => normalizeInput('x'.repeat(513), { config: cfg }), /invalid input/)
 throws(() => normalizeInput(null, { config: cfg }), /required/)
 throws(() => normalizeInput({ kind: 'weird' }, { config: cfg }), /input\.kind/)
-log('E: string auto-upgrade + scheme whitelist ✓')
+// A typed input that arrived STRINGIFIED must be a loud 400, never the file catch-all:
+// storing the blob as a path is what silently killed four production channels on
+// 2026-07-24 (see mcp/src/tools/broadcaster.js, which rescues the same shape earlier).
+throws(() => normalizeInput('{"kind":"pull","url":"http://host:8081/x/playlist.m3u8"}', { config: cfg }), /looks like JSON/, 'stringified typed input rejected')
+throws(() => normalizeInput('  {"kind":"test"}', { config: cfg }), /looks like JSON/, 'leading whitespace does not hide it')
+throws(() => normalizeInput('{not even json', { config: cfg }), /looks like JSON/, 'brace-leading is enough — we never guess it is a path')
+assert.deepStrictEqual(normalizeInput('/media/{a}/x.mp4', { config: cfg }), { kind: 'file', path: '/media/{a}/x.mp4' }, 'a brace INSIDE a path is still a path')
+log('E: string auto-upgrade + scheme whitelist + stringified-object rejection ✓')
 
 // ===== F: ports — range, uniqueness, allocation =====
 throws(() => normalizeInput({ kind: 'udp', port: 80 }, { config: cfg }), /1024-65535/)

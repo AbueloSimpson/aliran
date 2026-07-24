@@ -138,6 +138,13 @@ export function normalizeInput (value, { config, usedPorts = new Set(), existing
       value = { kind: 'pull', url: s }
     } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
       bad('unsupported input url scheme (allowed: http(s), rtsp, rtmp(s), srt, udp)')
+    } else if (s.trimStart().startsWith('{')) {
+      // A typed input that arrived STRINGIFIED (a client with no schema for the field,
+      // a shell that quoted the body). A file path is never a JSON object, so the
+      // catch-all below would have stored the whole blob as `path` and left the channel
+      // with no usable source — silently, behind a 200. Four production channels lost
+      // their source that way on 2026-07-24; this is now a 400 instead.
+      bad('input looks like JSON but arrived as a string — send input as an object, e.g. {"kind":"pull","url":"https://host/x.m3u8"}')
     } else {
       value = { kind: 'file', path: s }
     }

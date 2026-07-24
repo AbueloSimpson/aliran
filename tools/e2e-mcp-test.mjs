@@ -15,6 +15,10 @@
 //   G  the SSH executor against a COMMAND-STUB SEAM (a fake ssh binary) — preflight,
 //      status, and install (asserting the publisher SECRET never comes back to the model)
 //   H  the broadcaster tools (health + channel add/list + incidents)
+//   I  the onboarding doctor (--doctor)
+//   J  TYPED channel input/transcode: the published schema is no longer empty, an
+//      object-valued input round-trips to kind:"pull", a stringified object is rescued,
+//      and a malformed one is a loud error — never a silent {kind:"file"} fallback
 // Exits 0 on PASS.
 
 import assert from 'assert'
@@ -31,6 +35,7 @@ import * as ops from '../panel/src/ops.js'
 import { startAdminServer } from '../panel/src/admin-server.js'
 import { addAdmin as bcAddAdmin } from '../broadcaster/src/control-auth.js'
 import { startControlServer } from '../broadcaster/src/control-server.js'
+import { normalizeInput, normalizeTranscode } from '../broadcaster/src/channel.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
@@ -55,8 +60,20 @@ async function cleanup () { for (const fn of cleanups.reverse()) { try { await f
 
 // A fake ChannelManager: enough of the ChannelManager surface for the control server
 // to answer the tools this test drives, with NO ffmpeg and NO panel/DHT connection.
+// add/update run the REAL normalizeInput/normalizeTranscode (the production
+// ChannelManager does the same via normalizeMeta), so section J drives the MCP tool
+// schemas against the exact validation a live broadcaster applies — that is what keeps
+// the mirrored schemas in mcp/src/tools/broadcaster.js from drifting.
+const NORM_CFG = { rtmpPort: 1935, ingest: { portBase: 5000, portMax: 5009 } }
 function makeFakeManager () {
   const channels = new Map()
+  const normalize = (fields, existing) => {
+    const out = {}
+    if (fields.input != null) out.input = normalizeInput(fields.input, { config: NORM_CFG, existing: existing ? existing.input : null })
+    if (fields.transcode !== undefined) out.transcode = normalizeTranscode(fields.transcode)
+    if (fields.title != null) out.title = String(fields.title)
+    return out
+  }
   return {
     channels,
     health: () => ({ up: true, uptimeSec: 1, resuming: false, resumed: 0, failed: 0, total: channels.size }),
@@ -65,8 +82,18 @@ function makeFakeManager () {
     capabilities: async () => ({ ffmpeg: true, protocols: { udp: true, rtmp: true, srt: false }, encoders: { libx264: { listed: true, verified: true } } }),
     list: async () => Array.from(channels.values()),
     get: async (id) => { const c = channels.get(id); if (!c) { const e = new Error('no such channel: ' + id); e.httpStatus = 404; throw e } return c },
-    add: async (id, b) => { const c = { id, title: b.title || id, input: b.input || 'test', running: false, state: 'idle' }; channels.set(id, c); return c },
-    update: async (id, b) => { const c = channels.get(id); Object.assign(c, b); return c },
+    add: async (id, b) => {
+      const c = { id, title: b.title || id, transcode: null, running: false, state: 'idle', ...normalize({ ...b, input: b.input ?? 'test' }, null) }
+      channels.set(id, c)
+      return c
+    },
+    update: async (id, b) => {
+      const c = channels.get(id)
+      if (!c) { const e = new Error('no such channel: ' + id); e.httpStatus = 404; throw e }
+      // Validate FIRST, assign second — a rejected patch must leave the channel alone.
+      const patch = normalize(b, c)
+      return Object.assign(c, patch)
+    },
     remove: async (id) => { channels.delete(id); return { id, removed: true } },
     start: async (id) => ({ id, running: true }),
     stop: async (id) => ({ id, running: false }),
@@ -306,7 +333,70 @@ try {
   assert.ok(drNone.stdout.includes('[FAIL] config error'), 'config error reported on stdout in doctor mode')
   log('I: doctor — full pass w/ --login exit 0, dead panel [FAIL] exit 1, bad config exit 2, no passwords printed ✓')
 
-  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor)')
+  // ===== J: typed channel input/transcode (the 2026-07-24 silent-corruption fix) =====
+  // Root cause: `input`/`transcode` were declared z.any(), which publishes an EMPTY
+  // JSON Schema — a client with no type information for the field passes objects as
+  // JSON STRINGS, and the broadcaster's normalizeInput stored the blob as a file path.
+  // HTTP 200, sourceCount 0, four dead production channels.
+  const upd = byName.broadcaster_update_channel.inputSchema.properties.input
+  assert.ok(upd && Object.keys(upd).length > 0, 'input must publish a real schema, not {} (the z.any() footgun)')
+  const inputBranches = JSON.stringify(upd)
+  assert.match(inputBranches, /"kind"/, 'the published input schema names the discriminator')
+  for (const kind of ['test', 'file', 'pull', 'rtmp', 'srt', 'udp']) {
+    assert.ok(inputBranches.includes(`"const":"${kind}"`), `published input schema is missing the ${kind} branch`)
+  }
+  assert.ok(Object.keys(byName.broadcaster_update_channel.inputSchema.properties.transcode || {}).length > 0, 'transcode must publish a real schema too')
+
+  const PULL = 'http://origin.example:8081/CH/1/playlist.m3u8'
+  const PULL2 = 'https://backup.example/CH/2/playlist.m3u8'
+  // Object-valued input on add AND on update — the shape the model naturally sends.
+  const addedObj = await callJson(client, 'broadcaster_add_channel', { id: 'mcp-typed', input: { kind: 'pull', url: PULL, fallbacks: [PULL2] } })
+  assert.strictEqual(addedObj.input.kind, 'pull', 'object input round-trips as kind:"pull" (not a file path)')
+  assert.strictEqual(addedObj.input.url, PULL, 'the pull url survived intact')
+  assert.deepStrictEqual(addedObj.input.fallbacks, [PULL2], 'fallbacks survived — there is no string shorthand for them')
+  const patched = await callJson(client, 'broadcaster_update_channel', { id: 'mcp-typed', input: { kind: 'pull', url: PULL2 } })
+  assert.strictEqual(patched.input.kind, 'pull', 'object input round-trips through update too')
+  assert.strictEqual(patched.input.url, PULL2, 'update repointed the source')
+
+  // Defense in depth: the EXACT failing call from 2026-07-24 — the object arriving as
+  // a JSON string. It must be parsed back into an object, never stored as a path.
+  const rescued = await callJson(client, 'broadcaster_update_channel', { id: 'mcp-typed', input: JSON.stringify({ kind: 'pull', url: PULL }) })
+  assert.strictEqual(rescued.input.kind, 'pull', 'a STRINGIFIED input object is parsed, not taken for a file path')
+  assert.strictEqual(rescued.input.url, PULL, 'the rescued url is the one that was sent')
+
+  // Malformed input is a LOUD error — and leaves the stored source untouched.
+  for (const [label, badInput] of [
+    ['stringified object with no url', '{"kind":"pull"}'],
+    ['truncated JSON', '{"kind":"pull","url":"http://h/x.m3u8"'],
+    ['unknown kind', { kind: 'stream' }],
+    ['object with no url', { kind: 'pull' }],
+    ['misspelled field', { kind: 'pull', url: PULL, fallback: PULL2 }],
+    ['unsupported scheme', { kind: 'pull', url: 'ftp://h/x' }]
+  ]) {
+    const r = await callRaw(client, 'broadcaster_update_channel', { id: 'mcp-typed', input: badInput })
+    const text = (r.content && r.content[0] && r.content[0].text) || ''
+    assert.ok(r.isError, `a malformed input (${label}) must be rejected, got: ${text}`)
+    assert.ok(!/"kind"\s*:\s*"file"/.test(text), `a malformed input (${label}) must never fall back to kind:"file": ${text}`)
+  }
+  const afterBad = await callJson(client, 'broadcaster_get_channel', { id: 'mcp-typed' })
+  assert.strictEqual(afterBad.input.kind, 'pull', 'the rejected patches left the channel on its pull source')
+  assert.strictEqual(afterBad.input.url, PULL, 'the rejected patches did not touch the url')
+
+  // transcode: same two paths (object + stringified object), same loud rejection.
+  const tc = await callJson(client, 'broadcaster_update_channel', { id: 'mcp-typed', transcode: { encoder: 'libx264', resolution: '720p', fps: 30 } })
+  assert.strictEqual(tc.transcode.encoder, 'libx264', 'object transcode round-trips')
+  assert.strictEqual(tc.transcode.resolution, '720p', 'transcode resolution applied')
+  const tcStr = await callJson(client, 'broadcaster_update_channel', { id: 'mcp-typed', transcode: JSON.stringify({ encoder: 'copy' }) })
+  assert.strictEqual(tcStr.transcode.encoder, 'copy', 'a STRINGIFIED transcode object is parsed too')
+  for (const badTc of [{ encoder: 'h265_nvenc' }, '{"encoder":"copy","resolution":"720p"}', 'libx264', '{"encoder":']) {
+    const r = await callRaw(client, 'broadcaster_update_channel', { id: 'mcp-typed', transcode: badTc })
+    assert.ok(r.isError, `a malformed transcode (${JSON.stringify(badTc)}) must be rejected`)
+  }
+  const stillCopy = await callJson(client, 'broadcaster_get_channel', { id: 'mcp-typed' })
+  assert.strictEqual(stillCopy.transcode.encoder, 'copy', 'the rejected transcode patches changed nothing')
+  log('J: typed input/transcode — real published schema, objects round-trip, stringified objects rescued, malformed ones rejected with the stored source intact ✓')
+
+  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor; typed channel input/transcode)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

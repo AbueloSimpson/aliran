@@ -260,6 +260,14 @@ The control API is OFF unless `CONTROL_ENABLED=1`; a `broadcaster_*` tool that c
 reach it says so (`server_install` sets it). Secrets minted server-side (the
 `PUBLISHER_KEY`) are written into the box `.env` and never returned to the model.
 
+`broadcaster_add_channel` / `broadcaster_update_channel` take `input` as a shorthand
+string (`"test"`, `"rtmp"`, a pull url, a file path) or a typed object
+(`{kind:"pull",url,fallbacks?}`, `{kind:"file",path}`, `{kind:"test"}`,
+`{kind:"rtmp"|"srt"|"udp",port?,…}`), and `transcode` as an object or `null` to clear.
+Both are passed as objects, not as quoted JSON strings: a stringified object is parsed
+back where possible and rejected with a 400 where not — it is never stored as a file
+path (that fallback used to leave a channel with no working source behind an HTTP 200).
+
 ## Panel RPC (over Hyperswarm)
 
 - `hello` → proof-of-work challenge + difficulty (pre-login).

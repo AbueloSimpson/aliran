@@ -107,6 +107,18 @@ operator's local config file; you (the model) see only tool RESULTS.
 - **docs_search** + the mcp://aliran/docs/* resources — the shipped documentation
   (${index.docs.length} files). Prefer these over memory for usage questions.
 
+## Channel sources (broadcaster_add_channel / broadcaster_update_channel)
+
+\`input\` is either a shorthand STRING — \`"test"\`, \`"rtmp"\`, a pull url, or a file path
+on the broadcaster host — or a typed OBJECT: \`{kind:"pull",url,fallbacks?}\`,
+\`{kind:"file",path}\`, \`{kind:"test"}\`, or a push listener
+\`{kind:"rtmp"|"srt"|"udp",port?,…}\`. \`transcode\` is an object
+(\`{encoder,resolution,fps,videoBitrateKbps,audioBitrateKbps,preset}\`) or \`null\` to
+clear it; it has no string shorthand. Send both as real objects — a quoted JSON string
+is parsed back if it can be and rejected outright if it cannot, never stored as a path.
+A source change rotates the feed identity and needs a restart, so re-read the channel
+afterwards and confirm it reports the source you intended.
+
 ## Install happy-path (server_install)
 
 1. \`git clone\` the repo into the box's install dir.
