@@ -9,8 +9,7 @@ full threat model and honest limitations.
 **Please do not open public issues for security vulnerabilities.**
 
 Instead, report privately via GitHub Security Advisories ("Report a vulnerability"
-under the repository's *Security* tab), or email the maintainers at
-`security@<your-domain>` (replace with your address before publishing).
+under the repository's *Security* tab).
 
 Please include: affected component (panel / broadcaster / client), version/commit,
 reproduction steps, and impact. We aim to acknowledge within 72 hours.
