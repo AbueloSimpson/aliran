@@ -36,6 +36,11 @@ jobs:
       - run: npm ci
       - name: Crypto unit tests (test:core)
         run: npm run test:core
+      # Login-RPC hardening (S42): malformed payloads fail closed instead of crashing
+      # the panel, a captured register cannot be replayed, the throttle map stays
+      # bounded. Loopback SecretStream pair, no DHT — deterministic.
+      - name: Login RPC hardening (test:rpc-hardening)
+        run: npm run test:rpc-hardening
       - name: Client store corruption recovery (test:corrupt)
         run: npm run test:corrupt
       - name: ffmpeg argument builders (test:args)

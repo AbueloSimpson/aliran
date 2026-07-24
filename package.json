@@ -28,6 +28,7 @@
     "brand": "node tools/brand.mjs",
     "test": "npm run test:core",
     "test:core": "node core/test.mjs",
+    "test:rpc-hardening": "node tools/rpc-hardening-test.mjs",
     "test:args": "node tools/args-test.mjs",
     "test:config": "node tools/config-validation-test.mjs",
     "test:backup": "node tools/backup-restore-test.mjs",

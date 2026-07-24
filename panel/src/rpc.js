@@ -8,6 +8,22 @@ import { loadPublishers, scopeMatch } from './ops.js'
 
 const json = (o) => b4a.from(JSON.stringify(o))
 
+// Decode a client-supplied hex field to a Buffer, or return null when it is absent,
+// not a string, or not valid (even-length) hex — optionally pinning the exact decoded
+// byte length. EVERY b4a.from(x, 'hex') on an attacker-controlled RPC field MUST go
+// through this. b4a.from throws a TypeError when x is a non-string (a JSON object,
+// number or boolean in the payload survives JSON.parse); protomux-rpc hands a thrown
+// handler error to safety-catch, and safety-catch RETHROWS TypeError/RangeError into a
+// microtask — an uncaught exception that crashes the whole panel (there is no
+// uncaughtException handler, by design). Returning null lets each responder fail
+// closed with a JSON error. Wire-compatible: a real client always sends correct hex.
+function hexField (v, bytes) {
+  if (typeof v !== 'string') return null
+  if (bytes !== undefined ? v.length !== bytes * 2 : (v.length === 0 || (v.length & 1))) return null
+  if (!/^[0-9a-fA-F]+$/.test(v)) return null
+  return b4a.from(v, 'hex')
+}
+
 // Fixed-window rate limiter on OPRF evaluations per (username, peer).
 export function makeThrottle (threshold, windowSec) {
   const map = new Map()
@@ -42,13 +58,16 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     let req
     try { req = JSON.parse(b4a.toString(reqBuf)) } catch { return json({ error: 'bad request' }) }
     const { username, blinded, powNonce } = req || {}
-    const ok = powNonce && powVerify(challenge, b4a.from(powNonce, 'hex'), difficulty)
+    const nonce = hexField(powNonce) // null for a missing / non-string / non-hex nonce
+    const ok = nonce && powVerify(challenge, nonce, difficulty)
     challenge = hcrypto.randomBytes(16) // rotate → one PoW per attempt
     if (!ok) return json({ error: 'bad proof-of-work' })
     const t = throttle((username || '') + '|' + peerHex)
     if (t.locked) return json({ error: 'locked', retryAfter: t.retryAfter })
+    const B = hexField(blinded, 32) // ristretto255 point — exactly 32 bytes
+    if (!B) return json({ error: 'bad request' })
     try {
-      const evaluated = b4a.toString(evaluate(oprf, b4a.from(blinded, 'hex')), 'hex')
+      const evaluated = b4a.toString(evaluate(oprf, B), 'hex')
       sessionChallenge = hcrypto.randomBytes(16) // client will sign this to prove login
       return json({ evaluated, sessionChallenge: b4a.toString(sessionChallenge, 'hex') })
     } catch { return json({ error: 'eval failed' }) }
@@ -68,7 +87,9 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     if (!node) return json({ error: 'unknown user' })
     const user = node.value
     if (user.status && user.status !== 'active') return json({ error: 'account disabled' })
-    if (!user.authPub || !sig || !authVerify(b4a.from(user.authPub, 'hex'), chal, b4a.from(sig, 'hex'))) {
+    const sigBuf = hexField(sig, 64) // Ed25519 signature — 64 bytes
+    const authPubBuf = hexField(user.authPub, 32) // Ed25519 public key — 32 bytes
+    if (!authPubBuf || !sigBuf || !authVerify(authPubBuf, chal, sigBuf)) {
       return json({ error: 'auth failed' })
     }
     if (!deviceId) return json({ error: 'missing deviceId' })
@@ -117,7 +138,8 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     const { payload, sig } = req || {}
     const chal = challenge
     challenge = hcrypto.randomBytes(16) // one-shot
-    if (!payload || !payload.streamId || !sig) return json({ error: 'bad request' })
+    const sigBuf = hexField(sig, 64) // Ed25519 signature — 64 bytes; null on any bad input
+    if (!payload || !payload.streamId || !sigBuf) return json({ error: 'bad request' })
 
     // Resolve the verifying identity. Reject codes (unknown-publisher | revoked |
     // out-of-scope) surface verbatim through the broadcaster's registerError.
@@ -130,7 +152,8 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       const entry = typeof name === 'string' && Object.prototype.hasOwnProperty.call(publishers, name) ? publishers[name] : null
       if (!entry || !entry.publicKey) return json({ error: 'unknown-publisher' })
       if ((entry.status || 'active') !== 'active') return json({ error: 'revoked' })
-      verifyKey = b4a.from(entry.publicKey, 'hex')
+      verifyKey = hexField(entry.publicKey, 32) // guard a malformed registry entry too
+      if (!verifyKey) return json({ error: 'unknown-publisher' })
       scopes = entry.scopes || []
       origin = name
     } else {
@@ -139,7 +162,7 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       verifyKey = keys.publisher.publicKey
     }
     const msg = hcrypto.hash(b4a.concat([chal, b4a.from(JSON.stringify(payload))]))
-    if (!authVerify(verifyKey, msg, b4a.from(sig, 'hex'))) return json({ error: 'unauthorized' })
+    if (!authVerify(verifyKey, msg, sigBuf)) return json({ error: 'unauthorized' })
     if (scopes !== null && !scopeMatch(scopes, payload.streamId)) return json({ error: 'out-of-scope' })
 
     const { streamId, encryptionKey } = payload
