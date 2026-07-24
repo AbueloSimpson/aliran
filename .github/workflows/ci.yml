@@ -44,6 +44,10 @@ jobs:
       # LOG_FORMAT=json structured-logging contract. No network — deterministic.
       - name: Config validation + structured logging (test:config)
         run: npm run test:config
+      # The backup/restore drill: a cold copy of the panel DATA_DIR reopens as the
+      # same deployment (identity, admins, accounts, catalog). Loopback HTTP only.
+      - name: Backup/restore drill (test:backup)
+        run: npm run test:backup
       # Loopback UDP + a 1-node local testnet — deterministic, never touches the public
       # DHT. Runners ship the stock net.core.wmem_max, so this also exercises the
       # clamp-detection path against a real undersized kernel ceiling.

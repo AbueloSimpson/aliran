@@ -18,6 +18,19 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Backup, restore & key rotation runbooks**: `docs/kb/backup-and-rotation.md`
+  — the identity/data/cache model (panel keys are identity and NOT rotatable;
+  broadcaster feed stores are cache and not worth backing up), cold-backup and
+  restore procedures incl. the append-only restore-freshness hazard and its
+  client-side recovery, warm-standby failover under the never-two-writers rule,
+  and a rotation matrix for every credential (admin/principal passwords,
+  publisher keys, webhook secret, SRT passphrases, feedKeys). Plus
+  `deploy/backup.sh` (cold stop→tar→start per compose volume) and an automated
+  restore drill (`npm run test:backup`, required CI lane) proving a cold copy
+  of the panel DATA_DIR restores identity, admins, accounts and catalog.
+  Container logs are now bounded in every compose file (json-file 20m×5) — an
+  untended box can no longer fill its disk with logs.
+
 - **Observability & config hygiene**: every service fails fast on a typo'd env
   var — the boot error names the exact variable (no silent defaults, no NaN
   timeouts); opt-in structured logs (`LOG_FORMAT=json` emits one

@@ -80,14 +80,17 @@ Shipped:
 - ✅ **Observability & config hygiene**: fail-fast env validation on every service
   (a typo is a boot error naming the variable), opt-in JSON structured logs
   (`LOG_FORMAT=json`), unauthenticated `/healthz` on every HTTP surface (panel
-  included) + Prometheus `/metrics`, and an opt-in repeater status port
-  (`STATUS_PORT` — the stock repeater stays socket-free)
+  included) + Prometheus `/metrics`, an opt-in repeater status port
+  (`STATUS_PORT` — the stock repeater stays socket-free), and bounded container
+  logs in every compose file
+- ✅ **Backup, restore & rotation runbooks**: `docs/kb/backup-and-rotation.md`
+  (what to back up vs what's disposable, cold-backup + restore incl. the
+  restore-freshness fork hazard, warm-standby failover with the never-two-writers
+  rule, full credential rotation matrix), `deploy/backup.sh` (cold
+  stop→tar→start), and an automated restore drill (`test:backup`) in the required
+  CI lane — operational HA only, deployed players/SDKs unaffected
 
 Open:
-
-- ⬜ Panel **backup & restore tooling** + documented key-rotation and hot-standby
-  failover runbooks — operational HA only: no login-protocol changes, deployed
-  players/SDKs unaffected
 - ⬜ **Hardening pass** over the shipped crypto paths — implementation audit, fixes and
   regression tests; wire-compatible, no redesign
 

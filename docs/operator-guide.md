@@ -386,9 +386,15 @@ CAN grow forever is whatever captures that stdout:
   locks everyone out.
 - **Updates:** `git pull && docker compose up -d --build` (Compose) or
   `git pull && npm install --omit=dev --workspaces && systemctl restart aliran-panel aliran-broadcaster`.
-- **Key rotation:** rotating the OPRF key requires user re-enrollment; document a
-  runbook before you need it.
+- **Backups & key rotation:** covered end to end by the
+  [backup, restore & key rotation runbooks](kb/backup-and-rotation.md) — what to
+  back up (`deploy/backup.sh` does the cold stop→tar→start), the restore procedure
+  and its freshness caveat, and the rotation matrix for every credential. The
+  panel signing/OPRF keys are *identity*, not rotatable — protect and back them up.
 - **Monitoring:** watch panel login RPC, peer counts, lockouts; the dashboards show
-  live channel health (ffmpeg, peers, registration).
-- **HA:** for availability run a replica set (threshold OPRF) — see
-  [configuration.md](configuration.md); still on the roadmap.
+  live channel health (ffmpeg, peers, registration). See [Monitoring](#monitoring)
+  for `/healthz` + `/metrics`.
+- **HA / failover:** a warm standby carrying the latest cold snapshot, with the
+  **never-two-writers** discipline — the exact runbook is in
+  [backup & rotation](kb/backup-and-rotation.md). Clients find a moved panel by
+  its key on the DHT; there is no DNS to flip.

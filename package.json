@@ -30,6 +30,7 @@
     "test:core": "node core/test.mjs",
     "test:args": "node tools/args-test.mjs",
     "test:config": "node tools/config-validation-test.mjs",
+    "test:backup": "node tools/backup-restore-test.mjs",
     "test:nettune": "node tools/net-tune-test.mjs",
     "test:theme": "node tools/theme-test.mjs",
     "test:retention": "node tools/retention-test.mjs",

@@ -2326,3 +2326,30 @@ untouched proof) added to the REQUIRED CI lane, plus new assertions in the
 reseller e2e (reseller + in-process REAL panel healthz/metrics), the vod e2e
 (library metrics), the repeater e2e (status server against a live mirror), and
 the broadcaster-api e2e (metrics before login).
+
+### Backup, restore & key rotation runbooks + bounded logs (verified)
+The second of the two remaining v1.0 ops items. The runbook page
+(`docs/kb/backup-and-rotation.md`) is organized around one model: every byte is
+identity (panel `keys/` — signing + OPRF + shared publisher; not rotatable, only
+protectable), data (panel store, reseller ledger.jsonl, library titles, admin
+secrets), or cache (broadcaster feed stores, the whole repeater — never backed
+up; a restored broadcaster re-mints feeds and viewers follow the catalog). Cold
+backups only (a corestore copied mid-write can tear): `deploy/backup.sh` does
+stop→tar→start per compose volume with the panel's stop window costing only new
+logins. The restore section documents the sharp edge honestly — the store is an
+append-only signed log, so restoring a stale snapshot forks any client that
+replicated past it (recovery: clear client storage; mitigation: hourly cron +
+restore-the-newest); failover is a warm standby holding the latest snapshot
+under the NEVER-two-writers rule (two panels signing under one key = permanent
+fork, strictly worse than downtime — the drill instructions even point the
+scratch panel at a black-hole bootstrap). The rotation matrix covers every
+credential with its exact endpoint/CLI and blast radius, all wire-compatible.
+Verified: new `test:backup` (required CI lane) proves a cold DATA_DIR copy
+reopens as the same deployment — same signing identity, same admin verifiers,
+same accounts/grants/catalog over a real admin server, healthz answering.
+Alongside: every compose file now bounds container logs (json-file 20 MB × 5 per
+service) — Docker's default driver is unbounded and the eternal-log disk-fill is
+exactly the failure an untended co-tenant box hits first; the operator guide's
+Monitoring section documents the journald/daemon.json equivalents. Stale
+threshold-OPRF promises removed from architecture.md and the operator guide
+(rescoped out of the roadmap earlier the same day).

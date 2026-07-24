@@ -2,9 +2,9 @@
 // the secret OPRF key (the brute-force choke point). Stored under DATA_DIR/keys/.
 //
 // SECURITY: these files are the deployment's crown jewels. They are gitignored. Back
-// them up securely; losing the OPRF key locks every user out, leaking it re-enables
-// offline brute-force. Consider an HSM / OS keystore for production, and threshold OPRF
-// (t-of-n) across replicas — see docs/security-model.md.
+// them up securely (encrypted at rest — see docs/kb/backup-and-rotation.md); losing
+// the OPRF key locks every user out, leaking it re-enables offline brute-force.
+// Consider an HSM / OS keystore for production.
 
 import fs from 'fs'
 import path from 'path'

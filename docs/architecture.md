@@ -45,8 +45,9 @@ apps — one APK from Android 5.0, engine active on 10+; see the
 A single-writer, **panel-signed** Hyperbee holding the **account DB** and **stream
 catalog**, plus an **assets Hyperdrive** (posters/art). Serves an **OPRF login** RPC
 (brute-force choke point) and issues session/entitlement tokens. Today a deployment
-runs one panel node — viewers only need it online for *new* logins; an HA replica
-set (threshold OPRF) is on the roadmap.
+runs one panel node — viewers only need it online for *new* logins; availability
+is handled operationally with a warm standby + failover runbook
+([backup & rotation](kb/backup-and-rotation.md)).
 
 ### Repeater (Linux, optional)
 A **keyless** regional super-peer ([repeater.md](repeater.md)) — the Open-Connect
