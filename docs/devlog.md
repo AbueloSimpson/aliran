@@ -2593,3 +2593,16 @@ was not touched.
   live in the test process, so a `spawnSync` would block the event loop and the
   doctor's healthz probes would hang until their abort timers — the exact
   deadlock the first draft hit. `mkdocs build --strict` green.
+- **Client-agnostic wiring (same day):** operators can't be forced onto one
+  vendor's app, so the doctor now prints paste-ready snippets for **every major
+  MCP client** — the `mcpServers` JSON (Claude Desktop / Cursor / Windsurf /
+  Cline / Gemini CLI), Codex CLI TOML (single-quoted *literal* strings so Windows
+  backslash paths survive), VS Code agent-mode `mcp.json` (`servers` +
+  `type: "stdio"`), and the `claude mcp add` / `codex mcp add` one-liners — plus
+  an explicit warning that `destructiveHint` confirmations are ADVISORY per the
+  MCP spec (clients differ; the secrets guarantee is server-side and
+  client-independent). Quickstart Step 4 became the per-client matrix with a
+  "client differences that matter" section (hints advisory; resources support
+  varies — `docs_search` is deliberately a TOOL so docs answers work in
+  tools-only clients; large-catalog note); mcp.md + the package README follow.
+  test:mcp section I asserts the multi-client markers.

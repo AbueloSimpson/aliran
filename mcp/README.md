@@ -82,7 +82,8 @@ first prompts, troubleshooting): [docs/mcp-quickstart.md](../docs/mcp-quickstart
 node src/index.js --config ./config.json      # or set ALIRAN_MCP_CONFIG
 ```
 
-Claude Desktop (`claude_desktop_config.json`):
+**Any MCP client works** — the server is client-agnostic. The `mcpServers` JSON shape
+(Claude Desktop, Cursor, Windsurf, Cline, Gemini CLI):
 
 ```jsonc
 {
@@ -94,6 +95,14 @@ Claude Desktop (`claude_desktop_config.json`):
   }
 }
 ```
+
+Codex CLI takes the same two facts in `~/.codex/config.toml`
+(`[mcp_servers.aliran]`), VS Code agent mode in `.vscode/mcp.json`, Claude Code /
+Codex via `claude mcp add` / `codex mcp add` one-liners — `--doctor` prints every
+snippet with your absolute paths filled in, and
+[docs/mcp-quickstart.md](../docs/mcp-quickstart.md) has the per-client walkthrough.
+⚠ Destructive-tool confirmations (`destructiveHint`) are advisory per the MCP spec —
+verify your client prompts before purge/stop/update tools.
 
 Run it from a **repo checkout** so the `docs/` corpus (the resources + `docs_search`)
 resolves; set `docsDir` in the config to point elsewhere.

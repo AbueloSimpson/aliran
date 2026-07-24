@@ -38,12 +38,16 @@ phone + Android TV, and the Windows desktop player).
   repeater deferred; local stdio only). Onboarding: **`--doctor`** self-check
   (validates the config + file mode, probes SSH and the unauthenticated `/healthz`
   of each service — never spending a login attempt unless `--login` is passed —
-  lists the enabled tool groups and prints the paste-ready
-  `claude_desktop_config.json` snippet; exit codes 0/1/2 for scripting) plus a
-  step-by-step **[quickstart walkthrough](docs/mcp-quickstart.md)** (config → doctor
-  → Claude Desktop/Claude Code wiring → first prompts → fresh-server install, with
-  diagrams, a screenshot-capture checklist and a troubleshooting table). See
-  [docs/mcp.md](docs/mcp.md).
+  lists the enabled tool groups and prints **paste-ready wiring snippets for every
+  major MCP client** — the server is client-agnostic, so operators are never locked
+  to one vendor's app: the `mcpServers` JSON (Claude Desktop / Cursor / Windsurf /
+  Cline / Gemini CLI), Codex CLI TOML, VS Code agent-mode `mcp.json`, and the
+  `claude mcp add` / `codex mcp add` one-liners, all with absolute paths filled in;
+  exit codes 0/1/2 for scripting) plus a step-by-step
+  **[quickstart walkthrough](docs/mcp-quickstart.md)** (config → doctor →
+  per-client wiring incl. an advisory-hints caveat → first prompts → fresh-server
+  install, with diagrams, a screenshot-capture checklist and a troubleshooting
+  table). See [docs/mcp.md](docs/mcp.md).
 - **Channel packages ("bouquets")** — named channel bundles an admin grants as one
   unit ("Basic", "Sports"), replacing chip-by-chip per-stream grants that stop
   scaling past a few dozen channels. Because a grant is a **sealed key** (not an

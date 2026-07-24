@@ -273,6 +273,13 @@ try {
     'Enabled tool groups: panel_*  broadcaster_*  server_*  diagnose_*  docs_search',
     'claude_desktop_config.json',
     '"mcpServers"',
+    'client-agnostic',
+    '[mcp_servers.aliran]',
+    '~/.codex/config.toml',
+    '.vscode/mcp.json',
+    'codex mcp add aliran',
+    'claude mcp add aliran',
+    'destructiveHint) are ADVISORY',
     'RESULT: all checks passed'
   ]) assert.ok(dr.stdout.includes(marker), `doctor output missing: ${marker}\n---\n${dr.stdout}`)
   assert.ok(!dr.stdout.includes(PANEL_ADMIN.pass) && !dr.stdout.includes(BC_ADMIN.pass), 'doctor never prints a password')

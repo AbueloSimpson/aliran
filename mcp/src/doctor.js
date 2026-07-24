@@ -124,15 +124,42 @@ export async function runDoctor (config, { checkLogin = false, out = (l) => proc
   out('Enabled tool groups: ' + groups.join('  '))
   out(`Resources: ${docsIndex.docs.length} docs + mcp://aliran/guide`)
 
-  // --- 6. the paste-ready client wiring ---
+  // --- 6. the paste-ready client wiring (the server is client-agnostic: any MCP
+  // client that can launch a local stdio server works — these are the big ones) ---
   const entry = path.resolve(fileURLToPath(new URL('./index.js', import.meta.url)))
-  const snippet = JSON.stringify({
+  const jsonSnippet = JSON.stringify({
     mcpServers: { aliran: { command: 'node', args: [entry, '--config', config.configPath] } }
   }, null, 2)
+  // TOML literal (single-quoted) strings: no escape processing, so Windows
+  // backslash paths survive verbatim.
+  const tq = (s) => "'" + String(s).replace(/'/g, "''") + "'"
   out('')
-  out('Claude Desktop — merge this into claude_desktop_config.json')
-  out('  (Settings -> Developer -> Edit Config; needs `node` on PATH):')
-  out(snippet)
+  out('Wire it into your MCP client — any MCP client works; the server is client-agnostic.')
+  out('')
+  out('JSON ("mcpServers" shape) — Claude Desktop, Cursor, Windsurf, Cline, Gemini CLI:')
+  out(jsonSnippet)
+  out('  Claude Desktop : claude_desktop_config.json (Settings -> Developer -> Edit Config)')
+  out('  Cursor         : ~/.cursor/mcp.json (or .cursor/mcp.json per project)')
+  out('  Windsurf       : ~/.codeium/windsurf/mcp_config.json')
+  out('  Cline          : the extension\'s MCP settings (cline_mcp_settings.json)')
+  out('  Gemini CLI     : ~/.gemini/settings.json (add the "mcpServers" key)')
+  out('')
+  out('Codex CLI — ~/.codex/config.toml:')
+  out('[mcp_servers.aliran]')
+  out('command = "node"')
+  out(`args = [${tq(entry)}, '--config', ${tq(config.configPath)}]`)
+  out('')
+  out('VS Code (Copilot agent mode) — .vscode/mcp.json:')
+  out(JSON.stringify({ servers: { aliran: { type: 'stdio', command: 'node', args: [entry, '--config', config.configPath] } } }, null, 2))
+  out('')
+  out('One-liners:')
+  out(`  Claude Code : claude mcp add aliran -- node ${entry} --config ${config.configPath}`)
+  out(`  Codex CLI   : codex mcp add aliran -- node ${entry} --config ${config.configPath}`)
+  out('')
+  out('NOTE: destructive-tool confirmations (MCP destructiveHint) are ADVISORY — clients')
+  out('differ in whether they prompt before purge/stop/update tools. Verify yours does,')
+  out('or phrase destructive intent explicitly. Secrets are safe regardless (enforced')
+  out('server-side: no tool result ever contains a password or private key).')
 
   const failures = checks.filter((c) => c.level === 'fail').length
   out('')
@@ -140,7 +167,7 @@ export async function runDoctor (config, { checkLogin = false, out = (l) => proc
     out(`RESULT: ${failures} check(s) FAILED — fix the [FAIL] lines above and re-run.`)
   } else {
     out('RESULT: all checks passed. Next steps:')
-    out('  1. Paste the snippet above into claude_desktop_config.json and restart Claude Desktop.')
+    out('  1. Paste the snippet for YOUR client above, then fully restart that client.')
     out('  2. Look for the tools icon in a new conversation — "aliran" should list its tools.')
     out('  3. Try: "What is the status of my Aliran panel?" or "Search the Aliran docs for backups".')
     out('  4. Fresh box? Say: "Run a preflight check on my server, then install Aliran on it."')

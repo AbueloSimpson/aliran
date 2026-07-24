@@ -79,9 +79,13 @@ as the credentials `server_install` provisions).
 Any of `panel`, `broadcaster`, `ssh` may be omitted; only the tools whose backend is
 configured are registered.
 
-## Run it from your AI client
+## Run it from your AI client — any MCP client
 
-`claude_desktop_config.json`:
+The server has **no client coupling**: any MCP client that can launch a local stdio
+server works — Claude Desktop, Claude Code, **Codex CLI**, Cursor, VS Code (Copilot
+agent mode), Windsurf, Cline, Gemini CLI, … They all launch it the same way
+(`command: node`, `args: [entry, --config, path]`), each in its own config format.
+The Claude Desktop / Cursor / Windsurf / Cline / Gemini shape:
 
 ```jsonc
 {
@@ -93,6 +97,14 @@ configured are registered.
   }
 }
 ```
+
+Per-client wiring (Codex TOML, VS Code `mcp.json`, the `claude mcp add` /
+`codex mcp add` one-liners, config-file locations) is in the
+[quickstart, Step 4](mcp-quickstart.md) — and `--doctor` prints every snippet with
+your absolute paths filled in. One caveat when choosing a client: the
+`destructiveHint` confirmations are **advisory** in the MCP spec — verify your
+client prompts before destructive tools (Claude clients do; some others ignore
+hints). The secrets guarantee is client-independent (enforced server-side).
 
 Run it from a **repo checkout** so the `docs/` corpus (the resources + `docs_search`)
 resolves; set `docsDir` in the config to point elsewhere.

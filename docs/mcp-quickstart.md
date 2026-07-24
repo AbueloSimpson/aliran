@@ -1,10 +1,11 @@
 # MCP quickstart — walkthrough & onboarding
 
-A step-by-step path from *nothing* to *asking Claude to run your Aliran service*.
+A step-by-step path from *nothing* to *asking an AI to run your Aliran service*.
 For the concepts, the full tool catalog and the security model, see the
 [MCP server overview](mcp.md); this page is the hands-on walkthrough. At the end
-you'll have the MCP wired into Claude Desktop (or Claude Code), verified by the
-built-in **doctor**, and you'll have run your first tool calls.
+you'll have the MCP wired into **your MCP client of choice** — Claude Desktop,
+Claude Code, Codex CLI, Cursor, VS Code, Windsurf, Cline, Gemini CLI, … — verified
+by the built-in **doctor**, and you'll have run your first tool calls.
 
 > 📸 **About screenshots** — this guide marks the exact moments worth capturing
 > (**📸 Screenshot point**) so you can produce an illustrated internal runbook from
@@ -16,7 +17,7 @@ built-in **doctor**, and you'll have run your first tool calls.
 | | Requirement | Notes |
 |---|---|---|
 | 💻 | Your workstation | Node.js ≥ 20 + git; this is where the MCP server runs |
-| 🤖 | An MCP client | Claude Desktop, or Claude Code |
+| 🤖 | An MCP client | **Any** — Claude Desktop, Claude Code, Codex CLI, Cursor, VS Code (Copilot agent mode), Windsurf, Cline, Gemini CLI, … The server is client-agnostic (see [Step 4](#step-4-wire-it-into-your-ai-client-any-mcp-client)) |
 | 🖥 | A Linux box (optional) | Only for the `server_*` tools — a VPS you can SSH into with a key. Skip it to manage an already-running deployment over HTTPS |
 | 🔑 | Credentials | Panel/broadcaster **dashboard admin** logins (`add-admin`) — or none yet, if `server_install` will create everything |
 
@@ -108,8 +109,9 @@ config: /home/op/aliran/mcp/config.json
 Enabled tool groups: panel_*  broadcaster_*  server_*  diagnose_*  docs_search
 Resources: 43 docs + mcp://aliran/guide
 
-Claude Desktop — merge this into claude_desktop_config.json
-  (Settings -> Developer -> Edit Config; needs `node` on PATH):
+Wire it into your MCP client — any MCP client works; the server is client-agnostic.
+
+JSON ("mcpServers" shape) — Claude Desktop, Cursor, Windsurf, Cline, Gemini CLI:
 {
   "mcpServers": {
     "aliran": {
@@ -119,12 +121,18 @@ Claude Desktop — merge this into claude_desktop_config.json
   }
 }
 
-RESULT: all checks passed. Next steps:
-  1. Paste the snippet above into claude_desktop_config.json and restart Claude Desktop.
-  2. Look for the tools icon in a new conversation — "aliran" should list its tools.
-  3. Try: "What is the status of my Aliran panel?" or "Search the Aliran docs for backups".
-  4. Fresh box? Say: "Run a preflight check on my server, then install Aliran on it."
+Codex CLI — ~/.codex/config.toml:
+[mcp_servers.aliran]
+command = "node"
+args = ['/home/op/aliran/mcp/src/index.js', '--config', '/home/op/aliran/mcp/config.json']
+
+… (the VS Code snippet and the Claude Code / Codex CLI one-liners follow) …
+
+RESULT: all checks passed.
 ```
+
+The doctor prints every snippet with **your absolute paths already filled in** — Step 4
+is mostly copy-paste.
 
 - The default run probes only the **unauthenticated** `/healthz` endpoints, so a
   debugging loop can never trip the login throttle (10 attempts / 900 s). Add
@@ -144,29 +152,96 @@ Common doctor failures:
 | `broadcaster: … unreachable` (tunnel) | `CONTROL_ENABLED=1` missing in `broadcaster/.env` — the control API is off by default |
 | `… login failed` (with `--login`) | Wrong `user`/`pass` — create one with `add-admin` (see the [operator guide](operator-guide.md)). Careful: repeated bad logins lock for 15 min |
 
-## Step 4 — Wire it into your AI client
+## Step 4 — Wire it into your AI client (any MCP client)
 
-**Claude Desktop** — open **Settings → Developer → Edit Config** (or edit the file
-directly) and merge in the snippet the doctor printed:
+The Aliran MCP is a standard local-stdio MCP server with **no client coupling** —
+you cannot be locked into one vendor's app. Every client below launches it with the
+same two facts (`command: node`, `args: [entry, --config, path]`), each in its own
+config format. The [doctor](#step-3-run-the-doctor) prints all of these snippets
+with your absolute paths filled in.
 
-| OS | `claude_desktop_config.json` location |
+### The universal JSON shape
+
+Claude Desktop, Cursor, Windsurf, Cline and Gemini CLI all accept the same
+`mcpServers` JSON:
+
+```json
+{
+  "mcpServers": {
+    "aliran": {
+      "command": "node",
+      "args": ["/path/to/aliran/mcp/src/index.js", "--config", "/path/to/config.json"]
+    }
+  }
+}
+```
+
+| Client | Where the JSON goes |
 |---|---|
-| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
-| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
-| Linux | `~/.config/Claude/claude_desktop_config.json` |
+| Claude Desktop | **Settings → Developer → Edit Config**, or directly: Windows `%APPDATA%\Claude\claude_desktop_config.json` · macOS `~/Library/Application Support/Claude/claude_desktop_config.json` · Linux `~/.config/Claude/claude_desktop_config.json` |
+| Cursor | `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (per project) |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| Cline | the extension's MCP settings (`cline_mcp_settings.json`) |
+| Gemini CLI | `~/.gemini/settings.json` — add the `mcpServers` key |
 
-Then **fully restart** Claude Desktop (quit from the tray/menu-bar icon — closing
-the window is not enough). In a new conversation, the tools icon should now list
-**aliran** with its tools.
+Then **fully restart** the client (Claude Desktop: quit from the tray/menu-bar icon —
+closing the window is not enough). In a new conversation, the client's tools UI
+should list **aliran**.
 
-> 📸 **Screenshot point 2** — Settings → Developer showing the `aliran` server
-> running. **Screenshot point 3** — the tools list in a new chat.
+### Codex CLI (OpenAI)
 
-**Claude Code** — one command instead:
+`~/.codex/config.toml` — note the single-quoted TOML *literal* strings, which keep
+Windows backslash paths intact:
+
+```toml
+[mcp_servers.aliran]
+command = "node"
+args = ['/path/to/aliran/mcp/src/index.js', '--config', '/path/to/config.json']
+```
+
+Recent Codex versions also take the CLI route:
+
+```bash
+codex mcp add aliran -- node /path/to/aliran/mcp/src/index.js --config /path/to/config.json
+```
+
+### VS Code (Copilot agent mode)
+
+`.vscode/mcp.json` — note the different top-level key and the explicit `type`:
+
+```json
+{
+  "servers": {
+    "aliran": { "type": "stdio", "command": "node",
+                "args": ["/path/to/aliran/mcp/src/index.js", "--config", "/path/to/config.json"] }
+  }
+}
+```
+
+### Claude Code
 
 ```bash
 claude mcp add aliran -- node /path/to/aliran/mcp/src/index.js --config /path/to/config.json
 ```
+
+> 📸 **Screenshot point 2** — your client's MCP/servers screen showing `aliran`
+> connected. **Screenshot point 3** — the tools list in a new chat.
+
+### Client differences that matter
+
+- **Destructive-tool confirmations are advisory.** Aliran annotates purges,
+  stop/rotate and server updates with the MCP `destructiveHint`, but *honoring* it
+  is the client's job — Claude clients prompt before running them; some others
+  ignore hints entirely. Verify yours prompts, or phrase destructive intent
+  explicitly. The secrets guarantee is client-independent (enforced server-side:
+  no tool result ever contains a password or private key).
+- **Resources support varies.** Some clients surface MCP *resources*
+  (`mcp://aliran/docs/*`), some only tools. That's why `docs_search` is a **tool**:
+  docs-grounded answers work in every client either way.
+- **59 tools is a large catalog.** Capable models handle it fine; weaker models
+  pick tools less reliably — a client consideration, not a server setting.
+- Any other MCP client that can launch a **local stdio server** works the same way —
+  give it `node` + the two args and consult that client's docs for where they go.
 
 ## Step 5 — First conversation
 
@@ -268,7 +343,7 @@ points above. Rules first:
 
 | Symptom | Likely cause → fix |
 |---|---|
-| `aliran` never appears in Claude Desktop | Config JSON syntax error, or `node` not on PATH for GUI apps (macOS: launch once from a terminal or use an absolute node path). Fully quit + restart the app |
+| `aliran` never appears in your client | Config syntax error (JSON comma / TOML quoting), or `node` not on PATH for GUI apps (macOS: use an absolute node path). Fully quit + restart the client |
 | Tools appear, every call fails `unreachable` | The doctor passes but the *server* runs with a different working environment — re-run the doctor with the exact `--config` path from the client snippet |
 | `panel rejected the admin credentials` | Wrong dashboard login — `add-admin` on the box, update `config.json` |
 | `login throttled` / `locked` | 10 bad attempts / 15 min window. Wait it out; use `--doctor` (healthz-only) while debugging, not `--login` |
