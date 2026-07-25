@@ -112,14 +112,29 @@ operator's local config file; you (the model) see only tool RESULTS.
   unavailable — purge it panel-side). Descriptive metadata is panel-owned after
   creation.
 - **server_*** — the SSH executor: preflight, install (the whole compose sequence),
-  update (git pull → rebuild → up -d), status, logs, disk, env tuning
-  (validate-then-apply with revert), restart, backup/restore, sysctl. Secrets
-  minted during install are written into the box's .env server-side and are never
-  returned to you.
+  update (git pull → rebuild → up -d; \`dryRun:true\` previews what would deploy),
+  status, logs, disk, env tuning (validate-then-apply with revert), restart,
+  backup/restore, sysctl. Secrets minted during install are written into the box's
+  .env server-side and are never returned to you. **Multi-box deployments**: extra
+  boxes (repeaters, scale-out broadcasters) are named in the config's \`ssh.hosts\`
+  and every server_* tool takes \`host:"<name>"\` (omitted = the default box);
+  \`panel_add_publisher\` takes it too, so a site key lands on the RIGHT box.
+- **repeater_status** — SSH-shaped status for a repeater appliance: the repeater has
+  NO admin API by design (zero listening sockets stock), so this reports compose
+  state + logs, plus the opt-in loopback /metrics when STATUS_PORT is set on the
+  box; "not enabled" is reported honestly, not as an error.
 - **diagnose_*** — a /healthz sweep across the configured services and a symptom → KB
   lookup.
 - **docs_search** + the mcp://aliran/docs/* resources — the shipped documentation
   (${index.docs.length} files). Prefer these over memory for usage questions.
+
+## Prompts — guided runbooks
+
+The server registers MCP prompts for the recurring multi-step jobs:
+\`new-site-install\`, \`onboard-a-reseller\`, \`migrate-a-channel-source\`,
+\`monthly-maintenance\`, \`incident-triage\`, \`expose-dashboards\`. Each is numbered
+guidance naming the exact tools plus the honesty caveats they carry — offer the
+matching prompt when the operator asks for one of these jobs.
 
 ## Channel sources (broadcaster_add_channel / broadcaster_update_channel)
 

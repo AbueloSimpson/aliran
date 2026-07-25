@@ -1,16 +1,41 @@
 {
   "name": "@aliran/mcp",
-  "version": "0.0.1",
-  "private": true,
-  "description": "Aliran MCP server — exposes the panel admin API, broadcaster control API, an SSH install/maintenance executor and the shipped docs as Model Context Protocol tools/resources, so an AI client (Claude Desktop, Claude Code) can install, configure, maintain and support an Aliran deployment for a non-server-literate operator",
+  "version": "0.1.0",
+  "description": "Aliran MCP server — exposes the panel admin API, broadcaster control API, reseller/library oversight, an SSH install/maintenance executor (multi-host), guided runbook prompts and the shipped docs as Model Context Protocol tools/resources, so an AI client (Claude Desktop, Claude Code) can install, configure, maintain and support an Aliran deployment for a non-server-literate operator",
   "license": "MIT",
   "type": "module",
   "main": "src/index.js",
   "bin": {
     "aliran-mcp": "src/index.js"
   },
+  "files": [
+    "src",
+    "docs-bundle",
+    "config.example.json",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbueloSimpson/aliran.git",
+    "directory": "mcp"
+  },
+  "homepage": "https://abuelosimpson.github.io/aliran/mcp/",
+  "bugs": "https://github.com/AbueloSimpson/aliran/issues",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ott",
+    "streaming",
+    "p2p",
+    "aliran",
+    "operations"
+  ],
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "prepack": "node scripts/bundle-docs.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -19,5 +44,5 @@
   "engines": {
     "node": ">=20"
   },
-  "comment": "The SERVER side of MCP: it exposes Aliran admin operations to an AI client over local stdio. It does NOT call the Claude API, so it depends only on @modelcontextprotocol/sdk — no @anthropic-ai/* packages. Secrets (panel/broadcaster passwords, the SSH key) live in the operator's local config.json (0600) and never reach the model — the model only ever sees tool RESULTS. Runs on the operator's machine, NOT inside the docker-compose stack."
+  "comment": "The SERVER side of MCP: it exposes Aliran admin operations to an AI client over local stdio. It does NOT call the Claude API, so it depends only on @modelcontextprotocol/sdk — no @anthropic-ai/* packages. Secrets (panel/broadcaster passwords, the SSH key) live in the operator's local config.json (0600) and never reach the model — the model only ever sees tool RESULTS. Runs on the operator's machine, NOT inside the docker-compose stack. prepack bundles the repo docs/ corpus into docs-bundle/ so a published install still serves the mcp://aliran/docs resources (config.js prefers a live repo checkout's docs/ when one is present)."
 }

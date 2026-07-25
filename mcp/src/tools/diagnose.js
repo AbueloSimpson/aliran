@@ -16,7 +16,11 @@ const SYMPTOMS = [
   { re: /corrupt|oplog|epartialread|playback|freeze|crash.*play/i, kb: 'kb/playback.md', hint: 'client playback + store-corruption recovery' },
   { re: /backup|restore|rotation|lost key|recover/i, kb: 'kb/backup-and-rotation.md', hint: 'backup/restore + the key-rotation matrix' },
   { re: /dashboard|caddy|https|expose|public|tls|proxy/i, kb: 'kb/public-dashboards.md', hint: 'publishing the dashboards safely behind Caddy' },
-  { re: /source|pull|ingest|codec|hevc|rtmp|srt|udp/i, kb: 'kb/source-compatibility.md', hint: 'pull-ingest source compatibility + codecs' }
+  { re: /source|pull|ingest|codec|hevc|rtmp|srt|udp/i, kb: 'kb/source-compatibility.md', hint: 'pull-ingest source compatibility + codecs' },
+  // S49c additions — support lore from the S49a/b cycles:
+  { re: /env.*(not|n['’]t|no).*(appl|effect|work|take)|restart.*env|env.*restart|knob|\.env.*ignor/i, kb: 'configuration.md', hint: 'a compose restart does NOT re-read env files — apply env changes via server_set_env (it validates in-image, then recreates with plain up -d)' },
+  { re: /renam.*categor|categor.*renam|package.*(lost|empty|missing|strip)|bouquet.*(lost|empty)|selector/i, kb: 'mcp.md', hint: 'a package category:<slug> member is a STRING — renaming/merging the category strips that bouquet\'s holders until the member is edited to the new slug (panel_set_package)' },
+  { re: /restore.*(refus|fail|non-empty|not empty)|volume.*not empty/i, kb: 'kb/backup-and-rotation.md', hint: 'server_restore refuses a NON-EMPTY volume or a name-mismatched archive without force:true — with force the current contents are deleted first (untar-over-merge would itself be corruption)' }
 ]
 
 export function registerDiagnoseTools (ctx, h) {

@@ -254,9 +254,22 @@ are registered.
 | `broadcaster_*` | `broadcaster_health` `R`, `broadcaster_status` `R`, `broadcaster_capabilities` `R`, `broadcaster_list_channels` `R`, `broadcaster_get_channel` `R`, `broadcaster_channel_logs` `R`, `broadcaster_incidents` `R`, `broadcaster_analytics` `R`, `broadcaster_list_admins` `R`, `broadcaster_add_channel`, `broadcaster_update_channel`, `broadcaster_start_channel`, `broadcaster_add_admin`, `broadcaster_set_admin_password`, `broadcaster_stop_channel` `D`, `broadcaster_rotate_channel` `D`, `broadcaster_remove_channel` `D`, `broadcaster_remove_admin` `D` |
 | `reseller_*` (optional) | `reseller_status` `R`, `reseller_system` `R`, `reseller_list_principals` `R`, `reseller_get_principal` `R`, `reseller_ledger` `R`, `reseller_list_accounts` `R`, `reseller_get_account` `R`, `reseller_trials` `R`, `reseller_ops_status` `R`, `reseller_add_principal`, `reseller_set_principal_password`, `reseller_set_principal_limits`, `reseller_grant_credits`, `reseller_set_principal_status` `D` |
 | `library_*` (optional) | `library_status` `R`, `library_list_titles` `R`, `library_get_title` `R`, `library_title_logs` `R`, `library_add_title`, `library_set_title`, `library_reingest_title` `D`, `library_delete_title` `D` |
-| `server_*` (SSH executor) | `server_preflight` `R`, `server_status` `R`, `server_logs` `R`, `server_disk` `R`, `server_list_backups` `R`, `server_backup`, `server_set_env` `D`, `server_restart` `D`, `server_restore` `D`, `server_sysctl` `D`, `server_update` `D`, `server_install` |
+| `server_*` (SSH executor) | `server_preflight` `R`, `server_status` `R`, `server_logs` `R`, `server_disk` `R`, `server_list_backups` `R`, `server_backup`, `server_set_env` `D`, `server_restart` `D`, `server_restore` `D`, `server_sysctl` `D`, `server_update` `D` (`dryRun:true` previews), `server_install` — every tool (except `server_install`) takes `host:"<name>"` for a box named in `ssh.hosts` |
+| `repeater_*` | `repeater_status` `R` — SSH-shaped (the repeater has no admin API by design): compose state + logs + the opt-in loopback `/metrics` when `STATUS_PORT` is set on the box |
 | `diagnose_*` | `diagnose_healthz` `R`, `diagnose_symptom` `R` |
 | resources | `docs_search` `R` + every `docs/`+`docs/kb/` file as `mcp://aliran/docs/<path>`, plus `mcp://aliran/guide` |
+
+The server also registers **MCP prompts** — guided runbooks that name the exact
+tools for a multi-step job:
+
+| Prompt | Runbook |
+|---|---|
+| `new-site-install` | preflight → install → verify → first channel → first viewer |
+| `onboard-a-reseller` | enroll a principal → mint credits → verify the ledger → the oversight boundary |
+| `migrate-a-channel-source` | remote-source path (add → curate → sync → verify) and broadcaster-pull path (update → stop/start → verify) |
+| `monthly-maintenance` | update dry-run → backup → update → disk + analytics review → admin hygiene |
+| `incident-triage` | healthz sweep → localize (logs/incidents) → symptom → KB → fix or escalate (takes an optional `symptom` argument) |
+| `expose-dashboards` | publish the dashboards behind Caddy TLS per the KB, then repoint the MCP config at the https urls |
 
 The control API is OFF unless `CONTROL_ENABLED=1`; a `broadcaster_*` tool that can't
 reach it says so (`server_install` sets it). Secrets minted server-side (the
@@ -274,6 +287,21 @@ documents itself as a process bounce only. `server_restore` wraps
 without `force`, and echoes exactly what was overwritten and from which archive.
 Rotating or removing the admin account the MCP itself logs in with requires
 updating the operator's local mcp config afterwards.
+
+S49c behaviors worth knowing: **multi-host** — `ssh.hosts` names extra boxes
+(repeaters, scale-out broadcasters; each entry may carry its own `keyPath`/`port`/
+`repoDir`), the `host` parameter routes a tool there, and `panel_add_publisher
+{host}` writes the minted `PUBLISHER_KEY` into **that** box's `broadcaster/.env`
+(the key still never transits the model). **List ergonomics** — `panel_list_streams`
+grew client-side `category`/`prefix`/`idsOnly`/`limit` filters (the no-argument call
+still returns the raw catalog), and every user-shaped result summarizes grant lists
+longer than 12 ids to `{count, sample}` with `full:true` restoring every id
+(`panel_revoke_grant` additionally reports `stillGranted` when a package re-sealed
+the stream). **Schema gaps closed** — `broadcaster_add_channel`/`_update_channel`
+take `hlsTime` (1-30) / `hlsListSize` (2-60); `panel_add_stream` takes `feedKey` +
+`key` for pre-seeded feeds (a **supplied** `key` is stored panel-side and redacted
+from the result; an omitted one is generated and returned once), and
+`panel_set_stream_meta` takes `feedKey`.
 
 S49b behaviors worth knowing: `panel_rename_category` / `panel_merge_categories`
 **rewrite the category tag across every catalog record** (package `category:` member

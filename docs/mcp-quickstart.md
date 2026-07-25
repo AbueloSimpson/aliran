@@ -112,8 +112,9 @@ config: /home/op/aliran/mcp/config.json
 [--]   library: not configured — its library_* tools are disabled
 [ok]   docs: 43 documents indexed at /home/op/aliran/docs
 
-Enabled tool groups: panel_*  broadcaster_*  server_*  diagnose_*  docs_search
+Enabled tool groups: panel_*  broadcaster_*  server_*  repeater_*  diagnose_*  docs_search
 Resources: 43 docs + mcp://aliran/guide
+Prompts: 6 guided runbooks (new-site-install, onboard-a-reseller, migrate-a-channel-source, monthly-maintenance, incident-triage, expose-dashboards)
 
 Wire it into your MCP client — any MCP client works; the server is client-agnostic.
 
@@ -244,7 +245,7 @@ claude mcp add aliran -- node /path/to/aliran/mcp/src/index.js --config /path/to
 - **Resources support varies.** Some clients surface MCP *resources*
   (`mcp://aliran/docs/*`), some only tools. That's why `docs_search` is a **tool**:
   docs-grounded answers work in every client either way.
-- **73 tools is a large catalog.** Capable models handle it fine; weaker models
+- **102 tools is a large catalog.** Capable models handle it fine; weaker models
   pick tools less reliably — a client consideration, not a server setting.
 - Any other MCP client that can launch a **local stdio server** works the same way —
   give it `node` + the two args and consult that client's docs for where they go.

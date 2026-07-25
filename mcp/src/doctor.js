@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url'
 import { makeHttpClient } from './http-client.js'
 import { makeSsh } from './ssh.js'
 import { buildDocsIndex } from './resources/docs.js'
+import { PROMPTS } from './prompts.js'
 
 const TAG = { ok: '[ok]  ', warn: '[warn]', fail: '[FAIL]', skip: '[--]  ' }
 
@@ -72,6 +73,21 @@ export async function runDoctor (config, { checkLogin = false, out = (l) => proc
     if (config.ssh.keyPath && !fs.existsSync(config.ssh.keyPath)) {
       add('fail', `ssh: keyPath does not exist: ${config.ssh.keyPath}`)
     }
+    // Named hosts (multi-host, S49c): one cheap echo each — a dead repeater box
+    // should show up here, not mid-runbook. The default host was probed above.
+    if (config.ssh.hosts) {
+      for (const [name, entry] of Object.entries(config.ssh.hosts)) {
+        if (name === config.ssh.defaultName) continue
+        try {
+          const r = await makeSsh(entry).run('echo aliran-doctor-ok', { allowFail: true, timeoutMs: 20000 })
+          if (r.code === 0) add('ok', `ssh host "${name}": connected to ${entry.user}@${entry.host}${entry.port ? ':' + entry.port : ''}`)
+          else add('fail', `ssh host "${name}": command exited ${r.code} — ${(r.stderr || r.stdout || '').trim().split('\n').pop() || 'no output'}`)
+        } catch (err) {
+          add('fail', `ssh host "${name}": ${err.message}`)
+        }
+        if (entry.keyPath && !fs.existsSync(entry.keyPath)) add('fail', `ssh host "${name}": keyPath does not exist: ${entry.keyPath}`)
+      }
+    }
   }
 
   // --- 3. service reachability (healthz — never burns a login) ---
@@ -120,11 +136,12 @@ export async function runDoctor (config, { checkLogin = false, out = (l) => proc
   if (config.broadcaster) groups.push('broadcaster_*')
   if (config.reseller) groups.push('reseller_*')
   if (config.library) groups.push('library_*')
-  if (config.ssh) groups.push('server_*')
+  if (config.ssh) groups.push('server_*', 'repeater_*')
   groups.push('diagnose_*', 'docs_search')
   out('')
   out('Enabled tool groups: ' + groups.join('  '))
   out(`Resources: ${docsIndex.docs.length} docs + mcp://aliran/guide`)
+  out(`Prompts: ${PROMPTS.length} guided runbooks (${PROMPTS.map((p) => p.name).join(', ')})`)
 
   // --- 6. the paste-ready client wiring (the server is client-agnostic: any MCP
   // client that can launch a local stdio server works — these are the big ones) ---

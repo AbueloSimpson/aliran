@@ -3,6 +3,8 @@
 
   "_comment_optional_services": "Running the reseller panel (S38/S45) or the VOD library too? Add their blocks and the reseller_*/library_* tool groups light up — same shape as panel/broadcaster: \"reseller\": { \"user\": \"<root admin principal>\", \"pass\": \"...\" } and \"library\": { \"user\": \"<library admin>\", \"pass\": \"...\" } (omit `url` to tunnel to :3330 / :3320). The reseller login should be the ROOT admin principal — the operator-oversight identity (principals, credit mints, ledger); reseller daily driving stays in the resellers' own panel.",
 
+  "_comment_multi_host": "More than one box (repeater appliances, scale-out broadcasters)? Name them inside ssh: \"ssh\": { \"host\": \"<default box>\", \"user\": \"root\", \"keyPath\": \"...\", \"hosts\": { \"edge-1\": { \"host\": \"203.0.113.20\", \"user\": \"root\", \"keyPath\": \"~/.ssh/aliran_deploy_ed25519\", \"repoDir\": \"/opt/aliran\" } } }. Every server_* tool, repeater_status and panel_add_publisher then take host:\"edge-1\" (omitted = the default box). Per-entry keyPath/port/repoDir are optional. A hosts-only shape works too: \"hosts\" plus \"default\": \"<name>\" and no top-level host.",
+
   "panel": {
     "url": "https://panel.example.com",
     "user": "admin",

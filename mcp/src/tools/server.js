@@ -91,17 +91,23 @@ const REFUSED_ENV = {
 
 export function registerServerTools (ctx, h) {
   const { def, ok } = h
-  const ssh = ctx.ssh
-  const repoDir = ctx.config.install.repoDir
   const profileFlags = ctx.config.install.composeProfiles.map((p) => `--profile ${shq(p)} `).join('')
   const compose = (sub) => `docker compose ${profileFlags}${sub}`
+  // Multi-host (S49c): every tool here takes an optional `host` naming an entry in
+  // config ssh.hosts; omitted = the default box, byte-identical to single-host use.
+  // Resolution happens per call — an unknown name is a loud error listing the
+  // configured names before anything touches a box.
+  const at = (host) => ({ ssh: ctx.sshFor(host), repoDir: ctx.repoDirFor(host) })
+  const HOST_ARG = { host: z.string().optional().describe('named box from ssh.hosts (omit = the default box)') }
 
   // ---- read-only diagnostics ----
   def('server_preflight', {
     title: 'Preflight the box',
     description: 'Check the box has docker + compose + ffmpeg + git and reports their versions. Read-only.',
+    inputSchema: { ...HOST_ARG },
     annotations: { readOnlyHint: true }
-  }, async () => {
+  }, async ({ host }) => {
+    const { ssh, repoDir } = at(host)
     const script = [
       'echo "== docker =="; command -v docker >/dev/null 2>&1 && docker --version || echo MISSING',
       'echo "== docker compose =="; docker compose version 2>/dev/null | head -1 || echo MISSING',
@@ -116,8 +122,10 @@ export function registerServerTools (ctx, h) {
   def('server_status', {
     title: 'Deployment status',
     description: 'docker compose ps + the deployed git commit for the box. Read-only.',
+    inputSchema: { ...HOST_ARG },
     annotations: { readOnlyHint: true }
-  }, async () => {
+  }, async ({ host }) => {
+    const { ssh, repoDir } = at(host)
     const r = await ssh.run(`${compose('ps')}; echo '== commit =='; git -C ${shq(repoDir)} log --oneline -1 2>/dev/null || echo '(no repo)'`, { cwd: repoDir, allowFail: true, timeoutMs: 60000 })
     return ok({ host: ssh.host, status: r.stdout.trim(), stderr: r.stderr.trim() || undefined })
   })
@@ -125,9 +133,10 @@ export function registerServerTools (ctx, h) {
   def('server_logs', {
     title: 'Service logs',
     description: 'docker compose logs (tail). Optional service = panel | broadcaster | library | reseller. Read-only.',
-    inputSchema: { service: z.string().optional(), lines: z.number().int().min(1).max(2000).optional() },
+    inputSchema: { service: z.string().optional(), lines: z.number().int().min(1).max(2000).optional(), ...HOST_ARG },
     annotations: { readOnlyHint: true }
-  }, async ({ service, lines }) => {
+  }, async ({ service, lines, host }) => {
+    const { ssh, repoDir } = at(host)
     const n = lines || 200
     const r = await ssh.run(compose(`logs --tail ${n} --no-color${service ? ' ' + shq(service) : ''}`), { cwd: repoDir, allowFail: true, timeoutMs: 60000 })
     return ok({ host: ssh.host, logs: (r.stdout || r.stderr).trim() })
@@ -136,18 +145,54 @@ export function registerServerTools (ctx, h) {
   def('server_disk', {
     title: 'Disk usage',
     description: 'df -h + docker system df on the box, to spot a filling disk. Read-only.',
+    inputSchema: { ...HOST_ARG },
     annotations: { readOnlyHint: true }
-  }, async () => {
+  }, async ({ host }) => {
+    const { ssh } = at(host)
     const r = await ssh.run("df -h; echo '== docker =='; docker system df 2>/dev/null || true", { allowFail: true, timeoutMs: 60000 })
     return ok({ host: ssh.host, disk: r.stdout.trim() })
+  })
+
+  // The repeater deliberately has NO admin API — a stock repeater opens ZERO
+  // listening sockets (part of its co-tenancy/trust story), so its status is
+  // SSH-shaped: compose state + logs, plus the opt-in loopback status server
+  // when the operator enabled one (STATUS_PORT in repeater/.env).
+  def('repeater_status', {
+    title: 'Repeater status',
+    description: 'Status of a repeater appliance over SSH — the repeater has NO admin API by design (a stock repeater opens zero listening sockets). Reports docker compose ps + a logs tail for the deploy/docker-compose.repeater.yml stack, and probes the opt-in loopback status server (/metrics) ON the box when STATUS_PORT is set in its repeater/.env; when it is not enabled, that is reported honestly rather than as an error. host = a named box from ssh.hosts (a repeater is typically its own machine). Install guidance: deploy/docker-compose.repeater.yml + the repeater KB.',
+    inputSchema: { lines: z.number().int().min(1).max(400).optional(), ...HOST_ARG },
+    annotations: { readOnlyHint: true }
+  }, async ({ lines, host }) => {
+    const { ssh, repoDir } = at(host)
+    const rcompose = 'docker compose -f deploy/docker-compose.repeater.yml'
+    const ps = await ssh.run(`${rcompose} ps`, { cwd: repoDir, allowFail: true, timeoutMs: 60000 })
+    const logs = await ssh.run(`${rcompose} logs --tail ${lines || 80} --no-color`, { cwd: repoDir, allowFail: true, timeoutMs: 60000 })
+    const portR = await ssh.run("grep '^STATUS_PORT=' repeater/.env 2>/dev/null | tail -1", { cwd: repoDir, allowFail: true, timeoutMs: 30000 })
+    const portM = portR.stdout.match(/STATUS_PORT=(\d+)/)
+    const port = portM ? Number(portM[1]) : 0
+    let statusServer
+    let metrics
+    if (port > 0) {
+      const met = await ssh.run(`curl -sf --max-time 5 http://127.0.0.1:${port}/metrics`, { allowFail: true, timeoutMs: 30000 })
+      if (met.code === 0 && met.stdout.trim()) {
+        statusServer = `enabled (STATUS_PORT=${port})`
+        metrics = tail(met.stdout, 120)
+      } else {
+        statusServer = `configured (STATUS_PORT=${port}) but /metrics did not answer on the box loopback — is the repeater container up? (docker compose -f deploy/docker-compose.repeater.yml ps)`
+      }
+    } else {
+      statusServer = 'not enabled — a stock repeater opens ZERO listening sockets by design. Opt in by setting STATUS_PORT in repeater/.env on the box (see the repeater KB: docs/kb/repeater-production-example.md), then recreate with docker compose -f deploy/docker-compose.repeater.yml up -d.'
+    }
+    return ok({ host: ssh.host, compose: ps.stdout.trim() || ps.stderr.trim() || '(no output)', statusServer, ...(metrics ? { metrics } : {}), logs: (logs.stdout || logs.stderr).trim() })
   })
 
   // ---- maintenance ----
   def('server_backup', {
     title: 'Cold backup',
     description: 'Run deploy/backup.sh: cold stop → tar the data volume → start. Briefly pauses NEW logins for the named services (viewers keep playing). Encrypt the archives at rest — a panel backup holds the signing/OPRF keys. See server_list_backups / server_restore for the way back.',
-    inputSchema: { services: z.array(z.enum(['panel', 'broadcaster', 'library', 'reseller'])).optional(), outDir: z.string().optional() }
-  }, async ({ services, outDir }) => {
+    inputSchema: { services: z.array(z.enum(['panel', 'broadcaster', 'library', 'reseller'])).optional(), outDir: z.string().optional(), ...HOST_ARG }
+  }, async ({ services, outDir, host }) => {
+    const { ssh, repoDir } = at(host)
     const svc = (services && services.length ? services : ['panel']).map(shq).join(' ')
     const out = outDir ? `-o ${shq(outDir)} ` : ''
     const r = await ssh.run(`sh ./deploy/backup.sh ${out}${svc}`, { cwd: repoDir, timeoutMs: 600000 })
@@ -157,9 +202,10 @@ export function registerServerTools (ctx, h) {
   def('server_list_backups', {
     title: 'List backups',
     description: 'List the backup archives on the box (what deploy/backup.sh / server_backup wrote; default dir ./backups under the repo). Read-only.',
-    inputSchema: { dir: z.string().optional().describe('backup dir on the box (default ./backups, relative to the repo dir)') },
+    inputSchema: { dir: z.string().optional().describe('backup dir on the box (default ./backups, relative to the repo dir)'), ...HOST_ARG },
     annotations: { readOnlyHint: true }
-  }, async ({ dir }) => {
+  }, async ({ dir, host }) => {
+    const { ssh, repoDir } = at(host)
     const d = dir || './backups'
     const r = await ssh.run(`ls -lh ${shq(d)}/*.tar.gz ${shq(d)}/*.tgz 2>/dev/null || echo '(no archives)'`, { cwd: repoDir, allowFail: true, timeoutMs: 60000 })
     return ok({ host: ssh.host, dir: d, backups: r.stdout.trim(), note: 'restore with server_restore {service, archive}' })
@@ -171,10 +217,12 @@ export function registerServerTools (ctx, h) {
     inputSchema: {
       service: z.enum(['panel', 'broadcaster', 'library', 'reseller']),
       archive: z.string().describe('archive path ON THE BOX — absolute, or relative to the repo dir (server_list_backups shows them, e.g. backups/panel-20260724-070000.tar.gz)'),
-      force: z.boolean().optional().describe('replace a NON-EMPTY volume / accept a name-mismatched archive — destroys the current contents')
+      force: z.boolean().optional().describe('replace a NON-EMPTY volume / accept a name-mismatched archive — destroys the current contents'),
+      ...HOST_ARG
     },
     annotations: { destructiveHint: true }
-  }, async ({ service, archive, force }) => {
+  }, async ({ service, archive, force, host }) => {
+    const { ssh, repoDir } = at(host)
     const r = await ssh.run(`sh ./deploy/restore.sh ${force ? '--force ' : ''}${shq(service)} ${shq(archive)}`, { cwd: repoDir, timeoutMs: 600000 })
     return ok({ host: ssh.host, service, archive, result: r.stdout.trim(), stderr: r.stderr.trim() || undefined })
   })
@@ -185,10 +233,12 @@ export function registerServerTools (ctx, h) {
     inputSchema: {
       service: z.enum(['panel', 'broadcaster', 'library', 'reseller']),
       pairs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).describe('KEY: value map of documented knobs (e.g. {"MAX_DEVICES_DEFAULT": 5})'),
-      apply: z.boolean().optional().describe('default true: recreate the service container with the new env. false = write + validate only; apply later with another server_set_env or server_update')
+      apply: z.boolean().optional().describe('default true: recreate the service container with the new env. false = write + validate only; apply later with another server_set_env or server_update'),
+      ...HOST_ARG
     },
     annotations: { destructiveHint: true }
-  }, async ({ service, pairs, apply }) => {
+  }, async ({ service, pairs, apply, host }) => {
+    const { ssh, repoDir } = at(host)
     const entries = Object.entries(pairs || {})
     if (!entries.length) throw new Error('no pairs given — nothing to set')
     const allowed = SETTABLE_ENV[service]
@@ -247,9 +297,10 @@ export function registerServerTools (ctx, h) {
   def('server_restart', {
     title: 'Restart services',
     description: 'docker compose restart of the named services (default: all). Bounces the process in the SAME container — use it after server_sysctl so swarms re-request their socket buffers. It does NOT apply .env changes (compose only re-reads env files on an up -d recreate — server_set_env does that itself). Broadcaster: boot-resume restarts every desired-running channel (paced — allow a minute or more on a large fleet). Never uses --force-recreate.',
-    inputSchema: { services: z.array(z.enum(['panel', 'broadcaster', 'library', 'reseller'])).optional() },
+    inputSchema: { services: z.array(z.enum(['panel', 'broadcaster', 'library', 'reseller'])).optional(), ...HOST_ARG },
     annotations: { destructiveHint: true }
-  }, async ({ services }) => {
+  }, async ({ services, host }) => {
+    const { ssh, repoDir } = at(host)
     const names = (services && services.length) ? services : null
     const r = await ssh.run(compose('restart' + (names ? ' ' + names.map(shq).join(' ') : '')), { cwd: repoDir, timeoutMs: 300000 })
     return ok({ host: ssh.host, restarted: names || 'all services', output: (r.stdout.trim() || r.stderr.trim()) || 'restarted' })
@@ -257,18 +308,38 @@ export function registerServerTools (ctx, h) {
 
   def('server_sysctl', {
     title: 'Apply host network tuning',
-    description: 'Run deploy/sysctl/install.sh (needs root): raise net.core.rmem_max/wmem_max so the swarm socket buffers are not silently clamped. Then restart services to re-request the buffers.',
+    description: 'Run deploy/sysctl/install.sh (needs root): raise net.core.rmem_max/wmem_max so the swarm socket buffers are not silently clamped. Then restart services to re-request the buffers. Worth running on a repeater box specifically (host:"<name>") — a repeater on default ceilings quietly caps out.',
+    inputSchema: { ...HOST_ARG },
     annotations: { destructiveHint: true }
-  }, async () => {
+  }, async ({ host }) => {
+    const { ssh, repoDir } = at(host)
     const r = await ssh.run('sudo deploy/sysctl/install.sh', { cwd: repoDir, allowFail: true, timeoutMs: 120000 })
     return ok({ host: ssh.host, result: (r.stdout || '').trim(), stderr: r.stderr.trim() || undefined, note: 'restart the services to apply: server_update, or docker compose restart' })
   })
 
   def('server_update', {
     title: 'Update the deployment',
-    description: 'The §3B update recipe: git pull → COMPOSE_BAKE=false docker compose build → plain docker compose up -d (NEVER --force-recreate). Recreates only changed containers. A full rebuild can take several minutes; raise the client timeout or run it by hand for very large builds.',
+    description: 'The §3B update recipe: git pull → COMPOSE_BAKE=false docker compose build → plain docker compose up -d (NEVER --force-recreate). Recreates only changed containers. A full rebuild can take several minutes; raise the client timeout or run it by hand for very large builds. dryRun:true only fetches and reports what WOULD deploy (commits + changed files) — nothing is pulled into the worktree, built, or restarted.',
+    inputSchema: { dryRun: z.boolean().optional().describe('report what would deploy (git fetch + log + diff --stat against the upstream) without building or restarting anything'), ...HOST_ARG },
     annotations: { destructiveHint: true }
-  }, async () => {
+  }, async ({ dryRun, host }) => {
+    const { ssh, repoDir } = at(host)
+    if (dryRun) {
+      // Fetch updates the remote-tracking refs only — the worktree, images and
+      // containers stay untouched. '@{u}' = the checked-out branch's upstream,
+      // exactly what the real run's `git pull --ff-only` would merge.
+      await ssh.run('git fetch --quiet', { cwd: repoDir, timeoutMs: 120000 })
+      const logR = await ssh.run("git log --oneline HEAD..'@{u}'", { cwd: repoDir, allowFail: true, timeoutMs: 60000 })
+      const statR = await ssh.run("git diff --stat HEAD '@{u}'", { cwd: repoDir, allowFail: true, timeoutMs: 60000 })
+      const commits = logR.stdout.trim()
+      return ok({
+        host: ssh.host,
+        dryRun: true,
+        wouldDeploy: commits || '(nothing — the box is up to date with its upstream)',
+        changedFiles: commits ? (statR.stdout.trim() || '(no file changes reported)') : '(none)',
+        note: 'dry run only — nothing was pulled, built, or restarted. Run server_update without dryRun to deploy exactly this.'
+      })
+    }
     const pull = await ssh.run('git pull --ff-only', { cwd: repoDir, timeoutMs: 120000 })
     const build = await ssh.run(compose('build'), { cwd: repoDir, timeoutMs: 600000, allowFail: false })
     const up = await ssh.run(compose('up -d'), { cwd: repoDir, timeoutMs: 300000 })
@@ -277,9 +348,10 @@ export function registerServerTools (ctx, h) {
 
   def('server_install', {
     title: 'Install Aliran on the box',
-    description: 'Orchestrate the operator-guide §A install: clone → cp .env.example → build → admin-cli init (mints keys) → add-admin (panel + broadcaster, using the config credentials) → write PANEL_PUBKEY/PUBLISHER_KEY/ADMIN_ENABLED=1/CONTROL_ENABLED=1/INPUT into the box .env → up -d. The PUBLISHER secret is written into the box broadcaster .env; only the panel PUBLIC key is returned.',
+    description: 'Orchestrate the operator-guide §A install: clone → cp .env.example → build → admin-cli init (mints keys) → add-admin (panel + broadcaster, using the config credentials) → write PANEL_PUBKEY/PUBLISHER_KEY/ADMIN_ENABLED=1/CONTROL_ENABLED=1/INPUT into the box .env → up -d. The PUBLISHER secret is written into the box broadcaster .env; only the panel PUBLIC key is returned. Deliberately DEFAULT-BOX ONLY (no host param): this installs the full panel+broadcaster stack, a one-box affair — a repeater box is installed by hand per deploy/docker-compose.repeater.yml + the repeater KB, and broadcaster-only scale-out installs are an S20b follow-up.',
     inputSchema: { input: z.string().optional().describe('the env channel input (default "test")'), repoUrl: z.string().optional() }
   }, async ({ input, repoUrl }) => {
+    const { ssh, repoDir } = at(null)
     if (!ctx.config.panel || !ctx.config.broadcaster) {
       return h.fail('server_install needs both a "panel" and a "broadcaster" block in the config — their user/pass become the dashboard admin logins the panel_/broadcaster_ tools use.')
     }

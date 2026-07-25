@@ -130,6 +130,46 @@ phone + Android TV, and the Windows desktop player).
   sections **Q–V** over an in-process REAL reseller service (pointed at the
   test's real panel; the mint is asserted against the actual ledger) and a
   fake-TitleManager library control server — no DHT, no ffmpeg.
+- **MCP scale + DX (S49c)** — the P2/P3 tail; completes the S49
+  operator-coverage arc (101 → **102 tools** + 6 prompts). **Multi-host SSH**:
+  the config's `ssh` block optionally names extra boxes
+  (`hosts: {name: {host, user, keyPath?, port?, repoDir?}}` + `default`; the
+  single-host shape is unchanged) — every `server_*` tool takes `host:"<name>"`,
+  and `panel_add_publisher {host}` writes the minted site key into **that**
+  box's `broadcaster/.env` (secrets still never transit the model). New
+  **`repeater_status {host?}`**: the repeater deliberately has no admin API
+  (zero listening sockets stock), so status is SSH-shaped — compose state +
+  logs for the `deploy/docker-compose.repeater.yml` stack, plus the opt-in
+  loopback `/metrics` when `STATUS_PORT` is set on the box, and an honest
+  "not enabled" note when it is not. `--doctor` probes every named host.
+  **List ergonomics**: `panel_list_streams` grew client-side
+  `category`/`prefix`/`idsOnly`/`limit` filters (no-argument calls still return
+  the raw catalog), and every user-shaped result summarizes grant lists longer
+  than 12 ids to `{count, sample}` — `full:true` restores every id, and
+  `panel_revoke_grant` now reports `stillGranted` when a package re-sealed the
+  stream. **Schema gaps**: `broadcaster_add/update_channel` take `hlsTime`
+  (1-30) / `hlsListSize` (2-60); `panel_add_stream` takes `feedKey` + `key` for
+  pre-seeded feed flows — a **supplied** `key` is stored panel-side and
+  **redacted** from the result (an omitted one is generated and returned once,
+  as before); `panel_set_stream_meta` takes `feedKey`. **Prompts as runbooks**:
+  six MCP prompts (`new-site-install`, `onboard-a-reseller`,
+  `migrate-a-channel-source`, `monthly-maintenance`, `incident-triage` with an
+  optional symptom argument, `expose-dashboards`) — numbered guidance naming
+  the exact tools + their honesty caveats, sourced from the shipped docs; the
+  TLS story stays **docs-first** (Caddy per the KB; DNS is out-of-band).
+  **`server_update {dryRun:true}`** previews exactly what would deploy
+  (fetch + commit list + changed files) without building or restarting.
+  **npm-publish prep**: `@aliran/mcp` is publish-ready — `prepack` bundles the
+  docs corpus into `docs-bundle/` and the server falls back to it when no repo
+  checkout is around, so a published `npx @aliran/mcp` still serves the docs
+  resources (publishing itself is a manual release step). `diagnose_symptom`
+  learned the new lore (env changes need `up -d`, category-rename ×
+  `category:` members, restore's non-empty refusal). `test:mcp` grew sections
+  **W–AC**: a second fake box through the same ssh stub (multi-host routing +
+  per-host repoDir), all three repeater status-server states, filter/compaction
+  round-trips, hls bounds + the `key` redaction, a prompt drift guard (every
+  tool name a prompt mentions must exist), a dry-run zero-build/up log sweep,
+  and an `npm pack` probe that runs `--doctor` from the unpacked tarball.
 - **Channel packages ("bouquets")** — named channel bundles an admin grants as one
   unit ("Basic", "Sports"), replacing chip-by-chip per-stream grants that stop
   scaling past a few dozen channels. Because a grant is a **sealed key** (not an

@@ -35,6 +35,25 @@
 //   U  library (S49b/G9): titles add/get/list, the mid-ingest delete refusal,
 //      operational patch, reingest, logs, delete echoing the panel-record disposition
 //   V  diagnose_healthz sweeps all four configured services
+//   W  multi-host SSH (S49c/G10): a second fake box through the EXTENDED stub seam
+//      (--state/--log argv) — server_* {host}, per-host repoDir, unknown-host error,
+//      panel_add_publisher {host} writing the named box's broadcaster/.env (secret
+//      still never in the result), default-host behavior untouched
+//   X  repeater_status (S49c/G10): compose ps + logs over SSH; the opt-in status
+//      server honestly reported when absent, probed when STATUS_PORT is set
+//      (metrics on 9600, configured-but-dead on 9700)
+//   Y  list ergonomics (S49c/G11): panel_list_streams category/prefix/idsOnly/limit
+//      (no-arg call stays the raw array), user-summary compaction ({count, sample})
+//      with full:true restoring every id, small users untouched
+//   Z  schema gaps (S49c/G12): hlsTime/hlsListSize round-trip + bounds rejection
+//      (the mirrored bounds text-matched against channel.js), panel feedKey/key —
+//      a SUPPLIED key lands panel-side and is REDACTED from the result, a
+//      generated one still returns once
+//   AA MCP prompts (S49c/G13): list/get shapes, argument interpolation, and the
+//      drift guard — every tool name a prompt mentions must exist
+//   AB server_update dryRun (S49c/G16): fetch+log+diff only, no build/up in the log
+//   AC npm-publish prep (S49c/G14): bundle-docs, npm pack --dry-run file list, and
+//      the unpacked-tarball doctor run resolving docs from docs-bundle/
 // Exits 0 on PASS.
 
 import assert from 'assert'
@@ -97,6 +116,17 @@ function makeFakeManager () {
     if (fields.input != null) out.input = normalizeInput(fields.input, { config: NORM_CFG, existing: existing ? existing.input : null })
     if (fields.transcode !== undefined) out.transcode = normalizeTranscode(fields.transcode)
     if (fields.title != null) out.title = String(fields.title)
+    // Mirrors channel.js normalizeMeta's hls block (incl. the quirk that patching
+    // one field re-derives the OTHER from the config default, not the stored
+    // value). Section Z text-matches the real source so this cannot drift silently.
+    if (fields.hlsTime != null || fields.hlsListSize != null) {
+      const time = parseInt(fields.hlsTime ?? 2, 10)
+      const listSize = parseInt(fields.hlsListSize ?? 8, 10)
+      const bad = (msg) => { const e = new Error(msg); e.httpStatus = 400; throw e }
+      if (!Number.isInteger(time) || time < 1 || time > 30) bad('hlsTime must be 1-30')
+      if (!Number.isInteger(listSize) || listSize < 2 || listSize > 60) bad('hlsListSize must be 2-60')
+      out.hls = { time, listSize }
+    }
     return out
   }
   return {
@@ -218,19 +248,35 @@ function makeFakeLibrary () {
 const FAKE_SSH = path.join(dirs.mcp, 'fake-ssh.mjs')
 const FAKE_STATE = path.join(dirs.mcp, 'fakebox-env.json')
 const FAKE_CMDLOG = path.join(dirs.mcp, 'fake-ssh-commands.log')
+// The second fake box (multi-host, section W): SAME stub script, its own state +
+// command log — selected per host through the sshBin argv (--state/--log prefix
+// args), so the seam is extended, not forked.
+const FAKE_STATE2 = path.join(dirs.mcp, 'fakebox2-env.json')
+const FAKE_CMDLOG2 = path.join(dirs.mcp, 'fake-ssh2-commands.log')
 fs.writeFileSync(FAKE_SSH, String.raw`
 import fs from 'fs'
 import { spawnSync } from 'child_process'
 const REPO = ${JSON.stringify(REPO)}
-const STATE = ${JSON.stringify(FAKE_STATE)}
-const LOGF = ${JSON.stringify(FAKE_CMDLOG)}
+let STATE = ${JSON.stringify(FAKE_STATE)}
+let LOGF = ${JSON.stringify(FAKE_CMDLOG)}
+// --state/--log prefix args (from the config's sshBin array) point this instance
+// at a different fake box; everything after them is the normal ssh argv.
+let av = process.argv.slice(2)
+while (av[0] === '--state' || av[0] === '--log') {
+  if (av[0] === '--state') STATE = av[1]
+  else LOGF = av[1]
+  av = av.slice(2)
+}
 const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : {}
 const save = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
 const out = (s) => { process.stdout.write(s + '\n'); process.exit(0) }
 
-let remote = process.argv[process.argv.length - 1]
+let remote = av[av.length - 1]
 fs.appendFileSync(LOGF, remote.split('\n').join(' <NL> ') + '\n')
-remote = remote.replace(/^cd '[^']*' && /, '')
+// The repo dir the MCP cd'd into — repoDir differs per host (repoDirFor), so the
+// state keys derive from it rather than a hardcoded /opt/aliran.
+let cwd = '/opt/aliran'
+remote = remote.replace(/^cd '([^']*)' && /, (mm, d) => { cwd = d; return '' })
 let m
 
 // ---- canned probes (S46) ----
@@ -275,7 +321,7 @@ if (remote.indexOf("printf '%s") !== -1 && remote.indexOf(" >> '") !== -1) {
 // ---- in-image check-config: run the REAL service config.js locally ----
 if ((m = remote.match(/docker compose(?: --profile '[^']*')* run --rm '(panel|broadcaster|library|reseller)' node src\/config\.js --check/))) {
   const vars = {}
-  for (const line of (state['/opt/aliran/' + m[1] + '/.env'] || '').split('\n')) {
+  for (const line of (state[cwd + '/' + m[1] + '/.env'] || '').split('\n')) {
     const i = line.indexOf('=')
     if (i > 0) vars[line.slice(0, i)] = line.slice(i + 1)
   }
@@ -289,6 +335,33 @@ if ((m = remote.match(/docker compose(?: --profile '[^']*')* up -d '(panel|broad
 }
 if (/docker compose(?: --profile '[^']*')* restart/.test(remote)) {
   out('Container aliran-panel-1  Started\nContainer aliran-broadcaster-1  Started')
+}
+// ---- repeater (section X) — BEFORE the generic ps branch: its compose calls
+// carry -f deploy/docker-compose.repeater.yml and must not get the panel answer.
+if (/docker compose -f deploy\/docker-compose\.repeater\.yml ps/.test(remote)) {
+  out('NAME                   STATUS\nrepeater-repeater-1    Up 3 hours')
+}
+if (/docker compose -f deploy\/docker-compose\.repeater\.yml logs/.test(remote)) {
+  out('repeater-1  | [repeater] mirroring 12 channels (category:news)\nrepeater-1  | [net] swarm sockets tuned: recv 4 MiB, send 4 MiB')
+}
+if (remote.indexOf("grep '^STATUS_PORT='") === 0) {
+  const pm = remote.match(/grep '\^STATUS_PORT=' ([^ ]+)/)
+  const envText = state[cwd + '/' + String(pm[1]).replace(/^\.\//, '')] || ''
+  const line = envText.split('\n').filter((l) => l.indexOf('STATUS_PORT=') === 0).pop()
+  if (line) out(line)
+  process.exit(1)
+}
+if ((m = remote.match(/^curl -sf --max-time \d+ http:\/\/127\.0\.0\.1:(\d+)\/metrics$/))) {
+  if (m[1] === '9600') out('# repeater status\nrepeater_held_blocks{stream_id="news-24"} 1234\nrepeater_peers{stream_id="news-24"} 7\nrepeater_served_bytes_total{stream_id="news-24"} 987654321')
+  process.exit(22)
+}
+// ---- server_update dryRun (section AB) ----
+if (/^git fetch --quiet$/.test(remote)) out('')
+if (/^git log --oneline HEAD\.\.'@\{u\}'$/.test(remote)) {
+  out('abc1234 feat(panel): next thing\ndef5678 fix(broadcaster): other thing')
+}
+if (/^git diff --stat HEAD '@\{u\}'$/.test(remote)) {
+  out(' panel/src/ops.js       | 12 ++++--\n broadcaster/src/hls.js |  4 +-\n 2 files changed, 12 insertions(+), 4 deletions(-)')
 }
 if (/docker compose .*\bps\b/.test(remote)) {
   out('NAME                  STATUS\naliran-panel-1        Up 2 hours\naliran-broadcaster-1  Up 2 hours\n== commit ==\nb136457 docs(packages)')
@@ -400,7 +473,17 @@ try {
     broadcaster: { url: `http://127.0.0.1:${bcPort}`, user: BC_ADMIN.user, pass: BC_ADMIN.pass },
     reseller: { url: `http://127.0.0.1:${rslPort}`, user: RSL_ROOT.user, pass: RSL_ROOT.pass },
     library: { url: `http://127.0.0.1:${libPort}`, user: LIB_ADMIN.user, pass: LIB_ADMIN.pass },
-    ssh: { host: 'box.example', user: 'root', keyPath: FAKE_SSH, sshBin: [process.execPath, FAKE_SSH] },
+    ssh: {
+      host: 'box.example',
+      user: 'root',
+      keyPath: FAKE_SSH,
+      sshBin: [process.execPath, FAKE_SSH],
+      // The second fake box (section W): same stub, own state/log via argv — the
+      // extended seam. repoDir differs deliberately so repoDirFor is exercised.
+      hosts: {
+        edge: { host: 'edge.example', user: 'root', repoDir: '/opt/edge', sshBin: [process.execPath, FAKE_SSH, '--state', FAKE_STATE2, '--log', FAKE_CMDLOG2] }
+      }
+    },
     install: { repoDir: '/opt/aliran', composeProfiles: [] }
   }, null, 2), { mode: 0o600 })
 
@@ -426,10 +509,11 @@ try {
     'library_status', 'library_list_titles', 'library_get_title', 'library_add_title', 'library_set_title',
     'library_reingest_title', 'library_title_logs', 'library_delete_title',
     'server_preflight', 'server_install', 'server_update', 'server_set_env', 'server_restart', 'server_list_backups', 'server_restore',
+    'repeater_status',
     'diagnose_healthz', 'diagnose_symptom', 'docs_search']) {
     assert.ok(toolNames.has(must), 'tools/list missing ' + must)
   }
-  assert.ok(toolsList.tools.length >= 95, 'expected a broad tool catalog (S49b: 99), got ' + toolsList.tools.length)
+  assert.ok(toolsList.tools.length >= 100, 'expected a broad tool catalog (S49c: 102), got ' + toolsList.tools.length)
   const resList = await client.listResources()
   const resUris = new Set(resList.resources.map((r) => r.uri))
   assert.ok(resUris.has('mcp://aliran/guide'), 'guide resource missing')
@@ -470,7 +554,7 @@ try {
     assert.strictEqual(byName[name].annotations && byName[name].annotations.destructiveHint, true, name + ' must carry destructiveHint')
   }
   for (const name of ['panel_status', 'panel_list_users', 'panel_list_streams', 'broadcaster_list_channels', 'docs_search', 'diagnose_healthz', 'server_preflight',
-    'panel_analytics', 'broadcaster_analytics', 'panel_list_admins', 'broadcaster_list_admins', 'server_list_backups',
+    'panel_analytics', 'broadcaster_analytics', 'panel_list_admins', 'broadcaster_list_admins', 'server_list_backups', 'repeater_status',
     'panel_source_channels', 'reseller_status', 'reseller_system', 'reseller_list_principals', 'reseller_get_principal', 'reseller_ledger',
     'reseller_list_accounts', 'reseller_get_account', 'reseller_trials', 'reseller_ops_status',
     'library_status', 'library_list_titles', 'library_get_title', 'library_title_logs']) {
@@ -537,6 +621,7 @@ try {
     'Aliran MCP doctor',
     'config readable + valid JSON',
     'ssh: connected to root@box.example',
+    'ssh host "edge": connected to root@edge.example',
     'panel: /healthz answered',
     'panel: credentials accepted',
     'broadcaster: /healthz answered',
@@ -546,7 +631,8 @@ try {
     'library: /healthz answered',
     'library: credentials accepted',
     'documents indexed',
-    'Enabled tool groups: panel_*  broadcaster_*  reseller_*  library_*  server_*  diagnose_*  docs_search',
+    'Enabled tool groups: panel_*  broadcaster_*  reseller_*  library_*  server_*  repeater_*  diagnose_*  docs_search',
+    'guided runbooks (new-site-install, onboard-a-reseller, migrate-a-channel-source, monthly-maintenance, incident-triage, expose-dashboards)',
     'claude_desktop_config.json',
     '"mcpServers"',
     'client-agnostic',
@@ -1018,7 +1104,268 @@ try {
   assert.ok(sweep.library.reachable === true && sweep.library.health.up === true, 'sweep: library up with vitals')
   log('V: diagnose_healthz sweeps panel + broadcaster + reseller + library ✓')
 
-  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep)')
+  // ===== W: multi-host SSH (S49c / G10) =====
+  // The second fake box rides the SAME stub script with its own state + command
+  // log, selected by the sshBin argv (--state/--log) — the seam extended, not
+  // forked. `host:"edge"` must route commands (and repoDir) to that box while the
+  // default-host behavior stays byte-identical.
+  const readCmdLog2 = () => fs.existsSync(FAKE_CMDLOG2) ? fs.readFileSync(FAKE_CMDLOG2, 'utf8') : ''
+  const readState2 = () => fs.existsSync(FAKE_STATE2) ? JSON.parse(fs.readFileSync(FAKE_STATE2, 'utf8')) : {}
+  const log1Before = readCmdLog().split('\n').length
+  const edgeStatus = await callJson(client, 'server_status', { host: 'edge' })
+  assert.strictEqual(edgeStatus.host, 'edge.example', 'a named host reports ITS address, not the default box')
+  assert.ok(readCmdLog2().includes("cd '/opt/edge' &&"), 'edge commands run in the edge box\'s own repoDir (per-host repoDir override)')
+  assert.strictEqual(readCmdLog().split('\n').length, log1Before, 'the edge call left the default box\'s command log untouched')
+  const unknownHost = await callRaw(client, 'server_status', { host: 'nope' })
+  assert.ok(unknownHost.isError, 'an unknown host name is a loud error')
+  assert.match(unknownHost.content[0].text, /unknown ssh host "nope"/, 'the error names the bad host')
+  assert.match(unknownHost.content[0].text, /edge/, 'the error lists the configured names')
+  // set_env against the named box: full snapshot→check→apply flow on ITS state.
+  const edgeSet = await callJson(client, 'server_set_env', { service: 'panel', host: 'edge', pairs: { MAX_DEVICES_DEFAULT: 9 } })
+  assert.strictEqual(edgeSet.host, 'edge.example', 'set_env reports the edge box')
+  assert.ok(readState2()['/opt/edge/panel/.env'].includes('MAX_DEVICES_DEFAULT=9'), 'the edge box .env got the knob (its own state file)')
+  assert.ok(!readState()['/opt/aliran/panel/.env'].includes('MAX_DEVICES_DEFAULT=9'), 'the DEFAULT box .env did not change')
+  assert.ok(readCmdLog2().includes("run --rm 'panel' node src/config.js --check"), 'the in-image check ran on the edge box')
+  // The G10 headline: enrolling a publisher for a NAMED box writes THAT box's
+  // broadcaster/.env — and the secret still never reaches the model.
+  const edgePub = await callJson(client, 'panel_add_publisher', { name: 'edge-pub', scopes: ['edge-*'], host: 'edge' })
+  const edgeBcEnv = readState2()['/opt/edge/broadcaster/.env'] || ''
+  assert.ok(edgeBcEnv.includes('PUBLISHER_NAME=edge-pub'), 'the edge box broadcaster/.env names the publisher')
+  const edgeKeyM = edgeBcEnv.match(/PUBLISHER_KEY=([0-9a-f]{128})/)
+  assert.ok(edgeKeyM, 'the publisher SECRET landed in the edge box .env')
+  assert.ok(!JSON.stringify(edgePub).includes(edgeKeyM[1]), 'the publisher SECRET is absent from the tool result')
+  assert.match(edgePub.secretDisposition, /\/opt\/edge\/broadcaster\/\.env on edge\.example/, 'the disposition names the edge box + path')
+  assert.ok(!(readState()['/opt/aliran/broadcaster/.env'] || '').includes('edge-pub'), 'the default box .env was not touched by the edge enrollment')
+  const badHostPub = await callRaw(client, 'panel_add_publisher', { name: 'stray-pub', host: 'nope' })
+  assert.ok(badHostPub.isError && /unknown ssh host/.test(badHostPub.content[0].text), 'an unknown host fails the enrollment BEFORE a secret is minted')
+  assert.ok(!(await callJson(client, 'panel_list_publishers')).some((p) => p.name === 'stray-pub'), 'nothing was enrolled on the failed-host call')
+  log('W: multi-host — edge box commands/env/repoDir isolated, unknown host loud, add_publisher {host} lands the key on the RIGHT box (secret still server-side) ✓')
+
+  // ===== X: repeater_status (S49c / G10) =====
+  // The repeater has NO admin API by design — status is SSH-shaped, and the
+  // opt-in status server is reported honestly in all three states.
+  const writeStateFile = (file, mut) => { const s = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {}; mut(s); fs.writeFileSync(file, JSON.stringify(s, null, 1)) }
+  const repOff = await callJson(client, 'repeater_status')
+  assert.strictEqual(repOff.host, 'box.example', 'default host answers')
+  assert.match(repOff.compose, /repeater-repeater-1/, 'compose ps rode the repeater compose file')
+  assert.match(repOff.statusServer, /not enabled/, 'no STATUS_PORT -> the honest disabled note, not an error')
+  assert.match(repOff.statusServer, /ZERO listening sockets/, 'the note explains the zero-sockets default')
+  assert.ok(!repOff.metrics, 'no metrics block when the status server is off')
+  assert.match(repOff.logs, /mirroring 12 channels/, 'the logs tail came back')
+  // Configured but dead: STATUS_PORT set, nothing answering (the stub 22s non-9600).
+  writeStateFile(FAKE_STATE, (s) => { s['/opt/aliran/repeater/.env'] = 'PANEL_PUBKEY=' + 'a'.repeat(64) + '\nSTATUS_PORT=9700\n' })
+  const repDead = await callJson(client, 'repeater_status')
+  assert.match(repDead.statusServer, /configured \(STATUS_PORT=9700\) but \/metrics did not answer/, 'a dead status server is reported as configured-but-unanswering')
+  // Enabled and answering on the edge box (9600 in ITS state file).
+  writeStateFile(FAKE_STATE2, (s) => { s['/opt/edge/repeater/.env'] = 'PANEL_PUBKEY=' + 'a'.repeat(64) + '\nSTATUS_PORT=9600\n' })
+  const repUp = await callJson(client, 'repeater_status', { host: 'edge', lines: 40 })
+  assert.strictEqual(repUp.host, 'edge.example', 'repeater_status routes to the named box')
+  assert.match(repUp.statusServer, /enabled \(STATUS_PORT=9600\)/, 'an enabled status server is detected from the box .env')
+  assert.match(repUp.metrics, /repeater_served_bytes_total\{stream_id="news-24"\}/, 'the /metrics text is surfaced (S48 served-bytes counter)')
+  assert.ok(byName.repeater_status.description.includes('NO admin API'), 'the tool description states the no-admin-API design')
+  assert.ok(byName.repeater_status.description.includes('docker-compose.repeater.yml'), 'the tool description points at the repeater compose file for installs')
+  log('X: repeater_status — honest disabled note, configured-but-dead, enabled metrics via the box loopback, per-host routing ✓')
+
+  // ===== Y: list-result ergonomics (S49c / G11) =====
+  // 350-channel catalogs flood the client context. Filters are client-side only
+  // (the panel API is untouched); the no-arg call must stay the raw array.
+  for (let i = 1; i <= 14; i++) {
+    await callJson(client, 'panel_add_stream', { id: `bulk-${String(i).padStart(2, '0')}`, category: 'BulkCat' })
+  }
+  await callJson(client, 'panel_add_stream', { id: 'kids-1', category: 'Kids/Cartoons' })
+  const rawList = await callJson(client, 'panel_list_streams')
+  assert.ok(Array.isArray(rawList), 'no-arg panel_list_streams still returns the raw catalog array (back-compat)')
+  const catList = await callJson(client, 'panel_list_streams', { category: 'BulkCat' })
+  assert.strictEqual(catList.matched, 14, 'category filter matched the 14 bulk channels')
+  assert.strictEqual(catList.total, rawList.length, 'total reports the full catalog size so nothing hides')
+  assert.ok(Array.isArray(catList.streams) && catList.streams.length === 14, 'filtered records returned')
+  const idList = await callJson(client, 'panel_list_streams', { category: 'BulkCat', idsOnly: true, limit: 5 })
+  assert.deepStrictEqual(idList.ids.length, 5, 'limit caps the returned rows')
+  assert.strictEqual(idList.matched, 14, 'matched still reports the pre-limit count (nothing silently dropped)')
+  assert.ok(idList.ids.every((id) => typeof id === 'string'), 'idsOnly returns bare ids')
+  const prefList = await callJson(client, 'panel_list_streams', { prefix: 'bulk-0', idsOnly: true })
+  assert.strictEqual(prefList.matched, 9, 'prefix filter (bulk-01..09)')
+  const parentCat = await callJson(client, 'panel_list_streams', { category: 'Kids', idsOnly: true })
+  assert.deepStrictEqual(parentCat.ids, ['kids-1'], "a parent category matches its 'Parent/Child' children")
+  // The user-summary compaction: ONE mechanism on every user-shaped result.
+  await callJson(client, 'panel_add_package', { name: 'bulk-pack', members: 'bulk-*' })
+  await callJson(client, 'panel_create_user', { username: 'bulkviewer' })
+  const bigAssign = await callJson(client, 'panel_set_user_packages', { username: 'bulkviewer', packages: ['bulk-pack'] })
+  assert.strictEqual(bigAssign.grants.count, 14, 'a >12-id grant list compacts to {count, sample}')
+  assert.strictEqual(bigAssign.grants.sample.length, 8, 'the sample is a short head')
+  assert.match(bigAssign.note, /full:true/, 'the result says how to get the full lists')
+  const bigFull = await callJson(client, 'panel_get_user', { username: 'bulkviewer', full: true })
+  assert.ok(Array.isArray(bigFull.grants) && bigFull.grants.length === 14, 'full:true restores the complete id list')
+  const bigDefault = await callJson(client, 'panel_get_user', { username: 'bulkviewer' })
+  assert.strictEqual(bigDefault.grants.count, 14, 'panel_get_user compacts by default')
+  const granted15 = await callJson(client, 'panel_grant', { username: 'bulkviewer', streamId: 'kids-1' })
+  assert.strictEqual(granted15.grants.count, 15, 'panel_grant returns the compact summary too')
+  const inList = (await callJson(client, 'panel_list_users', { prefix: 'bulkviewer' })).users[0]
+  assert.strictEqual(inList.grants.count, 15, 'panel_list_users items compact the same way')
+  const inListFull = (await callJson(client, 'panel_list_users', { prefix: 'bulkviewer', full: true })).users[0]
+  assert.ok(Array.isArray(inListFull.grants), 'panel_list_users full:true restores arrays')
+  // Small users never see the summary shape — a 3-grant record stays raw.
+  const smallUser = await callJson(client, 'panel_get_user', { username: 'mcpviewer' })
+  assert.ok(Array.isArray(smallUser.grants), 'a small grant list stays a plain array (small deployments unchanged)')
+  assert.ok(!smallUser.note, 'no summary note on an uncompacted result')
+  for (const name of ['panel_get_user', 'panel_set_user_packages', 'panel_grant', 'panel_create_user', 'panel_set_max_devices']) {
+    assert.ok(/full:true/.test(byName[name].description) || /full/.test(JSON.stringify(byName[name].inputSchema.properties.full || {})), name + ' documents the summary mechanism')
+  }
+  log('Y: list ergonomics — category/prefix/idsOnly/limit client-side, raw no-arg call intact, {count,sample} compaction with full:true recovery, small users untouched ✓')
+
+  // ===== Z: schema gaps (S49c / G12) =====
+  // hlsTime/hlsListSize: bounds mirror channel.js normalizeMeta. The mirrored
+  // bounds are text-matched against the real source so they cannot drift silently.
+  const channelJs = fs.readFileSync(path.join(REPO, 'broadcaster', 'src', 'channel.js'), 'utf8')
+  assert.ok(channelJs.includes("bad('hlsTime must be 1-30')"), 'channel.js still enforces hlsTime 1-30 (update the MCP schema if this moved)')
+  assert.ok(channelJs.includes("bad('hlsListSize must be 2-60')"), 'channel.js still enforces hlsListSize 2-60 (update the MCP schema if this moved)')
+  const hlsAdd = await callJson(client, 'broadcaster_add_channel', { id: 'mcp-hls', input: 'test', hlsTime: 4, hlsListSize: 12 })
+  assert.deepStrictEqual(hlsAdd.hls, { time: 4, listSize: 12 }, 'hlsTime/hlsListSize round-trip on add')
+  const hlsPatch = await callJson(client, 'broadcaster_update_channel', { id: 'mcp-hls', hlsListSize: 20 })
+  assert.deepStrictEqual(hlsPatch.hls, { time: 2, listSize: 20 }, 'patching one hls field re-derives the pair from the env default (the real normalizeMeta semantics)')
+  for (const bad of [{ hlsTime: 31 }, { hlsTime: 0 }, { hlsListSize: 1 }, { hlsListSize: 61 }]) {
+    let rejected = false
+    try { const r = await callRaw(client, 'broadcaster_update_channel', { id: 'mcp-hls', ...bad }); rejected = !!r.isError } catch { rejected = true }
+    assert.ok(rejected, `out-of-bounds ${JSON.stringify(bad)} must be rejected`)
+  }
+  // feedKey/key on the panel: the pre-seeded feed flow. `key` is a SECRET INPUT —
+  // it flows TO the panel and never back.
+  const SEED_KEY = 'c'.repeat(64)
+  const SEED_FEED = 'd'.repeat(64)
+  const preseed = await callJson(client, 'panel_add_stream', { id: 'preseed', feedKey: SEED_FEED, key: SEED_KEY })
+  assert.strictEqual(preseed.catalog.feedKey, SEED_FEED, 'the supplied feedKey landed on the catalog record')
+  assert.strictEqual(preseed.catalog.status, 'live', 'a feedKey-bearing stream starts live (the panel semantics)')
+  assert.strictEqual(preseed.encryptionKey, undefined, 'a SUPPLIED key is not echoed back')
+  assert.match(preseed.encryptionKeyNote, /redacted/, 'the result says the key was redacted and why')
+  assert.ok(!JSON.stringify(preseed).includes(SEED_KEY), 'the supplied secret appears nowhere in the result')
+  const secretsFile = JSON.parse(fs.readFileSync(path.join(dirs.panel, 'secrets', 'streams.json'), 'utf8'))
+  assert.strictEqual(secretsFile.preseed, SEED_KEY, 'the supplied key IS stored panel-side (it flowed TO the panel)')
+  const genkey = await callJson(client, 'panel_add_stream', { id: 'genkey' })
+  assert.match(genkey.encryptionKey, /^[0-9a-f]{64}$/, 'an omitted key still mints + returns one ONCE (the generated-password pattern — there is no read-back API)')
+  const repointed = await callJson(client, 'panel_set_stream_meta', { id: 'preseed', feedKey: 'e'.repeat(64) })
+  assert.strictEqual(repointed.catalog.feedKey, 'e'.repeat(64), 'set_stream_meta re-points the feedKey')
+  assert.strictEqual(repointed.catalog.blobsKey, null, 'a feedKey edit resets the paired blobsKey (re-filled by the next real registration)')
+  let badHexRejected = false
+  try { const r = await callRaw(client, 'panel_add_stream', { id: 'badhex', key: 'nothex' }); badHexRejected = !!r.isError } catch { badHexRejected = true }
+  assert.ok(badHexRejected, 'a non-64-hex key is rejected by the schema before it ships')
+  const conflict = await callRaw(client, 'panel_add_stream', { id: 'conflicted', url: 'https://cdn.example/x.m3u8', feedKey: SEED_FEED })
+  assert.ok(conflict.isError && /redirect channel cannot have a feedKey/.test(conflict.content[0].text), 'the redirect+feedKey conflict surfaces the panel\'s own clean error')
+  log('Z: schema gaps — hls bounds round-trip + drift text-match, feedKey/key pre-seed flow with the supplied secret REDACTED, generated key returned once ✓')
+
+  // ===== AA: MCP prompts — runbooks (S49c / G13) =====
+  const promptsList = await client.listPrompts()
+  const promptNames = new Set(promptsList.prompts.map((p) => p.name))
+  for (const must of ['new-site-install', 'onboard-a-reseller', 'migrate-a-channel-source', 'monthly-maintenance', 'incident-triage', 'expose-dashboards']) {
+    assert.ok(promptNames.has(must), 'prompts/list missing ' + must)
+  }
+  assert.ok(promptsList.prompts.every((p) => p.description && p.description.length > 20), 'every prompt carries a description')
+  // The drift guard: every tool name a prompt mentions must exist. A renamed tool
+  // may not silently strand a runbook.
+  const TOOL_TOKEN = /\b(?:panel|broadcaster|reseller|library|server|repeater|diagnose|docs)_[a-z0-9_]+/g
+  for (const p of promptsList.prompts) {
+    const got = await client.getPrompt({ name: p.name, arguments: {} })
+    const body = got.messages.map((m) => m.content.text).join('\n')
+    assert.ok(got.messages.length >= 1 && body.length > 300, `prompt ${p.name} has substantive guidance`)
+    for (const tok of body.match(TOOL_TOKEN) || []) {
+      assert.ok(toolNames.has(tok), `prompt ${p.name} names "${tok}" which is NOT a registered tool (the drift guard)`)
+    }
+  }
+  const triage = await client.getPrompt({ name: 'incident-triage', arguments: { symptom: 'disk keeps filling' } })
+  assert.ok(triage.messages[0].content.text.includes('disk keeps filling'), 'incident-triage interpolates the symptom argument')
+  const expose = await client.getPrompt({ name: 'expose-dashboards', arguments: {} })
+  assert.ok(expose.messages[0].content.text.includes('kb/public-dashboards.md'), 'expose-dashboards routes through the shipped KB (the G15 docs-first decision)')
+  const migrate = await client.getPrompt({ name: 'migrate-a-channel-source', arguments: {} })
+  assert.ok(/broadcaster_stop_channel.*broadcaster_start_channel/s.test(migrate.messages[0].content.text), 'the migrate runbook carries the stop→start honesty (a running channel does not apply a source change in place)')
+  log(`AA: prompts — ${promptsList.prompts.length} runbooks, shapes + argument interpolation + the tool-name drift guard ✓`)
+
+  // ===== AB: server_update dryRun (S49c / G16) =====
+  const buildCountBefore = readCmdLog().split('compose build').length
+  const upCountBefore2 = readCmdLog().split('up -d').length
+  const dry = await callJson(client, 'server_update', { dryRun: true })
+  assert.strictEqual(dry.dryRun, true, 'the result is marked as a dry run')
+  assert.match(dry.wouldDeploy, /abc1234 feat\(panel\): next thing/, 'dryRun lists the commits that WOULD deploy')
+  assert.match(dry.changedFiles, /panel\/src\/ops\.js/, 'dryRun summarizes the changed files')
+  assert.match(dry.note, /nothing was pulled, built, or restarted/, 'the note states what did NOT happen')
+  assert.ok(readCmdLog().includes('git fetch --quiet'), 'dryRun fetched')
+  assert.ok(readCmdLog().includes("git log --oneline HEAD..'@{u}'"), 'dryRun compared against the branch upstream (what pull --ff-only would merge)')
+  assert.strictEqual(readCmdLog().split('compose build').length, buildCountBefore, 'dryRun never built')
+  assert.strictEqual(readCmdLog().split('up -d').length, upCountBefore2, 'dryRun never recreated anything')
+  log('AB: server_update dryRun — commits + changed files reported, zero build/up commands ✓')
+
+  // ===== AC: npm-publish prep (S49c / G14) =====
+  // A published @aliran/mcp must still serve the docs resources: prepack bundles
+  // docs/ into docs-bundle/, and config.js falls back to it exactly when the live
+  // repo docs/ sibling is absent (an unpacked tarball). Deterministic: local pack,
+  // no network; the unpacked entry resolves node_modules via a link to the repo's.
+  const mcpDir = path.join(REPO, 'mcp')
+  const packDest = fs.mkdtempSync(path.join(os.tmpdir(), 'e2emcp-pack-'))
+  cleanups.push(() => { try { fs.rmSync(packDest, { recursive: true, force: true }) } catch {} })
+  const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  // Windows: .cmd shims need a shell, and DEP0190 wants the command as ONE string
+  // there (args quoted by hand — they are all our own paths/flags).
+  const runCmd = (cmd, args, { cwd, timeoutMs = 120000 } = {}) => new Promise((resolve) => {
+    const child = process.platform === 'win32'
+      ? spawn([cmd, ...args.map((a) => /\s/.test(a) ? '"' + a + '"' : a)].join(' '), [], { cwd: cwd || REPO, stdio: ['ignore', 'pipe', 'pipe'], shell: true })
+      : spawn(cmd, args, { cwd: cwd || REPO, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, timeoutMs)
+    child.stdout.on('data', (c) => { stdout += c })
+    child.stderr.on('data', (c) => { stderr += c })
+    child.on('close', (code) => { clearTimeout(timer); resolve({ status: code, stdout, stderr }) })
+  })
+  // 1. The bundler itself (also what prepack runs).
+  const bundle = await runCli([path.join(mcpDir, 'scripts', 'bundle-docs.mjs')])
+  assert.strictEqual(bundle.status, 0, 'bundle-docs exits 0: ' + bundle.stderr)
+  assert.ok(fs.existsSync(path.join(mcpDir, 'docs-bundle', 'operator-guide.md')), 'the bundle holds the docs corpus')
+  assert.ok(fs.existsSync(path.join(mcpDir, 'docs-bundle', 'kb', 'backup-and-rotation.md')), 'the bundle keeps the kb/ subtree')
+  // 2. npm pack --dry-run: the published file list.
+  const dryPack = await runCmd(npmBin, ['pack', '--dry-run', '--json', '--pack-destination', packDest], { cwd: mcpDir })
+  assert.strictEqual(dryPack.status, 0, 'npm pack --dry-run exits 0: ' + dryPack.stderr.slice(-500))
+  const jsonText = dryPack.stdout.slice(dryPack.stdout.indexOf('['), dryPack.stdout.lastIndexOf(']') + 1)
+  const packMeta = JSON.parse(jsonText)[0]
+  const packFiles = new Set(packMeta.files.map((f) => f.path))
+  for (const need of ['src/index.js', 'src/prompts.js', 'src/tools/server.js', 'docs-bundle/operator-guide.md', 'docs-bundle/kb/backup-and-rotation.md', 'docs-bundle/mcp.md', 'config.example.json', 'README.md', 'package.json']) {
+    assert.ok(packFiles.has(need), `the tarball must ship ${need}`)
+  }
+  assert.ok(!packFiles.has('config.json'), 'a real config (credentials) can never ship')
+  assert.ok(![...packFiles].some((f) => f.startsWith('scripts/')), 'the build-time bundler script stays out of the tarball')
+  assert.strictEqual(packMeta.name, '@aliran/mcp', 'package name')
+  // 3. Real pack → unpack → run the doctor FROM the tarball: docs must resolve
+  // from docs-bundle/ (the repo checkout chain misses on purpose out there).
+  const realPack = await runCmd(npmBin, ['pack', '--pack-destination', packDest], { cwd: mcpDir })
+  assert.strictEqual(realPack.status, 0, 'npm pack exits 0: ' + realPack.stderr.slice(-500))
+  const tarName = realPack.stdout.trim().split('\n').pop().trim()
+  assert.ok(tarName.endsWith('.tgz'), 'npm pack printed the tarball name, got: ' + tarName)
+  // Relative paths on purpose: a GNU tar (git-bash) on PATH reads a Windows
+  // drive colon as a remote-host separator; cwd + bare names sidestep it.
+  const untar = await runCmd('tar', ['-xzf', tarName, '-C', '.'], { cwd: packDest })
+  assert.strictEqual(untar.status, 0, 'tar extract exits 0: ' + untar.stderr)
+  const unpacked = path.join(packDest, 'package')
+  // The tarball ships no node_modules (deps install on npm i); link the repo's so
+  // the entry can import the MCP SDK — ESM ignores NODE_PATH, so a link it is.
+  // Walk up from REPO exactly like node's resolver does: a git worktree has no
+  // node_modules of its own (the main checkout's, an ancestor, serves it).
+  let nmRoot = null
+  for (let d = REPO; ; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, 'node_modules', '@modelcontextprotocol', 'sdk'))) { nmRoot = path.join(d, 'node_modules'); break }
+    if (path.dirname(d) === d) break
+  }
+  assert.ok(nmRoot, 'found a node_modules holding the MCP SDK')
+  const nmLink = path.join(unpacked, 'node_modules')
+  fs.symlinkSync(nmRoot, nmLink, 'junction')
+  cleanups.push(() => { try { process.platform === 'win32' ? fs.rmdirSync(nmLink) : fs.unlinkSync(nmLink) } catch {} })
+  const packedCfg = path.join(packDest, 'packed-config.json')
+  fs.writeFileSync(packedCfg, JSON.stringify({ panel: { url: `http://127.0.0.1:${panelPort}`, user: PANEL_ADMIN.user, pass: PANEL_ADMIN.pass } }), { mode: 0o600 })
+  const packedDoctor = await runCli([path.join(unpacked, 'src', 'index.js'), '--doctor', '--config', packedCfg])
+  assert.strictEqual(packedDoctor.status, 0, 'the unpacked-tarball doctor exits 0:\n' + packedDoctor.stdout + packedDoctor.stderr)
+  const docsLine = packedDoctor.stdout.split('\n').find((l) => l.includes('documents indexed'))
+  assert.ok(docsLine, 'the unpacked doctor indexed docs (resources non-empty out of a tarball)')
+  assert.ok(/docs-bundle/.test(docsLine), 'the docs resolved from the BUNDLED copy: ' + docsLine)
+  assert.ok(/documents indexed at/.test(docsLine) && parseInt(docsLine.match(/(\d+) documents/)[1], 10) >= 20, 'a real corpus, not a stray file: ' + docsLine)
+  log('AC: npm-publish prep — bundle built, tarball file list correct (no secrets, no build scripts), unpacked entry serves docs from docs-bundle ✓')
+
+  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

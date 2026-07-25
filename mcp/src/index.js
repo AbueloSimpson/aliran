@@ -27,6 +27,7 @@ import { registerResellerTools } from './tools/reseller.js'
 import { registerLibraryTools } from './tools/library.js'
 import { registerServerTools, upsertEnv } from './tools/server.js'
 import { registerDiagnoseTools } from './tools/diagnose.js'
+import { registerPrompts } from './prompts.js'
 
 const VERSION = '0.0.1'
 const logerr = (m) => process.stderr.write(`[aliran-mcp] ${m}\n`)
@@ -85,6 +86,29 @@ async function main () {
   const tunnels = []
   const ssh = config.ssh ? makeSsh(config.ssh) : null
 
+  // Multi-host (S49c): `host` parameters on server_* / repeater_status /
+  // panel_add_publisher name entries in config.ssh.hosts; omitted = the default box
+  // (byte-identical to the single-host behavior). Executors are built lazily and
+  // cached — a named repeater box costs nothing until a tool targets it.
+  const sshByName = new Map()
+  function sshFor (name) {
+    if (!ssh) throw new Error('no "ssh" block configured — server-side tools are disabled')
+    if (!name) return ssh
+    const entry = config.ssh.hosts && config.ssh.hosts[name]
+    if (!entry) {
+      const known = config.ssh.hosts ? Object.keys(config.ssh.hosts).join(', ') : '(none — add "ssh.hosts" to the config)'
+      throw new Error(`unknown ssh host "${name}" — configured named hosts: ${known}`)
+    }
+    if (!sshByName.has(name)) sshByName.set(name, makeSsh(entry))
+    return sshByName.get(name)
+  }
+  // The checkout dir on a given box: a named host's own repoDir wins, else the
+  // global install.repoDir (single-host deployments never notice this exists).
+  function repoDirFor (name) {
+    const entry = name ? (config.ssh && config.ssh.hosts && config.ssh.hosts[name]) : config.ssh
+    return (entry && entry.repoDir) || config.install.repoDir
+  }
+
   // Resolve reachability: explicit url wins; otherwise open an SSH local-forward
   // tunnel to the loopback API on the box (needs the ssh block). A service whose
   // tunnel can't be opened is left unconfigured (its tools aren't registered).
@@ -116,16 +140,19 @@ async function main () {
     reseller,
     library,
     ssh,
+    sshFor,
+    repoDirFor,
     docsIndex,
-    upsertEnv: ssh ? (path, pairs) => upsertEnv(ssh, path, pairs, { cwd: config.install.repoDir }) : null
+    upsertEnvOn: ssh ? (hostName, path, pairs) => upsertEnv(sshFor(hostName), path, pairs, { cwd: repoDirFor(hostName) }) : null
   }
 
   const server = new McpServer({ name: 'aliran-mcp', version: VERSION }, {
-    instructions: 'Operate an Aliran deployment: panel_* (viewer accounts, grants, channel packages, streams, sources, categories, art, publishers), broadcaster_* (channels/start/stop/rotate/logs), reseller_* (operator oversight: principals, credit mints, ledger, accounts — reseller daily driving stays in their own panel), library_* (VOD titles + one-shot ingest), server_* (SSH install/update/env-tuning/backup/restore/diagnostics), diagnose_*, and docs_search + the mcp://aliran/* resources. Prefer docs_search for usage questions. Secrets stay in the operator config — you only see tool results.'
+    instructions: 'Operate an Aliran deployment: panel_* (viewer accounts, grants, channel packages, streams, sources, categories, art, publishers), broadcaster_* (channels/start/stop/rotate/logs), reseller_* (operator oversight: principals, credit mints, ledger, accounts — reseller daily driving stays in their own panel), library_* (VOD titles + one-shot ingest), server_* (SSH install/update/env-tuning/backup/restore/diagnostics; multi-box deployments name extra hosts in ssh.hosts and pass host:"<name>"), repeater_status (SSH-shaped status for repeater appliances — they have no admin API by design), diagnose_*, and docs_search + the mcp://aliran/* resources. The registered PROMPTS are guided runbooks (new-site-install, incident-triage, monthly-maintenance, …) — offer them for multi-step jobs. Prefer docs_search for usage questions. Secrets stay in the operator config — you only see tool results.'
   })
   const h = makeHelpers(server)
 
   registerDocs(server, docsIndex, h)
+  registerPrompts(ctx, server)
   registerDiagnoseTools(ctx, h)
   if (panel) registerPanelTools(ctx, h); else logerr('panel not configured — panel_* tools disabled')
   if (broadcaster) registerBroadcasterTools(ctx, h); else logerr('broadcaster not configured — broadcaster_* tools disabled')

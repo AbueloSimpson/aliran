@@ -29,13 +29,18 @@ is a thin, credentialed adapter over those, plus an SSH executor for the box its
 | **`broadcaster_*`** | broadcaster control API `:3310` | channels (create/start/stop/rotate), ffmpeg logs, capability probe, incidents, health, [analytics](analytics.md), control admins |
 | **`reseller_*`** *(optional)* | reseller control API `:3330` | operator oversight: principals (enroll/limits/suspend), **credit mints** (echoing the ledger line), ledger audit, accounts/trials views, sweep status — see [below](#reseller-library-oversight-optional) |
 | **`library_*`** *(optional)* | library control API `:3320` | VOD titles list/get/add (one-shot ingest), operational patches, re-ingest, ingest logs, delete |
-| **`server_*`** | **SSH executor** | `preflight`, `install`, `update`, `status`, `logs`, `disk`, `set_env` (validate-then-apply), `restart`, `backup`, `list_backups`, `restore`, `sysctl` |
+| **`server_*`** | **SSH executor** | `preflight`, `install`, `update` (+ `dryRun` preview), `status`, `logs`, `disk`, `set_env` (validate-then-apply), `restart`, `backup`, `list_backups`, `restore`, `sysctl` — all host-addressable on a [multi-box deployment](#multi-host-repeaters-and-scale-out-boxes) |
+| **`repeater_status`** | **SSH** (the repeater has no admin API by design) | compose state + logs + the opt-in loopback `/metrics` when the box enables it |
 | **`diagnose_*`** | the above + KB | `/healthz` sweep across every configured service, symptom → knowledge-base router |
 | **`docs_search`** + `mcp://aliran/*` resources | the shipped docs | full-text search + every doc as a resource |
 
 Read tools carry the MCP `readOnlyHint` annotation; purges/deletes/revokes/restarts
 carry `destructiveHint`, so a well-behaved client confirms before running them. See the
 [full tool catalog in the reference](reference.md#mcp-server-tool-catalog).
+
+The server also registers **[MCP prompts](#prompts-guided-runbooks)** — six guided
+runbooks (`new-site-install`, `incident-triage`, `monthly-maintenance`, …) that turn
+the recurring multi-tool procedures into one-click guidance in any MCP client.
 
 ## The secrets-stay-local guarantee
 
@@ -84,6 +89,77 @@ principal** (the operator-oversight identity).
 Any of `panel`, `broadcaster`, `reseller`, `library`, `ssh` may be omitted; only the
 tools whose backend is configured are registered.
 
+## Multi-host: repeaters and scale-out boxes
+
+A deployment rarely stays one box: [repeater appliances](repeater.md) live on their
+own high-bandwidth machines, and scale-out adds broadcaster boxes. The `ssh` block
+optionally **names** them:
+
+```jsonc
+"ssh": {
+  "host": "203.0.113.10", "user": "root", "keyPath": "~/.ssh/aliran_deploy",   // the DEFAULT box
+  "hosts": {
+    "edge-1": { "host": "203.0.113.20", "user": "root", "keyPath": "~/.ssh/aliran_deploy", "repoDir": "/opt/aliran" }
+  }
+}
+```
+
+Every `server_*` tool (and `repeater_status`) then takes `host: "edge-1"`; omitted,
+it targets the default box — a single-host config keeps meaning exactly what it
+always did. Each entry may carry its own `keyPath`/`port`/`repoDir` (falling back
+to the shared key and `install.repoDir`). A hosts-only shape also works: give
+`hosts` plus `default: "<name>"` (implicit with a single entry). `--doctor` probes
+every named host with a cheap echo.
+
+Two flows that need this:
+
+- **`panel_add_publisher {name, scopes, host}`** — enrolling a broadcaster identity
+  for a second site writes the minted `PUBLISHER_KEY` into **that** box's
+  `broadcaster/.env` (the secret still never transits the model). Without `host`
+  it lands on the default box, as before.
+- **`repeater_status {host}`** — the repeater deliberately has **no admin API** (a
+  stock repeater opens zero listening sockets), so its status is SSH-shaped:
+  compose state + a logs tail for the `deploy/docker-compose.repeater.yml` stack,
+  plus the opt-in loopback `/metrics` when `STATUS_PORT` is set in the box's
+  `repeater/.env` — and an honest "not enabled" note when it is not. Installing a
+  repeater stays a short by-hand recipe (clone → `repeater/.env` →
+  `docker compose -f deploy/docker-compose.repeater.yml up -d --build`) — see the
+  [repeater production example](kb/repeater-production-example.md).
+
+`server_install` deliberately stays default-box-only: it installs the full
+panel+broadcaster stack, a one-box affair. Broadcaster-only scale-out installs are
+an S20b follow-up; multi-box **live** validation rides the same milestone.
+
+## Prompts: guided runbooks
+
+The server registers six MCP prompts — numbered runbooks naming the exact tools
+plus the honesty caveats they carry (content sourced from these docs):
+
+`new-site-install` (preflight → install → verify → first channel),
+`onboard-a-reseller` (principal → credits → ledger → the oversight boundary),
+`migrate-a-channel-source` (remote-source add → curate → sync → verify, or
+broadcaster-pull update → stop/start → verify), `monthly-maintenance`
+(update dry-run → backup → update → disk + analytics review),
+`incident-triage` (healthz → localize → symptom → KB; takes an optional `symptom`
+argument) and `expose-dashboards` (Caddy TLS per the
+[KB](kb/public-dashboards.md), then repoint the config at the https urls —
+kept docs-first because DNS and certificates are out-of-band).
+
+In Claude Desktop they appear in the prompt picker ("+" → the aliran server); any
+MCP client with prompt support lists them the same way.
+
+## Big-catalog ergonomics
+
+Agent context is a budget, and a real deployment runs hundreds of channels:
+
+- `panel_list_streams` takes client-side `category` / `prefix` / `idsOnly` /
+  `limit` filters (with any filter the result is `{total, matched, returned, …}`;
+  the no-argument call still returns the raw full catalog).
+- Every user-shaped result (create/grant/packages/get/list…) summarizes grant
+  lists longer than 12 ids to `{count, sample}` and says so; `full:true` restores
+  the complete lists. `panel_revoke_grant` reports `stillGranted` when a package
+  re-sealed the stream in the same request.
+
 ## Run it from your AI client — any MCP client
 
 The server has **no client coupling**: any MCP client that can launch a local stdio
@@ -111,8 +187,12 @@ your absolute paths filled in. One caveat when choosing a client: the
 client prompts before destructive tools (Claude clients do; some others ignore
 hints). The secrets guarantee is client-independent (enforced server-side).
 
-Run it from a **repo checkout** so the `docs/` corpus (the resources + `docs_search`)
-resolves; set `docsDir` in the config to point elsewhere.
+Run it from a **repo checkout** or from the **published npm package**: `@aliran/mcp`
+bundles the docs corpus at pack time (`docs-bundle/`), so the resources and
+`docs_search` work either way — a checkout's live `docs/` wins when present, and
+`docsDir` in the config overrides both. Once the package is on the registry,
+`npx @aliran/mcp --config <path>` (or `command: "npx", args: ["-y", "@aliran/mcp",
+"--config", …]` in the client config) replaces the `node <entry>` wiring.
 
 ## The install happy-path (`server_install`)
 
@@ -216,12 +296,13 @@ can add the two config blocks and get their control APIs wrapped:
 Both services join `diagnose_healthz` and the `--doctor` probes automatically
 once configured.
 
-## Scope (v1)
+## Scope (v1 — S49 complete)
 
 Panel admin + broadcaster control + reseller/library oversight + install/maintain
-+ docs. The **repeater** stays unwrapped by design for now — it has no admin API
-(healthz/metrics only), so reaching it is multi-host SSH work (planned; its
-box-level plumbing — `server_logs` / `server_set_env` / `server_backup` /
-`server_restore` — already accepts the `library` / `reseller` service names on
-the one configured box). Remote (HTTP) transport is not offered — local stdio
-only.
++ multi-host SSH (repeaters and extra boxes reachable by name, `repeater_status`
+included) + prompts-as-runbooks + docs. What deliberately stays out: reseller
+**daily driving** (their own panel exists for it), client/app **builds** (signing
+keys belong on a build machine), a repeater **install orchestrator** (the by-hand
+recipe is three commands; see the multi-host section), and remote (HTTP)
+transport — local stdio only. Multi-box **live** validation rides S20b when the
+hardware lands.

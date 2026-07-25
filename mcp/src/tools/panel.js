@@ -24,6 +24,36 @@ export function genPassword () {
 
 const q = (v) => encodeURIComponent(String(v))
 
+// G11: a user summary's grants/manualGrants can be hundreds of ids (bouquet
+// deployments run 350+ channels), which floods an AI client's context on every
+// user mutation. ONE mechanism everywhere a user summary is returned: id arrays
+// longer than GRANTS_INLINE_MAX collapse to { count, sample } and the result says
+// so; pass full:true for the complete lists. Short arrays pass through untouched,
+// so small deployments never see the summary shape. (Shared with the reseller
+// account view — reseller.js imports this.)
+const GRANTS_INLINE_MAX = 12
+const GRANTS_SAMPLE = 8
+export function compactUser (u, full) {
+  if (full || !u || typeof u !== 'object' || Array.isArray(u)) return u
+  const out = { ...u }
+  let touched = false
+  for (const k of ['grants', 'manualGrants']) {
+    if (Array.isArray(out[k]) && out[k].length > GRANTS_INLINE_MAX) {
+      out[k] = { count: out[k].length, sample: out[k].slice(0, GRANTS_SAMPLE) }
+      touched = true
+    }
+  }
+  if (touched) out.note = 'grants/manualGrants summarized to {count, sample} — pass full:true for the complete id lists'
+  return out
+}
+const FULL_ARG = { full: z.boolean().optional().describe(`return the complete grants/manualGrants id lists (default: lists longer than ${GRANTS_INLINE_MAX} ids are summarized to {count, sample})`) }
+
+// G12: 64 hex chars = 32 bytes — the shape of both a hypercore feed public key
+// (feedKey) and a stream encryption secret (key). The panel stores feedKey
+// unvalidated, but a typo'd hex string would strand every client silently, so the
+// tool checks the shape loudly before it ships.
+const HEX64 = /^[0-9a-f]{64}$/i
+
 // Stream art (G7): the image is read from the OPERATOR's machine (this process's
 // disk) and POSTed as raw bytes — image data never transits the model as base64.
 // The extension whitelist doubles as the content-type map (the panel derives the
@@ -57,25 +87,48 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_list_users', {
     title: 'List users',
-    description: 'List viewer accounts (prefix search + cursor paging). Returns {users,next}.',
-    inputSchema: { prefix: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional() },
+    description: 'List viewer accounts (prefix search + cursor paging). Returns {users,next}. Each user\'s long grant lists come back as {count, sample} — full:true for every id.',
+    inputSchema: { prefix: z.string().optional(), after: z.string().optional(), limit: z.number().int().min(1).max(200).optional(), ...FULL_ARG },
     annotations: { readOnlyHint: true }
-  }, async ({ prefix, after, limit }) => {
+  }, async ({ prefix, after, limit, full }) => {
     const qs = []
     if (prefix) qs.push('prefix=' + q(prefix))
     if (after) qs.push('after=' + q(after))
     if (limit) qs.push('limit=' + q(limit))
-    return ok(await p.get('/api/users' + (qs.length ? '?' + qs.join('&') : '')))
+    const out = await p.get('/api/users' + (qs.length ? '?' + qs.join('&') : ''))
+    return ok(out && Array.isArray(out.users) ? { ...out, users: out.users.map((u) => compactUser(u, full)) } : out)
   })
 
-  def('panel_get_user', { title: 'Get user', description: 'One viewer account: grants, packages, manualGrants, devices, status.', inputSchema: { username: z.string() }, annotations: { readOnlyHint: true } },
-    async ({ username }) => ok(await p.get('/api/users/' + q(username))))
+  def('panel_get_user', {
+    title: 'Get user',
+    description: 'One viewer account: grants, packages, manualGrants, devices, status. Long grant lists come back as {count, sample} — full:true for every id.',
+    inputSchema: { username: z.string(), ...FULL_ARG },
+    annotations: { readOnlyHint: true }
+  }, async ({ username, full }) => ok(compactUser(await p.get('/api/users/' + q(username)), full)))
 
   def('panel_list_devices', { title: 'List a user\'s devices', description: 'Enrolled devices for a viewer account.', inputSchema: { username: z.string() }, annotations: { readOnlyHint: true } },
     async ({ username }) => ok(await p.get('/api/users/' + q(username) + '/devices')))
 
-  def('panel_list_streams', { title: 'List streams', description: 'Full channel catalog (P2P + redirect channels).', annotations: { readOnlyHint: true } },
-    async () => ok(await p.get('/api/streams')))
+  def('panel_list_streams', {
+    title: 'List streams',
+    description: 'The channel catalog (P2P + redirect channels). With no arguments the raw full catalog comes back, exactly as before. Client-side filters for large catalogs (the panel returns everything; nothing new hits the API): category (an exact tag, or a parent matching its \'Parent/Child\' children), prefix (stream-id prefix), idsOnly (ids instead of full records), limit. With any filter set, the result is {total, matched, returned, streams|ids} so nothing is dropped silently.',
+    inputSchema: {
+      category: z.string().optional(),
+      prefix: z.string().optional(),
+      idsOnly: z.boolean().optional(),
+      limit: z.number().int().min(1).max(1000).optional()
+    },
+    annotations: { readOnlyHint: true }
+  }, async ({ category, prefix, idsOnly, limit }) => {
+    const all = await p.get('/api/streams')
+    if (category === undefined && prefix === undefined && !idsOnly && limit === undefined) return ok(all)
+    let rows = Array.isArray(all) ? all : []
+    if (category !== undefined) rows = rows.filter((s) => (Array.isArray(s.category) ? s.category : []).some((c) => c === category || String(c).startsWith(category + '/')))
+    if (prefix !== undefined) rows = rows.filter((s) => String(s.id).startsWith(prefix))
+    const matched = rows.length
+    if (limit !== undefined) rows = rows.slice(0, limit)
+    return ok({ total: Array.isArray(all) ? all.length : 0, matched, returned: rows.length, ...(idsOnly ? { ids: rows.map((s) => s.id) } : { streams: rows }) })
+  })
 
   def('panel_list_packages', { title: 'List channel packages', description: 'Channel packages (bouquets) with resolved-channel and holder counts.', annotations: { readOnlyHint: true } },
     async () => ok(await p.get('/api/packages')))
@@ -115,50 +168,69 @@ export function registerPanelTools (ctx, h) {
   // ---- users: create / mutate ----
   def('panel_create_user', {
     title: 'Create a viewer account',
-    description: 'Create a viewer account. If password is omitted a strong one is generated and returned so you can hand it to the viewer. Default packages + source auto-grants are applied automatically.',
-    inputSchema: { username: z.string(), password: z.string().min(8).optional() }
-  }, async ({ username, password }) => {
+    description: 'Create a viewer account. If password is omitted a strong one is generated and returned so you can hand it to the viewer. Default packages + source auto-grants are applied automatically; long grant lists come back as {count, sample} — full:true for every id.',
+    inputSchema: { username: z.string(), password: z.string().min(8).optional(), ...FULL_ARG }
+  }, async ({ username, password, full }) => {
     const pw = password || genPassword()
     const out = await p.post('/api/users', { username, password: pw })
-    return ok({ ...out, generatedPassword: password ? undefined : pw })
+    return ok({ ...compactUser(out, full), generatedPassword: password ? undefined : pw })
   })
 
   def('panel_set_user_password', {
     title: 'Set a user password',
     description: 'Reset a viewer account password (re-seals grants). Omit password to generate + return a strong one.',
-    inputSchema: { username: z.string(), password: z.string().min(8).optional() }
-  }, async ({ username, password }) => {
+    inputSchema: { username: z.string(), password: z.string().min(8).optional(), ...FULL_ARG }
+  }, async ({ username, password, full }) => {
     const pw = password || genPassword()
     const out = await p.post('/api/users/' + q(username) + '/password', { password: pw })
-    return ok({ ...out, generatedPassword: password ? undefined : pw })
+    return ok({ ...compactUser(out, full), generatedPassword: password ? undefined : pw })
   })
 
-  def('panel_set_user_status', { title: 'Enable/disable a user', description: 'Set a viewer account active or disabled (disable revokes live sessions).', inputSchema: { username: z.string(), status: z.enum(['active', 'disabled']) } },
-    async ({ username, status }) => ok(await p.post('/api/users/' + q(username) + '/status', { status })))
+  def('panel_set_user_status', { title: 'Enable/disable a user', description: 'Set a viewer account active or disabled (disable revokes live sessions).', inputSchema: { username: z.string(), status: z.enum(['active', 'disabled']), ...FULL_ARG } },
+    async ({ username, status, full }) => ok(compactUser(await p.post('/api/users/' + q(username) + '/status', { status }), full)))
 
-  def('panel_set_max_devices', { title: 'Set max devices', description: 'Set the concurrent-device limit for a viewer account.', inputSchema: { username: z.string(), maxDevices: z.number().int().min(1) } },
-    async ({ username, maxDevices }) => ok(await p.post('/api/users/' + q(username) + '/max-devices', { maxDevices })))
+  def('panel_set_max_devices', { title: 'Set max devices', description: 'Set the concurrent-device limit for a viewer account. Long grant lists come back as {count, sample} — full:true for every id.', inputSchema: { username: z.string(), maxDevices: z.number().int().min(1), ...FULL_ARG } },
+    async ({ username, maxDevices, full }) => ok(compactUser(await p.post('/api/users/' + q(username) + '/max-devices', { maxDevices }), full)))
 
-  def('panel_logout_all', { title: 'Log out all devices', description: 'Revoke every session for a viewer account (tokenVersion bump).', inputSchema: { username: z.string() } },
-    async ({ username }) => ok(await p.post('/api/users/' + q(username) + '/logout-all', {})))
+  def('panel_logout_all', { title: 'Log out all devices', description: 'Revoke every session for a viewer account (tokenVersion bump).', inputSchema: { username: z.string(), ...FULL_ARG } },
+    async ({ username, full }) => ok(compactUser(await p.post('/api/users/' + q(username) + '/logout-all', {}), full)))
 
-  def('panel_grant', { title: 'Grant a stream', description: 'Grant a viewer account a single stream (adds a manual entitlement, sealed to the user key).', inputSchema: { username: z.string(), streamId: z.string() } },
-    async ({ username, streamId }) => ok(await p.post('/api/users/' + q(username) + '/grants', { streamId })))
+  def('panel_grant', { title: 'Grant a stream', description: 'Grant a viewer account a single stream (adds a manual entitlement, sealed to the user key). Long grant lists come back as {count, sample} — full:true for every id.', inputSchema: { username: z.string(), streamId: z.string(), ...FULL_ARG } },
+    async ({ username, streamId, full }) => ok(compactUser(await p.post('/api/users/' + q(username) + '/grants', { streamId }), full)))
 
-  def('panel_set_user_packages', { title: 'Set a user\'s packages', description: 'Replace the viewer\'s package list (bouquets); grants materialize immediately.', inputSchema: { username: z.string(), packages: z.array(z.string()) } },
-    async ({ username, packages }) => ok(await p.post('/api/users/' + q(username) + '/packages', { packages })))
+  def('panel_set_user_packages', { title: 'Set a user\'s packages', description: 'Replace the viewer\'s package list (bouquets); grants materialize immediately. Long grant lists come back as {count, sample} — full:true for every id.', inputSchema: { username: z.string(), packages: z.array(z.string()), ...FULL_ARG } },
+    async ({ username, packages, full }) => ok(compactUser(await p.post('/api/users/' + q(username) + '/packages', { packages }), full)))
 
   // ---- streams / packages / sources: create / mutate ----
   def('panel_add_stream', {
     title: 'Add a stream',
-    description: 'Add a channel. Provide `url` (https) for a REDIRECT channel (viewers play the url, no P2P feed); otherwise a P2P channel a broadcaster will register a feed for.',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), url: z.string().optional(), order: z.number().int().optional(), featured: z.boolean().optional() }
-  }, async (a) => ok(await p.post('/api/streams', a)))
+    description: 'Add a channel. Provide `url` (https) for a REDIRECT channel (viewers play the url, no P2P feed); otherwise a P2P channel a broadcaster will register a feed for. Pre-seeded feed flows (operator KB): `feedKey` (64 hex) pre-binds an existing broadcaster feed, and `key` (64 hex) supplies that feed\'s encryption secret so grants seal the RIGHT key. `key` is a SECRET input — a supplied key is stored panel-side and NEVER echoed back in the result. Omit `key` and the panel mints one, returned ONCE here (`encryptionKey`) for the broadcaster\'s data/feed.key — there is no read-back API later.',
+    inputSchema: {
+      id: z.string(),
+      title: z.string().optional(),
+      description: z.string().optional(),
+      category: z.union([z.string(), z.array(z.string())]).optional(),
+      url: z.string().optional(),
+      order: z.number().int().optional(),
+      featured: z.boolean().optional(),
+      feedKey: z.string().regex(HEX64, 'feedKey must be 64 hex chars (the hypercore feed public key)').optional(),
+      key: z.string().regex(HEX64, 'key must be 64 hex chars (a 32-byte stream encryption secret)').optional()
+    }
+  }, async (a) => {
+    const out = await p.post('/api/streams', a)
+    // A SUPPLIED key is a secret the operator already holds — echoing it back
+    // would copy it into the model context for nothing. A panel-GENERATED key
+    // keeps the generated-password pattern: returned once, or it is nowhere.
+    if (a.key && out && typeof out === 'object') {
+      return ok({ ...out, encryptionKey: undefined, encryptionKeyNote: 'redacted — you supplied `key`, so you already hold the secret; it was stored panel-side (secrets/streams.json)' })
+    }
+    return ok(out)
+  })
 
   def('panel_set_stream_meta', {
     title: 'Edit a stream',
-    description: 'Patch channel metadata (title/description/category/order/featured/isLive/status/url).',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), url: z.string().optional(), isLive: z.boolean().optional(), status: z.string().optional(), order: z.number().int().nullable().optional(), featured: z.boolean().optional() }
+    description: 'Patch channel metadata (title/description/category/order/featured/isLive/status/url). `feedKey` (64 hex) re-points the P2P feed — the paired blobsKey resets and is re-filled from the next real registration. The encryption `key` is fixed at creation (add-only): re-keying a stream is delete + re-add, which mints a fresh key and invalidates old grants.',
+    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), url: z.string().optional(), isLive: z.boolean().optional(), status: z.string().optional(), order: z.number().int().nullable().optional(), featured: z.boolean().optional(), feedKey: z.string().regex(HEX64, 'feedKey must be 64 hex chars (the hypercore feed public key)').optional() }
   }, async ({ id, ...body }) => ok(await p.patch('/api/streams/' + q(id), body)))
 
   def('panel_add_package', {
@@ -215,17 +287,22 @@ export function registerPanelTools (ctx, h) {
   // withheld and you're told to place PUBLISHER_KEY in the broadcaster .env by hand.
   def('panel_add_publisher', {
     title: 'Enroll a publisher',
-    description: 'Enroll a broadcaster identity (per-site key + channel scopes). The secret key is NEVER returned to you: it is written into the box broadcaster .env when SSH is configured, otherwise withheld.',
-    inputSchema: { name: z.string(), scopes: z.array(z.string()).optional() }
-  }, async ({ name, scopes }) => {
+    description: 'Enroll a broadcaster identity (per-site key + channel scopes). The secret key is NEVER returned to you: it is written into the target box\'s broadcaster/.env when SSH is configured, otherwise withheld. Multi-box sites: `host` names an entry in ssh.hosts so the key lands on the RIGHT box\'s broadcaster (omit = the default box). Note the env change applies on that broadcaster\'s next recreate (docker compose up -d broadcaster) — a plain restart does not re-read env files.',
+    inputSchema: { name: z.string(), scopes: z.array(z.string()).optional(), host: z.string().optional().describe('named box from ssh.hosts whose broadcaster/.env receives the key (omit = the default box)') }
+  }, async ({ name, scopes, host }) => {
+    // Resolve the target box BEFORE enrolling: an unknown host name must fail the
+    // whole call, not strand a freshly-minted secret with nowhere to write it.
+    let targetSsh = null
+    if (ctx.ssh && ctx.ssh.configured) targetSsh = ctx.sshFor(host)
+    else if (host) throw new Error(`host "${host}" given but there is no "ssh" block in the config`)
     const out = await p.post('/api/publishers', { name, scopes })
     const { secretKey, ...safe } = out
     let secretDisposition
-    if (ctx.ssh && ctx.ssh.configured && secretKey) {
+    if (targetSsh && secretKey) {
       try {
-        const envPath = `${ctx.config.install.repoDir}/broadcaster/.env`
-        await ctx.upsertEnv(envPath, { PUBLISHER_NAME: name, PUBLISHER_KEY: secretKey })
-        secretDisposition = `written to ${envPath} on ${ctx.ssh.host} (restart the broadcaster to apply)`
+        const envPath = `${ctx.repoDirFor(host)}/broadcaster/.env`
+        await ctx.upsertEnvOn(host, envPath, { PUBLISHER_NAME: name, PUBLISHER_KEY: secretKey })
+        secretDisposition = `written to ${envPath} on ${targetSsh.host} (recreate that broadcaster to apply: docker compose up -d broadcaster)`
       } catch (err) {
         secretDisposition = `WITHHELD — could not write it to the box (${err.message}); enroll via the dashboard/CLI and place PUBLISHER_KEY in the broadcaster .env yourself`
       }
@@ -289,8 +366,17 @@ export function registerPanelTools (ctx, h) {
   def('panel_revoke_device', { title: 'Revoke a device', description: 'Drop one device enrollment from a viewer account.', inputSchema: { username: z.string(), deviceId: z.string() }, annotations: { destructiveHint: true } },
     async ({ username, deviceId }) => ok(await p.del('/api/users/' + q(username) + '/devices/' + q(deviceId))))
 
-  def('panel_revoke_grant', { title: 'Revoke a grant', description: 'Remove a viewer\'s MANUAL entitlement for a stream (a package that still covers it re-seals it).', inputSchema: { username: z.string(), streamId: z.string() }, annotations: { destructiveHint: true } },
-    async ({ username, streamId }) => ok(await p.del('/api/users/' + q(username) + '/grants/' + q(streamId))))
+  def('panel_revoke_grant', {
+    title: 'Revoke a grant',
+    description: 'Remove a viewer\'s MANUAL entitlement for a stream. A package that still covers the stream re-seals it in the same request — the result\'s stillGranted field says so honestly (edit the covering package to truly revoke). Long grant lists come back as {count, sample} — full:true for every id.',
+    inputSchema: { username: z.string(), streamId: z.string(), ...FULL_ARG },
+    annotations: { destructiveHint: true }
+  }, async ({ username, streamId, full }) => {
+    const out = await p.del('/api/users/' + q(username) + '/grants/' + q(streamId))
+    // Derived BEFORE compaction so the covered-revoke honesty survives the summary.
+    const covered = out && Array.isArray(out.grants) && out.grants.includes(streamId)
+    return ok({ ...compactUser(out, full), stillGranted: covered ? `yes — a package still covers ${streamId} (the panel re-sealed it in this request); remove it from the covering package or the package from the user to truly revoke` : false })
+  })
 
   def('panel_delete_stream', { title: 'Purge a stream', description: 'FULL purge of a channel: catalog record, private key, grants and art. Irreversible.', inputSchema: { id: z.string() }, annotations: { destructiveHint: true } },
     async ({ id }) => ok(await p.del('/api/streams/' + q(id))))

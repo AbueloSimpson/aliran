@@ -69,6 +69,13 @@ const TRANSCODE_ARG = z.union([CHANNEL_TRANSCODE, z.null(), z.string().min(1)])
 const INPUT_HINT = 'accepted: "test" | "rtmp" | a pull url | a file path | {kind:"test"} | {kind:"file",path} | {kind:"pull",url,fallbacks?} | {kind:"rtmp"|"srt"|"udp",port?,…}'
 const TRANSCODE_HINT = 'accepted: null (clear) | {encoder?,resolution?,fps?,videoBitrateKbps?,audioBitrateKbps?,preset?}'
 
+// Per-channel HLS window (G12) — bounds mirror channel.js normalizeMeta (the
+// broadcaster re-validates; test:mcp round-trips both so they cannot drift).
+const HLS_TIME = z.number().int().min(1).max(30)
+  .describe('HLS segment length in seconds, 1-30 (default: the broadcaster env HLS_TIME, normally 2)')
+const HLS_LIST_SIZE = z.number().int().min(2).max(60)
+  .describe('segments kept in the live window, 2-60 (default: the broadcaster env HLS_LIST_SIZE, normally 8)')
+
 // An object that arrived as a STRING. A leading `{` is the tell: no shorthand, url or
 // file path starts with a brace. Parse it — or fail LOUDLY. The one thing this must
 // never do is hand a JSON blob onwards to be stored as a file path.
@@ -164,14 +171,14 @@ export function registerBroadcasterTools (ctx, h) {
   // ---- create / mutate ----
   def('broadcaster_add_channel', {
     title: 'Add a channel',
-    description: 'Add a channel to the broadcaster registry. input: "test" (built-in pattern), a file path, a pull url, or the object form — {kind:"pull",url,fallbacks?} / {kind:"file",path} / a push listener {kind:"rtmp"|"srt"|"udp",port?}. transcode: {encoder:"copy"|"libx264"|...}. buffer: "disk" (default) | "ram". Send input/transcode as real objects, NOT as quoted JSON strings.',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: CHANNEL_INPUT.optional(), transcode: TRANSCODE_ARG.optional(), buffer: z.enum(['disk', 'ram']).optional() }
+    description: 'Add a channel to the broadcaster registry. input: "test" (built-in pattern), a file path, a pull url, or the object form — {kind:"pull",url,fallbacks?} / {kind:"file",path} / a push listener {kind:"rtmp"|"srt"|"udp",port?}. transcode: {encoder:"copy"|"libx264"|...}. buffer: "disk" (default) | "ram". hlsTime/hlsListSize override the per-channel HLS window (1-30 s segments / 2-60 kept). Send input/transcode as real objects, NOT as quoted JSON strings.',
+    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: CHANNEL_INPUT.optional(), transcode: TRANSCODE_ARG.optional(), buffer: z.enum(['disk', 'ram']).optional(), hlsTime: HLS_TIME.optional(), hlsListSize: HLS_LIST_SIZE.optional() }
   }, async (a) => ok(await b.post('/api/channels', channelBody(a))))
 
   def('broadcaster_update_channel', {
     title: 'Edit a channel',
-    description: 'Patch a channel\'s meta/input/transcode (applied on the next start; a source change rotates the feed identity). Same input/transcode shapes as broadcaster_add_channel — objects, not quoted JSON strings. Omitted fields keep their stored value; transcode:null clears it. Verify afterwards that the channel reports the source you intended.',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: CHANNEL_INPUT.optional(), transcode: TRANSCODE_ARG.optional() }
+    description: 'Patch a channel\'s meta/input/transcode/HLS window (applied on the next start; a source change rotates the feed identity). Same input/transcode shapes as broadcaster_add_channel — objects, not quoted JSON strings. hlsTime (1-30) / hlsListSize (2-60) tune the per-channel HLS window. Omitted fields keep their stored value; transcode:null clears it. Verify afterwards that the channel reports the source you intended.',
+    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), input: CHANNEL_INPUT.optional(), transcode: TRANSCODE_ARG.optional(), hlsTime: HLS_TIME.optional(), hlsListSize: HLS_LIST_SIZE.optional() }
   }, async ({ id, ...fields }) => ok(await b.patch('/api/channels/' + q(id), channelBody(fields))))
 
   def('broadcaster_start_channel', { title: 'Start a channel', description: 'Start a channel (spawns ffmpeg, mints/reuses the feed, registers with the panel).', inputSchema: { id: z.string() } },

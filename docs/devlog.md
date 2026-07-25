@@ -2890,3 +2890,100 @@ was not touched.
   markers updated (groups line + reseller/library healthz + credentials). Full
   required lane + `mkdocs --strict` green locally. NO VPS work (no reseller or
   library instance runs on the box; S46 precedent).
+
+### S49c — MCP scale + DX: multi-host SSH, repeater reach, ergonomics, prompts, publish prep (verified)
+- **Why:** the S49 gap analysis' P2/P3 tail — the last tier between "the MCP
+  covers the single-box lifecycle" and "the MCP covers the deployment". One host
+  meant repeater appliances and future scale-out boxes were unreachable (and
+  `panel_add_publisher`'s env-write could only ever land on THE box); 350-channel
+  catalogs flooded agent context on every list/user call; a handful of documented
+  API fields had no schema; multi-step procedures lived only in docs; and the
+  package could not be published without losing its docs resources. Closes
+  G10–G17: 101 → **102 tools** (`repeater_status`) + **6 prompts**, and the S49
+  arc is complete.
+- **Multi-host SSH (G10).** `ssh.hosts` optionally names extra boxes
+  (`{name: {host, user, keyPath?, port?, repoDir?, sshBin?}}` + `default`); the
+  single-host shape normalizes unchanged, and the resolved default is hoisted so
+  every existing consumer keeps reading `ssh.host` as before. Every `server_*`
+  tool takes `host:"<name>"` (resolved per call — an unknown name is a loud
+  error listing the configured names BEFORE anything touches a box);
+  `panel_add_publisher {host}` resolves the target before enrolling (an unknown
+  host cannot strand a freshly-minted secret) and writes `PUBLISHER_NAME`/
+  `PUBLISHER_KEY` into the NAMED box's `broadcaster/.env`. `server_install`
+  deliberately stays default-box-only: it installs the full panel+broadcaster
+  stack — a broadcaster-only scale-out install is an S20b follow-up, and a
+  repeater install is a three-command by-hand recipe the docs (and the
+  `repeater_status` description) point at. The doctor probes each named host
+  with one cheap echo.
+- **`repeater_status {host?}` — status for a box that has no API on purpose.**
+  A stock repeater opens ZERO listening sockets (part of its co-tenancy story),
+  so status is SSH-shaped: `docker compose -f deploy/docker-compose.repeater.yml
+  ps` + a logs tail, then `STATUS_PORT` is read from the box's `repeater/.env` —
+  set, the tool curls `127.0.0.1:<port>/metrics` ON the box loopback and
+  surfaces the text (S48 served-bytes counters included); unset, the result says
+  "not enabled … zero listening sockets by design" honestly instead of erroring;
+  set-but-dead gets its own distinct message.
+- **List ergonomics (G11) — one mechanism, everywhere.** `panel_list_streams`
+  grew client-side `category` (parent matches its `Parent/Child` children) /
+  `prefix` / `idsOnly` / `limit`; with no arguments the raw catalog returns
+  byte-identical, with any filter the shape is `{total, matched, returned, …}`
+  so nothing is silently dropped. Every user-shaped result (create/password/
+  status/max-devices/logout/grant/packages/revoke/get/list + the reseller
+  account view's live block) runs through ONE `compactUser` helper: grant lists
+  longer than 12 ids collapse to `{count, sample: first 8}` + a note naming
+  `full:true`; short lists pass through untouched so small deployments never see
+  the summary shape. `panel_revoke_grant` derives `stillGranted` BEFORE
+  compaction, so the S45 covered-revoke honesty survives the summary.
+- **Schema gaps (G12).** `broadcaster_add/update_channel` gained `hlsTime`
+  (1-30) / `hlsListSize` (2-60) — bounds mirror `channel.js normalizeMeta`, the
+  fake manager mirrors them for the round-trip, and the test text-matches the
+  real source's bounds strings so a bounds change breaks the build until the
+  mirror is updated (incl. the real quirk that patching one field re-derives the
+  other from the env default). `panel_add_stream` gained `feedKey` + `key`
+  (64-hex validated client-side) for the pre-seeded feed flows in the operator
+  KB; **a supplied `key` is a secret input** — it flows TO the panel
+  (`secrets/streams.json`, asserted) and is REDACTED from the result with a note
+  saying why, while an omitted key keeps the generated-password pattern
+  (returned ONCE — there is no read-back API). `panel_set_stream_meta` gained
+  `feedKey` (the paired blobsKey reset is asserted).
+- **Prompts as runbooks (G13).** Six `registerPrompt` entries sourced from the
+  shipped docs: `new-site-install`, `onboard-a-reseller` (incl. the
+  daily-driving boundary), `migrate-a-channel-source` (both worlds: remote-source
+  add→curate→sync→verify, and broadcaster-pull update→STOP→START→verify — the
+  stop/start honesty is asserted), `monthly-maintenance` (dry-run first, backup
+  before update), `incident-triage` (optional `symptom` argument interpolated),
+  `expose-dashboards`. The test's **drift guard** extracts every tool-shaped
+  token from every prompt body and requires it to be a registered tool — a
+  renamed tool cannot silently strand a runbook.
+- **G15 decision — TLS stays docs-first.** `expose-dashboards` walks
+  kb/public-dashboards.md (Caddy) and ends by repointing the MCP config at the
+  https urls; a `server_setup_tls` tool was deliberately NOT built (DNS +
+  certificates are out-of-band; a Caddy-install orchestrator is a footgun with
+  none of set_env's validate-revert safety net).
+- **`server_update {dryRun:true}` (G16).** `git fetch` + `log HEAD..'@{u}'` +
+  `diff --stat` — reports exactly the commits + files that WOULD deploy and
+  states that nothing was pulled, built or restarted (the test sweeps the
+  command log: zero build/up after a dry run). The real run keeps
+  `destructiveHint`.
+- **npm-publish prep (G14).** `@aliran/mcp` 0.1.0 is publish-ready: `files`
+  whitelist (src / docs-bundle / config.example.json / README), `prepack` runs
+  `scripts/bundle-docs.mjs` (copies the repo docs corpus into `docs-bundle/`,
+  gitignored), and `defaultDocsDir` chains repo checkout → bundled copy → the
+  old degrade-to-empty. Publishing itself stays the user's release step (S32/S33
+  precedent).
+- **Verified:** `test:mcp` sections **W–AC**. W drives a SECOND fake box through
+  the SAME ssh stub (the seam grew `--state`/`--log` argv + cwd capture instead
+  of being forked): per-host command logs + env stores are asserted disjoint,
+  `set_env {host:"edge"}` runs the real `--check` against the edge state, and
+  the enrolled publisher key lands in `/opt/edge/broadcaster/.env` while the
+  result carries no secret. X covers all three repeater status-server states.
+  Y proves filters + compaction + `full:true` recovery + small-user
+  back-compat. Z round-trips hls bounds and the feedKey/key flow (supplied
+  secret in the panel's secrets file AND absent from the result). AA lists/gets
+  all six prompts and runs the drift guard. AB sweeps the log for zero build/up
+  after `dryRun`. AC runs the bundler, asserts the `npm pack --dry-run` file
+  list (docs-bundle in, `config.json` + `scripts/` out), unpacks the real
+  tarball and runs `--doctor` from it — docs resolve from `docs-bundle/`
+  (45 docs) with exit 0. Doctor markers updated in lockstep (named-host line,
+  `repeater_*` group, prompts line). Full required lane + `mkdocs --strict`
+  green locally. NO VPS work; multi-box LIVE validation rides S20b.

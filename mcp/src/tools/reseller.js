@@ -11,7 +11,7 @@
 // own audit trail.
 
 import { z } from 'zod'
-import { genPassword } from './panel.js'
+import { genPassword, compactUser } from './panel.js'
 
 const q = (v) => encodeURIComponent(String(v))
 const qs = (pairs) => {
@@ -62,10 +62,13 @@ export function registerResellerTools (ctx, h) {
 
   def('reseller_get_account', {
     title: 'Get a reseller-managed account',
-    description: 'One managed account: the reseller-side registry record (owner, expiry, kind, packages, extraGrants) plus its LIVE panel state (status, grants, packages, devices) when the panel is reachable.',
-    inputSchema: { account: z.string() },
+    description: 'One managed account: the reseller-side registry record (owner, expiry, kind, packages, extraGrants) plus its LIVE panel state (status, grants, packages, devices) when the panel is reachable. The live block\'s long grant lists come back as {count, sample} — full:true for every id.',
+    inputSchema: { account: z.string(), full: z.boolean().optional().describe('return the live block\'s complete grants/manualGrants id lists (default: long lists are summarized to {count, sample})') },
     annotations: { readOnlyHint: true }
-  }, async ({ account }) => ok(await r.get('/api/accounts/' + q(account))))
+  }, async ({ account, full }) => {
+    const out = await r.get('/api/accounts/' + q(account))
+    return ok(out && out.live ? { ...out, live: compactUser(out.live, full) } : out)
+  })
 
   def('reseller_trials', {
     title: 'View trial accounts',

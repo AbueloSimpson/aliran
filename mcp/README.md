@@ -24,12 +24,23 @@ MCP **resources**:
   list/get/add (one-shot ingest from a path ON the library box), operational
   patches, re-ingest, ffmpeg logs, delete (the panel record is only marked
   unavailable — purging it is a panel job).
-- **`server_*`** — an **SSH executor**: `preflight`, `install`, `update`, `status`,
-  `logs`, `disk`, `set_env` (env knobs, validated in-image via `config.js --check`
-  and **reverted** on failure before anything restarts), `restart`, `backup`,
-  `list_backups`, `restore` (refuses a non-empty volume without `force`), `sysctl`.
+- **`server_*`** — an **SSH executor**: `preflight`, `install`, `update` (with a
+  `dryRun` preview of what would deploy), `status`, `logs`, `disk`, `set_env` (env
+  knobs, validated in-image via `config.js --check` and **reverted** on failure
+  before anything restarts), `restart`, `backup`, `list_backups`, `restore`
+  (refuses a non-empty volume without `force`), `sysctl`. **Multi-host:** name
+  extra boxes (repeaters, scale-out broadcasters) in `ssh.hosts` and every tool
+  takes `host:"<name>"` — `panel_add_publisher {host}` writes the minted site key
+  into the RIGHT box's `broadcaster/.env`.
+- **`repeater_status`** — SSH-shaped status for a repeater appliance (the repeater
+  has NO admin API by design): compose state, logs, and the opt-in loopback
+  `/metrics` when the box enables `STATUS_PORT` — honestly reported when it
+  doesn't.
 - **`diagnose_*`** — a `/healthz` sweep and a symptom → knowledge-base router.
 - **`docs_search`** + the `mcp://aliran/*` resources — the shipped documentation.
+- **6 MCP prompts** — guided runbooks (`new-site-install`, `onboard-a-reseller`,
+  `migrate-a-channel-source`, `monthly-maintenance`, `incident-triage`,
+  `expose-dashboards`) naming the exact tools per step.
 
 > This is the **server** side of MCP. It exposes tools/resources to an AI client; it
 > does **not** call the Claude API. Its only runtime dependency is
@@ -78,6 +89,13 @@ key — no public dashboard required. `user`/`pass` are the **dashboard admin** 
 Any of `panel`, `broadcaster`, `reseller`, `library`, `ssh` may be omitted; only the
 tools whose backend is configured are registered.
 
+**Multi-host.** More than one box? Grow `ssh` with named hosts —
+`"hosts": { "edge-1": { "host": "…", "user": "root", "keyPath": "…", "repoDir": "/opt/aliran" } }`
+— and pass `host:"edge-1"` on any `server_*` tool / `repeater_status` /
+`panel_add_publisher` (omitted = the default box; a single-host config is
+unchanged). Per-entry `keyPath`/`port`/`repoDir` are optional; a hosts-only shape
+takes `"default": "<name>"`. The doctor probes every named host.
+
 ## Check your setup (`--doctor`)
 
 The onboarding self-check: validates the config (and its file mode), probes SSH and
@@ -122,8 +140,12 @@ snippet with your absolute paths filled in, and
 ⚠ Destructive-tool confirmations (`destructiveHint`) are advisory per the MCP spec —
 verify your client prompts before purge/stop/update tools.
 
-Run it from a **repo checkout** so the `docs/` corpus (the resources + `docs_search`)
-resolves; set `docsDir` in the config to point elsewhere.
+Run it from a **repo checkout** or from the **published package** — `npm pack` /
+`npm publish` bundle the docs corpus into `docs-bundle/` (the `prepack` script), and
+the server falls back to it exactly when a repo checkout's live `docs/` is absent.
+Once published: `npx @aliran/mcp --config <path>`, or
+`command: "npx", args: ["-y", "@aliran/mcp", "--config", …]` in the client config.
+Set `docsDir` in the config to override the docs location either way.
 
 ## Test
 
@@ -135,5 +157,11 @@ destructive-annotation presence, docs search, the re-login-on-401 path, the SSH
 executor against a command stub (which runs the REAL `config.js --check` for the
 `server_set_env` validate-then-revert path, and covers the `server_restore`
 refusal), category/source/art curation, the reseller oversight set (the credit
-mint asserted against the real ledger), and the library title lifecycle. It is in
-the required CI lane (deterministic, no DHT).
+mint asserted against the real ledger), and the library title lifecycle. S49c adds:
+a SECOND fake box through the same stub (multi-host routing, per-host repoDir, the
+publisher key landing on the named box), `repeater_status` in all three
+status-server states, the list filters + grant-summary compaction, hls bounds +
+the feedKey/`key` redaction, the prompt runbooks with a tool-name drift guard,
+`server_update {dryRun}`, and an `npm pack` probe that runs the doctor from the
+unpacked tarball (docs resolving from `docs-bundle/`). It is in the required CI
+lane (deterministic, no DHT).
