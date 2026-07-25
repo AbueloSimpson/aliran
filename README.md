@@ -3,6 +3,7 @@
 [![ci](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml/badge.svg)](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml)
 [![docs](https://github.com/AbueloSimpson/aliran/actions/workflows/docs.yml/badge.svg)](https://abuelosimpson.github.io/aliran/)
 [![npm](https://img.shields.io/npm/v/%40aliran%2Fplayer-sdk?label=%40aliran%2Fplayer-sdk)](https://www.npmjs.com/package/@aliran/player-sdk)
+[![npm](https://img.shields.io/npm/v/%40aliran%2Fmcp?label=%40aliran%2Fmcp)](https://www.npmjs.com/package/@aliran/mcp)
 [![viewer builds](https://img.shields.io/github/v/release/AbueloSimpson/aliran?label=viewer%20builds)](https://github.com/AbueloSimpson/aliran/releases/latest)
 [![license](https://img.shields.io/github/license/AbueloSimpson/aliran)](LICENSE)
 
@@ -34,7 +35,9 @@ bandwidth cost.
 Keyless **public builds** of every viewer are on the
 **[releases page](https://github.com/AbueloSimpson/aliran/releases/latest)** —
 Windows (installer + portable exe), macOS (Apple silicon + Intel, dmg/zip), and
-one Android APK that covers phone **and** Android TV. On first run each app shows
+Android APKs where one build covers phone **and** Android TV (pick your device's
+ABI: `arm64-v8a` for most devices, `armeabi-v7a` for older 32-bit TV boxes; the
+APKs install from Android 7, live P2P playback needs Android 10+). On first run each app shows
 a **Connect screen**: enter the three things an Aliran operator hands out — the
 **panel public key**, a **username**, and a **password** — and the app finds the
 service over the P2P network. No URLs. Install steps (including the unsigned-build
@@ -61,6 +64,7 @@ each other over the Hyperswarm DHT by public key):
 | **[`desktop/`](desktop/)** | Windows & macOS | The desktop player (Electron): the same OTT interface and P2P engine on a PC — Windows installer/portable exe, macOS dmg/zip |
 | **[`sdk/`](sdk/)** | anywhere Node runs | The published engine — [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) (with `@aliran/core` and `@aliran/react-native`): build your own client or headless viewer on the exact engine the apps run |
 | **[`sdk/android/`](sdk/android/)** | any Android app (no React Native) | **`aliran-kit`** — native Kotlin SDK: the same engine + player contracts, one APK from **Android 5.0** (P2P active on 10+, silently off below with a ready-made notice + fallback seam) |
+| **[`mcp/`](mcp/)** | the operator's own machine | **[`@aliran/mcp`](https://www.npmjs.com/package/@aliran/mcp)** — an MCP server that lets an AI client (Claude Desktop, Claude Code, …) install, configure, maintain and support a deployment over the admin APIs + SSH, with guided runbooks — so an operator never needs a terminal |
 
 ```
  ORIGIN (OBS/RTSP/HLS)      Hyperswarm DHT (find peers by public key)
@@ -129,6 +133,11 @@ path — pinned ffmpeg/Node, auto-restart, host networking pre-configured) — s
   per-operator custom builds for Android and desktop — the
   [operator build walkthrough](docs/operator-build-walkthrough.md) goes from your
   keys to a branded APK and exe
+- **AI-operable** (optional): point an MCP-capable AI client at
+  [`@aliran/mcp`](https://www.npmjs.com/package/@aliran/mcp) and it can install a
+  fresh server, tune it, curate content, run backups/restores and answer usage
+  questions from the shipped docs — 100+ tools plus guided runbooks, with secrets
+  never leaving the operator's machine. See [docs/mcp.md](docs/mcp.md)
 - **No DRM, by design**: content protection is transport encryption + per-user sealed
   keys + key rotation — honest access control, not studio-grade DRM. The
   [security model](docs/security-model.md) spells out exactly what that does and
@@ -145,6 +154,7 @@ Browse online at **<https://abuelosimpson.github.io/aliran/>**, or start at
 [Configuration](docs/configuration.md) ·
 [Privacy-preserving analytics](docs/analytics.md) ·
 [Player SDK](docs/sdk.md) ·
+[MCP server (AI-operable ops)](docs/mcp.md) ·
 [Desktop viewer guide](docs/desktop-viewer-guide.md) ·
 [Android viewer guide](docs/android-viewer-guide.md) ·
 [Operator build walkthrough](docs/operator-build-walkthrough.md) ·

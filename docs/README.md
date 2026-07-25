@@ -16,6 +16,13 @@ Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
 - [Configuration](configuration.md) — full config reference for every component
 - [Content management](content-management.md) — catalog, metadata, assets, redirect channels, VOD
 - [Privacy-preserving analytics](analytics.md) — aggregate-only counts, why per-user tracking is impossible, what is (and is not) collected
+- [MCP server](mcp.md) — AI-operable install, config, maintenance & support (`@aliran/mcp` on npm): 100+ tools + guided runbooks over the admin APIs and SSH, secrets never leaving the operator's machine
+- [MCP quickstart](mcp-quickstart.md) — hands-on walkthrough: config → `--doctor` → wire it into your AI client → first prompts
+- [Player SDK](sdk.md) — `@aliran/player-sdk` overview: build your own client on the published engine
+- [SDK guide](sdk-guide.md) — the full embedding guide (engine lifecycle, playback, entitlements)
+- [Ops ↔ SDK integration](ops-sdk-integration.md) — wiring SDK apps to the operator-side surfaces (healthz/metrics, art, EPG)
+- [Kotlin SDK walkthrough](kotlin-sdk-walkthrough.md) — `aliran-kit`: the native Android (no-React-Native) path
+- [White-label](white-label.md) — branding: app overlays, desktop/Android custom builds, reseller-panel theming
 - [Client build](client-build.md) — build the Android (phone + TV) app
 - [Operator build walkthrough](operator-build-walkthrough.md) — end to end: your key + branding → custom APK and Windows exe
 - [Android app — viewer guide](android-viewer-guide.md) — install the public APK, connect, watch (phone + TV/D-pad)
@@ -47,8 +54,9 @@ rebuilds and deploys the site to GitHub Pages via
 In active development, pre-1.0 — and running on real infrastructure. The full stack is
 implemented and verified end to end: panel + broadcaster (+ optional repeater)
 deployed via the provided Docker/systemd pack, web admin dashboards for both, and the
-Android app (phone + TV) and the Windows desktop player playing live P2P streams
-over the public DHT, plus the optional VOD library service. Pages reflect what is
+Android app (phone + TV) and the Windows & macOS desktop players playing live P2P
+streams over the public DHT, plus the optional VOD library, reseller and MCP
+(AI-operable ops) services. Pages reflect what is
 built; the few forward-looking items (panel HA, the GPU transcode pack) are marked
 as such and tracked in the
 [Roadmap](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md).

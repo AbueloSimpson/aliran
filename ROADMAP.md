@@ -169,8 +169,8 @@ following only the docs.
   **prompts**, and the docs as searchable resources. Secrets stay in the operator's
   local config; the model sees only tool results, and install-minted secrets are
   written into the box `.env` server-side. `test:mcp` in the required lane.
-  Publish-ready (`prepack` bundles the docs corpus, so `npx @aliran/mcp` keeps its
-  resources); the npm publish itself is a release step. See [docs/mcp.md](docs/mcp.md)
+  **Published on npm** — `npx @aliran/mcp` runs it anywhere, with the docs corpus
+  bundled at pack time. See [docs/mcp.md](docs/mcp.md)
 - ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
   (the desktop player already ships this as the public build's Connect screen)
 - ⬜ Concurrency limits, rental windows, blackout dates (entitlement-time features)
