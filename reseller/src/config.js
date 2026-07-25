@@ -133,6 +133,22 @@ if (config.webhook.secret && config.webhook.secret.length < 16) {
   problems.push('WEBHOOK_SECRET must be at least 16 characters (32+ recommended)')
 }
 
+// --- check-config dry-run (S49a) ---
+// `node src/config.js --check` (the file run DIRECTLY) reports the problem list
+// on stdout and exits 0/1 instead of throwing — the MCP's server_set_env
+// validates a .env change in the built image this way BEFORE restarting.
+// See panel/src/config.js.
+const checkRun = process.argv.includes('--check') && process.argv[1] &&
+  path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()
+if (checkRun) {
+  if (problems.length) {
+    process.stdout.write('reseller: invalid configuration —\n  - ' + problems.join('\n  - ') + '\n')
+    process.exit(1)
+  }
+  process.stdout.write('reseller: configuration OK\n')
+  process.exit(0)
+}
+
 if (problems.length) {
   throw new Error('reseller: invalid configuration —\n  - ' + problems.join('\n  - '))
 }

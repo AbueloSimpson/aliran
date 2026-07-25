@@ -67,6 +67,19 @@ catalog, verifies the same admins, and signs with the same identity.
 
 ## Restore
 
+`deploy/restore.sh` is the scripted counterpart of `backup.sh` (verify the
+archive → stop → **replace** the volume contents → start). It refuses a
+non-empty volume or an archive whose name doesn't match the service unless you
+pass `--force` — restoring over live data is deliberately the loud path:
+
+```sh
+./deploy/restore.sh panel backups/panel-<stamp>.tar.gz            # empty volume
+./deploy/restore.sh --force panel backups/panel-<stamp>.tar.gz    # replace live data
+```
+
+(The [MCP server](../mcp.md) wraps the same script as `server_restore`, with
+`server_list_backups` to find the archive.) By hand it is:
+
 ```sh
 docker compose stop panel
 docker run --rm -v aliran_panel-data:/data alpine sh -c 'rm -rf /data/* /data/..?* /data/.[!.]*'

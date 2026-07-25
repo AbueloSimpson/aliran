@@ -111,6 +111,22 @@ chkInt('ARGON2_MEM_KIB', config.argon2.memKiB, 8)
 chkInt('ARGON2_TIME', config.argon2.time, 1)
 chkBootstrap('BOOTSTRAP', config.bootstrap)
 
+// --- check-config dry-run (S49a) ---
+// `node src/config.js --check` (the file run DIRECTLY) reports the problem list
+// on stdout and exits 0/1 instead of throwing — the MCP's server_set_env
+// validates a .env change in the built image this way BEFORE restarting.
+// See panel/src/config.js.
+const checkRun = process.argv.includes('--check') && process.argv[1] &&
+  path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()
+if (checkRun) {
+  if (problems.length) {
+    process.stdout.write('library: invalid configuration —\n  - ' + problems.join('\n  - ') + '\n')
+    process.exit(1)
+  }
+  process.stdout.write('library: configuration OK\n')
+  process.exit(0)
+}
+
 if (problems.length) {
   throw new Error('library: invalid configuration —\n  - ' + problems.join('\n  - '))
 }

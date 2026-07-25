@@ -40,6 +40,35 @@ for (const [svc, env, needle] of BAD) {
   console.log(`  ok   ${svc} rejects bad ${needle}`)
 }
 
+// ===== 1b: the --check dry-run entrypoint (S49a) =====
+// `node src/config.js --check` (the file run DIRECTLY) must report on stdout and
+// exit 0/1 instead of throwing — the MCP's server_set_env dry-runs a .env change
+// in the built image this way before restarting. Importing the module (1/2a)
+// must stay unaffected by a stray --check in argv (direct-run detection).
+function probeCheck (svc, env) {
+  return spawnSync(process.execPath, [path.join(root, svc, 'src', 'config.js'), '--check'],
+    { env: { ...process.env, ...env }, encoding: 'utf8', timeout: 30000 })
+}
+for (const svc of ['panel', 'broadcaster', 'library', 'reseller']) {
+  const r = probeCheck(svc, {})
+  assert.strictEqual(r.status, 0, `${svc} --check must exit 0 on a clean env (stdout: ${r.stdout} stderr: ${r.stderr})`)
+  assert.ok(r.stdout.includes(`${svc}: configuration OK`), `${svc} --check reports OK on stdout`)
+  console.log(`  ok   ${svc} --check exits 0 on a clean env`)
+}
+const BAD_CHECK = [
+  ['panel', { POW_DIFFICULTY: 'notanumber' }, 'POW_DIFFICULTY must be an integer'],
+  ['broadcaster', { HLS_LIST_SIZE: '1' }, 'HLS_LIST_SIZE must be >= 2'],
+  ['library', { INGEST_CONCURRENCY: '0' }, 'INGEST_CONCURRENCY must be >= 1'],
+  ['reseller', { WEBHOOK_SECRET: 'short' }, 'WEBHOOK_SECRET must be at least 16 characters']
+]
+for (const [svc, env, needle] of BAD_CHECK) {
+  const r = probeCheck(svc, env)
+  assert.strictEqual(r.status, 1, `${svc} --check must exit 1 on a bad env (got ${r.status})`)
+  assert.ok(r.stdout.includes(needle), `${svc} --check must print "${needle}" on stdout (got: ${r.stdout})`)
+  assert.ok(!(r.stderr || '').includes('Error'), `${svc} --check reports cleanly, never a stack trace (stderr: ${r.stderr})`)
+  console.log(`  ok   ${svc} --check exits 1 naming the problem`)
+}
+
 // ===== 2a: clean env still boots every config =====
 for (const svc of ['panel', 'broadcaster', 'reseller', 'library', 'repeater']) {
   const r = probeImport(cfgUrl(svc), {})

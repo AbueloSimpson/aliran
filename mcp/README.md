@@ -9,11 +9,14 @@ MCP **resources**:
 
 - **`panel_*`** — the panel admin API (`:3210`): viewer accounts, grants, channel
   packages (bouquets), streams, remote sources, categories, publishers,
-  status/observability.
+  status/observability, aggregate-only analytics, dashboard admins.
 - **`broadcaster_*`** — the broadcaster control API (`:3310`): channels
-  (create/start/stop/rotate), ffmpeg logs, the capability probe, incidents, health.
+  (create/start/stop/rotate), ffmpeg logs, the capability probe, incidents, health,
+  aggregate-only analytics, control admins.
 - **`server_*`** — an **SSH executor**: `preflight`, `install`, `update`, `status`,
-  `logs`, `disk`, `backup`, `sysctl`.
+  `logs`, `disk`, `set_env` (env knobs, validated in-image via `config.js --check`
+  and **reverted** on failure before anything restarts), `restart`, `backup`,
+  `list_backups`, `restore` (refuses a non-empty volume without `force`), `sysctl`.
 - **`diagnose_*`** — a `/healthz` sweep and a symptom → knowledge-base router.
 - **`docs_search`** + the `mcp://aliran/*` resources — the shipped documentation.
 
@@ -112,5 +115,7 @@ resolves; set `docsDir` in the config to point elsewhere.
 `npm run test:mcp` (from the repo root) boots an in-process panel + broadcaster,
 launches this server over a stdio pipe, and drives it as an MCP client — tools,
 resources, a write chain, destructive-annotation presence, docs search, the
-re-login-on-401 path, and the SSH executor against a command stub. It is in the
-required CI lane (deterministic, no DHT).
+re-login-on-401 path, and the SSH executor against a command stub (which runs the
+REAL `config.js --check` for the `server_set_env` validate-then-revert path, and
+covers the `server_restore` refusal). It is in the required CI lane
+(deterministic, no DHT).

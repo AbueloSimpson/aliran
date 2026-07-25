@@ -238,7 +238,7 @@ claude mcp add aliran -- node /path/to/aliran/mcp/src/index.js --config /path/to
 - **Resources support varies.** Some clients surface MCP *resources*
   (`mcp://aliran/docs/*`), some only tools. That's why `docs_search` is a **tool**:
   docs-grounded answers work in every client either way.
-- **59 tools is a large catalog.** Capable models handle it fine; weaker models
+- **73 tools is a large catalog.** Capable models handle it fine; weaker models
   pick tools less reliably — a client consideration, not a server setting.
 - Any other MCP client that can launch a **local stdio server** works the same way —
   give it `node` + the two args and consult that client's docs for where they go.

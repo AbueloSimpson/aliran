@@ -2741,3 +2741,63 @@ was not touched.
   rejected with the channel's stored source left untouched. `test:args` covers the
   broadcaster-side refusal. Both new blocks were confirmed to FAIL against the
   pre-fix sources. Full required lane (15 suites) green.
+
+### S49a — MCP ops completeness: env tuning, restore, analytics, admins (verified)
+- **Why:** the S49 gap analysis (a source-level inventory of all 59 tools vs every
+  service's admin surface) found four P0 lifecycle blockers that still forced an
+  operator out of the MCP: no way to set an env knob or restart to apply anything
+  (three shipped flows literally end "restart to apply" with no tool able to),
+  backup without restore, the S48 analytics endpoints unwrapped, and admin-account
+  management missing entirely. This lands all four — 59 → **73 tools**.
+- **`server_set_env` — validate before you restart.** Every service config is
+  fail-fast at boot *by design* (S40), which is exactly wrong for a remote agent:
+  a typo'd knob + restart = service down. So all four service configs
+  (panel/broadcaster/library/reseller) gained a **`node src/config.js --check`**
+  dry-run mode — direct-run detection, problem list on stdout, exit 0/1, the
+  normal import path untouched — and the tool runs it **in the built image**
+  (`docker compose run --rm <svc> …`, which reads the freshly-written env_file)
+  BEFORE any restart. Validation failure ⇒ the `.env` snapshot is **reverted** and
+  the exact problem text is the tool error; success ⇒ applied via plain
+  `docker compose up -d <service>`. The subtle compose fact that shaped the
+  design: **`docker compose restart` does not re-read env files** — only an
+  `up -d` recreate does. `server_restart` (the `server_sysctl` follow-up) states
+  that limitation in its own description. Keys are **allowlisted** per service
+  (names only — the *values* are validated by the real config, so the lists can't
+  drift into wrongness, only into incompleteness, which fails safe); secrets
+  (`PUBLISHER_KEY`, `PANEL_PUBKEY`, `WEBHOOK_SECRET`, …) are refused with a
+  pointer at their dedicated server-side flows, and values are single-line-only —
+  an embedded newline could otherwise smuggle a `PUBLISHER_KEY=` line past the
+  allowlist into the env file.
+- **`deploy/restore.sh` + `server_restore`/`server_list_backups`.** backup.sh
+  finally has a counterpart: verify the tarball (before anything stops) → stop →
+  **replace** the volume contents → start, refusing a non-empty volume or an
+  archive whose name doesn't match the service without `--force` (and with
+  `--force` it clears first — an untar-over-merge of two corestore generations is
+  itself a corruption). The done-line states files restored, files replaced and
+  the archive name, and the tool relays it verbatim — a destructive tool's result
+  must say exactly what it destroyed. Also fixed in passing: `backup.sh` was
+  committed non-executable, so `server_backup`'s `./deploy/backup.sh` failed on a
+  fresh clone — both scripts are `755` now and invoked via `sh`.
+- **Analytics + admins.** `panel_analytics` / `broadcaster_analytics {days?}` are
+  plain GET passthroughs of the S48 aggregate-only endpoints (counts and "≥ N"
+  lower bounds; no new identity surface — the S48 invariant holds by
+  construction). Admin CRUD (list/add/remove/set-password) landed twice — panel
+  admin API and broadcaster control API — with the `panel_create_user`
+  generated-password pattern, and the honest caveat that rotating the account the
+  MCP itself logs in with requires updating the operator's local `mcp/config.json`
+  (the tools re-login with the *configured* password).
+- **Verified:** `test:mcp` sections **K–P**. The ssh command stub grew a persisted
+  fake-box `.env` store and — the part that matters — its `docker compose run …
+  --check` branch **spawns the real service config.js locally**, so the
+  revert-path test asserts the genuine `POW_DIFFICULTY must be an integer (got
+  "notanumber")` text arriving through the full MCP → ssh → image-check → revert
+  chain, and that the `.env` is byte-identical afterwards. Admin passwords are
+  live-verified (the generated password logs in over `/api/login`; the old one
+  401s after rotation; a removed admin can't log in). The whole-run command log is
+  swept for `--force-recreate` (zero occurrences, the standing §3B rule).
+  `test:config` gained `--check` probes for all four services (clean = exit 0
+  "configuration OK"; bad = exit 1 naming the knob, no stack trace). Full
+  required lane green; docs (mcp.md, reference.md catalog, configuration.md,
+  backup-and-rotation.md, quickstart, mcp/README) updated; `mkdocs --strict`
+  green. NO VPS work — post-merge live validation is the user's call (S46
+  precedent).

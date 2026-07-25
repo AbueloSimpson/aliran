@@ -70,6 +70,36 @@ phone + Android TV, and the Windows desktop player).
   per-client wiring incl. an advisory-hints caveat → first prompts → fresh-server
   install, with diagrams, a screenshot-capture checklist and a troubleshooting
   table). See [docs/mcp.md](docs/mcp.md).
+- **MCP ops completeness (S49a)** — the four P0 gaps that still forced an operator
+  out of the MCP, closed (59 → **73 tools**): **(1) env tuning + restart** —
+  `server_set_env {service, pairs}` upserts documented, **allowlisted** env knobs
+  (secrets like `PUBLISHER_KEY` refused — they have dedicated server-side flows)
+  and, because every service config **fail-fasts at boot**, dry-runs the new
+  `.env` through the new `node src/config.js --check` mode **in the built image
+  first** — on failure the `.env` is **reverted** and the exact problem list
+  surfaces; on success it applies via plain `docker compose up -d <service>`
+  (compose `restart` does **not** re-read env files — `server_restart` exists for
+  process bounces like the `server_sysctl` follow-up and says so). The `--check`
+  dry-run mode itself landed in **all four** service configs
+  (panel/broadcaster/library/reseller), probed by `test:config`. **(2) restore**
+  — new `deploy/restore.sh` (verify → stop → **replace** volume contents →
+  start; refuses a non-empty volume or a name-mismatched archive without
+  `--force`) wrapped as `server_restore` + `server_list_backups`; the result
+  echoes exactly what was overwritten and from which archive (`backup.sh` /
+  `restore.sh` are also executable now and invoked via `sh` — the committed
+  `backup.sh` mode bit had made `./deploy/backup.sh` fail on a fresh clone).
+  **(3) analytics** — `panel_analytics` / `broadcaster_analytics {days?}` expose
+  the S48 aggregate-only rollups (counts and "≥ N" lower bounds only — no new
+  identity surface). **(4) admin accounts** — list/add/remove/set-password ×
+  panel **and** broadcaster, with generated-and-returned passwords like
+  `panel_create_user`, and an explicit caveat that rotating the account the MCP
+  itself logs in with means updating the operator's local `mcp/config.json`.
+  `test:mcp` grew sections **K–P** (analytics passthroughs; admins CRUD with the
+  generated password **live-verified** against `/api/login`; the set_env
+  validate-then-apply flow with the revert path driven by the REAL `--check`
+  output through the ssh stub; newline-injection guard; restart; list/restore
+  incl. the refusal path; and a whole-log assert that no tool ever used
+  `--force-recreate`).
 - **Channel packages ("bouquets")** — named channel bundles an admin grants as one
   unit ("Basic", "Sports"), replacing chip-by-chip per-stream grants that stop
   scaling past a few dozen channels. Because a grant is a **sealed key** (not an

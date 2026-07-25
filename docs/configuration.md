@@ -8,7 +8,14 @@ Two behaviors shared by **every** service:
 - **Fail-fast validation** — a typo'd value (bad integer, out-of-range port,
   malformed key/URL) is a startup error naming the exact variable, never a silent
   fallback. If a service exits immediately after a config change, read its first
-  log lines.
+  log lines. **Dry-run a change before restarting** with the check-config mode —
+  it prints the same problem list and exits 0/1 without booting anything (the
+  [MCP's](mcp.md) `server_set_env` does this for you before any restart):
+
+    ```sh
+    docker compose run --rm panel node src/config.js --check
+    ```
+
 - **`LOG_FORMAT=json`** — opt-in structured logs: one `{ts, level, svc, msg}` JSON
   object per line for log shippers (Loki, ELK, CloudWatch). Unset keeps the
   human-readable lines unchanged.

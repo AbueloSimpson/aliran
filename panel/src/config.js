@@ -118,6 +118,23 @@ chkInt('SOURCES_MAX_BYTES', config.sources.maxBytes, 1024)
 chkInt('SOURCES_MAX_CHANNELS', config.sources.maxChannels, 1)
 chkBootstrap('BOOTSTRAP', config.bootstrap)
 
+// --- check-config dry-run (S49a) ---
+// `node src/config.js --check` (the file run DIRECTLY, e.g. `docker compose run
+// --rm panel node src/config.js --check`) reports the problem list on stdout and
+// exits 0/1 instead of throwing. The MCP's server_set_env dry-runs a .env change
+// in the built image this way BEFORE restarting — a bad knob otherwise throws at
+// boot and the service stays down.
+const checkRun = process.argv.includes('--check') && process.argv[1] &&
+  path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase()
+if (checkRun) {
+  if (problems.length) {
+    process.stdout.write('panel: invalid configuration —\n  - ' + problems.join('\n  - ') + '\n')
+    process.exit(1)
+  }
+  process.stdout.write('panel: configuration OK\n')
+  process.exit(0)
+}
+
 if (problems.length) {
   throw new Error('panel: invalid configuration —\n  - ' + problems.join('\n  - '))
 }

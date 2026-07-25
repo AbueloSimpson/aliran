@@ -11,7 +11,7 @@
 import { randomBytes } from 'crypto'
 import { z } from 'zod'
 
-function genPassword () {
+export function genPassword () {
   const A = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
   const b = randomBytes(20)
   let s = ''
@@ -68,6 +68,19 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_list_publishers', { title: 'List publishers', description: 'Enrolled broadcaster identities (S26) with scopes + status (never secrets).', annotations: { readOnlyHint: true } },
     async () => ok(await p.get('/api/publishers')))
+
+  def('panel_analytics', {
+    title: 'Panel analytics',
+    description: 'Aggregate-only analytics rollups (S48): logins ok/failed, sessions issued, unique viewers/day, apps-online gauge and catalog composition, per hour/UTC day. days = how many days back (default 7). Counts only — no usernames/keys/IPs exist in this surface, and connection-derived figures are lower bounds ("≥ N").',
+    inputSchema: { days: z.number().int().min(1).max(3650).optional() },
+    annotations: { readOnlyHint: true }
+  }, async ({ days }) => ok(await p.get('/api/analytics' + (days ? '?days=' + q(days) : ''))))
+
+  def('panel_list_admins', {
+    title: 'List dashboard admins',
+    description: 'Panel dashboard admin accounts (name/status/createdAt — never password material). These are the operator logins for the admin API + dashboard, not viewer accounts.',
+    annotations: { readOnlyHint: true }
+  }, async () => ok(await p.get('/api/admins')))
 
   // ---- users: create / mutate ----
   def('panel_create_user', {
@@ -173,6 +186,27 @@ export function registerPanelTools (ctx, h) {
   def('panel_set_publisher_status', { title: 'Activate/revoke a publisher', description: 'Set a publisher active or revoked.', inputSchema: { name: z.string(), status: z.enum(['active', 'revoked']) } },
     async ({ name, status }) => ok(await p.post('/api/publishers/' + q(name) + '/status', { status })))
 
+  // ---- dashboard admins (S49a) ----
+  def('panel_add_admin', {
+    title: 'Add a dashboard admin',
+    description: 'Create a panel dashboard admin account (full panel control — for co-operators, not viewers). If password is omitted a strong one is generated and returned so you can hand it over.',
+    inputSchema: { username: z.string(), password: z.string().min(8).optional() }
+  }, async ({ username, password }) => {
+    const pw = password || genPassword()
+    const out = await p.post('/api/admins', { username, password: pw })
+    return ok({ ...out, generatedPassword: password ? undefined : pw })
+  })
+
+  def('panel_set_admin_password', {
+    title: 'Set a dashboard admin password',
+    description: 'Rotate a panel dashboard admin password (bumps tokenVersion: every live session for that admin dies, dashboard logins included). Omit password to generate + return one. CAUTION: if this is the account this MCP itself logs in with (config "panel.user"/"pass"), update the operator\'s local mcp config (mcp/config.json) right afterwards — the panel_* tools re-login with the configured password and will fail auth until it matches.',
+    inputSchema: { username: z.string(), password: z.string().min(8).optional() }
+  }, async ({ username, password }) => {
+    const pw = password || genPassword()
+    const out = await p.post('/api/admins/' + q(username) + '/password', { password: pw })
+    return ok({ ...out, generatedPassword: password ? undefined : pw })
+  })
+
   // ---- destructive (destructiveHint) ----
   def('panel_delete_user', { title: 'Delete a user', description: 'Delete a viewer account record.', inputSchema: { username: z.string() }, annotations: { destructiveHint: true } },
     async ({ username }) => ok(await p.del('/api/users/' + q(username))))
@@ -194,4 +228,11 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_remove_publisher', { title: 'Remove a publisher', description: 'Hard-delete a publisher enrollment (prefer set_publisher_status revoked to keep the audit trail).', inputSchema: { name: z.string() }, annotations: { destructiveHint: true } },
     async ({ name }) => ok(await p.del('/api/publishers/' + q(name))))
+
+  def('panel_remove_admin', {
+    title: 'Remove a dashboard admin',
+    description: 'Delete a panel dashboard admin account. CAUTION: removing the account this MCP logs in with (config "panel.user") locks the panel_* tools out; removing the LAST admin locks the dashboard entirely — recover on the box with `docker compose run --rm panel node src/admin-cli.js add-admin <name>`.',
+    inputSchema: { username: z.string() },
+    annotations: { destructiveHint: true }
+  }, async ({ username }) => ok(await p.del('/api/admins/' + q(username))))
 }

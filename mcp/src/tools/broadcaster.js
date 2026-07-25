@@ -23,6 +23,7 @@
 // tools through the REAL normalizeInput so the two cannot drift apart silently.
 
 import { z } from 'zod'
+import { genPassword } from './panel.js'
 
 const q = (v) => encodeURIComponent(String(v))
 
@@ -147,6 +148,19 @@ export function registerBroadcasterTools (ctx, h) {
   def('broadcaster_incidents', { title: 'Broadcaster incidents', description: 'Correlated incidents (fleet-wide respawn bursts, source failovers), newest first. Ephemeral — cleared on a broadcaster restart.', annotations: { readOnlyHint: true } },
     async () => ok(await b.get('/api/incidents')))
 
+  def('broadcaster_analytics', {
+    title: 'Broadcaster analytics',
+    description: 'Aggregate-only per-channel rollups (S48): peer-link min/mean/max, egress bytes, respawns + incidents per hour/UTC day. days = how many days back (default 7). Peer counts are lower bounds ("≥ N" — viewers also serve each other); labels are public stream ids, never identities.',
+    inputSchema: { days: z.number().int().min(1).max(3650).optional() },
+    annotations: { readOnlyHint: true }
+  }, async ({ days }) => ok(await b.get('/api/analytics' + (days ? '?days=' + q(days) : ''))))
+
+  def('broadcaster_list_admins', {
+    title: 'List control admins',
+    description: 'Broadcaster control-dashboard admin accounts (name/status/createdAt — never password material). Separate from the panel\'s admins.',
+    annotations: { readOnlyHint: true }
+  }, async () => ok(await b.get('/api/admins')))
+
   // ---- create / mutate ----
   def('broadcaster_add_channel', {
     title: 'Add a channel',
@@ -163,6 +177,27 @@ export function registerBroadcasterTools (ctx, h) {
   def('broadcaster_start_channel', { title: 'Start a channel', description: 'Start a channel (spawns ffmpeg, mints/reuses the feed, registers with the panel).', inputSchema: { id: z.string() } },
     async ({ id }) => ok(await b.post('/api/channels/' + q(id) + '/start', {})))
 
+  // ---- control-dashboard admins (S49a) ----
+  def('broadcaster_add_admin', {
+    title: 'Add a control admin',
+    description: 'Create a broadcaster control-dashboard admin account. If password is omitted a strong one is generated and returned so you can hand it over.',
+    inputSchema: { username: z.string(), password: z.string().min(8).optional() }
+  }, async ({ username, password }) => {
+    const pw = password || genPassword()
+    const out = await b.post('/api/admins', { username, password: pw })
+    return ok({ ...out, generatedPassword: password ? undefined : pw })
+  })
+
+  def('broadcaster_set_admin_password', {
+    title: 'Set a control admin password',
+    description: 'Rotate a broadcaster control-admin password (bumps tokenVersion: every live session for that admin dies). Omit password to generate + return one. CAUTION: if this is the account this MCP itself logs in with (config "broadcaster.user"/"pass"), update the operator\'s local mcp config (mcp/config.json) right afterwards — the broadcaster_* tools re-login with the configured password and will fail auth until it matches.',
+    inputSchema: { username: z.string(), password: z.string().min(8).optional() }
+  }, async ({ username, password }) => {
+    const pw = password || genPassword()
+    const out = await b.post('/api/admins/' + q(username) + '/password', { password: pw })
+    return ok({ ...out, generatedPassword: password ? undefined : pw })
+  })
+
   // ---- destructive (destructiveHint) ----
   def('broadcaster_stop_channel', { title: 'Stop a channel', description: 'Stop a channel (ffmpeg down; the panel catalog flips it to isLive:false). Takes it off air.', inputSchema: { id: z.string() }, annotations: { destructiveHint: true } },
     async ({ id }) => ok(await b.post('/api/channels/' + q(id) + '/stop', {})))
@@ -172,4 +207,11 @@ export function registerBroadcasterTools (ctx, h) {
 
   def('broadcaster_remove_channel', { title: 'Remove a channel', description: 'Remove a STOPPED channel from the registry (its feed data is kept on disk).', inputSchema: { id: z.string() }, annotations: { destructiveHint: true } },
     async ({ id }) => ok(await b.del('/api/channels/' + q(id))))
+
+  def('broadcaster_remove_admin', {
+    title: 'Remove a control admin',
+    description: 'Delete a broadcaster control-admin account. CAUTION: removing the account this MCP logs in with (config "broadcaster.user") locks the broadcaster_* tools out; removing the LAST admin locks the control dashboard — recover on the box with `docker compose run --rm broadcaster node src/control-cli.js add-admin <name>`.',
+    inputSchema: { username: z.string() },
+    annotations: { destructiveHint: true }
+  }, async ({ username }) => ok(await b.del('/api/admins/' + q(username))))
 }

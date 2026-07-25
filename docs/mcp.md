@@ -25,9 +25,9 @@ is a thin, credentialed adapter over those, plus an SSH executor for the box its
 
 | Group | Backs onto | Examples |
 |---|---|---|
-| **`panel_*`** | panel admin API `:3210` | users, grants, **channel packages** (bouquets), streams, remote sources, categories, publishers, status/observability |
-| **`broadcaster_*`** | broadcaster control API `:3310` | channels (create/start/stop/rotate), ffmpeg logs, capability probe, incidents, health |
-| **`server_*`** | **SSH executor** | `preflight`, `install`, `update`, `status`, `logs`, `disk`, `backup`, `sysctl` |
+| **`panel_*`** | panel admin API `:3210` | users, grants, **channel packages** (bouquets), streams, remote sources, categories, publishers, status/observability, [analytics](analytics.md), dashboard admins |
+| **`broadcaster_*`** | broadcaster control API `:3310` | channels (create/start/stop/rotate), ffmpeg logs, capability probe, incidents, health, [analytics](analytics.md), control admins |
+| **`server_*`** | **SSH executor** | `preflight`, `install`, `update`, `status`, `logs`, `disk`, `set_env` (validate-then-apply), `restart`, `backup`, `list_backups`, `restore`, `sysctl` |
 | **`diagnose_*`** | the above + KB | `/healthz` sweep, symptom → knowledge-base router |
 | **`docs_search`** + `mcp://aliran/*` resources | the shipped docs | full-text search + every doc as a resource |
 
@@ -131,8 +131,41 @@ Updating is `server_update`: `git pull` → `COMPOSE_BAKE=false docker compose b
 plain `docker compose up -d` (never `--force-recreate`, per the
 [§3B recipe](kb/operator.md)).
 
+## Tuning, restarts and disaster recovery
+
+The full deployment lifecycle stays inside the MCP:
+
+- **`server_set_env {service, pairs}`** upserts documented env knobs
+  (`MAX_DEVICES_DEFAULT`, `HLS_LIST_SIZE`, `ANALYTICS_RETENTION_DAYS`, …) in the
+  service's `.env` on the box — **validated before applied**. Both configs
+  [fail fast](configuration.md) at boot, so the tool dry-runs the new `.env`
+  through `node src/config.js --check` **in the built image** first; on a failure
+  the `.env` is **reverted** and the exact problem list comes back, so a typo can
+  never leave a service down. On success it applies by recreating that one service
+  with plain `docker compose up -d <service>` — a compose `restart` does **not**
+  re-read env files. Secret keys (`PUBLISHER_KEY`, `PANEL_PUBKEY`, …) are refused:
+  they have dedicated flows that keep them server-side.
+- **`server_restart {services?}`** is the plain `docker compose restart` — the
+  follow-up `server_sysctl` asks for (swarms re-request their socket buffers on
+  boot). It deliberately does **not** apply `.env` changes (see above).
+- **`server_backup` / `server_list_backups` / `server_restore`** close the
+  disaster-recovery loop over `deploy/backup.sh` + `deploy/restore.sh`: cold
+  stop → tar → start one way, verify → stop → **replace** the volume contents →
+  start the other. A restore **refuses** a non-empty volume or a name-mismatched
+  archive unless forced, and its result states exactly what was overwritten and
+  from which archive. See the
+  [backup & restore runbook](kb/backup-and-rotation.md).
+- **Admin accounts** (`panel_*_admin`, `broadcaster_*_admin`) cover co-operator
+  onboarding/offboarding and password rotation (generated passwords are returned
+  so you can hand them over). Rotating or removing **the account the MCP itself
+  logs in with** requires updating the operator's local mcp config
+  (`mcp/config.json`) right afterwards — the tools re-login with the configured
+  password.
+
 ## Scope (v1)
 
-Panel admin + broadcaster control + install/maintain + docs. The reseller, VOD library
-and repeater services are **not** wrapped in v1. Remote (HTTP) transport is not offered
-— local stdio only.
+Panel admin + broadcaster control + install/maintain + docs. The reseller, VOD
+library and repeater services' own HTTP APIs are **not** wrapped yet (their
+box-level plumbing — `server_logs` / `server_set_env` / `server_backup` /
+`server_restore` — already accepts the `library` / `reseller` service names).
+Remote (HTTP) transport is not offered — local stdio only.

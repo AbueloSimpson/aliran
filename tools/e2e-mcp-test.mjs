@@ -102,24 +102,111 @@ function makeFakeManager () {
   }
 }
 
-// A fake `ssh` binary: reads the remote command (the last argv element ssh builds) and
-// prints canned output. This is the command-stub seam — server_* tools exercise their
-// real argv-building + parsing code against it, without a live sshd.
+// A fake `ssh` binary — the command-stub seam. It emulates just enough of the box
+// for server_* tools to exercise their REAL argv-building/sequencing/parsing code
+// without a live sshd: canned outputs for the probes, a persisted fake .env store
+// (fakebox-env.json) for the server_set_env snapshot/upsert/revert flow, and — the
+// part that matters — `docker compose run … node src/config.js --check` spawns the
+// REAL service config.js locally with the fake .env as its environment, so the
+// validate-then-revert path is driven by the true fail-fast validation text, not a
+// mock of it. Every remote command is appended to a log the test asserts on.
 const FAKE_SSH = path.join(dirs.mcp, 'fake-ssh.mjs')
-fs.writeFileSync(FAKE_SSH, `
-const remote = process.argv[process.argv.length - 1]
-let out = ''
-if (/admin-cli\\.js init/.test(remote)) {
-  out = 'Panel initialized.\\nPanel public key (give to clients):\\n  ${FAKE_PUB}\\nPublisher key (put in the broadcaster .env as PUBLISHER_KEY):\\n  ${FAKE_PUBLISHER_SECRET}\\nKeys are in /data/keys (gitignored - BACK UP).'
-} else if (/command -v docker|docker --version|== docker ==/.test(remote)) {
-  out = '== docker ==\\nDocker version 27.0.0\\n== docker compose ==\\nDocker Compose version v2.29.0\\n== ffmpeg ==\\nffmpeg version 7.0\\n== git ==\\ngit version 2.43.0\\n== repo ==\\nabsent (/opt/aliran)'
-} else if (/docker compose .*\\bps\\b/.test(remote)) {
-  out = 'NAME                  STATUS\\naliran-panel-1        Up 2 hours\\naliran-broadcaster-1  Up 2 hours\\n== commit ==\\nb136457 docs(packages)'
-} else {
-  out = 'stub-ok'
+const FAKE_STATE = path.join(dirs.mcp, 'fakebox-env.json')
+const FAKE_CMDLOG = path.join(dirs.mcp, 'fake-ssh-commands.log')
+fs.writeFileSync(FAKE_SSH, String.raw`
+import fs from 'fs'
+import { spawnSync } from 'child_process'
+const REPO = ${JSON.stringify(REPO)}
+const STATE = ${JSON.stringify(FAKE_STATE)}
+const LOGF = ${JSON.stringify(FAKE_CMDLOG)}
+const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : {}
+const save = () => fs.writeFileSync(STATE, JSON.stringify(state, null, 1))
+const out = (s) => { process.stdout.write(s + '\n'); process.exit(0) }
+
+let remote = process.argv[process.argv.length - 1]
+fs.appendFileSync(LOGF, remote.split('\n').join(' <NL> ') + '\n')
+remote = remote.replace(/^cd '[^']*' && /, '')
+let m
+
+// ---- canned probes (S46) ----
+if (/admin-cli\.js init/.test(remote)) {
+  out('Panel initialized.\nPanel public key (give to clients):\n  ${FAKE_PUB}\nPublisher key (put in the broadcaster .env as PUBLISHER_KEY):\n  ${FAKE_PUBLISHER_SECRET}\nKeys are in /data/keys (gitignored - BACK UP).')
 }
-process.stdout.write(out + '\\n')
-process.exit(0)
+if (/command -v docker|docker --version|== docker ==/.test(remote)) {
+  out('== docker ==\nDocker version 27.0.0\n== docker compose ==\nDocker Compose version v2.29.0\n== ffmpeg ==\nffmpeg version 7.0\n== git ==\ngit version 2.43.0\n== repo ==\nabsent (/opt/aliran)')
+}
+
+// ---- fake box .env state (upsertEnv / the server_set_env snapshot-revert flow) ----
+if ((m = remote.match(/^\[ -f '([^']+)' \] && echo exists/))) {
+  out(state[m[1]] !== undefined ? 'exists' : 'absent')
+}
+if ((m = remote.match(/^cp -p '([^']+)' '([^']+)'$/))) {
+  if (state[m[1]] === undefined) { process.stderr.write('cp: no such file\n'); process.exit(1) }
+  state[m[2]] = state[m[1]]; save(); out('')
+}
+if ((m = remote.match(/^mv '([^']+)' '([^']+)'$/))) {
+  if (state[m[1]] === undefined) { process.stderr.write('mv: no such file\n'); process.exit(1) }
+  state[m[2]] = state[m[1]]; delete state[m[1]]; save(); out('')
+}
+if ((m = remote.match(/^rm -f '([^']+)'$/))) { delete state[m[1]]; save(); out('') }
+if (remote.indexOf("printf '%s") !== -1 && remote.indexOf(" >> '") !== -1) {
+  let mm
+  const touchRe = /touch '([^']+)'/g
+  while ((mm = touchRe.exec(remote))) { if (state[mm[1]] === undefined) state[mm[1]] = '' }
+  const dropRe = /grep -v '\^([A-Z0-9_]+)=' '([^']+)'/g
+  while ((mm = dropRe.exec(remote))) {
+    const keep = (state[mm[2]] || '').split('\n').filter((l) => l !== '' && l.indexOf(mm[1] + '=') !== 0)
+    state[mm[2]] = keep.length ? keep.join('\n') + '\n' : ''
+  }
+  const addRe = /printf '%s\\n' '([^']*)' >> '([^']+)'/g
+  while ((mm = addRe.exec(remote))) {
+    const keep = (state[mm[2]] || '').split('\n').filter((l) => l !== '')
+    keep.push(mm[1])
+    state[mm[2]] = keep.join('\n') + '\n'
+  }
+  save(); out('')
+}
+
+// ---- in-image check-config: run the REAL service config.js locally ----
+if ((m = remote.match(/docker compose(?: --profile '[^']*')* run --rm '(panel|broadcaster|library|reseller)' node src\/config\.js --check/))) {
+  const vars = {}
+  for (const line of (state['/opt/aliran/' + m[1] + '/.env'] || '').split('\n')) {
+    const i = line.indexOf('=')
+    if (i > 0) vars[line.slice(0, i)] = line.slice(i + 1)
+  }
+  const r = spawnSync(process.execPath, [REPO + '/' + m[1] + '/src/config.js', '--check'], { env: Object.assign({}, process.env, vars), encoding: 'utf8', timeout: 30000 })
+  process.stdout.write(r.stdout || '')
+  process.stderr.write(r.stderr || '')
+  process.exit(r.status === null ? 1 : r.status)
+}
+if ((m = remote.match(/docker compose(?: --profile '[^']*')* up -d '(panel|broadcaster|library|reseller)'$/))) {
+  out('Container aliran-' + m[1] + '-1  Started')
+}
+if (/docker compose(?: --profile '[^']*')* restart/.test(remote)) {
+  out('Container aliran-panel-1  Started\nContainer aliran-broadcaster-1  Started')
+}
+if (/docker compose .*\bps\b/.test(remote)) {
+  out('NAME                  STATUS\naliran-panel-1        Up 2 hours\naliran-broadcaster-1  Up 2 hours\n== commit ==\nb136457 docs(packages)')
+}
+
+// ---- backups ----
+if (/^ls -lh '/.test(remote)) {
+  out('-rw-r--r-- 1 root root 8.9M Jul 24 07:00 ./backups/panel-20260724-070000.tar.gz\n-rw-r--r-- 1 root root  61M Jul 24 07:01 ./backups/broadcaster-20260724-070100.tar.gz')
+}
+if (/deploy\/restore\.sh/.test(remote)) {
+  const force = remote.indexOf('--force') !== -1
+  const am = remote.match(/'([^']*\.tar\.gz)'/)
+  const arch = am ? am[1].split('/').pop() : 'unknown.tar.gz'
+  const sm = remote.match(/restore\.sh (?:--force )?'([a-z]+)'/)
+  const svc = sm ? sm[1] : 'panel'
+  if (arch.indexOf('nonempty') !== -1 && !force) {
+    process.stderr.write('refusing: volume aliran_' + svc + '-data is NOT empty (1234 files, 8.9M) — restoring would overwrite it. Re-run with --force to replace its contents.\n')
+    process.exit(3)
+  }
+  out('== ' + svc + ': verifying archive ' + arch + '\n== ' + svc + ': stopping\n== ' + svc + ': clearing aliran_' + svc + '-data (1234 files, 8.9M)\n== ' + svc + ': restoring ' + arch + ' -> aliran_' + svc + '-data\n== ' + svc + ': starting\n== done: restored aliran_' + svc + '-data from ' + arch + ' (1201 files; replaced 1234 previous files, 8.9M)')
+}
+
+out('stub-ok')
 `)
 
 async function callRaw (client, name, args) {
@@ -163,7 +250,10 @@ try {
   const bcConfig = { dataDir: dirs.bc, argon2: { memKiB: 8192, time: 1 } }
   bcAddAdmin({ config: bcConfig, dataDir: dirs.bc }, BC_ADMIN.user, BC_ADMIN.pass)
   const manager = makeFakeManager()
-  const bcSrv = await startControlServer({ config: bcConfig, manager, dataDir: dirs.bc }, { host: '127.0.0.1', port: 0, sessionTtlMs: 3600000, lockout: { threshold: 50, seconds: 60 } })
+  // Kept as a named ref so section K can attach a fake `analytics` later — the
+  // control server reads ctx.analytics per request.
+  const bcCtx = { config: bcConfig, manager, dataDir: dirs.bc }
+  const bcSrv = await startControlServer(bcCtx, { host: '127.0.0.1', port: 0, sessionTtlMs: 3600000, lockout: { threshold: 50, seconds: 60 } })
   cleanups.push(bcSrv.close)
   const bcPort = bcSrv.port
   log('broadcaster control API on 127.0.0.1:' + bcPort)
@@ -190,11 +280,14 @@ try {
   const toolsList = await client.listTools()
   const toolNames = new Set(toolsList.tools.map((t) => t.name))
   for (const must of ['panel_status', 'panel_create_user', 'panel_delete_stream', 'panel_add_package', 'panel_set_user_packages',
+    'panel_analytics', 'panel_list_admins', 'panel_add_admin', 'panel_remove_admin', 'panel_set_admin_password',
     'broadcaster_list_channels', 'broadcaster_add_channel', 'broadcaster_incidents',
-    'server_preflight', 'server_install', 'server_update', 'diagnose_healthz', 'diagnose_symptom', 'docs_search']) {
+    'broadcaster_analytics', 'broadcaster_list_admins', 'broadcaster_add_admin', 'broadcaster_remove_admin', 'broadcaster_set_admin_password',
+    'server_preflight', 'server_install', 'server_update', 'server_set_env', 'server_restart', 'server_list_backups', 'server_restore',
+    'diagnose_healthz', 'diagnose_symptom', 'docs_search']) {
     assert.ok(toolNames.has(must), 'tools/list missing ' + must)
   }
-  assert.ok(toolsList.tools.length >= 30, 'expected a broad tool catalog, got ' + toolsList.tools.length)
+  assert.ok(toolsList.tools.length >= 70, 'expected a broad tool catalog (S49a: 73), got ' + toolsList.tools.length)
   const resList = await client.listResources()
   const resUris = new Set(resList.resources.map((r) => r.uri))
   assert.ok(resUris.has('mcp://aliran/guide'), 'guide resource missing')
@@ -229,14 +322,17 @@ try {
 
   // ===== D: annotations — destructiveHint on purges/revokes, readOnlyHint on GETs =====
   const byName = Object.fromEntries(toolsList.tools.map((t) => [t.name, t]))
-  for (const name of ['panel_delete_stream', 'panel_delete_user', 'panel_revoke_grant', 'panel_delete_package', 'broadcaster_remove_channel', 'broadcaster_stop_channel', 'server_update']) {
+  for (const name of ['panel_delete_stream', 'panel_delete_user', 'panel_revoke_grant', 'panel_delete_package', 'broadcaster_remove_channel', 'broadcaster_stop_channel', 'server_update',
+    'server_set_env', 'server_restart', 'server_restore', 'panel_remove_admin', 'broadcaster_remove_admin']) {
     assert.strictEqual(byName[name].annotations && byName[name].annotations.destructiveHint, true, name + ' must carry destructiveHint')
   }
-  for (const name of ['panel_status', 'panel_list_users', 'panel_list_streams', 'broadcaster_list_channels', 'docs_search', 'diagnose_healthz', 'server_preflight']) {
+  for (const name of ['panel_status', 'panel_list_users', 'panel_list_streams', 'broadcaster_list_channels', 'docs_search', 'diagnose_healthz', 'server_preflight',
+    'panel_analytics', 'broadcaster_analytics', 'panel_list_admins', 'broadcaster_list_admins', 'server_list_backups']) {
     assert.strictEqual(byName[name].annotations && byName[name].annotations.readOnlyHint, true, name + ' must carry readOnlyHint')
   }
   // create/mutate tools must NOT be flagged destructive (clients would over-confirm)
   assert.ok(!(byName.panel_create_user.annotations && byName.panel_create_user.annotations.destructiveHint), 'create_user is not destructive')
+  assert.ok(!(byName.panel_add_admin.annotations && byName.panel_add_admin.annotations.destructiveHint), 'add_admin is not destructive')
   log('D: destructiveHint on purges/revokes; readOnlyHint on GETs; creates unflagged ✓')
 
   // ===== E: docs resource read + docs_search + the guide =====
@@ -396,7 +492,143 @@ try {
   assert.strictEqual(stillCopy.transcode.encoder, 'copy', 'the rejected transcode patches changed nothing')
   log('J: typed input/transcode — real published schema, objects round-trip, stringified objects rescued, malformed ones rejected with the stored source intact ✓')
 
-  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor; typed channel input/transcode)')
+  // ===== K: analytics passthroughs (S49a / G3) =====
+  // Without an analytics module both services answer the honest empty shape; with
+  // one attached the tools must pass `days` through untouched. The fakes only echo
+  // — the rollup math itself is test:analytics's job.
+  const emptyShape = await callJson(client, 'panel_analytics')
+  assert.strictEqual(emptyShape.enabled, false, 'no analytics module -> honest empty shape (enabled:false)')
+  assert.deepStrictEqual(emptyShape.days, [], 'empty shape has days:[]')
+  ctx.analytics = { api: (days) => ({ enabled: true, retentionDays: 90, requestedDays: days, days: [], current: null }) }
+  bcCtx.analytics = { api: (days) => ({ enabled: true, retentionDays: 90, requestedDays: days, days: [], current: null }) }
+  assert.strictEqual((await callJson(client, 'panel_analytics', { days: 3 })).requestedDays, 3, 'panel_analytics forwards days=3')
+  assert.strictEqual((await callJson(client, 'panel_analytics')).requestedDays, 7, 'panel_analytics default lands on the route default (7)')
+  assert.strictEqual((await callJson(client, 'broadcaster_analytics', { days: 2 })).requestedDays, 2, 'broadcaster_analytics forwards days=2')
+  // Schema-level rejection may surface as a protocol error (SDK InvalidParams) or
+  // an isError result depending on the SDK — either way it must not go through.
+  let daysRejected = false
+  try { const r = await callRaw(client, 'panel_analytics', { days: 0 }); daysRejected = !!r.isError } catch { daysRejected = true }
+  assert.ok(daysRejected, 'days:0 is rejected by the schema (min 1)')
+  log('K: analytics passthroughs — empty shape without a module, days forwarded with one ✓')
+
+  // ===== L: dashboard-admin CRUD on both services (S49a / G4) =====
+  // Proves the generated password actually WORKS (a real /api/login with it), the
+  // rotation kills the old password, and remove revokes login entirely.
+  const apiLogin = async (port, username, password) => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }) })
+    try { await r.json() } catch {}
+    return r.status
+  }
+  for (const [label, listTool, addTool, pwTool, rmTool, port, seedAdmin] of [
+    ['panel', 'panel_list_admins', 'panel_add_admin', 'panel_set_admin_password', 'panel_remove_admin', panelPort, PANEL_ADMIN.user],
+    ['broadcaster', 'broadcaster_list_admins', 'broadcaster_add_admin', 'broadcaster_set_admin_password', 'broadcaster_remove_admin', bcPort, BC_ADMIN.user]
+  ]) {
+    const seedList = await callJson(client, listTool)
+    assert.ok(seedList.some((a) => a.name === seedAdmin), `${listTool} shows the seed admin`)
+    assert.ok(!JSON.stringify(seedList).includes('verifier') && !JSON.stringify(seedList).includes('salt'), `${listTool} never leaks password material`)
+    const added = await callJson(client, addTool, { username: 'mcpadmin2' })
+    assert.ok(added.generatedPassword && added.generatedPassword.length >= 16, `${addTool} generates + returns a password when omitted`)
+    assert.ok((await callJson(client, listTool)).some((a) => a.name === 'mcpadmin2'), `${addTool} shows up in the list`)
+    assert.strictEqual(await apiLogin(port, 'mcpadmin2', added.generatedPassword), 200, `${label}: the generated password actually logs in`)
+    const rotated = await callJson(client, pwTool, { username: 'mcpadmin2' })
+    assert.ok(rotated.generatedPassword && rotated.tokenVersion >= 2, `${pwTool} rotates + bumps tokenVersion`)
+    assert.strictEqual(await apiLogin(port, 'mcpadmin2', added.generatedPassword), 401, `${label}: the OLD password is dead after rotation`)
+    assert.strictEqual(await apiLogin(port, 'mcpadmin2', rotated.generatedPassword), 200, `${label}: the NEW password logs in`)
+    const removed = await callJson(client, rmTool, { username: 'mcpadmin2' })
+    assert.strictEqual(removed.removed, true, `${rmTool} reports removal`)
+    assert.ok(!(await callJson(client, listTool)).some((a) => a.name === 'mcpadmin2'), `${rmTool} really removed it`)
+    assert.strictEqual(await apiLogin(port, 'mcpadmin2', rotated.generatedPassword), 401, `${label}: a removed admin cannot log in`)
+  }
+  // The self-lockout caveat must be spelled out where the client reads it.
+  for (const name of ['panel_set_admin_password', 'broadcaster_set_admin_password', 'panel_remove_admin', 'broadcaster_remove_admin']) {
+    assert.ok(byName[name].description.includes('mcp') || byName[name].description.includes('MCP'), name + ' description warns about the MCP\'s own login')
+  }
+  assert.ok(byName.panel_set_admin_password.description.includes('mcp/config.json'), 'rotation caveat names the operator\'s local mcp config')
+  log('L: admins CRUD ×2 services — generated passwords live-verified, rotation kills the old one, remove revokes login ✓')
+
+  // ===== M: server_set_env happy paths (S49a / G1) =====
+  // Through the ssh stub: snapshot -> upsert -> REAL config.js --check in the
+  // "image" -> apply via plain `docker compose up -d <svc>` (compose restart does
+  // NOT re-read env files — asserted below on the command log).
+  const readState = () => JSON.parse(fs.readFileSync(FAKE_STATE, 'utf8'))
+  const readCmdLog = () => fs.readFileSync(FAKE_CMDLOG, 'utf8')
+  const setOk = await callJson(client, 'server_set_env', { service: 'panel', pairs: { MAX_DEVICES_DEFAULT: 5, SESSION_TTL_DAYS: 45 } })
+  assert.deepStrictEqual(setOk.set, { MAX_DEVICES_DEFAULT: '5', SESSION_TTL_DAYS: '45' }, 'set_env echoes the written knobs')
+  assert.match(setOk.validation, /passed/, 'set_env reports the in-image validation')
+  assert.match(setOk.applied, /up -d panel/, 'set_env applies via docker compose up -d (the recreate that re-reads env)')
+  let panelEnv = readState()['/opt/aliran/panel/.env']
+  assert.ok(panelEnv.includes('MAX_DEVICES_DEFAULT=5') && panelEnv.includes('SESSION_TTL_DAYS=45'), 'the fake box .env holds the new knobs')
+  assert.ok(readCmdLog().includes("run --rm 'panel' node src/config.js --check"), 'check-config ran in the built image BEFORE the restart')
+  // Upsert semantics: setting the same key again replaces the line, not appends.
+  await callJson(client, 'server_set_env', { service: 'panel', pairs: { MAX_DEVICES_DEFAULT: 6 } })
+  panelEnv = readState()['/opt/aliran/panel/.env']
+  assert.strictEqual(panelEnv.split('\n').filter((l) => l.startsWith('MAX_DEVICES_DEFAULT=')).length, 1, 'upsert replaces the existing line')
+  assert.ok(panelEnv.includes('MAX_DEVICES_DEFAULT=6') && panelEnv.includes('SESSION_TTL_DAYS=45'), 'other keys survive an upsert')
+  // apply:false stages without the recreate.
+  const staged = await callJson(client, 'server_set_env', { service: 'broadcaster', pairs: { HLS_LIST_SIZE: 12 }, apply: false })
+  assert.match(staged.applied, /NOT applied/, 'apply:false stages the change')
+  assert.ok(!readCmdLog().includes("up -d 'broadcaster'"), 'apply:false never recreated the broadcaster')
+  // First-ever .env (absent file): no snapshot, still validated, still applied.
+  const fresh = await callJson(client, 'server_set_env', { service: 'reseller', pairs: { DAYS_PER_MONTH: 30 } })
+  assert.match(fresh.validation, /passed/, 'set_env works when the .env does not exist yet')
+  assert.ok(readState()['/opt/aliran/reseller/.env'].includes('DAYS_PER_MONTH=30'), 'the fresh .env was created')
+  log('M: server_set_env — validated in-image, applied via up -d, upsert replaces, apply:false stages, absent .env created ✓')
+
+  // ===== N: server_set_env refusals + the check-config-failure REVERT path =====
+  const secretTry = await callRaw(client, 'server_set_env', { service: 'panel', pairs: { PUBLISHER_KEY: 'feed'.repeat(32) } })
+  assert.ok(secretTry.isError, 'PUBLISHER_KEY must be refused')
+  assert.match(secretTry.content[0].text, /refusing to set PUBLISHER_KEY/, 'refusal names the key')
+  assert.match(secretTry.content[0].text, /panel_add_publisher/, 'refusal points at the dedicated flow')
+  const unknownTry = await callRaw(client, 'server_set_env', { service: 'panel', pairs: { TYPO_KNOB: '1' } })
+  assert.ok(unknownTry.isError && /not a documented panel knob/.test(unknownTry.content[0].text), 'unknown keys are refused with the allowlist')
+  assert.ok(unknownTry.content[0].text.includes('MAX_DEVICES_DEFAULT'), 'the refusal lists the settable keys')
+  // The flagship failure: a typo'd VALUE. The stub runs the REAL panel config.js
+  // --check, so this asserts the true problem text surfaces and the .env reverts.
+  const beforeBad = readState()['/opt/aliran/panel/.env']
+  const upCountBefore = readCmdLog().split("up -d 'panel'").length
+  const badVal = await callRaw(client, 'server_set_env', { service: 'panel', pairs: { POW_DIFFICULTY: 'notanumber' } })
+  assert.ok(badVal.isError, 'a value the service would refuse at boot must be rejected')
+  assert.match(badVal.content[0].text, /REVERTED/, 'the tool says the .env was reverted')
+  assert.match(badVal.content[0].text, /POW_DIFFICULTY must be an integer \(got "notanumber"\)/, 'the EXACT config.js problem text surfaces')
+  assert.strictEqual(readState()['/opt/aliran/panel/.env'], beforeBad, 'the .env is byte-identical after the revert')
+  assert.ok(readCmdLog().includes("mv '/opt/aliran/panel/.env.mcp-prev' '/opt/aliran/panel/.env'"), 'the snapshot was moved back')
+  assert.strictEqual(readCmdLog().split("up -d 'panel'").length, upCountBefore, 'nothing was applied on the failed set')
+  // Absent-file failure: the revert removes the file it created.
+  const badFresh = await callRaw(client, 'server_set_env', { service: 'library', pairs: { INGEST_CONCURRENCY: 0 } })
+  assert.ok(badFresh.isError && /INGEST_CONCURRENCY must be >= 1/.test(badFresh.content[0].text), 'library bad value rejected with the real problem text')
+  assert.strictEqual(readState()['/opt/aliran/library/.env'], undefined, 'the created .env was removed on revert (file was absent before)')
+  // Injection guard: a newline in a value could smuggle a secret line past the allowlist.
+  const inject = await callRaw(client, 'server_set_env', { service: 'panel', pairs: { SESSION_TTL_DAYS: '30\nPUBLISHER_KEY=evil' } })
+  assert.ok(inject.isError && /single line/.test(inject.content[0].text), 'multi-line values are rejected')
+  assert.ok(!JSON.stringify(readState()).includes('PUBLISHER_KEY=evil'), 'the smuggled line never reached any .env')
+  log('N: server_set_env refusals — secrets/unknown keys client-side, bad values REVERTED with the real check-config text, newline injection blocked ✓')
+
+  // ===== O: server_restart (S49a / G1) =====
+  const restarted = await callJson(client, 'server_restart', { services: ['broadcaster'] })
+  assert.deepStrictEqual(restarted.restarted, ['broadcaster'], 'restart echoes the service list')
+  assert.ok(readCmdLog().includes("docker compose restart 'broadcaster'"), 'compose restart with the named service')
+  const restartAll = await callJson(client, 'server_restart')
+  assert.strictEqual(restartAll.restarted, 'all services', 'no-arg restart = all services')
+  assert.ok(byName.server_restart.description.includes('does NOT apply .env'), 'server_restart is honest that restart does not re-read env files')
+  log('O: server_restart — named + all-services restarts through compose restart ✓')
+
+  // ===== P: backups — list + restore + the refusal path (S49a / G2) =====
+  const backups = await callJson(client, 'server_list_backups')
+  assert.match(backups.backups, /panel-20260724-070000\.tar\.gz/, 'server_list_backups lists the archives')
+  const restored = await callJson(client, 'server_restore', { service: 'panel', archive: 'backups/panel-20260724-070000.tar.gz' })
+  assert.match(restored.result, /== done: restored aliran_panel-data from panel-20260724-070000\.tar\.gz/, 'restore states exactly what was overwritten and from which archive')
+  const refused = await callRaw(client, 'server_restore', { service: 'panel', archive: 'backups/panel-nonempty-20260101-000000.tar.gz' })
+  assert.ok(refused.isError, 'restore onto a non-empty volume without force must fail')
+  assert.match(refused.content[0].text, /NOT empty/, 'the refusal explains the volume is not empty')
+  assert.match(refused.content[0].text, /--force/, 'the refusal names the way through')
+  const forced = await callJson(client, 'server_restore', { service: 'panel', archive: 'backups/panel-nonempty-20260101-000000.tar.gz', force: true })
+  assert.match(forced.result, /== done: restored/, 'force:true goes through')
+  assert.ok(readCmdLog().includes("restore.sh --force 'panel'"), 'force maps to the script\'s --force flag')
+  // The standing §3B rule, asserted over EVERYTHING this test ran on the box:
+  assert.ok(!readCmdLog().includes('--force-recreate'), 'NO tool ever used docker compose --force-recreate')
+  log('P: backups — list, restore with exact overwrite echo, refusal without force, no --force-recreate anywhere ✓')
+
+  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
