@@ -24,11 +24,12 @@ you close the app. On mobile data it behaves better than most: see
 
 ## 2. Install
 
-Your operator hands you an APK file (usually `aliran-android-public-arm64.apk`
+Your operator hands you an APK file (usually `aliran-android-public-arm64-v8a.apk`
 or their own branded name) — or you can download the generic public build
 yourself from the project's
 [releases page](https://github.com/AbueloSimpson/aliran/releases/latest)
-(pick the `arm64` APK for real phones and TVs). It isn't from an app store, so
+(pick the `arm64-v8a` APK for real phones and TVs; the smaller `armeabi-v7a`
+one is for older 32-bit TV boxes and sticks). It isn't from an app store, so
 Android asks you to allow the install:
 
 - **Phone / tablet:** open the APK (from Files, your browser's downloads, or a
@@ -41,10 +42,10 @@ Android asks you to allow the install:
 
 Playback needs **Android 10 or newer** — that's a hard floor of the P2P
 engine, not a preference (older devices, including all Fire OS 7 sticks,
-cannot load it). Most TVs and phones from 2020 on are fine. The current
-downloads only install on Android 10+; newer operator-distributed builds may
-install from Android 7 but show an "engine unavailable" notice on anything
-below 10 — either way, older devices cannot play.
+cannot load it). Most TVs and phones from 2020 on are fine. The APKs
+themselves **install from Android 7** (so one file can go out to a mixed
+fleet), but on Android 7–9 the app shows an "engine not supported on this
+device" notice instead of playing — installing ≠ playing on those devices.
 
 **Why the "unknown sources" warning?** Community builds are distributed
 directly, not through Play. The warning is Android's standard gate for that.

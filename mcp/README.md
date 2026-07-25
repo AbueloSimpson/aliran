@@ -140,12 +140,14 @@ snippet with your absolute paths filled in, and
 ⚠ Destructive-tool confirmations (`destructiveHint`) are advisory per the MCP spec —
 verify your client prompts before purge/stop/update tools.
 
-Run it from a **repo checkout** or from the **published package** — `npm pack` /
-`npm publish` bundle the docs corpus into `docs-bundle/` (the `prepack` script), and
-the server falls back to it exactly when a repo checkout's live `docs/` is absent.
-Once published: `npx @aliran/mcp --config <path>`, or
+Run it from a **repo checkout** or straight from
+**[npm](https://www.npmjs.com/package/@aliran/mcp)** — no checkout needed:
+`npx @aliran/mcp --config <path>`, or
 `command: "npx", args: ["-y", "@aliran/mcp", "--config", …]` in the client config.
-Set `docsDir` in the config to override the docs location either way.
+`npm pack` / `npm publish` bundle the docs corpus into `docs-bundle/` (the
+`prepack` script), and the server falls back to it exactly when a repo checkout's
+live `docs/` is absent. Set `docsDir` in the config to override the docs location
+either way.
 
 ## Test
 

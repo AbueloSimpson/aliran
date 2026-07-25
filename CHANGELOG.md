@@ -158,10 +158,11 @@ phone + Android TV, and the Windows desktop player).
   TLS story stays **docs-first** (Caddy per the KB; DNS is out-of-band).
   **`server_update {dryRun:true}`** previews exactly what would deploy
   (fetch + commit list + changed files) without building or restarting.
-  **npm-publish prep**: `@aliran/mcp` is publish-ready — `prepack` bundles the
-  docs corpus into `docs-bundle/` and the server falls back to it when no repo
-  checkout is around, so a published `npx @aliran/mcp` still serves the docs
-  resources (publishing itself is a manual release step). `diagnose_symptom`
+  **npm publish**: `@aliran/mcp@0.1.0` is **live on the registry**
+  (published 2026-07-25) — `prepack` bundles the docs corpus into
+  `docs-bundle/` and the server falls back to it when no repo checkout is
+  around, verified post-publish: `npx @aliran/mcp --doctor` from a scratch
+  directory indexes all 45 bundled docs. `diagnose_symptom`
   learned the new lore (env changes need `up -d`, category-rename ×
   `category:` members, restore's non-empty refusal). `test:mcp` grew sections
   **W–AC**: a second fake box through the same ssh stub (multi-host routing +

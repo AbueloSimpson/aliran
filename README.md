@@ -11,6 +11,7 @@ Self-hostable, open-source, peer-to-peer OTT streaming on the
 [![ci](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml/badge.svg)](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml)
 [![docs](https://github.com/AbueloSimpson/aliran/actions/workflows/docs.yml/badge.svg)](https://abuelosimpson.github.io/aliran/)
 [![npm](https://img.shields.io/npm/v/%40aliran%2Fplayer-sdk?label=%40aliran%2Fplayer-sdk)](https://www.npmjs.com/package/@aliran/player-sdk)
+[![npm](https://img.shields.io/npm/v/%40aliran%2Fmcp?label=%40aliran%2Fmcp)](https://www.npmjs.com/package/@aliran/mcp)
 [![viewer builds](https://img.shields.io/github/v/release/AbueloSimpson/aliran?label=viewer%20builds)](https://github.com/AbueloSimpson/aliran/releases/latest)
 [![license](https://img.shields.io/github/license/AbueloSimpson/aliran)](LICENSE)
 
@@ -41,9 +42,27 @@ Self-hostable, open-source, peer-to-peer OTT streaming on the
 
 | | | |
 |---|---|---|
-| 📺 | **Watch a service someone runs** | Grab an app from the [releases page](https://github.com/AbueloSimpson/aliran/releases/latest), then follow the [Android](docs/android-viewer-guide.md) or [desktop](docs/desktop-viewer-guide.md) viewer guide. You'll need a panel key, username and password from your operator. |
+| 📺 | **Watch a service someone runs** | Install a [public build](#get-the-apps) below, then follow the [Android](docs/android-viewer-guide.md) or [desktop](docs/desktop-viewer-guide.md) viewer guide. You'll need a panel key, username and password from your operator. |
 | 🖥️ | **Run your own service** | [**Quickstart — terminal**](docs/quickstart-terminal.md): Docker Compose to a live channel in ~15 minutes. Or [**Quickstart — AI assistant**](docs/mcp-quickstart.md) to have an AI client do it through the MCP server. |
 | 🛠️ | **Build on it** | The viewer engine ships as [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) (plus [`@aliran/react-native`](https://www.npmjs.com/package/@aliran/react-native) and native Kotlin [`aliran-kit`](sdk/android/)) — start at the [Player SDK docs](docs/sdk.md), or see [all components](#how-it-works). |
+
+### Get the apps
+
+Keyless **public builds** of every viewer are on the
+**[releases page](https://github.com/AbueloSimpson/aliran/releases/latest)**:
+
+| Platform | Build |
+|---|---|
+| **Windows** | Installer + portable exe |
+| **macOS** | Apple silicon + Intel (dmg/zip) |
+| **Android** | One build covers phone **and** Android TV — pick your device's ABI: `arm64-v8a` for most devices, `armeabi-v7a` for older 32-bit TV boxes. APKs install from **Android 7**; live P2P playback needs **Android 10+** |
+
+On first run each app shows a **Connect screen**: enter the three things an operator
+hands out — the **panel public key**, a **username** and a **password** — and the app
+finds the service over the P2P network. No URLs, no port forwarding. Install steps,
+including the unsigned-build warnings each OS shows, are in the
+[desktop viewer guide](docs/desktop-viewer-guide.md) (Windows + macOS) and the
+[Android viewer guide](docs/android-viewer-guide.md).
 
 There is **no public demo service** — Aliran is infrastructure for operators. You
 connect the apps to your own deployment, or to one someone runs for you.
@@ -139,11 +158,13 @@ instead.
 
 - Live P2P streaming (HLS-over-Hyperdrive), viewers re-seed each other
 - Resilient ingest: crash/stall watchdog, backup sources, and an **offline slate** — a
-  channel whose source dies loops a "SOURCE OFFLINE" card and auto-recovers
+  channel whose source dies loops a "SOURCE OFFLINE" card and auto-recovers, never
+  going blank
 - Push (RTMP/SRT/MPEG-TS) and pull (RTSP/HLS/RTMP/SRT/UDP/file) ingest, per-channel
   transcode including GPU encoders
 - **Redirect channels** that play an operator CDN/HLS URL directly, no P2P feed behind
-- Optional keyless **repeater** super-peers to absorb fan-out
+- Self-healing playback: tune watchdog, wedged-connection teardown, live-edge stall
+  resync — plus optional keyless **repeater** super-peers to absorb fan-out
 - **VOD**: encrypted, P2P-seeded on-demand titles with full seek
 
 **Apps & viewing**
@@ -166,8 +187,15 @@ instead.
 - **Channel packages** (bouquets) granted as one unit, plus an optional reseller panel
 - **Privacy-preserving analytics**: aggregate counts only — per-viewer tracking is
   architecturally impossible, and a test enforces it
-- **AI-operable**: an [MCP server](docs/mcp.md) exposing the whole deployment as tools
-- **White-label**: brand overlays and per-operator custom builds for Android and desktop
+- **AI-operable** (optional): point an MCP-capable AI client at
+  [`@aliran/mcp`](https://www.npmjs.com/package/@aliran/mcp) and it can install a fresh
+  server, tune it, curate content, run backups/restores and answer usage questions from
+  the shipped docs — 100+ tools plus guided runbooks, with secrets never leaving the
+  operator's machine. See [docs/mcp.md](docs/mcp.md)
+- **White-label**: brand overlays (name, colours, logo, wallpaper, TV banner) and
+  per-operator custom builds for Android and desktop — the
+  [operator build walkthrough](docs/operator-build-walkthrough.md) goes from your keys
+  to a branded APK and exe
 
 **Deliberate limits**
 
@@ -187,6 +215,9 @@ Full docs at **<https://abuelosimpson.github.io/aliran/>**.
 [Operator guide](docs/operator-guide.md) ·
 [Configuration](docs/configuration.md) ·
 [Player SDK](docs/sdk.md) ·
+[MCP server (AI-operable ops)](docs/mcp.md) ·
+[Desktop viewer guide](docs/desktop-viewer-guide.md) ·
+[Android viewer guide](docs/android-viewer-guide.md) ·
 [Operator build walkthrough](docs/operator-build-walkthrough.md) ·
 [Knowledge base](docs/kb/index.md) ·
 [FAQ](docs/faq.md)

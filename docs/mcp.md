@@ -187,12 +187,14 @@ your absolute paths filled in. One caveat when choosing a client: the
 client prompts before destructive tools (Claude clients do; some others ignore
 hints). The secrets guarantee is client-independent (enforced server-side).
 
-Run it from a **repo checkout** or from the **published npm package**: `@aliran/mcp`
-bundles the docs corpus at pack time (`docs-bundle/`), so the resources and
-`docs_search` work either way — a checkout's live `docs/` wins when present, and
-`docsDir` in the config overrides both. Once the package is on the registry,
-`npx @aliran/mcp --config <path>` (or `command: "npx", args: ["-y", "@aliran/mcp",
-"--config", …]` in the client config) replaces the `node <entry>` wiring.
+Run it from a **repo checkout** or straight from
+**[npm](https://www.npmjs.com/package/@aliran/mcp)** — no checkout needed:
+`npx @aliran/mcp --config <path>`, or in the client config
+`command: "npx", args: ["-y", "@aliran/mcp", "--config", …]` in place of the
+`node <entry>` wiring. The package bundles the docs corpus at pack time
+(`docs-bundle/`), so the resources and `docs_search` work either way — a
+checkout's live `docs/` wins when present, and `docsDir` in the config
+overrides both.
 
 ## The install happy-path (`server_install`)
 
