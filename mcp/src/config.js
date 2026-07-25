@@ -8,13 +8,18 @@
 //   {
 //     "panel":       { "url": "...", "user": "...", "pass": "..." },
 //     "broadcaster": { "url": "...", "user": "...", "pass": "..." },
+//     "reseller":    { "url": "...", "user": "...", "pass": "..." },   // optional (S49b)
+//     "library":     { "url": "...", "user": "...", "pass": "..." },   // optional (S49b)
 //     "ssh":         { "host": "...", "user": "root", "keyPath": "~/.ssh/id", "port": 22 },
 //     "install":     { "repoDir": "/opt/aliran", "composeProfiles": [] }
 //   }
 //
-// `url` is optional per service: if omitted, the panel/broadcaster loopback API
-// (:3210 / :3310) is reached over an SSH local-forward tunnel opened with the same
-// key (index.js). Give an explicit `url` (a Caddy TLS endpoint) to skip the tunnel.
+// `url` is optional per service: if omitted, that service's loopback API on the box
+// (:3210 panel / :3310 broadcaster / :3330 reseller / :3320 library) is reached over
+// an SSH local-forward tunnel opened with the same key (index.js). Give an explicit
+// `url` (a Caddy TLS endpoint) to skip the tunnel. `reseller`/`library` are for
+// deployments actually running those services; the reseller credentials should be
+// the ROOT admin principal (the operator-oversight identity).
 // The file MUST be 0600 — it is the operator's credential store.
 
 import fs from 'fs'
@@ -77,15 +82,17 @@ export function loadConfig (file, { logger = (m) => process.stderr.write(m + '\n
     docsDir: obj.docsDir ? path.resolve(expandHome(obj.docsDir)) : defaultDocsDir(),
     panel: normalizeBearer('panel', obj.panel),
     broadcaster: normalizeBearer('broadcaster', obj.broadcaster),
+    reseller: normalizeBearer('reseller', obj.reseller),
+    library: normalizeBearer('library', obj.library),
     ssh: normalizeSsh(obj.ssh),
     install: normalizeInstall(obj.install)
   }
 
-  if (!cfg.panel && !cfg.broadcaster && !cfg.ssh) {
-    throw new ConfigError('config enables nothing: give at least one of "panel", "broadcaster", or "ssh"')
+  if (!cfg.panel && !cfg.broadcaster && !cfg.reseller && !cfg.library && !cfg.ssh) {
+    throw new ConfigError('config enables nothing: give at least one of "panel", "broadcaster", "reseller", "library", or "ssh"')
   }
   // A service reached by tunnel (no url) needs SSH to open that tunnel.
-  for (const svc of ['panel', 'broadcaster']) {
+  for (const svc of ['panel', 'broadcaster', 'reseller', 'library']) {
     if (cfg[svc] && !cfg[svc].url && !cfg.ssh) {
       throw new ConfigError(`"${svc}" has no "url" and there is no "ssh" block to tunnel through — add a url (e.g. a Caddy TLS endpoint) or an ssh block`)
     }

@@ -25,10 +25,12 @@ is a thin, credentialed adapter over those, plus an SSH executor for the box its
 
 | Group | Backs onto | Examples |
 |---|---|---|
-| **`panel_*`** | panel admin API `:3210` | users, grants, **channel packages** (bouquets), streams, remote sources, categories, publishers, status/observability, [analytics](analytics.md), dashboard admins |
+| **`panel_*`** | panel admin API `:3210` | users, grants, **channel packages** (bouquets), streams, **stream art** (from the operator's disk), remote sources (incl. per-channel **exclusion**), **categories** (presentation + rename/merge), publishers, status/observability, [analytics](analytics.md), dashboard admins |
 | **`broadcaster_*`** | broadcaster control API `:3310` | channels (create/start/stop/rotate), ffmpeg logs, capability probe, incidents, health, [analytics](analytics.md), control admins |
+| **`reseller_*`** *(optional)* | reseller control API `:3330` | operator oversight: principals (enroll/limits/suspend), **credit mints** (echoing the ledger line), ledger audit, accounts/trials views, sweep status — see [below](#reseller-library-oversight-optional) |
+| **`library_*`** *(optional)* | library control API `:3320` | VOD titles list/get/add (one-shot ingest), operational patches, re-ingest, ingest logs, delete |
 | **`server_*`** | **SSH executor** | `preflight`, `install`, `update`, `status`, `logs`, `disk`, `set_env` (validate-then-apply), `restart`, `backup`, `list_backups`, `restore`, `sysctl` |
-| **`diagnose_*`** | the above + KB | `/healthz` sweep, symptom → knowledge-base router |
+| **`diagnose_*`** | the above + KB | `/healthz` sweep across every configured service, symptom → knowledge-base router |
 | **`docs_search`** + `mcp://aliran/*` resources | the shipped docs | full-text search + every doc as a resource |
 
 Read tools carry the MCP `readOnlyHint` annotation; purges/deletes/revokes/restarts
@@ -63,21 +65,24 @@ $EDITOR config.json
 {
   "panel":       { "url": "https://panel.example.com", "user": "admin", "pass": "…" },
   "broadcaster": { "url": "https://broadcaster.example.com", "user": "admin", "pass": "…" },
+  "reseller":    { "user": "root-admin", "pass": "…" },   // optional — no url → tunneled to :3330
+  "library":     { "user": "admin", "pass": "…" },        // optional — no url → tunneled to :3320
   "ssh":         { "host": "203.0.113.10", "user": "root", "keyPath": "~/.ssh/aliran_deploy", "port": 22 },
   "install":     { "repoDir": "/opt/aliran", "composeProfiles": [] }
 }
 ```
 
-**Reachability.** The panel and broadcaster admin APIs
-[bind loopback on the box](operator-guide.md).
+**Reachability.** Every service API [binds loopback on the box](operator-guide.md).
 Give each an explicit `url` (a [Caddy TLS endpoint](kb/public-dashboards.md)), **or**
-omit `url` and the MCP opens an **SSH local-forward tunnel** to `127.0.0.1:3210` /
-`:3310` with the same key — no public dashboard needed. `user`/`pass` are the
-**dashboard admin** logins (created by `add-admin`, or by `server_install`, and reused
-as the credentials `server_install` provisions).
+omit `url` and the MCP opens an **SSH local-forward tunnel** to its loopback port
+(`:3210` panel / `:3310` broadcaster / `:3330` reseller / `:3320` library) with the
+same key — no public dashboard needed. `user`/`pass` are the **dashboard admin**
+logins (created by `add-admin`, or by `server_install`, and reused as the credentials
+`server_install` provisions); the reseller login should be the **root admin
+principal** (the operator-oversight identity).
 
-Any of `panel`, `broadcaster`, `ssh` may be omitted; only the tools whose backend is
-configured are registered.
+Any of `panel`, `broadcaster`, `reseller`, `library`, `ssh` may be omitted; only the
+tools whose backend is configured are registered.
 
 ## Run it from your AI client — any MCP client
 
@@ -162,10 +167,61 @@ The full deployment lifecycle stays inside the MCP:
   (`mcp/config.json`) right afterwards — the tools re-login with the configured
   password.
 
+## Content curation
+
+Beyond stream CRUD, the catalog-presentation jobs the dashboard does are wrapped
+too:
+
+- **Categories** — `panel_set_category` owns presentation (label / rail order /
+  hidden); `panel_rename_category` and `panel_merge_categories` rewrite the tag
+  across every channel record (that is what they are for — membership lives on
+  the records); `panel_delete_category` drops **only** the registry entry and
+  keeps membership. One honest coupling to know: a package member like
+  `category:Movies` is a **string** re-resolved after any move, so renaming
+  `Movies` strips that bouquet's holders until the member is updated to the new
+  slug — the rename tool's description says so, and
+  [`panel_set_package`](reference.md#mcp-server-tool-catalog) is the fix.
+- **Source curation** — `panel_source_channels` lists everything a
+  [remote source](operator-guide.md) knows about (imported + excluded), and
+  `panel_set_source`'s `exclude` field replaces the deselect list. An exclusion
+  change resets the source's ETag so the next sync re-pulls the full feed and
+  applies it.
+- **Stream art** — `panel_set_stream_art {id, kind, path}` reads the image from
+  the **operator's machine** (where the MCP server runs) and POSTs the raw bytes
+  (≤ 10 MiB; `.png .jpg .jpeg .webp .gif`). Image data never transits the model
+  as base64 — the tool result is just the stored asset ref.
+
+## Reseller & library oversight (optional)
+
+Deployments running the [reseller panel](reseller-panel.md) or the VOD library
+can add the two config blocks and get their control APIs wrapped:
+
+- **`reseller_*`** covers the **operator's** oversight jobs: enroll principals
+  (`reseller_add_principal` — generated passwords returned), tune limits, suspend
+  (optionally with the whole customer base, `mode:"with-accounts"`), **mint
+  credits** (`reseller_grant_credits` — the result echoes the exact ledger line:
+  seq, actor, principal, amount, new balance), audit the ledger, and observe
+  accounts, trials and the sweeps. **Reseller daily driving — activating,
+  renewing, extending accounts — is deliberately not wrapped:** those are the
+  resellers' own jobs, in [their own panel](reseller-panel.md), under their own
+  audit trail. Configure the **root admin principal** as the login.
+- **`library_*`** covers VOD titles end to end: add (`library_add_title` queues a
+  one-shot ingest; `input` is a path **on the library box**, not your machine),
+  poll progress, patch the operational fields (`input`/`mode`/`hlsTime` — the
+  descriptive metadata is panel-owned after creation), re-ingest, read the ffmpeg
+  log ring, delete. A delete purges the library box but only marks the panel
+  record `unavailable` — the catalog record and grants are admin-owned, so the
+  tool result says exactly that and points at `panel_delete_stream`.
+
+Both services join `diagnose_healthz` and the `--doctor` probes automatically
+once configured.
+
 ## Scope (v1)
 
-Panel admin + broadcaster control + install/maintain + docs. The reseller, VOD
-library and repeater services' own HTTP APIs are **not** wrapped yet (their
+Panel admin + broadcaster control + reseller/library oversight + install/maintain
++ docs. The **repeater** stays unwrapped by design for now — it has no admin API
+(healthz/metrics only), so reaching it is multi-host SSH work (planned; its
 box-level plumbing — `server_logs` / `server_set_env` / `server_backup` /
-`server_restore` — already accepts the `library` / `reseller` service names).
-Remote (HTTP) transport is not offered — local stdio only.
+`server_restore` — already accepts the `library` / `reseller` service names on
+the one configured box). Remote (HTTP) transport is not offered — local stdio
+only.

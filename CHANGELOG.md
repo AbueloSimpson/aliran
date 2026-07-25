@@ -100,6 +100,36 @@ phone + Android TV, and the Windows desktop player).
   output through the ssh stub; newline-injection guard; restart; list/restore
   incl. the refusal path; and a whole-log assert that no tool ever used
   `--force-recreate`).
+- **MCP content + business coverage (S49b)** — the P1 gaps: content curation and
+  the two previously-unwrapped services (73 → **101 tools**). **Categories**:
+  `panel_set_category` (presentation: label/order/hidden),
+  `panel_rename_category` / `panel_merge_categories` (rewrite the tag across
+  every catalog record — and the honest coupling is documented + tested: a
+  package `category:` member is a *string* re-resolved after the move, so a
+  rename strips that bouquet's holders until the member is updated),
+  `panel_delete_category` (registry entry only — membership kept). **Source
+  curation**: `panel_source_channels` (imported + excluded, the channels-dialog
+  view) and an `exclude` field on `panel_set_source` (replacing the deselect
+  list resets the source ETag so the next sync re-diffs the full feed).
+  **Stream art**: `panel_set_stream_art {id, kind, path}` reads the image from
+  the *operator's* machine and POSTs raw bytes (≤ 10 MiB, image extensions
+  whitelisted client-side) — image data never transits the model as base64.
+  **Reseller oversight** (optional `reseller` config block, control API
+  `:3330`): 14 `reseller_*` tools covering the OPERATOR's jobs — principals
+  (enroll with generated-and-returned passwords / limits / suspend incl.
+  `with-accounts`), **credit mints whose result echoes the appended ledger line**
+  (seq/actor/principal/amount/new balance), ledger audit, accounts + trials
+  views, sweeps status; reseller *daily driving* (activate/renew/extend) is
+  deliberately not wrapped — that stays in the resellers' own panel. **VOD
+  library** (optional `library` block, `:3320`): 8 `library_*` tools — titles
+  list/get, add (one-shot ingest from a path **on the library box**), operational
+  patches (descriptive metadata stays panel-owned), re-ingest, ffmpeg log ring,
+  delete (purges the box; the result says the panel record is only marked
+  `unavailable` and points at `panel_delete_stream`). Both services join
+  `diagnose_healthz` and the `--doctor` probes once configured. `test:mcp` grew
+  sections **Q–V** over an in-process REAL reseller service (pointed at the
+  test's real panel; the mint is asserted against the actual ledger) and a
+  fake-TitleManager library control server — no DHT, no ffmpeg.
 - **Channel packages ("bouquets")** — named channel bundles an admin grants as one
   unit ("Basic", "Sports"), replacing chip-by-chip per-stream grants that stop
   scaling past a few dozen channels. Because a grant is a **sealed key** (not an

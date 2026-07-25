@@ -24,11 +24,11 @@ export function registerDiagnoseTools (ctx, h) {
 
   def('diagnose_healthz', {
     title: 'Health sweep',
-    description: 'Probe the unauthenticated /healthz of every configured service (panel, broadcaster) and report up/down + each service\'s vitals.',
+    description: 'Probe the unauthenticated /healthz of every configured service (panel, broadcaster, reseller, library) and report up/down + each service\'s vitals.',
     annotations: { readOnlyHint: true }
   }, async () => {
     const out = {}
-    for (const [name, client] of [['panel', ctx.panel], ['broadcaster', ctx.broadcaster]]) {
+    for (const [name, client] of [['panel', ctx.panel], ['broadcaster', ctx.broadcaster], ['reseller', ctx.reseller], ['library', ctx.library]]) {
       if (!client) { out[name] = { configured: false }; continue }
       try { out[name] = { configured: true, reachable: true, health: await client.healthz() } } catch (err) { out[name] = { configured: true, reachable: false, error: err.message } }
     }

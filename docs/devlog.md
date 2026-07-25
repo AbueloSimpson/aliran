@@ -2801,3 +2801,92 @@ was not touched.
   backup-and-rotation.md, quickstart, mcp/README) updated; `mkdocs --strict`
   green. NO VPS work — post-merge live validation is the user's call (S46
   precedent).
+
+### S49b — MCP content + business coverage: categories, curation, art, reseller, library (verified)
+- **Why:** the S49 gap analysis' P1 tier — the content-curation jobs (categories,
+  source deselection, channel art) still needed the dashboard, and two whole
+  services (the reseller panel, the VOD library) had zero MCP coverage despite
+  their box-level plumbing (`server_logs`/`server_set_env`/`server_backup`/
+  `server_restore`) already accepting their names. This closes G5–G9:
+  73 → **101 tools**, plus two optional config blocks.
+- **Categories (G5) — and the selector honesty that fell out.** Four tools over
+  the catmeta routes: `panel_set_category` owns PRESENTATION (label/order/hidden;
+  slugs ride in the request body because two-level rails contain `/`),
+  `panel_rename_category` / `panel_merge_categories` rewrite the tag across every
+  catalog record (children carried on a parent rename; merge is annotated
+  destructive — reversing needs the old membership), `panel_delete_category`
+  drops only the registry entry and the listing keeps showing the slug as
+  unregistered while channels carry it. The subtle bit the test pins down: a
+  package `category:` member is a **string resolved at reconcile time** —
+  renaming the category strips the bouquet's holders (the reconcile runs inside
+  the rename request) until the member is edited to the new slug. The tool
+  description says exactly that, and section Q walks the full honest loop:
+  rename → holder loses the grants → `panel_set_package` to the new slug →
+  grants re-materialize; merge → the retagged channel auto-joins the bouquet.
+- **Source curation (G6).** `panel_source_channels` wraps the channels-dialog
+  route (imported entries from the catalog + excluded entries from the registry,
+  with captured labels), and `panel_set_source` gained the `exclude` field the
+  PATCH always accepted ({id,title} objects or bare id strings — REPLACES the
+  list). The S27b fact rides along: an exclusion CHANGE nulls the source ETag so
+  the next sync re-pulls the full body; the test seeds a fake ETag in the
+  registry file and asserts it survives a same-ids write but dies on a real
+  change — no gratuitous refetch, no masked exclusion.
+- **Stream art (G7) — bytes never transit the model.** `panel_set_stream_art
+  {id, kind: logo|poster|backdrop, path}` reads the image from the OPERATOR's
+  machine (where the MCP server runs — the description says so, twice, because
+  "path" is ambiguous in an agent context) and POSTs the raw bytes with the
+  content-type derived from the extension; the panel derives the stored
+  extension from that content-type, so a `.jpg` upload lands as `poster.jpg`.
+  Client-side before any bytes move: extension whitelist, empty/missing checks,
+  and the 10 MiB cap (mirroring the panel's body limit). The http-client grew
+  `postRaw` (same 401-relogin discipline) and `del` learned to carry a JSON body
+  (the category DELETE rides the body). Section S uploads a real 1×1 PNG,
+  asserts the assets drive holds byte-identical content and the catalog record
+  gained the ref, and asserts the tool RESULT is a small ref echo — no base64,
+  ever.
+- **Reseller oversight (G8) — the operator's jobs, not the resellers'.** New
+  optional `reseller {url?, user, pass}` block (tunnel `:3330` when no url; the
+  login should be the ROOT admin principal) and 14 `reseller_*` tools: status +
+  system diagnostics (live panel probe), principals list/get/add (generated
+  passwords returned, roles co-admin/super/reseller — `admin` is the seeded root
+  and not creatable), set password / limits / status (suspend bumps
+  tokenVersion; `mode:"with-accounts"` bulk-disables the customer base —
+  destructive-annotated), **`reseller_grant_credits` echoing the ledger line it
+  appended** (seq/actor/principal/amount/new balance — the operator-honesty
+  precedent), ledger query (real type enum: MINT/TRANSFER/ACTIVATE/RENEW/REFUND/
+  RECLAIM/TRIAL/ADJUST), accounts list/get (registry + LIVE panel state), the
+  trials view, and sweeps/ops status. Activate/renew/extend are deliberately
+  ABSENT (asserted absent, even): daily driving belongs to resellers in their
+  own panel, under their own audit trail.
+- **VOD library (G9).** Optional `library {url?, user, pass}` block (tunnel
+  `:3320`) and 8 `library_*` tools: status, titles list/get (live ingest
+  phase/pct), add (one-shot ingest; `input` is a path ON THE LIBRARY BOX or a
+  URL its ffmpeg can read), operational patch (input/mode/hlsTime only —
+  descriptive metadata is panel-owned after creation and the description points
+  at `panel_set_stream_meta`), re-ingest (next feed generation; annotated
+  destructive like `broadcaster_rotate_channel` — the title is briefly
+  unavailable), the ffmpeg log ring, and delete — which purges the library box
+  but only marks the panel record `unavailable`, so the tool result appends
+  exactly that disposition and names `panel_delete_stream` as the panel-side
+  purge. Library admins CRUD stays deferred per the gap doc.
+- **Wiring.** `clientFor` gained the two services; both join `diagnose_healthz`
+  and the `--doctor` probe loop + tool-groups line (the quickstart's sample
+  transcript shows the new not-configured skip lines); the server `instructions`
+  string and the `mcp://aliran/guide` resource describe both groups incl. the
+  daily-driving boundary; `config.example.json` documents the optional blocks
+  without enabling them (a copied example must not fail doctor probes on
+  services that aren't running).
+- **Verified:** `test:mcp` sections **Q–V** over an in-process REAL reseller
+  service pointed at the test's REAL panel (the e2e-reseller harness pattern —
+  root principal seeded, its own dedicated panel admin so section F's
+  tokenVersion bump can't race it) and a library control server over a fake
+  TitleManager that mirrors the real routes' refusal semantics (mid-ingest
+  delete/reingest refusals, the panel-owned-metadata patch gate). Highlights:
+  the minted credit line is looked up in the ledger itself and matched against
+  the tool's echo; principal + rotated passwords are live-verified over
+  `/api/login` (old dead, new works); the category rename walks the
+  selector-coupling loop end to end; the diagnose sweep reports all four
+  services. Tool floor 95 (actual 101), annotation lists extended, doctor
+  markers updated (groups line + reseller/library healthz + credentials). Full
+  required lane + `mkdocs --strict` green locally. NO VPS work (no reseller or
+  library instance runs on the box; S46 precedent).

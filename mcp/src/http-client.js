@@ -53,7 +53,9 @@ export function makeHttpClient (svc, { baseUrl, dataDir } = {}) {
   const saved = readJsonFile(tokenFile, null)
   if (saved && saved.token && saved.expiresAt > Date.now() + 60000) token = saved
 
-  async function rawFetch (method, apiPath, body, bearer) {
+  // raw = { buf, contentType }: send the bytes as-is (art uploads) instead of a
+  // JSON body. Mutually exclusive with `body`.
+  async function rawFetch (method, apiPath, body, bearer, raw) {
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), timeoutMs)
     if (timer.unref) timer.unref()
@@ -62,10 +64,10 @@ export function makeHttpClient (svc, { baseUrl, dataDir } = {}) {
         method,
         signal: ac.signal,
         headers: {
-          ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+          ...(raw ? { 'content-type': raw.contentType } : body !== undefined ? { 'content-type': 'application/json' } : {}),
           ...(bearer ? { authorization: `Bearer ${bearer}` } : {})
         },
-        body: body !== undefined ? JSON.stringify(body) : undefined
+        body: raw ? raw.buf : body !== undefined ? JSON.stringify(body) : undefined
       })
       let json = null
       try { json = await res.json() } catch {}
@@ -102,13 +104,13 @@ export function makeHttpClient (svc, { baseUrl, dataDir } = {}) {
   }
 
   // Authenticated request with the once-each 401-relogin-retry.
-  async function req (method, apiPath, body) {
+  async function req (method, apiPath, body, raw) {
     if (!token || token.expiresAt < Date.now() + 60000) await login()
-    let r = await rawFetch(method, apiPath, body, token.token)
+    let r = await rawFetch(method, apiPath, body, token.token, raw)
     if (r.status === 401) {
       token = null
       await login()
-      r = await rawFetch(method, apiPath, body, token.token)
+      r = await rawFetch(method, apiPath, body, token.token, raw)
     }
     if (r.status >= 200 && r.status < 300) {
       lastOkAt = Date.now()
@@ -133,9 +135,14 @@ export function makeHttpClient (svc, { baseUrl, dataDir } = {}) {
     login,
     get: (p) => req('GET', p),
     post: (p, body) => req('POST', p, body === undefined ? {} : body),
+    // Raw bytes with an explicit content-type (the panel art route reads the
+    // content-type to pick the stored extension). Never JSON-wrapped.
+    postRaw: (p, buf, contentType) => req('POST', p, undefined, { buf, contentType }),
     patch: (p, body) => req('PATCH', p, body === undefined ? {} : body),
-    del: (p) => req('DELETE', p),
-    // Unauthenticated liveness probe (both services expose /healthz).
+    // A body on DELETE is unusual but real here: the panel's category routes carry
+    // the slug in the body (slugs may contain '/'). Existing callers pass no body.
+    del: (p, body) => req('DELETE', p, body),
+    // Unauthenticated liveness probe (every service exposes /healthz).
     healthz: async () => (await rawFetch('GET', '/healthz')).json,
     healthInfo
   }

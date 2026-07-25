@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Aliran MCP server — stdio bootstrap.
 //
-// Exposes the panel admin API, the broadcaster control API, an SSH install/
-// maintenance executor, and the shipped docs as Model Context Protocol tools/
-// resources, so an AI client (Claude Desktop, Claude Code) can install, configure,
-// maintain and support an Aliran deployment. It is the SERVER side of MCP — it does
-// NOT call the Claude API.
+// Exposes the panel admin API, the broadcaster control API, the (optional)
+// reseller + VOD-library control APIs, an SSH install/maintenance executor, and
+// the shipped docs as Model Context Protocol tools/resources, so an AI client
+// (Claude Desktop, Claude Code) can install, configure, maintain and support an
+// Aliran deployment. It is the SERVER side of MCP — it does NOT call the Claude API.
 //
 //   node src/index.js --config <path>        (or set ALIRAN_MCP_CONFIG)
 //
@@ -23,6 +23,8 @@ import { buildDocsIndex } from './resources/docs.js'
 import { registerDocs } from './resources/docs.js'
 import { registerPanelTools } from './tools/panel.js'
 import { registerBroadcasterTools } from './tools/broadcaster.js'
+import { registerResellerTools } from './tools/reseller.js'
+import { registerLibraryTools } from './tools/library.js'
 import { registerServerTools, upsertEnv } from './tools/server.js'
 import { registerDiagnoseTools } from './tools/diagnose.js'
 
@@ -103,19 +105,23 @@ async function main () {
 
   const panel = await clientFor(config.panel, 3210)
   const broadcaster = await clientFor(config.broadcaster, 3310)
+  const reseller = await clientFor(config.reseller, 3330)
+  const library = await clientFor(config.library, 3320)
   const docsIndex = buildDocsIndex(config.docsDir)
 
   const ctx = {
     config,
     panel,
     broadcaster,
+    reseller,
+    library,
     ssh,
     docsIndex,
     upsertEnv: ssh ? (path, pairs) => upsertEnv(ssh, path, pairs, { cwd: config.install.repoDir }) : null
   }
 
   const server = new McpServer({ name: 'aliran-mcp', version: VERSION }, {
-    instructions: 'Operate an Aliran deployment: panel_* (viewer accounts, grants, channel packages, streams, sources, publishers), broadcaster_* (channels/start/stop/rotate/logs), server_* (SSH install/update/backup/diagnostics), diagnose_*, and docs_search + the mcp://aliran/* resources. Prefer docs_search for usage questions. Secrets stay in the operator config — you only see tool results.'
+    instructions: 'Operate an Aliran deployment: panel_* (viewer accounts, grants, channel packages, streams, sources, categories, art, publishers), broadcaster_* (channels/start/stop/rotate/logs), reseller_* (operator oversight: principals, credit mints, ledger, accounts — reseller daily driving stays in their own panel), library_* (VOD titles + one-shot ingest), server_* (SSH install/update/env-tuning/backup/restore/diagnostics), diagnose_*, and docs_search + the mcp://aliran/* resources. Prefer docs_search for usage questions. Secrets stay in the operator config — you only see tool results.'
   })
   const h = makeHelpers(server)
 
@@ -123,6 +129,8 @@ async function main () {
   registerDiagnoseTools(ctx, h)
   if (panel) registerPanelTools(ctx, h); else logerr('panel not configured — panel_* tools disabled')
   if (broadcaster) registerBroadcasterTools(ctx, h); else logerr('broadcaster not configured — broadcaster_* tools disabled')
+  if (reseller) registerResellerTools(ctx, h); else logerr('reseller not configured — reseller_* tools disabled')
+  if (library) registerLibraryTools(ctx, h); else logerr('library not configured — library_* tools disabled')
   if (ssh) registerServerTools(ctx, h); else logerr('ssh not configured — server_* tools disabled')
 
   const transport = new StdioServerTransport()
@@ -132,7 +140,7 @@ async function main () {
   process.on('SIGTERM', () => { shutdown(); process.exit(0) })
 
   await server.connect(transport)
-  logerr(`ready (panel:${!!panel} broadcaster:${!!broadcaster} ssh:${!!ssh} docs:${docsIndex.docs.length})`)
+  logerr(`ready (panel:${!!panel} broadcaster:${!!broadcaster} reseller:${!!reseller} library:${!!library} ssh:${!!ssh} docs:${docsIndex.docs.length})`)
 }
 
 main().catch((err) => { logerr('fatal: ' + (err && err.stack || err)); process.exit(1) })

@@ -1,5 +1,7 @@
 {
-  "_comment": "Copy to config.json (chmod 600) and fill in. This file is the ONLY place secrets live. Pass it with --config <path> or ALIRAN_MCP_CONFIG. Give panel/broadcaster an explicit https `url` (a Caddy TLS endpoint) OR omit `url` and the loopback API (:3210 / :3310) is reached over an SSH local-forward tunnel opened with the ssh key below. `user`/`pass` for panel & broadcaster are their DASHBOARD admin logins (created by `add-admin`, or by `server_install`).",
+  "_comment": "Copy to config.json (chmod 600) and fill in. This file is the ONLY place secrets live. Pass it with --config <path> or ALIRAN_MCP_CONFIG. Give each service an explicit https `url` (a Caddy TLS endpoint) OR omit `url` and its loopback API (:3210 panel / :3310 broadcaster / :3330 reseller / :3320 library) is reached over an SSH local-forward tunnel opened with the ssh key below. `user`/`pass` for panel & broadcaster are their DASHBOARD admin logins (created by `add-admin`, or by `server_install`).",
+
+  "_comment_optional_services": "Running the reseller panel (S38/S45) or the VOD library too? Add their blocks and the reseller_*/library_* tool groups light up — same shape as panel/broadcaster: \"reseller\": { \"user\": \"<root admin principal>\", \"pass\": \"...\" } and \"library\": { \"user\": \"<library admin>\", \"pass\": \"...\" } (omit `url` to tunnel to :3330 / :3320). The reseller login should be the ROOT admin principal — the operator-oversight identity (principals, credit mints, ledger); reseller daily driving stays in the resellers' own panel.",
 
   "panel": {
     "url": "https://panel.example.com",

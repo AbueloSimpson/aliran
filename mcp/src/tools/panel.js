@@ -8,6 +8,9 @@
 // is directing, not a system secret; the panel/broadcaster admin passwords and the
 // SSH key stay in the local config and never appear in a tool result.)
 
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 import { randomBytes } from 'crypto'
 import { z } from 'zod'
 
@@ -20,6 +23,26 @@ export function genPassword () {
 }
 
 const q = (v) => encodeURIComponent(String(v))
+
+// Stream art (G7): the image is read from the OPERATOR's machine (this process's
+// disk) and POSTed as raw bytes — image data never transits the model as base64.
+// The extension whitelist doubles as the content-type map (the panel derives the
+// stored extension from the content-type), and the 10 MiB cap mirrors the panel's
+// own body limit so an oversize file fails fast client-side.
+const ART_CONTENT_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif'
+}
+const ART_MAX_BYTES = 10 * 1024 * 1024
+
+function expandHome (p) {
+  if (p === '~') return os.homedir()
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2))
+  return p
+}
 
 export function registerPanelTools (ctx, h) {
   const { def, ok } = h
@@ -62,6 +85,13 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_list_sources', { title: 'List remote sources', description: 'Remote channel sources (S27) and their owned-channel counts.', annotations: { readOnlyHint: true } },
     async () => ok(await p.get('/api/sources')))
+
+  def('panel_source_channels', {
+    title: 'List a source\'s channels',
+    description: 'Every channel a remote source knows about: imported entries (feedId, catalog id, title, order) followed by the operator-excluded ones (excluded:true). This is the curation view — pair it with the `exclude` field of panel_set_source to deselect provider channels.',
+    inputSchema: { name: z.string() },
+    annotations: { readOnlyHint: true }
+  }, async ({ name }) => ok(await p.get('/api/sources/' + q(name) + '/channels')))
 
   def('panel_list_categories', { title: 'List categories', description: 'Category vocabulary + per-category channel counts.', annotations: { readOnlyHint: true } },
     async () => ok(await p.get('/api/categories')))
@@ -149,11 +179,36 @@ export function registerPanelTools (ctx, h) {
     inputSchema: { name: z.string(), url: z.string(), category: z.string(), prefix: z.string().optional(), autoGrant: z.boolean().optional(), enabled: z.boolean().optional(), intervalMs: z.number().int().optional() }
   }, async (a) => ok(await p.post('/api/sources', a)))
 
-  def('panel_set_source', { title: 'Edit a remote source', description: 'Edit any field of a remote source.', inputSchema: { name: z.string(), url: z.string().optional(), category: z.string().optional(), prefix: z.string().optional(), autoGrant: z.boolean().optional(), enabled: z.boolean().optional(), intervalMs: z.number().int().optional() } },
-    async ({ name, ...body }) => ok(await p.patch('/api/sources/' + q(name), body)))
+  def('panel_set_source', {
+    title: 'Edit a remote source',
+    description: 'Edit any field of a remote source. `exclude` REPLACES the deselect list: feed ids (unprefixed, as panel_source_channels reports them) the sync must skip — pass [{id,title}] objects or bare id strings. Changing the exclusion set resets the source\'s ETag, so the next sync re-pulls the full feed body and re-diffs (excluded channels already imported are removed then).',
+    inputSchema: { name: z.string(), url: z.string().optional(), category: z.string().optional(), prefix: z.string().optional(), autoGrant: z.boolean().optional(), enabled: z.boolean().optional(), intervalMs: z.number().int().optional(), exclude: z.array(z.union([z.string(), z.object({ id: z.string(), title: z.string().optional() })])).optional() }
+  }, async ({ name, ...body }) => ok(await p.patch('/api/sources/' + q(name), body)))
 
   def('panel_sync_source', { title: 'Sync a remote source now', description: 'Pull + diff + grant a source immediately; returns the sync report.', inputSchema: { name: z.string() } },
     async ({ name }) => ok(await p.post('/api/sources/' + q(name) + '/sync', {})))
+
+  // ---- categories (S49b): presentation registry + catalog-wide moves ----
+  // Slugs travel in the request BODY on every category route (two-level rails are
+  // 'Parent/Child' — a slash in a path segment would split it).
+  def('panel_set_category', {
+    title: 'Set category presentation',
+    description: 'Upsert a category\'s PRESENTATION: label, rail order (0-9999, null clears), hidden. Touches only the registry entry — which channels carry the category (membership) is untouched. Slugs are one- or two-level (\'Deportes\' or \'Deportes/Futbol\').',
+    inputSchema: { slug: z.string(), label: z.string().optional(), order: z.number().int().min(0).max(9999).nullable().optional(), hidden: z.boolean().optional() }
+  }, async (a) => ok(await p.post('/api/categories', a)))
+
+  def('panel_rename_category', {
+    title: 'Rename a category',
+    description: 'Rename a category EVERYWHERE: rewrites the category tag on every channel record in the catalog (renaming a parent carries its \'Parent/Child\' children along) and moves the registry entries. Package category:<slug> selectors are strings re-resolved after the move — one naming the OLD slug now matches nothing and its covered grants are removed; update that package\'s members to the new slug (panel_set_package) to keep its holders entitled. Returns how many channel records and registry entries moved.',
+    inputSchema: { from: z.string(), to: z.string() }
+  }, async ({ from, to }) => ok(await p.patch('/api/categories', { from, to })))
+
+  def('panel_merge_categories', {
+    title: 'Merge categories',
+    description: 'Merge one or more categories INTO another: every channel tagged with a `from` category is retagged with `to` across the whole catalog, and the `from` registry entries are deleted. Reversing requires knowing the old membership — treat as a bulk rewrite. Package category:<slug> selectors re-resolve after the move (a selector on a `from` slug loses its channels; one on `to` gains them).',
+    inputSchema: { from: z.array(z.string()).min(1), to: z.string() },
+    annotations: { destructiveHint: true }
+  }, async ({ from, to }) => ok(await p.patch('/api/categories', { op: 'merge', from, to })))
 
   // Publishers: enrollment mints a SECRET. It never comes back to you — with SSH
   // configured it is written into the box's broadcaster/.env; otherwise it is
@@ -185,6 +240,26 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_set_publisher_status', { title: 'Activate/revoke a publisher', description: 'Set a publisher active or revoked.', inputSchema: { name: z.string(), status: z.enum(['active', 'revoked']) } },
     async ({ name, status }) => ok(await p.post('/api/publishers/' + q(name) + '/status', { status })))
+
+  // ---- stream art (S49b): raw bytes from the OPERATOR's disk ----
+  def('panel_set_stream_art', {
+    title: 'Upload stream art',
+    description: 'Upload channel art (logo / poster / backdrop) for a stream from an image file on the OPERATOR\'s machine — the machine running this MCP server, not the panel box. The bytes are POSTed raw to the panel (they never appear in a tool result); allowed: .png .jpg .jpeg .webp .gif, at most 10 MiB. The result echoes the stored asset ref.',
+    inputSchema: { id: z.string(), kind: z.enum(['logo', 'poster', 'backdrop']), path: z.string().describe('image file path on the operator\'s machine') }
+  }, async ({ id, kind, path: artPath }) => {
+    const file = path.resolve(expandHome(artPath))
+    const ext = path.extname(file).toLowerCase()
+    const contentType = ART_CONTENT_TYPES[ext]
+    if (!contentType) throw new Error(`unsupported art file extension "${ext || '(none)'}" — allowed: ${Object.keys(ART_CONTENT_TYPES).join(' ')}`)
+    let st
+    try { st = fs.statSync(file) } catch { throw new Error(`cannot read ${file} — the path must exist on the OPERATOR's machine (where this MCP server runs)`) }
+    if (!st.isFile()) throw new Error(`${file} is not a file`)
+    if (st.size === 0) throw new Error(`${file} is empty`)
+    if (st.size > ART_MAX_BYTES) throw new Error(`${file} is ${(st.size / 1048576).toFixed(1)} MiB — the panel caps art at 10 MiB; shrink the image first`)
+    const buf = fs.readFileSync(file)
+    const out = await p.postRaw('/api/streams/' + q(id) + '/art/' + q(kind), buf, contentType)
+    return ok({ ...out, uploadedFrom: file })
+  })
 
   // ---- dashboard admins (S49a) ----
   def('panel_add_admin', {
@@ -225,6 +300,13 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_delete_source', { title: 'Delete a remote source', description: 'Remove a source and purge its channels (keepChannels detaches them instead).', inputSchema: { name: z.string(), keepChannels: z.boolean().optional() }, annotations: { destructiveHint: true } },
     async ({ name, keepChannels }) => ok(await p.del('/api/sources/' + q(name) + (keepChannels ? '?keepChannels=1' : ''))))
+
+  def('panel_delete_category', {
+    title: 'Delete a category registry entry',
+    description: 'Drop a category\'s PRESENTATION registry entry (label/order/hidden). Channels KEEP the tag — the category reappears in listings as unregistered while anything still carries it; use panel_rename_category / panel_merge_categories to move channels off a label.',
+    inputSchema: { slug: z.string() },
+    annotations: { destructiveHint: true }
+  }, async ({ slug }) => ok(await p.del('/api/categories', { slug })))
 
   def('panel_remove_publisher', { title: 'Remove a publisher', description: 'Hard-delete a publisher enrollment (prefer set_publisher_status revoked to keep the audit trail).', inputSchema: { name: z.string() }, annotations: { destructiveHint: true } },
     async ({ name }) => ok(await p.del('/api/publishers/' + q(name))))

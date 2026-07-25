@@ -94,12 +94,26 @@ operator's local config file; you (the model) see only tool RESULTS.
 ## Tool catalog
 
 - **panel_*** — the panel admin API (:3210): users, grants, channel packages
-  (bouquets), streams, remote sources, categories, publishers, status/observability.
+  (bouquets), streams, stream art (uploaded from the OPERATOR's disk, never as
+  base64 through you), remote sources (incl. per-channel exclusion), categories
+  (presentation + rename/merge across the catalog), publishers,
+  status/observability.
 - **broadcaster_*** — the broadcaster control API (:3310): channels (create / start /
   stop / rotate), logs, capabilities probe, incidents, health. The control API is OFF
   unless CONTROL_ENABLED=1 — a tool that can't reach it says so.
+- **reseller_*** — the reseller control API (:3330), when that service is configured:
+  the OPERATOR's oversight jobs — principals (enroll/limits/suspend), credit mints
+  (the result echoes the ledger line), ledger audit, accounts/trials views, sweep
+  status. Reseller DAILY driving (activate/renew/extend) stays in the resellers' own
+  panel — it is deliberately not wrapped here.
+- **library_*** — the VOD library control API (:3320), when configured: titles
+  list/get, add (one-shot ingest from a path ON THE LIBRARY BOX), operational
+  patches, re-ingest, ffmpeg logs, delete (the panel record is only marked
+  unavailable — purge it panel-side). Descriptive metadata is panel-owned after
+  creation.
 - **server_*** — the SSH executor: preflight, install (the whole compose sequence),
-  update (git pull → rebuild → up -d), status, logs, disk, backup, sysctl. Secrets
+  update (git pull → rebuild → up -d), status, logs, disk, env tuning
+  (validate-then-apply with revert), restart, backup/restore, sysctl. Secrets
   minted during install are written into the box's .env server-side and are never
   returned to you.
 - **diagnose_*** — a /healthz sweep across the configured services and a symptom → KB

@@ -8,11 +8,22 @@ It exposes Aliran's existing admin surfaces as MCP **tools** and the shipped doc
 MCP **resources**:
 
 - **`panel_*`** — the panel admin API (`:3210`): viewer accounts, grants, channel
-  packages (bouquets), streams, remote sources, categories, publishers,
+  packages (bouquets), streams, stream art (uploaded from the operator's disk —
+  never base64 through the model), remote sources incl. per-channel exclusion,
+  categories (presentation + catalog-wide rename/merge), publishers,
   status/observability, aggregate-only analytics, dashboard admins.
 - **`broadcaster_*`** — the broadcaster control API (`:3310`): channels
   (create/start/stop/rotate), ffmpeg logs, the capability probe, incidents, health,
   aggregate-only analytics, control admins.
+- **`reseller_*`** *(optional)* — the reseller control API (`:3330`): the OPERATOR's
+  oversight jobs — principals (enroll/limits/suspend), credit mints (the result
+  echoes the ledger line), ledger audit, accounts/trials views, sweep status.
+  Reseller daily driving (activate/renew) deliberately stays in the resellers' own
+  panel.
+- **`library_*`** *(optional)* — the VOD library control API (`:3320`): titles
+  list/get/add (one-shot ingest from a path ON the library box), operational
+  patches, re-ingest, ffmpeg logs, delete (the panel record is only marked
+  unavailable — purging it is a panel job).
 - **`server_*`** — an **SSH executor**: `preflight`, `install`, `update`, `status`,
   `logs`, `disk`, `set_env` (env knobs, validated in-image via `config.js --check`
   and **reverted** on failure before anything restarts), `restart`, `backup`,
@@ -49,19 +60,23 @@ $EDITOR config.json
 {
   "panel":       { "url": "https://panel.example.com", "user": "admin", "pass": "…" },
   "broadcaster": { "url": "https://broadcaster.example.com", "user": "admin", "pass": "…" },
+  "reseller":    { "user": "root-admin", "pass": "…" },   // optional — no url → tunneled to :3330
+  "library":     { "user": "admin", "pass": "…" },        // optional — no url → tunneled to :3320
   "ssh":         { "host": "203.0.113.10", "user": "root", "keyPath": "~/.ssh/aliran_deploy", "port": 22 },
   "install":     { "repoDir": "/opt/aliran", "composeProfiles": [] }
 }
 ```
 
-**Reachability.** The panel and broadcaster admin APIs bind loopback on the box. Give
-each an explicit `url` (a [Caddy TLS endpoint](../docs/kb/public-dashboards.md)), **or**
-omit `url` and this server opens an **SSH local-forward tunnel** to `127.0.0.1:3210` /
-`:3310` using the same key — no public dashboard required. `user`/`pass` are the
-**dashboard admin** logins (created by `add-admin`, or by `server_install`).
+**Reachability.** Every service API binds loopback on the box. Give each an explicit
+`url` (a [Caddy TLS endpoint](../docs/kb/public-dashboards.md)), **or** omit `url`
+and this server opens an **SSH local-forward tunnel** to its loopback port (`:3210`
+panel / `:3310` broadcaster / `:3330` reseller / `:3320` library) using the same
+key — no public dashboard required. `user`/`pass` are the **dashboard admin** logins
+(created by `add-admin`, or by `server_install`); the reseller login should be the
+**root admin principal**.
 
-Any of `panel`, `broadcaster`, `ssh` may be omitted; only the tools whose backend is
-configured are registered.
+Any of `panel`, `broadcaster`, `reseller`, `library`, `ssh` may be omitted; only the
+tools whose backend is configured are registered.
 
 ## Check your setup (`--doctor`)
 
@@ -112,10 +127,13 @@ resolves; set `docsDir` in the config to point elsewhere.
 
 ## Test
 
-`npm run test:mcp` (from the repo root) boots an in-process panel + broadcaster,
-launches this server over a stdio pipe, and drives it as an MCP client — tools,
-resources, a write chain, destructive-annotation presence, docs search, the
-re-login-on-401 path, and the SSH executor against a command stub (which runs the
-REAL `config.js --check` for the `server_set_env` validate-then-revert path, and
-covers the `server_restore` refusal). It is in the required CI lane
-(deterministic, no DHT).
+`npm run test:mcp` (from the repo root) boots an in-process panel + broadcaster, a
+REAL reseller service pointed at that panel, and a library control server (fake
+TitleManager — call shapes, no transcode), launches this server over a stdio pipe,
+and drives it as an MCP client — tools, resources, a write chain,
+destructive-annotation presence, docs search, the re-login-on-401 path, the SSH
+executor against a command stub (which runs the REAL `config.js --check` for the
+`server_set_env` validate-then-revert path, and covers the `server_restore`
+refusal), category/source/art curation, the reseller oversight set (the credit
+mint asserted against the real ledger), and the library title lifecycle. It is in
+the required CI lane (deterministic, no DHT).

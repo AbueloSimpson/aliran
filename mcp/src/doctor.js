@@ -74,8 +74,8 @@ export async function runDoctor (config, { checkLogin = false, out = (l) => proc
     }
   }
 
-  // --- 3. panel + broadcaster reachability (healthz — never burns a login) ---
-  for (const [name, svc, port] of [['panel', config.panel, 3210], ['broadcaster', config.broadcaster, 3310]]) {
+  // --- 3. service reachability (healthz — never burns a login) ---
+  for (const [name, svc, port] of [['panel', config.panel, 3210], ['broadcaster', config.broadcaster, 3310], ['reseller', config.reseller, 3330], ['library', config.library, 3320]]) {
     if (!svc) { add('skip', `${name}: not configured — its ${name}_* tools are disabled`); continue }
     let client = null
     let closeTunnel = null
@@ -118,6 +118,8 @@ export async function runDoctor (config, { checkLogin = false, out = (l) => proc
   const groups = []
   if (config.panel) groups.push('panel_*')
   if (config.broadcaster) groups.push('broadcaster_*')
+  if (config.reseller) groups.push('reseller_*')
+  if (config.library) groups.push('library_*')
   if (config.ssh) groups.push('server_*')
   groups.push('diagnose_*', 'docs_search')
   out('')

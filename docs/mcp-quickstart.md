@@ -79,7 +79,11 @@ flowchart LR
 Any of `panel` / `broadcaster` / `ssh` may be omitted — only the tools whose
 backend is configured get registered. `user`/`pass` are the **dashboard admin**
 logins; if the box is fresh, put the credentials you *want* here and
-`server_install` will create those admins for you.
+`server_install` will create those admins for you. Running the
+[reseller panel](reseller-panel.md) or the VOD library as well? Optional
+`"reseller"` / `"library"` blocks (same shape; tunnel ports `:3330` / `:3320`)
+light up the `reseller_*` / `library_*` tool groups — see
+[the MCP page](mcp.md#reseller-library-oversight-optional).
 
 ## Step 3 — Run the doctor
 
@@ -104,6 +108,8 @@ config: /home/op/aliran/mcp/config.json
 [--]   panel: credential check skipped (re-run with --login to spend ONE real login)
 [ok]   broadcaster: /healthz answered via ssh tunnel 127.0.0.1:49807 -> 203.0.113.10:3310 (up:true resuming:false resumed:83)
 [--]   broadcaster: credential check skipped (re-run with --login to spend ONE real login)
+[--]   reseller: not configured — its reseller_* tools are disabled
+[--]   library: not configured — its library_* tools are disabled
 [ok]   docs: 43 documents indexed at /home/op/aliran/docs
 
 Enabled tool groups: panel_*  broadcaster_*  server_*  diagnose_*  docs_search

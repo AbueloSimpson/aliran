@@ -248,10 +248,12 @@ are registered.
 
 | Group | Tools |
 |---|---|
-| `panel_*` (reads, `R`) | `panel_status`, `panel_observability`, `panel_analytics`, `panel_list_users`, `panel_get_user`, `panel_list_devices`, `panel_list_streams`, `panel_list_packages`, `panel_get_package`, `panel_list_sources`, `panel_list_categories`, `panel_list_publishers`, `panel_list_admins` |
-| `panel_*` (writes) | `panel_create_user`, `panel_set_user_password`, `panel_set_user_status`, `panel_set_max_devices`, `panel_logout_all`, `panel_grant`, `panel_set_user_packages`, `panel_add_stream`, `panel_set_stream_meta`, `panel_add_package`, `panel_set_package`, `panel_add_source`, `panel_set_source`, `panel_sync_source`, `panel_add_publisher`, `panel_set_publisher_scopes`, `panel_set_publisher_status`, `panel_add_admin`, `panel_set_admin_password` |
-| `panel_*` (purges, `D`) | `panel_delete_user`, `panel_revoke_device`, `panel_revoke_grant`, `panel_delete_stream`, `panel_delete_package`, `panel_delete_source`, `panel_remove_publisher`, `panel_remove_admin` |
+| `panel_*` (reads, `R`) | `panel_status`, `panel_observability`, `panel_analytics`, `panel_list_users`, `panel_get_user`, `panel_list_devices`, `panel_list_streams`, `panel_list_packages`, `panel_get_package`, `panel_list_sources`, `panel_source_channels`, `panel_list_categories`, `panel_list_publishers`, `panel_list_admins` |
+| `panel_*` (writes) | `panel_create_user`, `panel_set_user_password`, `panel_set_user_status`, `panel_set_max_devices`, `panel_logout_all`, `panel_grant`, `panel_set_user_packages`, `panel_add_stream`, `panel_set_stream_meta`, `panel_set_stream_art`, `panel_add_package`, `panel_set_package`, `panel_add_source`, `panel_set_source`, `panel_sync_source`, `panel_set_category`, `panel_rename_category`, `panel_add_publisher`, `panel_set_publisher_scopes`, `panel_set_publisher_status`, `panel_add_admin`, `panel_set_admin_password` |
+| `panel_*` (purges, `D`) | `panel_delete_user`, `panel_revoke_device`, `panel_revoke_grant`, `panel_delete_stream`, `panel_delete_package`, `panel_delete_source`, `panel_merge_categories`, `panel_delete_category`, `panel_remove_publisher`, `panel_remove_admin` |
 | `broadcaster_*` | `broadcaster_health` `R`, `broadcaster_status` `R`, `broadcaster_capabilities` `R`, `broadcaster_list_channels` `R`, `broadcaster_get_channel` `R`, `broadcaster_channel_logs` `R`, `broadcaster_incidents` `R`, `broadcaster_analytics` `R`, `broadcaster_list_admins` `R`, `broadcaster_add_channel`, `broadcaster_update_channel`, `broadcaster_start_channel`, `broadcaster_add_admin`, `broadcaster_set_admin_password`, `broadcaster_stop_channel` `D`, `broadcaster_rotate_channel` `D`, `broadcaster_remove_channel` `D`, `broadcaster_remove_admin` `D` |
+| `reseller_*` (optional) | `reseller_status` `R`, `reseller_system` `R`, `reseller_list_principals` `R`, `reseller_get_principal` `R`, `reseller_ledger` `R`, `reseller_list_accounts` `R`, `reseller_get_account` `R`, `reseller_trials` `R`, `reseller_ops_status` `R`, `reseller_add_principal`, `reseller_set_principal_password`, `reseller_set_principal_limits`, `reseller_grant_credits`, `reseller_set_principal_status` `D` |
+| `library_*` (optional) | `library_status` `R`, `library_list_titles` `R`, `library_get_title` `R`, `library_title_logs` `R`, `library_add_title`, `library_set_title`, `library_reingest_title` `D`, `library_delete_title` `D` |
 | `server_*` (SSH executor) | `server_preflight` `R`, `server_status` `R`, `server_logs` `R`, `server_disk` `R`, `server_list_backups` `R`, `server_backup`, `server_set_env` `D`, `server_restart` `D`, `server_restore` `D`, `server_sysctl` `D`, `server_update` `D`, `server_install` |
 | `diagnose_*` | `diagnose_healthz` `R`, `diagnose_symptom` `R` |
 | resources | `docs_search` `R` + every `docs/`+`docs/kb/` file as `mcp://aliran/docs/<path>`, plus `mcp://aliran/guide` |
@@ -272,6 +274,20 @@ documents itself as a process bounce only. `server_restore` wraps
 without `force`, and echoes exactly what was overwritten and from which archive.
 Rotating or removing the admin account the MCP itself logs in with requires
 updating the operator's local mcp config afterwards.
+
+S49b behaviors worth knowing: `panel_rename_category` / `panel_merge_categories`
+**rewrite the category tag across every catalog record** (package `category:` member
+selectors are strings re-resolved after the move — update them to the new slug), and
+`panel_delete_category` drops only the registry entry, keeping membership.
+`panel_set_source`'s `exclude` change resets the source ETag so the next sync
+re-diffs the full feed. `panel_set_stream_art` reads the image from the **operator's
+machine** and posts raw bytes (≤ 10 MiB, image extensions only) — never base64
+through the model. `reseller_grant_credits` echoes the ledger line it appended
+(seq/actor/principal/amount/new balance); reseller **daily driving**
+(activate/renew) is deliberately unwrapped — that lives in the resellers' own
+panel. `library_add_title`'s `input` is a path **on the library box**;
+`library_delete_title` purges the box but only marks the panel record
+`unavailable` (purge that with `panel_delete_stream`).
 
 `broadcaster_add_channel` / `broadcaster_update_channel` take `input` as a shorthand
 string (`"test"`, `"rtmp"`, a pull url, a file path) or a typed object

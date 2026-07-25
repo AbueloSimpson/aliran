@@ -1,10 +1,12 @@
 // End-to-end test for the Aliran MCP server (S46). Deterministic, no DHT, no ffmpeg —
 // belongs in the required core lane.
 //
-// Boots a REAL panel store + admin server in-process AND a broadcaster control server
-// (with a lightweight fake ChannelManager, so no ffmpeg/DHT), writes an MCP config
-// pointing at both over loopback, then launches mcp/src/index.js over a stdio pipe and
-// drives it AS AN MCP CLIENT:
+// Boots a REAL panel store + admin server in-process, a broadcaster control server
+// (with a lightweight fake ChannelManager, so no ffmpeg/DHT), a REAL reseller service
+// pointed at that panel (the e2e-reseller-test harness pattern), and a library
+// control server (fake TitleManager — the call shapes, not a real transcode), writes
+// an MCP config pointing at all four over loopback, then launches mcp/src/index.js
+// over a stdio pipe and drives it AS AN MCP CLIENT:
 //   A  list_tools / list_resources shape (+ the tool groups are present)
 //   B  a read tool (panel_status / panel_list_users)
 //   C  a write chain: add streams -> create user -> package -> assign -> assert in the
@@ -19,6 +21,20 @@
 //   J  TYPED channel input/transcode: the published schema is no longer empty, an
 //      object-valued input round-trips to kind:"pull", a stringified object is rescued,
 //      and a malformed one is a loud error — never a silent {kind:"file"} fallback
+//   Q  categories (S49b/G5): presentation upsert, rename rewrites the catalog (and a
+//      category: package selector honestly loses/regains its holders), merge retags,
+//      delete drops the registry entry but KEEPS membership
+//   R  source curation (S49b/G6): exclude round-trip through panel_set_source (the
+//      ETag reset on an exclusion change, not on a no-op) + panel_source_channels
+//   S  stream art (S49b/G7): a real PNG from the operator's disk lands in the assets
+//      drive + the catalog record — bytes never appear in a tool result; cap /
+//      extension / missing-file refusals are client-side
+//   T  reseller oversight (S49b/G8): status/system, principal enroll (generated
+//      password live-verified) / limits / suspend, credit mint echoing the ledger
+//      line, ledger query, accounts + trials views, ops status
+//   U  library (S49b/G9): titles add/get/list, the mid-ingest delete refusal,
+//      operational patch, reingest, logs, delete echoing the panel-record disposition
+//   V  diagnose_healthz sweeps all four configured services
 // Exits 0 on PASS.
 
 import assert from 'assert'
@@ -36,6 +52,10 @@ import { startAdminServer } from '../panel/src/admin-server.js'
 import { addAdmin as bcAddAdmin } from '../broadcaster/src/control-auth.js'
 import { startControlServer } from '../broadcaster/src/control-server.js'
 import { normalizeInput, normalizeTranscode } from '../broadcaster/src/channel.js'
+import { startReseller } from '../reseller/src/index.js'
+import { addPrincipal } from '../reseller/src/control-auth.js'
+import { addAdmin as libAddAdmin } from '../library/src/control-auth.js'
+import { startControlServer as startLibraryControlServer } from '../library/src/control-server.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
@@ -46,6 +66,9 @@ const MCP_ENTRY = path.join(REPO, 'mcp', 'src', 'index.js')
 
 const PANEL_ADMIN = { user: 'panelop', pass: 'panel-op-password-1' }
 const BC_ADMIN = { user: 'bcop', pass: 'bc-op-password-1' }
+const RSL_ROOT = { user: 'boss', pass: 'boss-pass-123' } // the reseller ROOT admin the MCP logs in as
+const RSL_SVC = { user: 'rsl-svc', pass: 'rsl-svc-secret-1' } // the reseller service's own panel admin
+const LIB_ADMIN = { user: 'libop', pass: 'lib-op-password-1' }
 const FAKE_PUB = 'a'.repeat(64) // the panel PUBLIC key our fake `admin-cli init` prints
 const FAKE_PUBLISHER_SECRET = 'b'.repeat(128) // the PUBLISHER secret — must never reach the model
 
@@ -53,6 +76,8 @@ const config = { argon2: { memKiB: 8192, time: 1 }, maxDevicesDefault: 2 }
 const dirs = {
   panel: fs.mkdtempSync(path.join(os.tmpdir(), 'e2emcp-panel-')),
   bc: fs.mkdtempSync(path.join(os.tmpdir(), 'e2emcp-bc-')),
+  rsl: fs.mkdtempSync(path.join(os.tmpdir(), 'e2emcp-rsl-')),
+  lib: fs.mkdtempSync(path.join(os.tmpdir(), 'e2emcp-lib-')),
   mcp: fs.mkdtempSync(path.join(os.tmpdir(), 'e2emcp-cfg-'))
 }
 const cleanups = []
@@ -99,6 +124,86 @@ function makeFakeManager () {
     stop: async (id) => ({ id, running: false }),
     rotate: async (id) => ({ id, feedGen: 1 }),
     logs: () => []
+  }
+}
+
+// A fake TitleManager: the library control-server surface with the REAL routes'
+// validation semantics mirrored (mid-ingest refusals, the panel-owned-metadata
+// patch gate) but no ffmpeg/DHT — test:mcp asserts the control-API call shapes,
+// not a real transcode. `setState` is the test's hook for walking a title through
+// queued → ready without an ingest actually running.
+function makeFakeLibrary () {
+  const titles = new Map()
+  const rings = new Map()
+  const bad = (msg) => { const e = new Error(msg); e.httpStatus = 400; throw e }
+  const notFound = (id) => { const e = new Error('no such title: ' + id); e.httpStatus = 404; throw e }
+  const view = (m) => ({ ...m, ingest: m.state === 'ingesting' ? { phase: 'transcode', pct: 42 } : null, peers: 0, registered: m.state === 'ready', registerError: null })
+  const counts = () => {
+    const all = [...titles.values()]
+    const by = (s) => all.filter((t) => t.state === s).length
+    return { titles: all.length, ready: by('ready'), ingesting: by('ingesting'), queued: by('queued'), error: by('error') }
+  }
+  return {
+    setState: (id, state) => { titles.get(id).state = state },
+    health: () => ({ up: true, uptimeSec: 1, ...counts(), panelLink: { connected: false, pendingOps: 0 } }),
+    statusSummary: async () => counts(),
+    list: () => [...titles.values()].map(view),
+    get: (id) => { const m = titles.get(id); if (!m) notFound(id); return view(m) },
+    logs: (id, lines = 400) => {
+      if (!titles.has(id)) notFound(id)
+      const ring = rings.get(id) || []
+      return lines >= ring.length ? ring.slice() : ring.slice(-lines)
+    },
+    add: async (id, b) => {
+      if (titles.has(id)) { const e = new Error(`title "${id}" already exists`); e.httpStatus = 409; throw e }
+      if (typeof b.input !== 'string' || !b.input.trim()) bad('input is required (a file path on the library box, or a URL ffmpeg can read)')
+      const mode = b.mode ?? 'auto'
+      if (!['auto', 'copy', 'transcode'].includes(mode)) bad("mode must be 'auto', 'copy' or 'transcode'")
+      const m = {
+        id,
+        title: b.title || id,
+        description: b.description || '',
+        category: Array.isArray(b.category) ? b.category : (b.category ? [b.category] : []),
+        input: b.input.trim(),
+        mode,
+        hlsTime: b.hlsTime ?? 4,
+        state: 'queued',
+        error: null,
+        gen: 0,
+        feedKey: null
+      }
+      titles.set(id, m)
+      rings.set(id, ['queued ingest from ' + m.input])
+      return view(m)
+    },
+    update: async (id, patch) => {
+      const m = titles.get(id)
+      if (!m) notFound(id)
+      const allowed = ['input', 'mode', 'hlsTime']
+      const unknown = Object.keys(patch).filter((k) => !allowed.includes(k))
+      if (unknown.length) bad(`only ${allowed.join('/')} can be changed here (${unknown.join(', ')} — descriptive metadata is edited in the panel; it is admin-owned after creation)`)
+      if (patch.mode !== undefined && !['auto', 'copy', 'transcode'].includes(patch.mode)) bad("mode must be 'auto', 'copy' or 'transcode'")
+      Object.assign(m, patch)
+      return view(m)
+    },
+    reingest: async (id, opts = {}) => {
+      const m = titles.get(id)
+      if (!m) notFound(id)
+      if (m.state === 'ingesting' || m.state === 'queued') bad(`title "${id}" is already ${m.state}`)
+      if (opts.input !== undefined) m.input = String(opts.input).trim()
+      m.state = 'queued'
+      m.gen++
+      rings.get(id).push('reingest gen ' + m.gen)
+      return view(m)
+    },
+    remove: async (id) => {
+      const m = titles.get(id)
+      if (!m) notFound(id)
+      if (m.state === 'ingesting' || m.state === 'queued') bad(`title "${id}" is ${m.state} — wait for the ingest to finish before deleting`)
+      titles.delete(id)
+      rings.delete(id)
+      return { id, removed: true }
+    }
   }
 }
 
@@ -241,6 +346,9 @@ try {
   const ring = makeRing(200)
   const ctx = { config, keys, db, assets, dataDir: dirs.panel, activity: ring }
   ops.addAdmin(ctx, PANEL_ADMIN.user, PANEL_ADMIN.pass)
+  // The reseller service gets its OWN panel admin — section F bumps PANEL_ADMIN's
+  // tokenVersion and must not race the reseller's cached login.
+  ops.addAdmin(ctx, RSL_SVC.user, RSL_SVC.pass)
   const panelSrv = await startAdminServer(ctx, { host: '127.0.0.1', port: 0, sessionTtlMs: 3600000, lockout: { threshold: 50, seconds: 60 } })
   cleanups.push(panelSrv.close)
   const panelPort = panelSrv.port
@@ -258,13 +366,40 @@ try {
   const bcPort = bcSrv.port
   log('broadcaster control API on 127.0.0.1:' + bcPort)
 
-  // ===== MCP config (points at both loopback APIs; ssh via the fake binary) =====
+  // ===== Reseller: the REAL service pointed at the in-process panel (S49b) =====
+  addPrincipal({ dataDir: dirs.rsl, config: { argon2: config.argon2 } }, { username: RSL_ROOT.user, password: RSL_ROOT.pass, role: 'admin', root: true, createdBy: 'cli' })
+  const rslSvc = await startReseller({
+    dataDir: dirs.rsl,
+    argon2: config.argon2,
+    daysPerMonth: 31,
+    trialHours: 24,
+    noSweeps: true, // ops driven through the routes, not wall-clock timers
+    control: { host: '127.0.0.1', port: 0 },
+    lockout: { threshold: 50, seconds: 60 },
+    panel: { url: `http://127.0.0.1:${panelPort}`, username: RSL_SVC.user, password: RSL_SVC.pass, timeoutMs: 4000 }
+  })
+  cleanups.push(() => rslSvc.close())
+  const rslPort = rslSvc.control.port
+  log('reseller control API on 127.0.0.1:' + rslPort)
+
+  // ===== Library: control server over the fake TitleManager (S49b) =====
+  const libConfig = { argon2: config.argon2 }
+  libAddAdmin({ config: libConfig, dataDir: dirs.lib }, LIB_ADMIN.user, LIB_ADMIN.pass)
+  const fakeLib = makeFakeLibrary()
+  const libSrv = await startLibraryControlServer({ config: libConfig, manager: fakeLib, dataDir: dirs.lib }, { host: '127.0.0.1', port: 0, sessionTtlMs: 3600000, lockout: { threshold: 50, seconds: 60 } })
+  cleanups.push(libSrv.close)
+  const libPort = libSrv.port
+  log('library control API on 127.0.0.1:' + libPort)
+
+  // ===== MCP config (points at all four loopback APIs; ssh via the fake binary) =====
   const cfgPath = path.join(dirs.mcp, 'config.json')
   fs.writeFileSync(cfgPath, JSON.stringify({
     dataDir: path.join(dirs.mcp, 'state'),
     docsDir: path.join(REPO, 'docs'),
     panel: { url: `http://127.0.0.1:${panelPort}`, user: PANEL_ADMIN.user, pass: PANEL_ADMIN.pass },
     broadcaster: { url: `http://127.0.0.1:${bcPort}`, user: BC_ADMIN.user, pass: BC_ADMIN.pass },
+    reseller: { url: `http://127.0.0.1:${rslPort}`, user: RSL_ROOT.user, pass: RSL_ROOT.pass },
+    library: { url: `http://127.0.0.1:${libPort}`, user: LIB_ADMIN.user, pass: LIB_ADMIN.pass },
     ssh: { host: 'box.example', user: 'root', keyPath: FAKE_SSH, sshBin: [process.execPath, FAKE_SSH] },
     install: { repoDir: '/opt/aliran', composeProfiles: [] }
   }, null, 2), { mode: 0o600 })
@@ -281,13 +416,20 @@ try {
   const toolNames = new Set(toolsList.tools.map((t) => t.name))
   for (const must of ['panel_status', 'panel_create_user', 'panel_delete_stream', 'panel_add_package', 'panel_set_user_packages',
     'panel_analytics', 'panel_list_admins', 'panel_add_admin', 'panel_remove_admin', 'panel_set_admin_password',
+    'panel_set_category', 'panel_rename_category', 'panel_merge_categories', 'panel_delete_category',
+    'panel_source_channels', 'panel_set_stream_art',
     'broadcaster_list_channels', 'broadcaster_add_channel', 'broadcaster_incidents',
     'broadcaster_analytics', 'broadcaster_list_admins', 'broadcaster_add_admin', 'broadcaster_remove_admin', 'broadcaster_set_admin_password',
+    'reseller_status', 'reseller_system', 'reseller_list_principals', 'reseller_get_principal', 'reseller_add_principal',
+    'reseller_set_principal_password', 'reseller_set_principal_status', 'reseller_set_principal_limits',
+    'reseller_grant_credits', 'reseller_ledger', 'reseller_list_accounts', 'reseller_get_account', 'reseller_trials', 'reseller_ops_status',
+    'library_status', 'library_list_titles', 'library_get_title', 'library_add_title', 'library_set_title',
+    'library_reingest_title', 'library_title_logs', 'library_delete_title',
     'server_preflight', 'server_install', 'server_update', 'server_set_env', 'server_restart', 'server_list_backups', 'server_restore',
     'diagnose_healthz', 'diagnose_symptom', 'docs_search']) {
     assert.ok(toolNames.has(must), 'tools/list missing ' + must)
   }
-  assert.ok(toolsList.tools.length >= 70, 'expected a broad tool catalog (S49a: 73), got ' + toolsList.tools.length)
+  assert.ok(toolsList.tools.length >= 95, 'expected a broad tool catalog (S49b: 99), got ' + toolsList.tools.length)
   const resList = await client.listResources()
   const resUris = new Set(resList.resources.map((r) => r.uri))
   assert.ok(resUris.has('mcp://aliran/guide'), 'guide resource missing')
@@ -323,16 +465,23 @@ try {
   // ===== D: annotations — destructiveHint on purges/revokes, readOnlyHint on GETs =====
   const byName = Object.fromEntries(toolsList.tools.map((t) => [t.name, t]))
   for (const name of ['panel_delete_stream', 'panel_delete_user', 'panel_revoke_grant', 'panel_delete_package', 'broadcaster_remove_channel', 'broadcaster_stop_channel', 'server_update',
-    'server_set_env', 'server_restart', 'server_restore', 'panel_remove_admin', 'broadcaster_remove_admin']) {
+    'server_set_env', 'server_restart', 'server_restore', 'panel_remove_admin', 'broadcaster_remove_admin',
+    'panel_merge_categories', 'panel_delete_category', 'reseller_set_principal_status', 'library_reingest_title', 'library_delete_title']) {
     assert.strictEqual(byName[name].annotations && byName[name].annotations.destructiveHint, true, name + ' must carry destructiveHint')
   }
   for (const name of ['panel_status', 'panel_list_users', 'panel_list_streams', 'broadcaster_list_channels', 'docs_search', 'diagnose_healthz', 'server_preflight',
-    'panel_analytics', 'broadcaster_analytics', 'panel_list_admins', 'broadcaster_list_admins', 'server_list_backups']) {
+    'panel_analytics', 'broadcaster_analytics', 'panel_list_admins', 'broadcaster_list_admins', 'server_list_backups',
+    'panel_source_channels', 'reseller_status', 'reseller_system', 'reseller_list_principals', 'reseller_get_principal', 'reseller_ledger',
+    'reseller_list_accounts', 'reseller_get_account', 'reseller_trials', 'reseller_ops_status',
+    'library_status', 'library_list_titles', 'library_get_title', 'library_title_logs']) {
     assert.strictEqual(byName[name].annotations && byName[name].annotations.readOnlyHint, true, name + ' must carry readOnlyHint')
   }
   // create/mutate tools must NOT be flagged destructive (clients would over-confirm)
   assert.ok(!(byName.panel_create_user.annotations && byName.panel_create_user.annotations.destructiveHint), 'create_user is not destructive')
   assert.ok(!(byName.panel_add_admin.annotations && byName.panel_add_admin.annotations.destructiveHint), 'add_admin is not destructive')
+  for (const name of ['panel_set_category', 'panel_rename_category', 'panel_set_stream_art', 'reseller_add_principal', 'reseller_grant_credits', 'library_add_title', 'library_set_title']) {
+    assert.ok(!(byName[name].annotations && byName[name].annotations.destructiveHint), name + ' is not destructive')
+  }
   log('D: destructiveHint on purges/revokes; readOnlyHint on GETs; creates unflagged ✓')
 
   // ===== E: docs resource read + docs_search + the guide =====
@@ -392,8 +541,12 @@ try {
     'panel: credentials accepted',
     'broadcaster: /healthz answered',
     'broadcaster: credentials accepted',
+    'reseller: /healthz answered',
+    'reseller: credentials accepted',
+    'library: /healthz answered',
+    'library: credentials accepted',
     'documents indexed',
-    'Enabled tool groups: panel_*  broadcaster_*  server_*  diagnose_*  docs_search',
+    'Enabled tool groups: panel_*  broadcaster_*  reseller_*  library_*  server_*  diagnose_*  docs_search',
     'claude_desktop_config.json',
     '"mcpServers"',
     'client-agnostic',
@@ -405,7 +558,7 @@ try {
     'destructiveHint) are ADVISORY',
     'RESULT: all checks passed'
   ]) assert.ok(dr.stdout.includes(marker), `doctor output missing: ${marker}\n---\n${dr.stdout}`)
-  assert.ok(!dr.stdout.includes(PANEL_ADMIN.pass) && !dr.stdout.includes(BC_ADMIN.pass), 'doctor never prints a password')
+  assert.ok(!dr.stdout.includes(PANEL_ADMIN.pass) && !dr.stdout.includes(BC_ADMIN.pass) && !dr.stdout.includes(RSL_ROOT.pass) && !dr.stdout.includes(LIB_ADMIN.pass), 'doctor never prints a password')
 
   // Failure path: a panel url nothing listens on → [FAIL] + exit 1.
   const deadPort = await new Promise((resolve, reject) => {
@@ -628,7 +781,244 @@ try {
   assert.ok(!readCmdLog().includes('--force-recreate'), 'NO tool ever used docker compose --force-recreate')
   log('P: backups — list, restore with exact overwrite echo, refusal without force, no --force-recreate anywhere ✓')
 
-  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups)')
+  // ===== Q: categories (S49b / G5) =====
+  // The registry owns PRESENTATION; membership lives on the catalog records — and
+  // rename/merge are the tools that move membership. The package-selector coupling
+  // is asserted honestly: a category: member is a STRING, so a rename strips the
+  // bouquet's holders until the member is updated to the new slug.
+  const upserted = await callJson(client, 'panel_set_category', { slug: 'MCPBundle', label: 'MCP Bundle', order: 5 })
+  assert.strictEqual(upserted.label, 'MCP Bundle', 'upsert sets the label')
+  assert.strictEqual(upserted.order, 5, 'upsert sets the order')
+  let cats = await callJson(client, 'panel_list_categories')
+  let entry = cats.find((c) => c.slug === 'MCPBundle')
+  assert.ok(entry && entry.registered && entry.channels === 2 && entry.label === 'MCP Bundle', 'registered entry carries label/order and counts the 2 channels')
+  const hid = await callJson(client, 'panel_set_category', { slug: 'MCPBundle', hidden: true })
+  assert.strictEqual(hid.hidden, true, 'hidden flag set')
+  assert.strictEqual(hid.label, 'MCP Bundle', 'upsert keeps the untouched fields')
+
+  const renamed = await callJson(client, 'panel_rename_category', { from: 'MCPBundle', to: 'MCPRail' })
+  assert.strictEqual(renamed.channels, 2, 'rename rewrote both channel records')
+  assert.strictEqual(renamed.registry, 1, 'rename carried the registry entry')
+  cats = await callJson(client, 'panel_list_categories')
+  assert.ok(!cats.find((c) => c.slug === 'MCPBundle'), 'the old slug is gone')
+  entry = cats.find((c) => c.slug === 'MCPRail')
+  assert.ok(entry && entry.registered && entry.channels === 2, 'the new slug owns the channels')
+  assert.strictEqual(entry.label, 'MCP Bundle', 'a hand-written label survives the rename')
+  const streamsAfterRename = await callJson(client, 'panel_list_streams')
+  assert.deepStrictEqual(streamsAfterRename.find((s) => s.id === 'mcp-a').category, ['MCPRail'], 'the channel record itself was retagged')
+  // The honest selector consequence: mcp-pack's member is still the STRING
+  // 'category:MCPBundle', which now matches nothing — the holder lost the grants.
+  let viewer = await callJson(client, 'panel_get_user', { username: 'mcpviewer' })
+  assert.ok(!viewer.grants.includes('mcp-a') && !viewer.grants.includes('mcp-b'), 'a category: selector naming the OLD slug loses its channels (documented in the tool description)')
+  await callJson(client, 'panel_set_package', { name: 'mcp-pack', members: ['category:MCPRail'] })
+  viewer = await callJson(client, 'panel_get_user', { username: 'mcpviewer' })
+  assert.ok(viewer.grants.includes('mcp-a') && viewer.grants.includes('mcp-b'), 'updating the member to the new slug re-materializes the grants')
+
+  await callJson(client, 'panel_add_stream', { id: 'mcp-c', category: 'MCPExtra' })
+  const merged = await callJson(client, 'panel_merge_categories', { from: ['MCPExtra'], to: 'MCPRail' })
+  assert.strictEqual(merged.channels, 1, 'merge retagged the MCPExtra channel')
+  cats = await callJson(client, 'panel_list_categories')
+  assert.ok(!cats.find((c) => c.slug === 'MCPExtra'), 'merged-away slug is gone from the vocabulary')
+  assert.strictEqual(cats.find((c) => c.slug === 'MCPRail').channels, 3, 'target category owns all three channels')
+  viewer = await callJson(client, 'panel_get_user', { username: 'mcpviewer' })
+  assert.ok(viewer.grants.includes('mcp-c'), 'the merge reconcile entitled the package holder to the retagged channel')
+
+  const catDeleted = await callJson(client, 'panel_delete_category', { slug: 'MCPRail' })
+  assert.strictEqual(catDeleted.deleted, true, 'registry entry deleted')
+  cats = await callJson(client, 'panel_list_categories')
+  entry = cats.find((c) => c.slug === 'MCPRail')
+  assert.ok(entry && entry.registered === false && entry.channels === 3, 'delete drops ONLY the registry entry — membership (3 channels) is kept and the slug still lists as unregistered')
+  log('Q: categories — upsert/list, rename rewrites catalog + honest selector coupling, merge retags + entitles, delete keeps membership ✓')
+
+  // ===== R: source curation (S49b / G6) =====
+  const src = await callJson(client, 'panel_add_source', { name: 'mcpsrc', url: 'https://feeds.example/mcp.json', category: 'MCP Imports' })
+  assert.deepStrictEqual(src.exclude, [], 'a new source starts with no exclusions')
+  // Seed a fake ETag directly in the registry file (the panel's own dataDir) so the
+  // exclusion-change reset is observable without running a real feed sync.
+  const sourcesFile = path.join(dirs.panel, 'sources.json')
+  let reg = JSON.parse(fs.readFileSync(sourcesFile, 'utf8'))
+  reg.mcpsrc.etag = 'W/"seeded"'
+  fs.writeFileSync(sourcesFile, JSON.stringify(reg))
+  const excluded = await callJson(client, 'panel_set_source', { name: 'mcpsrc', exclude: [{ id: '42', title: 'Chan 42' }, '43'] })
+  assert.deepStrictEqual(excluded.exclude, [{ id: '42', title: 'Chan 42' }, { id: '43', title: '' }], 'exclude accepts {id,title} objects and bare id strings')
+  assert.strictEqual(excluded.etag, null, 'an exclusion CHANGE resets the ETag so the next sync re-pulls the full body (S27b)')
+  // Same ids again → no exclusion change → a live ETag must survive (no gratuitous refetch).
+  reg = JSON.parse(fs.readFileSync(sourcesFile, 'utf8'))
+  reg.mcpsrc.etag = 'W/"seeded2"'
+  fs.writeFileSync(sourcesFile, JSON.stringify(reg))
+  const sameIds = await callJson(client, 'panel_set_source', { name: 'mcpsrc', exclude: ['42', '43'] })
+  assert.strictEqual(sameIds.etag, 'W/"seeded2"', 'an exclude write with the SAME ids keeps the ETag')
+  const dialog = await callJson(client, 'panel_source_channels', { name: 'mcpsrc' })
+  assert.strictEqual(dialog.name, 'mcpsrc', 'source_channels names the source')
+  const exRows = dialog.channels.filter((c) => c.excluded)
+  assert.strictEqual(exRows.length, 2, 'both exclusions appear in the channels view')
+  assert.ok(exRows.some((c) => c.feedId === '42' && c.id === 'mcpsrc.42'), 'excluded rows carry the feed id and the prefixed catalog id')
+  assert.ok(byName.panel_set_source.description.includes('ETag'), 'the ETag-reset behavior is documented on the tool')
+  await callJson(client, 'panel_delete_source', { name: 'mcpsrc' })
+  log('R: source curation — exclude round-trip (ETag reset on change, kept on no-op), channels view, cleanup ✓')
+
+  // ===== S: stream art (S49b / G7) =====
+  // A real (1x1) PNG written to the operator's disk; the MCP reads + posts the raw
+  // bytes. The tool RESULT must stay small and byte-free — never base64.
+  const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABXvMqOgAAAABJRU5ErkJggg=='
+  const pngBuf = Buffer.from(PNG_B64, 'base64')
+  const pngPath = path.join(dirs.mcp, 'mcp-logo.png')
+  fs.writeFileSync(pngPath, pngBuf)
+  const art = await callJson(client, 'panel_set_stream_art', { id: 'mcp-a', kind: 'logo', path: pngPath })
+  assert.strictEqual(art.logo, 'assets/mcp-a/logo.png', 'the panel stored the asset ref under the stream')
+  assert.strictEqual(art.bytes, pngBuf.length, 'the panel received exactly the file bytes')
+  assert.strictEqual((await db.get('catalog/mcp-a')).value.logo, 'assets/mcp-a/logo.png', 'the catalog record gained the asset ref')
+  const stored = await assets.get('/mcp-a/logo.png')
+  assert.ok(stored && Buffer.compare(stored, pngBuf) === 0, 'the assets drive holds the byte-identical image')
+  // Content-type comes from the extension: the same bytes as .jpg store as .jpg.
+  const jpgPath = path.join(dirs.mcp, 'mcp-poster.jpg')
+  fs.writeFileSync(jpgPath, pngBuf)
+  const rawArt = await callRaw(client, 'panel_set_stream_art', { id: 'mcp-a', kind: 'poster', path: jpgPath })
+  const rawArtText = (rawArt.content && rawArt.content[0] && rawArt.content[0].text) || ''
+  assert.ok(!rawArt.isError, 'poster upload succeeds: ' + rawArtText)
+  assert.match(rawArtText, /assets\/mcp-a\/poster\.jpg/, 'extension → content-type → stored extension')
+  assert.ok(!rawArtText.includes(PNG_B64.slice(0, 24)), 'image bytes never appear in a tool result (no base64)')
+  assert.ok(rawArtText.length < 600, 'the art tool result is a small ref echo, not a payload')
+  // Client-side refusals: wrong extension, missing file, oversize — none reach the panel.
+  const txtPath = path.join(dirs.mcp, 'not-art.txt')
+  fs.writeFileSync(txtPath, 'hello')
+  const badExt = await callRaw(client, 'panel_set_stream_art', { id: 'mcp-a', kind: 'logo', path: txtPath })
+  assert.ok(badExt.isError && /unsupported art file extension/.test(badExt.content[0].text), 'non-image extension refused client-side')
+  const missing = await callRaw(client, 'panel_set_stream_art', { id: 'mcp-a', kind: 'logo', path: path.join(dirs.mcp, 'nope.png') })
+  assert.ok(missing.isError && /cannot read/.test(missing.content[0].text), 'missing file is a clean error naming the operator machine')
+  const bigPath = path.join(dirs.mcp, 'too-big.png')
+  fs.writeFileSync(bigPath, Buffer.alloc(10 * 1024 * 1024 + 1))
+  const tooBig = await callRaw(client, 'panel_set_stream_art', { id: 'mcp-a', kind: 'logo', path: bigPath })
+  assert.ok(tooBig.isError && /10 MiB/.test(tooBig.content[0].text), 'the 10 MiB cap is enforced before any bytes move')
+  let kindRejected = false
+  try { const r = await callRaw(client, 'panel_set_stream_art', { id: 'mcp-a', kind: 'banner', path: pngPath }); kindRejected = !!r.isError } catch { kindRejected = true }
+  assert.ok(kindRejected, 'kind is a strict enum (logo|poster|backdrop)')
+  log('S: stream art — PNG from the operator disk to the assets drive byte-identical, refs echoed, cap/extension/missing refusals, no base64 anywhere ✓')
+
+  // ===== T: reseller oversight (S49b / G8) =====
+  const rslBase = `http://127.0.0.1:${rslPort}`
+  const rApi = async (method, p, body, token) => {
+    const res = await fetch(rslBase + p, {
+      method,
+      headers: { ...(body != null ? { 'content-type': 'application/json' } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: body != null ? JSON.stringify(body) : undefined
+    })
+    let json = null
+    try { json = await res.json() } catch {}
+    return { status: res.status, body: json }
+  }
+  const rslStatus = await callJson(client, 'reseller_status')
+  assert.strictEqual(rslStatus.name, RSL_ROOT.user, 'status reports the configured principal')
+  assert.strictEqual(rslStatus.role, 'admin', 'the MCP login is the root admin')
+  assert.ok(Number.isInteger(rslStatus.principals), 'admin view includes the principal count')
+  const rslSystem = await callJson(client, 'reseller_system')
+  assert.strictEqual(rslSystem.service.node, process.version, 'system view reports the service process')
+  assert.ok(rslSystem.panel && rslSystem.panel.stats && rslSystem.panel.stats.streams >= 3, 'system view live-probes the downstream panel')
+
+  const sup = await callJson(client, 'reseller_add_principal', { username: 'mcp-sup', role: 'super' })
+  assert.ok(sup.generatedPassword && sup.generatedPassword.length >= 16, 'add_principal generates + returns a password when omitted')
+  assert.strictEqual(sup.role, 'super', 'role landed')
+  assert.strictEqual(sup.parent, RSL_ROOT.user, 'created under the configured login')
+  assert.strictEqual((await rApi('POST', '/api/login', { username: 'mcp-sup', password: sup.generatedPassword })).status, 200, 'the generated principal password actually logs in')
+  assert.ok((await callJson(client, 'reseller_list_principals')).some((p) => p.name === 'mcp-sup'), 'new principal shows in the list')
+  const supView = await callJson(client, 'reseller_get_principal', { name: 'mcp-sup' })
+  assert.strictEqual(supView.balance, 0, 'fresh principal holds no credits')
+
+  const mintOut = await callJson(client, 'reseller_grant_credits', { to: 'mcp-sup', amount: 25, note: 'mcp top-up' })
+  assert.strictEqual(mintOut.minted.type, 'MINT', 'mint echoes the ledger line type')
+  assert.strictEqual(mintOut.minted.actor, RSL_ROOT.user, 'mint echoes the actor')
+  assert.strictEqual(mintOut.minted.principal, 'mcp-sup', 'mint echoes the funded principal')
+  assert.strictEqual(mintOut.minted.amount, 25, 'mint echoes the amount')
+  assert.strictEqual(mintOut.newBalance, 25, 'mint echoes the new balance')
+  assert.ok(Number.isInteger(mintOut.minted.seq), 'mint echoes the ledger seq')
+  const ledger = await callJson(client, 'reseller_ledger', { principal: 'mcp-sup' })
+  assert.ok(Array.isArray(ledger), 'ledger query returns the line list')
+  const mintLine = ledger.find((l) => l.seq === mintOut.minted.seq)
+  assert.ok(mintLine && mintLine.type === 'MINT' && mintLine.actor === RSL_ROOT.user, 'the echoed ledger line exists in the ledger itself')
+  assert.ok(mintLine.entries.some((e) => e.principal === 'mcp-sup' && e.delta === 25), 'the ledger line carries the credit entry')
+
+  const limited = await callJson(client, 'reseller_set_principal_limits', { name: 'mcp-sup', trialDailyCap: 2 })
+  assert.strictEqual(limited.trialDailyCap, 2, 'limits applied')
+  const suspended = await callJson(client, 'reseller_set_principal_status', { name: 'mcp-sup', status: 'suspended' })
+  assert.strictEqual(suspended.status, 'suspended', 'principal suspended')
+  await callJson(client, 'reseller_set_principal_status', { name: 'mcp-sup', status: 'active' })
+  const rotatedSup = await callJson(client, 'reseller_set_principal_password', { name: 'mcp-sup' })
+  assert.ok(rotatedSup.generatedPassword, 'password rotation returns the new one')
+  assert.strictEqual((await rApi('POST', '/api/login', { username: 'mcp-sup', password: sup.generatedPassword })).status, 401, 'the OLD principal password is dead')
+  assert.strictEqual((await rApi('POST', '/api/login', { username: 'mcp-sup', password: rotatedSup.generatedPassword })).status, 200, 'the NEW principal password logs in')
+
+  // Accounts + trials are DAILY DRIVING — created here through the reseller's own
+  // API (as the operator could in the reseller UI), then OBSERVED through the MCP.
+  assert.ok(!toolNames.has('reseller_activate_account') && !toolNames.has('reseller_renew_account'), 'daily-driver actions are deliberately NOT wrapped')
+  const boosted = await callJson(client, 'reseller_grant_credits', { amount: 10, note: 'self top-up' })
+  assert.strictEqual(boosted.minted.principal, RSL_ROOT.user, 'omitting `to` tops up the configured login')
+  const bossTok = (await rApi('POST', '/api/login', { username: RSL_ROOT.user, password: RSL_ROOT.pass })).body.token
+  const activated = await rApi('POST', '/api/accounts', { name: 'mcp-acct', password: 'acct-pass-999', months: 1 }, bossTok)
+  assert.strictEqual(activated.status, 201, 'account activated via the reseller API: ' + JSON.stringify(activated.body))
+  const trialMade = await rApi('POST', '/api/trials', { name: 'mcp-trial', password: 'trial-pass-999' }, bossTok)
+  assert.strictEqual(trialMade.status, 201, 'trial created via the reseller API: ' + JSON.stringify(trialMade.body))
+  const acctList = await callJson(client, 'reseller_list_accounts', {})
+  assert.ok(acctList.items.some((a) => a.account === 'mcp-acct'), 'accounts view lists the activation')
+  assert.ok(acctList.total >= 2, 'total counts both records')
+  const acct = await callJson(client, 'reseller_get_account', { account: 'mcp-acct' })
+  assert.strictEqual(acct.owner, RSL_ROOT.user, 'account view names the owner')
+  assert.ok(acct.live && acct.live.status === 'active', 'account view carries the LIVE panel state')
+  const trials = await callJson(client, 'reseller_trials', {})
+  assert.ok(trials.items.some((a) => a.account === 'mcp-trial' && a.kind === 'trial'), 'trials view shows the trial')
+  assert.ok(!trials.items.some((a) => a.account === 'mcp-acct'), 'trials view filters out paid accounts')
+
+  const opsNever = await callJson(client, 'reseller_ops_status')
+  assert.strictEqual(opsNever.never, true, 'no sweep ran yet (noSweeps harness) — the honest {never:true}')
+  assert.strictEqual((await rApi('POST', '/api/ops/reconcile', {}, bossTok)).status, 200, 'reconcile runs on demand')
+  const opsAfter = await callJson(client, 'reseller_ops_status')
+  assert.ok(opsAfter.never !== true, 'ops status reports the reconcile that just ran')
+  for (const [name, needle] of [['reseller_set_principal_password', 'mcp/config.json'], ['reseller_trials', 'reseller panel'], ['reseller_grant_credits', 'ledger']]) {
+    assert.ok(byName[name].description.includes(needle), `${name} description must mention "${needle}"`)
+  }
+  log('T: reseller oversight — status/system, principal lifecycle w/ live-verified passwords, mint echoing the real ledger line, accounts/trials views, ops status; daily driving stays unwrapped ✓')
+
+  // ===== U: library (S49b / G9) =====
+  const libStatus0 = await callJson(client, 'library_status')
+  assert.strictEqual(libStatus0.titles, 0, 'empty library')
+  const added = await callJson(client, 'library_add_title', { id: 'mcp-movie', input: '/media/mcp-movie.mkv', title: 'MCP Movie', category: 'Cine' })
+  assert.strictEqual(added.state, 'queued', 'add queues the one-shot ingest')
+  assert.strictEqual(added.input, '/media/mcp-movie.mkv', 'the box-side input path is stored as sent')
+  const delWhileQueued = await callRaw(client, 'library_delete_title', { id: 'mcp-movie' })
+  assert.ok(delWhileQueued.isError && /wait for the ingest to finish/.test(delWhileQueued.content[0].text), 'delete is refused mid-ingest')
+  fakeLib.setState('mcp-movie', 'ready')
+  const got = await callJson(client, 'library_get_title', { id: 'mcp-movie' })
+  assert.strictEqual(got.state, 'ready', 'get reflects the ingest completing')
+  assert.strictEqual((await callJson(client, 'library_list_titles')).length, 1, 'list shows the title')
+  const patched2 = await callJson(client, 'library_set_title', { id: 'mcp-movie', mode: 'copy', hlsTime: 6 })
+  assert.strictEqual(patched2.mode, 'copy', 'operational patch applied (mode)')
+  assert.strictEqual(patched2.hlsTime, 6, 'operational patch applied (hlsTime)')
+  const reing = await callJson(client, 'library_reingest_title', { id: 'mcp-movie', input: '/media/mcp-movie-v2.mkv' })
+  assert.strictEqual(reing.state, 'queued', 'reingest queues the next generation')
+  assert.strictEqual(reing.gen, 1, 'the feed generation advanced')
+  assert.strictEqual(reing.input, '/media/mcp-movie-v2.mkv', 'reingest can repoint the input')
+  const reingBusy = await callRaw(client, 'library_reingest_title', { id: 'mcp-movie' })
+  assert.ok(reingBusy.isError && /already queued/.test(reingBusy.content[0].text), 'a second reingest while queued is refused')
+  fakeLib.setState('mcp-movie', 'ready')
+  const libLogs = await callJson(client, 'library_title_logs', { id: 'mcp-movie', lines: 10 })
+  assert.ok(Array.isArray(libLogs.lines) && libLogs.lines.some((l) => /reingest gen 1/.test(l)), 'the ingest log ring is readable')
+  assert.strictEqual(libLogs.state, 'ready', 'logs carry the current state')
+  const gone = await callJson(client, 'library_delete_title', { id: 'mcp-movie' })
+  assert.strictEqual(gone.removed, true, 'delete removed the library-side title')
+  assert.ok(/unavailable/.test(gone.panelRecord) && /panel_delete_stream/.test(gone.panelRecord), 'delete echoes the panel-record disposition: marked unavailable, purge is a panel job')
+  assert.deepStrictEqual(await callJson(client, 'library_list_titles'), [], 'library empty again')
+  assert.ok(byName.library_set_title.description.includes('panel_set_stream_meta'), 'the panel-owned-metadata boundary is documented on the tool')
+  assert.ok(/LIBRARY box/i.test(byName.library_add_title.description), 'add_title says the input path lives on the library box')
+  log('U: library — add/refuse-delete-mid-ingest/get/list, operational patch, reingest + generation bump, logs, delete with the panel-record echo ✓')
+
+  // ===== V: the diagnose sweep covers all four services =====
+  const sweep = (await callJson(client, 'diagnose_healthz')).sweep
+  assert.strictEqual(sweep.panel.reachable, true, 'sweep: panel up')
+  assert.strictEqual(sweep.broadcaster.reachable, true, 'sweep: broadcaster up')
+  assert.ok(sweep.reseller.reachable === true && sweep.reseller.health.ok === true, 'sweep: reseller up with vitals')
+  assert.ok(sweep.library.reachable === true && sweep.library.health.up === true, 'sweep: library up with vitals')
+  log('V: diagnose_healthz sweeps panel + broadcaster + reseller + library ✓')
+
+  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
