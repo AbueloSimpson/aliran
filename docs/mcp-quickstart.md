@@ -1,16 +1,16 @@
-# MCP quickstart — walkthrough & onboarding
+# Quickstart — AI assistant
 
 A step-by-step path from *nothing* to *asking an AI to run your Aliran service*.
+
+Prefer to drive it yourself in a terminal? The
+**[terminal quickstart](quickstart-terminal.md)** covers the same ground with Docker
+Compose. Both end in the same place — pick one.
+
 For the concepts, the full tool catalog and the security model, see the
 [MCP server overview](mcp.md); this page is the hands-on walkthrough. At the end
 you'll have the MCP wired into **your MCP client of choice** — Claude Desktop,
 Claude Code, Codex CLI, Cursor, VS Code, Windsurf, Cline, Gemini CLI, … — verified
 by the built-in **doctor**, and you'll have run your first tool calls.
-
-> 📸 **About screenshots** — this guide marks the exact moments worth capturing
-> (**📸 Screenshot point**) so you can produce an illustrated internal runbook from
-> your *own* deployment. See [Capturing screenshots](#capturing-screenshots-for-your-team)
-> for the checklist and the redaction rules.
 
 ## What you need
 
@@ -147,8 +147,6 @@ is mostly copy-paste.
 - Exit codes: `0` all good · `1` a configured backend failed · `2` the config
   itself is unusable — handy in provisioning scripts.
 
-> 📸 **Screenshot point 1** — the all-green doctor output in your terminal.
-
 Common doctor failures:
 
 | `[FAIL]` line | Fix |
@@ -231,9 +229,6 @@ codex mcp add aliran -- node /path/to/aliran/mcp/src/index.js --config /path/to/
 claude mcp add aliran -- node /path/to/aliran/mcp/src/index.js --config /path/to/config.json
 ```
 
-> 📸 **Screenshot point 2** — your client's MCP/servers screen showing `aliran`
-> connected. **Screenshot point 3** — the tools list in a new chat.
-
 ### Client differences that matter
 
 - **Destructive-tool confirmations are advisory.** Aliran annotates purges,
@@ -261,9 +256,6 @@ on the first use of each tool:
 >
 > **Claude:** Your panel is up — 12 viewer accounts and 84 channels, 61 of them
 > live right now. Want me to look at anything specific?
-
-> 📸 **Screenshot point 4** — the first tool permission prompt.
-> **Screenshot point 5** — a conversation with the expanded tool-call result.
 
 Good first prompts, in escalating order:
 
@@ -323,28 +315,13 @@ panel **public** key returns through the conversation — that's the
 Afterwards: *"check the server status"* (`server_status`), *"show me the logs"*
 (`server_logs`), and later *"update my deployment"* (`server_update`).
 
-> 📸 **Screenshot point 6** — the install result with the panel public key.
+## Sharing your setup safely
 
-## Capturing screenshots for your team
-
-To turn this into an illustrated runbook for your own operators, capture the six
-points above. Rules first:
-
-- **Never screenshot** `config.json`, a `.env` file, or a terminal showing
-  passwords/keys. By design no tool *result* contains a password or private key —
-  conversations are safe to capture.
-- Safe to show: the panel **public** key (it ships inside every client build),
-  tool names, channel/package names, the doctor output.
-- Consider blurring: your server IP/hostname, real viewer usernames.
-
-| # | Moment | Where |
-|---|---|---|
-| 1 | Doctor all-green | your terminal, after Step 3 |
-| 2 | `aliran` server listed | Claude Desktop → Settings → Developer |
-| 3 | Tool list in a chat | new conversation → tools icon |
-| 4 | First permission prompt | first `panel_status` call |
-| 5 | Tool call + result expanded | any Step 5 prompt |
-| 6 | Install result (public key) | after `server_install` |
+Writing internal runbooks, or pasting output into an issue? Tool *results* never
+contain a password or private key by design, so conversations are safe to share.
+Never share `config.json`, a `.env` file, or a terminal showing passwords or keys.
+Your panel **public** key is safe to show — it ships inside every client build.
+Consider redacting your server hostname/IP and real viewer usernames.
 
 ## Troubleshooting
 

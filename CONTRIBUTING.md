@@ -32,6 +32,22 @@ docs/          Documentation site sources (Markdown, Mermaid diagrams)
 - Add/adjust docs under `docs/` for any user-facing change.
 - Record significant architectural decisions as ADRs in `docs/adr/`.
 
+## Working on the docs site
+
+`docs/` is the source for the documentation site (MkDocs Material; diagrams use
+Mermaid), published at <https://abuelosimpson.github.io/aliran/>.
+
+```bash
+pip install mkdocs-material mkdocs-mermaid2-plugin
+mkdocs serve                  # local preview at http://127.0.0.1:8000
+python -m mkdocs build --strict   # what CI runs — dead links fail the build
+```
+
+Add new pages to the `nav:` in [`mkdocs.yml`](mkdocs.yml), under the audience section
+they belong to. Publishing is automatic: every push to `main` touching `docs/` or
+`mkdocs.yml` rebuilds and deploys via
+[`.github/workflows/docs.yml`](.github/workflows/docs.yml).
+
 ## Commit / PR
 
 - Branch from `main`, open a PR with a clear description and testing notes.

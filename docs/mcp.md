@@ -13,8 +13,8 @@ is a thin, credentialed adapter over those, plus an SSH executor for the box its
 
 !!! tip "First time? Take the walkthrough"
     The **[MCP quickstart](mcp-quickstart.md)** is the hands-on onboarding path:
-    clone → config → the built-in **`--doctor`** self-check → Claude Desktop wiring →
-    first prompts, with a troubleshooting table and screenshot capture points.
+    clone → config → the built-in **`--doctor`** self-check → wiring for your MCP
+    client of choice → first prompts, with a troubleshooting table.
 
 !!! note "It is the *server* side of MCP"
     This exposes tools/resources **to** an AI client; it does **not** call the Claude

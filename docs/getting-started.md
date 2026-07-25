@@ -1,12 +1,14 @@
-# Getting Started
+# Developer tour — run it locally
 
-Aliran has three audiences. Pick your path:
+For **contributors and developers** who want the stack running from the repo, without
+Docker. Node processes straight from the workspaces, so you can edit and restart.
 
-- **Operators** — run a streaming service → [Operator Guide](operator-guide.md)
-- **Developers** — build/contribute → this page + [Architecture](architecture.md)
-- **End users** — watch on the app → install the operator's APK and log in
+!!! tip "Running a service, not hacking on one?"
+    Use the **[terminal quickstart](quickstart-terminal.md)** (Docker Compose — the
+    supported deployment path) or the **[AI quickstart](mcp-quickstart.md)**. This page
+    is the development setup, not a deployment guide.
 
-## 5-minute developer tour
+## 5-minute tour
 
 > Prerequisites: Node.js 20+, `ffmpeg`. (The Android app additionally needs the native
 > toolchain — see [client-build.md](client-build.md).)

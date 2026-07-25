@@ -25,54 +25,69 @@ plugins:
 markdown_extensions:
   - admonition
   - tables
+  # attr_list + md_in_html back the Material "grid cards" layout on the landing page.
+  - attr_list
+  - md_in_html
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
           class: mermaid
           format: !!python/name:mermaid2.fence_mermaid_custom
 
+# Grouped by AUDIENCE, not by file. A visitor should be able to find their lane in
+# one glance: get started → run a service → build the apps → integrate the SDK →
+# watch → look something up → project artifacts.
 nav:
   - Home: README.md
-  - Getting started: getting-started.md
-  - Concepts: concepts.md
-  - Architecture: architecture.md
-  - Security model: security-model.md
-  - Operator guide: operator-guide.md
-  - MCP server (AI-operable): mcp.md
-  - MCP quickstart (walkthrough): mcp-quickstart.md
-  - Repeater appliance: repeater.md
-  - VOD library: vod-library.md
-  - Configuration: configuration.md
-  - Content management: content-management.md
-  - Privacy-preserving analytics: analytics.md
-  - Client build: client-build.md
-  - Android app — viewer guide: android-viewer-guide.md
-  - Desktop player (Windows & macOS): desktop-player.md
-  - Desktop player — viewer guide: desktop-viewer-guide.md
-  - Player SDK: sdk.md
-  - SDK installation & configuration: sdk-guide.md
-  - Kotlin SDK walkthrough: kotlin-sdk-walkthrough.md
-  - Operator APIs & the SDK: ops-sdk-integration.md
-  - White-label branding: white-label.md
-  - Operator build walkthrough: operator-build-walkthrough.md
-  - User management: user-management.md
-  - Reseller panel: reseller-panel.md
-  - Reference: reference.md
-  - Development log: devlog.md
-  - Knowledge base:
-      - Overview: kb/index.md
-      - Playback & client runtime: kb/playback.md
-      - P2P feed buffer & tuning: kb/feed-buffer.md
-      - Scaling & capacity planning: kb/scaling.md
-      - Network tuning (socket buffers): kb/network-tuning.md
-      - Repeater in production (worked example): kb/repeater-production-example.md
-      - Viewer bandwidth & battery: kb/viewer-bandwidth.md
-      - Source compatibility (pull ingest): kb/source-compatibility.md
-      - Operating panel & broadcaster: kb/operator.md
-      - Backup, restore & key rotation: kb/backup-and-rotation.md
-      - Offline slate media: kb/offline-slate.md
-      - Publishing the dashboards: kb/public-dashboards.md
-      - Android & RN builds: kb/android-build.md
-      - Bare worklet & bundling: kb/bare-worklet.md
-  - FAQ & troubleshooting: faq.md
-  - Legal & compliance: legal-compliance.md
+  - Get started:
+      - Quickstart — terminal: quickstart-terminal.md
+      - Quickstart — AI assistant: mcp-quickstart.md
+      - How it works (concepts): concepts.md
+      - Architecture: architecture.md
+      - Developer tour (run it locally): getting-started.md
+  - Run a service:
+      - Operator guide: operator-guide.md
+      - Security model: security-model.md
+      - Configuration: configuration.md
+      - Content management: content-management.md
+      - User management: user-management.md
+      - Privacy-preserving analytics: analytics.md
+      - Optional — MCP server (AI-operable): mcp.md
+      - Optional — Repeater appliance: repeater.md
+      - Optional — VOD library: vod-library.md
+      - Optional — Reseller panel: reseller-panel.md
+  - Build & brand the apps:
+      - Operator build walkthrough: operator-build-walkthrough.md
+      - White-label branding: white-label.md
+      - Client build (Android phone & TV): client-build.md
+      - Desktop player (Windows & macOS): desktop-player.md
+  - Integrate the SDK:
+      - Player SDK: sdk.md
+      - Installation & configuration: sdk-guide.md
+      - Kotlin walkthrough: kotlin-sdk-walkthrough.md
+      - Operator APIs & the SDK: ops-sdk-integration.md
+  - For viewers:
+      - Android app — viewer guide: android-viewer-guide.md
+      - Desktop player — viewer guide: desktop-viewer-guide.md
+  - Look it up:
+      - Reference: reference.md
+      - FAQ & troubleshooting: faq.md
+      - Legal & compliance: legal-compliance.md
+      - Knowledge base:
+          - Overview: kb/index.md
+          - Playback & client runtime: kb/playback.md
+          - P2P feed buffer & tuning: kb/feed-buffer.md
+          - Scaling & capacity planning: kb/scaling.md
+          - Network tuning (socket buffers): kb/network-tuning.md
+          - Repeater in production (worked example): kb/repeater-production-example.md
+          - Viewer bandwidth & battery: kb/viewer-bandwidth.md
+          - Source compatibility (pull ingest): kb/source-compatibility.md
+          - Operating panel & broadcaster: kb/operator.md
+          - Backup, restore & key rotation: kb/backup-and-rotation.md
+          - Offline slate media: kb/offline-slate.md
+          - Publishing the dashboards: kb/public-dashboards.md
+          - Android & RN builds: kb/android-build.md
+          - Bare worklet & bundling: kb/bare-worklet.md
+  - Project:
+      - Development log: devlog.md
+      - Architecture decision records: adr/0001-record-architecture-decisions.md

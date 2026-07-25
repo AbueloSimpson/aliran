@@ -68,8 +68,7 @@ phone + Android TV, and the Windows desktop player).
   exit codes 0/1/2 for scripting) plus a step-by-step
   **[quickstart walkthrough](docs/mcp-quickstart.md)** (config → doctor →
   per-client wiring incl. an advisory-hints caveat → first prompts → fresh-server
-  install, with diagrams, a screenshot-capture checklist and a troubleshooting
-  table). See [docs/mcp.md](docs/mcp.md).
+  install, with diagrams and a troubleshooting table). See [docs/mcp.md](docs/mcp.md).
 - **MCP ops completeness (S49a)** — the four P0 gaps that still forced an operator
   out of the MCP, closed (59 → **73 tools**): **(1) env tuning + restart** —
   `server_set_env {service, pairs}` upserts documented, **allowlisted** env knobs
