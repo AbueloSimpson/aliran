@@ -43,7 +43,7 @@ Self-hostable, open-source, peer-to-peer OTT streaming on the
 |---|---|---|
 | 📺 | **Watch a service someone runs** | Grab an app from the [releases page](https://github.com/AbueloSimpson/aliran/releases/latest), then follow the [Android](docs/android-viewer-guide.md) or [desktop](docs/desktop-viewer-guide.md) viewer guide. You'll need a panel key, username and password from your operator. |
 | 🖥️ | **Run your own service** | [**Quickstart — terminal**](docs/quickstart-terminal.md): Docker Compose to a live channel in ~15 minutes. Or [**Quickstart — AI assistant**](docs/mcp-quickstart.md) to have an AI client do it through the MCP server. |
-| 🛠️ | **Build on it** | The engine is published as [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) — see the [Player SDK docs](docs/sdk.md), or [`aliran-kit`](sdk/android/) for native Kotlin. |
+| 🛠️ | **Build on it** | The viewer engine ships as [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) (plus [`@aliran/react-native`](https://www.npmjs.com/package/@aliran/react-native) and native Kotlin [`aliran-kit`](sdk/android/)) — start at the [Player SDK docs](docs/sdk.md), or see [all components](#how-it-works). |
 
 There is **no public demo service** — Aliran is infrastructure for operators. You
 connect the apps to your own deployment, or to one someone runs for you.
@@ -61,20 +61,43 @@ connect the apps to your own deployment, or to one someone runs for you.
 ```
 
 Cooperating peer-to-peer components — all serverless in transport, finding each other
-over the Hyperswarm DHT by public key:
+over the Hyperswarm DHT by public key.
+
+**Services you run** — the deployment. Only the first two are required:
 
 | Component | Runs on | Role |
 |-----------|---------|------|
-| **[`panel/`](panel/)** | Linux / desktop | Origin of truth: signed account DB + stream catalog, OPRF login (brute-force resistant), entitlement tokens |
-| **[`broadcaster/`](broadcaster/)** | Linux (headless) | Ingests the original stream (OBS/RTSP/HLS/file) → encrypted P2P feed, seeds the swarm |
-| **[`repeater/`](repeater/)** | Linux (headless) | Optional **keyless** regional super-peer (Open-Connect model): mirrors + serves encrypted feeds, absorbs viewer fan-out, cannot watch what it serves |
-| **[`library/`](library/)** | Linux (headless) | Optional **VOD service**: one-shot ingest of video files → encrypted, P2P-seeded on-demand titles with full seek, granted like channels |
-| **[`reseller/`](reseller/)** | Linux (headless) | Optional **reseller panel**: role hierarchy + credit ledger fronting the panel admin API |
-| **[`client/`](client/)** | Android (phone + TV) | The app/APK: logs in, browses an OTT UI, plays the stream, **and re-seeds to other viewers** |
+| **[`panel/`](panel/)** | Linux / desktop | Origin of truth: signed account DB + stream catalog, OPRF login (brute-force resistant), entitlement tokens, admin dashboard |
+| **[`broadcaster/`](broadcaster/)** | Linux (headless) | Ingests the original stream (OBS/RTSP/HLS/file) → encrypted P2P feed, seeds the swarm; control dashboard |
+| **[`repeater/`](repeater/)** *(optional)* | Linux (headless) | **Keyless** regional super-peer (Open-Connect model): mirrors + serves encrypted feeds, absorbs viewer fan-out, cannot watch what it serves |
+| **[`library/`](library/)** *(optional)* | Linux (headless) | **VOD service**: one-shot ingest of video files → encrypted, P2P-seeded on-demand titles with full seek, granted like channels |
+| **[`reseller/`](reseller/)** *(optional)* | Linux (headless) | **Reseller panel**: role hierarchy + credit ledger fronting the panel admin API |
+
+**Apps your viewers install:**
+
+| Component | Runs on | Role |
+|-----------|---------|------|
+| **[`client/`](client/)** | Android (phone + TV) | The app/APK: logs in, browses an OTT UI, plays the stream, **and re-seeds to other viewers**. Runs the SDK in a [Bare](https://github.com/holepunchto/bare) worklet |
 | **[`desktop/`](desktop/)** | Windows & macOS | The desktop player (Electron): the same OTT interface and P2P engine on a PC |
-| **[`sdk/`](sdk/)** | anywhere Node runs | The published engine — [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk): build your own client on the exact engine the apps run |
-| **[`sdk/android/`](sdk/android/)** | any Android app (no React Native) | **`aliran-kit`** — native Kotlin SDK, one APK from **Android 5.0** |
-| **[`mcp/`](mcp/)** | operator workstation | Optional **MCP server**: install, configure and operate a deployment through an AI client |
+
+**Libraries & tools you build on** — published to npm:
+
+| Package | Source | Role |
+|---------|--------|------|
+| [`@aliran/core`](https://www.npmjs.com/package/@aliran/core) | [`core/`](core/) | The crypto foundation every component shares: OPRF, Argon2id, key sealing, token signing |
+| [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) | [`sdk/`](sdk/) | The headless viewer engine — the exact engine the apps run. Build your own client |
+| [`@aliran/react-native`](https://www.npmjs.com/package/@aliran/react-native) | [`sdk/react-native/`](sdk/react-native/) | React Native binding: `AliranBackend` + `<AliranVideo>` |
+| [`@aliran/mcp`](https://www.npmjs.com/package/@aliran/mcp) | [`mcp/`](mcp/) | **MCP server**: install, configure and operate a deployment through an AI client |
+| *(Gradle, from source)* | [`sdk/android/`](sdk/android/) | **`aliran-kit`** — native Kotlin SDK for Android apps without React Native; one APK from **Android 5.0** |
+
+**Running and developing the repo:**
+
+| Directory | What's in it |
+|-----------|--------------|
+| [`deploy/`](deploy/) | Docker Compose, systemd units, the Caddy TLS recipe, backup/restore scripts, the sysctl tuning drop-in |
+| [`tools/`](tools/) | The e2e test suites, a headless viewer, the scale bench, and `acceptance-remote.mjs` — proves a deployment from any machine |
+| [`examples/`](examples/) | Minimal integration examples, including a headless player |
+| [`docs/`](docs/) | Source for the [documentation site](https://abuelosimpson.github.io/aliran/) |
 
 ### Why this design
 
