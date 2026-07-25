@@ -248,6 +248,24 @@ try {
   log('panel: unauthorized publisher rejected ✓')
 
   // ===== S26: enrolled publishers — per-site keys + admin-assigned channel scopes =====
+  // These streams get FRESH feeds (one each) instead of re-using feed2: a re-probe of
+  // an already-purged feedKey over the long-lived public-DHT connection can
+  // intermittently stick ("Not opened" then header timeouts) until the enricher parks
+  // (~8 min) and the next heartbeat re-enqueues — the recurring CI flake this file used
+  // to trip at the own-core count below. The scope/key/attribution assertions here do
+  // not care WHICH feed backs them, and first-touch probes do not wedge. (Real
+  // deployments never share a feedKey across streams either — the sharing was test
+  // convenience only.)
+  const feedScoped = new Hyperdrive(feedStore.namespace('feed-scoped'), { encryptionKey: encKey }); await feedScoped.ready()
+  await feedScoped.put('/index.m3u8', b4a.from('#EXTM3U'))
+  const feedScopedHex = b4a.toString(feedScoped.key, 'hex')
+  const feedOther = new Hyperdrive(feedStore.namespace('feed-other'), { encryptionKey: encKey }); await feedOther.ready()
+  await feedOther.put('/index.m3u8', b4a.from('#EXTM3U'))
+  const feedOtherHex = b4a.toString(feedOther.key, 'hex')
+  feedSwarm.join(feedScoped.discoveryKey, { server: true, client: false })
+  feedSwarm.join(feedOther.discoveryKey, { server: true, client: false })
+  await feedSwarm.flush()
+
   const pctx = { dataDir: dirs.panel }
   const east = addPublisher(pctx, 'east', { scopes: 'scoped-*' })
   assert.match(east.secretKey, /^[0-9a-f]{128}$/, 'enrollment returns the site secret once')
@@ -255,7 +273,7 @@ try {
 
   // In-scope named register: verified against the ENROLLED key, origin stamped.
   await registerWithPanel(pcall, east.secretKey, {
-    publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, encryptionKey: encKeyHex, title: 'Scoped', isLive: true
+    publisher: 'east', streamId: 'scoped-1', feedKey: feedScopedHex, encryptionKey: encKeyHex, title: 'Scoped', isLive: true
   })
   const scoped = (await db.get('catalog/scoped-1')).value
   assert.strictEqual(scoped.origin, 'east', 'catalog record carries origin:<name>')
@@ -267,32 +285,32 @@ try {
   const rejectCode = async (secret, payload) => {
     try { await registerWithPanel(pcall, secret, payload); return null } catch (e) { return e.message }
   }
-  let code = await rejectCode(east.secretKey, { publisher: 'east', streamId: 'other-1', feedKey: feedKey2Hex, encryptionKey: encKeyHex, isLive: true })
+  let code = await rejectCode(east.secretKey, { publisher: 'east', streamId: 'other-1', feedKey: feedOtherHex, encryptionKey: encKeyHex, isLive: true })
   assert.match(code, /out-of-scope/, 'out-of-scope streamId rejected')
   assert.ok(!(await db.get('catalog/other-1')), 'out-of-scope wrote no catalog record')
   assert.strictEqual(loadSecrets(dirs.panel)['other-1'], undefined, 'out-of-scope wrote no secret')
 
   // A named entry still verifies the signature — the right name with the wrong key fails.
-  code = await rejectCode(b4a.toString(authKeyPair().secretKey, 'hex'), { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: true })
+  code = await rejectCode(b4a.toString(authKeyPair().secretKey, 'hex'), { publisher: 'east', streamId: 'scoped-1', feedKey: feedScopedHex, isLive: true })
   assert.match(code, /unauthorized/, 'named publisher with a wrong key rejected')
 
   // Unknown name.
-  code = await rejectCode(east.secretKey, { publisher: 'nobody', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: true })
+  code = await rejectCode(east.secretKey, { publisher: 'nobody', streamId: 'scoped-1', feedKey: feedScopedHex, isLive: true })
   assert.match(code, /unknown-publisher/, 'unknown publisher name rejected')
 
   // Revoke = status flip (no global re-key); re-activate re-accepts the SAME key.
   setPublisherStatus(pctx, 'east', 'revoked')
-  code = await rejectCode(east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: false })
+  code = await rejectCode(east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedScopedHex, isLive: false })
   assert.match(code, /revoked/, 'revoked publisher rejected')
   assert.strictEqual((await db.get('catalog/scoped-1')).value.isLive, true, 'revoked register did not flip isLive')
   setPublisherStatus(pctx, 'east', 'active')
-  await registerWithPanel(pcall, east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: false })
+  await registerWithPanel(pcall, east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedScopedHex, isLive: false })
   assert.strictEqual((await db.get('catalog/scoped-1')).value.isLive, false, 're-activated publisher registers again')
   log('panel: out-of-scope / wrong-key / unknown / revoked all rejected before any write ✓')
 
   // Scope edits are live: the registry is re-read on every register.
   setPublisherScopes(pctx, 'east', ['scoped-*', 'other-*'])
-  await registerWithPanel(pcall, east.secretKey, { publisher: 'east', streamId: 'other-1', feedKey: feedKey2Hex, encryptionKey: encKeyHex, isLive: true })
+  await registerWithPanel(pcall, east.secretKey, { publisher: 'east', streamId: 'other-1', feedKey: feedOtherHex, encryptionKey: encKeyHex, isLive: true })
   assert.strictEqual((await db.get('catalog/other-1')).value.origin, 'east', 'widened scope applies with no restart')
 
   // Legacy fallback: the unnamed registers earlier in this file all verified against
@@ -312,7 +330,7 @@ try {
     await registerWithPanel(pcall2, b4a.toString(keys.publisher.secretKey, 'hex'), { streamId: 'news', feedKey: feedKey2Hex, isLive: true })
   } catch (e) { legacyOffCode = e.message }
   assert.match(legacyOffCode, /unknown-publisher/, 'legacy disabled: unnamed payload rejected even with the right shared key')
-  await registerWithPanel(pcall2, east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedKey2Hex, isLive: true })
+  await registerWithPanel(pcall2, east.secretKey, { publisher: 'east', streamId: 'scoped-1', feedKey: feedScopedHex, isLive: true })
   assert.strictEqual((await db.get('catalog/scoped-1')).value.isLive, true, 'named registration unaffected by the legacy cutover')
   log('panel: LEGACY_PUBLISHER=0 rejects unnamed payloads; enrolled sites unaffected ✓')
 
@@ -348,8 +366,28 @@ try {
   await assets.put('/gc/keepme.txt', b4a.from('assets must survive the sweep'))
   const newsBefore = (await db.get('catalog/news')).value
   const aliceBefore = (await db.get('user/alice')).value
+  // QUIESCE before counting: the S26 registers above (scoped-1 / other-1 on feed2)
+  // enqueued ASYNC enrichment probes, and a probe holds its feed cores OPEN on the
+  // panel store for the duration of an attempt (purged per attempt, 20 s timeout +
+  // 5-60 s backoff). Locally the probe wins in milliseconds; on a congested CI
+  // runner a retry can still be in flight HERE, and its transient cores made this
+  // count 4-5 (the recurring DHT-lane flake). Same discipline as the ghost section:
+  // measure only once the enricher reports idle.
+  try {
+    await waitFor(async () => enrich.pending() === 0, 90000, 'enricher idle before the own-core count')
+  } catch (e) {
+    console.log('DEBUG pending:', enrich.pending())
+    const secretsNow = loadSecrets(dirs.panel)
+    for await (const { key, value } of db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+      const id = key.slice('catalog/'.length)
+      console.log(`DEBUG catalog/${id}: feedKey=${(value.feedKey || '').slice(0, 8)} blobsKey=${value.blobsKey ? value.blobsKey.slice(0, 8) : 'NULL'} secret=${secretsNow[id] ? 'yes' : 'NO'}`)
+    }
+    console.log('DEBUG cores now:', panelCores(dirs.panel).map((c) => c.slice(0, 8)).join(' '))
+    throw e
+  }
   const ownCores = panelCores(dirs.panel).sort()
-  assert.strictEqual(ownCores.length, 3, "the panel owns exactly 3 cores (bee + assets metadata/blobs)")
+  assert.strictEqual(ownCores.length, 3,
+    `the panel owns exactly 3 cores (bee + assets metadata/blobs) — got ${ownCores.length}: ${ownCores.map((c) => c.slice(0, 8)).join(' ')}`)
 
   // Strand cores the way a pre-purge probe did: open the feed's metadata + blobs cores on the
   // panel's own store and close() without purging. They are KEYED, so they land under

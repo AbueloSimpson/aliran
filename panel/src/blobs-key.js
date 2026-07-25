@@ -134,7 +134,10 @@ export function makeBlobsKeyEnricher ({ store, swarm, db, dataDir }, opts = {}) 
   async function run (streamId, job) {
     try {
       while (!closed && job.attempts < cfg.maxAttempts) {
-        try { if (await attempt(streamId)) return } catch {}
+        // Attempt failures are routine (offline broadcaster, header not written yet)
+        // and stay silent by default; ALIRAN_ENRICH_DEBUG=1 surfaces them per attempt
+        // on stderr — the visibility that pinned down the 2026-07 re-probe wedge.
+        try { if (await attempt(streamId)) return } catch (e) { if (process.env.ALIRAN_ENRICH_DEBUG) console.error(`[enrich-debug] ${streamId} attempt ${job.attempts} failed: ${e && e.message}`) }
         if (closed) return
         const delay = Math.min(cfg.backoffBaseMs * 2 ** job.attempts, cfg.backoffMaxMs)
         job.attempts++
