@@ -56,7 +56,7 @@ export const REPORT_CATEGORY_LABELS: Record<ReportCategory, string> = {
 // about the account name, which the protocol structurally guarantees (the report
 // carries a session token the panel immediately reduces to an HMAC pseudonym).
 export const REPORT_CONSENT =
-  'Sent with your report: the problem you picked, anything you type, the channel you were ' +
+  'Sent with your report: the problem you picked, the channel you were ' +
   'watching, your app version and device type, how many peers you were connected to, and the ' +
   'last few things the player did. Your account name and password are never sent.'
 

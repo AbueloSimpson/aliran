@@ -676,6 +676,9 @@ img { -webkit-user-drag: none; }
   width: min(560px, 92vw); max-height: 88vh; overflow-y: auto;
   background: var(--c-surface); border-radius: 12px; padding: 24px 26px;
 }
+/* The channel being reported (S51) — the modal opens from the player, so naming the
+   channel replaces the free-text field as the "what is this about" signal. */
+.report-channel { font-size: 15px; font-weight: 600; margin: 2px 0 8px; }
 .report-categories { display: flex; flex-direction: column; gap: 4px; }
 .report-category {
   display: flex; align-items: center; gap: 12px; width: 100%;

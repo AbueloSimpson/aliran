@@ -26,6 +26,7 @@ export interface NowPlayingBarProps {
   onChannels: () => void
   onInfo: () => void
   onToggleFavorite: () => void
+  onReport: () => void
   hasTracks?: boolean
   onTracks?: () => void
   vod?: VodTransport | null
@@ -33,7 +34,7 @@ export interface NowPlayingBarProps {
   onSeek?: (seconds: number) => void
 }
 
-export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, hasTracks, onTracks, vod, onTogglePause, onSeek }: NowPlayingBarProps) {
+export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek }: NowPlayingBarProps) {
   // What's on NOW from the program guide — more useful on the bar than the channel
   // synopsis; the synopsis still lives in the Info panel.
   const { data } = useEpg(stream.epgUrl, stream.epgId)
@@ -65,6 +66,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
         <BarButton glyph="☰" label="Channels" onClick={onChannels} />
         <BarButton glyph="ⓘ" label="Info" onClick={onInfo} />
         <BarButton glyph={favorite ? '★' : '☆'} label="Favorite" active={favorite} onClick={onToggleFavorite} />
+        <BarButton glyph="⚑" label="Report" onClick={onReport} />
         {hasTracks && <BarButton glyph="CC" label="Subtitles" onClick={() => onTracks?.()} />}
       </div>
     </div>

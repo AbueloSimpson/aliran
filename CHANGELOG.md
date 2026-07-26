@@ -18,6 +18,17 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **In-player problem reporting (S51)** — the "Report a problem" flow moved from
+  Settings onto the **player itself**: a Report button on the now-playing bar
+  (phone + desktop, plus the `r` key on desktop) and on the playing channel's
+  info panel (TV/D-pad). Reports therefore always carry the **channel being
+  watched**. The flow is select-a-symptom → Send: the free-text note is gone
+  (the wire still accepts `text` from SDK hosts; reports from the shipped apps
+  are `text: null`), and the `login` category is no longer offered by the apps —
+  reaching a channel proves login worked (the panel's login alert rule still
+  runs for SDK hosts that send it). The Settings entry was removed; the consent
+  line no longer promises "anything you type".
+
 - **Viewer problem reports (panel ingest core)** — viewers can report a problem
   ("no audio on channel X") over the **existing** P2P RPC socket: a new `report`
   responder beside `login`/`session`, no new port and no wire change for older

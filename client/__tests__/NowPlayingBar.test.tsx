@@ -13,7 +13,7 @@ function texts (tree: RendererInstance): string {
   return tree.root.findAllByType(Text).map(t => [t.props.children].flat(9).map(String).join('')).join(' | ')
 }
 
-const props = { number: 1, clock: '17:45', favorite: false, onChannels: () => {}, onInfo: () => {}, onToggleFavorite: () => {} }
+const props = { number: 1, clock: '17:45', favorite: false, onChannels: () => {}, onInfo: () => {}, onToggleFavorite: () => {}, onReport: () => {} }
 const mounted: RendererInstance[] = []
 async function createTree (el: React.ReactElement): Promise<RendererInstance> {
   let tree!: RendererInstance

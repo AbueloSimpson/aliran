@@ -31,6 +31,7 @@ import { CategoryRail } from '../components/CategoryRail'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { TrackMenu } from '../components/TrackMenu'
+import { ReportModal } from '../components/ReportModal'
 
 type Overlay = 'none' | 'list' | 'info'
 
@@ -75,6 +76,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
   const [selectedText, setSelectedText] = useState(-1)
   const [selectedAudio, setSelectedAudio] = useState<number | undefined>(undefined)
   const [showTracks, setShowTracks] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
   // Bottom bar + cursor idle.
   const [barShown, setBarShown] = useState(true)
   const [cursorHidden, setCursorHidden] = useState(false)
@@ -249,6 +251,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (showTracks) return // TrackMenu captures its own keys
+      if (reportOpen) { if (e.key === 'Escape') { e.preventDefault(); setReportOpen(false) } return } // modal owns its keys
       const ov = overlayRef.current
       if (ov === 'none') {
         if (e.key === 'ArrowUp') { e.preventDefault(); zap(1); showBar() }
@@ -257,6 +260,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
         else if (e.key === 'Escape') { e.preventDefault(); onExit() }
         else if ((e.key === 'i' || e.key === 'I') && playing) { e.preventDefault(); openInfo(playing) }
         else if ((e.key === 'f' || e.key === 'F') && playing) { e.preventDefault(); backend.toggleFavorite(playing.id); showBar() }
+        else if ((e.key === 'r' || e.key === 'R') && playing) { e.preventDefault(); setReportOpen(true) }
         else if ((e.key === 'c' || e.key === 'C') && (textTracks.length > 0 || audioTracks.length > 1)) { e.preventDefault(); setShowTracks(true) }
         else if (e.key === ' ' && playingVod) { e.preventDefault(); toggleVodPause() }
       } else if (ov === 'list' && paneRef.current === 'rail') {
@@ -276,7 +280,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streams, playingId, error, railItems, railFocus, infoStream, showTracks, textTracks, audioTracks, playingVod, playing])
+  }, [streams, playingId, error, railItems, railFocus, infoStream, showTracks, reportOpen, textTracks, audioTracks, playingVod, playing])
 
   function toggleVodPause () {
     // ▶ on a finished title replays from the top (unpausing at the end is a no-op —
@@ -377,6 +381,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
             onChannels={() => { setPane('list'); setOverlay('list') }}
             onInfo={() => openInfo(playing)}
             onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
+            onReport={() => { showBar(); setReportOpen(true) }}
             hasTracks={textTracks.length > 0 || audioTracks.length > 1}
             onTracks={() => { showBar(); setShowTracks(true) }}
             vod={playingVod ? { position: vodPos, duration: vodDur, paused: vodPaused } : null}
@@ -419,6 +424,10 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
           onClose={() => setShowTracks(false)}
         />
       )}
+
+      {/* "Report a problem" (S51) — from the bar's Report button or the `r` key. The
+          engine attaches the ACTIVE stream, so it is only reachable during playback. */}
+      {reportOpen && <ReportModal channelTitle={playing?.title} onClose={() => setReportOpen(false)} />}
     </div>
   )
 }

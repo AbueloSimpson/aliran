@@ -30,9 +30,10 @@ export interface ChannelInfoPanelProps {
   peers?: number | null
   onWatch: () => void
   onToggleFavorite: () => void
+  onReport?: () => void
 }
 
-export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite }: ChannelInfoPanelProps) {
+export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite, onReport }: ChannelInfoPanelProps) {
   const art = stream.poster || stream.backdrop || stream.logo
   // vod library title (S8a): runtime + availability instead of LIVE state, and the
   // program-guide slot does not apply (a title has no schedule).
@@ -80,6 +81,10 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
       <View style={styles.actions}>
         <ActionButton label={playing ? 'Watching' : 'Watch'} primary onPress={onWatch} hasTVPreferredFocus />
         <ActionButton label={favorite ? '★ Remove favorite' : '☆ Add favorite'} onPress={onToggleFavorite} />
+        {/* Report rides the info panel only for the channel BEING WATCHED — the
+            engine attaches the active stream to the report, so offering it on a
+            merely-browsed channel would report the wrong one (S51). */}
+        {playing && onReport && <ActionButton label="⚑ Report a problem" onPress={onReport} />}
       </View>
     </ScrollView>
   )

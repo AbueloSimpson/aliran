@@ -5,12 +5,15 @@ CDN edge starts serving garbage — the people watching it notice in seconds, an
 until now they had no way to tell you except a message on whatever chat app they
 happened to have.
 
-Aliran ships a **"Report a problem"** flow in both apps (phone/TV and desktop). A
-viewer picks one of seven categories, optionally types a sentence, and the report
-travels over the **existing** P2P RPC socket to your panel — no new port, no extra
-service, nothing to expose. The panel correlates reports, opens **one** alert per
-channel per window, and pushes it once to wherever you actually look (ntfy, Slack,
-Discord, Telegram, or any JSON webhook).
+Aliran ships a **"Report a problem"** button on the player itself, in both apps
+(phone/TV and desktop): it sits on the now-playing bar (and the playing channel's
+info panel on TV; the `r` key on desktop), so every report carries the **specific
+channel being watched** — the viewer picks a symptom from a fixed list and presses
+Send, and there is nothing to type. The report travels over the **existing** P2P
+RPC socket to your panel — no new port, no extra service, nothing to expose. The
+panel correlates reports, opens **one** alert per channel per window, and pushes it
+once to wherever you actually look (ntfy, Slack, Discord, Telegram, or any JSON
+webhook).
 
 The whole feature is built around one constraint: **a real outage must cost the
 panel almost nothing**, and **no report may ever tell you who sent it**.
@@ -21,19 +24,18 @@ panel almost nothing**, and **no report may ever tell you who sent it**.
 
 | Field | Value |
 |---|---|
-| category | one of `no-audio`, `black-screen`, `visual-artifacts`, `buffering`, `wrong-content`, `login`, `other` — a closed enum; anything else is rejected, never coerced |
-| text | optional free text, 300 characters max, control characters stripped |
-| channel | the stream id they were watching |
+| category | one of `no-audio`, `black-screen`, `visual-artifacts`, `buffering`, `wrong-content`, `login`, `other` — a closed enum; anything else is rejected, never coerced. The shipped apps offer everything except `login` (the flow lives on the player, and reaching a channel proves login worked); the wire keeps the full enum for SDK hosts |
+| text | optional on the wire (300-char cap, control characters stripped), but the shipped apps collect **no free text** — a report from them always has `text: null`. The cap exists for third-party SDK hosts |
+| channel | the stream id being watched — always present from the apps, since the flow only opens during playback |
 | appVersion / platform | e.g. `0.2.0` / `android-tv` |
 | peers | how many peers the engine was connected to |
 | events | the engine's own rolling 50-entry breadcrumb ring (error/status/fallback/source-changed), each detail truncated to 200 bytes |
 
 The apps show this verbatim before sending:
 
-> Sent with your report: the problem you picked, anything you type, the channel you
-> were watching, your app version and device type, how many peers you were connected
-> to, and the last few things the player did. Your account name and password are
-> never sent.
+> Sent with your report: the problem you picked, the channel you were watching,
+> your app version and device type, how many peers you were connected to, and the
+> last few things the player did. Your account name and password are never sent.
 
 That last sentence is a structural guarantee, not a policy — see
 [Pseudonymity, honestly](#pseudonymity-honestly).
@@ -226,6 +228,9 @@ Two rules, both evaluated on ingest:
   `kind:"channel"` alert.
 - **Login rule** — the same window logic over `category:"login"` panel-wide. A broken
   login is not a channel problem: nobody who hits it can even reach a channel.
+  Honest caveat: the **shipped apps never send this category** — their report flow
+  lives on the player, behind a successful login. The rule still runs for reports
+  from SDK hosts that do offer it.
 
 Further matching reports **extend** the open alert (its `lastAt`, per-category
 tallies and distinct-reporter count grow) — they never open a second one and never

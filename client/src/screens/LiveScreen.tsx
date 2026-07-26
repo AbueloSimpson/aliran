@@ -40,6 +40,7 @@ import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
 import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/ChannelChangeIndicator'
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { TrackMenu } from '../components/TrackMenu'
+import { ReportSheet } from '../components/ReportSheet'
 import { SectionLoading } from '../components/SectionLoading'
 import { theme } from '../theme'
 
@@ -99,6 +100,7 @@ export function LiveScreen ({ route }: Props) {
   const [selectedText, setSelectedText] = useState<SelectedTrack>({ type: SelectedTrackType.DISABLED })
   const [selectedAudio, setSelectedAudio] = useState<SelectedTrack | undefined>(undefined)
   const [showTracks, setShowTracks] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Bottom bar auto-hide (phone): `barShown` gates mounting; `barOpacity` fades it.
   // TV never auto-hides (theme.isTV branch in armBarHide).
@@ -385,6 +387,7 @@ export function LiveScreen ({ route }: Props) {
                 onChannels={() => setOverlay('list')}
                 onInfo={() => { setInfoStream(playing); setOverlay('info') }}
                 onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
+                onReport={() => { showBar(); setReportOpen(true) }}
                 hasTracks={textTracks.length > 0 || audioTracks.length > 1}
                 onTracks={() => { showBar(); setShowTracks(true) }}
                 vod={playingVod ? { position: vodPos, duration: vodDur, paused: vodPaused } : null}
@@ -454,6 +457,7 @@ export function LiveScreen ({ route }: Props) {
                     peers={peers}
                     onWatch={() => play(streams.find(s => s.id === infoStream.id) ?? infoStream, { collapse: true })}
                     onToggleFavorite={() => backend.toggleFavorite(infoStream.id)}
+                    onReport={() => setReportOpen(true)}
                   />
                 )}
               </View>
@@ -487,6 +491,11 @@ export function LiveScreen ({ route }: Props) {
           onClose={() => setShowTracks(false)}
         />
       )}
+
+      {/* "Report a problem" (S51) — opened from the NowPlayingBar (phone) or the info
+          panel of the channel being watched (TV). The engine attaches the ACTIVE
+          stream, so this sheet is only reachable while one is playing. */}
+      <ReportSheet visible={reportOpen} channelTitle={playing?.title} onClose={() => setReportOpen(false)} />
 
     </View>
   )
