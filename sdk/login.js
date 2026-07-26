@@ -103,17 +103,9 @@ export function checkSession (panelPublicKey, token, now = Date.now()) {
 // session is live only while its device is still enrolled in `user.devices[]` with
 // a matching tokenVersion. This is what notices an admin per-device revoke (which
 // deliberately does NOT bump tokenVersion) — a well-behaved client drops to login.
-// Cooperative session hygiene, not content protection: a hostile client keeps its
-// cached token/keys, so access revocation is grant revoke + stream-key rotation.
-export async function sessionLive (db, payload, now = Date.now()) {
-  if (!payload || !payload.userId || !payload.deviceId) return false
-  const node = await db.get('user/' + payload.userId)
-  const user = node && node.value
-  if (!user) return false
-  if (user.status && user.status !== 'active') return false
-  if ((user.tokenVersion || 1) !== (payload.tokenVersion || 1)) return false
-  const d = (user.devices || []).find((x) => x.deviceId === payload.deviceId)
-  if (!d) return false
-  if (d.expiresAt && d.expiresAt <= now) return false
-  return (d.tokenVersion || 1) === (payload.tokenVersion || 1)
-}
+//
+// MOVED to @aliran/core in S50a (core/session.js) — the panel's `report` responder
+// needs the same predicate, and the panel must not import the sdk. Re-exported here
+// UNCHANGED so `sdk/index.js`, the desktop/RN shells and the e2e tests that import
+// it from this path keep working verbatim.
+export { sessionLive } from '@aliran/core'
