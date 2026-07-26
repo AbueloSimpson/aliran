@@ -66,6 +66,24 @@ export const config = {
   analytics: {
     retentionDays: int(process.env.ANALYTICS_RETENTION_DAYS, 90)
   },
+  // Viewer problem reports (S50): pseudonymous reports over the existing P2P RPC,
+  // stored under DATA_DIR/reports/. RETENTION_DAYS=0 is the kill switch — the store
+  // becomes a no-op that never touches disk AND the `report` responder is not
+  // attached at all, so the method does not exist (a new client sees "unsupported",
+  // exactly as against a pre-S50 panel). Defaults: ingest ON, notifications OFF —
+  // an empty webhook URL / Telegram token means no notifier is configured (S50b).
+  reports: {
+    retentionDays: int(process.env.REPORTS_RETENTION_DAYS, 30),
+    maxPerWindow: int(process.env.REPORTS_MAX_PER_WINDOW, 5), // per reporter…
+    windowSeconds: int(process.env.REPORTS_WINDOW_SECONDS, 600), // …per this window
+    alertCount: int(process.env.REPORTS_ALERT_COUNT, 3), // distinct reporters → alert
+    alertWindowMin: int(process.env.REPORTS_ALERT_WINDOW_MIN, 10),
+    stormSample: int(process.env.REPORTS_STORM_SAMPLE, 20), // records kept per storm
+    globalPerMin: int(process.env.REPORTS_GLOBAL_PER_MIN, 120), // panel-wide breaker
+    webhookUrl: process.env.REPORTS_WEBHOOK_URL || '',
+    telegramBotToken: process.env.REPORTS_TELEGRAM_BOT_TOKEN || '', // SECRET
+    telegramChatId: process.env.REPORTS_TELEGRAM_CHAT_ID || ''
+  },
   // Remote channel sources (S27): provider JSON feeds pulled on a schedule.
   sources: {
     tickMs: int(process.env.SOURCES_TICK_MS, 3600000), // registry scan cadence (due-check, not fetch)
@@ -92,6 +110,14 @@ const chkBool = (name) => {
     problems.push(`${name} must be one of 1/true/yes/0/false/no (got "${v}")`)
   }
 }
+// An optional outbound URL knob: empty = feature off, otherwise it must be a real
+// http(s) URL. A typo'd webhook must fail at boot, not silently never notify.
+const chkUrl = (name, v) => {
+  if (!v) return
+  let u = null
+  try { u = new URL(v) } catch {}
+  if (!u || !/^https?:$/.test(u.protocol)) problems.push(`${name} must be an http(s) URL (got "${v}")`)
+}
 const chkBootstrap = (name, list) => {
   for (const e of list) {
     const m = e.match(/^(.+):(\d+)$/)
@@ -109,6 +135,14 @@ chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
 chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
 chkInt('ADMIN_PORT', config.admin.port, 0, 65535)
 chkInt('ANALYTICS_RETENTION_DAYS', config.analytics.retentionDays, 0)
+chkInt('REPORTS_RETENTION_DAYS', config.reports.retentionDays, 0)
+chkInt('REPORTS_MAX_PER_WINDOW', config.reports.maxPerWindow, 1)
+chkInt('REPORTS_WINDOW_SECONDS', config.reports.windowSeconds, 1)
+chkInt('REPORTS_ALERT_COUNT', config.reports.alertCount, 1)
+chkInt('REPORTS_ALERT_WINDOW_MIN', config.reports.alertWindowMin, 1)
+chkInt('REPORTS_STORM_SAMPLE', config.reports.stormSample, 1)
+chkInt('REPORTS_GLOBAL_PER_MIN', config.reports.globalPerMin, 1)
+chkUrl('REPORTS_WEBHOOK_URL', config.reports.webhookUrl)
 chkInt('ADMIN_SESSION_TTL_HOURS', config.admin.sessionTtlHours, 1)
 chkInt('SOURCES_TICK_MS', config.sources.tickMs, 1000)
 chkInt('SOURCES_BOOT_DELAY_MS', config.sources.bootDelayMs, 0)

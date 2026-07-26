@@ -2,11 +2,17 @@
 import ProtomuxRPC from 'protomux-rpc'
 import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
-import { evaluate, powVerify, authVerify, signToken } from '@aliran/core'
+import { evaluate, powVerify, authVerify, signToken, verifyToken, sessionLive } from '@aliran/core'
 import { loadSecrets, saveSecrets } from './store.js'
 import { loadPublishers, scopeMatch } from './ops.js'
 
 const json = (o) => b4a.from(JSON.stringify(o))
+
+// Hard cap on a `report` request buffer, enforced BEFORE JSON.parse. A report is the
+// only responder a viewer can push arbitrary text into, and JSON.parse on a huge
+// buffer is the cheap way to burn the panel's event loop. 16 KiB is ~50× the largest
+// legitimate report (300 chars of text + 50 capped events).
+const MAX_REPORT_BYTES = 16384
 
 // Decode a client-supplied hex field to a Buffer, or return null when it is absent,
 // not a string, or not valid (even-length) hex — optionally pinning the exact decoded
@@ -63,8 +69,12 @@ export function makeThrottle (threshold, windowSec, { maxKeys = 20000 } = {}) {
 // `enrich` is the optional blobsKey enricher (src/blobs-key.js) nudged by register;
 // `legacyPublisher` (default true) keeps accepting UNNAMED register payloads signed
 // with the shared keys/publisher.json key — set false (LEGACY_PUBLISHER=0) once every
-// broadcaster is enrolled as a named publisher (S26).
-export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, analytics = null, enrich = null, legacyPublisher = true }) {
+// broadcaster is enrolled as a named publisher (S26);
+// `reports` is the optional pseudonymous problem-report store (src/reports.js, S50a) —
+// omitted (or disabled) means the `report` method simply does not exist, exactly as on
+// a pre-S50 panel; `reportThrottle` is its SHARED per-reporter limiter (created once in
+// src/index.js so it spans connections — a viewer reconnecting must not reset it).
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, analytics = null, enrich = null, legacyPublisher = true, reports = null, reportThrottle = null }) {
   const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
@@ -285,6 +295,79 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     if (enrich && feedKey) enrich.enqueue(streamId)
     return json({ ok: true })
   })
+
+  // Viewer problem report (S50a). Attached ONLY when a reports store is enabled —
+  // otherwise the method does not exist and a new client gets protomux-rpc's
+  // unknown-method error, which it maps to a friendly "unsupported" toast (exactly
+  // what it gets from a pre-S50 panel).
+  //
+  // This is the lowest-priority responder on the socket and the only one a viewer can
+  // push free text into, so it is also the most hostile input surface in the panel.
+  // The order below is the contract (S50-DESIGN D2/D3) and must not be rearranged:
+  //   raw size cap (BEFORE parse) → JSON.parse in a try → typeof-gate EVERY field →
+  //   verifyToken + sessionLive → reduce identity to a pseudonym → per-reporter
+  //   throttle → ingest (global breaker + storm collapse live in there) → activity.
+  // No naked b4a.from / .slice on a client field anywhere: a thrown TypeError here is
+  // rethrown by safety-catch into a microtask and kills the whole panel (see hexField).
+  if (reports && reports.enabled) {
+    // Shared across connections when src/index.js passes one in. The per-connection
+    // fallback exists so a test (or an embedder) can attach the responder standalone;
+    // it limits a single socket, which is strictly weaker — always pass one in prod.
+    const reportLimiter = reportThrottle || makeThrottle(5, 600)
+    rpc.respond('report', async (reqBuf) => {
+      if (!db || !keys || !keys.signing) return json({ error: 'reports unavailable' })
+      if (!reqBuf || typeof reqBuf.length !== 'number' || reqBuf.length > MAX_REPORT_BYTES) return json({ error: 'too large' })
+      let req
+      try { req = JSON.parse(b4a.toString(reqBuf)) } catch { return json({ error: 'bad request' }) }
+      if (!req || typeof req !== 'object' || Array.isArray(req)) return json({ error: 'bad request' })
+      // The token is the ONLY identity input. Fields like `username` in the payload
+      // are ignored entirely — a viewer cannot report as someone else.
+      if (typeof req.token !== 'string' || !req.token) return json({ error: 'unauthorized' })
+      let payload = null
+      try { payload = verifyToken(keys.signing.publicKey, req.token) } catch { payload = null }
+      if (!payload || typeof payload.userId !== 'string' || typeof payload.deviceId !== 'string') return json({ error: 'unauthorized' })
+      if (typeof payload.expiresAt === 'number' && Date.now() >= payload.expiresAt) return json({ error: 'expired' })
+      // Revocation-aware: a revoked device / bumped tokenVersion / disabled account
+      // stops reporting on the very next report.
+      let live = false
+      try { live = await sessionLive(db, payload) } catch { live = false }
+      if (!live) return json({ error: 'unauthorized' })
+
+      // Identity dies here. Nothing below this line has the username or deviceId.
+      const reporter = reports.pseudonym(payload.userId, payload.deviceId)
+      if (!reporter) return json({ error: 'unauthorized' })
+      const t = reportLimiter(reporter)
+      if (t.locked) return json({ error: 'locked', retryAfter: t.retryAfter })
+
+      let res
+      try {
+        res = reports.ingest({
+          reporter,
+          category: req.category,
+          text: req.text,
+          channel: req.channel,
+          appVersion: req.appVersion,
+          platform: req.platform,
+          peers: req.peers,
+          events: req.events
+        })
+      } catch { return json({ error: 'ingest failed' }) }
+      if (!res || res.ok !== true) return json({ error: (res && res.error) || 'ingest failed' })
+
+      // The activity ring carries WHAT broke, never WHO said so — no user field, and
+      // not even the pseudonym (the ring is a human-readable ops feed, not a log of
+      // who complains). Shed reports were never persisted, so they never appear.
+      if (activity && !res.shed) activity.record('report', { channel: res.channel || null, category: res.category })
+
+      const reply = { ok: true }
+      if (res.id) reply.id = res.id
+      if (res.count > 1) reply.count = res.count
+      if (res.collapsed) reply.collapsed = true
+      if (res.shed) reply.shed = true
+      if (res.cooldown) reply.cooldown = res.cooldown
+      return json(reply)
+    })
+  }
 
   return rpc
 }

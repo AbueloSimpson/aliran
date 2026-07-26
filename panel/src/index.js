@@ -20,6 +20,7 @@ import { startAdminServer } from './admin-server.js'
 import { loadAdmins, loadPublishers, legacyPublisherActiveWithNamed } from './ops.js'
 import { makeRing } from './activity.js'
 import { makeAnalytics } from './analytics.js'
+import { makeReports } from './reports.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
 import { loadPackages, reconcilePackages } from './packages.js'
@@ -62,6 +63,23 @@ export async function startPanel () {
   // per-day rollups under DATA_DIR/analytics/. ANALYTICS_RETENTION_DAYS=0 turns the
   // whole thing off (no files, endpoints answer empty).
   const analytics = makeAnalytics({ dataDir: config.dataDir, retentionDays: config.analytics.retentionDays })
+  // Viewer problem reports (S50a): pseudonymous ingest + correlation alerts under
+  // DATA_DIR/reports/. REPORTS_RETENTION_DAYS=0 makes this a no-op store AND skips
+  // attaching the responder below, so the RPC method does not exist at all.
+  const reports = makeReports({
+    dataDir: config.dataDir,
+    retentionDays: config.reports.retentionDays,
+    alertCount: config.reports.alertCount,
+    alertWindowMin: config.reports.alertWindowMin,
+    stormSampleSize: config.reports.stormSample,
+    globalPerMin: config.reports.globalPerMin,
+    // S50b replaces this with the webhook/Telegram notifier. Until then an alert is
+    // still surfaced where an operator will see it: the panel log.
+    onAlert: (a) => console.warn(`[reports] ALERT ${a.kind}${a.channel ? ' ' + a.channel : ''} — ${a.reporters} distinct reporters within ${config.reports.alertWindowMin} min (id ${a.id})`)
+  })
+  // ONE limiter shared by every connection — a viewer who reconnects must not get a
+  // fresh allowance (rpc.js falls back to a per-socket one only when none is passed).
+  const reportThrottle = makeThrottle(config.reports.maxPerWindow, config.reports.windowSeconds)
 
   const sessionTtlMs = config.sessionTtlDays * 86400000
   const swarm = new Hyperswarm({ bootstrap: config.bootstrap.length ? config.bootstrap : undefined })
@@ -77,7 +95,7 @@ export async function startPanel () {
   const enrich = makeBlobsKeyEnricher({ store, swarm, db, dataDir: config.dataDir })
   swarm.on('connection', (socket) => {
     store.replicate(socket) // clients replicate the signed account/catalog DB
-    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, analytics, enrich, legacyPublisher: config.legacyPublisher })
+    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, analytics, enrich, legacyPublisher: config.legacyPublisher, reports, reportThrottle })
   })
 
   const topic = hcrypto.hash(keys.signing.publicKey)
@@ -135,9 +153,15 @@ export async function startPanel () {
     console.log('Analytics: DISABLED (ANALYTICS_RETENTION_DAYS=0) — nothing is collected.')
   }
 
-  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
+  if (reports.enabled) {
+    console.log(`Viewer reports: pseudonymous ingest in ${config.dataDir}/reports (retention ${config.reports.retentionDays}d, alert at ${config.reports.alertCount} distinct reporters / ${config.reports.alertWindowMin} min). No username or device id is ever stored — see docs/reports.md.`)
+  } else {
+    console.log('Viewer reports: DISABLED (REPORTS_RETENTION_DAYS=0) — the `report` RPC method is not served.')
+  }
+
+  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); reports.close(); sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys, admin, enrich, sourcesSched, analytics }
+  return { swarm, store, db, keys, admin, enrich, sourcesSched, analytics, reports }
 }
 
 // Run directly (not when imported by a test).

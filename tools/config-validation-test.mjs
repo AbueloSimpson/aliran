@@ -23,6 +23,8 @@ const BAD = [
   ['panel', { LOCKOUT_THRESHOLD: 'abc' }, 'LOCKOUT_THRESHOLD'],
   ['panel', { ADMIN_PORT: '70000' }, 'ADMIN_PORT'],
   ['panel', { ANALYTICS_RETENTION_DAYS: 'abc' }, 'ANALYTICS_RETENTION_DAYS'],
+  ['panel', { REPORTS_ALERT_COUNT: 'abc' }, 'REPORTS_ALERT_COUNT'],
+  ['panel', { REPORTS_WEBHOOK_URL: 'not a url' }, 'REPORTS_WEBHOOK_URL'],
   ['broadcaster', { FEED_BUFFER: 'rma' }, 'FEED_BUFFER'],
   ['broadcaster', { ANALYTICS_RETENTION_DAYS: '-1' }, 'ANALYTICS_RETENTION_DAYS'],
   ['broadcaster', { PANEL_PUBKEY: 'nothex' }, 'PANEL_PUBKEY'],
@@ -57,6 +59,7 @@ for (const svc of ['panel', 'broadcaster', 'library', 'reseller']) {
 }
 const BAD_CHECK = [
   ['panel', { POW_DIFFICULTY: 'notanumber' }, 'POW_DIFFICULTY must be an integer'],
+  ['panel', { REPORTS_STORM_SAMPLE: '0' }, 'REPORTS_STORM_SAMPLE must be >= 1'],
   ['broadcaster', { HLS_LIST_SIZE: '1' }, 'HLS_LIST_SIZE must be >= 2'],
   ['library', { INGEST_CONCURRENCY: '0' }, 'INGEST_CONCURRENCY must be >= 1'],
   ['reseller', { WEBHOOK_SECRET: 'short' }, 'WEBHOOK_SECRET must be at least 16 characters']

@@ -83,6 +83,14 @@ jobs:
       # surface). Loopback SecretStream + HTTP only — no DHT, deterministic.
       - name: Privacy-preserving analytics (test:analytics)
         run: npm run test:analytics
+      # Viewer problem reports (S50a): the `report` responder crash-fuzzed (a throwing
+      # responder kills the panel), a real login → report → pseudonymous record, the
+      # per-reporter throttle, dedupe, ack/resolve + the retention=0 kill switch, a
+      # 200-report storm drill (global breaker, storm collapse, ONE alert, a concurrent
+      # login stays fast), and the NEGATIVE IDENTITY SCAN (no username or device id may
+      # reach any report surface). Loopback SecretStream only — no DHT, deterministic.
+      - name: Viewer problem reports (test:reports)
+        run: npm run test:reports
       # The whole VOD chain (S8a) on a LOCAL DHT testnet — library ingest → panel vod
       # record class → grant → SDK resolve/serve/seek → delete. Loopback UDP + ffmpeg
       # only, never the public DHT, so it is deterministic enough for the required lane.

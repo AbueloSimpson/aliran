@@ -18,6 +18,23 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Viewer problem reports (panel ingest core)** — viewers can report a problem
+  ("no audio on channel X") over the **existing** P2P RPC socket: a new `report`
+  responder beside `login`/`session`, no new port and no wire change for older
+  clients (the method simply does not exist on a pre-S50 panel). Reports are
+  **pseudonymous by construction**: the panel verifies the session token, then
+  immediately reduces the identity to `HMAC-SHA256(salt, userId|deviceId)` sliced
+  to 16 hex — no username and no device id is ever stored, counted, returned or
+  logged (negative-scanned by `test:reports`, the same discipline as the analytics
+  suite). Reports live in `DATA_DIR/reports/` (atomic writes, 5000-record cap,
+  retention prune) — never in the Hyperbee, which replicates to every viewer.
+  Four layers of flood control keep a real outage cheap: a per-reporter throttle,
+  per-channel storm collapse (once an alert is open only a bounded sample of full
+  records is stored), a panel-wide token-bucket breaker, and correlation that
+  opens **one** alert per channel per window and extends it rather than
+  re-firing. `REPORTS_RETENTION_DAYS=0` is a complete kill switch. Ops
+  notifications, the admin API/CLI, the Reports tab and the client-side flow land
+  in the follow-up segments.
 - **Privacy-preserving analytics** — aggregate-only, server-side-only usage
   rollups ([docs/analytics.md](docs/analytics.md)). Per-user watch tracking is
   architecturally impossible in Aliran (viewers replicate P2P; the panel sees
