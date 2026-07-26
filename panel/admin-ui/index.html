@@ -175,6 +175,25 @@
         Oversized feeds are capped (500 channels by default, <span class="mono">sources.maxChannels</span>) and invalid
         entries skipped — the report line under <b>Last sync</b> opens the full details. Registry lives in
         <span class="mono">DATA_DIR/sources.json</span>.</p>
+
+      <div class="card" id="vod-card">
+        <h3 class="card-title">VOD provider <span class="muted">(ZenContent)</span> <span id="vod-badge" class="badge disabled">not configured</span></h3>
+        <form id="vod-form" class="row-form">
+          <input id="vod-api-base" placeholder="API base (https://provider.example/api)" size="34">
+          <input id="vod-service" placeholder="service">
+          <input id="vod-movies-source" placeholder="movies source">
+          <input id="vod-params" placeholder="extra params (hm=1,hs=2)">
+          <label class="inline"><input type="checkbox" id="vod-enabled"> enabled</label>
+          <button class="btn primary">Save</button>
+        </form>
+        <p class="muted footnote">A separate <b>movies &amp; series catalog</b> the apps fetch <b>directly</b> from the provider —
+          this panel never proxies its calls or its media, and it stores <b>no viewer credential</b> for it (each viewer
+          authenticates with their own account). Everything here is public coordinates: the API base (<b>https only</b>, no
+          query string, no embedded credentials), the provider's service and per-kind source values, plus extra query
+          params passed through verbatim. <b>Enabled</b> is the switch: on, both apps show a VOD section; off — or never
+          configured — the option does not exist for viewers. Changes apply at each viewer's <b>next login</b>. Series
+          arrives later; only the movies source is configurable today.</p>
+      </div>
     </section>
 
     <section id="categories-section" hidden>

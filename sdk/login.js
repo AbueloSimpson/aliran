@@ -72,6 +72,22 @@ export async function login (call, db, username, password, { deviceId, deviceLab
     }
   }
 
+  // 4b. External VOD provider (S53): ONE replicated record the panel writes
+  //     (`svcmeta/vod`) carrying the operator's enable SWITCH plus the coordinates the
+  //     CLIENT uses to call the provider DIRECTLY — the panel never proxies it. Read
+  //     from the same signed DB as the catalog, so it is as trustworthy as a channel
+  //     record, and it holds NO secret (a viewer authenticates to the provider with
+  //     their own account). Delivered ONLY when the record exists AND is enabled: a
+  //     client that sees no `vod` field treats the feature as off with no version
+  //     check and no separate "absent vs disabled" branch. Read at login, not watched
+  //     — an operator's change lands on the viewer's next login.
+  let vod
+  const vodNode = await db.get('svcmeta/vod')
+  if (vodNode && vodNode.value && vodNode.value.enabled === true) {
+    const v = vodNode.value
+    vod = { enabled: true, apiBase: v.apiBase, service: v.service, sources: v.sources || {}, params: v.params || {} }
+  }
+
   // 5. prove login (sign the panel's session challenge with the recovered auth key) to
   //    obtain a panel-signed session token + register this device.
   let token = null; let expiresAt = null
@@ -87,7 +103,7 @@ export async function login (call, db, username, password, { deviceId, deviceLab
     token = sres.token; expiresAt = sres.expiresAt
   }
 
-  return { streams, token, expiresAt, deviceId: did, tokenVersion: user.tokenVersion }
+  return { streams, ...(vod ? { vod } : {}), token, expiresAt, deviceId: did, tokenVersion: user.tokenVersion }
 }
 
 // Offline session check: valid panel signature + not expired. tokenVersion is checked

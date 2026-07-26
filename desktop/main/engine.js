@@ -29,7 +29,11 @@
 // Messages out: identical to the worklet protocol (see backend.mjs header), except
 // 'prefs' carries creds: { username } | null — no password. 'report-result'
 // { ok, error?, retryAfter?, id? } answers a 'report' (error 'unsupported' = the
-// panel predates reports or has them disabled).
+// panel predates reports or has them disabled). 'streams' carries an optional
+// `vod` (S53) — the panel's external VOD provider config { enabled, apiBase,
+// service, sources, params }, present ONLY when the operator enabled one (absent =
+// no VOD section). The renderer's state() snapshot mirrors it as `vod: … | null`
+// for screens that mount after the one-shot message.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -186,7 +190,7 @@ export class EngineHost {
     }
     const p = this.player
     p.on('ready', () => { this.ready = true; this.send({ type: 'ready' }) })
-    p.on('streams', (streams) => this.send({ type: 'streams', streams }))
+    p.on('streams', (streams, vod) => this.send({ type: 'streams', streams, ...(vod ? { vod } : {}) }))
     p.on('status', (status) => {
       if (status?.state === 'net:tuned') { try { console.log('[net]', status.message) } catch {} }
       this.send({ type: 'status', ...status })
@@ -219,6 +223,7 @@ export class EngineHost {
     return {
       ready: this.ready,
       streams: this.player ? this.player.listStreams() : [],
+      vod: this.player ? this.player.vodConfig() : null, // S53: null = no provider / disabled
       ...this.last,
       creds: p.credsUser ? { username: p.credsUser } : null,
       favorites: p.favorites,

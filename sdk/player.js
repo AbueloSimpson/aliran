@@ -336,6 +336,11 @@ export class AliranPlayer extends Emitter {
     this._assetsOpen = null
     this._purging = null
     this._streams = []
+    // External VOD provider (S53): the panel-delivered config from the last login, or
+    // null. The engine only CARRIES it — it never calls the provider (the host app does,
+    // directly, with the viewer's own account). null covers both "no record" and
+    // "disabled", which is exactly what a host should treat as "no VOD section".
+    this._vod = null
     this._entitled = new Map() // streamId -> { feedKey, encryptionKey }
     // --- problem reports (S50c) ---
     // Per-install device identity. Passed to the panel at login so device limits and
@@ -415,7 +420,9 @@ export class AliranPlayer extends Emitter {
   async login (username, password) {
     const streams = await this._recover(() => this._doLogin(username, password))
     this._streams = streams
-    this.emit('streams', streams)
+    // Second argument (S53): the panel-delivered VOD provider config, or undefined.
+    // Additive — every existing listener takes one argument and is untouched.
+    this.emit('streams', streams, this._vod || undefined)
     if (this._prewarmN) this.prewarm().catch(() => {}) // background warm the lineup — never blocks login
     return streams
   }
@@ -795,6 +802,12 @@ export class AliranPlayer extends Emitter {
 
   // Last display list from a successful login.
   listStreams () { return this._streams }
+
+  // Panel-delivered external VOD provider config (S53) from the last login, or null
+  // when the operator has none / has it disabled. Rides the 'streams' emit as a second
+  // argument too; this accessor is for hosts that mount after login (the desktop
+  // shell's state snapshot).
+  vodConfig () { return this._vod }
 
   // Start (or reuse) the localhost server for an entitled stream and return where to
   // point the host's video player. `url`/`source` reflect the ACTIVE source under the
@@ -1595,7 +1608,9 @@ export class AliranPlayer extends Emitter {
       if (node && node.value) streams.push(this._display(port, id, node.value))
     }
     this._streams = streams
-    this.emit('streams', streams)
+    // The VOD config rides along unchanged: it is login-scoped (the record is read at
+    // login, not watched), so a catalog push must not silently drop it from the payload.
+    this.emit('streams', streams, this._vod || undefined)
   }
 
   // A stream's feedKey can rotate in the catalog WHILE a viewer is watching it (broadcaster
@@ -1688,7 +1703,11 @@ export class AliranPlayer extends Emitter {
   async _doLogin (username, password) {
     if (!this._call) throw new Error('not connected to panel')
     const res = await oprfLogin(this._call, this._panelBee, username, password, { deviceId: this._deviceId || undefined, deviceLabel: this._deviceLabel || undefined })
-    const { streams } = res
+    const { streams, vod } = res
+    // S53: present ONLY when the operator configured a provider AND enabled it — the
+    // login result carries no `vod` field otherwise, so absent and disabled collapse
+    // to the same null here.
+    this._vod = vod || null
     // Retain the session (S50c). Before this the token was discarded on the spot, which
     // left the engine with no way to prove entitlement for anything but a fresh login —
     // report() needs exactly that proof. It is an in-memory bearer credential: never

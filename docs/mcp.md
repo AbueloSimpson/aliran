@@ -299,6 +299,17 @@ too:
   the **operator's machine** (where the MCP server runs) and POSTs the raw bytes
   (≤ 10 MiB; `.png .jpg .jpeg .webp .gif`). Image data never transits the model
   as base64 — the tool result is just the stored asset ref.
+- **External VOD provider** — `panel_vod_config` reads the replicated
+  `svcmeta/vod` record (`null` when there is none) and `panel_set_vod_config`
+  edits it: `enabled` is the switch that makes both apps show a VOD section at
+  all, beside the coordinates (`apiBase`, `service`, `sources.movies`, extra
+  `params`). The patch merges onto what is stored and the **merged whole** is
+  validated, so `{enabled:true}` alone is refused while the coordinates are
+  blank. `apiBase` must be **https with no query string and no embedded
+  credentials**, and `sources`/`params` replace their whole map. Nothing here is
+  a secret: the apps call the provider **directly** with the viewer's own
+  account — the panel never proxies it and stores no viewer credential for it.
+  A change lands at each viewer's **next login**, not mid-session.
 
 ## Reseller & library oversight (optional)
 

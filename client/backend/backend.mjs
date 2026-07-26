@@ -57,9 +57,18 @@
 //                                        and its recent event breadcrumbs, and proves
 //                                        entitlement with the SESSION TOKEN — never a
 //                                        username. Always answered, never throws.
-//   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
-//                                        live whenever the panel edits the catalog —
-//                                        same shape; the Home screen re-renders on it)
+//   out: { type:'ready' } | { type:'streams', streams, vod? }   (on login, and pushed
+//                                        again live whenever the panel edits the catalog
+//                                        — same shape; the Home screen re-renders on it.
+//                                        vod (S53) = the panel's external VOD provider
+//                                        config { enabled, apiBase, service, sources,
+//                                        params }, PRESENT ONLY when the operator
+//                                        enabled one. Absent = no VOD section; the
+//                                        client calls that provider directly with the
+//                                        viewer's own account — the panel never proxies
+//                                        it and stores no credential for it. Read at
+//                                        login, so an operator change lands on the next
+//                                        login/app start)
 //        { type:'port', port, url, source, streamId, recordType, durationSec }
 //                                        (url = ACTIVE source under hybrid; streamId
 //                                        echoes the play() request so the client can
@@ -193,7 +202,9 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
   player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, deviceId: ensureDeviceId(), appVersion, platform })
   player.on('ready', () => send({ type: 'ready' }))
-  player.on('streams', (streams) => send({ type: 'streams', streams }))
+  // `vod` (S53) rides the streams message only when the panel enabled a provider —
+  // the field is absent otherwise, so the UI's "no VOD section" is the default.
+  player.on('streams', (streams, vod) => send({ type: 'streams', streams, ...(vod ? { vod } : {}) }))
   player.on('status', (status) => {
     // Mirror the servers' "[net] ..." console line for the socket-buffer tuning
     // outcome (S33) so plain logcat shows it even without the RN debug relay.

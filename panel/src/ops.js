@@ -616,6 +616,118 @@ function normOrder (v) {
 
 const normBool = (v) => v === true || /^(1|true|yes)$/i.test(String(v))
 
+// ---------------------------------------------------------------- VOD provider (S53)
+//
+// `svcmeta/vod` — ONE replicated record describing an EXTERNAL VOD provider that the
+// END-USER CLIENT calls DIRECTLY. The panel never proxies provider calls or media: it
+// owns the SWITCH (`enabled`) and the COORDINATES (apiBase / service / per-kind source
+// values / extra query params), and the apps read the record at login. Nothing in here
+// is a secret — a viewer reaches the provider with their OWN account, so no viewer
+// credential is ever stored panel-side for this feature.
+//
+// ⚠ KEY ORDERING, same discipline as catmeta/: every catalog scan is bounded
+// `gt:'catalog/' lt:'catalog0'` and every category scan `gt:'catmeta/' lt:'catmeta0'`.
+// 'svcmeta/' sorts ABOVE both ranges ('s' > 'c'), so this keyspace is invisible to all
+// of them. Re-check that before renaming the prefix.
+//
+// Config changes apply at the viewer's NEXT login (the record is read there, not
+// watched) — the dashboard and the docs say so.
+
+const VOD_KEY = 'svcmeta/vod'
+const VOD_TEXT_MAX = 128
+const VOD_PARAM_KEY_RE = /^[a-z0-9_]{1,32}$/i
+const VOD_PARAMS_MAX = 16
+// Only `movies` for now. Series ships when a real series source value exists; an
+// unknown key is REFUSED rather than stored, so a typo can never sit silently in the
+// record pretending to be a feature.
+const VOD_SOURCE_KINDS = ['movies']
+
+// The provider's API root. https is required for the same reason as remote art and
+// redirect URLs — Android blocks cleartext, and the CLIENT is the one fetching it.
+// No query string (per-call params belong in `params`, which the client composes) and
+// no userinfo (credentials in a URL would land in the replicated record, in logs and
+// in every client's memory). Trailing slashes are stripped so `${apiBase}/getMovies.php`
+// is deterministic on every client copy. Empty string = unset.
+export function normVodApiBase (v) {
+  const s = String(v ?? '').trim()
+  if (s === '') return ''
+  if (s.length > 2048) bad('apiBase must be at most 2048 characters')
+  if (/[\r\n]/.test(s)) bad('apiBase must not contain line breaks')
+  let u
+  try { u = new URL(s) } catch { bad('apiBase must be an absolute https:// URL') }
+  if (u.protocol !== 'https:') bad('apiBase must be an https:// URL (the apps block cleartext)')
+  if (u.username || u.password) bad('apiBase must not embed credentials (no user:pass@host)')
+  if (u.search || s.includes('?')) bad('apiBase must not carry a query string — put extra query params in `params`')
+  if (u.hash || s.includes('#')) bad('apiBase must not carry a fragment')
+  return s.replace(/\/+$/, '')
+}
+
+function normVodText (v, what) {
+  const s = String(v ?? '').trim()
+  if (s.length > VOD_TEXT_MAX) bad(`${what} must be at most ${VOD_TEXT_MAX} characters`)
+  if (/[\r\n]/.test(s)) bad(`${what} must not contain line breaks`)
+  return s
+}
+
+// Per-kind source values (`{movies:'movies_hd'}`). Supplying `sources` REPLACES the
+// whole map — that is the only way to clear a kind, and the map is two entries at most.
+function normVodSources (v) {
+  if (v == null) return {}
+  if (typeof v !== 'object' || Array.isArray(v)) bad('sources must be an object, e.g. {"movies":"movies_hd"}')
+  const out = {}
+  for (const [k, val] of Object.entries(v)) {
+    if (!VOD_SOURCE_KINDS.includes(k)) bad(`unknown source kind "${k}" (supported: ${VOD_SOURCE_KINDS.join(', ')})`)
+    const s = normVodText(val, `sources.${k}`)
+    if (s) out[k] = s
+  }
+  return out
+}
+
+// Extra query params the client appends verbatim to every provider call (the observed
+// provider wants `hm`/`hs`; their semantics are the provider's business). Supplying
+// `params` REPLACES the whole map.
+function normVodParams (v) {
+  if (v == null) return {}
+  if (typeof v !== 'object' || Array.isArray(v)) bad('params must be an object, e.g. {"hm":"1","hs":"2"}')
+  const entries = Object.entries(v)
+  if (entries.length > VOD_PARAMS_MAX) bad(`at most ${VOD_PARAMS_MAX} params`)
+  const out = {}
+  for (const [k, val] of entries) {
+    if (!VOD_PARAM_KEY_RE.test(k)) bad(`invalid param name "${k}" (letters, digits, _ ; max 32)`)
+    out[k] = normVodText(val, `params.${k}`)
+  }
+  return out
+}
+
+// null when nothing was ever configured — clients treat "no record" exactly like
+// "disabled", so absence never needs a separate branch anywhere downstream.
+export async function getVodConfig (ctx) {
+  const node = await ctx.db.get(VOD_KEY)
+  return node ? node.value : null
+}
+
+// Partial PATCH: fields present in the patch land on top of the current record, and the
+// MERGED WHOLE is validated — so `{enabled:true}` alone is refused while apiBase/service
+// are still blank, and setting them in the same request works. S29 idempotency: the bee
+// is append-only with no compaction, so an identical PATCH must cost zero appends.
+export async function setVodConfig (ctx, patch = {}) {
+  if (patch == null || typeof patch !== 'object' || Array.isArray(patch)) bad('vod config must be an object')
+  const node = await ctx.db.get(VOD_KEY)
+  const cur = node ? node.value : {}
+  const next = {
+    enabled: patch.enabled !== undefined ? normBool(patch.enabled) : !!cur.enabled,
+    apiBase: patch.apiBase !== undefined ? normVodApiBase(patch.apiBase) : (cur.apiBase ?? ''),
+    service: patch.service !== undefined ? normVodText(patch.service, 'service') : (cur.service ?? ''),
+    sources: patch.sources !== undefined ? normVodSources(patch.sources) : normVodSources(cur.sources),
+    params: patch.params !== undefined ? normVodParams(patch.params) : normVodParams(cur.params)
+  }
+  if (next.enabled && (!next.apiBase || !next.service)) {
+    bad('cannot enable the VOD provider without an apiBase and a service — set them in the same request, or first')
+  }
+  if (!node || JSON.stringify(next) !== JSON.stringify(cur)) await ctx.db.put(VOD_KEY, next)
+  return next
+}
+
 // ---------------------------------------------------------------- status
 
 export async function statusSummary (ctx) {

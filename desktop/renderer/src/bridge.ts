@@ -4,10 +4,14 @@
 // fields exist for late-mounting screens (the one-shot replies can land before a
 // screen exists), and onMessage is the live feed.
 
-import type { BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream } from './types'
+import type { BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream, VodConfig } from './types'
 
 class DesktopBackend {
   streams: Stream[] = []
+  // Panel-delivered external VOD provider config (S53), or null when the operator has
+  // none / has it disabled — null IS "no VOD section". Login-scoped: it arrives on the
+  // 'streams' message and in the initial state snapshot, never mid-session.
+  vod: VodConfig | null = null
   port: number | null = null
   url: string | null = null
   source: 'p2p' | 'cdn' | null = null
@@ -33,6 +37,7 @@ class DesktopBackend {
     const s: EngineState = await window.aliran.state()
     this.ready = s.ready
     this.streams = s.streams ?? []
+    this.vod = s.vod ?? null
     this.port = s.port
     this.url = s.url
     this.source = s.source
@@ -98,7 +103,7 @@ class DesktopBackend {
     if (msg.type === 'ready') this.ready = true
     if (msg.type === 'service') { this.descriptor = msg.descriptor; this.descriptorSource = 'runtime' }
     if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.prefsLoaded = true }
-    if (msg.type === 'streams') this.streams = msg.streams
+    if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
     if (msg.type === 'port') {
       this.port = msg.port ?? null
       this.url = msg.url ?? (msg.port ? `http://127.0.0.1:${msg.port}/index.m3u8` : null)

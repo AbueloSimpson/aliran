@@ -18,6 +18,7 @@ let publishers = []
 let channelSources = []
 let channelPackages = [] // S44 bouquets — resolved id arrays double as the Users-tab provenance data
 let categories = []
+let vodConfig = null // S53 external VOD provider (svcmeta/vod) — null = never configured
 let obsTimer = null // 10 s observability poll, runs only while the Overview tab is open
 let anTimer = null // 60 s analytics poll, runs only while the Analytics tab is open
 let rpTimer = null // 30 s reports poll, runs only while the Reports tab is open
@@ -100,13 +101,14 @@ for (const tab of document.querySelectorAll('.tab')) {
 // ---------------------------------------------------------------- refresh + render
 
 async function refresh () {
-  const [status, s, a, p, src, cats, pkgs] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers'), api('GET', '/api/sources'), api('GET', '/api/categories'), api('GET', '/api/packages')])
+  const [status, s, a, p, src, cats, pkgs, vod] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/streams'), api('GET', '/api/admins'), api('GET', '/api/publishers'), api('GET', '/api/sources'), api('GET', '/api/categories'), api('GET', '/api/packages'), api('GET', '/api/vod-config')])
   streams = s
   categories = cats
   admins = a
   publishers = p
   channelSources = src
   channelPackages = pkgs
+  vodConfig = vod
   $('#status-chips').innerHTML =
     `<span class="chip"><b>${status.users}</b> users</span>` +
     `<span class="chip"><b>${status.streams}</b> streams</span>` +
@@ -119,6 +121,7 @@ async function refresh () {
   renderSources()
   renderPackages()
   renderCategories()
+  renderVodConfig()
   await loadUsers(true) // back to page 1, keeping the current search prefix
   // The reports badge rides every refresh so an alert is visible from any tab.
   // Best-effort on purpose: a panel without the reports store must not break refresh.
@@ -451,6 +454,60 @@ function renderSources () {
     tbody.innerHTML = '<tr><td colspan="7" class="muted">no sources yet — add a provider feed above and its channels appear as a category</td></tr>'
   }
 }
+
+// External VOD provider (S53): ONE replicated record (svcmeta/vod) the APPS read at
+// login and then call the provider with, directly — the panel is only the switch and
+// the coordinates. Nothing shown here is a secret (no viewer credential is stored for
+// it), so the fields render as-is. `null` = never configured, which viewers experience
+// exactly like disabled.
+function kvString (obj) {
+  return Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join(',')
+}
+
+// "hm=1,hs=2" -> { hm: '1', hs: '2' } ('' -> {}). Values may contain '=' (split once).
+function parseKeyVals (s) {
+  const out = {}
+  for (const pair of String(s || '').split(',')) {
+    const t = pair.trim()
+    if (!t) continue
+    const i = t.indexOf('=')
+    if (i < 1) throw new Error(`bad extra param "${t}" — expected key=value`)
+    out[t.slice(0, i).trim()] = t.slice(i + 1).trim()
+  }
+  return out
+}
+
+function renderVodConfig () {
+  const v = vodConfig || {}
+  $('#vod-api-base').value = v.apiBase || ''
+  $('#vod-service').value = v.service || ''
+  $('#vod-movies-source').value = (v.sources && v.sources.movies) || ''
+  $('#vod-params').value = kvString(v.params)
+  $('#vod-enabled').checked = !!v.enabled
+  const badge = $('#vod-badge')
+  const state = !vodConfig ? 'not configured' : v.enabled ? 'enabled' : 'disabled'
+  badge.className = 'badge ' + (v.enabled ? 'active' : 'disabled')
+  badge.innerHTML = esc(state)
+}
+
+$('#vod-form').addEventListener('submit', (e) => {
+  e.preventDefault()
+  const enabled = $('#vod-enabled').checked
+  const movies = $('#vod-movies-source').value.trim()
+  let params
+  try { params = parseKeyVals($('#vod-params').value) } catch (err) { toast(err.message, true); return }
+  act(async () => {
+    // Always a full patch: the form shows every field, so what is on screen IS the
+    // intended record (sources/params are whole-map replacements server-side).
+    await api('PATCH', '/api/vod-config', {
+      enabled,
+      apiBase: $('#vod-api-base').value.trim(),
+      service: $('#vod-service').value.trim(),
+      sources: movies ? { movies } : {},
+      params
+    })
+  }, `VOD provider ${enabled ? 'enabled' : 'disabled'} — viewers pick it up at their next login`)
+})
 
 // Channel packages / bouquets (S44): named bundles materialized into sealed
 // per-user grants. The resolved arrays fetched here also feed the Users-tab

@@ -61,6 +61,11 @@
 //      mini negative-identity scan over every tool result, the REPORTS_* allowlist
 //      vs the refused notification credentials, and a category-enum drift guard
 //      against panel/src/reports.js
+//   AE external VOD provider (S53a): panel_vod_config / panel_set_vod_config — the
+//      honest null before anything is configured, a CRUD round-trip through the two
+//      tools, and the validation refusals arriving IN BAND as isError results
+//      (cleartext apiBase, an apiBase carrying a query string, enabling an empty
+//      config, an unknown source kind) with the stored record untouched
 // Exits 0 on PASS.
 
 import assert from 'assert'
@@ -511,6 +516,7 @@ try {
     'panel_analytics', 'panel_list_admins', 'panel_add_admin', 'panel_remove_admin', 'panel_set_admin_password',
     'panel_set_category', 'panel_rename_category', 'panel_merge_categories', 'panel_delete_category',
     'panel_source_channels', 'panel_set_stream_art',
+    'panel_vod_config', 'panel_set_vod_config',
     'panel_list_reports', 'panel_list_alerts', 'panel_ack_report', 'panel_resolve_report', 'panel_test_notify',
     'broadcaster_list_channels', 'broadcaster_add_channel', 'broadcaster_incidents',
     'broadcaster_analytics', 'broadcaster_list_admins', 'broadcaster_add_admin', 'broadcaster_remove_admin', 'broadcaster_set_admin_password',
@@ -524,7 +530,7 @@ try {
     'diagnose_healthz', 'diagnose_symptom', 'docs_search']) {
     assert.ok(toolNames.has(must), 'tools/list missing ' + must)
   }
-  assert.ok(toolsList.tools.length >= 105, 'expected a broad tool catalog (S50d: 107), got ' + toolsList.tools.length)
+  assert.ok(toolsList.tools.length >= 107, 'expected a broad tool catalog (S53a: 109), got ' + toolsList.tools.length)
   const resList = await client.listResources()
   const resUris = new Set(resList.resources.map((r) => r.uri))
   assert.ok(resUris.has('mcp://aliran/guide'), 'guide resource missing')
@@ -1519,7 +1525,47 @@ try {
   assert.deepStrictEqual(catEnum, REPORT_CATEGORIES, 'the published panel_list_reports category enum must deep-equal panel/src/reports.js')
   log(`AD: viewer reports — disabled shape, filters + sinceHours, ${catEnum.length}-category drift guard, event-ring compaction with full:true, ack/resolve+note, read-only alerts, one push per alert + test_notify, zero identity leaks, REPORTS_* allowlist vs refused credentials ✓`)
 
-  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe; S50d: viewer problem reports — the honest disabled shape, filters + sinceHours, event-ring compaction with full:true, ack/resolve with a note, read-only alerts, one webhook push per opened alert plus test_notify, a negative-identity scan over every report surface, the REPORTS_* tunables settable while the notification credentials are refused, and a category-enum drift guard against the panel)')
+  // ===== AE: external VOD provider config (S53a) =====
+  // The panel owns the switch; the APPS call the provider. Nothing here is a secret,
+  // so the whole record round-trips through the tool result — what must not happen is
+  // a bad config landing quietly, so every refusal is asserted in band with the stored
+  // record re-read afterwards.
+  assert.strictEqual(await callJson(client, 'panel_vod_config'), null, 'no VOD provider configured -> honest null')
+  const vodSet = await callJson(client, 'panel_set_vod_config', {
+    apiBase: 'https://provider.example/like/api/',
+    service: 'demoservice',
+    sources: { movies: 'movies_hd' },
+    params: { hm: '1', hs: '2' }
+  })
+  assert.strictEqual(vodSet.enabled, false, 'a fresh config is DISABLED until the operator flips the switch')
+  assert.strictEqual(vodSet.apiBase, 'https://provider.example/like/api', 'the trailing slash is normalized away')
+  assert.strictEqual(vodSet.sources.movies, 'movies_hd', 'movies source stored')
+  assert.deepStrictEqual(vodSet.params, { hm: '1', hs: '2' }, 'extra params stored verbatim')
+  const vodOn = await callJson(client, 'panel_set_vod_config', { enabled: true })
+  assert.strictEqual(vodOn.enabled, true, 'the switch flips on its own once the coordinates are stored')
+  assert.strictEqual(vodOn.service, 'demoservice', 'a partial patch MERGES — the untouched fields survive')
+  assert.deepStrictEqual(await callJson(client, 'panel_vod_config'), vodOn, 'the read tool answers exactly what was written')
+  for (const [patch, why] of [
+    [{ apiBase: 'http://provider.example/api' }, 'cleartext apiBase'],
+    [{ apiBase: 'https://provider.example/api?token=x' }, 'apiBase with a query string'],
+    [{ sources: { series: 'series_hd' } }, 'unknown source kind'],
+    [{ params: { 'bad key': '1' } }, 'invalid param name']
+  ]) {
+    const r = await callRaw(client, 'panel_set_vod_config', patch)
+    assert.ok(r.isError, `${why} must be refused in band, got: ${JSON.stringify(r.content)}`)
+  }
+  assert.deepStrictEqual(await callJson(client, 'panel_vod_config'), vodOn, 'every refused patch left the stored record untouched')
+  // Enabling an EMPTY config is the refusal that protects viewers from a VOD section
+  // pointing nowhere — proven on a second panel-less field set rather than by wrecking
+  // the good record: clear the coordinates and enable in the same breath.
+  const emptyEnable = await callRaw(client, 'panel_set_vod_config', { enabled: true, apiBase: '', service: '' })
+  assert.ok(emptyEnable.isError, 'enabling an empty config must be refused')
+  assert.match(emptyEnable.content[0].text, /apiBase and a service/, 'the refusal says what is missing')
+  assert.deepStrictEqual(await callJson(client, 'panel_vod_config'), vodOn, 'the refused enable changed nothing')
+  await callJson(client, 'panel_set_vod_config', { enabled: false })
+  log('AE: VOD provider config — honest null, CRUD round-trip through both tools, https/query-string/unknown-kind/empty-enable refusals in band with the record untouched ✓')
+
+  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe; S50d: viewer problem reports — the honest disabled shape, filters + sinceHours, event-ring compaction with full:true, ack/resolve with a note, read-only alerts, one webhook push per opened alert plus test_notify, a negative-identity scan over every report surface, the REPORTS_* tunables settable while the notification credentials are refused, and a category-enum drift guard against the panel; S53a: the external VOD provider config — honest null, CRUD through both tools, and https/query-string/unknown-kind/empty-enable refusals in band with the stored record untouched)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

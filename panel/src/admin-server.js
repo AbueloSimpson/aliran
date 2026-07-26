@@ -72,6 +72,9 @@
 //   DELETE /api/categories                   {slug} — drops the registry entry, KEEPS membership
 //     (slugs ride in the body, not the path: 'Parent/Child' contains a path separator)
 //   POST   /api/sources/:name/sync           pull + diff + grant NOW; returns the sync report
+//   GET    /api/vod-config                   external VOD provider (S53): the record, or null
+//   PATCH  /api/vod-config                   {enabled?,apiBase?,service?,sources?,params?} partial
+//                                            merge; enabling needs a valid apiBase + service
 //
 // Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
 // directory, GET only — see serveStatic for the traversal guard).
@@ -421,6 +424,21 @@ export function startAdminServer (ctx, opts = {}) {
         const b = await readJson(req)
         const out = await ops.deleteCategory(ctx, b.slug)
         act('category-delete', { category: out.slug })
+        return sendJson(res, 200, out)
+      }
+    }
+
+    // External VOD provider (S53): ONE replicated `svcmeta/vod` record — the enable
+    // SWITCH plus the coordinates the CLIENT uses to call the provider DIRECTLY. The
+    // panel never proxies provider calls or media, and no viewer credential is stored
+    // for it. GET answers `null` (not 404) when nothing was ever configured, so the
+    // dashboard has exactly one "not set up" branch. PATCH is a partial merge over the
+    // current record, validated as a whole — see ops.setVodConfig.
+    if (r1 === 'vod-config' && seg.length === 2) {
+      if (req.method === 'GET') return sendJson(res, 200, await ops.getVodConfig(ctx))
+      if (req.method === 'PATCH') {
+        const out = await ops.setVodConfig(ctx, await readJson(req))
+        act('vod-config', { enabled: out.enabled, service: out.service })
         return sendJson(res, 200, out)
       }
     }

@@ -4,7 +4,9 @@
 // admin login (bad creds rejected, lockout enforced) → create user + stream +
 // grant + meta + art → asserts the signed DB/secrets/assets reflect every write →
 // finally a real viewer logs in over a live Hyperswarm and receives the granted
-// stream key. Exits 0 on PASS.
+// stream key. Since S53a it also covers the external VOD provider record: written
+// over the admin API, refused when invalid, and read back by a REAL login only while
+// the operator has it enabled. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
 import Hyperbee from 'hyperbee'
@@ -679,7 +681,109 @@ try {
   for (const id of ['pkg-a', 'pkg-b']) await api('DELETE', '/api/streams/' + id, undefined, { token })
   log('R: packages — CRUD + assignment over HTTP, member edit materializes, delete strips users, UI markers ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages — all land in the signed DB; viewer login works end-to-end)')
+  // ===== S: the external VOD provider record (S53a) =====
+  // The panel owns ONE replicated `svcmeta/vod` record: the enable SWITCH plus the
+  // coordinates the APPS use to call the provider directly (the panel never proxies
+  // it, and stores no viewer credential for it). Asserted on both surfaces at once —
+  // the admin HTTP API that writes it, and a REAL viewer login over the live swarm
+  // that reads it back out of the replicated bee.
+  r = await api('GET', '/api/vod-config', undefined, { token })
+  assert.strictEqual(r.status, 200, 'vod-config reads before anything is configured')
+  assert.strictEqual(r.body, null, 'never configured answers null, not 404')
+
+  // A viewer logging in with NO record at all must see no `vod` field whatsoever —
+  // "absent" and "disabled" have to collapse into one client branch.
+  r = await api('POST', '/api/users', { username: 'vodview', password: 'vodview-secret-1' }, { token })
+  assert.strictEqual(r.status, 201, 'create the vod test viewer')
+  await waitFor(async () => await cliBee.get('user/vodview'), 30000, 'vodview replication')
+  let vodSession = await login(call, cliBee, 'vodview', 'vodview-secret-1', { deviceId: 'vod-device', deviceLabel: 'e2e-vod' })
+  assert.ok(!('vod' in vodSession), 'no record -> the login result carries NO vod field at all')
+
+  // Validation refusals — every one of these would strand a client on a URL it cannot
+  // use, so they must be in-band 400s, not stored values.
+  for (const [patch, why] of [
+    [{ apiBase: 'http://provider.example/api' }, 'cleartext apiBase'],
+    [{ apiBase: 'https://provider.example/api?token=x' }, 'apiBase carrying a query string'],
+    [{ apiBase: 'https://user:pass@provider.example/api' }, 'apiBase embedding credentials'],
+    [{ apiBase: 'not-a-url' }, 'apiBase that is not a URL'],
+    [{ enabled: true }, 'enabling an empty config'],
+    [{ sources: { series: 'series_hd' } }, 'unknown source kind'],
+    [{ params: { 'bad key': '1' } }, 'invalid param name'],
+    [{ service: 'x'.repeat(129) }, 'over-long service']
+  ]) {
+    r = await api('PATCH', '/api/vod-config', patch, { token })
+    assert.strictEqual(r.status, 400, `must refuse ${why}: ${JSON.stringify(r.body)}`)
+  }
+  assert.strictEqual((await api('GET', '/api/vod-config', undefined, { token })).body, null, 'no refused patch created a record')
+
+  // CRUD: a valid config lands DISABLED (the switch is a separate, deliberate act).
+  r = await api('PATCH', '/api/vod-config', {
+    apiBase: 'https://provider.example/like/api/',
+    service: 'demoservice',
+    sources: { movies: 'movies_hd' },
+    params: { hm: '1', hs: '2' }
+  }, { token })
+  assert.strictEqual(r.status, 200, 'valid config accepted: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.enabled, false, 'a fresh config is disabled until the operator enables it')
+  assert.strictEqual(r.body.apiBase, 'https://provider.example/like/api', 'trailing slashes normalized away')
+  assert.deepStrictEqual(r.body.sources, { movies: 'movies_hd' }, 'movies source stored')
+  assert.deepStrictEqual(r.body.params, { hm: '1', hs: '2' }, 'params stored verbatim')
+  assert.ok(ring.list().some((e) => e.op === 'vod-config'), 'the write landed in the activity ring as an admin audit entry')
+
+  // Configured but DISABLED still delivers nothing to viewers.
+  await waitFor(async () => await cliBee.get('svcmeta/vod'), 30000, 'vod record replication')
+  vodSession = await login(call, cliBee, 'vodview', 'vodview-secret-1', { deviceId: 'vod-device', deviceLabel: 'e2e-vod' })
+  assert.ok(!('vod' in vodSession), 'configured but disabled -> still NO vod field in the login result')
+
+  // Partial merge + the switch.
+  r = await api('PATCH', '/api/vod-config', { enabled: true }, { token })
+  assert.strictEqual(r.status, 200, 'enable once the coordinates are stored')
+  assert.strictEqual(r.body.enabled, true)
+  assert.strictEqual(r.body.service, 'demoservice', 'a partial patch merges — untouched fields survive')
+  assert.deepStrictEqual(r.body.params, { hm: '1', hs: '2' }, 'params survive a patch that does not mention them')
+
+  // S29 idempotency: the bee is append-only, so an identical PATCH must cost nothing.
+  const vodLenBefore = db.core.length
+  r = await api('PATCH', '/api/vod-config', { enabled: true }, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(db.core.length, vodLenBefore, 'an identical PATCH appends nothing to the bee')
+
+  // Replication → a REAL login now carries the whole config.
+  await waitFor(async () => {
+    const n = await cliBee.get('svcmeta/vod')
+    return n && n.value && n.value.enabled === true
+  }, 30000, 'enabled vod record replication')
+  vodSession = await login(call, cliBee, 'vodview', 'vodview-secret-1', { deviceId: 'vod-device', deviceLabel: 'e2e-vod' })
+  assert.deepStrictEqual(vodSession.vod, {
+    enabled: true,
+    apiBase: 'https://provider.example/like/api',
+    service: 'demoservice',
+    sources: { movies: 'movies_hd' },
+    params: { hm: '1', hs: '2' }
+  }, 'an enabled provider reaches the viewer through the signed DB, verbatim')
+
+  // …and flipping the switch off removes the field again (no client rebuild involved).
+  r = await api('PATCH', '/api/vod-config', { enabled: false }, { token })
+  assert.strictEqual(r.body.enabled, false)
+  await waitFor(async () => {
+    const n = await cliBee.get('svcmeta/vod')
+    return n && n.value && n.value.enabled === false
+  }, 30000, 'disabled vod record replication')
+  vodSession = await login(call, cliBee, 'vodview', 'vodview-secret-1', { deviceId: 'vod-device', deviceLabel: 'e2e-vod' })
+  assert.ok(!('vod' in vodSession), 'disabling removes the field from the next login')
+
+  const homeHtmlS = await (await fetch(base + '/')).text()
+  for (const marker of ['vod-card', 'vod-form', 'vod-enabled', 'vod-api-base']) {
+    assert.ok(homeHtmlS.includes(marker), `dashboard carries the VOD provider card: ${marker}`)
+  }
+  const appJsS = await (await fetch(base + '/app.js')).text()
+  for (const marker of ['api/vod-config', 'renderVodConfig']) {
+    assert.ok(appJsS.includes(marker), `app.js wires the VOD provider card: ${marker}`)
+  }
+  await api('DELETE', '/api/users/vodview', undefined, { token })
+  log('S: VOD provider — null before setup, 8 validation refusals with nothing stored, CRUD + partial merge, identical PATCH appends nothing, and a REAL login sees the config only while it is enabled ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

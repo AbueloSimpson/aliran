@@ -163,6 +163,12 @@ export function registerPanelTools (ctx, h) {
   def('panel_list_categories', { title: 'List categories', description: 'Category vocabulary + per-category channel counts.', annotations: { readOnlyHint: true } },
     async () => ok(await p.get('/api/categories')))
 
+  def('panel_vod_config', {
+    title: 'Get the VOD provider config',
+    description: 'The external VOD provider (movies & series) the viewer APPS call directly: {enabled, apiBase, service, sources, params} — or null when the operator never configured one. Nothing in it is a secret: the panel never proxies the provider and stores no viewer credential for it (each viewer authenticates to the provider with their own account).',
+    annotations: { readOnlyHint: true }
+  }, async () => ok(await p.get('/api/vod-config')))
+
   def('panel_list_publishers', { title: 'List publishers', description: 'Enrolled broadcaster identities (S26) with scopes + status (never secrets).', annotations: { readOnlyHint: true } },
     async () => ok(await p.get('/api/publishers')))
 
@@ -336,6 +342,22 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_sync_source', { title: 'Sync a remote source now', description: 'Pull + diff + grant a source immediately; returns the sync report.', inputSchema: { name: z.string() } },
     async ({ name }) => ok(await p.post('/api/sources/' + q(name) + '/sync', {})))
+
+  // External VOD provider (S53). ONE replicated record; the patch MERGES onto what is
+  // stored and the merged whole is validated, so `{enabled:true}` alone is refused
+  // while apiBase/service are blank. `sources` and `params` are whole-map replacements
+  // (that is the only way to clear a key) — send the complete map you want.
+  def('panel_set_vod_config', {
+    title: 'Set the VOD provider config',
+    description: 'Configure the external VOD provider the viewer APPS call directly. Partial patch merged onto the stored record. apiBase must be https with NO query string and NO embedded credentials (per-call query params go in `params`, which the client appends verbatim); `sources` currently accepts only the `movies` key (series ships later) and, like `params`, REPLACES the whole map. `enabled:true` is refused unless apiBase and service are set (here or already stored) — enabled is the switch that makes both apps show a VOD section at all. Viewers pick a change up at their NEXT login: the record is read there, not watched.',
+    inputSchema: {
+      enabled: z.boolean().optional(),
+      apiBase: z.string().optional(),
+      service: z.string().optional(),
+      sources: z.record(z.string()).optional(),
+      params: z.record(z.string()).optional()
+    }
+  }, async (a) => ok(await p.patch('/api/vod-config', a)))
 
   // ---- categories (S49b): presentation registry + catalog-wide moves ----
   // Slugs travel in the request BODY on every category route (two-level rails are

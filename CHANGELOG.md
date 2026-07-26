@@ -33,6 +33,22 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **External VOD provider — the panel-owned switch (S53a)** — an operator can point
+  the apps at a third-party movies/series catalog they already have an account
+  with. One replicated record (`svcmeta/vod`) holds the enable bit plus the
+  coordinates (`apiBase`, `service`, per-kind source values, extra query params);
+  the **apps call that provider directly**, so the panel never proxies its calls or
+  its media, and it stores **no viewer credential** for it. Manageable from the
+  dashboard (a card on the Sources tab), the admin API
+  (`GET`/`PATCH /api/vod-config`), the CLI (`vod-config` / `vod-config-set`) and the
+  MCP server (`panel_vod_config` / `panel_set_vod_config` — 107 → **109 tools**).
+  `apiBase` must be https with no query string and no embedded credentials, and
+  `enabled:true` is refused while the coordinates are blank, so the section can
+  never appear pointing nowhere. The login payload carries a `vod` field **only**
+  while the operator has it enabled — absent means "no VOD section", with no
+  version check on the client — and a change lands at each viewer's next login.
+  The apps' VOD section itself ships next.
+
 - **In-player problem reporting (S51)** — the "Report a problem" flow moved from
   Settings onto the **player itself**: a Report button on the now-playing bar
   (phone + desktop, plus the `r` key on desktop) and on the playing channel's

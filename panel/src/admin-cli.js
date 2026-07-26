@@ -52,6 +52,19 @@ function requireKeys () {
 
 const str = (v) => (v != null && v !== true ? String(v) : undefined)
 
+// "hm=1,hs=2" -> { hm: '1', hs: '2' }; "" -> {}. Values may contain '=' (split once).
+function parseKeyVals (s) {
+  const out = {}
+  for (const pair of String(s).split(',')) {
+    const t = pair.trim()
+    if (!t) continue
+    const i = t.indexOf('=')
+    if (i < 1) { console.error(`Bad param "${t}" — expected key=value.`); process.exit(1) }
+    out[t.slice(0, i).trim()] = t.slice(i + 1).trim()
+  }
+  return out
+}
+
 async function main () {
   const [cmd, ...rest] = process.argv.slice(2)
   const { pos, opts } = parseArgs(rest)
@@ -520,6 +533,44 @@ async function main () {
       break
     }
 
+    // External VOD provider (S53). The record lives in the replicated bee, so these
+    // need the store: run them with the panel STOPPED, or use the dashboard Sources
+    // tab / the admin API against the live panel instead.
+    case 'vod-config': {
+      const v = await ops.getVodConfig(ctx)
+      if (!v) { console.log('No VOD provider configured (viewers see no VOD section).'); break }
+      console.log(JSON.stringify(v, null, 2))
+      if (!v.enabled) console.log('(disabled — viewers see no VOD section until --enabled true)')
+      break
+    }
+
+    case 'vod-config-set': {
+      const patch = {}
+      if (opts.enabled != null) patch.enabled = opts.enabled
+      if (opts['api-base'] != null) patch.apiBase = opts['api-base'] === true ? '' : String(opts['api-base'])
+      if (opts.service != null) patch.service = opts.service === true ? '' : String(opts.service)
+      if (opts['movies-source'] != null) {
+        const cur = (await ops.getVodConfig(ctx)) || {}
+        patch.sources = { ...(cur.sources || {}), movies: opts['movies-source'] === true ? '' : String(opts['movies-source']) }
+        if (!patch.sources.movies) delete patch.sources.movies
+      }
+      // --params replaces the whole map ("" clears it); --param k=v merges ONE key onto
+      // whatever is stored (the common "add hs=2" edit without retyping the rest).
+      if (opts.params != null) {
+        patch.params = parseKeyVals(opts.params === true ? '' : String(opts.params))
+      }
+      if (opts.param != null && opts.param !== true) {
+        const one = parseKeyVals(String(opts.param))
+        const cur = patch.params !== undefined ? patch.params : ((await ops.getVodConfig(ctx)) || {}).params || {}
+        patch.params = { ...cur, ...one }
+      }
+      if (Object.keys(patch).length === 0) return usage(await done())
+      const v = await ops.setVodConfig(ctx, patch)
+      console.log(`VOD provider ${v.enabled ? 'ENABLED' : 'disabled'} -> ` + JSON.stringify({ apiBase: v.apiBase, service: v.service, sources: v.sources, params: v.params }))
+      console.log('Viewers pick this up at their NEXT login (the record is read there, not watched).')
+      break
+    }
+
     case 'list': {
       let after = ''
       do {
@@ -587,6 +638,14 @@ function usage () {
   remove-package <name>                 Remove a package (grants it alone covered are removed)
   set-user-packages <u> <p1,p2|"">      Replace a user's packages ("" clears) — seals/removes immediately
                                         (package commands need the store: panel stopped, or use the dashboard)
+  vod-config                            Show the external VOD provider record (svcmeta/vod)
+  vod-config-set [--enabled true|false] [--api-base https://…/api] [--service X]
+                 [--movies-source Y] [--params "hm=1,hs=2"] [--param hs=2]
+                                        Configure the VOD provider the APPS call directly.
+                                        --params replaces the map, --param merges one key.
+                                        Enabling needs an apiBase + service; viewers pick the
+                                        change up at their NEXT login. (Needs the store: panel
+                                        stopped, or use the dashboard/API.)
   sync-source <name>                    Pull + apply the feed NOW (panel stopped — or use the dashboard)
   remove-source <name> [--keep-channels]  Remove a source; purges its channels unless --keep-channels
   list-reports [--status new|ack|resolved] [--channel c] [--category c] [--limit n]

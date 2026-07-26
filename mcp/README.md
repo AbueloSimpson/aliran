@@ -13,7 +13,9 @@ MCP **resources**:
   categories (presentation + catalog-wide rename/merge), publishers,
   status/observability, aggregate-only analytics, viewer problem reports +
   correlation alerts (reporters are pseudonyms; report text is viewer-typed,
-  untrusted content), dashboard admins.
+  untrusted content), dashboard admins, and the external VOD provider config —
+  the switch plus the coordinates the viewer apps call the provider with directly
+  (no viewer credential is stored panel-side for it).
 - **`broadcaster_*`** — the broadcaster control API (`:3310`): channels
   (create/start/stop/rotate), ffmpeg logs, the capability probe, incidents, health,
   aggregate-only analytics, control admins.
@@ -44,7 +46,7 @@ MCP **resources**:
   `migrate-a-channel-source`, `monthly-maintenance`, `incident-triage`,
   `expose-dashboards`) naming the exact tools per step.
 
-**107 tools** in total (only the configured groups register).
+**109 tools** in total (only the configured groups register).
 
 > This is the **server** side of MCP. It exposes tools/resources to an AI client; it
 > does **not** call the Claude API. Its only runtime dependency is

@@ -92,9 +92,24 @@ export const REPORT_CONSENT =
 /** Free-text cap (characters) — the panel enforces its own copy of this. */
 export const REPORT_TEXT_MAX = 300
 
+/** Panel-delivered external VOD provider config (S53) — the operator's switch plus the
+ *  coordinates the APP uses to call the provider DIRECTLY (the panel never proxies it,
+ *  and stores no viewer credential for it: each viewer authenticates with their own
+ *  account). Delivered ONLY while the operator has a provider enabled, so its absence
+ *  IS "no VOD section". Read at login — an operator change lands at the next login. */
+export interface VodConfig {
+  enabled: true
+  apiBase: string
+  service: string
+  /** Per-kind source values; only `movies` exists today (series ships later). */
+  sources: { movies?: string }
+  /** Extra query params appended verbatim to every provider call. */
+  params: Record<string, string>
+}
+
 export type BackendMessage =
   | { type: 'ready' }
-  | { type: 'streams'; streams: Stream[] }
+  | { type: 'streams'; streams: Stream[]; vod?: VodConfig }
   | { type: 'login-error'; message: string }
   // streamId names the stream this play() reply is for — the video component uses it
   // to tell "the served channel just CHANGED under the shared localhost URL" (remount)
@@ -166,6 +181,8 @@ export interface ServiceDescriptor {
 export interface EngineState {
   ready: boolean
   streams: Stream[]
+  /** S53: the panel's VOD provider config, or null (no provider / disabled). */
+  vod: VodConfig | null
   port: number | null
   url: string | null
   source: 'p2p' | 'cdn' | null

@@ -145,9 +145,26 @@ export interface SavedCredentials { username: string; password: string }
  *  Connect screen. Builds with a baked descriptor never save one (baked wins). */
 export interface SavedService { panelPubKey: string; name?: string }
 
+/** Panel-delivered external VOD provider config (S53) — the operator's switch plus the
+ *  coordinates the APP uses to call the provider DIRECTLY. The panel never proxies the
+ *  provider's calls or media and stores no viewer credential for it: each viewer
+ *  authenticates with their own account. Delivered ONLY while the operator has a
+ *  provider enabled, so its ABSENCE is "no VOD section" — a client needs no version
+ *  check and no separate absent-vs-disabled branch. Read at login, so an operator's
+ *  change lands at the viewer's next login / app start. */
+export interface VodConfig {
+  enabled: true
+  apiBase: string
+  service: string
+  /** Per-kind source values; only `movies` exists today (series ships later). */
+  sources: { movies?: string }
+  /** Extra query params appended verbatim to every provider call. */
+  params: Record<string, string>
+}
+
 export type BackendMessage =
   | { type: 'ready' }
-  | { type: 'streams'; streams: Stream[] }
+  | { type: 'streams'; streams: Stream[]; vod?: VodConfig }
   | { type: 'login-error'; message: string }
   // streamId names the stream this play() reply is for (absent on dev direct-play and
   // on worklet bundles older than the field) — <AliranVideo> uses it to tell "the served
@@ -219,6 +236,10 @@ export class AliranBackend {
   // home screen navigated to on {type:'streams'}) read this instead of missing the
   // one-shot message.
   streams: Stream[] = []
+  // Panel-delivered external VOD provider config (S53), or null when the operator has
+  // none / has it disabled — null IS "no VOD section". Login-scoped: it rides the
+  // 'streams' message and never changes mid-session.
+  vod: VodConfig | null = null
   // Last media-server port / active-source URL. The server is persistent (one port
   // per session), and the one-shot {type:'port'} reply to play() can land before the
   // player screen mounts.
@@ -390,7 +411,7 @@ export class AliranBackend {
         // Never log the raw 'prefs' line — it can carry the saved password.
         if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
         if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.prefsLoaded = true }
-        if (msg.type === 'streams') this.streams = msg.streams
+        if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
           this.port = msg.port ?? null
           this.url = msg.url ?? (msg.port ? `http://127.0.0.1:${msg.port}/index.m3u8` : null)
