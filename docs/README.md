@@ -60,6 +60,7 @@ Optional services you can add later:
 | [Reseller panel](reseller-panel.md) | A role hierarchy + credit ledger so resellers manage their own customers |
 | [MCP server](mcp.md) | Operate the whole deployment through an AI assistant |
 | [Analytics](analytics.md) | Aggregate-only usage counts — no per-viewer tracking, by design |
+| [Viewer problem reports](reports.md) | "Report a problem" from the apps, correlation alerts, ops notifications — pseudonymous by construction |
 
 ### I'm building or branding the apps
 

@@ -52,6 +52,7 @@ nav:
       - Content management: content-management.md
       - User management: user-management.md
       - Privacy-preserving analytics: analytics.md
+      - Viewer problem reports: reports.md
       - Optional — MCP server (AI-operable): mcp.md
       - Optional — Repeater appliance: repeater.md
       - Optional — VOD library: vod-library.md

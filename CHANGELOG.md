@@ -180,6 +180,31 @@ phone + Android TV, and the Windows desktop player).
   sections **Q–V** over an in-process REAL reseller service (pointed at the
   test's real panel; the mint is asserted against the actual ledger) and a
   fake-TitleManager library control server — no DHT, no ffmpeg.
+- **Viewer reports through the MCP + the operator guide (S50d)** — the reporting
+  feature reaches the AI-operated path and the docs site (102 → **107 tools**).
+  Five new panel tools: `panel_list_reports` (status/channel/category filters,
+  raw epoch-ms `since` **plus** a `sinceHours` convenience, `limit`),
+  `panel_list_alerts`, `panel_ack_report`, `panel_resolve_report {note}` and
+  `panel_test_notify`. A report carries the engine's 50-entry breadcrumb ring, so
+  long rings summarize to `{count, sample}` of the **last** three — the
+  `compactUser` mechanism applied to a second shape, with `full:true` restoring
+  everything. Alert ack/resolve stays deliberately unwrapped (a running panel
+  holds alerts in memory). `server_set_env` gained the seven `REPORTS_*`
+  **tunables** plus `REPORTS_TELEGRAM_CHAT_ID`, and **refuses**
+  `REPORTS_TELEGRAM_BOT_TOKEN` *and* `REPORTS_WEBHOOK_URL`: an ntfy topic, a
+  Slack incoming webhook and a Discord webhook all carry their credential in the
+  URL path, so a notification endpoint is a secret and belongs in `panel/.env`
+  on the box, not in a model's context. The `incident-triage` runbook now starts
+  by asking what viewers reported, and `monthly-maintenance` closes the loop on
+  stale reports and re-proves the notification wiring; `diagnose_symptom` routes
+  report-storm and dead-notifier symptoms to the new page. New
+  **[docs/reports.md](docs/reports.md)**: the ten knobs, curl-able
+  ntfy/Slack/Discord/Telegram recipes, the alert rules, the four flood-control
+  layers, and an honest pseudonymity section that states plainly what HMAC with a
+  panel-held salt does and does **not** promise (pseudonymous at rest, *not*
+  anonymous to the operator — do not tell your audience otherwise). `test:mcp`
+  grew section **AD**, driving the tools against a real reports store + notifier
+  stub, plus a category-enum drift guard against `panel/src/reports.js`.
 - **MCP scale + DX (S49c)** — the P2/P3 tail; completes the S49
   operator-coverage arc (101 → **102 tools** + 6 prompts). **Multi-host SSH**:
   the config's `ssh` block optionally names extra boxes

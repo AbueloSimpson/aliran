@@ -32,13 +32,15 @@
 | `set-package <name> [--label --members "…" --default true\|false]` / `remove-package <name>` | Edit a package (member edits materialize for every holder; `""` clears members) / remove it (grants only it covered are removed) |
 | `list-packages` / `show-package <name>` | Packages + resolved/holder counts / one package with the channels it resolves to now |
 | `set-user-packages <u> <p1,p2\|"">` | Replace a user's package list — seals/removes grants immediately (package commands need the store: panel stopped, or use the dashboard/API) |
-| `list-reports [--status --channel --category --limit]` | Viewer problem reports (S50). Reporters are 16-hex pseudonyms — no username or device id is stored anywhere |
+| `list-reports [--status --channel --category --limit]` | [Viewer problem reports](reports.md) (S50). Reporters are 16-hex pseudonyms — no username or device id is stored anywhere |
 | `ack-report <id>` / `resolve-report <id> [note]` | Acknowledge / close one report |
 | `list-alerts [--status open\|ack\|resolved]` | Correlation alerts. **Read-only here** — a running panel holds alerts in memory and flushes lazily, so ack/resolve them in the dashboard/API |
 | `test-notify` | Send a synthetic ops notification through the configured webhook / Telegram targets (needs the panel's `REPORTS_*` env in this shell) |
 
 > The report verbs touch only `DATA_DIR/reports/` (re-read per operation), so they work
 > **beside a running panel** — triaging reports never means stopping the service.
+> The knobs, the ntfy/Slack/Discord/Telegram recipes and the pseudonymity limits are
+> in [Viewer problem reports](reports.md).
 
 
 > **Stream deletion caveat:** the purge removes everything the panel can remove, but a
@@ -84,7 +86,7 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `GET /api/status` | Counts: users, streams, live, admins |
 | `GET /api/observability` | Uptime, memory, swarm peers, data size/disk free + last-200 activity ring (in-memory — cleared by a restart) |
 | `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) (S48) → `{enabled, retentionDays, days:[{date, hours:{H:{logins:{ok,failed}, sessions, onlineApps:{min,max,mean,samples}, catalog?}}, day:{uniqueViewers}}], current}` — UTC day rollups (default 7, capped at retention) + the reduced in-progress hour. Counts only, never an identity |
-| `GET /api/reports?status&channel&category&since&limit` | Pseudonymous viewer problem reports (S50) → `{enabled, reports:[{id, at, lastAt, count, reporter, category, text, channel, appVersion, platform, peers, events, status, ackAt, resolvedAt, note}]}`. `reporter` is a 16-hex HMAC pseudonym — **never** a username or device id |
+| `GET /api/reports?status&channel&category&since&limit` | [Pseudonymous viewer problem reports](reports.md) (S50) → `{enabled, reports:[{id, at, lastAt, count, reporter, category, text, channel, appVersion, platform, peers, events, status, ackAt, resolvedAt, note}]}`. `reporter` is a 16-hex HMAC pseudonym — **never** a username or device id |
 | `GET /api/reports/summary` | Badge + chart source → `{enabled, retentionDays, total, new, ack, resolved, openAlerts, shed, collapsed, byChannel, byCategory, byHour[24]}` — counts only |
 | `POST /api/reports/:id/ack` · `POST /api/reports/:id/resolve` `{note?}` | Acknowledge / close one report (the note is operator text, control-stripped and capped) |
 | `POST /api/reports/test-notify` | Send a synthetic notification through the **real** configured targets → `{enabled, targets, results:[{target, ok, status?, attempts, error?}]}` |
@@ -262,8 +264,8 @@ are registered.
 
 | Group | Tools |
 |---|---|
-| `panel_*` (reads, `R`) | `panel_status`, `panel_observability`, `panel_analytics`, `panel_list_users`, `panel_get_user`, `panel_list_devices`, `panel_list_streams`, `panel_list_packages`, `panel_get_package`, `panel_list_sources`, `panel_source_channels`, `panel_list_categories`, `panel_list_publishers`, `panel_list_admins` |
-| `panel_*` (writes) | `panel_create_user`, `panel_set_user_password`, `panel_set_user_status`, `panel_set_max_devices`, `panel_logout_all`, `panel_grant`, `panel_set_user_packages`, `panel_add_stream`, `panel_set_stream_meta`, `panel_set_stream_art`, `panel_add_package`, `panel_set_package`, `panel_add_source`, `panel_set_source`, `panel_sync_source`, `panel_set_category`, `panel_rename_category`, `panel_add_publisher`, `panel_set_publisher_scopes`, `panel_set_publisher_status`, `panel_add_admin`, `panel_set_admin_password` |
+| `panel_*` (reads, `R`) | `panel_status`, `panel_observability`, `panel_analytics`, `panel_list_users`, `panel_get_user`, `panel_list_devices`, `panel_list_streams`, `panel_list_packages`, `panel_get_package`, `panel_list_sources`, `panel_source_channels`, `panel_list_categories`, `panel_list_publishers`, `panel_list_reports`, `panel_list_alerts`, `panel_list_admins` |
+| `panel_*` (writes) | `panel_create_user`, `panel_set_user_password`, `panel_set_user_status`, `panel_set_max_devices`, `panel_logout_all`, `panel_grant`, `panel_set_user_packages`, `panel_add_stream`, `panel_set_stream_meta`, `panel_set_stream_art`, `panel_add_package`, `panel_set_package`, `panel_add_source`, `panel_set_source`, `panel_sync_source`, `panel_set_category`, `panel_rename_category`, `panel_add_publisher`, `panel_set_publisher_scopes`, `panel_set_publisher_status`, `panel_ack_report`, `panel_resolve_report`, `panel_test_notify`, `panel_add_admin`, `panel_set_admin_password` |
 | `panel_*` (purges, `D`) | `panel_delete_user`, `panel_revoke_device`, `panel_revoke_grant`, `panel_delete_stream`, `panel_delete_package`, `panel_delete_source`, `panel_merge_categories`, `panel_delete_category`, `panel_remove_publisher`, `panel_remove_admin` |
 | `broadcaster_*` | `broadcaster_health` `R`, `broadcaster_status` `R`, `broadcaster_capabilities` `R`, `broadcaster_list_channels` `R`, `broadcaster_get_channel` `R`, `broadcaster_channel_logs` `R`, `broadcaster_incidents` `R`, `broadcaster_analytics` `R`, `broadcaster_list_admins` `R`, `broadcaster_add_channel`, `broadcaster_update_channel`, `broadcaster_start_channel`, `broadcaster_add_admin`, `broadcaster_set_admin_password`, `broadcaster_stop_channel` `D`, `broadcaster_rotate_channel` `D`, `broadcaster_remove_channel` `D`, `broadcaster_remove_admin` `D` |
 | `reseller_*` (optional) | `reseller_status` `R`, `reseller_system` `R`, `reseller_list_principals` `R`, `reseller_get_principal` `R`, `reseller_ledger` `R`, `reseller_list_accounts` `R`, `reseller_get_account` `R`, `reseller_trials` `R`, `reseller_ops_status` `R`, `reseller_add_principal`, `reseller_set_principal_password`, `reseller_set_principal_limits`, `reseller_grant_credits`, `reseller_set_principal_status` `D` |
@@ -281,8 +283,8 @@ tools for a multi-step job:
 | `new-site-install` | preflight → install → verify → first channel → first viewer |
 | `onboard-a-reseller` | enroll a principal → mint credits → verify the ledger → the oversight boundary |
 | `migrate-a-channel-source` | remote-source path (add → curate → sync → verify) and broadcaster-pull path (update → stop/start → verify) |
-| `monthly-maintenance` | update dry-run → backup → update → disk + analytics review → admin hygiene |
-| `incident-triage` | healthz sweep → localize (logs/incidents) → symptom → KB → fix or escalate (takes an optional `symptom` argument) |
+| `monthly-maintenance` | update dry-run → backup → update → disk + analytics review → admin hygiene → viewer-report triage + a notification test |
+| `incident-triage` | healthz sweep → what viewers reported → localize (logs/incidents) → symptom → KB → fix or escalate (takes an optional `symptom` argument) |
 | `expose-dashboards` | publish the dashboards behind Caddy TLS per the KB, then repoint the MCP config at the https urls |
 
 The control API is OFF unless `CONTROL_ENABLED=1`; a `broadcaster_*` tool that can't
@@ -290,7 +292,10 @@ reach it says so (`server_install` sets it). Secrets minted server-side (the
 `PUBLISHER_KEY`) are written into the box `.env` and never returned to the model.
 
 `server_set_env` upserts only **documented, allowlisted** env knobs and refuses
-secret/identity keys (`PUBLISHER_KEY`, `PANEL_PUBKEY`, `WEBHOOK_SECRET`, …). The new
+secret/identity keys (`PUBLISHER_KEY`, `PANEL_PUBKEY`, `WEBHOOK_SECRET`,
+`REPORTS_TELEGRAM_BOT_TOKEN`, `REPORTS_WEBHOOK_URL` — an ntfy/Slack/Discord webhook
+url carries its credential in the path, so it is a secret too; see
+[Viewer problem reports](reports.md#enabling-notifications)). The new
 `.env` is dry-run through `node src/config.js --check` in the built image **before**
 anything restarts (every service config is fail-fast at boot); a validation failure
 reverts the file and surfaces the exact problem list. On success the change applies

@@ -39,6 +39,13 @@ Two behaviors shared by **every** service:
 | `ADMIN_PORT` | `3210` | Admin API port |
 | `ADMIN_SESSION_TTL_HOURS` | `12` | Admin session token lifetime |
 | `ANALYTICS_RETENTION_DAYS` | `90` | Days of [aggregate-only analytics](analytics.md) rollups kept under `DATA_DIR/analytics/`. **`0` disables collection entirely** (no files, endpoints answer empty) |
+| `REPORTS_RETENTION_DAYS` | `30` | Days of [viewer problem reports](reports.md) kept under `DATA_DIR/reports/`. **`0` disables the feature entirely** (no files, and the `report` RPC method is not served) |
+| `REPORTS_MAX_PER_WINDOW` / `REPORTS_WINDOW_SECONDS` | `5` / `600` | Per-reporter ingest throttle |
+| `REPORTS_ALERT_COUNT` / `REPORTS_ALERT_WINDOW_MIN` | `3` / `10` | Distinct reporters on one channel, and the window, that open a correlation alert |
+| `REPORTS_STORM_SAMPLE` | `20` | Full records stored per storm once an alert is open (further reports only bump tallies) |
+| `REPORTS_GLOBAL_PER_MIN` | `120` | Panel-wide ingest breaker; past it reports are acknowledged, counted as `shed`, and dropped |
+| `REPORTS_WEBHOOK_URL` | *(empty)* | Ops notification webhook — one body suits ntfy, Slack and Discord. **A secret** (the credential is in the URL path): set it on the box by hand, never through the MCP. [Recipes](reports.md#enabling-notifications) |
+| `REPORTS_TELEGRAM_BOT_TOKEN` / `REPORTS_TELEGRAM_CHAT_ID` | *(empty)* | Telegram bot target; both must be set. The token is **a secret** |
 | `SOURCES_SYNC_INTERVAL_MS` | `86400000` | Default per-source pull interval (daily); override per source via `intervalMs` |
 | `SOURCES_TICK_MS` | `3600000` | How often the scheduler checks which sources are due (a check, not a fetch) |
 | `SOURCES_BOOT_DELAY_MS` | `15000` | Delay before the first due-check after panel boot |
