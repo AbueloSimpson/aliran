@@ -21,7 +21,21 @@
 //      stormSampleSize, exactly ONE alert opens (extended, never duplicated, onAlert
 //      fired once), and a viewer logging in on another connection MEANWHILE is not
 //      made to wait — reports are the lowest-priority responder.
-//   G  THE NEGATIVE IDENTITY SCAN: analytics runs beside reports through the same
+//   G  ADMIN HTTP SURFACE (S50b): a real panel store + admin server in-process.
+//      Auth is enforced, the list/summary/alerts reads answer the documented shapes,
+//      the filters work, ack/resolve round-trip over HTTP, an unknown id is a clean
+//      404, test-notify reaches the real target, and every mutation lands in the
+//      activity ring as an admin audit entry.
+//   H  NOTIFIER DELIVERY (S50b): a local http.createServer stub stands in for BOTH
+//      the webhook and (via the injected telegramApiBase) the Telegram API. An alert
+//      that opens fires EXACTLY ONE POST per target — never one per report — and the
+//      webhook body carries title/message/text/content/channel/count plus X-Title,
+//      the one shape that satisfies ntfy, Slack and Discord at the same time.
+//   I  FAIL-DARK (S50b): endpoints that blackhole, hang, 500 or do not exist. Ingest
+//      stays fast and keeps storing WHILE the notifier is stuck, the notification is
+//      dropped after its retry budget, the queue is bounded, and an unconfigured
+//      notifier is a complete no-op.
+//   J  THE NEGATIVE IDENTITY SCAN: analytics runs beside reports through the same
 //      logins, then every reports file, alerts file, module response, report-shaped
 //      activity-ring entry and analytics rollup is scanned for the needle usernames,
 //      device ids and session tokens — ZERO hits (the test:analytics precedent). The
@@ -33,6 +47,7 @@
 import assert from 'assert'
 import os from 'os'
 import fs from 'fs'
+import http from 'http'
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import SecretStream from '@hyperswarm/secret-stream'
@@ -42,8 +57,13 @@ import b4a from 'b4a'
 import { blind, powSolve, authKeyPair, authSign } from '@aliran/core'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { makeReports, normalizeReport, REPORT_CATEGORIES } from '../panel/src/reports.js'
+import { makeNotifier, renderAlert } from '../panel/src/notify.js'
 import { makeAnalytics } from '../panel/src/analytics.js'
 import { makeRing } from '../panel/src/activity.js'
+import { initKeys, openKeys } from '../panel/src/keys.js'
+import { openStore } from '../panel/src/store.js'
+import * as ops from '../panel/src/ops.js'
+import { startAdminServer } from '../panel/src/admin-server.js'
 
 const log = (...a) => console.log(...a)
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -96,6 +116,39 @@ function rpcClient (stream, timeoutMs = 8000) {
     } finally { clearTimeout(timer) }
   }
   return { rpc, call }
+}
+
+// A local HTTP stub standing in for the operator's webhook AND (via the injected
+// telegramApiBase) the Telegram API. Every request is recorded; `mode` decides how
+// it answers — 'ok', 'error' (500), or 'hang' (accepts the request and NEVER
+// replies: the blackhole the fail-dark lane needs).
+function stubServer (mode = 'ok') {
+  const seen = []
+  const held = new Set()
+  const server = http.createServer((req, res) => {
+    const chunks = []
+    req.on('data', (c) => chunks.push(c))
+    req.on('end', () => {
+      let body = null
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch {}
+      seen.push({ method: req.method, url: req.url, headers: req.headers, body, raw: Buffer.concat(chunks).toString('utf8') })
+      if (mode === 'hang') { held.add(res); return }
+      if (mode === 'error') { res.writeHead(500, { 'content-type': 'application/json' }); return res.end('{"error":"nope"}') }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{"ok":true}')
+    })
+  })
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => {
+    resolve({
+      seen,
+      base: `http://127.0.0.1:${server.address().port}`,
+      close: () => new Promise((r) => {
+        for (const res of held) { try { res.destroy() } catch {} }
+        if (server.closeAllConnections) server.closeAllConnections()
+        server.close(() => r())
+      })
+    })
+  }))
 }
 
 // A complete, REAL viewer login: hello → PoW → OPRF login → signed session token.
@@ -541,7 +594,273 @@ try {
     log(`F: storm drill — 200 reports/30 reporters: ${shed} shed, ${collapsed} collapsed, ${records.length} stored, 1 alert, concurrent login ${sessionMs} ms (storm ${stormMs} ms) ✓`)
   }
 
-  // ===================== G: the negative identity scan =====================
+  // ===================== G: the admin HTTP surface =====================
+  {
+    const dir = mkdir('adminapi')
+    initKeys(dir)
+    const keys = openKeys(dir)
+    const { store, db, assets } = await openStore(dir, keys)
+    cleanups.push(() => store.close())
+    const activity = makeRing(200)
+    const hook = await stubServer('ok')
+    cleanups.push(hook.close)
+    const notifier = makeNotifier({ webhookUrl: hook.base + '/hook', timeoutMs: 2000, backoffMs: [10, 10], log: () => {} })
+    const reports = makeReports({ dataDir: dir, retentionDays: 30, alertCount: 2, flushMs: 10, onAlert: (a) => notifier.notify(a) })
+    // Argon2 at the sodium minimum — this lane tests routing, not password cost.
+    const ctx = { config: { argon2: { memKiB: 8192, time: 1 }, maxDevicesDefault: 2 }, keys, db, assets, dataDir: dir, activity, reports, notifier }
+    ops.addAdmin(ctx, 'root', 'correct-horse-battery')
+    const srv = await startAdminServer(ctx, { host: '127.0.0.1', port: 0, sessionTtlMs: 3600000, lockout: { threshold: 50, seconds: 60 } })
+    cleanups.push(srv.close)
+    const base = `http://127.0.0.1:${srv.port}`
+    let adminToken = null
+    const http_ = async (method, p, body) => {
+      const headers = {}
+      if (adminToken) headers.authorization = 'Bearer ' + adminToken
+      if (body !== undefined) headers['content-type'] = 'application/json'
+      const res = await fetch(base + p, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
+      const text = await res.text()
+      let json = null
+      try { json = JSON.parse(text) } catch {}
+      return { status: res.status, body: json, text }
+    }
+
+    // Seeded by the module (the responder path is lanes A-F's job).
+    const repA = reports.pseudonym(NEEDLE_USER, NEEDLE_DEVICE)
+    const repB = reports.pseudonym(NEEDLE_STORM_USERS[1], NEEDLE_STORM_DEVICE)
+    const s1 = reports.ingest({ reporter: repA, category: 'no-audio', channel: 'api-ch', text: 'sound cuts out', appVersion: '0.2.0', platform: 'android-tv', peers: 3, events: [{ t: 1, type: 'error', detail: 'decoder stalled' }] })
+    const s2 = reports.ingest({ reporter: repB, category: 'no-audio', channel: 'api-ch' })
+    reports.ingest({ reporter: repA, category: 'buffering', channel: 'other-ch' })
+    assert.ok(s2.alertId, 'the seed opened an alert (2 distinct reporters)')
+    await notifier.idle()
+    assert.strictEqual(hook.seen.length, 1, 'the opened alert produced exactly one webhook POST')
+
+    assert.strictEqual((await http_('GET', '/api/reports')).status, 401, 'reports need an admin token')
+    assert.strictEqual((await http_('GET', '/api/alerts')).status, 401, 'alerts need an admin token')
+    const login = await http_('POST', '/api/login', { username: 'root', password: 'correct-horse-battery' })
+    assert.strictEqual(login.status, 200, 'admin login: ' + login.text)
+    adminToken = login.body.token
+
+    const all = await http_('GET', '/api/reports')
+    assert.strictEqual(all.status, 200)
+    assert.strictEqual(all.body.enabled, true, 'GET /api/reports reports the store as enabled')
+    assert.strictEqual(all.body.reports.length, 3, 'all three seeded reports are listed')
+    assert.ok(all.body.reports.every((r) => /^[0-9a-f]{16}$/.test(r.reporter)), 'every listed reporter is a 16-hex pseudonym')
+    assert.strictEqual((await http_('GET', '/api/reports?channel=api-ch')).body.reports.length, 2, 'channel filter')
+    assert.strictEqual((await http_('GET', '/api/reports?category=buffering')).body.reports.length, 1, 'category filter')
+    assert.strictEqual((await http_('GET', '/api/reports?status=new')).body.reports.length, 3, 'status filter')
+    assert.strictEqual((await http_('GET', '/api/reports?limit=1')).body.reports.length, 1, 'limit')
+    assert.strictEqual((await http_('GET', '/api/reports?since=' + (Date.now() + 60000))).body.reports.length, 0, 'since filter')
+
+    const sum = await http_('GET', '/api/reports/summary')
+    assert.strictEqual(sum.status, 200)
+    assert.strictEqual(sum.body.enabled, true)
+    assert.strictEqual(sum.body.total, 3)
+    assert.strictEqual(sum.body.new, 3)
+    assert.strictEqual(sum.body.openAlerts, 1, 'the summary carries the badge count')
+    assert.strictEqual(sum.body.byChannel['api-ch'], 2)
+    assert.strictEqual(sum.body.byCategory['no-audio'], 2)
+    assert.strictEqual(sum.body.byHour.length, 24, 'the summary carries a 24-hour chart series')
+
+    assert.strictEqual((await http_('POST', '/api/reports/nope/ack')).status, 404, 'ack of an unknown report is 404')
+    const acked = await http_('POST', `/api/reports/${s1.id}/ack`)
+    assert.strictEqual(acked.status, 200)
+    assert.strictEqual(acked.body.status, 'ack', 'ack round-tripped over HTTP')
+    const resolved = await http_('POST', `/api/reports/${s1.id}/resolve`, { note: 'transcoder restarted' })
+    assert.strictEqual(resolved.status, 200)
+    assert.strictEqual(resolved.body.status, 'resolved')
+    assert.strictEqual(resolved.body.note, 'transcoder restarted', 'the operator note is stored')
+    assert.strictEqual((await http_('GET', '/api/reports?status=resolved')).body.reports.length, 1)
+    assert.strictEqual(reports.get(s1.id).status, 'resolved', 'the HTTP mutation hit the same store the module reads')
+
+    const alerts = await http_('GET', '/api/alerts')
+    assert.strictEqual(alerts.body.alerts.length, 1, 'one alert over HTTP')
+    assert.strictEqual(alerts.body.alerts[0].kind, 'channel')
+    assert.strictEqual(alerts.body.alerts[0].channel, 'api-ch')
+    const alertId = alerts.body.alerts[0].id
+    assert.strictEqual((await http_('POST', '/api/alerts/nope/ack')).status, 404, 'ack of an unknown alert is 404')
+    assert.strictEqual((await http_('POST', `/api/alerts/${alertId}/ack`)).body.status, 'ack')
+    assert.strictEqual((await http_('GET', '/api/alerts?status=ack')).body.alerts.length, 1, 'alert status filter')
+    assert.strictEqual((await http_('POST', `/api/alerts/${alertId}/resolve`)).body.status, 'resolved')
+    assert.strictEqual((await http_('GET', '/api/reports/summary')).body.openAlerts, 0, 'resolving the alert clears the badge')
+
+    const tn = await http_('POST', '/api/reports/test-notify')
+    assert.strictEqual(tn.status, 200)
+    assert.deepStrictEqual(tn.body.targets, ['webhook'])
+    assert.strictEqual(tn.body.results[0].ok, true, 'test-notify reached the stub: ' + tn.text)
+    assert.strictEqual(hook.seen.length, 2, 'test-notify sent exactly one more POST')
+    assert.ok(/test notification/i.test(hook.seen[1].body.title), 'the test push is obviously synthetic')
+
+    // Every mutation is audited through act() into the observability ring.
+    const audit = activity.list().filter((e) => e.type === 'admin').map((e) => e.op)
+    for (const op of ['report-ack', 'report-resolve', 'alert-ack', 'alert-resolve', 'report-test-notify']) {
+      assert.ok(audit.includes(op), `admin audit carries ${op} (got ${audit.join(',')})`)
+    }
+    assert.ok(activity.list().filter((e) => e.type === 'admin').every((e) => e.admin === 'root'), 'audit entries name the acting admin')
+
+    scanBodies.push(
+      ['GET /api/reports', all.text],
+      ['GET /api/reports/summary', sum.text],
+      ['GET /api/alerts', alerts.text],
+      ['POST /api/reports/:id/resolve', resolved.text],
+      ['admin audit ring', JSON.stringify(activity.list())]
+    )
+    reports.close(); notifier.close()
+    log('G: admin HTTP surface — auth, filters, summary, ack/resolve, alerts, test-notify, 404s, audited ✓')
+  }
+
+  // ===================== H: notifier delivery =====================
+  {
+    const dir = mkdir('notify')
+    const hook = await stubServer('ok')
+    cleanups.push(hook.close)
+    const notifier = makeNotifier({
+      webhookUrl: hook.base + '/topic/aliran',
+      telegramBotToken: 'TESTBOTTOKEN',
+      telegramChatId: '-100123',
+      telegramApiBase: hook.base, // the injectable seam — no traffic ever leaves the box
+      timeoutMs: 2000,
+      backoffMs: [10, 10],
+      log: () => {}
+    })
+    assert.deepStrictEqual(notifier.targets, ['webhook', 'telegram'], 'both targets configured')
+
+    let opens = 0
+    const reports = makeReports({
+      dataDir: dir,
+      retentionDays: 30,
+      alertCount: 3,
+      stormSampleSize: 50,
+      flushMs: 10,
+      onAlert: (a) => { opens++; notifier.notify(a) }
+    })
+    // 12 reports, 4 distinct reporters, one channel: ONE alert opens and is then
+    // EXTENDED nine more times. A notification per report would be nine too many.
+    for (let i = 0; i < 12; i++) {
+      reports.ingest({
+        reporter: reports.pseudonym('notify-user-' + (i % 4), NEEDLE_DEVICE),
+        category: i % 2 ? 'no-audio' : 'buffering',
+        channel: 'notify-ch'
+      })
+    }
+    await notifier.idle()
+    assert.strictEqual(opens, 1, 'exactly ONE alert opened for the burst')
+    assert.strictEqual(hook.seen.length, 2, `exactly ONE POST per target (got ${hook.seen.length}: ${hook.seen.map((p) => p.url).join(', ')})`)
+
+    const webhook = hook.seen.find((p) => p.url === '/topic/aliran')
+    const telegram = hook.seen.find((p) => p.url.startsWith('/bot'))
+    assert.ok(webhook, 'the webhook target was posted to')
+    assert.strictEqual(webhook.method, 'POST')
+    // THE compatibility shape: ntfy reads title/message, Slack reads text, Discord
+    // reads content — one body, three providers, no adapter.
+    assert.deepStrictEqual(Object.keys(webhook.body).sort(), ['channel', 'content', 'count', 'message', 'text', 'title'], 'the webhook body carries the ntfy/Slack/Discord union')
+    assert.strictEqual(webhook.body.channel, 'notify-ch')
+    assert.ok(webhook.body.count >= 3, `the push carries the distinct-reporter count (${webhook.body.count})`)
+    assert.ok(webhook.body.title.includes('notify-ch'), 'the title names the broken channel')
+    assert.strictEqual(webhook.body.text, webhook.body.content, 'text and content carry the same line')
+    assert.ok(webhook.body.text.includes(webhook.body.message), 'text embeds the message')
+    assert.strictEqual(webhook.headers['x-title'], webhook.body.title, 'X-Title is set for plain ntfy topic URLs')
+    assert.strictEqual(webhook.headers['content-type'], 'application/json')
+
+    assert.ok(telegram, 'the Telegram target was posted to')
+    assert.strictEqual(telegram.url, '/botTESTBOTTOKEN/sendMessage', 'Telegram uses /bot<token>/sendMessage on the injected base')
+    assert.strictEqual(telegram.body.chat_id, '-100123')
+    assert.ok(telegram.body.text.includes('notify-ch'), 'the Telegram text names the channel')
+
+    // A second, LOGIN-kind alert: panel-wide, no channel.
+    for (let i = 0; i < 3; i++) reports.ingest({ reporter: reports.pseudonym('login-user-' + i, NEEDLE_DEVICE), category: 'login' })
+    await notifier.idle()
+    assert.strictEqual(opens, 2, 'the panel-wide login rule opened its own alert')
+    assert.strictEqual(hook.seen.length, 4, 'one more POST per target — still never per report')
+    const loginPush = hook.seen[2]
+    assert.strictEqual(loginPush.body.channel, null, 'a login alert has no channel')
+    assert.ok(/login/i.test(loginPush.body.title), 'the login alert says so')
+
+    // renderAlert is pure and total — it never throws on a partial alert record.
+    assert.doesNotThrow(() => renderAlert({}), 'renderAlert tolerates an empty alert')
+    assert.ok(renderAlert({ reporters: 600, reportersCapped: true, channel: 'x', id: 'y' }).title.includes('≥'), 'a capped reporter count renders as a lower bound')
+
+    const notifierStats = notifier.stats()
+    assert.strictEqual(notifierStats.sent, 4)
+    assert.strictEqual(notifierStats.failed, 0)
+    assert.strictEqual(notifierStats.dropped, 0)
+
+    scanBodies.push(['webhook POST bodies', JSON.stringify(hook.seen.map((p) => ({ url: p.url, body: p.body })))])
+    reports.close(); notifier.close()
+    log('H: notifier delivery — 12 reports → 1 alert → exactly 1 POST per target; ntfy/Slack/Discord body union + X-Title + Telegram sendMessage ✓')
+  }
+
+  // ===================== I: fail-dark =====================
+  {
+    const dir = mkdir('faildark')
+    // A blackhole: it accepts the request and never answers. This is the shape that
+    // would deadlock a naive notifier — and with it, report ingest.
+    const black = await stubServer('hang')
+    cleanups.push(black.close)
+    const notifier = makeNotifier({ webhookUrl: black.base + '/dead', timeoutMs: 150, backoffMs: [20, 20], log: () => {} })
+    const reports = makeReports({ dataDir: dir, retentionDays: 30, alertCount: 2, stormSampleSize: 100, flushMs: 10, onAlert: (a) => notifier.notify(a) })
+
+    const t0 = Date.now()
+    for (let i = 0; i < 40; i++) {
+      const r = reports.ingest({ reporter: reports.pseudonym('dark-user-' + i, NEEDLE_DEVICE), category: 'buffering', channel: 'dark-ch' })
+      assert.strictEqual(r.ok, true, `ingest ${i} still succeeds while the endpoint blackholes`)
+    }
+    const ingestMs = Date.now() - t0
+    assert.ok(ingestMs < 5000, `ingest never waits on the notifier (${ingestMs} ms for 40 reports)`)
+    assert.ok(reports.list({ limit: 1000 }).length >= 20, 'reports kept landing on disk throughout')
+    assert.strictEqual(reports.listAlerts().length, 1, 'the alert opened normally')
+
+    await notifier.idle()
+    const stats = notifier.stats()
+    assert.strictEqual(stats.sent, 0, 'nothing was delivered to the blackhole')
+    assert.strictEqual(stats.failed, 1, 'the notification was DROPPED, once, after its budget')
+    assert.strictEqual(stats.attempts, 3, `3 attempts then drop (got ${stats.attempts})`)
+    assert.ok(black.seen.length >= 1, 'the blackhole really did receive attempts')
+    // And the panel is entirely unaffected: ingest still works after the drop.
+    assert.strictEqual(reports.ingest({ reporter: reports.pseudonym('after-drop', NEEDLE_DEVICE), category: 'other', channel: 'dark-ch' }).ok, true, 'ingest still works after a dropped notification')
+    reports.close(); notifier.close()
+
+    // A 5xx endpoint: retried to the budget, then dropped with the status in the error.
+    const bad = await stubServer('error')
+    cleanups.push(bad.close)
+    const n2 = makeNotifier({ webhookUrl: bad.base + '/x', timeoutMs: 1000, backoffMs: [5, 5], log: () => {} })
+    const r2 = await n2.test()
+    assert.strictEqual(r2.results[0].ok, false, 'a 500 is a failure')
+    assert.strictEqual(r2.results[0].attempts, 3, 'retried to the budget')
+    assert.ok(/HTTP 500/.test(r2.results[0].error), `the error names the status (got ${r2.results[0].error})`)
+    assert.strictEqual(bad.seen.length, 3, 'exactly 3 attempts reached the endpoint')
+    n2.close()
+
+    // A refused connection (nothing listening) is a failure, not a crash.
+    const gone = await stubServer('ok')
+    const goneBase = gone.base
+    await gone.close()
+    const n3 = makeNotifier({ webhookUrl: goneBase + '/gone', timeoutMs: 500, backoffMs: [5, 5], log: () => {} })
+    const r3 = await n3.test()
+    assert.strictEqual(r3.results[0].ok, false, 'a refused connection fails cleanly')
+    assert.ok(typeof r3.results[0].error === 'string' && r3.results[0].error.length > 0, 'the failure carries a message')
+    n3.close()
+
+    // Unconfigured = a complete no-op (the default deployment).
+    const off = makeNotifier({})
+    assert.strictEqual(off.enabled, false, 'no knobs → disabled')
+    assert.deepStrictEqual(off.targets, [], 'no targets')
+    assert.deepStrictEqual(await off.notify({ id: 'x', channel: 'y' }), [], 'notify is a no-op')
+    assert.strictEqual((await off.test()).enabled, false, 'test says so honestly')
+    off.close()
+
+    // The queue is BOUNDED: a stuck endpoint costs bounded memory, not unbounded growth.
+    const stuck = await stubServer('hang')
+    cleanups.push(stuck.close)
+    const n4 = makeNotifier({ webhookUrl: stuck.base + '/q', timeoutMs: 100, backoffMs: [5, 5], queueMax: 3, log: () => {} })
+    for (let i = 0; i < 12; i++) n4.notify({ id: 'q' + i, kind: 'channel', channel: 'q-ch', reporters: 3, categories: {} })
+    assert.ok(n4.stats().queued <= 3, `the queue is capped at queueMax (${n4.stats().queued})`)
+    assert.ok(n4.stats().dropped >= 8, `the oldest pending notifications were dropped (${n4.stats().dropped})`)
+    n4.close()
+
+    log(`I: fail-dark — blackhole/500/refused endpoints all drop after 3 attempts, ingest unaffected (40 reports in ${ingestMs} ms), queue bounded, unconfigured = no-op ✓`)
+  }
+
+  // ===================== J: the negative identity scan =====================
   {
     const dir = mkdir('scan')
     const signing = hcrypto.keyPair()
@@ -623,7 +942,7 @@ try {
     }
     assert.deepStrictEqual(hits, [], 'IDENTITY LEAK:\n  ' + hits.join('\n  '))
     assert.ok(happyReporter && !bodies.some(([l]) => l === 'nope'), 'scan ran over the captured surfaces')
-    log(`G: negative identity scan — ${bodies.length} surfaces × ${needles.length} needles, ZERO hits ✓`)
+    log(`J: negative identity scan — ${bodies.length} surfaces × ${needles.length} needles, ZERO hits ✓`)
 
     // Category drift guard: the sdk copy (S50c) must stay deep-equal to the panel's.
     const sdkReport = path.join(root, 'sdk', 'report.js')
@@ -638,7 +957,7 @@ try {
   }
 
   assert.ok(!crashed, 'no uncaught exception / unhandled rejection fired during the run')
-  log('\nRESULT: PASS ✅  (crash fuzzing; happy path + token-derived pseudonym; throttle; dedupe; lifecycle + kill switch; storm drill; negative identity scan)')
+  log('\nRESULT: PASS ✅  (crash fuzzing; happy path + token-derived pseudonym; throttle; dedupe; lifecycle + kill switch; storm drill; admin HTTP surface; notifier delivery; fail-dark; negative identity scan)')
   await cleanup(); process.exit(0)
 } catch (err) {
   console.error('ERROR:', err.stack || err.message)

@@ -32,6 +32,14 @@
 | `set-package <name> [--label --members "…" --default true\|false]` / `remove-package <name>` | Edit a package (member edits materialize for every holder; `""` clears members) / remove it (grants only it covered are removed) |
 | `list-packages` / `show-package <name>` | Packages + resolved/holder counts / one package with the channels it resolves to now |
 | `set-user-packages <u> <p1,p2\|"">` | Replace a user's package list — seals/removes grants immediately (package commands need the store: panel stopped, or use the dashboard/API) |
+| `list-reports [--status --channel --category --limit]` | Viewer problem reports (S50). Reporters are 16-hex pseudonyms — no username or device id is stored anywhere |
+| `ack-report <id>` / `resolve-report <id> [note]` | Acknowledge / close one report |
+| `list-alerts [--status open\|ack\|resolved]` | Correlation alerts. **Read-only here** — a running panel holds alerts in memory and flushes lazily, so ack/resolve them in the dashboard/API |
+| `test-notify` | Send a synthetic ops notification through the configured webhook / Telegram targets (needs the panel's `REPORTS_*` env in this shell) |
+
+> The report verbs touch only `DATA_DIR/reports/` (re-read per operation), so they work
+> **beside a running panel** — triaging reports never means stopping the service.
+
 
 > **Stream deletion caveat:** the purge removes everything the panel can remove, but a
 > client that already unsealed the stream key may have it cached — full revocation of
@@ -76,6 +84,12 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `GET /api/status` | Counts: users, streams, live, admins |
 | `GET /api/observability` | Uptime, memory, swarm peers, data size/disk free + last-200 activity ring (in-memory — cleared by a restart) |
 | `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) (S48) → `{enabled, retentionDays, days:[{date, hours:{H:{logins:{ok,failed}, sessions, onlineApps:{min,max,mean,samples}, catalog?}}, day:{uniqueViewers}}], current}` — UTC day rollups (default 7, capped at retention) + the reduced in-progress hour. Counts only, never an identity |
+| `GET /api/reports?status&channel&category&since&limit` | Pseudonymous viewer problem reports (S50) → `{enabled, reports:[{id, at, lastAt, count, reporter, category, text, channel, appVersion, platform, peers, events, status, ackAt, resolvedAt, note}]}`. `reporter` is a 16-hex HMAC pseudonym — **never** a username or device id |
+| `GET /api/reports/summary` | Badge + chart source → `{enabled, retentionDays, total, new, ack, resolved, openAlerts, shed, collapsed, byChannel, byCategory, byHour[24]}` — counts only |
+| `POST /api/reports/:id/ack` · `POST /api/reports/:id/resolve` `{note?}` | Acknowledge / close one report (the note is operator text, control-stripped and capped) |
+| `POST /api/reports/test-notify` | Send a synthetic notification through the **real** configured targets → `{enabled, targets, results:[{target, ok, status?, attempts, error?}]}` |
+| `GET /api/alerts?status` | Correlation alerts → `{enabled, alerts:[{id, kind:'channel'\|'login', channel, categories, reporters, openedAt, lastAt, status, shedCount, sampled}]}` — one alert per channel per window, extended rather than re-fired |
+| `POST /api/alerts/:id/ack` · `POST /api/alerts/:id/resolve` | Acknowledge / close an alert (resolving lets the next storm on that channel open a new one) |
 | `GET /api/users?prefix&after&limit` | → `{users, next}` — prefix search + cursor paging (`next` is the `after` for the following page) |
 | `POST /api/users` | Create (`{username,password}`) |
 | `GET /api/users/:u` · `DELETE /api/users/:u` | One user / delete the account record |

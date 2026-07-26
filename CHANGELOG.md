@@ -32,9 +32,18 @@ phone + Android TV, and the Windows desktop player).
   per-channel storm collapse (once an alert is open only a bounded sample of full
   records is stored), a panel-wide token-bucket breaker, and correlation that
   opens **one** alert per channel per window and extends it rather than
-  re-firing. `REPORTS_RETENTION_DAYS=0` is a complete kill switch. Ops
-  notifications, the admin API/CLI, the Reports tab and the client-side flow land
-  in the follow-up segments.
+  re-firing. `REPORTS_RETENTION_DAYS=0` is a complete kill switch.
+  An opened alert pushes **once** to ops: a generic webhook whose body suits
+  ntfy, Slack and Discord at the same time (`REPORTS_WEBHOOK_URL`) and/or a
+  Telegram bot (`REPORTS_TELEGRAM_BOT_TOKEN` + `REPORTS_TELEGRAM_CHAT_ID`); both
+  unset is a no-op. Delivery is **fail-dark** — queued and never awaited, one
+  attempt at a time, dropped after three tries over ~30 s — so a dead endpoint can
+  never slow report ingest down. Triage lives in the dashboard's new **Reports
+  tab** (alert strip, filters, grouped and expandable report list, per-hour chart,
+  ack/resolve), in `GET/POST /api/reports…` + `/api/alerts…`, and in the
+  `list-reports` / `ack-report` / `resolve-report` / `list-alerts` /
+  `test-notify` CLI verbs (which work beside a running panel). The client-side
+  "Report a problem" flow lands in the follow-up segment.
 - **Privacy-preserving analytics** — aggregate-only, server-side-only usage
   rollups ([docs/analytics.md](docs/analytics.md)). Per-user watch tracking is
   architecturally impossible in Aliran (viewers replicate P2P; the panel sees

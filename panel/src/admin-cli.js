@@ -17,6 +17,8 @@ import { openStore } from './store.js'
 import * as ops from './ops.js'
 import * as sources from './sources.js'
 import * as packages from './packages.js'
+import { makeReports } from './reports.js'
+import { makeNotifier } from './notify.js'
 
 function parseArgs (argv) {
   const pos = []; const opts = {}
@@ -170,6 +172,95 @@ async function main () {
     })
     console.log(`Updated source "${name}" (category "${s.category}", enabled ${s.enabled !== false}` +
       ((s.exclude || []).length ? `, ${s.exclude.length} excluded` : '') + '). Changes apply on its next sync.')
+    return
+  }
+
+  // Viewer problem reports (S50). The store re-reads DATA_DIR/reports/ per operation
+  // and needs no Corestore, so these verbs work BESIDE a running panel — that is the
+  // point (an operator triaging reports should not have to stop the service).
+  // Two honest limits:
+  //   - a live panel holds alerts.json in memory and flushes it lazily, so
+  //     `list-alerts` here can be up to a few seconds stale (and there is
+  //     deliberately no CLI alert ack/resolve: the live panel's next flush would
+  //     overwrite it — use the dashboard/API for those).
+  //   - `test-notify` reads the same REPORTS_* env this shell has, so run it with
+  //     the panel's .env loaded or it will report "no targets configured".
+  if (cmd === 'list-reports' || cmd === 'ack-report' || cmd === 'resolve-report' || cmd === 'list-alerts') {
+    const reports = makeReports({ dataDir: config.dataDir, retentionDays: config.reports.retentionDays })
+    if (!reports.enabled) {
+      console.log('Viewer reports are DISABLED (REPORTS_RETENTION_DAYS=0) — nothing is collected.')
+      return
+    }
+    if (cmd === 'list-reports') {
+      const rows = reports.list({
+        status: str(opts.status),
+        channel: str(opts.channel),
+        category: str(opts.category),
+        limit: opts.limit != null ? String(opts.limit) : 50
+      })
+      if (!rows.length) console.log('(no reports)')
+      for (const r of rows) {
+        console.log(r.id, '->', JSON.stringify({
+          at: new Date(r.lastAt || r.at).toISOString(),
+          status: r.status,
+          category: r.category,
+          channel: r.channel,
+          count: r.count,
+          reporter: r.reporter, // a pseudonym — never a username or device id
+          platform: r.platform,
+          appVersion: r.appVersion,
+          peers: r.peers,
+          text: r.text
+        }))
+      }
+      reports.close()
+      return
+    }
+    if (cmd === 'list-alerts') {
+      const rows = reports.listAlerts({ status: str(opts.status) })
+      if (!rows.length) console.log('(no alerts)')
+      for (const a of rows) {
+        console.log(a.id, '->', JSON.stringify({
+          opened: new Date(a.openedAt).toISOString(),
+          last: new Date(a.lastAt || a.openedAt).toISOString(),
+          status: a.status,
+          kind: a.kind,
+          channel: a.channel,
+          reporters: (a.reportersCapped ? '>=' : '') + a.reporters,
+          categories: a.categories,
+          shed: a.shedCount || 0,
+          sampled: a.sampled || 0
+        }))
+      }
+      console.log('(a running panel flushes alerts lazily — this view can be a few seconds behind)')
+      reports.close()
+      return
+    }
+    const id = pos[0]; if (!id) { reports.close(); return usage() }
+    const out = cmd === 'ack-report' ? reports.ack(id) : reports.resolve(id, pos.slice(1).join(' ') || str(opts.note))
+    reports.close()
+    if (!out.ok) { console.error(`No report "${id}" (${out.error}).`); process.exitCode = 1; return }
+    console.log(`Report "${id}" is now ${out.report.status}` + (out.report.note ? ` — note: ${out.report.note}` : '') + '.')
+    return
+  }
+
+  if (cmd === 'test-notify') {
+    const notifier = makeNotifier({
+      webhookUrl: config.reports.webhookUrl,
+      telegramBotToken: config.reports.telegramBotToken,
+      telegramChatId: config.reports.telegramChatId
+    })
+    if (!notifier.enabled) {
+      console.log('No ops notification targets configured. Set REPORTS_WEBHOOK_URL and/or REPORTS_TELEGRAM_BOT_TOKEN + REPORTS_TELEGRAM_CHAT_ID in the panel .env.')
+      return
+    }
+    console.log(`Sending a test notification to: ${notifier.targets.join(', ')} …`)
+    const out = await notifier.test()
+    for (const r of out.results) {
+      console.log(r.ok ? `  ${r.target}: OK (HTTP ${r.status}, ${r.attempts} attempt(s))` : `  ${r.target}: FAILED after ${r.attempts} attempt(s) — ${r.error}`)
+    }
+    notifier.close()
+    if (out.results.some((r) => !r.ok)) process.exitCode = 1
     return
   }
 
@@ -498,6 +589,15 @@ function usage () {
                                         (package commands need the store: panel stopped, or use the dashboard)
   sync-source <name>                    Pull + apply the feed NOW (panel stopped — or use the dashboard)
   remove-source <name> [--keep-channels]  Remove a source; purges its channels unless --keep-channels
+  list-reports [--status new|ack|resolved] [--channel c] [--category c] [--limit n]
+                                        Viewer problem reports (S50) — reporters are 16-hex
+                                        pseudonyms; no username or device id is ever stored
+  ack-report <id> / resolve-report <id> [note]   Acknowledge / close one report
+  list-alerts [--status open|ack|resolved]       Correlation alerts (ack/resolve them in the
+                                        dashboard — a live panel would overwrite a CLI write)
+  test-notify                           Send a synthetic ops notification through the configured
+                                        webhook / Telegram targets (report verbs work beside a
+                                        running panel; they touch only DATA_DIR/reports/)
 `)
 }
 

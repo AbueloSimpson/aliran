@@ -21,6 +21,7 @@ import { loadAdmins, loadPublishers, legacyPublisherActiveWithNamed } from './op
 import { makeRing } from './activity.js'
 import { makeAnalytics } from './analytics.js'
 import { makeReports } from './reports.js'
+import { makeNotifier } from './notify.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
 import { loadPackages, reconcilePackages } from './packages.js'
@@ -63,6 +64,14 @@ export async function startPanel () {
   // per-day rollups under DATA_DIR/analytics/. ANALYTICS_RETENTION_DAYS=0 turns the
   // whole thing off (no files, endpoints answer empty).
   const analytics = makeAnalytics({ dataDir: config.dataDir, retentionDays: config.analytics.retentionDays })
+  // Ops notifications (S50b): webhook + Telegram fan-out for OPENED alerts. Both
+  // knobs empty = a complete no-op. Fail-dark by construction — notify() queues and
+  // returns, so a dead endpoint can never back-pressure report ingest.
+  const notifier = makeNotifier({
+    webhookUrl: config.reports.webhookUrl,
+    telegramBotToken: config.reports.telegramBotToken,
+    telegramChatId: config.reports.telegramChatId
+  })
   // Viewer problem reports (S50a): pseudonymous ingest + correlation alerts under
   // DATA_DIR/reports/. REPORTS_RETENTION_DAYS=0 makes this a no-op store AND skips
   // attaching the responder below, so the RPC method does not exist at all.
@@ -73,9 +82,12 @@ export async function startPanel () {
     alertWindowMin: config.reports.alertWindowMin,
     stormSampleSize: config.reports.stormSample,
     globalPerMin: config.reports.globalPerMin,
-    // S50b replaces this with the webhook/Telegram notifier. Until then an alert is
-    // still surfaced where an operator will see it: the panel log.
-    onAlert: (a) => console.warn(`[reports] ALERT ${a.kind}${a.channel ? ' ' + a.channel : ''} — ${a.reporters} distinct reporters within ${config.reports.alertWindowMin} min (id ${a.id})`)
+    // An alert always lands in the panel log (the one surface that needs no setup);
+    // the notifier additionally pushes it wherever the operator actually looks.
+    onAlert: (a) => {
+      console.warn(`[reports] ALERT ${a.kind}${a.channel ? ' ' + a.channel : ''} — ${a.reporters} distinct reporters within ${config.reports.alertWindowMin} min (id ${a.id})`)
+      notifier.notify(a) // NOT awaited — ingest never waits on an endpoint
+    }
   })
   // ONE limiter shared by every connection — a viewer who reconnects must not get a
   // fresh allowance (rpc.js falls back to a per-socket one only when none is passed).
@@ -111,7 +123,7 @@ export async function startPanel () {
     if (Object.keys(loadAdmins(config.dataDir)).length === 0) {
       console.warn('Admin API enabled but no admins exist — create one: node src/admin-cli.js add-admin <name>')
     }
-    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity, analytics }, {
+    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity, analytics, reports, notifier }, {
       host: config.admin.host,
       port: config.admin.port,
       sessionTtlMs: config.admin.sessionTtlHours * 3600000,
@@ -155,13 +167,16 @@ export async function startPanel () {
 
   if (reports.enabled) {
     console.log(`Viewer reports: pseudonymous ingest in ${config.dataDir}/reports (retention ${config.reports.retentionDays}d, alert at ${config.reports.alertCount} distinct reporters / ${config.reports.alertWindowMin} min). No username or device id is ever stored — see docs/reports.md.`)
+    console.log(notifier.enabled
+      ? `Ops notifications: ${notifier.targets.join(' + ')} — one push per OPENED alert, dropped after 3 failed attempts (fail-dark). Test it: node src/admin-cli.js test-notify`
+      : 'Ops notifications: OFF (REPORTS_WEBHOOK_URL / REPORTS_TELEGRAM_* unset) — alerts appear in this log and the dashboard Reports tab only.')
   } else {
     console.log('Viewer reports: DISABLED (REPORTS_RETENTION_DAYS=0) — the `report` RPC method is not served.')
   }
 
-  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); reports.close(); sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
+  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); reports.close(); notifier.close(); sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys, admin, enrich, sourcesSched, analytics, reports }
+  return { swarm, store, db, keys, admin, enrich, sourcesSched, analytics, reports, notifier }
 }
 
 // Run directly (not when imported by a test).

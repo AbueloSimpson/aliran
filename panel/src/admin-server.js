@@ -19,6 +19,14 @@
 //   GET    /api/status
 //   GET    /api/observability                uptime/mem/swarm/data + activity ring
 //   GET    /api/analytics?days=N             aggregate-only rollups (S48) — counts, no identities
+//   GET    /api/reports?status&channel&category&since&limit   pseudonymous viewer problem reports (S50)
+//   GET    /api/reports/summary              badge counts + per-channel/per-category/per-hour series
+//   POST   /api/reports/:id/ack              mark one report acknowledged
+//   POST   /api/reports/:id/resolve          {note?} close it (the note is operator text, capped)
+//   POST   /api/reports/test-notify          send a synthetic ops notification through the real targets
+//   GET    /api/alerts?status                correlation alerts (open|ack|resolved)
+//   POST   /api/alerts/:id/ack               acknowledge an alert (stops it counting for the badge)
+//   POST   /api/alerts/:id/resolve           close an alert — the next storm on that channel opens a NEW one
 //   GET    /api/users?prefix&after&limit     → {users,next} (prefix search + cursor)
 //   POST   /api/users                        {username,password}
 //   GET    /api/users/:u
@@ -81,6 +89,11 @@ import * as packages from './packages.js'
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'admin-ui')
 
 const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
+
+// The shape /api/reports/summary answers when no reports store is attached at all
+// (an embedding that never built one). Identical to the store's own disabled shape
+// so the dashboard has exactly one "off" branch to render.
+const REPORTS_OFF_SUMMARY = { enabled: false, total: 0, new: 0, ack: 0, resolved: 0, openAlerts: 0, shed: 0, byChannel: {}, byCategory: {}, byHour: [] }
 const ART_BODY_LIMIT = 10 * 1024 * 1024 // 10 MiB
 
 const CONTENT_EXT = {
@@ -90,9 +103,10 @@ const CONTENT_EXT = {
   'image/gif': '.gif'
 }
 
-// ctx = { config, keys, db, assets, dataDir, swarm?, activity?, analytics? } (open
-// panel store; swarm, activity ring and analytics are optional — observability and
-// /api/analytics degrade gracefully without them).
+// ctx = { config, keys, db, assets, dataDir, swarm?, activity?, analytics?, reports?,
+// notifier? } (open panel store; swarm, activity ring, analytics, the reports store
+// and the ops notifier are optional — observability, /api/analytics and
+// /api/reports degrade gracefully to their "off" shapes without them).
 // opts = { host, port, sessionTtlMs, lockout: { threshold, seconds }, loginVerifyTimeoutMs }.
 // Resolves to { server, host, port, close } once listening (port 0 → ephemeral).
 export function startAdminServer (ctx, opts = {}) {
@@ -231,6 +245,64 @@ export function startAdminServer (ctx, opts = {}) {
       return sendJson(res, 200, ctx.analytics
         ? ctx.analytics.api(Number.isInteger(days) && days > 0 ? days : 7)
         : { enabled: false, retentionDays: 0, days: [], current: null })
+    }
+
+    // Viewer problem reports + correlation alerts (S50). Everything here is
+    // pseudonymous by construction: a record carries a 16-hex reporter id derived
+    // from an HMAC of the session identity and NEVER a username or device id (see
+    // the src/reports.js header). Absent or disabled reports answer the honest
+    // "disabled" shape rather than 404, so the dashboard can always render.
+    if (r1 === 'reports') {
+      const rep = ctx.reports
+      if (seg.length === 2 && req.method === 'GET') {
+        const since = parseInt(url.searchParams.get('since'), 10)
+        return sendJson(res, 200, {
+          enabled: !!(rep && rep.enabled),
+          reports: rep
+            ? rep.list({
+              status: url.searchParams.get('status') || undefined,
+              channel: url.searchParams.get('channel') || undefined,
+              category: url.searchParams.get('category') || undefined,
+              since: Number.isInteger(since) ? since : undefined,
+              limit: url.searchParams.get('limit') || 200
+            })
+            : []
+        })
+      }
+      if (seg.length === 3 && r2 === 'summary' && req.method === 'GET') {
+        return sendJson(res, 200, rep ? rep.summary() : REPORTS_OFF_SUMMARY)
+      }
+      // Deliberately a MUTATION route (POST): it sends real traffic to the
+      // operator's endpoints, so it is audited like one.
+      if (seg.length === 3 && r2 === 'test-notify' && req.method === 'POST') {
+        const out = ctx.notifier ? await ctx.notifier.test() : { enabled: false, targets: [], results: [] }
+        act('report-test-notify', { targets: (out.targets || []).join(',') || '(none)', ok: (out.results || []).filter((x) => x.ok).length })
+        return sendJson(res, 200, out)
+      }
+      if (seg.length === 4 && req.method === 'POST' && (r3 === 'ack' || r3 === 'resolve')) {
+        if (!rep) throw httpError(400, 'reports are not available on this panel')
+        const out = r3 === 'ack' ? rep.ack(r2) : rep.resolve(r2, (await readJson(req)).note)
+        if (!out.ok) throw httpError(out.error === 'not-found' ? 404 : 400, out.error)
+        act('report-' + r3, { reportId: r2, channel: out.report.channel || null, category: out.report.category })
+        return sendJson(res, 200, out.report)
+      }
+    }
+
+    if (r1 === 'alerts') {
+      const rep = ctx.reports
+      if (seg.length === 2 && req.method === 'GET') {
+        return sendJson(res, 200, {
+          enabled: !!(rep && rep.enabled),
+          alerts: rep ? rep.listAlerts({ status: url.searchParams.get('status') || undefined }) : []
+        })
+      }
+      if (seg.length === 4 && req.method === 'POST' && (r3 === 'ack' || r3 === 'resolve')) {
+        if (!rep) throw httpError(400, 'reports are not available on this panel')
+        const out = r3 === 'ack' ? rep.ackAlert(r2) : rep.resolveAlert(r2)
+        if (!out.ok) throw httpError(out.error === 'not-found' ? 404 : 400, out.error)
+        act('alert-' + r3, { alertId: r2, channel: out.alert.channel || null })
+        return sendJson(res, 200, out.alert)
+      }
     }
 
     if (r1 === 'admins') {

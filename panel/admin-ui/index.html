@@ -42,6 +42,7 @@
     <button class="tab" data-tab="publishers">Publishers</button>
     <button class="tab" data-tab="sources">Sources</button>
     <button class="tab" data-tab="categories">Categories</button>
+    <button class="tab" data-tab="reports">Reports <span id="rp-badge" class="badge alert" title="open correlation alerts — acknowledging one clears it from here" hidden></span></button>
     <button class="tab" data-tab="analytics">Analytics</button>
     <button class="tab" data-tab="overview">Overview</button>
   </nav>
@@ -199,6 +200,56 @@
         children with it. <b>Membership vs presentation:</b> a source feed decides <i>which</i> channels carry its category and
         reasserts that on every sync — so to move an imported rail, rename the <b>source's</b> category on the Sources tab.
         Everything here (label / order / hidden) is yours and survives a sync.</p>
+    </section>
+
+    <section id="reports-section" hidden>
+      <div class="card">
+        <h3 class="card-title">Alerts <span class="muted">(one per channel per window — further reports extend an open alert, they never open a second)</span></h3>
+        <div id="rp-alerts" class="alert-strip"></div>
+      </div>
+      <div class="card row-form">
+        <strong>Filter</strong>
+        <select id="rp-status">
+          <option value="">any status</option>
+          <option value="new">new</option>
+          <option value="ack">acknowledged</option>
+          <option value="resolved">resolved</option>
+        </select>
+        <select id="rp-category">
+          <option value="">any category</option>
+          <option value="no-audio">no-audio</option>
+          <option value="black-screen">black-screen</option>
+          <option value="visual-artifacts">visual-artifacts</option>
+          <option value="buffering">buffering</option>
+          <option value="wrong-content">wrong-content</option>
+          <option value="login">login</option>
+          <option value="other">other</option>
+        </select>
+        <input id="rp-channel" placeholder="channel id…">
+        <span class="spacer"></span>
+        <button class="btn ghost" id="rp-test-notify" type="button">Send test notification</button>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Now <span class="muted">(refreshes every 30 s)</span></h3>
+        <div id="rp-chips" class="chips"></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Reports per hour <span class="muted">(last 24 h, by last activity)</span></h3>
+        <div id="rp-chart" class="an-chart"></div>
+      </div>
+      <div id="rp-list" class="cards"></div>
+      <p class="muted footnote"><b>Who reported this?</b> Nobody knows from here — and that is deliberate. The panel verifies the
+        viewer's session token, then immediately reduces the identity to <span class="mono">HMAC(salt, user|device)</span> sliced to
+        16 hex. That <b>reporter</b> pseudonym is all that is stored, deduped and counted; no username and no device id ever reaches
+        this tab, the files, the notifications or the logs. Honest limit: the salt lives on this panel
+        (<span class="mono">DATA_DIR/secrets/reports-salt</span>), so <i>you</i> could re-derive the mapping — it is pseudonymous at
+        rest, not anonymous to the operator. <b>Free text is written by the viewer</b> and is rendered as plain text, never as markup.
+        An <b>alert</b> opens when <span class="mono">REPORTS_ALERT_COUNT</span> distinct reporters hit one channel inside
+        <span class="mono">REPORTS_ALERT_WINDOW_MIN</span> minutes, and pushes <b>once</b> to the configured webhook/Telegram targets
+        (a dead endpoint is dropped after 3 attempts — it can never slow the panel down). During a storm only a bounded sample of full
+        records is kept; the rest are counted on the alert, and reports past
+        <span class="mono">REPORTS_GLOBAL_PER_MIN</span> are shed. <span class="mono">REPORTS_RETENTION_DAYS=0</span> turns the whole
+        feature off, including the RPC method.</p>
     </section>
 
     <section id="analytics-section" hidden>

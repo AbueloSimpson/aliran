@@ -20,6 +20,7 @@ let channelPackages = [] // S44 bouquets — resolved id arrays double as the Us
 let categories = []
 let obsTimer = null // 10 s observability poll, runs only while the Overview tab is open
 let anTimer = null // 60 s analytics poll, runs only while the Analytics tab is open
+let rpTimer = null // 30 s reports poll, runs only while the Reports tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
 
 // ---------------------------------------------------------------- api
@@ -50,6 +51,7 @@ function logout () {
   sessionStorage.removeItem('aliranAdminName')
   stopObsPoll()
   stopAnalyticsPoll()
+  stopReportsPoll()
   for (const url of artCache.values()) URL.revokeObjectURL(url)
   artCache.clear()
   show('login')
@@ -81,7 +83,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'analytics', 'overview']
+const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'reports', 'analytics', 'overview']
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
@@ -90,6 +92,8 @@ for (const tab of document.querySelectorAll('.tab')) {
     else stopObsPoll()
     if (tab.dataset.tab === 'analytics') startAnalyticsPoll()
     else stopAnalyticsPoll()
+    if (tab.dataset.tab === 'reports') startReportsPoll()
+    else stopReportsPoll()
   })
 }
 
@@ -116,6 +120,9 @@ async function refresh () {
   renderPackages()
   renderCategories()
   await loadUsers(true) // back to page 1, keeping the current search prefix
+  // The reports badge rides every refresh so an alert is visible from any tab.
+  // Best-effort on purpose: a panel without the reports store must not break refresh.
+  loadReportsBadge().catch(() => {})
   if (!$('#overview-section').hidden) await loadObservability().catch(() => {})
 }
 
@@ -1339,6 +1346,236 @@ function startAnalyticsPoll () {
 
 function stopAnalyticsPoll () {
   if (anTimer) { clearInterval(anTimer); anTimer = null }
+}
+
+// ---------------------------------------------------------------- reports (S50)
+// Viewer problem reports + correlation alerts. EVERYTHING rendered here is either
+// panel-generated or VIEWER-AUTHORED free text, so every single interpolation goes
+// through esc() — a report is the one surface a hostile client can push arbitrary
+// text into. The CSP forbids inline handlers, so actions are delegated clicks that
+// read data-* attributes.
+
+let reportsEnabled = true
+
+const RP_CATEGORY_LABEL = {
+  'no-audio': 'no audio',
+  'black-screen': 'black screen',
+  'visual-artifacts': 'visual artifacts',
+  buffering: 'buffering',
+  'wrong-content': 'wrong content',
+  login: 'login',
+  other: 'other'
+}
+const rpTime = (t) => (t ? new Date(t).toLocaleString() : '—')
+
+// The badge counts OPEN alerts (not reports): an alert is the thing that wants an
+// operator right now. It rides every refresh, so it is visible from any tab.
+async function loadReportsBadge () {
+  const s = await api('GET', '/api/reports/summary')
+  reportsEnabled = !!s.enabled
+  const badge = $('#rp-badge')
+  badge.textContent = s.openAlerts || ''
+  badge.hidden = !s.openAlerts
+  return s
+}
+
+function rpFilters () {
+  const q = new URLSearchParams({ limit: 300 })
+  const status = $('#rp-status').value
+  const category = $('#rp-category').value
+  const channel = $('#rp-channel').value.trim()
+  if (status) q.set('status', status)
+  if (category) q.set('category', category)
+  if (channel) q.set('channel', channel)
+  return q
+}
+
+async function loadReports () {
+  const [summary, list, alerts] = await Promise.all([
+    loadReportsBadge(),
+    api('GET', '/api/reports?' + rpFilters()),
+    api('GET', '/api/alerts')
+  ])
+  renderReportsSummary(summary)
+  renderAlerts(alerts.alerts || [])
+  renderReportList(list.reports || [])
+}
+
+function renderReportsSummary (s) {
+  if (!s.enabled) {
+    $('#rp-chips').innerHTML = '<span class="chip">viewer reports <b>disabled</b> — REPORTS_RETENTION_DAYS=0, the report RPC method is not served</span>'
+    $('#rp-chart').innerHTML = ''
+    return
+  }
+  const cats = Object.entries(s.byCategory || {}).sort((a, b) => b[1] - a[1]).slice(0, 4)
+  $('#rp-chips').innerHTML =
+    `<span class="chip">new <b>${s.new || 0}</b></span>` +
+    `<span class="chip">acknowledged <b>${s.ack || 0}</b></span>` +
+    `<span class="chip">resolved <b>${s.resolved || 0}</b></span>` +
+    `<span class="chip">open alerts <b>${s.openAlerts || 0}</b></span>` +
+    `<span class="chip" title="reports acknowledged and dropped by the panel-wide breaker (REPORTS_GLOBAL_PER_MIN) since this panel started">shed <b>${s.shed || 0}</b></span>` +
+    `<span class="chip" title="reports folded onto an open alert instead of being stored in full (storm collapse)">collapsed <b>${s.collapsed || 0}</b></span>` +
+    cats.map(([c, n]) => `<span class="chip">${esc(RP_CATEGORY_LABEL[c] || c)} <b>${n}</b></span>`).join('') +
+    `<span class="chip">retention <b>${s.retentionDays || 0}</b> d</span>`
+
+  const hours = s.byHour || []
+  const slots = []
+  const now = Date.now()
+  for (let i = hours.length - 1; i >= 0; i--) {
+    const d = new Date(now - i * 3600000)
+    slots.push(`${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}h`)
+  }
+  $('#rp-chart').innerHTML = barsSvg(slots, [{ label: 'reports', values: hours }], ['var(--accent)'])
+}
+
+function renderAlerts (alerts) {
+  const el = $('#rp-alerts')
+  const open = alerts.filter((a) => a.status !== 'resolved')
+  if (!open.length) {
+    el.innerHTML = alerts.length
+      ? '<p class="muted">No open alerts. ' + alerts.length + ' resolved alert(s) in the retention window.</p>'
+      : '<p class="muted">No alerts. One opens when several distinct viewers report the same channel inside the correlation window.</p>'
+    return
+  }
+  el.innerHTML = open.map((a) => {
+    const cats = Object.entries(a.categories || {}).sort((x, y) => y[1] - x[1])
+      .map(([c, n]) => `<span class="chip">${esc(RP_CATEGORY_LABEL[c] || c)} <b>${n}</b></span>`).join('')
+    const who = `${a.reportersCapped ? '≥ ' : ''}${a.reporters || 0}`
+    return `<div class="alert-row ${a.status === 'ack' ? 'acked' : ''}">
+      <div class="alert-head">
+        <span class="badge ${a.status === 'ack' ? 'idle' : 'live'}">${esc(a.status)}</span>
+        <strong>${a.kind === 'login' ? 'login problems (panel-wide)' : esc(a.channel || '(no channel)')}</strong>
+        <span class="muted" title="distinct reporter pseudonyms — a lower bound once the per-alert set cap is hit">${who} distinct reporter${a.reporters === 1 ? '' : 's'}</span>
+        <span class="spacer"></span>
+        <button class="btn small" data-alert="${esc(a.id)}" data-act="ack">Ack</button>
+        <button class="btn small" data-alert="${esc(a.id)}" data-act="resolve">Resolve</button>
+      </div>
+      <div class="chips">${cats}${a.shedCount ? `<span class="chip" title="reports the breaker shed while this alert was open">shed <b>${a.shedCount}</b></span>` : ''}<span class="chip">sampled <b>${a.sampled || 0}</b></span></div>
+      <div class="muted mono">opened ${esc(rpTime(a.openedAt))} · last ${esc(rpTime(a.lastAt))} · id ${esc(a.id)}</div>
+    </div>`
+  }).join('')
+}
+
+function renderReportList (list) {
+  const el = $('#rp-list')
+  if (!reportsEnabled) { el.innerHTML = ''; return }
+  if (!list.length) {
+    el.innerHTML = '<div class="card"><p class="muted">No reports match this filter.</p></div>'
+    return
+  }
+  // Grouped by channel: an operator reads "what is broken", not a flat log.
+  const groups = new Map()
+  for (const r of list) {
+    const k = r.channel || '(no channel)'
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k).push(r)
+  }
+  const ordered = [...groups.entries()].sort((a, b) => b[1].length - a[1].length)
+  el.innerHTML = ordered.map(([channel, rows]) => {
+    const tally = {}
+    let occurrences = 0
+    for (const r of rows) { tally[r.category] = (tally[r.category] || 0) + (r.count || 1); occurrences += r.count || 1 }
+    const chips = Object.entries(tally).sort((a, b) => b[1] - a[1])
+      .map(([c, n]) => `<span class="chip">${esc(RP_CATEGORY_LABEL[c] || c)} <b>${n}</b></span>`).join('')
+    return `<div class="card">
+      <div class="rp-group-head">
+        <strong>${esc(channel)}</strong>
+        <span class="muted">${rows.length} report${rows.length === 1 ? '' : 's'} · ${occurrences} occurrence${occurrences === 1 ? '' : 's'}</span>
+        <span class="spacer"></span>
+        <div class="chips">${chips}</div>
+      </div>
+      ${rows.map(reportRow).join('')}
+    </div>`
+  }).join('')
+}
+
+function reportRow (r) {
+  const events = (r.events || []).map((e) =>
+    `<li><span class="mono muted">${esc(e.type)}</span> ${esc(e.detail || '')}</li>`).join('')
+  return `<details class="rp-item">
+    <summary>
+      <span class="badge ${r.status === 'resolved' ? 'active' : r.status === 'ack' ? 'idle' : 'live'}">${esc(r.status)}</span>
+      <span class="rp-cat">${esc(RP_CATEGORY_LABEL[r.category] || r.category)}</span>
+      ${r.count > 1 ? `<span class="chip">×${r.count}</span>` : ''}
+      <span class="rp-text">${esc(r.text || '(no description)')}</span>
+      <span class="spacer"></span>
+      <span class="muted mono">${esc(rpTime(r.lastAt || r.at))}</span>
+    </summary>
+    <div class="rp-detail">
+      <div class="chips">
+        <span class="chip" title="pseudonym — HMAC of the session identity, never a username or device id">reporter <b class="mono">${esc(r.reporter || '—')}</b></span>
+        <span class="chip">app <b>${esc(r.appVersion || '—')}</b></span>
+        <span class="chip">platform <b>${esc(r.platform || '—')}</b></span>
+        <span class="chip" title="peers the viewer's player saw — a lower bound">peers <b>${r.peers == null ? '—' : '≥ ' + r.peers}</b></span>
+        <span class="chip">first seen <b>${esc(rpTime(r.at))}</b></span>
+      </div>
+      ${events ? `<p class="muted rp-sub">Recent player events (viewer-reported):</p><ul class="report-list">${events}</ul>` : '<p class="muted rp-sub">No player events attached.</p>'}
+      ${r.note ? `<p class="rp-sub"><b>Note:</b> ${esc(r.note)}</p>` : ''}
+      <div class="rp-actions">
+        <button class="btn small" data-report="${esc(r.id)}" data-act="ack"${r.status === 'new' ? '' : ' disabled'}>Ack</button>
+        <button class="btn small" data-report="${esc(r.id)}" data-act="resolve"${r.status === 'resolved' ? ' disabled' : ''}>Resolve…</button>
+        <span class="muted mono">id ${esc(r.id)}</span>
+      </div>
+    </div>
+  </details>`
+}
+
+// Delegated actions (CSP: no inline handlers anywhere in this dashboard).
+$('#rp-alerts').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-alert]')
+  if (!btn) return
+  try {
+    await api('POST', `/api/alerts/${encodeURIComponent(btn.dataset.alert)}/${btn.dataset.act}`)
+    toast(`alert ${btn.dataset.act === 'ack' ? 'acknowledged' : 'resolved'}`)
+    await loadReports()
+  } catch (err) { toast(err.message, true) }
+})
+
+$('#rp-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-report]')
+  if (!btn) return
+  const id = btn.dataset.report
+  try {
+    if (btn.dataset.act === 'resolve') {
+      const v = await dialog('Resolve report', [{ name: 'note', label: 'Note (optional — what fixed it)', type: 'textarea' }], { okLabel: 'Resolve' })
+      if (!v) return
+      await api('POST', `/api/reports/${encodeURIComponent(id)}/resolve`, { note: v.note })
+      toast('report resolved')
+    } else {
+      await api('POST', `/api/reports/${encodeURIComponent(id)}/ack`)
+      toast('report acknowledged')
+    }
+    await loadReports()
+  } catch (err) { toast(err.message, true) }
+})
+
+$('#rp-test-notify').addEventListener('click', async () => {
+  try {
+    const out = await api('POST', '/api/reports/test-notify')
+    if (!out.enabled) return toast('no notification targets configured (REPORTS_WEBHOOK_URL / REPORTS_TELEGRAM_*)', true)
+    const bad = (out.results || []).filter((r) => !r.ok)
+    if (bad.length) toast(bad.map((r) => `${r.target}: ${r.error}`).join(' · '), true)
+    else toast(`test notification sent to ${(out.targets || []).join(', ')}`)
+  } catch (err) { toast(err.message, true) }
+})
+
+let rpFilterTimer = null
+for (const sel of ['#rp-status', '#rp-category']) {
+  $(sel).addEventListener('change', () => loadReports().catch((err) => toast(err.message, true)))
+}
+$('#rp-channel').addEventListener('input', () => {
+  clearTimeout(rpFilterTimer)
+  rpFilterTimer = setTimeout(() => loadReports().catch((err) => toast(err.message, true)), 300)
+})
+
+function startReportsPoll () {
+  stopReportsPoll()
+  loadReports().catch((err) => toast(err.message, true))
+  rpTimer = setInterval(() => loadReports().catch(() => {}), 30000)
+}
+
+function stopReportsPoll () {
+  if (rpTimer) { clearInterval(rpTimer); rpTimer = null }
 }
 
 // ---------------------------------------------------------------- boot
