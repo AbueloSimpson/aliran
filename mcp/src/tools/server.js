@@ -44,7 +44,14 @@ const SETTABLE_ENV = {
     'BOOTSTRAP', 'ADMIN_ENABLED', 'ADMIN_HOST', 'ADMIN_PORT',
     'ADMIN_SESSION_TTL_HOURS', 'ANALYTICS_RETENTION_DAYS', 'SOURCES_TICK_MS',
     'SOURCES_BOOT_DELAY_MS', 'SOURCES_SYNC_INTERVAL_MS', 'SOURCES_FETCH_TIMEOUT_MS',
-    'SOURCES_MAX_BYTES', 'SOURCES_MAX_CHANNELS', 'LOG_FORMAT'
+    'SOURCES_MAX_BYTES', 'SOURCES_MAX_CHANNELS',
+    // Viewer problem reports (S50) — the TUNABLES only. The two knobs that carry
+    // credentials (REPORTS_WEBHOOK_URL, REPORTS_TELEGRAM_BOT_TOKEN) are refused
+    // below; REPORTS_TELEGRAM_CHAT_ID is a bare id, useless without the token.
+    'REPORTS_RETENTION_DAYS', 'REPORTS_MAX_PER_WINDOW', 'REPORTS_WINDOW_SECONDS',
+    'REPORTS_ALERT_COUNT', 'REPORTS_ALERT_WINDOW_MIN', 'REPORTS_STORM_SAMPLE',
+    'REPORTS_GLOBAL_PER_MIN', 'REPORTS_TELEGRAM_CHAT_ID',
+    'LOG_FORMAT'
   ],
   broadcaster: [
     'STREAM_ID', 'TITLE', 'CATEGORY', 'INPUT', 'RTMP_PORT', 'PUBLIC_HOST',
@@ -86,6 +93,14 @@ const REFUSED_ENV = {
   PANEL_ADMIN_USER: 'the reseller\'s panel credential — set it on the box by hand (it is a secret pairing)',
   PANEL_ADMIN_PASS: 'a secret — never transits the MCP; set it on the box by hand',
   WEBHOOK_SECRET: 'a secret — never transits the MCP; set it on the box by hand',
+  REPORTS_TELEGRAM_BOT_TOKEN: 'a bot secret — never transits the MCP; put it in panel/.env on the box by hand (docs/reports.md), then apply it with a plain `docker compose up -d panel`',
+  // A notification URL is not "just a URL": an ntfy topic, a Slack incoming
+  // webhook and a Discord webhook all carry their CREDENTIAL in the path, so
+  // anyone holding the url can post as the operator. Setting it here would copy
+  // that credential into the model's context and echo it back in the applied
+  // pairs — the same reason PANEL_ADMIN_PASS is refused. The tunables around it
+  // stay settable, so an operator can still tune the alert rules through the MCP.
+  REPORTS_WEBHOOK_URL: 'a notification endpoint that carries its own credential in the path (ntfy topic / Slack / Discord webhook urls are secrets) — set it in panel/.env on the box by hand (docs/reports.md), then apply it with a plain `docker compose up -d panel`; panel_test_notify proves it works afterwards',
   DATA_DIR: 'pinned to /data by docker-compose.yml (environment wins over env_file)'
 }
 

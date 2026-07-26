@@ -54,12 +54,20 @@
 //   AB server_update dryRun (S49c/G16): fetch+log+diff only, no build/up in the log
 //   AC npm-publish prep (S49c/G14): bundle-docs, npm pack --dry-run file list, and
 //      the unpacked-tarball doctor run resolving docs from docs-bundle/
+//   AD viewer problem reports (S50d): the five panel_* report tools against a REAL
+//      reports store + a webhook stub — the honest "disabled" shape without one,
+//      filters + sinceHours, event-ring compaction with full:true, ack/resolve with
+//      a note, alerts (read-only by design), test_notify reaching the stub, a
+//      mini negative-identity scan over every tool result, the REPORTS_* allowlist
+//      vs the refused notification credentials, and a category-enum drift guard
+//      against panel/src/reports.js
 // Exits 0 on PASS.
 
 import assert from 'assert'
 import os from 'os'
 import fs from 'fs'
 import net from 'net'
+import http from 'http'
 import path from 'path'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
@@ -68,6 +76,8 @@ import { openStore } from '../panel/src/store.js'
 import { makeRing } from '../panel/src/activity.js'
 import * as ops from '../panel/src/ops.js'
 import { startAdminServer } from '../panel/src/admin-server.js'
+import { makeReports, REPORT_CATEGORIES } from '../panel/src/reports.js'
+import { makeNotifier } from '../panel/src/notify.js'
 import { addAdmin as bcAddAdmin } from '../broadcaster/src/control-auth.js'
 import { startControlServer } from '../broadcaster/src/control-server.js'
 import { normalizeInput, normalizeTranscode } from '../broadcaster/src/channel.js'
@@ -501,6 +511,7 @@ try {
     'panel_analytics', 'panel_list_admins', 'panel_add_admin', 'panel_remove_admin', 'panel_set_admin_password',
     'panel_set_category', 'panel_rename_category', 'panel_merge_categories', 'panel_delete_category',
     'panel_source_channels', 'panel_set_stream_art',
+    'panel_list_reports', 'panel_list_alerts', 'panel_ack_report', 'panel_resolve_report', 'panel_test_notify',
     'broadcaster_list_channels', 'broadcaster_add_channel', 'broadcaster_incidents',
     'broadcaster_analytics', 'broadcaster_list_admins', 'broadcaster_add_admin', 'broadcaster_remove_admin', 'broadcaster_set_admin_password',
     'reseller_status', 'reseller_system', 'reseller_list_principals', 'reseller_get_principal', 'reseller_add_principal',
@@ -513,7 +524,7 @@ try {
     'diagnose_healthz', 'diagnose_symptom', 'docs_search']) {
     assert.ok(toolNames.has(must), 'tools/list missing ' + must)
   }
-  assert.ok(toolsList.tools.length >= 100, 'expected a broad tool catalog (S49c: 102), got ' + toolsList.tools.length)
+  assert.ok(toolsList.tools.length >= 105, 'expected a broad tool catalog (S50d: 107), got ' + toolsList.tools.length)
   const resList = await client.listResources()
   const resUris = new Set(resList.resources.map((r) => r.uri))
   assert.ok(resUris.has('mcp://aliran/guide'), 'guide resource missing')
@@ -555,7 +566,8 @@ try {
   }
   for (const name of ['panel_status', 'panel_list_users', 'panel_list_streams', 'broadcaster_list_channels', 'docs_search', 'diagnose_healthz', 'server_preflight',
     'panel_analytics', 'broadcaster_analytics', 'panel_list_admins', 'broadcaster_list_admins', 'server_list_backups', 'repeater_status',
-    'panel_source_channels', 'reseller_status', 'reseller_system', 'reseller_list_principals', 'reseller_get_principal', 'reseller_ledger',
+    'panel_source_channels', 'panel_list_reports', 'panel_list_alerts',
+    'reseller_status', 'reseller_system', 'reseller_list_principals', 'reseller_get_principal', 'reseller_ledger',
     'reseller_list_accounts', 'reseller_get_account', 'reseller_trials', 'reseller_ops_status',
     'library_status', 'library_list_titles', 'library_get_title', 'library_title_logs']) {
     assert.strictEqual(byName[name].annotations && byName[name].annotations.readOnlyHint, true, name + ' must carry readOnlyHint')
@@ -563,7 +575,8 @@ try {
   // create/mutate tools must NOT be flagged destructive (clients would over-confirm)
   assert.ok(!(byName.panel_create_user.annotations && byName.panel_create_user.annotations.destructiveHint), 'create_user is not destructive')
   assert.ok(!(byName.panel_add_admin.annotations && byName.panel_add_admin.annotations.destructiveHint), 'add_admin is not destructive')
-  for (const name of ['panel_set_category', 'panel_rename_category', 'panel_set_stream_art', 'reseller_add_principal', 'reseller_grant_credits', 'library_add_title', 'library_set_title']) {
+  for (const name of ['panel_set_category', 'panel_rename_category', 'panel_set_stream_art', 'reseller_add_principal', 'reseller_grant_credits', 'library_add_title', 'library_set_title',
+    'panel_ack_report', 'panel_resolve_report', 'panel_test_notify']) {
     assert.ok(!(byName[name].annotations && byName[name].annotations.destructiveHint), name + ' is not destructive')
   }
   log('D: destructiveHint on purges/revokes; readOnlyHint on GETs; creates unflagged ✓')
@@ -1365,7 +1378,148 @@ try {
   assert.ok(/documents indexed at/.test(docsLine) && parseInt(docsLine.match(/(\d+) documents/)[1], 10) >= 20, 'a real corpus, not a stray file: ' + docsLine)
   log('AC: npm-publish prep — bundle built, tarball file list correct (no secrets, no build scripts), unpacked entry serves docs from docs-bundle ✓')
 
-  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe)')
+  // ===== AD: viewer problem reports (S50d) =====
+  // The tools ride the S50a/b store + notifier. Without them attached the routes
+  // answer the honest "disabled" shape rather than 404 — assert that FIRST, then
+  // attach a real store (the admin server reads ctx.reports per request, the same
+  // seam section K uses for analytics) and drive the whole triage loop.
+  const reportsOff = await callJson(client, 'panel_list_reports')
+  assert.strictEqual(reportsOff.enabled, false, 'no reports store -> honest {enabled:false}, not a 404')
+  assert.deepStrictEqual(reportsOff.reports, [], 'the disabled shape carries an empty list')
+  assert.strictEqual((await callJson(client, 'panel_list_alerts')).enabled, false, 'alerts answer the disabled shape too')
+  const notifyOff = await callJson(client, 'panel_test_notify')
+  assert.strictEqual(notifyOff.enabled, false, 'test_notify with nothing configured is enabled:false, not an error')
+  assert.deepStrictEqual(notifyOff.targets, [], 'no targets when unconfigured')
+  const ackOff = await callRaw(client, 'panel_ack_report', { id: 'nope' })
+  assert.ok(ackOff.isError && /not available/.test(ackOff.content[0].text), 'a mutation without a store is a loud error, not a silent no-op')
+
+  // A webhook stub so the alert push + test_notify have somewhere real to land.
+  const hookSeen = []
+  const hookSrv = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => { try { hookSeen.push({ headers: req.headers, body: JSON.parse(body) }) } catch { hookSeen.push({ headers: req.headers, body: null }) }; res.writeHead(200); res.end('ok') })
+  })
+  await new Promise((r) => hookSrv.listen(0, '127.0.0.1', r))
+  cleanups.push(() => new Promise((r) => hookSrv.close(r)))
+  const hookBase = `http://127.0.0.1:${hookSrv.address().port}`
+  const notifier = makeNotifier({ webhookUrl: hookBase + '/hook', timeoutMs: 2000, backoffMs: [10, 10], log: () => {} })
+  cleanups.push(() => notifier.close())
+  // alertCount 2 so two seeded reporters open an alert; a generous storm sample so
+  // this lane exercises records, not the collapse path (test:reports owns that).
+  const reports = makeReports({ dataDir: dirs.panel, retentionDays: 30, alertCount: 2, stormSampleSize: 100, flushMs: 10, onAlert: (a) => notifier.notify(a) })
+  cleanups.push(() => reports.close())
+  ctx.reports = reports
+  ctx.notifier = notifier
+
+  // Seed through the module, exactly as the RPC responder would: identities are
+  // reduced to pseudonyms BEFORE anything is stored.
+  const NEEDLE_USER = 'mcp-report-viewer'
+  const NEEDLE_DEVICE = 'mcpdevice00112233'
+  const repA = reports.pseudonym(NEEDLE_USER, NEEDLE_DEVICE)
+  const repB = reports.pseudonym(NEEDLE_USER + '-2', NEEDLE_DEVICE + 'ff')
+  assert.match(repA, /^[0-9a-f]{16}$/, 'the pseudonym is 16 hex chars')
+  const longEvents = Array.from({ length: 12 }, (_, i) => ({ t: i, type: 'error', detail: 'breadcrumb-' + i }))
+  const r1 = reports.ingest({ reporter: repA, category: 'no-audio', channel: 'mcp-rep-ch', text: 'sound cuts out every minute', appVersion: '0.2.0', platform: 'android-tv', peers: 4, events: longEvents })
+  const r2 = reports.ingest({ reporter: repB, category: 'no-audio', channel: 'mcp-rep-ch' })
+  const r3 = reports.ingest({ reporter: repA, category: 'buffering', channel: 'mcp-other-ch' })
+  assert.ok(r1.ok && r2.ok && r3.ok, 'three seeded reports stored')
+  assert.ok(r2.alertId, 'two distinct reporters on one channel opened an alert')
+
+  const all = await callJson(client, 'panel_list_reports')
+  assert.strictEqual(all.enabled, true, 'the attached store reports enabled:true')
+  assert.strictEqual(all.reports.length, 3, 'all three seeded reports come back')
+  assert.strictEqual(all.returned, 3, 'the envelope states how many were returned')
+  assert.ok(all.reports.every((r) => /^[0-9a-f]{16}$/.test(r.reporter)), 'every listed reporter is a pseudonym')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { channel: 'mcp-rep-ch' })).reports.length, 2, 'channel filter')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { category: 'buffering' })).reports.length, 1, 'category filter')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { status: 'new' })).reports.length, 3, 'status filter')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { limit: 1 })).reports.length, 1, 'limit')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { since: Date.now() + 60000 })).reports.length, 0, 'raw epoch-ms since filters everything out')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { sinceHours: 24 })).reports.length, 3, 'sinceHours 24 covers everything just seeded')
+  // sinceHours WINS over since — the convenience must not be silently ignored.
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { since: Date.now() + 60000, sinceHours: 24 })).reports.length, 3, 'sinceHours overrides a conflicting since')
+  let catRejected = false
+  try { const r = await callRaw(client, 'panel_list_reports', { category: 'not-a-category' }); catRejected = !!r.isError } catch { catRejected = true }
+  assert.ok(catRejected, 'an unknown category is rejected by the schema before it reaches the panel')
+
+  // Event-ring compaction (the compactUser mechanism on a second shape).
+  const compacted = (await callJson(client, 'panel_list_reports', { channel: 'mcp-rep-ch' })).reports.find((r) => r.id === r1.id)
+  assert.ok(!Array.isArray(compacted.events), 'a 12-event ring is summarized, not inlined')
+  assert.strictEqual(compacted.events.count, 12, 'the summary states the true event count')
+  assert.strictEqual(compacted.events.sample.length, 3, 'the sample is bounded')
+  assert.strictEqual(compacted.events.sample[2].detail, 'breadcrumb-11', 'the sample is the TAIL — where the failure is')
+  assert.match((await callJson(client, 'panel_list_reports', { channel: 'mcp-rep-ch' })).note, /full:true/, 'the envelope says how to get every event')
+  const fullRing = (await callJson(client, 'panel_list_reports', { channel: 'mcp-rep-ch', full: true })).reports.find((r) => r.id === r1.id)
+  assert.strictEqual(fullRing.events.length, 12, 'full:true restores the whole ring')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { channel: 'mcp-other-ch' })).note, undefined, 'a short ring is passed through with no note')
+
+  // Lifecycle: ack -> resolve with a note, through the tools onto the same store.
+  assert.strictEqual((await callJson(client, 'panel_ack_report', { id: r3.id })).status, 'ack', 'ack round-trips')
+  const resolved = await callJson(client, 'panel_resolve_report', { id: r3.id, note: 'upstream transcoder restarted' })
+  assert.strictEqual(resolved.status, 'resolved', 'resolve round-trips')
+  assert.strictEqual(resolved.note, 'upstream transcoder restarted', 'the operator note is stored')
+  assert.strictEqual(reports.get(r3.id).status, 'resolved', 'the mutation hit the same store the module reads')
+  assert.strictEqual((await callJson(client, 'panel_list_reports', { status: 'resolved' })).reports.length, 1, 'the resolved report is filterable')
+  const ack404 = await callRaw(client, 'panel_ack_report', { id: 'no-such-report' })
+  assert.ok(ack404.isError, 'acking an unknown report is a loud error')
+
+  // Alerts are READ-ONLY here by design (a live panel holds them in memory).
+  const alertsOut = await callJson(client, 'panel_list_alerts')
+  assert.strictEqual(alertsOut.alerts.length, 1, 'exactly one alert for the storm')
+  assert.strictEqual(alertsOut.alerts[0].kind, 'channel')
+  assert.strictEqual(alertsOut.alerts[0].channel, 'mcp-rep-ch')
+  assert.ok(!('reporter' in alertsOut.alerts[0]), 'an alert carries counts, never a reporter id')
+  assert.strictEqual((await callJson(client, 'panel_list_alerts', { status: 'resolved' })).alerts.length, 0, 'alert status filter')
+  assert.match(byName.panel_list_alerts.description, /not wrapped here/, 'the tool states that alert ack/resolve is deliberately unwrapped')
+  assert.ok(!toolNames.has('panel_ack_alert') && !toolNames.has('panel_resolve_alert'), 'no alert-mutation tools exist')
+
+  // Notifications: the opened alert pushed once, and test_notify uses the SAME path.
+  await notifier.idle()
+  assert.strictEqual(hookSeen.length, 1, 'the opened alert produced exactly one webhook POST')
+  assert.match(hookSeen[0].body.title, /mcp-rep-ch/, 'the push names the channel')
+  const tn = await callJson(client, 'panel_test_notify')
+  assert.deepStrictEqual(tn.targets, ['webhook'], 'test_notify reports the configured targets')
+  assert.strictEqual(tn.results[0].ok, true, 'test_notify reached the stub: ' + JSON.stringify(tn))
+  assert.strictEqual(hookSeen.length, 2, 'test_notify sent exactly one more POST')
+  assert.match(hookSeen[1].body.title, /test notification/i, 'the test push is obviously synthetic')
+
+  // Mini negative-identity scan: nothing the tools returned may carry the seeded
+  // username or device id (test:reports owns the full 9-surface sweep).
+  const reportSurfaces = [
+    ['panel_list_reports', JSON.stringify(await callJson(client, 'panel_list_reports', { full: true }))],
+    ['panel_list_alerts', JSON.stringify(alertsOut)],
+    ['panel_resolve_report', JSON.stringify(resolved)],
+    ['webhook payloads', JSON.stringify(hookSeen)]
+  ]
+  for (const [label, body] of reportSurfaces) {
+    for (const needle of [NEEDLE_USER, NEEDLE_DEVICE]) {
+      assert.ok(!body.includes(needle), `IDENTITY LEAK: ${needle} appeared in ${label}`)
+    }
+  }
+
+  // REPORTS_* env split: the tunables are settable (validated by the REAL panel
+  // config.js --check in the stub image), the notification credentials are not.
+  const setReports = await callJson(client, 'server_set_env', { service: 'panel', pairs: { REPORTS_ALERT_COUNT: 5, REPORTS_RETENTION_DAYS: 45 } })
+  assert.match(setReports.validation, /passed/, 'the REPORTS_* tunables survive the real in-image config check')
+  assert.ok(readState()['/opt/aliran/panel/.env'].includes('REPORTS_ALERT_COUNT=5'), 'the tunable landed in the box .env')
+  for (const [key, why] of [['REPORTS_TELEGRAM_BOT_TOKEN', /bot secret/], ['REPORTS_WEBHOOK_URL', /credential in the path/]]) {
+    const refused = await callRaw(client, 'server_set_env', { service: 'panel', pairs: { [key]: 'https://example.invalid/secret-topic' } })
+    assert.ok(refused.isError, `${key} must be refused`)
+    assert.match(refused.content[0].text, new RegExp('refusing to set ' + key), 'the refusal names the key')
+    assert.match(refused.content[0].text, why, `${key}'s refusal explains why it is a secret`)
+    assert.ok(!JSON.stringify(readState()).includes('secret-topic'), 'the refused value never reached any .env')
+  }
+
+  // Drift guard: the MCP cannot import panel/src/reports.js (it ships as a
+  // standalone npm package), so its category enum is a copy — and a copy that
+  // drifts would reject categories the panel accepts. Check the PUBLISHED schema.
+  const catProp = byName.panel_list_reports.inputSchema.properties.category
+  const catEnum = catProp.enum || (catProp.anyOf || []).flatMap((x) => x.enum || [])
+  assert.deepStrictEqual(catEnum, REPORT_CATEGORIES, 'the published panel_list_reports category enum must deep-equal panel/src/reports.js')
+  log(`AD: viewer reports — disabled shape, filters + sinceHours, ${catEnum.length}-category drift guard, event-ring compaction with full:true, ack/resolve+note, read-only alerts, one push per alert + test_notify, zero identity leaks, REPORTS_* allowlist vs refused credentials ✓`)
+
+  log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe; S50d: viewer problem reports — the honest disabled shape, filters + sinceHours, event-ring compaction with full:true, ack/resolve with a note, read-only alerts, one webhook push per opened alert plus test_notify, a negative-identity scan over every report surface, the REPORTS_* tunables settable while the notification credentials are refused, and a category-enum drift guard against the panel)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

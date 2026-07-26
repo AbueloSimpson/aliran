@@ -20,7 +20,10 @@ const SYMPTOMS = [
   // S49c additions — support lore from the S49a/b cycles:
   { re: /env.*(not|n['’]t|no).*(appl|effect|work|take)|restart.*env|env.*restart|knob|\.env.*ignor/i, kb: 'configuration.md', hint: 'a compose restart does NOT re-read env files — apply env changes via server_set_env (it validates in-image, then recreates with plain up -d)' },
   { re: /renam.*categor|categor.*renam|package.*(lost|empty|missing|strip)|bouquet.*(lost|empty)|selector/i, kb: 'mcp.md', hint: 'a package category:<slug> member is a STRING — renaming/merging the category strips that bouquet\'s holders until the member is edited to the new slug (panel_set_package)' },
-  { re: /restore.*(refus|fail|non-empty|not empty)|volume.*not empty/i, kb: 'kb/backup-and-rotation.md', hint: 'server_restore refuses a NON-EMPTY volume or a name-mismatched archive without force:true — with force the current contents are deleted first (untar-over-merge would itself be corruption)' }
+  { re: /restore.*(refus|fail|non-empty|not empty)|volume.*not empty/i, kb: 'kb/backup-and-rotation.md', hint: 'server_restore refuses a NON-EMPTY volume or a name-mismatched archive without force:true — with force the current contents are deleted first (untar-over-merge would itself be corruption)' },
+  // S50d additions — viewer problem reports + the ops notifier:
+  { re: /viewer.?report|problem report|report a problem|reports? (tab|storm|flood|flooding)|complain|no.?audio|black.?screen|wrong content/i, kb: 'reports.md', hint: 'viewer problem reports: triage with panel_list_reports / panel_list_alerts, then panel_ack_report / panel_resolve_report. A storm is COLLAPSED by design (a bounded sample of full records + one extended alert), so "only 20 records for 500 complaints" is the feature, not a loss' },
+  { re: /notif|webhook|ntfy|slack|discord|telegram|alert.*(not|n['’]t|never).*(fir|arriv|sen|push)|no alerts?/i, kb: 'reports.md', hint: 'ops notifications are FAIL-DARK: a dead endpoint is retried 3× over ~30 s then DROPPED, and never back-pressures report ingest — so silence can mean unconfigured, dropped, or simply no alert opened. panel_test_notify proves the wiring end to end' }
 ]
 
 export function registerDiagnoseTools (ctx, h) {

@@ -11,7 +11,9 @@ MCP **resources**:
   packages (bouquets), streams, stream art (uploaded from the operator's disk —
   never base64 through the model), remote sources incl. per-channel exclusion,
   categories (presentation + catalog-wide rename/merge), publishers,
-  status/observability, aggregate-only analytics, dashboard admins.
+  status/observability, aggregate-only analytics, viewer problem reports +
+  correlation alerts (reporters are pseudonyms; report text is viewer-typed,
+  untrusted content), dashboard admins.
 - **`broadcaster_*`** — the broadcaster control API (`:3310`): channels
   (create/start/stop/rotate), ffmpeg logs, the capability probe, incidents, health,
   aggregate-only analytics, control admins.
@@ -41,6 +43,8 @@ MCP **resources**:
 - **6 MCP prompts** — guided runbooks (`new-site-install`, `onboard-a-reseller`,
   `migrate-a-channel-source`, `monthly-maintenance`, `incident-triage`,
   `expose-dashboards`) naming the exact tools per step.
+
+**107 tools** in total (only the configured groups register).
 
 > This is the **server** side of MCP. It exposes tools/resources to an AI client; it
 > does **not** call the Claude API. Its only runtime dependency is
@@ -165,5 +169,8 @@ publisher key landing on the named box), `repeater_status` in all three
 status-server states, the list filters + grant-summary compaction, hls bounds +
 the feedKey/`key` redaction, the prompt runbooks with a tool-name drift guard,
 `server_update {dryRun}`, and an `npm pack` probe that runs the doctor from the
-unpacked tarball (docs resolving from `docs-bundle/`). It is in the required CI
-lane (deterministic, no DHT).
+unpacked tarball (docs resolving from `docs-bundle/`). S50d adds the reports
+surface against a REAL reports store + notifier stub (filters, `sinceHours`,
+event-ring compaction, ack/resolve, alerts, `test_notify`), the
+`REPORTS_*` allowlist/refusal split, and a category-enum drift guard against
+`panel/src/reports.js`. It is in the required CI lane (deterministic, no DHT).
