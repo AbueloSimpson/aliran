@@ -82,6 +82,19 @@
 // segment-warmed as a zap neighbor, and does not hot-follow a catalog feedKey change
 // (a re-ingest applies on the NEXT resolve, not mid-film). See the vod branch in
 // resolve() and the a.vod guards it leans on.
+//
+// Viewer problem reports (S50c): report({category, text}) sends a pseudonymous
+// problem report to the panel over the SAME RPC socket login uses — no new port, no
+// HTTP. It attaches what the engine already knows (active channel, peer count, app
+// version/platform from the constructor opts, and a rolling 50-entry ring of the
+// engine's own error/status/fallback/source-changed/recovered events), and the
+// session TOKEN as proof of entitlement. The panel reduces that token to an HMAC
+// pseudonym on arrival; no username or deviceId is ever stored (see
+// panel/src/reports.js). report() NEVER throws and never rejects — a UI awaits it and
+// switches on the result — and it is rate-limited locally per channel+category so a
+// frustrated viewer mashing the button during a real outage costs the panel nothing.
+// A pre-S50 panel has no such responder: that lands as {error:'unsupported'}, which
+// hosts should surface as "this service doesn't accept reports", not as a failure.
 
 import Hyperswarm from 'hyperswarm'
 import Corestore from 'corestore'
@@ -93,6 +106,7 @@ import b4a from 'b4a'
 import { panelClient, login as oprfLogin } from './login.js'
 import { isCorruptionError, withRecovery } from './recover.js'
 import { createDriveHandler, playlistUris } from './serve.js'
+import { REPORT_CATEGORIES, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DETAIL_MAX, REPORT_COOLDOWN_MS } from './report.js'
 // The runtime-agnostic half of core/net-tune.js — no fs import (a node:fs edge in this
 // graph would become a `builtin:` ref the Bare worklet cannot load); the /proc ceiling
 // read gets the engine's INJECTED fs instead. See _tuneSwarmSockets.
@@ -264,8 +278,19 @@ function normalizeSwarmOpts (v) {
   return out
 }
 
+// Short free-form host strings that ride along on a problem report (appVersion,
+// platform) and the per-install device id. Anything that is not a non-empty string is
+// dropped rather than coerced — a host that passes an object must not turn into
+// "[object Object]" in an operator's Reports tab.
+function shortLabel (v, max = 64) {
+  if (typeof v !== 'string') return null
+  const s = v.replace(/\p{Cc}/gu, ' ').replace(/\s+/g, ' ').trim()
+  if (!s) return null
+  return s.length > max ? s.slice(0, max) : s
+}
+
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._hybrid = normalizeHybrid(hybrid)
@@ -309,6 +334,64 @@ export class AliranPlayer extends Emitter {
     this._purging = null
     this._streams = []
     this._entitled = new Map() // streamId -> { feedKey, encryptionKey }
+    // --- problem reports (S50c) ---
+    // Per-install device identity. Passed to the panel at login so device limits and
+    // revocation address THIS install (without it every install of a given account
+    // collapses onto one derived fallback id — see sdk/login.js), and folded into the
+    // report pseudonym panel-side. Hosts persist it; the engine only carries it.
+    this._deviceId = shortLabel(deviceId, 64)
+    this._deviceLabel = shortLabel(deviceLabel, 64)
+    this._appVersion = shortLabel(appVersion)
+    this._platform = shortLabel(platform)
+    // The live session: kept so report() can prove entitlement without a re-login.
+    // { username, token, expiresAt, deviceId } — the token is a panel-signed bearer
+    // credential, so it lives in memory only and dies with stop().
+    this._session = null
+    // Rolling breadcrumb ring (newest last, REPORT_EVENT_LIMIT entries) fed from
+    // emit() — what the engine was complaining about just before the viewer reported.
+    // NOT `_events`: that name is the Emitter's listener map (see the class above), and
+    // taking it would silently unregister every host listener.
+    this._eventRing = []
+    this._lastPeers = null // newest 'peers' count, attached to a report
+    // Client-side flood control (S50-DESIGN D2 layer 1): channel|category -> epoch ms
+    // until which a repeat is refused locally. Bounded — see _armReportCooldown.
+    this._reportCooldown = new Map()
+  }
+
+  // --- diagnostics ring (problem reports, S50c) ---
+
+  // Every engine event passes through here, so the breadcrumb ring is fed AT the emit
+  // sites — all of them, including ones added later — instead of by a dozen hand-placed
+  // calls that a future edit would forget. Only the five diagnostic events are recorded:
+  // 'peers' and 'streams' fire on a timer / on every catalog edit and would flush the
+  // ring of everything that matters, so 'peers' is sampled into _lastPeers instead.
+  // Recording can never affect delivery — a bad detail must not swallow an 'error'.
+  emit (name, ...args) {
+    try { this._recordEmit(name, args[0]) } catch {}
+    return super.emit(name, ...args)
+  }
+
+  _recordEmit (name, arg) {
+    if (name === 'peers') { if (Number.isFinite(arg)) this._lastPeers = arg; return }
+    switch (name) {
+      case 'error':
+      case 'recovered':
+        return this._recordEvent(name, String((arg && arg.message) || arg || ''))
+      case 'status':
+        return this._recordEvent(arg && arg.state ? String(arg.state) : 'status', arg && arg.message ? String(arg.message) : null)
+      case 'fallback':
+        return this._recordEvent('fallback', `${arg && arg.streamId} (${arg && arg.reason})`)
+      case 'source-changed':
+        return this._recordEvent('source-changed', `${arg && arg.streamId} -> ${arg && arg.source}`)
+    }
+  }
+
+  // Append one breadcrumb. Detail is truncated AT RECORD TIME (not at send time) so a
+  // pathological error message can never make the ring itself expensive to hold.
+  _recordEvent (type, detail) {
+    const d = shortLabel(detail, REPORT_EVENT_DETAIL_MAX)
+    this._eventRing.push({ t: Date.now(), type: shortLabel(type, 40) || 'event', detail: d })
+    if (this._eventRing.length > REPORT_EVENT_LIMIT) this._eventRing.splice(0, this._eventRing.length - REPORT_EVENT_LIMIT)
   }
 
   // --- public API ---
@@ -360,6 +443,104 @@ export class AliranPlayer extends Emitter {
   _curatedIds () {
     const rank = new Map(this._streams.map((s, i) => [s.id, (s.order ?? 1e9) * 1e6 + i]))
     return [...this._entitled.keys()].sort((a, b) => (rank.get(a) ?? 1e15) - (rank.get(b) ?? 1e15))
+  }
+
+  // --- viewer problem reports (S50c) ---
+
+  /**
+   * Send a pseudonymous problem report to the panel. NEVER throws and never rejects:
+   * a UI awaits it and switches on the result, because there is no sane thing for a
+   * "Report a problem" button to do with an exception. Resolves to
+   *   { ok:true, id?, count?, collapsed?, shed? }  or  { error, retryAfter? }
+   * with these error codes:
+   *   'bad-category'   the category is not one of REPORT_CATEGORIES (a host bug)
+   *   'not-logged-in'  no session token yet (report before login)
+   *   'offline'        no live panel socket, or the call failed in transit
+   *   'cooldown'       local per-channel+category limiter (retryAfter seconds)
+   *   'locked'         the panel's per-reporter throttle (retryAfter seconds)
+   *   'unsupported'    the panel has no `report` responder: a pre-S50 deployment, or
+   *                    one with REPORTS_RETENTION_DAYS=0. Say so kindly; do not retry.
+   *   'unauthorized' / 'expired'  the session died (device revoked, account disabled) —
+   *                    the host should route back to Login
+   * `collapsed`/`shed` are honest acknowledgements from a panel under a report storm:
+   * the report counted toward the alert but was not stored individually. Show the same
+   * "thanks, we know" to the viewer — telling them their report was deduplicated would
+   * be noise, and inviting a retry is the opposite of what an outage needs.
+   */
+  async report ({ category, text } = {}) {
+    try {
+      if (!REPORT_CATEGORIES.includes(category)) return { error: 'bad-category' }
+      if (!this._session || !this._session.token) return { error: 'not-logged-in' }
+      if (!this._call) return { error: 'offline' }
+
+      const channel = this._active ? this._active.streamId : null
+      const key = (channel || '-') + '|' + category
+      const now = Date.now()
+      const until = this._reportCooldown.get(key) || 0
+      if (now < until) return { error: 'cooldown', retryAfter: Math.ceil((until - now) / 1000) }
+
+      const body = {
+        token: this._session.token,
+        category,
+        // The panel caps and control-strips this too (a client cannot bypass it); the
+        // cap here keeps an oversized paste from making the request fail the 16 KiB
+        // pre-parse gate and lose the whole report.
+        text: typeof text === 'string' && text.trim() ? text.trim().slice(0, REPORT_TEXT_MAX) : undefined,
+        channel: channel || undefined,
+        appVersion: this._appVersion || undefined,
+        platform: this._platform || undefined,
+        peers: Number.isFinite(this._lastPeers) ? this._lastPeers : undefined,
+        events: this._eventRing.slice(-REPORT_EVENT_LIMIT)
+      }
+
+      let res
+      try {
+        res = await this._call('report', body)
+      } catch (err) {
+        // A panel without the responder answers protomux-rpc's UNKNOWN_METHOD — the
+        // pre-S50 case, and the reports-disabled case, are indistinguishable on the
+        // wire and mean the same thing to a viewer.
+        const code = err && err.code
+        const msg = String((err && err.message) || err)
+        if (code === 'UNKNOWN_METHOD' || /unknown method/i.test(msg)) return { error: 'unsupported' }
+        return { error: 'offline' }
+      }
+      if (!res || typeof res !== 'object') return { error: 'offline' }
+      if (res.error) {
+        const out = { error: String(res.error) }
+        if (Number.isFinite(res.retryAfter)) out.retryAfter = res.retryAfter
+        // A panel-side throttle lock is also a local cooldown: keep quiet for the
+        // window it named instead of letting the UI retry into a closed door.
+        if (res.error === 'locked' && Number.isFinite(res.retryAfter)) this._armReportCooldown(key, res.retryAfter * 1000)
+        return out
+      }
+      // Accepted (stored, deduped, collapsed or shed — all of them "we heard you").
+      this._armReportCooldown(key, Number.isFinite(res.cooldown) ? res.cooldown * 1000 : REPORT_COOLDOWN_MS)
+      const out = { ok: true }
+      if (typeof res.id === 'string') out.id = res.id
+      if (Number.isFinite(res.count)) out.count = res.count
+      if (res.collapsed) out.collapsed = true
+      if (res.shed) out.shed = true
+      return out
+    } catch (err) {
+      // Belt and braces: report() is called straight from a UI handler, and an engine
+      // in a broken state must degrade to a toast, not an unhandled rejection.
+      return { error: 'offline', detail: String((err && err.message) || err) }
+    }
+  }
+
+  // Arm (and bound) the local cooldown map. The key space is channel×category, so a
+  // viewer zapping a 300-channel lineup could otherwise accumulate 2000+ entries in a
+  // session; past the cap the oldest-armed keys are dropped (Map preserves insertion
+  // order, and an evicted key at worst lets one extra report through).
+  _armReportCooldown (key, ms) {
+    this._reportCooldown.delete(key)
+    this._reportCooldown.set(key, Date.now() + Math.max(0, ms))
+    const CAP = 200
+    while (this._reportCooldown.size > CAP) {
+      const oldest = this._reportCooldown.keys().next().value
+      this._reportCooldown.delete(oldest)
+    }
   }
 
   // --- adjacent-channel prefetch (zapPrefetch option; OFF by default) ---
@@ -890,6 +1071,13 @@ export class AliranPlayer extends Emitter {
     this._feedDiscovery = null
     this._assetsOpen = null
     this._call = null
+    // Full teardown is the ONE place the session token dies (a purge and a socket drop
+    // both keep it — see _doLogin). A service switch replaces the engine wholesale, so
+    // this is also what stops a token following a viewer to another operator's panel.
+    this._session = null
+    this._eventRing = []
+    this._reportCooldown.clear()
+    this._lastPeers = null
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
     for (const c of closing) { if (c) { try { await c.close() } catch {} } }
   }
@@ -1453,7 +1641,17 @@ export class AliranPlayer extends Emitter {
 
   async _doLogin (username, password) {
     if (!this._call) throw new Error('not connected to panel')
-    const { streams } = await oprfLogin(this._call, this._panelBee, username, password)
+    const res = await oprfLogin(this._call, this._panelBee, username, password, { deviceId: this._deviceId || undefined, deviceLabel: this._deviceLabel || undefined })
+    const { streams } = res
+    // Retain the session (S50c). Before this the token was discarded on the spot, which
+    // left the engine with no way to prove entitlement for anything but a fresh login —
+    // report() needs exactly that proof. It is an in-memory bearer credential: never
+    // written to disk by the engine, never handed to a host, and dropped by stop().
+    // It deliberately SURVIVES a corruption purge and a panel-socket drop: neither
+    // invalidates the token, the purge path already keeps the equivalent in-memory
+    // session (entitled stream keys) alive on purpose, and dropping it there would
+    // silently disable reporting exactly when things are going wrong.
+    this._session = res.token ? { username, token: res.token, expiresAt: res.expiresAt ?? null, deviceId: res.deviceId ?? null } : null
     await this._openAssets()
     const port = await this._ensureServer() // posters must be loadable before anything plays
     this._entitled.clear()

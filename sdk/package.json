@@ -13,6 +13,7 @@
     },
     "./player.js": "./player.js",
     "./login.js": "./login.js",
+    "./report.js": "./report.js",
     "./recover.js": "./recover.js",
     "./serve.js": "./serve.js",
     "./package.json": "./package.json"
@@ -22,6 +23,7 @@
     "index.d.ts",
     "player.js",
     "login.js",
+    "report.js",
     "recover.js",
     "serve.js",
     "README.md"

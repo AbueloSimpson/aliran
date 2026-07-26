@@ -102,7 +102,50 @@ export interface PlayerOptions {
   zapPrefetch?: boolean | ZapPrefetchConfig
   swarm?: SwarmConfig
   uploadPolicy?: UploadPolicy
+  /**
+   * Per-install device id (hex/short string) sent at login. Without one every install
+   * of an account collapses onto a single derived fallback id, so device limits and
+   * per-device revocation cannot tell them apart. Hosts should generate 8 random bytes
+   * once and persist them beside their prefs.
+   */
+  deviceId?: string
+  /** Human-readable device name shown in the panel's device list. */
+  deviceLabel?: string
+  /** Host app version attached to problem reports (e.g. '0.2.0'). */
+  appVersion?: string
+  /** Host platform attached to problem reports (e.g. 'windows', 'android 33'). */
+  platform?: string
 }
+
+/** The seven wire categories a viewer problem report may carry (see report.js). */
+export type ReportCategory =
+  | 'no-audio'
+  | 'black-screen'
+  | 'visual-artifacts'
+  | 'buffering'
+  | 'wrong-content'
+  | 'login'
+  | 'other'
+
+/** Result of AliranPlayer.report() — never a rejection, always one of these. */
+export type ReportResult =
+  | { ok: true; id?: string; count?: number; collapsed?: boolean; shed?: boolean }
+  | {
+      ok?: false
+      error:
+        | 'bad-category'
+        | 'not-logged-in'
+        | 'offline'
+        | 'cooldown'
+        | 'locked'
+        | 'unsupported'
+        | 'unauthorized'
+        | 'expired'
+        | string
+      /** Seconds to wait, on 'cooldown' and 'locked'. */
+      retryAfter?: number
+      detail?: string
+    }
 
 /** AliranPlayer constructor options: PlayerOptions + injected runtime modules. */
 export interface AliranPlayerOptions extends PlayerOptions {
@@ -202,6 +245,15 @@ export class AliranPlayer {
   setUploadPolicy(policy: UploadPolicy): Promise<{ policy: UploadPolicy; changed: boolean; rejoined: number }>
   /** Tear down wedged peer connections of the active feed and dial fresh. */
   reconnectActiveFeed(): number
+  /**
+   * Send a pseudonymous problem report over the panel RPC socket. NEVER throws or
+   * rejects — switch on the result. Attaches the active channel, peer count, the
+   * host's appVersion/platform and the engine's recent event breadcrumbs; identity is
+   * the session token, which the panel reduces to an HMAC pseudonym on arrival (no
+   * username or deviceId is ever stored). Locally rate-limited per channel+category;
+   * a pre-S50 panel answers 'unsupported'.
+   */
+  report(input: { category: ReportCategory; text?: string }): Promise<ReportResult>
   /** Full teardown. */
   stop(): Promise<void>
 }
@@ -244,6 +296,24 @@ export function checkSession(panelPublicKey: string | Uint8Array, token: string,
 
 /** Online companion: device still enrolled with a matching tokenVersion. */
 export function sessionLive(db: unknown, payload: SessionPayload | null, now?: number): Promise<boolean>
+
+// --- report.js (problem-report vocabulary for host UIs) ---
+
+/** The seven wire categories, in display order. Deep-equal to the panel's copy. */
+export const REPORT_CATEGORIES: readonly ReportCategory[]
+/** Viewer-facing label per category. */
+export const REPORT_CATEGORY_LABELS: Record<ReportCategory, string>
+/** Consent line to show VERBATIM above the submit control (S50-DESIGN D1). */
+export const REPORT_CONSENT: string
+/** Free-text cap (characters) — mirrors the panel's own cap. */
+export const REPORT_TEXT_MAX: number
+/** How many engine breadcrumbs ride along, and their per-entry detail cap. */
+export const REPORT_EVENT_LIMIT: number
+export const REPORT_EVENT_DETAIL_MAX: number
+/** Default client-side cooldown per channel+category (ms). */
+export const REPORT_COOLDOWN_MS: number
+export function isReportCategory(v: unknown): v is ReportCategory
+export function reportCategoryLabel(v: string): string
 
 // --- recover.js (store-corruption recovery) ---
 
