@@ -35,6 +35,17 @@
 //      stays fast and keeps storing WHILE the notifier is stuck, the notification is
 //      dropped after its retry budget, the queue is bounded, and an unconfigured
 //      notifier is a complete no-op.
+//   K  THE SDK CLIENT PATH (S50c): a REAL AliranPlayer, wired to the same in-process
+//      panel, driven through its public report() — the method a host app calls. It
+//      never throws, refuses before login and without a socket, rejects an unknown
+//      category locally, attaches the active channel / peers / appVersion / platform
+//      and its 50-entry breadcrumb ring (details truncated at record time), honours a
+//      LOCAL per-channel+category cooldown that never reaches the wire, and maps a
+//      panel with no `report` responder to 'unsupported' instead of an error.
+//   L  THE SHELL IPC CONTRACT (S50c): the desktop EngineHost driven exactly as the
+//      renderer drives it — {type:'report'} in, {type:'report-result'} out, answered
+//      even with no engine so a UI can never hang. Plus the per-install deviceId:
+//      minted once into prefs, stable, and never echoed to the UI layer.
 //   J  THE NEGATIVE IDENTITY SCAN: analytics runs beside reports through the same
 //      logins, then every reports file, alerts file, module response, report-shaped
 //      activity-ring entry and analytics rollup is scanned for the needle usernames,
@@ -64,6 +75,12 @@ import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
 import * as ops from '../panel/src/ops.js'
 import { startAdminServer } from '../panel/src/admin-server.js'
+// The client half (S50c): the engine method a host app calls, and the desktop shell
+// that turns renderer IPC into it. The Bare worklet shell (client/backend/backend.mjs)
+// cannot be imported here — it needs BareKit/bare-http1 — so the desktop twin stands
+// in for the IPC contract both shells implement.
+import { AliranPlayer } from '../sdk/player.js'
+import { EngineHost } from '../desktop/main/engine.js'
 
 const log = (...a) => console.log(...a)
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -860,6 +877,177 @@ try {
     log(`I: fail-dark — blackhole/500/refused endpoints all drop after 3 attempts, ingest unaffected (40 reports in ${ingestMs} ms), queue bounded, unconfigured = no-op ✓`)
   }
 
+  // ===================== K: the sdk client path =====================
+  {
+    const dir = mkdir('sdk')
+    const signing = hcrypto.keyPair()
+    const db = fakeDb({ ['user/' + NEEDLE_USER]: seedUser() })
+    const reports = makeReports({ dataDir: dir, retentionDays: 30, alertCount: 99 })
+    const [cli, srv] = streamPair()
+    cleanups.push(() => { cli.destroy(); srv.destroy() })
+    attachLoginRpc(srv, { keys: { signing }, oprfKey: hcrypto.randomBytes(32), difficulty: 1, throttle: makeThrottle(1000, 900), db, dataDir: dir, reports, reportThrottle: makeThrottle(1000, 900) })
+    const { call } = rpcClient(cli)
+    const token = await doLogin(call, NEEDLE_USER, NEEDLE_DEVICE, viewer)
+
+    // A real engine, minus the swarm: connect()/login() would need a DHT, so the two
+    // things a real login leaves behind (the RPC caller and the retained session) are
+    // wired directly. Everything below this line is the SHIPPING code path.
+    const player = new AliranPlayer({ http, fs, storeDir: path.join(dir, 'store'), deviceId: NEEDLE_DEVICE, appVersion: '9.9.9', platform: 'test-os' })
+
+    // Refusals that must never reach the wire, and must never throw.
+    assert.strictEqual((await player.report({ category: 'buffering' })).error, 'not-logged-in', 'report before login is refused locally')
+    player._session = { username: NEEDLE_USER, token, expiresAt: Date.now() + 600000, deviceId: NEEDLE_DEVICE }
+    assert.strictEqual((await player.report({ category: 'buffering' })).error, 'offline', 'report with no panel socket is refused locally')
+    player._call = call
+    for (const bad of ['not-a-category', 7, {}, null, undefined, ['other']]) {
+      const r = await player.report({ category: bad })
+      assert.strictEqual(r.error, 'bad-category', `category ${JSON.stringify(bad)} refused locally`)
+    }
+    assert.strictEqual((await player.report()).error, 'bad-category', 'report() with no argument never throws')
+    assert.strictEqual(reports.list({ limit: 100 }).length, 0, 'not one local refusal reached the panel')
+
+    // The breadcrumb ring: fed at the emit sites, bounded, truncated AT RECORD TIME.
+    for (let i = 0; i < 60; i++) player.emit('status', { state: 'feed:retune', message: 'm'.repeat(400) + i })
+    player.emit('fallback', { streamId: 'sdk-ch', url: 'https://x', reason: 'stall' })
+    player.emit('error', new Error('e'.repeat(500)))
+    player.emit('peers', 7) // sampled, NOT ringed — a 3 s ticker would flush everything else
+    assert.strictEqual(player._eventRing.length, 50, 'the event ring is bounded at 50')
+    assert.ok(player._eventRing.every((e) => !e.detail || e.detail.length <= 200), 'every breadcrumb detail is capped at 200 chars')
+    assert.ok(!player._eventRing.some((e) => e.type === 'peers'), 'the peers ticker never enters the ring')
+    assert.strictEqual(player._lastPeers, 7, 'the newest peer count is sampled for the report')
+
+    player._active = { streamId: 'sdk-ch' }
+    const sent = await player.report({ category: 'no-audio', text: '   sound cut out   ' })
+    assert.strictEqual(sent.ok, true, `sdk report accepted (got ${JSON.stringify(sent)})`)
+    assert.ok(sent.id, 'sdk report returned the panel id')
+    const rec = reports.get(sent.id)
+    assert.ok(rec, 'the sdk report was stored by the panel')
+    assert.strictEqual(rec.channel, 'sdk-ch', 'the ACTIVE channel is attached by the engine')
+    assert.strictEqual(rec.appVersion, '9.9.9')
+    assert.strictEqual(rec.platform, 'test-os')
+    assert.strictEqual(rec.peers, 7)
+    assert.strictEqual(rec.text, 'sound cut out', 'free text is trimmed before sending')
+    assert.strictEqual(rec.events.length, 50, 'the whole ring rode along')
+    assert.ok(rec.events.some((e) => e.type === 'error'), 'the ring carries the engine error breadcrumb')
+    assert.strictEqual(rec.reporter, reports.pseudonym(NEEDLE_USER, NEEDLE_DEVICE), 'identity came from the token the engine held')
+
+    // Flood-control layer 1: the repeat never reaches the panel at all.
+    const repeat = await player.report({ category: 'no-audio', text: 'again' })
+    assert.strictEqual(repeat.error, 'cooldown', 'a repeat on the same channel+category is refused locally')
+    assert.ok(repeat.retryAfter > 0 && repeat.retryAfter <= 600, `cooldown names a retryAfter (got ${repeat.retryAfter})`)
+    assert.strictEqual(reports.list({ channel: 'sdk-ch' }).length, 1, 'the cooled-down repeat never reached the panel')
+    // ...but it is per channel+category, not a global gag.
+    assert.strictEqual((await player.report({ category: 'buffering' })).ok, true, 'a different category is a different cooldown key')
+    player._active = { streamId: 'sdk-ch-2' }
+    assert.strictEqual((await player.report({ category: 'no-audio' })).ok, true, 'a different channel is a different cooldown key')
+
+    // A pre-S50 panel (or one with reports disabled): no responder at all.
+    {
+      const [c2, s2] = streamPair()
+      cleanups.push(() => { c2.destroy(); s2.destroy() })
+      attachLoginRpc(s2, { keys: { signing }, oprfKey: hcrypto.randomBytes(32), difficulty: 1, throttle: makeThrottle(1000, 900), db, dataDir: dir })
+      player._call = rpcClient(c2).call
+      player._reportCooldown.clear()
+      const old = await player.report({ category: 'other', text: 'hello' })
+      assert.strictEqual(old.error, 'unsupported', `an old panel maps to a friendly unsupported (got ${JSON.stringify(old)})`)
+    }
+
+    // stop() is the one place the session token dies.
+    await player.stop()
+    assert.strictEqual(player._session, null, 'stop() drops the session token')
+    assert.strictEqual((await player.report({ category: 'other' })).error, 'not-logged-in', 'a stopped engine cannot report')
+
+    scanBodies.push(['sdk reports.list()', JSON.stringify(reports.list().map((r) => ({ ...r, text: null })))])
+    reports.close()
+    log('K: sdk client path — report() attaches channel/peers/version + a 50-entry capped ring, refuses locally, cools down per channel+category, maps an old panel to unsupported ✓')
+  }
+
+  // ===================== L: the shell IPC contract =====================
+  {
+    const dir = mkdir('shell')
+    const userData = path.join(dir, 'userData')
+    fs.mkdirSync(userData, { recursive: true })
+    const signing = hcrypto.keyPair()
+    const db = fakeDb({ ['user/' + NEEDLE_USER]: seedUser() })
+    const reports = makeReports({ dataDir: dir, retentionDays: 30, alertCount: 99 })
+    const [cli, srv] = streamPair()
+    cleanups.push(() => { cli.destroy(); srv.destroy() })
+    attachLoginRpc(srv, { keys: { signing }, oprfKey: hcrypto.randomBytes(32), difficulty: 1, throttle: makeThrottle(1000, 900), db, dataDir: dir, reports, reportThrottle: makeThrottle(1000, 900) })
+    const { call } = rpcClient(cli)
+    const token = await doLogin(call, NEEDLE_USER, NEEDLE_DEVICE, viewer)
+
+    const out = []
+    const host = new EngineHost({
+      descriptor: { panelPubKey: 'ab'.repeat(32), name: 'Test' },
+      userData,
+      safeStorage: null,
+      onMessage: (m) => out.push(m),
+      appVersion: '0.2.0',
+      platform: 'test-os'
+    })
+    const waitFor = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)) }
+
+    // The per-install device id: minted once, persisted, stable, and NEVER echoed to
+    // the UI layer (nothing there needs it, and an id that never crosses the boundary
+    // cannot be logged on the other side).
+    const id = host.deviceId()
+    assert.ok(/^[0-9a-f]{16}$/.test(id), `deviceId is 8 random bytes of hex (got ${id})`)
+    assert.strictEqual(host.deviceId(), id, 'deviceId is stable across reads')
+    assert.ok(fs.readFileSync(host.prefsPath(), 'utf8').includes(id), 'deviceId is persisted in the prefs file')
+    host.sendPrefs()
+    const prefsMsg = out.find((m) => m.type === 'prefs')
+    assert.ok(prefsMsg, 'the shell answered prefs-get')
+    assert.ok(!JSON.stringify(prefsMsg).includes(id), 'the prefs reply does not carry the device id')
+    assert.ok(!JSON.stringify(host.state()).includes(id), 'the state snapshot does not carry the device id')
+
+    // No engine yet: a UI awaiting report-result must still get an answer.
+    out.length = 0
+    host.handle({ type: 'report', category: 'buffering' })
+    await waitFor(() => out.some((m) => m.type === 'report-result'))
+    assert.deepStrictEqual(out.find((m) => m.type === 'report-result'), { type: 'report-result', ok: false, error: 'offline' }, 'report with no engine is answered, not dropped')
+
+    // With an engine: the full renderer -> main -> sdk -> panel round trip.
+    const player = new AliranPlayer({ http, fs, storeDir: path.join(dir, 'store'), deviceId: id, appVersion: '0.2.0', platform: 'test-os' })
+    player._call = call
+    player._session = { username: NEEDLE_USER, token, expiresAt: Date.now() + 600000, deviceId: NEEDLE_DEVICE }
+    player._active = { streamId: 'shell-ch' }
+    host.player = player
+
+    out.length = 0
+    host.handle({ type: 'report', category: 'black-screen', text: 'nothing plays' })
+    await waitFor(() => out.some((m) => m.type === 'report-result'))
+    const res = out.find((m) => m.type === 'report-result')
+    assert.ok(res, 'the shell answered the report')
+    assert.strictEqual(res.ok, true, `report-result ok (got ${JSON.stringify(res)})`)
+    assert.ok(res.id, 'report-result carries the panel id')
+    const stored = reports.get(res.id)
+    assert.ok(stored, 'the IPC report reached the panel store')
+    assert.strictEqual(stored.channel, 'shell-ch')
+    assert.strictEqual(stored.category, 'black-screen')
+    assert.strictEqual(stored.text, 'nothing plays')
+    assert.strictEqual(stored.appVersion, '0.2.0')
+
+    // The local cooldown surfaces through IPC with its retryAfter, still never throwing.
+    out.length = 0
+    host.handle({ type: 'report', category: 'black-screen' })
+    await waitFor(() => out.some((m) => m.type === 'report-result'))
+    const cooled = out.find((m) => m.type === 'report-result')
+    assert.strictEqual(cooled.ok, false)
+    assert.strictEqual(cooled.error, 'cooldown')
+    assert.ok(cooled.retryAfter > 0, 'the cooldown reply names a retryAfter')
+
+    // Junk from a compromised renderer is refused in-band, never thrown.
+    out.length = 0
+    host.handle({ type: 'report', category: { evil: true }, text: 12345 })
+    await waitFor(() => out.some((m) => m.type === 'report-result'))
+    assert.strictEqual(out.find((m) => m.type === 'report-result').error, 'bad-category', 'a junk category from the UI is refused in-band')
+
+    await player.stop()
+    scanBodies.push(['shell report-result messages', JSON.stringify(out)], ['shell prefs reply', JSON.stringify(prefsMsg)])
+    reports.close()
+    log('L: shell IPC — {type:report} -> {type:report-result} round-trips to the panel, is answered with no engine, and the per-install deviceId is persisted but never echoed to the UI ✓')
+  }
+
   // ===================== J: the negative identity scan =====================
   {
     const dir = mkdir('scan')
@@ -944,20 +1132,30 @@ try {
     assert.ok(happyReporter && !bodies.some(([l]) => l === 'nope'), 'scan ran over the captured surfaces')
     log(`J: negative identity scan — ${bodies.length} surfaces × ${needles.length} needles, ZERO hits ✓`)
 
-    // Category drift guard: the sdk copy (S50c) must stay deep-equal to the panel's.
+    // Category drift guard. The enum is duplicated once per runtime that cannot import
+    // another's copy — the panel (Node), the engine (Node + Bare), the RN binding
+    // (Metro/TypeScript) and the desktop renderer (browser bundle). All four must stay
+    // deep-equal; the TypeScript copies are read as source, since importing .ts here
+    // would need a compiler this lane deliberately does not have.
     const sdkReport = path.join(root, 'sdk', 'report.js')
-    if (fs.existsSync(sdkReport)) {
-      const { REPORT_CATEGORIES: sdkCats } = await import(pathToFileURL(sdkReport).href)
-      assert.deepStrictEqual(sdkCats, REPORT_CATEGORIES, 'sdk/report.js categories must deep-equal the panel copy')
-      log('   drift guard: sdk/report.js categories deep-equal the panel copy ✓')
-    } else {
-      log('   drift guard: sdk/report.js not present yet (lands in S50c) — skipped')
+    assert.ok(fs.existsSync(sdkReport), 'sdk/report.js exists (the client half, S50c)')
+    const { REPORT_CATEGORIES: sdkCats } = await import(pathToFileURL(sdkReport).href)
+    assert.deepStrictEqual(sdkCats, REPORT_CATEGORIES, 'sdk/report.js categories must deep-equal the panel copy')
+    log('   drift guard: sdk/report.js categories deep-equal the panel copy ✓')
+
+    for (const rel of [['sdk', 'react-native', 'src', 'report.ts'], ['desktop', 'renderer', 'src', 'types.ts']]) {
+      const p = path.join(root, ...rel)
+      const src = fs.readFileSync(p, 'utf8')
+      const m = src.match(/REPORT_CATEGORIES:\s*ReportCategory\[\]\s*=\s*(\[[^\]]*\])/)
+      assert.ok(m, `${rel.join('/')} declares REPORT_CATEGORIES the guard can read`)
+      assert.deepStrictEqual(JSON.parse(m[1].replace(/'/g, '"').replace(/,\s*\]/, ']')), REPORT_CATEGORIES, `${rel.join('/')} categories must deep-equal the panel copy`)
+      log(`   drift guard: ${rel.join('/')} categories deep-equal the panel copy ✓`)
     }
     assert.strictEqual(REPORT_CATEGORIES.length, 7, 'the category enum is the frozen set of 7')
   }
 
   assert.ok(!crashed, 'no uncaught exception / unhandled rejection fired during the run')
-  log('\nRESULT: PASS ✅  (crash fuzzing; happy path + token-derived pseudonym; throttle; dedupe; lifecycle + kill switch; storm drill; admin HTTP surface; notifier delivery; fail-dark; negative identity scan)')
+  log('\nRESULT: PASS ✅  (crash fuzzing; happy path + token-derived pseudonym; throttle; dedupe; lifecycle + kill switch; storm drill; admin HTTP surface; notifier delivery; fail-dark; sdk client path; shell IPC; negative identity scan)')
   await cleanup(); process.exit(0)
 } catch (err) {
   console.error('ERROR:', err.stack || err.message)
