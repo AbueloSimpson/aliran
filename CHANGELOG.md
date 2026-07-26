@@ -16,6 +16,21 @@ implemented, covered by an e2e or unit suite, and — where it touches the runti
 verified on real infrastructure (a VPS over the public DHT, a physical Android
 phone + Android TV, and the Windows desktop player).
 
+### Fixed
+
+- **Panel RPC re-arm is validated (S52)** — found live: after a panel restart
+  dropped the RPC socket, the engine re-armed the RPC on the **next** swarm
+  connection to arrive, which mid-session is often a broadcaster feed peer
+  (hyperswarm keeps one socket per peer across every topic). Login, session
+  checks and problem reports then failed as "offline" **forever** — while
+  playback kept working. Now a candidate socket must answer `hello` within a
+  bounded probe before it may hold the RPC slot, the validated panel identity
+  is remembered for instant re-arms, a hung probe can never starve the real
+  panel connection, and `report()` kicks the panel topic's discovery and waits
+  a bounded moment for the re-arm instead of failing instantly. Pinned by a
+  new lane in `test:reports` (impostor never captures/starves the slot; a
+  report lands after re-arm).
+
 ### Added
 
 - **In-player problem reporting (S51)** — the "Report a problem" flow moved from

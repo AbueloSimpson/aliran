@@ -319,6 +319,9 @@ export class AliranPlayer extends Emitter {
     this._panelBee = null
     this._catalogWatcher = null
     this._call = null
+    this._panelPeerKey = null // hex public key of the peer that PROVED it is the panel (see _maybeArmRpc)
+    this._panelDiscovery = null // the panel topic's PeerDiscovery — report() kicks refresh() when the RPC is down
+    this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
     this._server = null
     this._assetsDrive = null
     this._feedDrive = null // the CURRENTLY served feed (one of _feeds' drives)
@@ -471,7 +474,19 @@ export class AliranPlayer extends Emitter {
     try {
       if (!REPORT_CATEGORIES.includes(category)) return { error: 'bad-category' }
       if (!this._session || !this._session.token) return { error: 'not-logged-in' }
-      if (!this._call) return { error: 'offline' }
+      if (!this._call) {
+        // No discovery = connect() never joined the panel topic — genuinely offline,
+        // nothing can re-arm. Otherwise: a report is exactly the call a viewer makes
+        // right after trouble, i.e. right when the panel link may have just flapped.
+        // The swarm redials the topic on its own; kick the discovery and give the
+        // validated re-arm (_maybeArmRpc) a bounded moment before declaring offline.
+        // The UI is already showing "Sending…", so a few seconds here is honest.
+        if (!this._panelDiscovery) return { error: 'offline' }
+        try { this._panelDiscovery.refresh({ client: true, server: false }) } catch {}
+        const t0 = Date.now()
+        while (!this._call && Date.now() - t0 < 5000) await new Promise((resolve) => setTimeout(resolve, 250))
+        if (!this._call) return { error: 'offline' }
+      }
 
       const channel = this._active ? this._active.streamId : null
       const key = (channel || '-') + '|' + category
@@ -1071,6 +1086,8 @@ export class AliranPlayer extends Emitter {
     this._feedDiscovery = null
     this._assetsOpen = null
     this._call = null
+    this._panelPeerKey = null
+    this._panelDiscovery = null
     // Full teardown is the ONE place the session token dies (a purge and a socket drop
     // both keep it — see _doLogin). A service switch replaces the engine wholesale, so
     // this is also what stops a token following a viewer to another operator's panel.
@@ -1465,21 +1482,50 @@ export class AliranPlayer extends Emitter {
     // dht.ready() is not added latency: the join right after would trigger the same
     // bind before any packet flows.
     await this._tuneSwarmSockets()
-    // The first connection after connect() is the panel (we join only its topic
-    // first); wire the RPC there. Later feed connections are ignored for RPC (call is
-    // already set). If the panel socket drops, clear `call` so the next reconnect
-    // re-arms it (otherwise every RPC after a drop fails with CHANNEL_CLOSED forever).
+    // Wire the panel RPC on incoming connections — VALIDATED, not first-come (S52).
+    // The old heuristic ("the first connection is the panel; we join only its topic
+    // first") is only true at boot: mid-session, after a panel restart drops the RPC
+    // socket, the next connection to arrive is often a BROADCASTER feed peer
+    // (hyperswarm keeps one socket per peer across all topics), and blindly wiring
+    // the RPC there wedged every later login/session/report call as 'offline' until
+    // that peer happened to drop — while playback kept working, which made it look
+    // like a panel outage. See _maybeArmRpc for the probe.
     this._swarm.on('connection', (socket) => {
       // A handshake that was in flight when stop()/a recovery purge nulled the store
       // can still land here (swarm.destroy() resolves later) — drop it, don't crash.
       if (!this._store) { try { socket.destroy() } catch {} return }
       this._store.replicate(socket)
-      if (!this._call && this._panelBee) {
-        const rpcCall = panelClient(socket).call
-        this._call = rpcCall
-        socket.on('close', () => { if (this._call === rpcCall) this._call = null })
-      }
+      this._maybeArmRpc(socket)
     })
+  }
+
+  // Arm the panel RPC on this socket if we need one and the socket proves it is the
+  // panel. Two tiers: a peer whose public key already validated once (the remembered
+  // panel identity) re-arms instantly; anyone else must answer a cheap `hello` within
+  // _rpcProbeMs first. Probes run concurrently — a slow/dead candidate must never
+  // starve the real panel connection arriving a moment later — and the first to
+  // validate wins; on failure the slot simply stays open for the next connection.
+  // Never throws (a probe failure is normal traffic, not an error).
+  _maybeArmRpc (socket) {
+    if (this._call || !this._panelBee) return
+    const remoteKey = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : null
+    const { call } = panelClient(socket)
+    const arm = () => {
+      if (this._call || socket.destroyed) return
+      this._call = call
+      if (remoteKey) this._panelPeerKey = remoteKey
+      socket.on('close', () => { if (this._call === call) this._call = null })
+    }
+    if (remoteKey && remoteKey === this._panelPeerKey) return arm()
+    ;(async () => {
+      try {
+        const res = await Promise.race([
+          call('hello'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('rpc probe timeout')), this._rpcProbeMs).unref?.())
+        ])
+        if (res && typeof res.challenge === 'string') arm()
+      } catch {}
+    })()
   }
 
   // Request the configured UDP socket buffer sizes on the swarm just created (also
@@ -1508,7 +1554,7 @@ export class AliranPlayer extends Emitter {
     await this._ensureStore()
     this._panelBee = new Hyperbee(this._store.get({ key: b4a.from(this._panelKey, 'hex') }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
     await this._panelBee.ready()
-    this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
+    this._panelDiscovery = this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
     this._watchCatalog()
   }
 

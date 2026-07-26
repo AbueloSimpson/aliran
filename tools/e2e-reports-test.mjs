@@ -1048,6 +1048,69 @@ try {
     log('L: shell IPC — {type:report} -> {type:report-result} round-trips to the panel, is answered with no engine, and the per-install deviceId is persisted but never echoed to the UI ✓')
   }
 
+  // ===================== M: validated RPC re-arm (S52) =====================
+  // The mid-session wedge found LIVE on 2026-07-26: a panel restart drops the RPC
+  // socket, and the old first-come re-arm wired the RPC to the next swarm connection
+  // — often a BROADCASTER feed peer (hyperswarm keeps one socket per peer across all
+  // topics). Every later login/session/report then answered 'offline' forever, while
+  // playback kept running. The fix under test: a candidate socket must answer `hello`
+  // within the probe bound before it may hold the RPC slot, a hung probe must never
+  // starve the real panel arriving later, and a validated re-arm carries a real
+  // report end to end.
+  {
+    const dir = mkdir('rearm')
+    const signing = hcrypto.keyPair()
+    const db = fakeDb({ ['user/' + NEEDLE_USER]: seedUser() })
+    const reports = makeReports({ dataDir: dir, retentionDays: 30, alertCount: 99 })
+    const waitFor = async (fn, label, ms = 8000) => {
+      const t0 = Date.now()
+      while (Date.now() - t0 < ms) { if (fn()) return; await new Promise((r) => setTimeout(r, 50)) }
+      throw new Error('timeout: ' + label)
+    }
+
+    const player = new AliranPlayer({ http, fs, storeDir: path.join(dir, 'store'), deviceId: NEEDLE_DEVICE, appVersion: '9.9.9', platform: 'test-os' })
+    player._panelBee = {} // truthy: the arm gate requires an open panel DB
+    player._rpcProbeMs = 800
+
+    // 1. An impostor (a live secret-stream that answers NO RPC — the broadcaster
+    //    replication shape) must not capture the slot while its probe is in flight...
+    const [impostor, impostorFar] = streamPair()
+    cleanups.push(() => { impostor.destroy(); impostorFar.destroy() })
+    player._maybeArmRpc(impostor)
+    await new Promise((r) => setTimeout(r, 150))
+    assert.strictEqual(player._call, null, 'an unvalidated peer does not hold the RPC slot while its probe is pending')
+
+    // 2. ...and must not STARVE the real panel arriving while that probe still hangs.
+    const [cli, srv] = streamPair()
+    cleanups.push(() => { cli.destroy(); srv.destroy() })
+    attachLoginRpc(srv, { keys: { signing }, oprfKey: hcrypto.randomBytes(32), difficulty: 1, throttle: makeThrottle(1000, 900), db, dataDir: dir, reports, reportThrottle: makeThrottle(1000, 900) })
+    player._maybeArmRpc(cli)
+    await waitFor(() => player._call, 'the validated panel socket arms the RPC')
+    const hello = await player._call('hello')
+    assert.ok(hello && typeof hello.challenge === 'string', 'the armed RPC really is the panel (hello answers)')
+
+    // 3. The full user-visible path after a validated arm: login + report land.
+    const token = await doLogin(player._call, NEEDLE_USER, NEEDLE_DEVICE, viewer)
+    player._session = { username: NEEDLE_USER, token, expiresAt: Date.now() + 600000, deviceId: NEEDLE_DEVICE }
+    player._active = { streamId: 'rearm-ch' }
+    const sent = await player.report({ category: 'buffering' })
+    assert.strictEqual(sent.ok, true, `a report lands over the validated arm (${JSON.stringify(sent)})`)
+
+    // 4. A drop clears the slot, and a fresh impostor STILL cannot take it afterwards
+    //    (its key does not match the remembered panel identity, and its probe fails).
+    cli.destroy(); srv.destroy()
+    await waitFor(() => !player._call, 'the RPC slot clears when the panel socket closes')
+    const [imp2, imp2Far] = streamPair()
+    cleanups.push(() => { imp2.destroy(); imp2Far.destroy() })
+    player._maybeArmRpc(imp2)
+    await new Promise((r) => setTimeout(r, 1200)) // well past _rpcProbeMs
+    assert.strictEqual(player._call, null, 'after a drop, an unvalidated peer still cannot capture the slot')
+
+    await player.stop()
+    reports.close()
+    log('M: validated RPC re-arm — an impostor never captures or starves the panel RPC slot, a report lands after re-arm, and a drop clears the slot cleanly ✓')
+  }
+
   // ===================== J: the negative identity scan =====================
   {
     const dir = mkdir('scan')
