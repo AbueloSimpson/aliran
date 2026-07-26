@@ -50,6 +50,9 @@ function main () {
       descriptorSource: source,
       userData: app.getPath('userData'),
       safeStorage,
+      // Provenance for problem reports (S50c) — which build, on which OS.
+      appVersion: app.getVersion(),
+      platform: process.platform,
       onMessage: (msg) => { if (win && !win.isDestroyed()) win.webContents.send('aliran:event', msg) }
     })
 

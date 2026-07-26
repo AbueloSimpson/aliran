@@ -12,6 +12,7 @@
 
 import { Platform, TurboModuleRegistry } from 'react-native'
 import b4a from 'b4a'
+import type { ReportCategory, ReportError } from './report'
 
 declare const require: (id: string) => any // Metro/CJS both provide it; typed locally so hosts need no @types/node
 
@@ -173,6 +174,11 @@ export type BackendMessage =
   // never set the toggle (the app's compiled default applies at boot). service: the
   // runtime-entered operator service — null/absent unless a keyless build saved one.
   | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null }
+  // Answer to sendReport() (S50c). ok=true means the panel accepted it (possibly
+  // deduplicated or collapsed into an open alert — either way, "we heard you").
+  // error 'unsupported' = this panel predates reports or has them disabled; 'cooldown'
+  // / 'locked' carry retryAfter seconds; 'not-logged-in' / 'offline' are transient.
+  | { type: 'report-result'; ok: boolean; error?: ReportError | string; retryAfter?: number; id?: string }
 
 export interface StartOptions {
   /** Omit to boot the worklet WITHOUT connecting (S36 runtime-descriptor flow: read
@@ -199,6 +205,11 @@ export interface StartOptions {
    *  request. 'client-only': never announce on feed/assets topics — practically zero
    *  viewer-to-viewer upload, at the cost of one fewer re-seeder in the swarm. */
   uploadPolicy?: 'reseed' | 'client-only'
+  /** Host app version attached to viewer problem reports (S50c), e.g. '0.2.0'. Used
+   *  for nothing else — the engine never sends it to the panel outside a report. */
+  appVersion?: string
+  /** Platform label attached to problem reports. Defaults to `${Platform.OS} ${Platform.Version}`. */
+  platform?: string
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
 }
@@ -271,7 +282,19 @@ export class AliranBackend {
   start (bundle: string | Uint8Array, opts: StartOptions) {
     if (!engineAvailable()) { this.inactive = true; this.pending = []; return } // no engine here — stay silent
     this.debug = !!opts.debug
-    this.engineOpts = { hybrid: opts.hybrid, prewarm: opts.prewarm, tune: opts.tune, zapPrefetch: opts.zapPrefetch, swarm: opts.swarm, uploadPolicy: opts.uploadPolicy }
+    this.engineOpts = {
+      hybrid: opts.hybrid,
+      prewarm: opts.prewarm,
+      tune: opts.tune,
+      zapPrefetch: opts.zapPrefetch,
+      swarm: opts.swarm,
+      uploadPolicy: opts.uploadPolicy,
+      appVersion: opts.appVersion,
+      // A coarse device/OS label for problem reports — 'android 33', 'ios 17'. Coarse
+      // ON PURPOSE: an exact device model plus an operator's account list is enough to
+      // start re-identifying a pseudonymous reporter.
+      platform: opts.platform ?? `${Platform.OS} ${Platform.Version}`
+    }
     const bytes = typeof bundle === 'string' ? b4a.from(bundle, 'base64') : bundle
     if (!this.worklet) {
       if (probeWorklet) { this.worklet = probeWorklet; probeWorklet = null } // reuse the probe's handle
@@ -317,6 +340,18 @@ export class AliranBackend {
   // uploading there is what burns their battery and allowance. Either signal limits
   // upload (S25); only `expensive` gates prefetch.
   setNetworkProfile (expensive: boolean, cellular = false) { this.send({ type: 'net-info', expensive, cellular }) }
+
+  /**
+   * Send a viewer problem report (S50c). Fire-and-forget: the answer arrives as
+   * {type:'report-result'} on the message feed, so a modal subscribes before calling.
+   * The engine attaches the active channel, peer count, app version/platform and its
+   * recent event breadcrumbs; identity is the SESSION TOKEN, which the panel reduces
+   * to a pseudonym on arrival — no username or device id is ever stored there.
+   * Show REPORT_CONSENT before submitting.
+   */
+  sendReport (category: ReportCategory, text?: string) {
+    this.send({ type: 'report', category, ...(text ? { text } : {}) })
+  }
 
   /** Ask the worklet for saved credentials + favorites; answers as {type:'prefs'}. */
   requestPrefs () { this.send({ type: 'prefs-get' }) }

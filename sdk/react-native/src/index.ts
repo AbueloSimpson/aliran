@@ -13,3 +13,8 @@ export type { EngineNoticeProps, EngineNoticeColors } from './EngineNotice'
 export { EpgService, epg } from './epg'
 export type { EpgProgram, NowNext, EpgServiceOpts } from './epg'
 export { useEpg } from './useEpg'
+// Viewer problem reports (S50c): the category enum + labels + the consent line a
+// "Report a problem" UI must show. Submit with backend.sendReport(); the answer
+// arrives as {type:'report-result'}. See src/report.ts.
+export { REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, REPORT_CONSENT, REPORT_TEXT_MAX } from './report'
+export type { ReportCategory, ReportError } from './report'

@@ -11,7 +11,8 @@
 // (app.bundle.js is a build artifact, gitignored; regenerate it as part of the app build.)
 //
 // IPC (line-delimited JSON) with React Native:
-//   in : { panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch?, swarm?, uploadPolicy? }
+//   in : { panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch?, swarm?, uploadPolicy?,
+//           appVersion?, platform? }
 //                                     -> connect to panel; optional hybrid CDN<->P2P
 //                                        config (cdnUrl as a '{streamId}' template
 //                                        string — JSON-safe), feed prewarm count,
@@ -23,7 +24,10 @@
 //                                        UDP socket buffers, default recv 2 MiB /
 //                                        send untouched), and uploadPolicy
 //                                        ('reseed' default | 'client-only' = never
-//                                        announce, ~zero viewer-to-viewer upload)
+//                                        announce, ~zero viewer-to-viewer upload),
+//                                        plus appVersion/platform — short labels the
+//                                        engine attaches to problem reports (S50c)
+//                                        and to nothing else
 //        { username, password }       -> OPRF login -> { streams } (display metadata)
 //        { streamId }                 -> play an entitled stream -> { port, url, source,
 //                                        recordType, durationSec }
@@ -46,6 +50,13 @@
 //                                        boolean or config object, applied mid-play
 //        { type:'net-info', expensive }            -> host network profile (NetInfo):
 //                                        expensive=true suspends zap prefetch
+//        { type:'report', category, text? }        -> viewer problem report (S50c):
+//                                        one of the seven sdk/report.js categories +
+//                                        optional free text. The engine attaches the
+//                                        active channel, peers, appVersion/platform
+//                                        and its recent event breadcrumbs, and proves
+//                                        entitlement with the SESSION TOKEN — never a
+//                                        username. Always answered, never throws.
 //   out: { type:'ready' } | { type:'streams', streams }   (on login, and pushed again
 //                                        live whenever the panel edits the catalog —
 //                                        same shape; the Home screen re-renders on it)
@@ -66,11 +77,16 @@
 //        { type:'prefs', creds: {username,password}|null, favorites: [streamId],
 //          smoothZapping: true|false|null,   (null = user never set the toggle)
 //          service: {panelPubKey,name?}|null }   (runtime-entered operator service)
+//        { type:'report-result', ok, error?, retryAfter?, id? }   (answer to 'report';
+//          error 'unsupported' = the panel predates reports / has them disabled)
 //
 // Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
 // the app-private files dir, the stated tradeoff; sign-out clears them) + favorites
 // (D4). Stored BESIDE the corestore, not in it — the store is a disposable cache that
-// corruption recovery purges wholesale, and prefs must survive that.
+// corruption recovery purges wholesale, and prefs must survive that. Since S50c prefs
+// also hold `deviceId`: 8 random bytes minted on first read and never rotated, so the
+// panel's device list and per-device revocation address THIS install (before it, every
+// install of an account collapsed onto one derived fallback id — see sdk/login.js).
 
 /* global BareKit, Bare */
 import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for the Bare worklet
@@ -129,10 +145,13 @@ function readPrefs () {
       // app connected to. Builds with a baked key ignore it (baked always wins).
       service: p && p.service && /^[0-9a-f]{64}$/.test(p.service.panelPubKey)
         ? { panelPubKey: p.service.panelPubKey, ...(typeof p.service.name === 'string' ? { name: p.service.name } : {}) }
-        : null
+        : null,
+      // Per-install device id (S50c). Absent on prefs written by an older build —
+      // ensureDeviceId() mints one on the next boot.
+      deviceId: typeof (p && p.deviceId) === 'string' && /^[0-9a-f]{16}$/.test(p.deviceId) ? p.deviceId : null
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, service: null }
+    return { creds: null, favorites: [], smoothZapping: null, service: null, deviceId: null }
   }
 }
 
@@ -142,7 +161,22 @@ function writePrefs (prefs) {
   }
 }
 
-function sendPrefs () { send({ type: 'prefs', ...readPrefs() }) }
+// The deviceId is deliberately NOT in the 'prefs' reply: nothing in the UI needs it,
+// and an identifier that never crosses into the RN layer cannot be logged there.
+function sendPrefs () { const { deviceId, ...rest } = readPrefs(); send({ type: 'prefs', ...rest }) }
+
+// Per-install device id (S50c): 8 random bytes, minted once and persisted. Read on
+// every boot rather than cached, so a `pm clear` (which wipes prefs) yields a fresh
+// install identity — exactly what a fresh install should look like to the panel.
+function ensureDeviceId () {
+  const prefs = readPrefs()
+  if (prefs.deviceId) return prefs.deviceId
+  const bytes = new Uint8Array(8)
+  globalThis.crypto.getRandomValues(bytes)
+  const id = b4a.toString(b4a.from(bytes), 'hex')
+  writePrefs({ ...prefs, deviceId: id })
+  return id
+}
 
 let player = null
 // The panel key the live player was built for — a later {panelPubKey} message with a
@@ -154,10 +188,10 @@ let connectedKey = null
 // by a Wi-Fi event.
 let basePolicy = 'reseed'
 
-function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy) {
+function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform) {
   if (player) return player
   if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, deviceId: ensureDeviceId(), appVersion, platform })
   player.on('ready', () => send({ type: 'ready' }))
   player.on('streams', (streams) => send({ type: 'streams', streams }))
   player.on('status', (status) => {
@@ -234,6 +268,17 @@ IPC.on('data', (data) => {
           }).catch(() => {})
         } catch (err) { fail(err) }
       }
+    } else if (msg.type === 'report') {
+      // Viewer problem report (S50c). player.report() never throws and never rejects,
+      // so this branch always answers — a UI waiting on 'report-result' must not be
+      // left hanging by a dead engine either, hence the no-player reply.
+      if (!player) {
+        send({ type: 'report-result', ok: false, error: 'offline' })
+      } else {
+        player.report({ category: msg.category, text: msg.text }).then((res) => {
+          send({ type: 'report-result', ok: res.ok === true, ...(res.error ? { error: res.error } : {}), ...(res.retryAfter ? { retryAfter: res.retryAfter } : {}), ...(res.id ? { id: res.id } : {}) })
+        }).catch((err) => send({ type: 'report-result', ok: false, error: String((err && err.message) || err) }))
+      }
     } else if (msg.feedKey && msg.encryptionKey) {
       ensurePlayer().serveFeed(msg.feedKey, msg.encryptionKey).then((port) => send({ type: 'port', port })).catch(fail)
     } else if (msg.username) {
@@ -250,7 +295,7 @@ IPC.on('data', (data) => {
       // app's compiled zapPrefetch default; true means the SDK's adaptive defaults.
       const saved = readPrefs().smoothZapping
       const zap = saved == null ? msg.zapPrefetch : saved
-      const boot = () => ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy).connect(msg.panelPubKey).catch(fail)
+      const boot = () => ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy, msg.appVersion, msg.platform).connect(msg.panelPubKey).catch(fail)
       if (player && connectedKey && connectedKey !== msg.panelPubKey) {
         // Service switch (S36: a Connect-screen retry after a wrong key, or "Change
         // service…"): the swarm, panel bee and every cached feed belong to the OLD

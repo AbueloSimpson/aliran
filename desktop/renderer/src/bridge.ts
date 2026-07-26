@@ -4,7 +4,7 @@
 // fields exist for late-mounting screens (the one-shot replies can land before a
 // screen exists), and onMessage is the live feed.
 
-import type { BackendMessage, EngineState, SavedIdentity, ServiceDescriptor, Stream } from './types'
+import type { BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream } from './types'
 
 class DesktopBackend {
   streams: Stream[] = []
@@ -68,6 +68,18 @@ class DesktopBackend {
   reconnect () { this.send({ type: 'reconnect' }) }
   setZapPrefetch (v: boolean) { this.send({ type: 'zap-prefetch-set', zapPrefetch: v }) }
   setNetworkProfile (expensive: boolean, cellular = false) { this.send({ type: 'net-info', expensive, cellular }) }
+  /**
+   * Send a viewer problem report (S50c). Fire-and-forget: the answer arrives as
+   * {type:'report-result'} on the message feed, so a modal subscribes before calling.
+   * The engine attaches the active channel, peer count, app version/platform and its
+   * recent event breadcrumbs; identity is the SESSION TOKEN, which the panel reduces
+   * to a pseudonym on arrival — no username or device id is ever stored there.
+   * Show REPORT_CONSENT before submitting.
+   */
+  sendReport (category: ReportCategory, text?: string) {
+    this.send({ type: 'report', category, ...(text ? { text } : {}) })
+  }
+
   requestPrefs () { this.send({ type: 'prefs-get' }) }
   clearCredentials () { this.creds = null; this.send({ type: 'creds-clear' }) }
   toggleFavorite (streamId: string) {

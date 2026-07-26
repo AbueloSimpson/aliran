@@ -23,11 +23,17 @@
 //   { type:'reconnect' }             wedged-transport escalation (stall ladder)
 //   { type:'zap-prefetch-set', zapPrefetch }   runtime "Smooth zapping" toggle
 //   { type:'net-info', expensive, cellular }   host network profile (S25 upload gate)
+//   { type:'report', category, text? }         viewer problem report (S50c) — one of
+//                                    the seven sdk/report.js categories + optional
+//                                    free text; answered with 'report-result'
 // Messages out: identical to the worklet protocol (see backend.mjs header), except
-// 'prefs' carries creds: { username } | null — no password.
+// 'prefs' carries creds: { username } | null — no password. 'report-result'
+// { ok, error?, retryAfter?, id? } answers a 'report' (error 'unsupported' = the
+// panel predates reports or has them disabled).
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { createPlayer } from '@aliran/player-sdk'
 
 const TRANSIENT_LOGIN = /not connected|channel closed/i
@@ -46,8 +52,11 @@ export class EngineHost {
    * @param {string} opts.userData   app.getPath('userData') — store + prefs live here
    * @param {object} opts.safeStorage Electron safeStorage (DPAPI credential wrap)
    * @param {(msg: object) => void} opts.onMessage  out-message sink (broadcast to windows)
+   * @param {string} [opts.appVersion] shell version (app.getVersion()) — attached to
+   *   problem reports so an operator can tell which build a complaint came from
+   * @param {string} [opts.platform] host platform label; defaults to process.platform
    */
-  constructor ({ descriptor, descriptorSource = descriptor ? 'baked' : null, userData, safeStorage, onMessage }) {
+  constructor ({ descriptor, descriptorSource = descriptor ? 'baked' : null, userData, safeStorage, onMessage, appVersion = null, platform = null }) {
     this.descriptor = descriptor
     // 'baked' (operator build: config shipped in the artifact) or 'runtime' (public
     // build: the Connect screen persisted it) — Settings offers "Change service"
@@ -55,6 +64,8 @@ export class EngineHost {
     this.descriptorSource = descriptorSource
     this.userData = userData
     this.safeStorage = safeStorage
+    this.appVersion = appVersion
+    this.platform = platform || process.platform
     this.send = (msg) => { try { onMessage(msg) } catch {} }
     this.player = null
     this.ready = false
@@ -81,11 +92,26 @@ export class EngineHost {
         credsUser: typeof p?.credsUser === 'string' ? p.credsUser : null,
         credsEnc: typeof p?.credsEnc === 'string' ? p.credsEnc : null,
         favorites: Array.isArray(p?.favorites) ? p.favorites.filter((x) => typeof x === 'string') : [],
-        smoothZapping: typeof p?.smoothZapping === 'boolean' ? p.smoothZapping : null
+        smoothZapping: typeof p?.smoothZapping === 'boolean' ? p.smoothZapping : null,
+        // Per-install device id (S50c); absent on prefs written by an older build —
+        // deviceId() mints one on the next boot.
+        deviceId: /^[0-9a-f]{16}$/.test(p?.deviceId || '') ? p.deviceId : null
       }
     } catch {
-      return { credsUser: null, credsEnc: null, favorites: [], smoothZapping: null }
+      return { credsUser: null, credsEnc: null, favorites: [], smoothZapping: null, deviceId: null }
     }
+  }
+
+  // Per-install device id: 8 random bytes, minted once into prefs and never rotated.
+  // Without it every install of an account collapses onto one derived fallback id
+  // (sdk/login.js), so the panel's device list and per-device revocation cannot tell
+  // two machines apart — and the report pseudonym cannot either.
+  deviceId () {
+    const p = this.readPrefs()
+    if (p.deviceId) return p.deviceId
+    const id = randomBytes(8).toString('hex')
+    this.writePrefs({ ...p, deviceId: id })
+    return id
   }
 
   writePrefs (prefs) {
@@ -149,7 +175,11 @@ export class EngineHost {
       zapPrefetch: saved ?? false,
       hybrid: this.descriptor.hybrid,
       swarm: this.descriptor.swarm,
-      uploadPolicy: this.descriptor.uploadPolicy
+      uploadPolicy: this.descriptor.uploadPolicy,
+      // Identity + provenance for the panel's device list and problem reports (S50c).
+      deviceId: this.deviceId(),
+      appVersion: this.appVersion || undefined,
+      platform: this.platform
     })
     if (this.descriptor.uploadPolicy === 'client-only' || this.descriptor.uploadPolicy === 'reseed') {
       this.basePolicy = this.descriptor.uploadPolicy
@@ -263,6 +293,23 @@ export class EngineHost {
             if (r.changed) this.send({ type: 'upload-policy', policy: r.policy, reason: limited ? (msg.cellular ? 'cellular' : 'metered') : 'unmetered' })
           }).catch(() => {})
         } catch (err) { fail(err) }
+      }
+    } else if (msg.type === 'report') {
+      // Viewer problem report (S50c). player.report() never throws and never rejects,
+      // so this branch always answers — and it answers even with no engine, because a
+      // UI awaiting 'report-result' must never be left hanging.
+      if (!this.player) {
+        this.send({ type: 'report-result', ok: false, error: 'offline' })
+      } else {
+        this.player.report({ category: msg.category, text: msg.text })
+          .then((res) => this.send({
+            type: 'report-result',
+            ok: res.ok === true,
+            ...(res.error ? { error: res.error } : {}),
+            ...(res.retryAfter ? { retryAfter: res.retryAfter } : {}),
+            ...(res.id ? { id: res.id } : {})
+          }))
+          .catch((err) => this.send({ type: 'report-result', ok: false, error: String(err?.message || err) }))
       }
     } else if (typeof msg.username === 'string' && typeof msg.password === 'string') {
       this.login(msg.username, msg.password).catch(fail)

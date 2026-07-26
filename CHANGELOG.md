@@ -42,8 +42,33 @@ phone + Android TV, and the Windows desktop player).
   tab** (alert strip, filters, grouped and expandable report list, per-hour chart,
   ack/resolve), in `GET/POST /api/reports…` + `/api/alerts…`, and in the
   `list-reports` / `ack-report` / `resolve-report` / `list-alerts` /
-  `test-notify` CLI verbs (which work beside a running panel). The client-side
-  "Report a problem" flow lands in the follow-up segment.
+  `test-notify` CLI verbs (which work beside a running panel).
+- **"Report a problem" in both apps (client path)** — the viewer half of the
+  reporting flow, in the phone/TV app and the desktop player. A Settings modal
+  offers the seven categories as a vertical focusable list (a TV remote can file a
+  report in four presses; the optional note is the last input and entirely
+  skippable), shows a consent line naming exactly what is sent, and reports the
+  outcome in plain language. Under it, `AliranPlayer.report({category, text})`
+  attaches what the engine already knows — the active channel, peer count, app
+  version/platform and a rolling 50-entry ring of the engine's own
+  error/status/fallback breadcrumbs — and proves entitlement with the retained
+  session token, never a username. It **never throws**: a local 10-minute
+  cooldown per channel+category means mashing the button during a real outage
+  never reaches the wire, and a panel without the responder (pre-S50, or reports
+  disabled) maps to a friendly "this service doesn't accept reports" rather than
+  an error. The category enum is duplicated per runtime that cannot import
+  another's copy (panel, engine, RN binding, desktop renderer) with an e2e drift
+  guard asserting all four stay deep-equal.
+- **Per-install device id** — both shells now mint 8 random bytes on first run,
+  persist them beside their prefs and pass them at login. Until now neither shell
+  passed one, so every install of an account collapsed onto a single derived
+  fallback id and the panel's device list could not tell two machines apart.
+  ⚠ **One-time churn on upgrade:** an existing install enrolls as a *new* device
+  the first time it signs in on the new build, and the old derived entry ages out
+  under the account's device policy. Accounts sitting at their device limit with
+  `devicePolicy` other than `evict` may need one revoke. The id is device-local:
+  it is never shown to the UI layer, and the panel folds it into the report
+  pseudonym rather than storing it.
 - **Privacy-preserving analytics** — aggregate-only, server-side-only usage
   rollups ([docs/analytics.md](docs/analytics.md)). Per-user watch tracking is
   architecturally impossible in Aliran (viewers replicate P2P; the panel sees

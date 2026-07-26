@@ -33,6 +33,65 @@ export interface Stream {
 /** Saved sign-in identity — username only; the password stays in the main process. */
 export interface SavedIdentity { username: string }
 
+// Viewer problem reports (S50c). This is the desktop copy of the closed category enum
+// (renderer code cannot import the engine's sdk/report.js — the engine lives in the
+// main process): the e2e drift guard in tools/e2e-reports-test.mjs reads this file
+// alongside sdk/report.js, sdk/react-native/src/report.ts and panel/src/reports.js and
+// requires all four to be deep-equal. Change one, change all four.
+export type ReportCategory =
+  | 'no-audio'
+  | 'black-screen'
+  | 'visual-artifacts'
+  | 'buffering'
+  | 'wrong-content'
+  | 'login'
+  | 'other'
+
+/** Error codes a 'report-result' may carry (see AliranPlayer.report()). */
+export type ReportError =
+  | 'bad-category'
+  | 'not-logged-in'
+  | 'offline'
+  | 'cooldown'
+  | 'locked'
+  | 'unsupported'
+  | 'unauthorized'
+  | 'expired'
+
+export const REPORT_CATEGORIES: ReportCategory[] = [
+  'no-audio',
+  'black-screen',
+  'visual-artifacts',
+  'buffering',
+  'wrong-content',
+  'login',
+  'other'
+]
+
+// Symptom-shaped, not cause-shaped: a viewer cannot tell a decoder fault from a dead
+// upstream, and a label that asks them to diagnose produces worse data.
+export const REPORT_CATEGORY_LABELS: Record<ReportCategory, string> = {
+  'no-audio': 'No sound',
+  'black-screen': 'Black screen / nothing plays',
+  'visual-artifacts': 'Broken or glitchy picture',
+  buffering: 'Keeps buffering or freezing',
+  'wrong-content': 'Wrong programme on this channel',
+  login: 'Trouble signing in',
+  other: 'Something else'
+}
+
+// Shown VERBATIM above the submit control (S50-DESIGN D1) — the viewer's only view of
+// what a report contains. The closing promise about the account name is one the
+// protocol structurally guarantees: the report carries a session token that the panel
+// immediately reduces to an HMAC pseudonym.
+export const REPORT_CONSENT =
+  'Sent with your report: the problem you picked, anything you type, the channel you were ' +
+  'watching, your app version and device type, how many peers you were connected to, and the ' +
+  'last few things the player did. Your account name and password are never sent.'
+
+/** Free-text cap (characters) — the panel enforces its own copy of this. */
+export const REPORT_TEXT_MAX = 300
+
 export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[] }
@@ -52,6 +111,10 @@ export type BackendMessage =
   | { type: 'zap-prefetch'; enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }
   | { type: 'upload-policy'; policy: 'reseed' | 'client-only'; reason?: string }
   | { type: 'prefs'; creds: SavedIdentity | null; favorites: string[]; smoothZapping?: boolean | null }
+  // Answer to a 'report' (S50c). ok=true means the panel accepted it (possibly
+  // deduplicated or folded into an open alert — either way, "we heard you").
+  // 'unsupported' = this panel predates reports or has them disabled.
+  | { type: 'report-result'; ok: boolean; error?: ReportError | string; retryAfter?: number; id?: string }
   // The runtime descriptor was accepted ('set-service', public flavor) — the engine
   // is booting on it; theme/branding may re-apply.
   | { type: 'service'; descriptor: ServiceDescriptor }

@@ -2,6 +2,10 @@
 // this app dogfoods the public SDK surface. See sdk/react-native and backend/backend.mjs.
 
 import { AliranBackend, type HybridConfig } from '@aliran/react-native'
+// The shipped app version, attached to viewer problem reports (S50c) so an operator
+// can tell which build a complaint came from. Read from package.json rather than
+// hand-copied, so a release bump cannot leave the reports lying.
+import { version as APP_VERSION } from '../package.json'
 // Base64-encoded Bare bundle produced by `npm run bundle-backend` (app.bundle.js is a
 // generated CommonJS module: `module.exports = "<base64>"`). The binding decodes it.
 import bundleBase64 from '../backend/app.bundle.js'
@@ -29,7 +33,7 @@ class Backend extends AliranBackend {
     // prewarm: open the first N channels' feeds right after login so the FIRST zap to a
     // channel is warm (not just re-zaps). Capped so a large lineup doesn't join hundreds
     // of DHT topics at once; a bounded TV lineup warms fully.
-    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, debug: true })
+    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, appVersion: APP_VERSION, debug: true })
   }
 
   // Public (keyless) flavor, S36: boot the worklet WITHOUT a panel so the persisted
@@ -37,7 +41,7 @@ class Backend extends AliranBackend {
   // connect()s to the saved panel or routes to the Connect screen. Same engine policy
   // as boot(); only the panel key arrives later.
   bootIdle (hybrid?: HybridConfig) {
-    this.start(bundleBase64, { hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, debug: true })
+    this.start(bundleBase64, { hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, appVersion: APP_VERSION, debug: true })
   }
 }
 
