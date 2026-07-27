@@ -48,6 +48,24 @@ they belong to. Publishing is automatic: every push to `main` touching `docs/` o
 `mkdocs.yml` rebuilds and deploys via
 [`.github/workflows/docs.yml`](.github/workflows/docs.yml).
 
+### Writing style — STE rules (required)
+
+All prose in `docs/`, `docs/kb/`, and every `README.md` follows the
+**ASD-STE100 (Simplified Technical English) writing rules**:
+
+- One instruction per sentence. Keep sentences short (aim for 20 words or fewer
+  in instructions, 25 in descriptions).
+- Active voice, present tense. Say who does what.
+- One approved term per thing — do not switch between synonyms for the same
+  object (a channel is always a *channel*, never also a *stream* or *feed* in
+  viewer-facing text).
+- No long noun strings (three nouns or more in a row — break them up).
+
+This is the writing-rules subset applied by hand with a project word list, not
+formal certified STE (the honest note at the top of [`docs/README.md`](docs/README.md)
+says so once, for the whole site). New or edited pages must follow these rules;
+`CHANGELOG.md`, `docs/devlog.md`, code comments, and commit messages are exempt.
+
 ## Commit / PR
 
 - Branch from `main`, open a PR with a clear description and testing notes.
