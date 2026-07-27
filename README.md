@@ -28,15 +28,15 @@ Self-hostable, open-source, peer-to-peer OTT streaming on the
 
 ---
 
-> **Status: pre-1.0, actively developed — and running for real.** The full pipeline is
-> verified end to end on live infrastructure **over the public DHT**: panel +
-> broadcaster deployed on a small VPS via the provided Docker pack, dozens of channels
-> ingested 24/7 from real sources, and the Android app (phone + TV) and the Windows
-> desktop player logging in and playing live P2P video against it — with the same
-> player packaged for macOS, keyless **public viewer builds** on the
+> **Status: pre-1.0, actively developed — and running for real.** The full pipeline
+> works end to end on live infrastructure **over the public DHT**. The panel and
+> broadcaster run on a small VPS through the provided Docker pack. Dozens of channels
+> ingest 24/7 from real sources. The Android app (phone and TV) and the Windows
+> desktop player log in and play live P2P video against it, and the same player is
+> packaged for macOS. Keyless **public viewer builds** are on the
 > [releases page](https://github.com/AbueloSimpson/aliran/releases/latest), the engine
-> published on npm, web admin dashboards for both server components, and a remote
-> acceptance harness that proves a deployment from anywhere.
+> is published on npm, web admin dashboards exist for both server components, and a
+> remote acceptance harness proves a deployment from anywhere.
 
 ## What do you want to do?
 
@@ -44,7 +44,7 @@ Self-hostable, open-source, peer-to-peer OTT streaming on the
 |---|---|---|
 | 📺 | **Watch a service someone runs** | Install a [public build](#get-the-apps) below, then follow the [Android](docs/android-viewer-guide.md) or [desktop](docs/desktop-viewer-guide.md) viewer guide. You'll need a panel key, username and password from your operator. |
 | 🖥️ | **Run your own service** | [**Quickstart — terminal**](docs/quickstart-terminal.md): Docker Compose to a live channel in ~15 minutes. Or [**Quickstart — AI assistant**](docs/mcp-quickstart.md) to have an AI client do it through the MCP server. |
-| 🛠️ | **Build on it** | The viewer engine ships as [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk) (plus [`@aliran/react-native`](https://www.npmjs.com/package/@aliran/react-native) and native Kotlin [`aliran-kit`](sdk/android/)) — start at the [Player SDK docs](docs/sdk.md), or see [all components](#how-it-works). |
+| 🛠️ | **Build on it** | The viewer engine ships as [`@aliran/player-sdk`](https://www.npmjs.com/package/@aliran/player-sdk), plus [`@aliran/react-native`](https://www.npmjs.com/package/@aliran/react-native) and native Kotlin [`aliran-kit`](sdk/android/). Start at the [Player SDK docs](docs/sdk.md), or see [all components](#how-it-works). |
 
 ### Get the apps
 
@@ -55,13 +55,13 @@ Keyless **public builds** of every viewer are on the
 |---|---|
 | **Windows** | Installer + portable exe |
 | **macOS** | Apple silicon + Intel (dmg/zip) |
-| **Android** | One build covers phone **and** Android TV — pick your device's ABI: `arm64-v8a` for most devices, `armeabi-v7a` for older 32-bit TV boxes. APKs install from **Android 7**; live P2P playback needs **Android 10+** |
+| **Android** | One build covers phone **and** Android TV. Pick your device's ABI: `arm64-v8a` for most devices, `armeabi-v7a` for older 32-bit TV boxes. APKs install from **Android 7**; live P2P playback needs **Android 10+** |
 
-On first run each app shows a **Connect screen**: enter the three things an operator
-hands out — the **panel public key**, a **username** and a **password** — and the app
-finds the service over the P2P network. No URLs, no port forwarding. Install steps,
-including the unsigned-build warnings each OS shows, are in the
-[desktop viewer guide](docs/desktop-viewer-guide.md) (Windows + macOS) and the
+On first run, each app shows a **Connect screen**. Enter the three things your
+operator gives you: the **panel public key**, a **username**, and a **password**.
+The app then finds the service over the P2P network — no URLs, no port forwarding.
+Install steps, including the unsigned-build warnings each OS shows, are in the
+[desktop viewer guide](docs/desktop-viewer-guide.md) (Windows and macOS) and the
 [Android viewer guide](docs/android-viewer-guide.md).
 
 There is **no public demo service** — Aliran is infrastructure for operators. You
@@ -79,8 +79,8 @@ connect the apps to your own deployment, or to one someone runs for you.
                                   (accounts, catalog, OPRF)
 ```
 
-Cooperating peer-to-peer components — all serverless in transport, finding each other
-over the Hyperswarm DHT by public key.
+These are cooperating peer-to-peer components. All of them are serverless in
+transport — they find each other over the Hyperswarm DHT by public key.
 
 **Services you run** — the deployment. Only the first two are required:
 
@@ -122,17 +122,17 @@ over the Hyperswarm DHT by public key.
 
 - **No infrastructure cost at scale** — clients distribute to each other.
 - **Runs behind a firewall** — the panel needs no public IP or open ports (DHT
-  hole-punching); optional relay-only mode hides its origin IP.
-- **Self-hostable & brandable** — every operator generates their own keys; nothing is
-  hardcoded to a single deployment.
+  hole-punching). An optional relay-only mode hides its origin IP.
+- **Self-hostable & brandable** — every operator generates their own keys. Nothing
+  is hardcoded to a single deployment.
 - **Security by secrets, not obscurity** — public code, per-deployment keys. See the
   [security model](docs/security-model.md).
 
 ## Quickstart
 
-The supported deployment is **Docker Compose** — it pins the two things that actually
-break streaming deployments (the ffmpeg build and the Node version) and pre-solves host
-networking, volumes and auto-restart.
+The supported deployment is **Docker Compose**. It pins the two things that most
+often break streaming deployments — the ffmpeg build and the Node version — and it
+pre-solves host networking, volumes, and auto-restart.
 
 ```bash
 git clone https://github.com/AbueloSimpson/aliran && cd aliran
@@ -147,19 +147,19 @@ docker compose run --rm panel node src/admin-cli.js init
 docker compose up -d
 ```
 
-Full walkthrough including accounts, your first channel and connecting a viewer:
-**[Quickstart — terminal](docs/quickstart-terminal.md)**. Contributors running the
-stack locally from npm workspaces want the [developer tour](docs/getting-started.md)
-instead.
+For the full walkthrough — accounts, your first channel, and connecting a viewer —
+see the **[Quickstart — terminal](docs/quickstart-terminal.md)**. If you are a
+contributor running the stack locally from npm workspaces, use the
+[developer tour](docs/getting-started.md) instead.
 
 ## Features
 
 **Streaming & delivery**
 
 - Live P2P streaming (HLS-over-Hyperdrive), viewers re-seed each other
-- Resilient ingest: crash/stall watchdog, backup sources, and an **offline slate** — a
-  channel whose source dies loops a "SOURCE OFFLINE" card and auto-recovers, never
-  going blank
+- Resilient ingest: crash/stall watchdog, backup sources, and an **offline slate**.
+  When a channel's source dies, it loops a "SOURCE OFFLINE" card and recovers
+  automatically — it never goes blank
 - Push (RTMP/SRT/MPEG-TS) and pull (RTSP/HLS/RTMP/SRT/UDP/file) ingest, per-channel
   transcode including GPU encoders
 - **Redirect channels** that play an operator CDN/HLS URL directly, no P2P feed behind
@@ -175,8 +175,8 @@ instead.
 - **Program guide**: on-demand EPG fetched from operator URLs — schedules never bloat
   the P2P catalog
 - In-player subtitle/CC and audio-track selection, plus "smooth zapping" prefetch
-- **Mobile-honest networking**: on cellular/metered connections the app stops re-seeding
-  and throttles prefetch — viewers never burn upload data on a data plan
+- **Mobile-honest networking**: on a cellular or metered connection, the app stops
+  re-seeding and throttles prefetch. Viewers never burn upload data on a data plan
 
 **Operating it**
 
@@ -188,21 +188,21 @@ instead.
 - **Privacy-preserving analytics**: aggregate counts only — per-viewer tracking is
   architecturally impossible, and a test enforces it
 - **AI-operable** (optional): point an MCP-capable AI client at
-  [`@aliran/mcp`](https://www.npmjs.com/package/@aliran/mcp) and it can install a fresh
-  server, tune it, curate content, run backups/restores and answer usage questions from
-  the shipped docs — 100+ tools plus guided runbooks, with secrets never leaving the
-  operator's machine. See [docs/mcp.md](docs/mcp.md)
+  [`@aliran/mcp`](https://www.npmjs.com/package/@aliran/mcp). It can install a fresh
+  server, tune it, curate content, run backups and restores, and answer usage
+  questions from the shipped docs. It has 100+ tools plus guided runbooks, and
+  secrets never leave the operator's machine. See [docs/mcp.md](docs/mcp.md)
 - **White-label**: brand overlays (name, colours, logo, wallpaper, TV banner) and
-  per-operator custom builds for Android and desktop — the
-  [operator build walkthrough](docs/operator-build-walkthrough.md) goes from your keys
-  to a branded APK and exe
+  per-operator custom builds for Android and desktop. The
+  [operator build walkthrough](docs/operator-build-walkthrough.md) goes from your
+  keys to a branded APK and exe
 
 **Deliberate limits**
 
-- **No DRM, by design.** Content protection is transport encryption + per-user sealed
-  keys + key rotation — honest access control, not studio-grade DRM. The
-  [security model](docs/security-model.md) spells out exactly what that does and does
-  not defend against.
+- **No DRM, by design.** Content protection comes from transport encryption,
+  per-user sealed keys, and key rotation — honest access control, not studio-grade
+  DRM. The [security model](docs/security-model.md) spells out exactly what this
+  does and does not defend against.
 
 ## Documentation
 
@@ -224,9 +224,9 @@ Full docs at **<https://abuelosimpson.github.io/aliran/>**.
 
 ## Contributing
 
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
-development setup, test lanes and conventions, and [SECURITY.md](SECURITY.md) for
-reporting vulnerabilities privately.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development setup, test lanes, and conventions. See [SECURITY.md](SECURITY.md) to
+report vulnerabilities privately.
 
 ## Support the project
 
@@ -240,9 +240,9 @@ Every contribution goes toward the work on the [Roadmap](ROADMAP.md).
 ## ⚠️ Content-rights disclaimer
 
 Aliran is neutral infrastructure and ships no content. **Operators are solely
-responsible** for holding the rights to any content they stream and for complying with
-content-licensing and regional/legal requirements in the territories they serve. See
-[docs/legal-compliance.md](docs/legal-compliance.md).
+responsible** for holding the rights to any content they stream. They must comply
+with content-licensing and regional and legal requirements in the territories they
+serve. See [docs/legal-compliance.md](docs/legal-compliance.md).
 
 ## License
 

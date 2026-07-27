@@ -6,14 +6,15 @@ without holding real admin power over your Aliran panel. It fronts the panel's
 a call to the real API, gated by this service's own **role hierarchy** and
 **credit ledger**.
 
-Two things this service owns that the panel does not:
+This service owns two things the panel does not:
 
 - **The role hierarchy.** The panel has no admin roles — every panel admin is
-  all-powerful. So the hierarchy lives here (**admin → co-admin → super reseller
-  → reseller**), and this service talks to the panel as *one* dedicated admin.
+  all-powerful. So the hierarchy lives here (**admin → co-admin → super
+  reseller → reseller**), and this service talks to the panel as *one*
+  dedicated admin.
 - **The subscription clock.** The panel has no account expiry. This service
-  tracks each account's expiry and disables lapsed ones on the panel (the expiry
-  sweep). Credits are months: 1 credit = 1 month, flat.
+  tracks each account's expiry and disables lapsed ones on the panel (the
+  expiry sweep). Credits are months: 1 credit = 1 month, flat.
 
 Full concepts, both deployment topologies, and the bootstrap walkthrough are in
 **[docs/reseller-panel.md](../docs/reseller-panel.md)**.
@@ -37,8 +38,8 @@ node src/admin-cli.js add-admin reseller-svc <password>   # in panel/
 ```
 
 Then open `http://127.0.0.1:3330`, sign in as the root admin, and create
-co-admins / super resellers / resellers, mint credits, and let them activate
-accounts.
+co-admins, super resellers, and resellers. From there they can mint credits and
+activate accounts.
 
 ## CLI
 
@@ -51,8 +52,8 @@ node src/reseller-cli.js add-admin <name>        Seed THE root admin (refused if
                           balance <name>
 ```
 
-Everything past bootstrap happens through the dashboard/API, where the role gates
-live.
+Everything past bootstrap happens through the dashboard/API, where the role
+gates live.
 
 ## Data (`DATA_DIR`, default `./data`)
 
@@ -66,7 +67,8 @@ state/                    cached panel token + last reconcile report
 
 ## Deploy
 
-Docker Compose behind the `reseller` profile (so a plain `up -d` never starts it):
+Docker Compose runs this behind the `reseller` profile, so a plain `up -d`
+never starts it:
 
 ```sh
 docker compose --profile reseller run --rm reseller node src/reseller-cli.js add-admin boss
