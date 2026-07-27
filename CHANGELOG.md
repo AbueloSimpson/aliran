@@ -33,6 +33,31 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Movies & Series: the full browse experience + series playback (S54)** — the
+  VOD section of both apps is rebuilt around a reference mockup set, and the
+  provider config grows a second per-kind source: `sources.series` (CLI
+  `vod-config-set --series-source`, the `/api/vod-config` `sources` map, a new
+  dashboard field). One provider download now feeds movies, series **and** the
+  genre names — enabling series adds no extra provider traffic — and series get
+  the full path: grid → detail page (poster, star rating, date range, genres,
+  plot, season tiles with episode-count badges) → episode list → playback, with
+  episode URLs token-filled under the same HTTPS-only rule as movies. The browse
+  structure in both apps: a left menu (Movies / Series / Search — search is its
+  own view), tabs **Recommended · My List · Genres · All**, an always-visible
+  "Sort by" chip over a five-option sort menu (Recently added / A-Z / Newest
+  releases / Oldest releases / Recently watched), a scroll-synced A–Z jump rail
+  on the alphabetical sort, genre cards built from the provider's own category
+  names, and one-row Recently-added / Newest-releases rails with "SEE N MORE…".
+  **My List and watch history are device-local by design** — stored only in the
+  app's local preferences (worklet-owned on Android, main-process-owned on
+  desktop), never sent to the panel or the provider; they power resume
+  ("Start" continues a series at the right episode and position), the Recently
+  watched sort, and the My List tab. Both VOD players gained the live players'
+  audio/subtitle track selection (phone CC button; desktop CC button + `c`).
+  Pinned by rebuilt jest suites (RN), new lanes in `test:desktop-vod` — incl. a
+  byte-identity guard that keeps the two sort-module copies in lockstep — and
+  the flipped e2e series-source assertions.
+
 - **Movies & Series in the apps (S53b–d)** — both the phone/TV app and the desktop
   player grow a VOD section fed by the operator's external provider: a menu tile
   (present **only** while the panel-delivered `vod` payload says enabled, and a

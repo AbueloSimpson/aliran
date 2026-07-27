@@ -272,7 +272,40 @@ provider the operator already has accounts with. Design facts a brand needs:
   with the panel switch on.
 - **Never ship dev credentials.** The gitignored `vod.dev` override in
   `config/service.json` is for local testing only — see
-  [Client build](client-build.md#the-vod-block--external-provider-dev-override-only).
+  [Client build](client-build.md#the-vod-block-external-provider-dev-override-only).
+
+### Movies and Series — per-kind sources
+
+The provider config carries one source name per catalog kind:
+`sources.movies` and `sources.series`. With only a movies source set, the apps
+show movies and keep Series honestly empty; setting a series source
+(`vod-config-set --series-source <name>`, the `sources` map on
+`PATCH /api/vod-config`, or the dashboard card's field) lights up series
+browsing — grid, a detail page with seasons and episode lists, and episode
+playback — at the viewer's next login, again with no client rebuild. One
+provider download feeds both kinds plus the genre names, so enabling series
+adds no extra provider traffic.
+
+### What the section looks like
+
+Both apps render the same browse structure (English strings, not themeable
+beyond the normal color tokens): a left menu (**Movies / Series / Search** —
+search is its own view), a tab bar (**Recommended · My List · Genres · All**),
+a sort menu (Recently added · A-Z · Newest releases · Oldest releases ·
+Recently watched) behind an always-visible "Sort by" chip, a vertical A–Z
+jump rail on the alphabetical sort, genre cards built from the provider's own
+category names, and one-row "Recently added" / "Newest releases" rails on
+Recommended. Titles resume where the viewer left off, and the VOD players
+offer the same audio/subtitle track selection as live playback.
+
+### My List and watch history stay on the device
+
+The watchlist ("My List") and the watch history that powers *Recently
+watched* and resume are stored **only in the app's local preferences file on
+the viewer's device**. They are never sent to the panel, the provider, or
+anywhere else — the operator cannot see them, and neither can you. Uninstalling
+the app (or clearing its data) erases them. If you write your own privacy
+copy, you can state this plainly.
 
 ## Keys and credentials
 

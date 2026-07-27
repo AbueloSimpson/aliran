@@ -20,7 +20,7 @@ also shares pieces of the stream you've already received with other viewers of
 the same service — that's what lets a small operator serve many viewers without
 a big server. It uses upload bandwidth while a channel plays (roughly comparable
 to the channel's own bitrate at most), and stops when you close the app. See
-[§7](#7-privacy-bandwidth-honestly) for exactly what is and isn't shared.
+[§8](#8-privacy-bandwidth-honestly) for exactly what is and isn't shared.
 
 ## 2. Install
 
@@ -78,7 +78,7 @@ is what signs you in — and it never leaves your computer in readable form.
 Press **Connect**. The first connection can take up to a minute while the app
 finds the network; after that, the app remembers everything and every later
 launch goes straight to live TV. If it fails, see
-[§8](#8-when-something-doesnt-work).
+[§9](#9-when-something-doesnt-work).
 
 *(The screenshots in this guide show a small demo service broadcasting colour
 bars — your operator's channels appear the same way, with their names, logos and
@@ -117,7 +117,33 @@ Things that are normal:
 - If your service has **on-demand titles** (movies/shows, not live), they play
   with a seek bar and pause — `Space` pauses, drag the bar to seek.
 
-## 5. Settings worth knowing
+## 5. Movies & Series (if your service has them)
+
+Some services add a **Movies & Series** tile to the main menu — an on-demand
+catalog next to the live channels. Inside it:
+
+- The left menu switches between **Movies**, **Series** and **Search**
+  (search is its own view with a result grid). The content pane carries a tab
+  bar — **Recommended · My List · Genres · All** — plus a **"Sort by" chip**
+  that opens the sort menu (Recently added, A-Z, Newest releases, Oldest
+  releases, Recently watched).
+- On the A-Z sort a **letter rail** appears on the right edge — click a
+  letter to jump; the letter of what you're looking at stays highlighted as
+  you scroll.
+- **My List:** hover a poster and click the **＋** that appears (or
+  right-click the tile); a series can also be added from its detail page.
+- **Series** open a detail page: pick a season, pick an episode, and it
+  plays. **Start** plays the next episode where you left off.
+- Titles **resume** where you stopped watching, and the *Recently watched*
+  sort surfaces what you were in the middle of.
+- In the player: `Space` pauses, `←`/`→` seek, and `c` (or the **CC**
+  button) picks subtitle and audio languages when the title carries them.
+  `Esc` goes back.
+
+Your list and your watch history are stored **only on this PC** — they are
+never sent to your operator or anyone else.
+
+## 6. Settings worth knowing
 
 - **Smooth zapping** — preloads the neighboring channels while you watch so
   `↑`/`↓` feels instant. It costs extra download bandwidth while a channel
@@ -130,14 +156,14 @@ Things that are normal:
 - **Diagnostics** — shows whether the current channel comes peer-to-peer
   (`P2P`, with a peer count) or from a direct internet source (`CDN`).
 
-## 6. Your account and devices
+## 7. Your account and devices
 
 Accounts have a device limit set by the operator (commonly a few devices). Each
 PC/phone you sign in on takes a slot; going over the limit signs out the oldest
 device. If you're unexpectedly signed out, that's the usual cause — just sign
 in again, or ask your operator to raise your limit.
 
-## 7. Privacy & bandwidth, honestly
+## 8. Privacy & bandwidth, honestly
 
 - **What the app uploads:** encrypted pieces of the streams you watch (or
   recently watched), served to other viewers of the same service. Nothing else.
@@ -154,7 +180,7 @@ in again, or ask your operator to raise your limit.
   simply to close the app when you're not watching — uploading only happens
   while it runs.
 
-## 8. When something doesn't work
+## 9. When something doesn't work
 
 | Problem | What it means / what to do |
 |---|---|
@@ -167,7 +193,7 @@ in again, or ask your operator to raise your limit.
 | The app opens on Connect again out of nowhere | Someone used *Change service…*, or your Windows user profile was reset (that also invalidates the encrypted sign-in — reconnect once). |
 | Two copies won't run at once | By design — the second launch focuses the first window. |
 
-## 9. Uninstall / full reset
+## 10. Uninstall / full reset
 
 - Installer build: uninstall from Windows *Apps* as usual. Portable build:
   delete the exe.

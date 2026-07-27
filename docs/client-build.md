@@ -166,12 +166,19 @@ always wins and ignores any persisted one.
 
 ### The `vod` block — external-provider dev override only
 
-If the operator's panel has an [external VOD provider](white-label.md#movies--series-the-external-vod-provider)
+If the operator's panel has an [external VOD provider](white-label.md#movies-series-the-external-vod-provider)
 enabled, the app shows a **Movies & Series** section — nothing about that is
 configured in the descriptor. The provider's coordinates (apiBase / service /
 sources / params) always come from the **panel** on the login payload, and in
 production the app authenticates to the provider with the **viewer's own app
-account** (username as `username`, app password as `token`).
+account** (username as `username`, app password as `token`). The `sources` map
+is per-kind (`movies` / `series`) — series browsing appears only when the
+operator has set a series source (see
+[the white-label page](white-label.md#movies-and-series-per-kind-sources)).
+The section's watchlist and watch history are **device-local** (they live in
+the same `aliran-prefs.json` the app already keeps — see
+[the privacy note](white-label.md#my-list-and-watch-history-stay-on-the-device));
+clearing app data resets them along with everything else.
 
 The only thing a descriptor may carry is a **dev-time credential override** for
 testing against a provider account that is not a viewer account:

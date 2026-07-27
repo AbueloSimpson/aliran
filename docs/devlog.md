@@ -2987,3 +2987,68 @@ was not touched.
   (45 docs) with exit 0. Doctor markers updated in lockstep (named-host line,
   `repeater_*` group, prompts line). Full required lane + `mkdocs --strict`
   green locally. NO VPS work; multi-box LIVE validation rides S20b.
+
+### S54 — Movies & Series: the mockup browse experience, series playback, device-local lists (verified)
+- **Why:** S53 shipped a functional but minimal VOD landing (one searchable grid);
+  the user supplied a five-screen reference mockup set and chose full scope. S54
+  rebuilds the section in BOTH apps to that pattern and lights up the series half
+  of the provider catalog. Built as four loop segments (S54a plumbing → S54b RN
+  browse → S54c RN series/lists/player → S54d desktop twin) + this user-gated
+  validation pass.
+- **One download, three lists (S54a).** The panel's provider config grew
+  `sources.series` (CLI `--series-source`, API `sources` map, dashboard field —
+  `VOD_SOURCE_KINDS` is now `['movies','series']`). The provider answers movies,
+  series AND the genre names from the SAME `getMovies.php` wrapper, so the cache
+  entry reshaped to `{at, movies, series, categories}` and one fetch feeds
+  everything. `pickSeriesList` reads only the wrapper's `series` key (no
+  first-array fallback), series years fall back to `aired_first` when `anio` is
+  "0", and `getSeriesInfo` strips the seasons/episodes shape with episode URLs
+  token-filled under the same HTTPS-only rule as movies (`url:''` = a notice,
+  never a dial). **Verified live this pass:** fetching with `source=<the series
+  value>` returns the identical full wrapper — so a series-only config works on
+  the same single download; the finding is pinned as a comment in both provider
+  copies.
+- **The browse structure (S54b/S54d).** Left menu Movies / Series / Search
+  (search is its own view — the always-visible inline input is gone), tabs
+  Recommended · My List · Genres · All, an always-visible "Sort by" chip over the
+  five-option mockup sort set (Recently added default / A-Z / Newest releases /
+  Oldest releases / Recently watched — no Z-A), a scroll-synced A–Z jump rail
+  rendered only in the alphabetical sort, genre cards from the provider's own
+  category strings (an item's numeric ids index them), Recommended = one-row
+  Recently-added / Newest-releases rails with "SEE N MORE…" jumping to All in
+  that ordering, and the tile restyle (framed poster + fixed 2-line label with
+  "(year)" inline; the overlay badge deleted). The two sort modules are
+  line-identical mirrors — a comment-stripped source-identity lane in
+  `test:desktop-vod` fails the build if they drift.
+- **Series detail + resume + tracks (S54c/S54d).** Series grid → detail (poster,
+  ★ rating from `rating`/2, date range, genres, expandable plot, season tiles
+  with episode-count badges) → episode list (duration chips via the S53
+  `parseDuration`) → playback. Watch history writes from the players every 10 s
+  (flush on back/unmount; >95 % watched stores position 0 = "watched"), resume
+  seeks once on load, and a series' **Start** continues at the newest episode
+  entry for that series. Both VOD players reuse the live players' track
+  machinery (RN rn-video tracks + TrackMenu, desktop hls.js audio/subtitle
+  events + TrackMenu + CC/`c`).
+- **My List and watch history are device-local (D9)** — the RN worklet and the
+  desktop main process own the two capped, shape-gated prefs arrays
+  (`vodList` 500 / `vodHistory` 200, whole-array replace, hostile-input rule);
+  nothing is ever sent to the panel or the provider, and the docs now say so in
+  plain words (white-label privacy section + both viewer guides).
+- **Verified (S54e):** full unit ladder at the tip (client jest 20 suites/167
+  tests + tsc, `test:desktop-vod`, desktop tsc + build, `test:admin-api` — its
+  lane S proves a REAL login carries the series source verbatim — `test:mcp`,
+  `test:config`, `mkdocs --strict`). Dev-panel drill: series source PATCHed into
+  a running panel, then an SDK login over the public DHT read
+  `vod.sources.series` back. Desktop CDP drive against the live provider
+  (7 229 movies / 197 series): tabs, genre cards (38, name + representative
+  poster), shelves + SEE-MORE sort hand-off, search view, all five sorts, A–Z
+  rail with exact letter jumps past the 120-tile page boundary (first target
+  tile lands at offset 0) + two-way scroll highlight, series detail → episode
+  playback (duration chip 51:00 = player duration 3 060 s), "Resume at" hints,
+  Start resuming mid-episode, My List add/remove from tile and detail, real
+  audio/subtitle switching (spa/eng/ara) via `c`, and **everything — list and
+  history — surviving an app restart**. Phone: worklet bundle regenerated and
+  byte-verified (`vod-list-set` present in the DECODED blob — the S53d
+  stale-bundle lesson applied), arm64 APK built from the main checkout with the
+  baked descriptor and the byte-identical fresh blob verified INSIDE the APK;
+  the on-device pass rides the dev phone's next connection.

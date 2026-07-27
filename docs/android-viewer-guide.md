@@ -20,7 +20,7 @@ also shares pieces of the stream you've already received with other viewers of
 the same service — that's what lets a small operator serve many viewers without
 a big server. It uses upload bandwidth while a channel plays, and it stops when
 you close the app. On mobile data it behaves better than most: see
-[§8](#8-privacy-bandwidth-honestly).
+[§9](#9-privacy-bandwidth-honestly).
 
 ## 2. Install
 
@@ -75,7 +75,7 @@ finds the network — if it reports the service unreachable on the very first
 try, press **Connect** again: the app keeps looking in the background, and the
 second attempt usually lands. After that, everything is remembered and every
 later launch goes straight to live TV. Still stuck? See
-[§9](#9-when-something-doesnt-work).
+[§10](#10-when-something-doesnt-work).
 
 *(The screenshots in this guide show a small demo service broadcasting colour
 bars — your operator's channels appear the same way, with their names, logos
@@ -134,7 +134,35 @@ while a channel starts; channels near the one you're watching often start
 faster, and the optional *Smooth zapping* setting (below) makes surfing
 near-instant.
 
-## 6. Settings worth knowing
+## 6. Movies & Series (if your service has them)
+
+Some services add a **Movies & Series** tile to the menu — an on-demand
+catalog next to the live channels. Inside it:
+
+- The left menu switches between **Movies**, **Series** and **Search**
+  (search is its own screen with a result grid).
+- The tab bar on top — **Recommended · My List · Genres · All** — works the
+  same for movies and series. *Recommended* shows "Recently added" and
+  "Newest releases" rows; *Genres* shows one card per genre; *All* is the
+  full grid.
+- The **"Sort by" chip** above the grid opens the sort menu: Recently added,
+  A-Z, Newest releases, Oldest releases, Recently watched. On the A-Z sort a
+  **letter rail** appears on the right edge — tap (or D-pad into) a letter to
+  jump.
+- **My List:** long-press a poster (hold **OK** on a TV remote) to add or
+  remove a title; a series can also be added from its detail page.
+- **Series** open a detail page: pick a season, pick an episode, and it
+  plays. **Start** plays the next episode where you left off.
+- Titles **resume** where you stopped watching, and the *Recently watched*
+  sort surfaces what you were in the middle of.
+- On the phone, the **CC** button in the player picks subtitle and audio
+  languages when the title carries them.
+
+Your list and your watch history are stored **only on this device** — they
+are never sent to your operator or anyone else, and clearing the app's data
+erases them.
+
+## 7. Settings worth knowing
 
 ![Settings on the phone](img/android/settings.png)
 
@@ -151,14 +179,14 @@ near-instant.
 - **Diagnostics** — shows whether the current channel comes peer-to-peer
   (`P2P`, with a peer count) or from a direct internet source (`CDN`).
 
-## 7. Your account and devices
+## 8. Your account and devices
 
 Accounts have a device limit set by the operator (commonly a few devices). Each
 phone/TV you sign in on takes a slot; going over the limit signs out the oldest
 device. If you're unexpectedly signed out, that's the usual cause — just sign
 in again, or ask your operator to raise your limit.
 
-## 8. Privacy & bandwidth, honestly
+## 9. Privacy & bandwidth, honestly
 
 - **What the app uploads:** encrypted pieces of the streams you watch (or
   recently watched), served to other viewers of the same service. Nothing else.
@@ -176,7 +204,7 @@ in again, or ask your operator to raise your limit.
   (standard Android app sandboxing — other apps can't read it; anyone you hand
   the unlocked device to can open the app signed-in, like any TV app).
 
-## 9. When something doesn't work
+## 10. When something doesn't work
 
 | Problem | What it means / what to do |
 |---|---|
@@ -190,7 +218,7 @@ in again, or ask your operator to raise your limit.
 | The app opens on Connect again out of nowhere | Someone used *Change service…*, or the app's data was cleared (see below) — reconnect once. |
 | Everything is wedged | Android Settings → Apps → Aliran → **Force stop**, then reopen. Still wedged: **Clear storage** is a complete factory reset of the app — you'll need the panel key + sign-in again; the stream cache it deletes is disposable. |
 
-## 10. Uninstall / full reset
+## 11. Uninstall / full reset
 
 Uninstall like any app (long-press the icon, or Settings → Apps). All app data
 — the service key, sign-in, favorites, and the stream cache — lives in the
