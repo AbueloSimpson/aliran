@@ -103,6 +103,7 @@ The keyboard (like a remote) and the mouse both work everywhere in the app.
 | See what's on / channel details | `i` (or right-click a channel row) — shows the program guide when the channel has one |
 | Add/remove a favorite | `f` (or the ★ button on the bottom bar) |
 | Subtitles / audio language | `c` (or the `CC` button) — shown only when the current channel actually carries tracks |
+| Mute / volume | `m` toggles mute; the speaker button + slider on the bottom bar set the level |
 | Go back / close a panel | `Esc` |
 | Main menu (Favorites, Search, Settings) | `Esc` from fullscreen video |
 
@@ -146,8 +147,9 @@ on-demand catalog next to the live channels. Inside it:
 - In the player: the controls fade out over clean video — move the mouse to
   bring them back (pausing keeps them up). Under the progress bar sit
   **skip buttons** (30 and 10 seconds, both directions) around play/pause;
-  `Space` pauses, `←`/`→` seek, and `c` (or the **⋮** button) picks a
-  subtitle or audio language when the title carries one. `Esc` goes back.
+  `Space` pauses, `←`/`→` seek, `m` mutes (the speaker button + slider set
+  the level), and `c` (or the **⋮** button) picks a subtitle or audio
+  language when the title carries one. `Esc` goes back.
 
 Your list and your watch history are stored **only on this computer**. The
 app never sends them to your operator or to anyone else.

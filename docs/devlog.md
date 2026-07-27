@@ -3251,3 +3251,12 @@ was not touched.
   way to a deep index; rows are now pinned to an exact height
   (`CHANNEL_ROW_H`) and the list mounts directly ON the playing channel
   (`initialScrollIndex` + exact `getItemLayout`).
+- **QA round 3 (same day): in-app volume.** Neither app had any audio
+  control. Both players in both shells gained a speaker mute toggle + level
+  slider (`VolumeControl`, mirrored RN/desktop): desktop applies it to the
+  `<video>` (re-applied on every self-heal remount), persists it in
+  localStorage and adds an `m` mute key; RN rides rn-video's
+  `volume`/`muted` props (`AliranVideo` needed no change — its existing
+  `videoProps` spread carries them), session-local beside the hardware
+  keys. TV stays control-free (S7): remotes own volume. Muting keeps the
+  level so unmuting restores it; dragging the slider unmutes.

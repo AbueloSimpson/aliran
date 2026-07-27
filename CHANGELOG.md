@@ -70,7 +70,11 @@ phone + Android TV, and the Windows desktop player).
   built from the device-local history (unfinished titles only, episodes
   crediting their series) so a backed-out film is one tap away; and the
   live channel list now opens directly ON the playing channel (exact
-  fixed-row math instead of a visible virtualized scroll hunt).
+  fixed-row math instead of a visible virtualized scroll hunt). Both apps
+  also gained an **in-app volume control** — a speaker mute toggle + level
+  slider on the player bars (desktop persists it and adds an `m` mute key;
+  on the phone it rides alongside the hardware volume keys; TV remotes keep
+  owning volume as before).
 
 - **Movies & Series in the apps (S53b–d)** — both the phone/TV app and the desktop
   player grow a VOD section fed by the operator's external provider: a menu tile
