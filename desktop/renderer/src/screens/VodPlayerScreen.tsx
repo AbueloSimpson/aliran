@@ -35,6 +35,7 @@ import { backend } from '../bridge'
 import { formatDuration } from '../catalog'
 import { TrackMenu } from '../components/TrackMenu'
 import { trackList, type MediaTrack } from '../components/HlsVideo'
+import { VolumeControl, loadVolume, saveVolume } from '../components/VolumeControl'
 import type { VodHistoryEntry } from '../types'
 
 /** Seconds of playback between two history writes. Main rewrites the whole prefs file
@@ -81,6 +82,16 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
   const [selectedText, setSelectedText] = useState(-1)
   const [selectedAudio, setSelectedAudio] = useState<number | undefined>(undefined)
   const [showTracks, setShowTracks] = useState(false)
+
+  // In-app volume (QA round 3): applied straight to the <video>, persisted in
+  // localStorage (shared with the live player).
+  const [{ volume, muted }, setVol] = useState(loadVolume)
+  const volRef = useRef({ volume, muted }); volRef.current = { volume, muted }
+  function setVolume (v: number, m: boolean) { setVol({ volume: v, muted: m }); saveVolume(v, m); showBar() }
+  useEffect(() => {
+    const v = videoRef.current
+    if (v) { v.volume = Math.max(0, Math.min(1, volume)); v.muted = muted }
+  }, [volume, muted, url, loading])
 
   // --- transport auto-hide (QA round 2) — the live screen's fade + cursor hide -----
   const [barShown, setBarShown] = useState(true)
@@ -162,6 +173,7 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
       else if (e.key === ' ') { e.preventDefault(); togglePause(); showBar() }
       else if (e.key === 'ArrowRight') { e.preventDefault(); nudge(30); showBar() }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); nudge(-10); showBar() }
+      else if (e.key === 'm' || e.key === 'M') { e.preventDefault(); setVolume(volRef.current.volume, !volRef.current.muted) }
       else if ((e.key === 'c' || e.key === 'C') && (textTracks.length > 0 || audioTracks.length > 1)) { e.preventDefault(); setShowTracks(true) }
     }
     window.addEventListener('keydown', onKey)
@@ -322,6 +334,7 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
               <span className="np-main">
                 <span className="np-title-line"><span className="np-title">{title}</span></span>
               </span>
+              <VolumeControl volume={volume} muted={muted} onChange={setVolume} />
               {hasTracks && (
                 <button className="np-btn" onClick={() => { setShowTracks(true); showBar() }}><span className="np-btn-glyph">⋮</span><span className="np-btn-label">Audio & subtitles</span></button>
               )}

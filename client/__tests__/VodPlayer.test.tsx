@@ -164,6 +164,20 @@ test('the transport fades after idle, a tap brings it back, and pausing pins it'
   }
 })
 
+test('the volume control mutes and sets the level on <Video>', async () => {
+  const tree = await createTree(<VodPlayerScreen {...propsFor({ url: URL, title: 'Heat' })} />)
+  await ReactTestRenderer.act(async () => { last().onLoad({ duration: 100 }) })
+  expect(last().volume).toBe(1)
+  expect(last().muted).toBe(false)
+  const speaker = () => tree.root.findAll(n => n.props.accessibilityRole === 'button' && ['Mute', 'Unmute'].includes(n.props.accessibilityLabel))[0]
+  await ReactTestRenderer.act(async () => { speaker().props.onPress() })
+  expect(last().muted).toBe(true)
+  expect(last().volume).toBe(0) // belt: level zeroed while muted
+  await ReactTestRenderer.act(async () => { speaker().props.onPress() })
+  expect(last().muted).toBe(false)
+  expect(last().volume).toBe(1) // unmute restores the kept level
+})
+
 // --- device-local watch history (D9) -----------------------------------------------
 
 test('history is written on a throttle, not on every progress tick', async () => {

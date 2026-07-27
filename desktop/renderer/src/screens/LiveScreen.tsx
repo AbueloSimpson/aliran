@@ -32,6 +32,7 @@ import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { TrackMenu } from '../components/TrackMenu'
 import { ReportModal } from '../components/ReportModal'
+import { loadVolume, saveVolume } from '../components/VolumeControl'
 
 type Overlay = 'none' | 'list' | 'info'
 
@@ -89,6 +90,11 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
   function setVodPaused (v: boolean) { vodPausedRef.current = v; setVodPausedState(v) }
 
   const videoHandle = useRef<HlsVideoHandle | null>(null)
+  // In-app volume (QA round 3): applied to the <video> by HlsVideo, persisted in
+  // localStorage (shared with the VOD player).
+  const [{ volume, muted }, setVol] = useState(loadVolume)
+  function setVolume (v: number, m: boolean) { setVol({ volume: v, muted: m }); saveVolume(v, m); showBar() }
+  const volRef = useRef({ volume, muted }); volRef.current = { volume, muted }
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   const barIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cursorIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -262,6 +268,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
         else if ((e.key === 'f' || e.key === 'F') && playing) { e.preventDefault(); backend.toggleFavorite(playing.id); showBar() }
         else if ((e.key === 'r' || e.key === 'R') && playing) { e.preventDefault(); setReportOpen(true) }
         else if ((e.key === 'c' || e.key === 'C') && (textTracks.length > 0 || audioTracks.length > 1)) { e.preventDefault(); setShowTracks(true) }
+        else if (e.key === 'm' || e.key === 'M') { e.preventDefault(); setVolume(volRef.current.volume, !volRef.current.muted) }
         else if (e.key === ' ' && playingVod) { e.preventDefault(); toggleVodPause() }
       } else if (ov === 'list' && paneRef.current === 'rail') {
         if (e.key === 'ArrowDown') { e.preventDefault(); bumpMenuIdle(); setRailFocus((i) => Math.min(railItems.length - 1, i + 1)) }
@@ -316,6 +323,8 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
           onProgress={playingVod ? setVodPos : undefined}
           onDuration={playingVod ? ((d) => { if (d > 0) setVodDur(d) }) : undefined}
           onEnded={playingVod ? (() => { setVodPaused(true); showBar() }) : undefined}
+          volume={volume}
+          muted={muted}
         />
       )}
 
@@ -393,6 +402,9 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
               setVodPos(Math.floor(sec))
               showBar()
             }}
+            volume={volume}
+            muted={muted}
+            onVolume={setVolume}
           />
           {source && (
             <div className="status-badge">

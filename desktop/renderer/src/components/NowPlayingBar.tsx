@@ -10,6 +10,7 @@
 import React, { useRef, useState } from 'react'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration } from '../catalog'
+import { VolumeControl } from './VolumeControl'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
 
 export interface VodTransport {
@@ -32,9 +33,13 @@ export interface NowPlayingBarProps {
   vod?: VodTransport | null
   onTogglePause?: () => void
   onSeek?: (seconds: number) => void
+  /** In-app volume (QA round 3) — the control renders when the handler is given. */
+  volume?: number
+  muted?: boolean
+  onVolume?: (volume: number, muted: boolean) => void
 }
 
-export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek }: NowPlayingBarProps) {
+export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
   // What's on NOW from the program guide — more useful on the bar than the channel
   // synopsis; the synopsis still lives in the Info panel.
   const { data } = useEpg(stream.epgUrl, stream.epgId)
@@ -68,6 +73,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
         <BarButton glyph={favorite ? '★' : '☆'} label="Favorite" active={favorite} onClick={onToggleFavorite} />
         <BarButton glyph="⚑" label="Report" onClick={onReport} />
         {hasTracks && <BarButton glyph="CC" label="Subtitles" onClick={() => onTracks?.()} />}
+        {onVolume && <VolumeControl volume={volume ?? 1} muted={!!muted} onChange={onVolume} />}
       </div>
     </div>
   )

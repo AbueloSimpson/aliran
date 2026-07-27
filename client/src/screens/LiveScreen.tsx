@@ -119,6 +119,10 @@ export function LiveScreen ({ route }: Props) {
   function setVodPaused (v: boolean) { vodPausedRef.current = v; setVodPausedState(v) }
   // Imperative seek into the SDK's player (vod transport; see AliranVideoHandle).
   const videoHandle = useRef<AliranVideoHandle | null>(null)
+  // In-app volume (QA round 3): rn-video's volume/muted props, session-local — the
+  // OS keeps hardware volume, this is the trim on top. Phone-only control (S7).
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
 
   const overlayRef = useRef(overlay); overlayRef.current = overlay
   const playingIdRef = useRef(playingId); playingIdRef.current = playingId
@@ -351,11 +355,16 @@ export function LiveScreen ({ route }: Props) {
           // in whole seconds (one re-render/second), the player-reported runtime, and
           // end-of-title parking the transport on ▶ (no auto-anything — the viewer
           // seeks back, replays, or zaps out).
-          videoProps={playingVod ? {
-            onProgress: (e: { currentTime: number }) => setVodPos(Math.floor(e.currentTime)),
-            onLoad: (e: { duration?: number }) => { if (e.duration && e.duration > 0) setVodDur(e.duration) },
-            onEnd: () => { setVodPaused(true); showBar() }
-          } : undefined}
+          videoProps={{
+            // In-app volume rides every playback (QA round 3).
+            volume: muted ? 0 : volume,
+            muted,
+            ...(playingVod ? {
+              onProgress: (e: { currentTime: number }) => setVodPos(Math.floor(e.currentTime)),
+              onLoad: (e: { duration?: number }) => { if (e.duration && e.duration > 0) setVodDur(e.duration) },
+              onEnd: () => { setVodPaused(true); showBar() }
+            } : {})
+          }}
         />
       )}
 
@@ -404,6 +413,9 @@ export function LiveScreen ({ route }: Props) {
                   setVodPos(Math.floor(sec))
                   showBar()
                 }}
+                volume={volume}
+                muted={muted}
+                onVolume={(v, m) => { setVolume(v); setMuted(m); showBar() }}
               />
             </Animated.View>
           )}

@@ -85,6 +85,10 @@ export interface HlsVideoProps {
   onProgress?: (seconds: number) => void
   onDuration?: (seconds: number) => void
   onEnded?: () => void
+  /** In-app volume (QA round 3): 0..1 level + mute, applied to the element on every
+   *  mount (the self-heal ladder remounts <video> — the setting must survive that). */
+  volume?: number
+  muted?: boolean
   stallTimeoutMs?: number
 }
 
@@ -107,7 +111,7 @@ export function trackList (tracks: Array<{ name?: string; lang?: string }>): Med
 export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function HlsVideo ({
   backend, streamId, paused, onTune, onPeers, onBuffering, onSource, onError, onStall,
   onAudioTracks, onTextTracks, selectedAudio, selectedText = -1,
-  onProgress, onDuration, onEnded, stallTimeoutMs = STALL_MS
+  onProgress, onDuration, onEnded, volume, muted, stallTimeoutMs = STALL_MS
 }: HlsVideoProps, ref) {
   const [url, setUrl] = useState<string | null>(backend.url)
   const [attempt, setAttempt] = useState(0)
@@ -133,6 +137,15 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
   useImperativeHandle(ref, () => ({
     seek: (seconds: number) => { const v = videoRef.current; if (v) v.currentTime = seconds }
   }), [])
+
+  // In-app volume: re-applied on every mount too (attempt) — the self-heal ladder
+  // replaces the <video> element and a fresh element starts at full volume.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    v.volume = typeof volume === 'number' ? Math.max(0, Math.min(1, volume)) : 1
+    v.muted = !!muted
+  }, [volume, muted, attempt, url])
 
   function remount () {
     epoch.current++

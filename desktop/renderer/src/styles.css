@@ -805,6 +805,11 @@ img { -webkit-user-drag: none; }
 /* The current sort, always visible above the grid (mockup screen 1). */
 .vod-sort { color: var(--c-text); }
 
+/* In-app volume (QA round 3): speaker mute button + level slider, on both players'
+   bars. The range input is restyled to the app's accent-on-surface look. */
+.np-volume { display: flex; align-items: center; gap: 6px; }
+.np-volume-slider { width: 96px; accent-color: var(--c-accent); cursor: pointer; }
+
 /* VOD player (QA round 2): the skip cluster centered under the progress bar, and the
    live screen's cursor-hide rule scoped to this surface. */
 .np-skip-row { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 10px; }

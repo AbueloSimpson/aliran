@@ -19,6 +19,7 @@ import { View, Text, Image, Pressable, StyleSheet, PanResponder } from 'react-na
 import type { Stream } from '../worklet'
 import { formatChannelNumber, formatDuration } from '../catalog'
 import { useEpg } from '@aliran/react-native'
+import { VolumeControl } from './VolumeControl'
 import { theme } from '../theme'
 
 /** Transport state for a vod title (position/duration in seconds). */
@@ -47,9 +48,14 @@ export interface NowPlayingBarProps {
   onTogglePause?: () => void
   /** vod: seek to an absolute position (seconds) — tap or drag-release on the bar. */
   onSeek?: (seconds: number) => void
+  /** In-app volume (QA round 3) — the control renders when the handler is given.
+   *  Phone-only like the rest of the button row. */
+  volume?: number
+  muted?: boolean
+  onVolume?: (volume: number, muted: boolean) => void
 }
 
-export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek }: NowPlayingBarProps) {
+export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
   // What's on NOW from the program guide (S27) — the airing program is more useful on
   // the bar than the channel synopsis. Falls back to the description ("via demotv")
   // for channels without an EPG. The channel synopsis still lives in the Info panel.
@@ -93,6 +99,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
             <BarButton glyph={favorite ? '★' : '☆'} label="Favorite" active={favorite} onPress={onToggleFavorite} />
             <BarButton glyph="⚑" label="Report" onPress={onReport} />
             {hasTracks && <BarButton glyph="CC" label="Subtitles" onPress={() => onTracks?.()} />}
+            {onVolume && <VolumeControl volume={volume ?? 1} muted={!!muted} onChange={onVolume} />}
           </View>
         )}
       </View>

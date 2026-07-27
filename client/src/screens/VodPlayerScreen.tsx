@@ -33,6 +33,7 @@ import { SelectedTrackType, type AudioTrack, type SelectedTrack, type TextTrack,
 import type { RootStackParamList } from '../App'
 import { backend } from '../worklet'
 import { TrackMenu } from '../components/TrackMenu'
+import { VolumeControl } from '../components/VolumeControl'
 import { formatDuration } from '../catalog'
 import { theme } from '../theme'
 
@@ -60,6 +61,10 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
   const [duration, setDuration] = useState(durationSec ?? 0)
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
+  // In-app volume (QA round 3): rn-video's volume/muted props, session-local — the
+  // OS keeps hardware volume, this is the trim on top. Phone-only control (S7).
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
 
   // Subtitle/CC + audio tracks the player found in THIS title, plus the current picks
   // (subtitles off, audio = the stream's default). Session-local: a track choice is not
@@ -199,6 +204,8 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
           resizeMode="contain"
           controls={false}
           paused={paused}
+          volume={muted ? 0 : volume}
+          muted={muted}
           progressUpdateInterval={1000}
           selectedAudioTrack={selectedAudio}
           selectedTextTrack={selectedText}
@@ -256,6 +263,9 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
           <View style={styles.transport} pointerEvents={theme.isTV ? 'none' : 'auto'}>
             <SeekBar position={position} duration={duration} onSeek={(s) => { seek(s); showBar() }} />
+            {!theme.isTV && (
+              <VolumeControl volume={volume} muted={muted} onChange={(v, m) => { setVolume(v); setMuted(m); showBar() }} />
+            )}
             {!theme.isTV && hasTracks && (
               <Pressable
                 accessibilityRole="button"
