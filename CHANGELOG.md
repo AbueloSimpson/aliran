@@ -931,6 +931,16 @@ phone + Android TV, and the Windows desktop player).
 - Ops: live feeds no longer grow unbounded (~1–2 GB/h/channel → O(window));
   orphan-pin disk reclaim; remote acceptance always ends with a verdict.
 
+### Changed
+
+- **Docs rewritten to Simplified Technical English (S55)** — every user-facing
+  page under `docs/`, the top-level `README.md`, and every package `README.md`
+  were rewritten for clarity: one instruction per sentence, active voice,
+  present tense, short sentences, and one approved term per concept (panel,
+  broadcaster, channel vs. stream, grant, package, …). This is a prose-clarity
+  pass only — no command, config value, default, or fact changed. `docs/devlog.md`
+  stays untouched, as historical record.
+
 ### To do (see [ROADMAP.md](ROADMAP.md) and per-package READMEs)
 - GPU transcode pack — a separately-packaged bare-metal deploy pack (NVIDIA
   drivers + NVENC; VAAPI/QSV variants) for hardware-encode hosts.
