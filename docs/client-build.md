@@ -1,48 +1,52 @@
 # Client Build (Android phone + TV)
 
-The client is a **React Native** app using **`react-native-tvos`** so one codebase
-targets phone/tablet and Android TV. It embeds **Bare** via `react-native-bare-kit`
-and will **not** run in Expo Go — it needs a real native build.
+The client is a **React Native** app that uses **`react-native-tvos`**, so
+one codebase targets phone/tablet and Android TV. It embeds **Bare** via
+`react-native-bare-kit` and will **not** run in Expo Go. It needs a real
+native build.
 
 ## Device requirements — the APK installs from Android 7; P2P needs Android 10+
 
 `react-native-bare-kit`'s Bare runtime is built with native ELF TLS
-(`__tls_get_addr`, added to Android's libc in **Android 10 / API 29**), so the
-dynamic linker on Android 9 and older **cannot load the P2P engine at all** —
-that is a real floor, not a conservative pin (verified: the loader needs
-`__tls_get_addr@LIBC_Q`, a hard GLOBAL import in `libbare-kit.so`). The **app**
-is no longer capped by it: the standard build is a single `minSdk 24` APK that
-loads the engine only where it can run (next section).
+(`__tls_get_addr`, added to Android's libc in **Android 10 / API 29**). So
+the dynamic linker on Android 9 and older **cannot load the P2P engine at
+all**. This is a real floor, not a conservative pin — the loader needs
+`__tls_get_addr@LIBC_Q`, a hard GLOBAL import in `libbare-kit.so`
+(verified). The **app** is no longer capped by it: the standard build is
+a single `minSdk 24` APK that loads the engine only where it can run
+(next section).
 
 Consequences for TV hardware:
 
-- **Fire TV**: Fire OS 8 devices get full P2P (Android 11 — Fire TV Stick 4K /
-  4K Max **2nd gen, 2023**, Fire TV Cube 3rd gen, Omni/4-Series TVs). **Fire
-  OS 7 devices** (Android 9 — every 2018–2021 stick, including the 4K Max
-  1st gen) install and run the app, but the engine stays silent there
-  (verified on a 4K Max 1st gen).
-- Most Fire TV sticks expose a **32-bit userland** (`armeabi-v7a` only — check with
-  `adb shell getprop ro.product.cpu.abilist`): build with
+- **Fire TV.** Fire OS 8 devices get full P2P — that's Android 11: Fire TV
+  Stick 4K / 4K Max **2nd gen, 2023**, Fire TV Cube 3rd gen, and
+  Omni/4-Series TVs. **Fire OS 7 devices** (Android 9 — every 2018–2021
+  stick, including the 4K Max 1st gen) install and run the app, but the
+  engine stays silent there (verified on a 4K Max 1st gen).
+- Most Fire TV sticks expose a **32-bit userland** — `armeabi-v7a` only;
+  check with `adb shell getprop ro.product.cpu.abilist`. Build with
   `gradlew :app:assembleRelease -PreactNativeArchitectures=armeabi-v7a`
   (bare-kit ships armv7 prebuilds). Sideload over network adb
-  (`adb connect <tv-ip>:5555`); the manifest already declares
-  `LEANBACK_LAUNCHER` + a TV banner, so the app appears in the TV launcher.
+  (`adb connect <tv-ip>:5555`). The manifest already declares
+  `LEANBACK_LAUNCHER` and a TV banner, so the app appears in the TV
+  launcher.
 
 ### One APK from Android 7 up (engine gates itself at runtime)
 
-The floor above is the **engine's**, not the APK's. The standard build is a
-**single APK with `minSdk 24`** that carries the engine and decides per device:
-on Android 10+ the engine loads and runs in full; on Android 7–9 it is never
-loaded, the SDK is **silently inactive** (`AliranBackend.isSupported()`
-returns false) and the app shows a plain "engine unavailable" notice — there
-is no P2P playback path below Android 10, period (the catalog itself only
-exists over the swarm).
+The floor above is the **engine's**, not the APK's. The standard build is
+a **single APK with `minSdk 24`** that carries the engine and decides per
+device. On Android 10+ the engine loads and runs in full. On Android 7–9
+it is never loaded: the SDK is **silently inactive**
+(`AliranBackend.isSupported()` returns false), and the app shows a plain
+"engine unavailable" notice. There is no P2P playback path below Android
+10, period — the catalog itself only exists over the swarm.
 
 What makes this possible is
-`client/patches/react-native-bare-kit+0.13.3.patch` (applied automatically by
-the `patch-package` postinstall): it turns the module's link-time dependency on
-`libbare-kit.so` into a lazy `dlopen`/`dlsym` resolved only on API 29+, so
-React init no longer pulls the engine library on old devices. Just build:
+`client/patches/react-native-bare-kit+0.13.3.patch`, applied
+automatically by the `patch-package` postinstall. It turns the module's
+link-time dependency on `libbare-kit.so` into a lazy `dlopen`/`dlsym`,
+resolved only on API 29+, so React init no longer pulls the engine
+library on old devices. Just build:
 
 ```bash
 ./gradlew :app:assembleRelease
@@ -50,16 +54,17 @@ React init no longer pulls the engine library on old devices. Just build:
 
 Sanity-check the output: `aapt dump badging … | grep sdkVer` says 24,
 `unzip -l app-release.apk | grep libbare-kit` shows the engine aboard, and
-readelf on `libappmodules.so` shows **no** `libbare-kit.so` `NEEDED` entry.
-Android 7 is React Native's own floor, not ours: RN 0.76+ prebuilds are built
-for API 24 and the build rejects a lower minSdk, so **Android 6 devices can't
-run a current-RN app at all**.
+readelf on `libappmodules.so` shows **no** `libbare-kit.so` `NEEDED`
+entry. Android 7 is React Native's own floor, not ours. RN 0.76+
+prebuilds are built for API 24, and the build rejects a lower minSdk. So
+**Android 6 devices can't run a current-RN app at all**.
 
 Optional: `ALIRAN_LEGACY=1 ./gradlew :app:assembleRelease` builds an
-**engine-less lean APK** (~55 MB/ABI smaller; `react-native-bare-kit` excluded
-from autolinking via `client/react-native.config.js`) for old-device-only
-fleets — same minSdk 24, same silent-SDK behavior everywhere. Details and the
-why in the
+**engine-less lean APK** — about 55 MB/ABI smaller, with
+`react-native-bare-kit` excluded from autolinking via
+`client/react-native.config.js` — for old-device-only fleets. Same minSdk
+24, same silent-SDK behavior everywhere. Details and the reasoning are in
+the
 [Android build KB](kb/android-build.md#device-floor-android-10-the-bare-runtime-needs-elf-tls).
 
 ## Prerequisites (the main hurdle)
@@ -77,7 +82,8 @@ Windows is fully supported for Android builds (no Mac needed).
 
 ## Install dependencies
 
-The native `android/` project is checked in (react-native-tvos 0.83, New Architecture).
+The native `android/` project is checked in: react-native-tvos 0.83, New
+Architecture.
 
 ```bash
 cd client
@@ -92,24 +98,28 @@ npm run bundle-backend   # bare-pack --preset android → backend/app.bundle.js 
 ```
 
 Notes:
-- `backend/imports.json` remaps `node:crypto` to `@aliran/bare-node-crypto` (a small
-  sodium-backed WebCrypto shim) because the bare-kit worklet runtime has no node-style
-  builtins; `backend/globals.mjs` polyfills TextEncoder/TextDecoder/`globalThis.crypto`.
-- Native addons (sodium-native ×2 majors, udx-native, quickbit/rabin/simdle/crc,
-  fs-native-extensions) ship as npm prebuilds and are packaged per-ABI automatically by
-  `react-native-bare-kit`'s gradle `link` task (`bare-link`), which walks the app's
-  dependency graph — that is why `client/package.json` depends on
+- `backend/imports.json` remaps `node:crypto` to `@aliran/bare-node-crypto`,
+  a small sodium-backed WebCrypto shim, because the bare-kit worklet
+  runtime has no node-style builtins. `backend/globals.mjs` polyfills
+  TextEncoder/TextDecoder/`globalThis.crypto`.
+- Native addons — sodium-native ×2 majors, udx-native,
+  quickbit/rabin/simdle/crc, fs-native-extensions — ship as npm
+  prebuilds. `react-native-bare-kit`'s gradle `link` task (`bare-link`)
+  packages them per-ABI automatically by walking the app's dependency
+  graph. That is why `client/package.json` depends on
   `@aliran/client-backend`.
 
 ## The on-device store is a disposable cache
 
-The worklet keeps its Corestore at `/data/data/<pkg>/files/aliran-store`. It holds
-**only replicas** (panel DB, assets drive, feed drives) — every byte re-replicates from
-peers, and nothing user-owned lives there. If the app process dies mid-write (crash,
-task kill), hypercore can refuse to reopen a core (`OPLOG_CORRUPT` and friends); the
-backend detects this, **wipes the store automatically and retries once**
-(`client/backend/recover.mjs`), so playback recovers without user action. Deleting the
-directory by hand (or `adb shell pm clear <pkg>`) is always safe — it only costs a
+The worklet keeps its Corestore at
+`/data/data/<pkg>/files/aliran-store`. It holds **only replicas** — panel
+DB, assets drive, feed drives. Every byte re-replicates from peers, and
+nothing user-owned lives there. If the app process dies mid-write (crash,
+task kill), hypercore can refuse to reopen a core (`OPLOG_CORRUPT` and
+friends). The backend detects this, **wipes the store automatically, and
+retries once** (`client/backend/recover.mjs`), so playback recovers
+without user action. Deleting the directory by hand, or running
+`adb shell pm clear <pkg>`, is always safe — it only costs a
 re-replication. Verified by `npm run test:corrupt` (repo root).
 
 ## App structure (since the GUI redesign)
@@ -130,58 +140,67 @@ Splash (boot + auto-auth: "Authorizing device…")
      └─ Settings    account / service / diagnostics / sign out
 ```
 
-- **Auto-login ("remember me"):** after a successful sign-in the app saves the
-  credentials to the **app-private files dir** (`aliran-prefs.json`, beside — not
-  inside — the disposable store, so corruption recovery never wipes them). This is
-  plaintext-at-rest inside the Android app sandbox — the normal tradeoff for this app
-  class; sign-out deletes it. Favorites live in the same file.
-- **White-label contract:** screens/components contain **no** brand names, colors, or
-  section lists. Everything flows from `config/service.json` (the service descriptor)
-  through `theme.ts makeTheme()` — swap the descriptor, ship a different brand.
-  Per-brand APK **packaging** (own applicationId, launcher icon, splash logo,
-  wallpaper, theme — brands co-install) is `tools/brand.mjs`; see
-  [White-label branding](white-label.md). Channel numbers are derived from the
-  panel's curation (`order`, then title) — never stored. No EPG data exists yet, so
-  the channel-detail panel shows an honest "No program information" placeholder
-  instead of a fake guide.
+- **Auto-login ("remember me").** After a successful sign-in, the app
+  saves the credentials to the **app-private files dir**
+  (`aliran-prefs.json`). This sits beside — not inside — the disposable
+  store, so corruption recovery never wipes them. The credentials are
+  plaintext-at-rest inside the Android app sandbox — the normal tradeoff
+  for this app class. Sign-out deletes it. Favorites live in the same
+  file.
+- **White-label contract.** Screens and components contain **no** brand
+  names, colors, or section lists. Everything flows from
+  `config/service.json` (the service descriptor) through
+  `theme.ts makeTheme()`. Swap the descriptor, and you ship a different
+  brand. Per-brand APK **packaging** — own applicationId, launcher icon,
+  splash logo, wallpaper, theme; brands co-install — is `tools/brand.mjs`
+  (see [White-label branding](white-label.md)). Channel numbers are
+  derived from the panel's curation (`order`, then title), and are never
+  stored. No EPG data exists yet, so the channel-detail panel shows an
+  honest "No program information" placeholder instead of a fake guide.
 
 ## Configure the panel key — two flavors, one codebase
 
-The build's `config/service.json` decides the flavor (mirrors the desktop player):
+The build's `config/service.json` decides the flavor. This mirrors the
+desktop player:
 
-- **Operator (baked) flavor:** copy `config/service.example.json` to
-  `config/service.json` and set your `panelPubKey` + branding. The key ships in the
-  APK, the app boots straight onto it, and it is **not** changeable at runtime
-  (Settings shows it read-only). `tools/brand.mjs` swaps this file per brand.
-- **Public (keyless) flavor:** copy the committed `config/service.public.json` to
-  `config/service.json` instead (its `panelPubKey` is the empty string — the
-  deliberate keyless marker). First run shows a **Connect screen** asking for the
-  operator's panel key + username + password; they persist on the device
-  (`aliran-prefs.json`, only after a successful sign-in) and Settings gains
-  **"Change service…"** to forget them and reconnect. One generic APK connects to
-  any operator's panel — phone and TV alike.
+- **Operator (baked) flavor.** Copy `config/service.example.json` to
+  `config/service.json` and set your `panelPubKey` and branding. The key
+  ships in the APK, and the app boots straight onto it. It is **not**
+  changeable at runtime — Settings shows it read-only. `tools/brand.mjs`
+  swaps this file per brand.
+- **Public (keyless) flavor.** Copy the committed
+  `config/service.public.json` to `config/service.json` instead — its
+  `panelPubKey` is the empty string, the deliberate keyless marker. First
+  run shows a **Connect screen** asking for the operator's panel key,
+  username, and password. These persist on the device
+  (`aliran-prefs.json`, only after a successful sign-in), and Settings
+  gains **"Change service…"** to forget them and reconnect. One generic
+  APK connects to any operator's panel, phone and TV alike.
 
-Precedence is **baked → persisted runtime service → Connect screen**; a baked key
-always wins and ignores any persisted one.
+Precedence is **baked → persisted runtime service → Connect screen**. A
+baked key always wins, and it ignores any persisted one.
 
 ### The `vod` block — external-provider dev override only
 
-If the operator's panel has an [external VOD provider](white-label.md#movies-series-the-external-vod-provider)
-enabled, the app shows a **Movies & Series** section — nothing about that is
-configured in the descriptor. The provider's coordinates (apiBase / service /
-sources / params) always come from the **panel** on the login payload, and in
-production the app authenticates to the provider with the **viewer's own app
-account** (username as `username`, app password as `token`). The `sources` map
-is per-kind (`movies` / `series`) — series browsing appears only when the
-operator has set a series source (see
+If the operator's panel has an
+[external VOD provider](white-label.md#movies-series-the-external-vod-provider)
+enabled, the app shows a **Movies & Series** section. Nothing about that
+is configured in the descriptor. The provider's coordinates (apiBase /
+service / sources / params) always come from the **panel** on the login
+payload. In production, the app authenticates to the provider with the
+**viewer's own app account**: the username as `username`, and the app
+password as `token`. The `sources` map is per-kind (`movies` / `series`) —
+series browsing appears only when the operator has set a series source
+(see
 [the white-label page](white-label.md#movies-and-series-per-kind-sources)).
-The section's watchlist and watch history are **device-local** (they live in
-the same `aliran-prefs.json` the app already keeps — see
-[the privacy note](white-label.md#my-list-and-watch-history-stay-on-the-device));
-clearing app data resets them along with everything else.
+The section's watchlist and watch history are **device-local** — they
+live in the same `aliran-prefs.json` the app already keeps (see
+[the privacy note](white-label.md#my-list-and-watch-history-stay-on-the-device)).
+Clearing app data resets them along with everything else.
 
-The only thing a descriptor may carry is a **dev-time credential override** for
-testing against a provider account that is not a viewer account:
+The only thing a descriptor may carry is a **dev-time credential
+override** for testing against a provider account that is not a viewer
+account:
 
 ```json
 "vod": { "dev": { "username": "…", "token": "…" } }
@@ -189,20 +208,23 @@ testing against a provider account that is not a viewer account:
 
 Rules that keep this safe:
 
-- Put it **only** in your local, gitignored `config/service.json`. **Never ship a
-  build whose descriptor contains it** — the descriptor is baked into the APK's
-  JS bundle, so anyone can lift the credential out of the file.
-- The example file's placeholder words (`YOUR_USERNAME` / `YOUR_TOKEN`) are
-  recognized and **ignored**: a copied-but-unfilled block falls through to the
-  normal viewer pass-off instead of sending the literals to the provider.
-- The app refuses cleartext everywhere here: a non-https `apiBase` is never
-  dialed, and the provider's playable URLs (which embed the token via a
-  `{token}` placeholder) are only completed over https.
+- Put it **only** in your local, gitignored `config/service.json`.
+  **Never ship a build whose descriptor contains it.** The descriptor is
+  baked into the APK's JS bundle, so anyone can lift the credential out
+  of the file.
+- The example file's placeholder words (`YOUR_USERNAME` / `YOUR_TOKEN`)
+  are recognized and **ignored**. A copied-but-unfilled block falls
+  through to the normal viewer pass-off instead of sending the literals
+  to the provider.
+- The app refuses cleartext everywhere here. A non-https `apiBase` is
+  never dialed, and the provider's playable URLs — which embed the token
+  via a `{token}` placeholder — are only completed over https.
 
-> **Gradle gotcha:** the release JS-bundling task does not track `client/config/*.json`
-> as an input — after editing `service.json`, delete
-> `android/app/build/generated/assets/react` (or run the bundle task with
-> `--rerun-tasks`) so the descriptor change actually lands in the APK.
+> **Gradle gotcha:** the release JS-bundling task does not track
+> `client/config/*.json` as an input. After editing `service.json`,
+> delete `android/app/build/generated/assets/react` (or run the bundle
+> task with `--rerun-tasks`) so the descriptor change actually lands in
+> the APK.
 
 ## Build & install
 
@@ -211,11 +233,13 @@ cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Test on a **phone** and an **Android TV** target (drive the TV build with a remote /
-D-pad).
+Test on a **phone** and an **Android TV** target — drive the TV build
+with a remote or D-pad.
 
 ## Manifest notes (dual phone + TV)
 
-Declare both `LAUNCHER` and `LEANBACK_LAUNCHER` intents; `android.software.leanback`
-**not required**; `android.hardware.touchscreen` `required=false`. Allow `127.0.0.1`
-cleartext in the network security config; add the `INTERNET` permission.
+Declare both `LAUNCHER` and `LEANBACK_LAUNCHER` intents. Set
+`android.software.leanback` to **not required**, and set
+`android.hardware.touchscreen` to `required=false`. Allow `127.0.0.1`
+cleartext in the network security config, and add the `INTERNET`
+permission.
