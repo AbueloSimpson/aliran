@@ -156,10 +156,34 @@ export interface VodConfig {
   enabled: true
   apiBase: string
   service: string
-  /** Per-kind source values; only `movies` exists today (series ships later). */
-  sources: { movies?: string }
+  /** Per-kind source values. Each kind is independent: no `series` value = the app
+   *  shows movies only (S54a). */
+  sources: { movies?: string; series?: string }
   /** Extra query params appended verbatim to every provider call. */
   params: Record<string, string>
+}
+
+/** One saved "My List" entry (S54a, design D9). DEVICE-LOCAL: the worklet persists it
+ *  beside the store and nothing about it ever reaches the panel or the provider. */
+export interface VodListEntry {
+  kind: 'movie' | 'series'
+  id: string
+}
+
+/** One watch-history entry (S54a, design D9) — device-local, newest first, one per
+ *  title/episode. `positionSec` 0 means "watched, start from the top again" (the
+ *  players store 0 rather than a near-end position). */
+export interface VodHistoryEntry {
+  kind: 'movie' | 'episode'
+  id: string
+  /** The parent series, for an episode — lets a series resume from its last episode. */
+  seriesId?: string
+  /** What to show when the id is no longer in the provider's catalog. */
+  title: string
+  positionSec: number
+  durationSec: number
+  /** Unix seconds this entry was last written (the "recently watched" order). */
+  at: number
 }
 
 export type BackendMessage =
@@ -190,7 +214,9 @@ export type BackendMessage =
   // smoothZapping: the persisted "Smooth zapping" choice — null/absent when the user
   // never set the toggle (the app's compiled default applies at boot). service: the
   // runtime-entered operator service — null/absent unless a keyless build saved one.
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null }
+  // vodList/vodHistory (S54a): the device-local VOD arrays, absent on worklet bundles
+  // older than the field — treat as empty, never as "the user has nothing saved".
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[] }
   // Answer to sendReport() (S50c). ok=true means the panel accepted it (possibly
   // deduplicated or collapsed into an open alert — either way, "we heard you").
   // error 'unsupported' = this panel predates reports or has them disabled; 'cooldown'
@@ -265,6 +291,11 @@ export class AliranBackend {
   /** Runtime-entered operator service mirrored from the worklet prefs (S36); null
    *  until a keyless build's Connect screen saves one. */
   service: SavedService | null = null
+  /** Device-local VOD "My List" + watch history mirrored from the worklet prefs
+   *  (S54a, D9). Newest first. The worklet re-validates and caps whatever is sent
+   *  (500 / 200), so what lands back on the next {type:'prefs'} is the truth. */
+  vodList: VodListEntry[] = []
+  vodHistory: VodHistoryEntry[] = []
   prefsLoaded = false
 
   private worklet: WorkletInstance | null = null
@@ -374,7 +405,8 @@ export class AliranBackend {
     this.send({ type: 'report', category, ...(text ? { text } : {}) })
   }
 
-  /** Ask the worklet for saved credentials + favorites; answers as {type:'prefs'}. */
+  /** Ask the worklet for saved credentials + favorites + the device-local VOD arrays;
+   *  answers as {type:'prefs'}. */
   requestPrefs () { this.send({ type: 'prefs-get' }) }
   /** Persist "remember me" credentials (device-local; sign-out clears them). */
   saveCredentials (username: string, password: string) { this.send({ type: 'creds-save', username, password }) }
@@ -394,6 +426,24 @@ export class AliranBackend {
 
   isFavorite (streamId: string) { return this.favorites.includes(streamId) }
 
+  /**
+   * Replace the device-local VOD "My List" (S54a, D9). Whole-array replace, newest
+   * first — the worklet gates the shapes and caps the length, then answers with a
+   * {type:'prefs'} carrying what it actually stored. Device-local: nothing about a
+   * viewer's list ever reaches the panel or the provider.
+   */
+  setVodList (entries: VodListEntry[]) {
+    this.vodList = entries // optimistic; the 'prefs' reply confirms
+    this.send({ type: 'vod-list-set', entries })
+  }
+
+  /** Replace the device-local watch history (S54a, D9) — same contract as setVodList.
+   *  Called by the VOD players on a throttle, so keep the array small and ordered. */
+  setVodHistory (entries: VodHistoryEntry[]) {
+    this.vodHistory = entries // optimistic; the 'prefs' reply confirms
+    this.send({ type: 'vod-history-set', entries })
+  }
+
   private send (obj: unknown) {
     if (this.inactive) return // engine-less build/device: drop silently, never queue
     if (!this.ipc) { this.pending.push(obj); return }
@@ -410,7 +460,7 @@ export class AliranBackend {
         const msg = JSON.parse(line) as BackendMessage
         // Never log the raw 'prefs' line — it can carry the saved password.
         if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.prefsLoaded = true }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
           this.port = msg.port ?? null

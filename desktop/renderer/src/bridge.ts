@@ -4,7 +4,10 @@
 // fields exist for late-mounting screens (the one-shot replies can land before a
 // screen exists), and onMessage is the live feed.
 
-import type { BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream, VodConfig, VodInfoResult, VodListResult } from './types'
+import type {
+  BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream,
+  VodConfig, VodHistoryEntry, VodInfoResult, VodKind, VodListEntry, VodListResult, VodSeriesInfoResult
+} from './types'
 
 // A provider call the main process fails to answer would leave the grid spinning
 // forever, so every request is bounded here. The provider client's own timeout is
@@ -29,6 +32,12 @@ class DesktopBackend {
   creds: SavedIdentity | null = null
   favorites: string[] = []
   smoothZapping: boolean | null = null
+  // Device-local VOD "My List" + watch history (S54a, D9), newest first. Main
+  // re-validates and caps whatever is sent (500 / 200), so the 'prefs' reply — not the
+  // array a screen just built — is the truth. (`vodMyList` rather than `vodList`: that
+  // name is the catalog REQUEST below, and the prefs array is a different thing.)
+  vodMyList: VodListEntry[] = []
+  vodHistory: VodHistoryEntry[] = []
   prefsLoaded = false
   ready = false
   descriptor: ServiceDescriptor | null = null
@@ -52,6 +61,8 @@ class DesktopBackend {
     this.creds = s.creds
     this.favorites = s.favorites ?? []
     this.smoothZapping = s.smoothZapping
+    this.vodMyList = s.vodList ?? []
+    this.vodHistory = s.vodHistory ?? []
     this.prefsLoaded = true
     this.descriptor = s.descriptor
     this.descriptorSource = s.descriptorSource ?? (s.descriptor ? 'baked' : null)
@@ -98,9 +109,9 @@ class DesktopBackend {
    * calls the provider module directly; the wire underneath is still the one-way
    * send + a 'vod-list-result' on the message feed.
    */
-  vodList (): Promise<VodListResult> {
-    return this.request<VodListResult>({ type: 'vod-list' }, (m) =>
-      m.type === 'vod-list-result'
+  vodList (kind: VodKind = 'movies'): Promise<VodListResult> {
+    return this.request<VodListResult>({ type: 'vod-list', kind }, (m) =>
+      m.type === 'vod-list-result' && (m.kind ?? 'movies') === kind
         ? (m.ok ? { ok: true, items: m.items ?? [] } : { ok: false, error: m.error ?? 'bad-response' })
         : null)
   }
@@ -111,6 +122,15 @@ class DesktopBackend {
     return this.request<VodInfoResult>({ type: 'vod-info', id }, (m) =>
       m.type === 'vod-info-result' && m.id === id
         ? (m.ok && m.url ? { ok: true, url: m.url, durationSec: m.durationSec ?? null } : { ok: false, error: m.error ?? 'bad-response' })
+        : null)
+  }
+
+  /** One series' seasons + episodes (S54a). Matched by id, like vodInfo. Episode URLs
+   *  arrive already playable — the token was substituted in the main process. */
+  vodSeriesInfo (id: string): Promise<VodSeriesInfoResult> {
+    return this.request<VodSeriesInfoResult>({ type: 'vod-series-info', id }, (m) =>
+      m.type === 'vod-series-info-result' && m.id === id
+        ? (m.ok && m.detail ? { ok: true, detail: m.detail } : { ok: false, error: m.error ?? 'bad-response' })
         : null)
   }
 
@@ -138,12 +158,24 @@ class DesktopBackend {
 
   isFavorite (streamId: string) { return this.favorites.includes(streamId) }
 
+  /**
+   * Replace the device-local VOD "My List" and/or watch history (S54a, D9). Whole-array
+   * replace, newest first; omit an array to leave it alone. Main gates the shapes and
+   * caps the lengths, then answers with a 'prefs' carrying what it actually stored.
+   * Device-local: nothing about a viewer's list ever reaches the panel or the provider.
+   */
+  setVodPrefs (next: { list?: VodListEntry[]; history?: VodHistoryEntry[] }) {
+    if (next.list) this.vodMyList = next.list // optimistic; the 'prefs' reply confirms
+    if (next.history) this.vodHistory = next.history
+    this.send({ type: 'vod-prefs-set', ...(next.list ? { list: next.list } : {}), ...(next.history ? { history: next.history } : {}) })
+  }
+
   private send (obj: unknown) { window.aliran.send(obj) }
 
   private dispatch (msg: BackendMessage) {
     if (msg.type === 'ready') this.ready = true
     if (msg.type === 'service') { this.descriptor = msg.descriptor; this.descriptorSource = 'runtime' }
-    if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.prefsLoaded = true }
+    if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.vodMyList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.prefsLoaded = true }
     if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
     if (msg.type === 'port') {
       this.port = msg.port ?? null

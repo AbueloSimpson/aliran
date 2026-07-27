@@ -42,9 +42,25 @@ const TIMEOUT_MS = 20000
 // new login rebuilds it (config changes land at login anyway).
 const CACHE_TTL_MS = 60 * 60 * 1000
 
+// S54a — SERIES. The provider answers movies AND series from the SAME getMovies.php
+// wrapper (`{movies:[…], series:[…], categories:[…strings]}`), so ONE download feeds
+// the movie grid, the series grid and the genre names: the session cache holds all
+// three per account (design D1). Series rows are movie rows plus `aired_first`, which
+// stands in for the year when the provider left `anio` at "0" (D2). A series never
+// plays directly — its detail call is the same getMovieInfo.php endpoint against the
+// SERIES source and answers seasons + episodes, whose paths carry the same literal
+// `{token}` the movie paths do (D3).
+
 /** @typedef {{ id: string, name: string, nameOriginal: string, icon: string, added: number, anio: string, categories: number[] }} VodItem */
 /** @typedef {'auth'|'network'|'bad-response'} VodErrorCode */
+/** @typedef {{ id: string, number: number, title: string, icon: string, airDate: string, episodeCount: number }} VodSeason */
+/** @typedef {{ id: string, seasonId: string, number: number, title: string, plot: string, icon: string, url: string, durationSec: number|null }} VodEpisode */
+/** @typedef {{ plot: string, genre: string, director: string, cast: string, rating: string, releasedate: string, icon: string, seasons: VodSeason[], episodes: VodEpisode[] }} VodSeriesDetail */
 
+// ONE entry per account holds everything the single list download carries: the movie
+// rows, the series rows and the genre names (D1). Whichever screen asks first pays for
+// the download; the other two render instantly off the same entry.
+/** @typedef {{ at: number, movies: VodItem[], series: VodItem[], categories: string[] }} CacheEntry */
 const listCache = new Map()
 
 /** Drop every cached list (tests, and a sign-out that changes the account). */
@@ -71,18 +87,25 @@ export function resolveCredentials (deps = {}) {
 
 function usable (v) { return typeof v === 'string' && !!v && !PLACEHOLDER.test(v) }
 
-/** The whole movie list, newest-added first. `sources.movies` absent = the operator
- *  enabled the provider without a movies source: an empty list, not an error.
- *  @returns {Promise<{ok: true, items: VodItem[]}|{ok: false, error: VodErrorCode}>} */
-export async function listMovies (config, deps = {}) {
-  const source = config && config.sources ? config.sources.movies : null
-  if (!source) return { ok: true, items: [] }
+/** The source value the ONE list call is made with. The provider returns the same
+ *  wrapper either way, so a movies-only, series-only or both-kinds operator all get
+ *  the whole catalog from a single download. */
+function listSourceOf (config) {
+  const s = (config && config.sources) || {}
+  return s.movies || s.series || ''
+}
+
+/** Download (or reuse) the wrapper and shape all three lists out of it.
+ *  @returns {Promise<{ok: true, entry: CacheEntry}|{ok: false, error: VodErrorCode}>} */
+async function loadCatalog (config, deps) {
+  const source = listSourceOf(config)
+  if (!source) return { ok: false, error: 'bad-response' } // callers gate first; belt-and-braces
   const creds = resolveCredentials(deps)
   if (!creds) return { ok: false, error: 'auth' }
 
   const key = `${config.apiBase}|${config.service}|${source}|${creds.username}`
   const hit = listCache.get(key)
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ok: true, items: hit.items }
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ok: true, entry: hit }
 
   const url = composeUrl(config, 'getMovies.php', { source }, creds)
   if (!url) return { ok: false, error: 'network' } // non-https apiBase — refused, never dialed
@@ -92,10 +115,48 @@ export async function listMovies (config, deps = {}) {
   if (!list) return { ok: false, error: 'bad-response' }
   // Strip FIRST, then let the parsed payload go: holding tens of MB of raw objects
   // alive behind a few fields each is how this screen would balloon the app's heap.
-  const items = list.map(stripItem).filter((it) => it !== null)
+  const entry = {
+    at: Date.now(),
+    movies: sortedItems(list, stripItem),
+    series: sortedItems(pickSeriesList(res.json), stripSeriesItem),
+    categories: pickCategories(res.json)
+  }
+  listCache.set(key, entry)
+  return { ok: true, entry }
+}
+
+function sortedItems (list, strip) {
+  const items = list.map(strip).filter((it) => it !== null)
   items.sort((a, b) => b.added - a.added)
-  listCache.set(key, { at: Date.now(), items })
-  return { ok: true, items }
+  return items
+}
+
+/** The whole movie list, newest-added first. `sources.movies` absent = the operator
+ *  enabled the provider without a movies source: an empty list, not an error.
+ *  @returns {Promise<{ok: true, items: VodItem[]}|{ok: false, error: VodErrorCode}>} */
+export async function listMovies (config, deps = {}) {
+  if (!(config && config.sources && config.sources.movies)) return { ok: true, items: [] }
+  const res = await loadCatalog(config, deps)
+  return res.ok ? { ok: true, items: res.entry.movies } : res
+}
+
+/** The whole series list, newest-added first. Same download as listMovies — and the
+ *  same "no source configured = an empty list, not an error" rule, which is what an
+ *  operator who never set a series source gets.
+ *  @returns {Promise<{ok: true, items: VodItem[]}|{ok: false, error: VodErrorCode}>} */
+export async function listSeries (config, deps = {}) {
+  if (!(config && config.sources && config.sources.series)) return { ok: true, items: [] }
+  const res = await loadCatalog(config, deps)
+  return res.ok ? { ok: true, items: res.entry.series } : res
+}
+
+/** The provider's genre names, in ITS order — item.categories are numeric indexes
+ *  into this array, so the order is load-bearing and must not be sorted.
+ *  @returns {Promise<{ok: true, categories: string[]}|{ok: false, error: VodErrorCode}>} */
+export async function listCategories (config, deps = {}) {
+  if (!listSourceOf(config)) return { ok: true, categories: [] }
+  const res = await loadCatalog(config, deps)
+  return res.ok ? { ok: true, categories: res.entry.categories } : res
 }
 
 /** Detail for one title: the playable URL (+ runtime when the provider states one).
@@ -114,6 +175,36 @@ export async function getMovieInfo (config, id, deps = {}) {
   const playable = fillToken(info.url, creds.token)
   if (!playable) return { ok: false, error: 'bad-response' }
   return { ok: true, url: playable, durationSec: info.durationSec }
+}
+
+/** Detail for one SERIES: metadata + seasons + episodes, with every episode URL
+ *  already playable. Same endpoint as a movie, against the SERIES source (getSeriesInfo.php
+ *  is a 500 and getSeries.php an "Invalid request" — verified live, do not use them).
+ *  No series source configured = a refusal that never dials: there is nothing to ask
+ *  for, and the request would otherwise go out against the MOVIES source and answer
+ *  about a completely different title.
+ *  @returns {Promise<{ok: true, detail: VodSeriesDetail}|{ok: false, error: VodErrorCode}>} */
+export async function getSeriesInfo (config, id, deps = {}) {
+  const source = config && config.sources ? config.sources.series : null
+  if (!source || !id) return { ok: false, error: 'bad-response' }
+  const creds = resolveCredentials(deps)
+  if (!creds) return { ok: false, error: 'auth' }
+  const url = composeUrl(config, 'getMovieInfo.php', { source, id: String(id), version: '2' }, creds)
+  if (!url) return { ok: false, error: 'network' }
+  const res = await getJson(url, creds.token, deps.fetchImpl)
+  if (!res.ok) return res
+  const info = extractSeriesInfo(res.json)
+  if (!info.ok) return info
+  // Episode paths embed the same literal {token} the movie paths do. Filling it HERE
+  // means no screen and no IPC message ever has to carry the credential — and a
+  // cleartext path comes back as '' (fillToken), which the UI renders as a notice.
+  return {
+    ok: true,
+    detail: {
+      ...info.detail,
+      episodes: info.detail.episodes.map((ep) => ({ ...ep, url: ep.url ? fillToken(ep.url, creds.token) : '' }))
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +252,71 @@ export function extractMovieInfo (json) {
   return { ok: true, url, durationSec }
 }
 
+// Series detail, shape VERIFIED live (S54, 2026-07-27): a FLAT object like a movie's
+// (director/genre/plot/cast/rating/releasedate) but with `duration:"0"` and `path:""`
+// — a series never plays directly — plus `seasons:[{season_id, number, title, icon,
+// air_date, episodes:"4"}]` and `episodes:[{ep_id, season_id, number, title, plot,
+// icon, duration:"00:51:00", path:"https://…?token={token}"}]`. Pure json->fields, so
+// the fixtures need no credential: getSeriesInfo fills the placeholders afterwards.
+// A response with neither array is a typed 'bad-response', never a throw.
+export function extractSeriesInfo (json) {
+  const root = asRecord(json)
+  if (!root) return { ok: false, error: 'bad-response' }
+  const rawSeasons = Array.isArray(root.seasons) ? root.seasons : null
+  const rawEpisodes = Array.isArray(root.episodes) ? root.episodes : null
+  if (!rawSeasons && !rawEpisodes) return { ok: false, error: 'bad-response' }
+  return {
+    ok: true,
+    detail: {
+      plot: str(root.plot),
+      genre: str(root.genre),
+      director: str(root.director),
+      cast: str(root.cast),
+      rating: str(root.rating),
+      releasedate: str(root.releasedate),
+      icon: str(root.icon) || str(root.poster) || str(root.cover),
+      seasons: (rawSeasons || []).map(stripSeason).filter((s) => s !== null),
+      episodes: (rawEpisodes || []).map(stripEpisode).filter((e) => e !== null)
+    }
+  }
+}
+
+export function stripSeason (raw) {
+  const r = asRecord(raw)
+  if (!r) return null
+  const id = str(r.season_id) || str(r.id)
+  const number = num(r.number)
+  if (!id && !number) return null // neither addressable nor labelable
+  return {
+    id,
+    number,
+    title: str(r.title) || str(r.name),
+    icon: str(r.icon) || str(r.cover),
+    airDate: str(r.air_date) || str(r.airDate),
+    episodeCount: num(r.episodes)
+  }
+}
+
+export function stripEpisode (raw) {
+  const r = asRecord(raw)
+  if (!r) return null
+  const id = str(r.ep_id) || str(r.id)
+  if (!id) return null
+  const path = str(r.path)
+  return {
+    id,
+    seasonId: str(r.season_id),
+    number: num(r.number),
+    title: str(r.title) || str(r.name),
+    plot: str(r.plot),
+    icon: str(r.icon),
+    // Kept with the placeholder intact — getSeriesInfo substitutes it. Anything that
+    // is not a URL at all becomes '' here rather than travelling to the player.
+    url: /^https?:\/\/\S+$/i.test(path) ? path : '',
+    durationSec: parseDuration(r.duration)
+  }
+}
+
 /** Fill the provider's literal `{token}` placeholder with the real credential. A URL
  *  without the placeholder passes through untouched; one that HAS it but is not https
  *  is refused ('' -> bad-response upstream) — the token is a viewer password and this
@@ -199,6 +355,24 @@ export function pickList (json) {
   return null
 }
 
+// The series list, STRICTLY: only the wrapper's own `series` key. There is no
+// first-array fallback here on purpose — the same wrapper carries `movies`, and a
+// loose pick would quietly render the movie catalog as "Series" the day the provider
+// renames the key. No key = no series, which is an honest empty grid.
+export function pickSeriesList (json) {
+  const root = asRecord(json)
+  return root && Array.isArray(root.series) ? root.series : []
+}
+
+// The genre vocabulary, in the provider's own order (item.categories are INDEXES into
+// it). Non-string entries are dropped rather than stringified — a genre card can only
+// render a name.
+export function pickCategories (json) {
+  const root = asRecord(json)
+  if (!root || !Array.isArray(root.categories)) return []
+  return root.categories.filter((c) => typeof c === 'string')
+}
+
 // One catalog row, reduced to what the grid actually renders. An item with no id and
 // no name is dropped — it could never be shown or played.
 export function stripItem (raw) {
@@ -218,7 +392,20 @@ export function stripItem (raw) {
   }
 }
 
+// A series row is a movie row with `aired_first`/`aired_last` — and, on this provider,
+// `anio:"0"`. D2: when the year is missing or "0", take it from aired_first's yyyymmdd;
+// anything else leaves the year EMPTY rather than inventing one (the tile then simply
+// shows no "(year)").
+export function stripSeriesItem (raw) {
+  const item = stripItem(raw)
+  if (!item) return null
+  if (item.anio && item.anio !== '0') return item
+  const aired = str(asRecord(raw).aired_first)
+  return { ...item, anio: /^\d{8}$/.test(aired) ? aired.slice(0, 4) : '' }
+}
+
 function str (v) { return typeof v === 'string' ? v : (typeof v === 'number' ? String(v) : '') }
+function num (v) { const n = Number(v); return Number.isFinite(n) ? Math.trunc(n) : 0 }
 function asRecord (v) {
   return v && typeof v === 'object' && !Array.isArray(v) ? v : null
 }

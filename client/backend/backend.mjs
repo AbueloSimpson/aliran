@@ -36,13 +36,23 @@
 //                                        the player plays it directly, no localhost)
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
 //        { type:'prefs-get' }         -> { type:'prefs', creds, favorites, smoothZapping,
-//                                        service }
+//                                        service, vodList, vodHistory }
 //        { type:'creds-save', username, password } | { type:'creds-clear' }
 //        { type:'service-save', service: { panelPubKey, name? } } | { type:'service-clear' }
 //                                        (S36 runtime descriptor: the public keyless app
 //                                        persists the operator service entered on its
 //                                        Connect screen; baked builds never send these)
 //        { type:'favorites-set', favorites: [streamId] }   (each replies with 'prefs')
+//        { type:'vod-list-set', entries }          device-local "My List" (S54a, D9):
+//                                        [{kind:'movie'|'series', id}], newest first.
+//        { type:'vod-history-set', entries }       device-local watch history (D9):
+//                                        [{kind:'movie'|'episode', id, seriesId?, title,
+//                                        positionSec, durationSec, at}], newest first.
+//                                        Both are WHOLE-ARRAY replacements the worklet
+//                                        re-validates and caps (500 / 200) before it
+//                                        writes — the RN layer's array is a request, not
+//                                        a promise. NOTHING here reaches the panel or
+//                                        the provider: this is the device's own record.
 //        { type:'reconnect' }         -> tear down the active feed's swarm connections
 //                                        and dial fresh (wedged-transport escalation
 //                                        from <AliranVideo>'s stall ladder)
@@ -85,7 +95,9 @@
 //        { type:'zap-prefetch', state:'suspended'|'resumed', reason? }   (adaptive gate)
 //        { type:'prefs', creds: {username,password}|null, favorites: [streamId],
 //          smoothZapping: true|false|null,   (null = user never set the toggle)
-//          service: {panelPubKey,name?}|null }   (runtime-entered operator service)
+//          service: {panelPubKey,name?}|null,   (runtime-entered operator service)
+//          vodList: […], vodHistory: […] }   (device-local VOD prefs, S54a — always
+//          arrays, empty on a build that never wrote one)
 //        { type:'report-result', ok, error?, retryAfter?, id? }   (answer to 'report';
 //          error 'unsupported' = the panel predates reports / has them disabled)
 //
@@ -134,11 +146,65 @@ function storeDir () {
   return './aliran-store' // desktop / non-Android fallback
 }
 
-// --- device-local prefs (saved credentials + favorites) ---
+// --- device-local prefs (saved credentials + favorites + the VOD arrays) ---
 // Lives next to the store dir (files-dir root on Android, cwd on desktop) so the
 // corruption-recovery purge of the store never wipes login or favorites.
 function prefsPath () {
   return storeDir().replace(/aliran-store$/, 'aliran-prefs.json')
+}
+
+// "My List" and watch history (S54a, design D9) are DEVICE-LOCAL: they never reach the
+// panel or the provider. The worklet owns the disk, so it — not the RN layer — decides
+// what a valid entry is and how many fit: a setter carries a whole array, and this is
+// where that array is re-validated, de-duplicated and capped. Treat every field as
+// hostile input; a bad entry is dropped, never written.
+const VOD_LIST_MAX = 500
+const VOD_HISTORY_MAX = 200
+const VOD_ID_MAX = 64
+const VOD_TITLE_MAX = 200
+
+function vodStr (v, max) { return typeof v === 'string' && v.length > 0 && v.length <= max ? v : '' }
+function vodNum (v) { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0 }
+
+function gateVodList (v) {
+  if (!Array.isArray(v)) return []
+  const out = []
+  const seen = new Set()
+  for (const e of v) {
+    if (!e || typeof e !== 'object') continue
+    const kind = e.kind === 'movie' || e.kind === 'series' ? e.kind : ''
+    const id = vodStr(e.id, VOD_ID_MAX)
+    if (!kind || !id || seen.has(kind + '/' + id)) continue
+    seen.add(kind + '/' + id)
+    out.push({ kind, id })
+    if (out.length >= VOD_LIST_MAX) break
+  }
+  return out
+}
+
+function gateVodHistory (v) {
+  if (!Array.isArray(v)) return []
+  const out = []
+  const seen = new Set()
+  for (const e of v) {
+    if (!e || typeof e !== 'object') continue
+    const kind = e.kind === 'movie' || e.kind === 'episode' ? e.kind : ''
+    const id = vodStr(e.id, VOD_ID_MAX)
+    if (!kind || !id || seen.has(kind + '/' + id)) continue
+    seen.add(kind + '/' + id)
+    const seriesId = vodStr(e.seriesId, VOD_ID_MAX)
+    out.push({
+      kind,
+      id,
+      ...(seriesId ? { seriesId } : {}),
+      title: vodStr(e.title, VOD_TITLE_MAX),
+      positionSec: vodNum(e.positionSec),
+      durationSec: vodNum(e.durationSec),
+      at: vodNum(e.at)
+    })
+    if (out.length >= VOD_HISTORY_MAX) break
+  }
+  return out
 }
 
 function readPrefs () {
@@ -157,10 +223,15 @@ function readPrefs () {
         : null,
       // Per-install device id (S50c). Absent on prefs written by an older build —
       // ensureDeviceId() mints one on the next boot.
-      deviceId: typeof (p && p.deviceId) === 'string' && /^[0-9a-f]{16}$/.test(p.deviceId) ? p.deviceId : null
+      deviceId: typeof (p && p.deviceId) === 'string' && /^[0-9a-f]{16}$/.test(p.deviceId) ? p.deviceId : null,
+      // Device-local VOD prefs (S54a). Re-gated on READ as well as on write: the file
+      // is plain JSON on the device, so what comes back is no more trustworthy than
+      // what went in, and a corrupt entry must not reach a screen.
+      vodList: gateVodList(p && p.vodList),
+      vodHistory: gateVodHistory(p && p.vodHistory)
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, service: null, deviceId: null }
+    return { creds: null, favorites: [], smoothZapping: null, service: null, deviceId: null, vodList: [], vodHistory: [] }
   }
 }
 
@@ -251,6 +322,16 @@ IPC.on('data', (data) => {
       sendPrefs()
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       writePrefs({ ...readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
+      sendPrefs()
+    } else if (msg.type === 'vod-list-set' && Array.isArray(msg.entries)) {
+      // Device-local "My List" (S54a, D9): whole-array replace, gated + capped HERE.
+      writePrefs({ ...readPrefs(), vodList: gateVodList(msg.entries) })
+      sendPrefs()
+    } else if (msg.type === 'vod-history-set' && Array.isArray(msg.entries)) {
+      // Device-local watch history (S54a, D9): same contract. The players write this
+      // every few seconds, so it stays a plain whole-array replace — no merge logic on
+      // the disk side to get wrong.
+      writePrefs({ ...readPrefs(), vodHistory: gateVodHistory(msg.entries) })
       sendPrefs()
     } else if (msg.type === 'reconnect') {
       // Wedged-transport escalation from the app's stall ladder: destroy the active

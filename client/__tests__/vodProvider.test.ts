@@ -14,7 +14,24 @@
 //      other Xtream-style providers. Fixture hosts are sanitized; the real capture
 //      structure is preserved verbatim.
 
-import { listMovies, getMovieInfo, extractMovieInfo, resolveCredentials, clearVodCache, fillToken, type VodItem } from '../src/vod/zencontent'
+// S54a adds the SERIES half, pinned in exactly the same cases as tools/desktop-vod-test.mjs:
+//   5. ONE download feeds movies, series AND the genre names (design D1) — the fetch
+//      stub proves it by counting calls;
+//   6. the series list is picked STRICTLY from the wrapper's `series` key — never the
+//      first array it finds, which would render the movie catalog as "Series";
+//   7. a series row's year comes from `aired_first` when the provider says `anio:"0"`,
+//      and stays EMPTY for anything else (D2);
+//   8. getSeriesInfo answers over the real captured series shape (D3): seasons +
+//      episodes stripped, "00:51:00" -> 3060, the `{token}` placeholder substituted
+//      URL-encoded, a cleartext episode path reduced to '' rather than dialed, and no
+//      series source at all refused WITHOUT a request.
+
+import {
+  listMovies, listSeries, listCategories, getMovieInfo, getSeriesInfo,
+  extractMovieInfo, extractSeriesInfo, resolveCredentials, clearVodCache,
+  pickSeriesList, pickCategories, stripSeriesItem, fillToken,
+  type VodItem, type VodSeriesDetail
+} from '../src/vod/zencontent'
 import type { VodConfig } from '@aliran/react-native'
 import { backend } from '../src/worklet'
 
@@ -45,6 +62,41 @@ function row (over: Record<string, unknown> = {}) {
     ...over
   }
 }
+
+// One SERIES row: the movie shape plus aired_first/aired_last, and (as the live
+// provider actually answers) anio:"0" — the year has to come from aired_first.
+function seriesRow (over: Record<string, unknown> = {}) {
+  return {
+    id: '900',
+    name: 'Serie Uno',
+    name_original: 'Serie Uno',
+    icon: 'https://art.example/900.jpg',
+    added: '800',
+    source: 'series',
+    anio: '0',
+    aired_first: '20260402',
+    aired_last: '20260718',
+    categories: [7],
+    ...over
+  }
+}
+
+// The ONE wrapper the list endpoint answers: both catalogs and the genre vocabulary in
+// a single response (structure verbatim from the live probe, hosts sanitized).
+function wrapper (over: Record<string, unknown> = {}) {
+  return {
+    movies: [row({ id: '1', name: 'Older movie', added: '100' }), row({ id: '2', name: 'Newest movie', added: '900' })],
+    series: [seriesRow({ id: '900', name: 'Serie Uno', added: '800' }), seriesRow({ id: '901', name: 'Serie Dos', added: '400' })],
+    movies_modified: '1783037028',
+    series_modified: '1783037029',
+    movies_hash: 'aaaa',
+    series_hash: 'bbbb',
+    categories: ['Action', 'Adventure', 'Animation'],
+    ...over
+  }
+}
+
+const BOTH: VodConfig = { ...CONFIG, sources: { movies: 'movies-src', series: 'series-src' } }
 
 function jsonResponse (body: unknown, status = 200) {
   return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(body) } as unknown as Response
@@ -266,4 +318,177 @@ test('getMovieInfo asks for the documented detail endpoint and shapes the answer
   expect(url).toContain('id=55157')
   expect(url).toContain('version=2')
   expect(res).toEqual({ ok: true, url: 'https://cdn.example/x.mp4', durationSec: 5400 })
+})
+
+// --- S54a: one download, three lists (design D1) ------------------------------------
+
+const items = (r: unknown) => (r as { ok: true; items: VodItem[] }).items
+const detailOf = (r: unknown) => (r as { ok: true; detail: VodSeriesDetail }).detail
+
+test('ONE download feeds movies, series AND the genre names', async () => {
+  const fetchImpl = fetchReturning(wrapper())
+  const deps = { dev: DEV, saved: null, fetchImpl }
+  const movies = await listMovies(BOTH, deps)
+  const series = await listSeries(BOTH, deps)
+  const cats = await listCategories(BOTH, deps)
+  expect(fetchImpl).toHaveBeenCalledTimes(1)
+  expect(String((fetchImpl.mock.calls[0] as unknown[])[0])).toContain('source=movies-src')
+  expect(items(movies).map(i => i.name)).toEqual(['Newest movie', 'Older movie'])
+  expect(items(series).map(i => i.name)).toEqual(['Serie Uno', 'Serie Dos'])
+  expect(cats).toEqual({ ok: true, categories: ['Action', 'Adventure', 'Animation'] })
+  // A series row is stripped to exactly the same grid fields as a movie row.
+  expect(Object.keys(items(series)[0]).sort()).toEqual(['added', 'anio', 'categories', 'icon', 'id', 'name', 'nameOriginal'])
+})
+
+test('a series-only operator dials the SERIES source, and the movie grid stays empty without a call', async () => {
+  const fetchImpl = fetchReturning(wrapper())
+  const seriesOnly = { ...CONFIG, sources: { series: 'series-src' } }
+  const deps = { dev: DEV, saved: null, fetchImpl }
+  expect(await listMovies(seriesOnly, deps)).toEqual({ ok: true, items: [] })
+  expect(fetchImpl).not.toHaveBeenCalled()
+  expect(items(await listSeries(seriesOnly, deps))).toHaveLength(2)
+  expect(String((fetchImpl.mock.calls[0] as unknown[])[0])).toContain('source=series-src')
+})
+
+test('no series source = an empty series catalog, not an error — and no call', async () => {
+  const fetchImpl = fetchReturning(wrapper())
+  expect(await listSeries(CONFIG, { dev: DEV, saved: null, fetchImpl })).toEqual({ ok: true, items: [] })
+  expect(await listCategories({ ...CONFIG, sources: {} }, { dev: DEV, saved: null, fetchImpl })).toEqual({ ok: true, categories: [] })
+  expect(fetchImpl).not.toHaveBeenCalled()
+})
+
+test('whichever list asks first pays; the other two are cache hits', async () => {
+  const fetchImpl = fetchReturning(wrapper())
+  const deps = { dev: DEV, saved: null, fetchImpl }
+  await listSeries(BOTH, deps)
+  await listMovies(BOTH, deps)
+  await listCategories(BOTH, deps)
+  expect(fetchImpl).toHaveBeenCalledTimes(1)
+})
+
+// --- S54a: the STRICT series pick + the year fallback (D1 / D2) ----------------------
+
+test('pickSeriesList reads only the wrapper`s own key — never the first array it finds', () => {
+  expect(pickSeriesList({ movies: [row()] })).toEqual([])
+  expect(pickSeriesList([row()])).toEqual([])
+  expect(pickSeriesList({ series: 'nope' })).toEqual([])
+  expect(pickSeriesList(wrapper())).toHaveLength(2)
+})
+
+test('pickCategories keeps only string genre names', () => {
+  expect(pickCategories({ categories: ['A', 7, null, 'B'] })).toEqual(['A', 'B'])
+  expect(pickCategories({})).toEqual([])
+})
+
+test('a bare-array response is still the movie list, and the series grid stays empty', async () => {
+  const fetchImpl = fetchReturning([row({ id: '1', name: 'Only movie' })])
+  const deps = { dev: DEV, saved: null, fetchImpl }
+  expect(items(await listMovies(BOTH, deps))).toHaveLength(1)
+  expect(await listSeries(BOTH, deps)).toEqual({ ok: true, items: [] })
+})
+
+test('stripSeriesItem: aired_first stands in for a missing year, and junk invents none', () => {
+  expect(stripSeriesItem(seriesRow())!.anio).toBe('2026')
+  expect(stripSeriesItem(seriesRow({ anio: '' }))!.anio).toBe('2026')
+  expect(stripSeriesItem(seriesRow({ anio: '0', aired_first: 'soon' }))!.anio).toBe('')
+  expect(stripSeriesItem(seriesRow({ anio: '0', aired_first: '2026' }))!.anio).toBe('')
+  expect(stripSeriesItem(seriesRow({ anio: '0', aired_first: undefined }))!.anio).toBe('')
+  expect(stripSeriesItem(seriesRow({ anio: '2023' }))!.anio).toBe('2023')
+  expect(stripSeriesItem({ name: 'no id' })).toBeNull()
+  expect(stripSeriesItem(null)).toBeNull()
+})
+
+// --- S54a: the series detail call (D3) ----------------------------------------------
+
+// The real series detail response, captured live (S54, 2026-07-27) and sanitized:
+// hosts are example domains and the free text is shortened, but every KEY, the
+// `{token}` placeholders and the "hh:mm:ss" durations are structure-verbatim. Note
+// `duration:"0"` and `path:""` — a series never plays directly.
+function realSeries (over: Record<string, unknown> = {}) {
+  return {
+    director: 'A Director',
+    duration: '0',
+    genre: 'Animation, Comedy',
+    plot: 'a synopsis',
+    cast: 'A Name, Another Name',
+    releasedate: '2019-10-05 - 2026-07-18',
+    rating: '8.0',
+    icon: 'https://art.example/900.jpg',
+    path: '',
+    seasons: [
+      { season_id: '5001', number: '1', title: 'Season 1', cast: '', icon: 'https://art.example/s1.jpg', air_date: '2019-10-05', episodes: '4' },
+      { season_id: '5002', number: '2', title: 'Season 2', cast: '', icon: 'https://art.example/s2.jpg', air_date: '2021-03-11', episodes: '2' }
+    ],
+    episodes: [
+      { ep_id: '70001', season_id: '5001', number: '1', title: 'Pilot', plot: 'the first one', director: '', releasedate: '2019-10-05', rating: '7.5', icon: 'https://art.example/e1.jpg', height: '1080', duration: '00:51:00', path: 'https://cdn.example/serie900/S01E01.mp4/index.m3u8?token={token}' },
+      { ep_id: '70002', season_id: '5001', number: '2', title: 'Cleartext', plot: '', director: '', releasedate: '', rating: '', icon: '', height: '720', duration: '00:42:30', path: 'http://cdn.example/serie900/S01E02.mp4/index.m3u8?token={token}' }
+    ],
+    ...over
+  }
+}
+
+test('extractSeriesInfo: the REAL shape, stripped — and pure (the placeholder stays)', () => {
+  const detail = detailOf(extractSeriesInfo(realSeries()))
+  expect(detail.seasons[0]).toEqual({ id: '5001', number: 1, title: 'Season 1', icon: 'https://art.example/s1.jpg', airDate: '2019-10-05', episodeCount: 4 })
+  expect(detail.releasedate).toBe('2019-10-05 - 2026-07-18')
+  expect(detail.episodes[0].url).toContain('{token}')
+})
+
+test('extractSeriesInfo: malformed shapes are bad-response, never a throw', () => {
+  const bad = { ok: false, error: 'bad-response' }
+  expect(extractSeriesInfo({ plot: 'no lists here' })).toEqual(bad)
+  expect(extractSeriesInfo(null)).toEqual(bad)
+  expect(extractSeriesInfo('a string')).toEqual(bad)
+  expect(extractSeriesInfo([1, 2, 3])).toEqual(bad)
+})
+
+test('getSeriesInfo end to end: the series source, stripped seasons/episodes, tokens filled', async () => {
+  const fetchImpl = fetchReturning(realSeries())
+  const res = await getSeriesInfo(BOTH, '900', { dev: DEV, saved: null, fetchImpl })
+  const url = String((fetchImpl.mock.calls[0] as unknown[])[0])
+  expect(url).toContain('/getMovieInfo.php?')
+  expect(url).toContain('source=series-src')
+  expect(url).toContain('id=900')
+  expect(url).toContain('version=2')
+  const detail = detailOf(res)
+  expect(detail.seasons).toHaveLength(2)
+  expect(detail.seasons[1].episodeCount).toBe(2)
+  expect(detail.episodes[0]).toMatchObject({
+    id: '70001',
+    seasonId: '5001',
+    number: 1,
+    title: 'Pilot',
+    durationSec: 3060,
+    url: 'https://cdn.example/serie900/S01E01.mp4/index.m3u8?token=DEV_TOKEN'
+  })
+  // A cleartext episode path never receives the viewer's password.
+  expect(detail.episodes[1].url).toBe('')
+})
+
+test('getSeriesInfo substitutes the token URL-encoded', async () => {
+  const fetchImpl = fetchReturning(realSeries())
+  const res = await getSeriesInfo(BOTH, '900', { dev: null, saved: { username: 'viewer1', password: 'p@ss w0rd' }, fetchImpl })
+  expect(detailOf(res).episodes[0].url).toBe('https://cdn.example/serie900/S01E01.mp4/index.m3u8?token=p%40ss%20w0rd')
+})
+
+test('getSeriesInfo refuses without a series source — and never dials the movies one instead', async () => {
+  const fetchImpl = fetchReturning(realSeries())
+  expect(await getSeriesInfo(CONFIG, '900', { dev: DEV, saved: null, fetchImpl })).toEqual({ ok: false, error: 'bad-response' })
+  expect(await getSeriesInfo(BOTH, '', { dev: DEV, saved: null, fetchImpl })).toEqual({ ok: false, error: 'bad-response' })
+  expect(await getSeriesInfo(BOTH, '900', { dev: null, saved: null, fetchImpl })).toEqual({ ok: false, error: 'auth' })
+  expect(await getSeriesInfo({ ...BOTH, apiBase: 'http://provider.example/api' }, '900', { dev: DEV, saved: null, fetchImpl })).toEqual({ ok: false, error: 'network' })
+  expect(fetchImpl).not.toHaveBeenCalled()
+})
+
+test('the series path leaks neither the token nor the password', async () => {
+  const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
+  const boom = jest.fn(async () => {
+    throw new Error('Network request failed: GET https://provider.example/vod/api/getMovieInfo.php?service=svc&source=series-src&id=900&username=viewer1&token=viewer-password')
+  }) as unknown as typeof fetch
+  const res = await getSeriesInfo(BOTH, '900', { dev: null, saved: SAVED, fetchImpl: boom })
+  expect(res).toEqual({ ok: false, error: 'network' })
+  const logged = warn.mock.calls.flat().map(String).join(' ')
+  expect(logged).not.toContain('viewer-password')
+  expect(logged).not.toContain('token=')
+  expect(JSON.stringify(res)).not.toContain('viewer-password')
 })

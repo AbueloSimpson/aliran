@@ -101,8 +101,9 @@ export interface VodConfig {
   enabled: true
   apiBase: string
   service: string
-  /** Per-kind source values; only `movies` exists today (series ships later). */
-  sources: { movies?: string }
+  /** Per-kind source values. Each kind is independent: no `series` value = the app
+   *  shows movies only (S54a). */
+  sources: { movies?: string; series?: string }
   /** Extra query params appended verbatim to every provider call. */
   params: Record<string, string>
 }
@@ -124,6 +125,74 @@ export interface VodItem {
   categories: number[]
 }
 
+/** Which catalog a 'vod-list' request is for (S54a). The result echoes it back. */
+export type VodKind = 'movies' | 'series'
+
+/** One season of a series, stripped by main/vod-provider.js. */
+export interface VodSeason {
+  id: string
+  /** Season number as the provider states it (0 when it states none). */
+  number: number
+  title: string
+  icon: string
+  /** First-air date, verbatim ('' when absent). */
+  airDate: string
+  /** Episodes the provider claims for this season (the tile badge). */
+  episodeCount: number
+}
+
+/** One episode. `url` is ALREADY playable — main substituted the provider's `{token}`
+ *  placeholder before the reply crossed the bridge. */
+export interface VodEpisode {
+  id: string
+  seasonId: string
+  number: number
+  title: string
+  plot: string
+  icon: string
+  /** '' = no usable path (or a cleartext one, which the app refuses to dial with a
+   *  viewer password) — show a notice instead of playing. */
+  url: string
+  durationSec: number | null
+}
+
+/** Everything the series detail screen renders. The flat fields are verbatim provider
+ *  text (the screen formats them); seasons/episodes are stripped lists. */
+export interface VodSeriesDetail {
+  plot: string
+  genre: string
+  director: string
+  cast: string
+  rating: string
+  /** Run range as the provider states it, e.g. "2019-10-05 - 2026-07-18". */
+  releasedate: string
+  icon: string
+  seasons: VodSeason[]
+  episodes: VodEpisode[]
+}
+
+/** One saved "My List" entry (S54a, design D9) — DEVICE-LOCAL: main persists it in
+ *  userData and nothing about it ever reaches the panel or the provider. */
+export interface VodListEntry {
+  kind: 'movie' | 'series'
+  id: string
+}
+
+/** One watch-history entry (S54a, design D9) — device-local, newest first, one per
+ *  title/episode. `positionSec` 0 means "watched, start from the top again". */
+export interface VodHistoryEntry {
+  kind: 'movie' | 'episode'
+  id: string
+  /** The parent series, for an episode — lets a series resume from its last episode. */
+  seriesId?: string
+  /** What to show when the id is no longer in the provider's catalog. */
+  title: string
+  positionSec: number
+  durationSec: number
+  /** Unix seconds this entry was last written (the "recently watched" order). */
+  at: number
+}
+
 /** Why a provider call could not be answered. Deliberately coarse: the UI names
  *  "sign-in" vs "connection" and never shows a code or a provider message. */
 export type VodErrorCode = 'auth' | 'network' | 'bad-response'
@@ -131,6 +200,9 @@ export type VodErrorCode = 'auth' | 'network' | 'bad-response'
 export type VodListResult = { ok: true; items: VodItem[] } | { ok: false; error: VodErrorCode }
 export type VodInfoResult =
   | { ok: true; url: string; durationSec: number | null }
+  | { ok: false; error: VodErrorCode }
+export type VodSeriesInfoResult =
+  | { ok: true; detail: VodSeriesDetail }
   | { ok: false; error: VodErrorCode }
 
 export type BackendMessage =
@@ -151,16 +223,21 @@ export type BackendMessage =
   | { type: 'feed-changed'; streamId: string; feedKey: string; url: string }
   | { type: 'zap-prefetch'; enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }
   | { type: 'upload-policy'; policy: 'reseed' | 'client-only'; reason?: string }
-  | { type: 'prefs'; creds: SavedIdentity | null; favorites: string[]; smoothZapping?: boolean | null }
+  // vodList/vodHistory (S54a): the device-local VOD arrays main persists — absent only
+  // on a main process older than the field; treat as empty.
+  | { type: 'prefs'; creds: SavedIdentity | null; favorites: string[]; smoothZapping?: boolean | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[] }
   // Answer to a 'report' (S50c). ok=true means the panel accepted it (possibly
   // deduplicated or folded into an open alert — either way, "we heard you").
   // 'unsupported' = this panel predates reports or has them disabled.
   | { type: 'report-result'; ok: boolean; error?: ReportError | string; retryAfter?: number; id?: string }
-  // Answers to the two external-VOD requests (S53c). The provider is called in the
+  // Answers to the external-VOD requests (S53c, S54a). The provider is called in the
   // MAIN process (the renderer is file:// — CORS — and the credential is the
-  // viewer's password); these carry only what the grid and the player need.
-  | { type: 'vod-list-result'; ok: boolean; items?: VodItem[]; error?: VodErrorCode }
+  // viewer's password); these carry only what the grid, the detail page and the
+  // player need. `kind` echoes the request so Movies and Series can be in flight at
+  // once (absent = movies, the pre-S54a shape).
+  | { type: 'vod-list-result'; kind?: VodKind; ok: boolean; items?: VodItem[]; error?: VodErrorCode }
   | { type: 'vod-info-result'; id: string; ok: boolean; url?: string; durationSec?: number | null; error?: VodErrorCode }
+  | { type: 'vod-series-info-result'; id: string; ok: boolean; detail?: VodSeriesDetail; error?: VodErrorCode }
   // The runtime descriptor was accepted ('set-service', public flavor) — the engine
   // is booting on it; theme/branding may re-apply.
   | { type: 'service'; descriptor: ServiceDescriptor }
@@ -227,6 +304,9 @@ export interface EngineState {
   creds: SavedIdentity | null
   favorites: string[]
   smoothZapping: boolean | null
+  /** S54a: device-local "My List" + watch history (design D9), newest first. */
+  vodList: VodListEntry[]
+  vodHistory: VodHistoryEntry[]
   /** null when no descriptor is baked OR stored — the app shows the Connect screen. */
   descriptor: ServiceDescriptor | null
   /** 'baked' (operator build) | 'runtime' (entered on the Connect screen) | null. */

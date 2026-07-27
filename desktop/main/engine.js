@@ -26,9 +26,17 @@
 //   { type:'report', category, text? }         viewer problem report (S50c) — one of
 //                                    the seven sdk/report.js categories + optional
 //                                    free text; answered with 'report-result'
-//   { type:'vod-list' }              the external VOD provider's movie catalog (S53c)
-//                                    -> 'vod-list-result'
+//   { type:'vod-list', kind? }       the external VOD provider's catalog (S53c) —
+//                                    kind 'movies' (default) or 'series' (S54a)
+//                                    -> 'vod-list-result' (which ECHOES the kind)
 //   { type:'vod-info', id }          one title's playable URL -> 'vod-info-result'
+//   { type:'vod-series-info', id }   one series' seasons + episodes (S54a)
+//                                    -> 'vod-series-info-result'
+//   { type:'vod-prefs-set', list?, history? }   device-local VOD prefs (S54a, D9):
+//                                    "My List" and watch history, each a WHOLE-ARRAY
+//                                    replacement this process re-validates and caps
+//                                    (500 / 200) before writing. Neither ever reaches
+//                                    the panel or the provider. Answers with 'prefs'.
 // Messages out: identical to the worklet protocol (see backend.mjs header), except
 // 'prefs' carries creds: { username } | null — no password. 'report-result'
 // { ok, error?, retryAfter?, id? } answers a 'report' (error 'unsupported' = the
@@ -37,18 +45,21 @@
 // service, sources, params }, present ONLY when the operator enabled one (absent =
 // no VOD section). The renderer's state() snapshot mirrors it as `vod: … | null`
 // for screens that mount after the one-shot message.
-// 'vod-list-result' { ok, items?, error? } and 'vod-info-result' { id, ok, url?,
-// durationSec?, error? } answer the two VOD requests (S53c). The provider is called
+// 'vod-list-result' { ok, kind, items?, error? }, 'vod-info-result' { id, ok, url?,
+// durationSec?, error? } and 'vod-series-info-result' { id, ok, detail?, error? }
+// answer the three VOD requests (S53c, S54a). The provider is called
 // from HERE, never from the renderer: the renderer is file:// (CORS blocks it) and,
 // more importantly, the credential the provider wants IS the viewer's password,
-// which never leaves this process. Error codes are the provider module's typed
-// 'auth' | 'network' | 'bad-response' — no provider text, no HTTP codes.
+// which never leaves this process (episode URLs arrive with the token already
+// substituted, which is the only form the renderer ever sees). Error codes are the
+// provider module's typed 'auth' | 'network' | 'bad-response' — no provider text, no
+// HTTP codes. The 'prefs' reply also carries the device-local vodList/vodHistory.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { createPlayer } from '@aliran/player-sdk'
-import { listMovies, getMovieInfo } from './vod-provider.js'
+import { listMovies, listSeries, getMovieInfo, getSeriesInfo } from './vod-provider.js'
 
 const TRANSIENT_LOGIN = /not connected|channel closed/i
 const LOGIN_RETRY_MS = 2500
@@ -58,6 +69,60 @@ const LOGIN_MAX_RETRIES = 24 // ≈1 minute of dialing before the error surfaces
 // bounded default as the phone app: covers the typical zapping range without opening
 // hundreds of DHT topics on a big catalog.
 const PREWARM_CHANNELS = 12
+
+// Device-local VOD prefs (S54a, design D9) — "My List" and watch history. This process
+// owns the prefs file, so it — not the renderer — decides what a valid entry is and how
+// many fit: a setter carries a whole array, and it is re-validated, de-duplicated and
+// capped here. Same limits and same gates as the phone worklet
+// (client/backend/backend.mjs), which is the copy this one must not drift from.
+const VOD_LIST_MAX = 500
+const VOD_HISTORY_MAX = 200
+const VOD_ID_MAX = 64
+const VOD_TITLE_MAX = 200
+
+function vodStr (v, max) { return typeof v === 'string' && v.length > 0 && v.length <= max ? v : '' }
+function vodNum (v) { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0 }
+
+function gateVodList (v) {
+  if (!Array.isArray(v)) return []
+  const out = []
+  const seen = new Set()
+  for (const e of v) {
+    if (!e || typeof e !== 'object') continue
+    const kind = e.kind === 'movie' || e.kind === 'series' ? e.kind : ''
+    const id = vodStr(e.id, VOD_ID_MAX)
+    if (!kind || !id || seen.has(kind + '/' + id)) continue
+    seen.add(kind + '/' + id)
+    out.push({ kind, id })
+    if (out.length >= VOD_LIST_MAX) break
+  }
+  return out
+}
+
+function gateVodHistory (v) {
+  if (!Array.isArray(v)) return []
+  const out = []
+  const seen = new Set()
+  for (const e of v) {
+    if (!e || typeof e !== 'object') continue
+    const kind = e.kind === 'movie' || e.kind === 'episode' ? e.kind : ''
+    const id = vodStr(e.id, VOD_ID_MAX)
+    if (!kind || !id || seen.has(kind + '/' + id)) continue
+    seen.add(kind + '/' + id)
+    const seriesId = vodStr(e.seriesId, VOD_ID_MAX)
+    out.push({
+      kind,
+      id,
+      ...(seriesId ? { seriesId } : {}),
+      title: vodStr(e.title, VOD_TITLE_MAX),
+      positionSec: vodNum(e.positionSec),
+      durationSec: vodNum(e.durationSec),
+      at: vodNum(e.at)
+    })
+    if (out.length >= VOD_HISTORY_MAX) break
+  }
+  return out
+}
 
 export class EngineHost {
   /**
@@ -117,10 +182,15 @@ export class EngineHost {
         smoothZapping: typeof p?.smoothZapping === 'boolean' ? p.smoothZapping : null,
         // Per-install device id (S50c); absent on prefs written by an older build —
         // deviceId() mints one on the next boot.
-        deviceId: /^[0-9a-f]{16}$/.test(p?.deviceId || '') ? p.deviceId : null
+        deviceId: /^[0-9a-f]{16}$/.test(p?.deviceId || '') ? p.deviceId : null,
+        // Device-local VOD prefs (S54a). Re-gated on READ as well as on write: the
+        // file is plain JSON in userData, so what comes back is no more trustworthy
+        // than what went in, and a corrupt entry must not reach a screen.
+        vodList: gateVodList(p?.vodList),
+        vodHistory: gateVodHistory(p?.vodHistory)
       }
     } catch {
-      return { credsUser: null, credsEnc: null, favorites: [], smoothZapping: null, deviceId: null }
+      return { credsUser: null, credsEnc: null, favorites: [], smoothZapping: null, deviceId: null, vodList: [], vodHistory: [] }
     }
   }
 
@@ -148,7 +218,9 @@ export class EngineHost {
       type: 'prefs',
       creds: p.credsUser ? { username: p.credsUser } : null,
       favorites: p.favorites,
-      smoothZapping: p.smoothZapping
+      smoothZapping: p.smoothZapping,
+      vodList: p.vodList,
+      vodHistory: p.vodHistory
     })
   }
 
@@ -266,6 +338,10 @@ export class EngineHost {
       creds: p.credsUser ? { username: p.credsUser } : null,
       favorites: p.favorites,
       smoothZapping: p.smoothZapping,
+      // S54a: device-local VOD prefs, so a screen mounting late renders My List and
+      // "recently watched" without waiting for a 'prefs' round-trip.
+      vodList: p.vodList,
+      vodHistory: p.vodHistory,
       descriptor: this.descriptor ? publicDescriptor(this.descriptor) : null,
       descriptorSource: this.descriptorSource
     }
@@ -312,6 +388,18 @@ export class EngineHost {
       this.sendPrefs()
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       this.writePrefs({ ...this.readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
+      this.sendPrefs()
+    } else if (msg.type === 'vod-prefs-set') {
+      // Device-local "My List" / watch history (S54a, D9). Either array may be
+      // omitted — the players write history far more often than the list changes —
+      // and each supplied one REPLACES its stored counterpart wholesale, gated and
+      // capped here. Nothing about this leaves the machine.
+      const prefs = this.readPrefs()
+      this.writePrefs({
+        ...prefs,
+        ...(Array.isArray(msg.list) ? { vodList: gateVodList(msg.list) } : {}),
+        ...(Array.isArray(msg.history) ? { vodHistory: gateVodHistory(msg.history) } : {})
+      })
       this.sendPrefs()
     } else if (msg.type === 'auto-login') {
       // Saved (safeStorage-wrapped) credentials win; a baked descriptor's `dev`
@@ -364,14 +452,33 @@ export class EngineHost {
       // provider module never throws and never rejects; the .catch is belt-and-braces
       // and still yields a typed code, never an exception string (which could carry
       // the request URL, and with it the token).
+      //
+      // The reply ECHOES the kind (S54a): Movies and Series can both be in flight, and
+      // the bridge matches the answer to the request that asked for it. An unknown or
+      // absent kind is 'movies' — the shape older renderers send.
+      const kind = msg.kind === 'series' ? 'series' : 'movies'
       const config = this.vodConfig()
       if (!config) {
         // Defensive only: the renderer gates the whole section on the same config.
-        this.send({ type: 'vod-list-result', ok: false, error: 'bad-response' })
+        this.send({ type: 'vod-list-result', kind, ok: false, error: 'bad-response' })
       } else {
-        listMovies(config, this.vodDeps())
-          .then((res) => this.send({ type: 'vod-list-result', ...res }))
-          .catch(() => this.send({ type: 'vod-list-result', ok: false, error: 'network' }))
+        const list = kind === 'series' ? listSeries : listMovies
+        list(config, this.vodDeps())
+          .then((res) => this.send({ type: 'vod-list-result', kind, ...res }))
+          .catch(() => this.send({ type: 'vod-list-result', kind, ok: false, error: 'network' }))
+      }
+    } else if (msg.type === 'vod-series-info' && typeof msg.id === 'string') {
+      // One series' seasons + episodes (S54a). Same always-answers contract as
+      // 'vod-list'; the episode URLs in `detail` already carry the substituted token,
+      // which is the only form that ever crosses to the renderer.
+      const id = msg.id
+      const config = this.vodConfig()
+      if (!config) {
+        this.send({ type: 'vod-series-info-result', id, ok: false, error: 'bad-response' })
+      } else {
+        getSeriesInfo(config, id, this.vodDeps())
+          .then((res) => this.send({ type: 'vod-series-info-result', id, ...res }))
+          .catch(() => this.send({ type: 'vod-series-info-result', id, ok: false, error: 'network' }))
       }
     } else if (msg.type === 'vod-info' && typeof msg.id === 'string') {
       // The reply carries the id back: the grid may have several tiles in flight and
