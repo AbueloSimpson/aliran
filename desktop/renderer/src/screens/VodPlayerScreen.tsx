@@ -43,6 +43,13 @@ export const HISTORY_STEP_SEC = 10
 /** Past this much of the runtime a title counts as watched — its stored position becomes
  *  0 so the next "Start" plays it from the top instead of the closing credits. */
 export const WATCHED_FRACTION = 0.95
+/** The transport fades away this long after it appears / the last activity, for an
+ *  unobstructed picture — the live bar's timing (QA round 2). Paused keeps it up. */
+export const BAR_IDLE_MS = 5000
+/** The mouse cursor hides over clean video after this idle (the live rule). */
+export const CURSOR_IDLE_MS = 3000
+/** The two skip sizes, mirrored around play/pause: ⟲30 ⟲10 ▶ ⟳10 ⟳30. */
+export const SKIP_STEPS = [10, 30] as const
 
 export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, resumeSec, onBack }: {
   url: string
@@ -74,6 +81,33 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
   const [selectedText, setSelectedText] = useState(-1)
   const [selectedAudio, setSelectedAudio] = useState<number | undefined>(undefined)
   const [showTracks, setShowTracks] = useState(false)
+
+  // --- transport auto-hide (QA round 2) — the live screen's fade + cursor hide -----
+  const [barShown, setBarShown] = useState(true)
+  const [cursorHidden, setCursorHidden] = useState(false)
+  const barIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cursorIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pausedRef = useRef(false); pausedRef.current = paused
+  const tracksOpenRef = useRef(false); tracksOpenRef.current = showTracks
+
+  function clearBarIdle () { if (barIdle.current) { clearTimeout(barIdle.current); barIdle.current = null } }
+  function showBar () {
+    clearBarIdle()
+    setBarShown(true)
+    // A paused title (or an open track menu) keeps the bar — and its play control — up.
+    if (pausedRef.current || tracksOpenRef.current) return
+    barIdle.current = setTimeout(() => setBarShown(false), BAR_IDLE_MS)
+  }
+  // Cursor hide over clean video; any mouse move reveals bar + cursor.
+  function pokeCursor () {
+    setCursorHidden(false)
+    if (cursorIdle.current) clearTimeout(cursorIdle.current)
+    cursorIdle.current = setTimeout(() => { if (!tracksOpenRef.current) setCursorHidden(true) }, CURSOR_IDLE_MS)
+  }
+  useEffect(() => {
+    if (paused || showTracks) { clearBarIdle(); setBarShown(true) } else showBar()
+  }, [paused, showTracks])
+  useEffect(() => () => { clearBarIdle(); if (cursorIdle.current) clearTimeout(cursorIdle.current) }, [])
 
   // --- device-local watch history (D9) ---------------------------------------------
   // Only a NAMED title is remembered; a caller that hands over just a url plays without
@@ -125,9 +159,9 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
     const onKey = (e: KeyboardEvent) => {
       if (showTracks) return // TrackMenu captures its own keys
       if (e.key === 'Escape') { e.preventDefault(); onBack() }
-      else if (e.key === ' ') { e.preventDefault(); togglePause() }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); nudge(30) }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); nudge(-10) }
+      else if (e.key === ' ') { e.preventDefault(); togglePause(); showBar() }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); nudge(30); showBar() }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); nudge(-10); showBar() }
       else if ((e.key === 'c' || e.key === 'C') && (textTracks.length > 0 || audioTracks.length > 1)) { e.preventDefault(); setShowTracks(true) }
     }
     window.addEventListener('keydown', onKey)
@@ -256,7 +290,14 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
   const hasTracks = textTracks.length > 0 || audioTracks.length > 1
 
   return (
-    <div className="vod-player">
+    <div
+      className={'vod-player' + (cursorHidden && !showTracks ? ' cursor-hidden' : '')}
+      onMouseMove={() => { pokeCursor(); showBar() }}
+      onClick={(e) => {
+        // A click on clean video (not on a control) toggles the transport.
+        if (e.target === videoRef.current) { if (barShown) { clearBarIdle(); setBarShown(false) } else showBar() }
+      }}
+    >
       <video ref={videoRef} className="video-surface" autoPlay />
 
       {loading && !failed && (
@@ -273,20 +314,31 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
         </div>
       )}
 
+      {/* The live screen's chrome fade wraps the bar — same class, same 0.3s ease. */}
       {!failed && (
-        <div className="nowplaying">
-          <div className="np-info">
-            <span className="np-main">
-              <span className="np-title-line"><span className="np-title">{title}</span></span>
-            </span>
-            {hasTracks && (
-              <button className="np-btn" onClick={() => setShowTracks(true)}><span className="np-btn-glyph">⋮</span><span className="np-btn-label">Audio & subtitles</span></button>
-            )}
-            <button className="np-btn" onClick={onBack}><span className="np-btn-glyph">↩</span><span className="np-btn-label">Back</span></button>
-          </div>
-          <div className="np-transport">
-            <button className="np-play" onClick={togglePause}>{paused ? '▶' : '❚❚'}</button>
-            <SeekBar position={position} duration={duration} onSeek={seek} />
+        <div className={'live-chrome' + (barShown ? '' : ' hidden')}>
+          <div className="nowplaying">
+            <div className="np-info">
+              <span className="np-main">
+                <span className="np-title-line"><span className="np-title">{title}</span></span>
+              </span>
+              {hasTracks && (
+                <button className="np-btn" onClick={() => { setShowTracks(true); showBar() }}><span className="np-btn-glyph">⋮</span><span className="np-btn-label">Audio & subtitles</span></button>
+              )}
+              <button className="np-btn" onClick={onBack}><span className="np-btn-glyph">↩</span><span className="np-btn-label">Back</span></button>
+            </div>
+            <div className="np-transport">
+              <SeekBar position={position} duration={duration} onSeek={(s) => { seek(s); showBar() }} />
+            </div>
+            {/* The skip cluster, centered under the progress bar (QA round 2):
+                ⟲30 ⟲10 ▶ ⟳10 ⟳30. Arrow keys keep their ±30/−10 behavior. */}
+            <div className="np-skip-row">
+              <button className="np-play np-skip" title={`Back ${SKIP_STEPS[1]} seconds`} onClick={() => { nudge(-SKIP_STEPS[1]); showBar() }}>{`↺${SKIP_STEPS[1]}`}</button>
+              <button className="np-play np-skip" title={`Back ${SKIP_STEPS[0]} seconds`} onClick={() => { nudge(-SKIP_STEPS[0]); showBar() }}>{`↺${SKIP_STEPS[0]}`}</button>
+              <button className="np-play" onClick={() => { togglePause(); showBar() }}>{paused ? '▶' : '❚❚'}</button>
+              <button className="np-play np-skip" title={`Forward ${SKIP_STEPS[0]} seconds`} onClick={() => { nudge(SKIP_STEPS[0]); showBar() }}>{`↻${SKIP_STEPS[0]}`}</button>
+              <button className="np-play np-skip" title={`Forward ${SKIP_STEPS[1]} seconds`} onClick={() => { nudge(SKIP_STEPS[1]); showBar() }}>{`↻${SKIP_STEPS[1]}`}</button>
+            </div>
           </div>
         </div>
       )}

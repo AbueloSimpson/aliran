@@ -100,7 +100,9 @@ export function VodScreen ({ navigation }: Props) {
   // (an operator's change lands at the viewer's next login).
   const config: VodConfig | null = backend.vod ?? null
   const [kind, setKind] = useState<Kind>('movies')
-  const [tab, setTab] = useState<Tab>('all')
+  // Recommended is the landing tab (QA round 2): a viewer who backed out of a title
+  // finds it right there under CONTINUE WATCHING instead of searching again.
+  const [tab, setTab] = useState<Tab>('recommended')
   const [search, setSearch] = useState(false)
   const [query, setQuery] = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
@@ -201,10 +203,31 @@ export function VodScreen ({ navigation }: Props) {
       .filter((g): g is { index: number; name: string; item: VodItem } => !!g.item)
   }, [all, categories])
 
+  // CONTINUE WATCHING (QA round 2): the unfinished titles of the ACTIVE kind, newest
+  // watch first. History is newest-first already; the first entry per credited id is
+  // the one that counts, an episode credits its parent series (the watchedAt rule),
+  // and positionSec 0 means finished (WATCHED_FRACTION) — nothing to continue.
+  const continueWatching = useMemo(() => {
+    const byId = new Map(all.map((it) => [it.id, it]))
+    const seen = new Set<string>()
+    const out: VodItem[] = []
+    for (const h of history) {
+      if (!h || !(h.positionSec > 0)) continue
+      if ((kind === 'movies') !== (h.kind === 'movie')) continue
+      const creditId = h.kind === 'episode' ? (h.seriesId || '') : h.id
+      if (!creditId || seen.has(creditId)) continue
+      seen.add(creditId)
+      const it = byId.get(creditId)
+      if (it) out.push(it)
+    }
+    return out
+  }, [history, all, kind])
+
   const rails = useMemo(() => ([
+    { key: 'watched' as VodSortKey, title: 'CONTINUE WATCHING', items: continueWatching },
     { key: 'added' as VodSortKey, title: 'RECENTLY ADDED', items: sortItems(all, 'added') },
     { key: 'yearDesc' as VodSortKey, title: 'NEWEST RELEASES', items: sortItems(all, 'yearDesc') }
-  ]), [all])
+  ]), [all, continueWatching])
 
   // The rail belongs to whichever grid is showing the SORTED list — "All", and a genre
   // opened from the cards. It is never drawn in any other sort (D5).

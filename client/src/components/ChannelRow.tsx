@@ -12,6 +12,15 @@ import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '@aliran/react-native'
 import { theme } from '../theme'
 
+// Exact row geometry (QA round 2): the channel list jumps to the playing channel with
+// FlatList getItemLayout, and that math is only exact when every row is EXACTLY this
+// tall — so the row's height is pinned (a guide-less one-liner centers in the same box)
+// instead of following its text. Same discipline as VOD_ROW_H (D5).
+const ROW_INNER_H = theme.isTV ? 64 : 56
+const ROW_MB = 2
+/** One list row + the gap under it — the getItemLayout unit. */
+export const CHANNEL_ROW_H = ROW_INNER_H + ROW_MB
+
 export interface ChannelRowProps {
   stream: Stream
   number?: number
@@ -67,8 +76,8 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
 const styles = StyleSheet.create({
   row: {
     flexDirection: 'row', alignItems: 'center',
-    paddingVertical: theme.isTV ? 10 : 8, paddingHorizontal: theme.spacing(1),
-    borderRadius: 8, marginBottom: 2,
+    height: ROW_INNER_H, paddingHorizontal: theme.spacing(1),
+    borderRadius: 8, marginBottom: ROW_MB,
     borderLeftWidth: 3, borderLeftColor: 'transparent'
   },
   rowPlaying: { borderLeftColor: theme.colors.accent },

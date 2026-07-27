@@ -151,6 +151,12 @@ async function mount (vod: any = VOD) {
   ;(backend as any).vod = vod
   return createTree(<VodScreen {...props} />)
 }
+/** The landing tab is Recommended (QA round 2) — grid-centric cases enter All first. */
+async function mountAll (vod: any = VOD) {
+  const tree = await mount(vod)
+  await press(tree, 'ALL')
+  return tree
+}
 
 // --- the Menu gate ---------------------------------------------------------------
 
@@ -184,12 +190,16 @@ test('the left pane is a menu and carries no search box of its own', async () =>
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0)
 })
 
-test('the tab bar carries the four mockup tabs and All is the landing tab', async () => {
+test('the tab bar carries the four mockup tabs and Recommended is the landing tab', async () => {
   const tree = await mount()
   for (const label of ['RECOMMENDED', 'MY LIST', 'GENRES', 'ALL']) {
     expect(pressableLabelled(tree, label)).toBeTruthy()
   }
+  // Recommended = the shelf stack (QA round 2: a backed-out title is one glance away)
+  expect(texts(tree)).toContain('RECENTLY ADDED')
+  expect(texts(tree)).not.toContain('Sort by: Recently added') // the chip belongs to the grid
   // All = the full grid with its sort chip
+  await press(tree, 'ALL')
   expect(texts(tree)).toContain('Sort by: Recently added')
   expect(gridIds()).toEqual(['1', '2', '3', '4', '5'])
 })
@@ -208,7 +218,7 @@ test('the grid renders the provider items with the year inline in the label', as
 
 test('an item with no poster falls back to its initial, not a grey hole', async () => {
   mockList.mockResolvedValue({ ok: true, items: [ITEMS[1]] }) // icon: ''
-  const tree = await mount()
+  const tree = await mountAll()
   const initial = tree.root.findAllByType(Text).filter(t => t.props.children === 'S') // "Sick Girl"
   expect(initial).toHaveLength(1)
   expect(tree.root.findAllByType(Image)).toHaveLength(0)
@@ -271,7 +281,7 @@ test('leaving Search through the kind menu puts the browse view back', async () 
   expect(tree.root.findAllByType(TextInput)).toHaveLength(1)
   await press(tree, 'MOVIES')
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0)
-  expect(texts(tree)).toContain('Sort by: Recently added')
+  expect(texts(tree)).toContain('RECENTLY ADDED') // back on the Recommended landing
 })
 
 // --- Genres -----------------------------------------------------------------------
@@ -303,11 +313,11 @@ test('Recommended stacks the two rails; a carousel caps at 50 and SEE N MORE jum
     added: 1000 - i, anio: String(1970 + i), categories: []
   }))
   mockList.mockResolvedValue({ ok: true, items: many })
-  const tree = await mount()
-  await press(tree, 'RECOMMENDED')
+  const tree = await mount() // Recommended IS the landing tab
   const t = texts(tree)
   expect(t).toContain('RECENTLY ADDED')
   expect(t).toContain('NEWEST RELEASES')
+  expect(t).not.toContain('CONTINUE WATCHING') // no history: the shelf simply isn't there
   expect(t).toContain('SEE 5 MORE…') // 55 titles − the 50-tile carousel cap
   expect(t).not.toContain('SEE 51 MORE…') // NOT the old fits-one-row arithmetic
   // The shelf really is a carousel: the last-rendered list is horizontal and holds 50.
@@ -320,10 +330,31 @@ test('Recommended stacks the two rails; a carousel caps at 50 and SEE N MORE jum
   expect(gridIds()[0]).toEqual('55') // …newest year (2024) first
 })
 
+test('Continue watching leads the landing: unfinished titles of the active kind, newest watch first', async () => {
+  mockSeries.mockResolvedValue({ ok: true, items: SERIES })
+  ;(backend as any).vodHistory = [
+    { kind: 'episode', id: 'ep7', seriesId: 's1', title: 'RM S1E1', positionSec: 30, durationSec: 3060, at: 950 },
+    { kind: 'movie', id: '3', title: 'Heat', positionSec: 60, durationSec: 5525, at: 900 },
+    { kind: 'movie', id: '1', title: 'Amélie', positionSec: 0, durationSec: 5000, at: 800 } // finished → excluded
+  ]
+  const MockFlatList = (require('react-native/Libraries/Lists/FlatList') as any).default
+  const tree = await mount(VOD_BOTH) // lands on Recommended; both kinds have sources
+  expect(texts(tree)).toContain('CONTINUE WATCHING')
+  // Movies landing: the unfinished MOVIE only — the episode credit belongs to Series,
+  // and the finished (positionSec 0) title has nothing to continue.
+  const firstShelf = () => tree.root.findAllByType(MockFlatList)[0]
+  expect(firstShelf().props.data.map((i: any) => i.id)).toEqual(['3'])
+
+  // Series side: the same shelf shows the episode's PARENT series.
+  await press(tree, 'SERIES')
+  expect(texts(tree)).toContain('CONTINUE WATCHING')
+  expect(firstShelf().props.data.map((i: any) => i.id)).toEqual(['s1'])
+})
+
 // --- sort -------------------------------------------------------------------------
 
 test('the sort chip opens the menu, marks the active row and reorders the grid', async () => {
-  const tree = await mount()
+  const tree = await mountAll()
   await press(tree, 'Sort by: Recently added')
   const menu = texts(tree)
   expect(menu).toContain('SORT BY')
@@ -343,7 +374,7 @@ test('Recently watched reads the device-local history, episodes counting for the
     { kind: 'movie', id: '3', title: 'Heat', positionSec: 60, durationSec: 5525, at: 500 },
     { kind: 'episode', id: 'ep7', seriesId: '4', title: 'Zulu S1E1', positionSec: 30, durationSec: 3060, at: 900 }
   ]
-  const tree = await mount()
+  const tree = await mountAll()
   await press(tree, 'Sort by: Recently added')
   await press(tree, 'Recently watched')
   expect(gridIds()).toEqual(['4', '3', '1', '2', '5']) // watched first, then added order
@@ -352,7 +383,7 @@ test('Recently watched reads the device-local history, episodes counting for the
 // --- the A–Z rail -----------------------------------------------------------------
 
 test('the rail exists only in the alphabetical sort, and jumps by ROW index', async () => {
-  const tree = await mount()
+  const tree = await mountAll()
   expect(tree.root.findAllByType(AlphaRail)).toHaveLength(0) // added sort: no rail
 
   await press(tree, 'Sort by: Recently added')
@@ -375,7 +406,7 @@ test('the rail exists only in the alphabetical sort, and jumps by ROW index', as
 })
 
 test('the rail is gone again the moment the sort leaves A-Z', async () => {
-  const tree = await mount()
+  const tree = await mountAll()
   await press(tree, 'Sort by: Recently added')
   await press(tree, 'A-Z')
   expect(tree.root.findAllByType(AlphaRail)).toHaveLength(1)
@@ -385,7 +416,7 @@ test('the rail is gone again the moment the sort leaves A-Z', async () => {
 })
 
 test('the grid describes exact rows and survives a scrollToIndex miss', async () => {
-  const tree = await mount()
+  const tree = await mountAll()
   await press(tree, 'Sort by: Recently added')
   await press(tree, 'A-Z')
   expect(listSpy.props.getItemLayout(null, 3)).toEqual({ length: VOD_ROW_H, offset: VOD_ROW_H * 3, index: 3 })
@@ -394,7 +425,7 @@ test('the grid describes exact rows and survives a scrollToIndex miss', async ()
 })
 
 test('the viewability pair keeps its identity (an unstable one makes RN throw mid-list)', async () => {
-  const tree = await mount()
+  const tree = await mountAll()
   const pairs = listSpy.props.viewabilityConfigCallbackPairs
   expect(pairs[0].viewabilityConfig).toEqual({ itemVisiblePercentThreshold: 5 })
   await press(tree, 'Sort by: Recently added')

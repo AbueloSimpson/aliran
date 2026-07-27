@@ -26,7 +26,7 @@
 //     button is PHONE-ONLY — on TV a focusable over the video hijacks the D-pad (S7), so
 //     the TV surface here stays exactly as focus-free as the live one.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, Pressable, StyleSheet, PanResponder, ActivityIndicator, BackHandler } from 'react-native'
+import { View, Text, Pressable, StyleSheet, PanResponder, ActivityIndicator, Animated, BackHandler, Platform } from 'react-native'
 import Video, { type VideoRef } from 'react-native-video'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { SelectedTrackType, type AudioTrack, type SelectedTrack, type TextTrack, type VodHistoryEntry } from '@aliran/react-native'
@@ -44,6 +44,12 @@ export const HISTORY_STEP_SEC = 10
 /** Past this much of the runtime a title counts as watched — its stored position becomes
  *  0 so the next "Start" plays it from the top instead of the closing credits. */
 export const WATCHED_FRACTION = 0.95
+/** The transport fades away this long after it appears / the last interaction, for an
+ *  unobstructed picture — the live bar's timing (QA round 2). Paused keeps it up; TV
+ *  never hides it (the TV transport is display-only, S7). */
+export const BAR_IDLE_MS = 5000
+/** The two skip sizes, mirrored around play/pause: ⟲30 ⟲10 ▶ ⟳10 ⟳30. */
+export const SKIP_STEPS = [10, 30] as const
 
 export function VodPlayerScreen ({ route, navigation }: Props) {
   const { url, title, durationSec, id, kind, seriesId, resumeSec } = route.params
@@ -133,6 +139,53 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
     progress.current.position = seconds
   }, [])
 
+  // Relative skip (the ±10/±30 buttons) — the desktop player's nudge(), clamped to
+  // the title. An unknown runtime only clamps the low end.
+  const nudge = useCallback((delta: number) => {
+    const at = progress.current.position + delta
+    const d = progress.current.duration
+    seek(Math.max(0, d > 0 ? Math.min(d, at) : at))
+  }, [seek])
+
+  // --- transport auto-hide (QA round 2) — the live bar's fade, ported -------------
+  // `barShown` gates mounting; `barOpacity` fades it. TV never hides (display-only
+  // transport, D-pad model); a paused title keeps the bar (and its play control) up.
+  const [barShown, setBarShown] = useState(true)
+  const barIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const barOpacity = useRef(new Animated.Value(1)).current
+  const pausedRef = useRef(false); pausedRef.current = paused
+  const tracksOpenRef = useRef(false); tracksOpenRef.current = showTracks
+
+  const clearBarIdle = useCallback(() => { if (barIdle.current) { clearTimeout(barIdle.current); barIdle.current = null } }, [])
+  const armBarHide = useCallback(() => {
+    clearBarIdle()
+    if (theme.isTV) return
+    if (pausedRef.current || tracksOpenRef.current) return
+    barIdle.current = setTimeout(() => {
+      Animated.timing(barOpacity, { toValue: 0, duration: 350, useNativeDriver: true })
+        .start(({ finished }) => { if (finished) setBarShown(false) })
+    }, BAR_IDLE_MS)
+  }, [clearBarIdle, barOpacity])
+  const showBar = useCallback(() => {
+    clearBarIdle()
+    barOpacity.stopAnimation()
+    setBarShown(true)
+    Animated.timing(barOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start()
+    armBarHide()
+  }, [clearBarIdle, armBarHide, barOpacity])
+  const hideBar = useCallback(() => {
+    clearBarIdle()
+    Animated.timing(barOpacity, { toValue: 0, duration: 350, useNativeDriver: true })
+      .start(({ finished }) => { if (finished) setBarShown(false) })
+  }, [clearBarIdle, barOpacity])
+
+  // Pausing pins the bar; resuming (or closing the track menu) re-arms the fade.
+  useEffect(() => {
+    if (paused || showTracks) clearBarIdle()
+    else armBarHide()
+  }, [paused, showTracks, clearBarIdle, armBarHide])
+  useEffect(() => clearBarIdle, [clearBarIdle])
+
   // The tracks (⋮) button follows the live bar's rule: subtitles OR a real audio choice.
   const hasTracks = textTracks.length > 0 || audioTracks.length > 1
 
@@ -189,11 +242,38 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
         </View>
       )}
 
-      {!failed && (
-        <View style={styles.bar} pointerEvents="box-none">
+      {/* Tap on clean video toggles the transport (phone only — a focusable catcher on
+          TV would hijack the D-pad, S7). Sits UNDER the bar so bar taps never toggle. */}
+      {!failed && !Platform.isTV && (
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={() => { if (barShown) hideBar(); else showBar() }}
+        />
+      )}
+
+      {!failed && barShown && (
+        <Animated.View style={[styles.bar, { opacity: barOpacity }]} pointerEvents="box-none">
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
           <View style={styles.transport} pointerEvents={theme.isTV ? 'none' : 'auto'}>
-            {!theme.isTV && (
+            <SeekBar position={position} duration={duration} onSeek={(s) => { seek(s); showBar() }} />
+            {!theme.isTV && hasTracks && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Audio and subtitles"
+                style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
+                onPress={() => { setShowTracks(true); showBar() }}
+              >
+                {/* A more-options glyph, not "CC" — the menu offers audio AND subtitles. */}
+                <Text style={styles.playGlyph}>⋮</Text>
+              </Pressable>
+            )}
+          </View>
+          {/* The skip cluster, centered under the progress bar (QA round 2):
+              ⟲30 ⟲10 ▶ ⟳10 ⟳30. */}
+          {!theme.isTV && (
+            <View style={styles.skipRow} pointerEvents="auto">
+              <SkipButton label={`↺${SKIP_STEPS[1]}`} a11y={`Back ${SKIP_STEPS[1]} seconds`} onPress={() => { nudge(-SKIP_STEPS[1]); showBar() }} />
+              <SkipButton label={`↺${SKIP_STEPS[0]}`} a11y={`Back ${SKIP_STEPS[0]} seconds`} onPress={() => { nudge(-SKIP_STEPS[0]); showBar() }} />
               <Pressable
                 accessibilityRole="button"
                 style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
@@ -202,25 +282,22 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
                   // a no-op in the player — it is already "ended").
                   if (paused && duration > 0 && position >= Math.floor(duration) - 1) seek(0)
                   setPaused((p) => !p)
+                  showBar()
                 }}
               >
                 <Text style={styles.playGlyph}>{paused ? '▶' : '❚❚'}</Text>
               </Pressable>
-            )}
-            <SeekBar position={position} duration={duration} onSeek={seek} />
-            {!theme.isTV && hasTracks && (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Audio and subtitles"
-                style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
-                onPress={() => setShowTracks(true)}
-              >
-                {/* A more-options glyph, not "CC" — the menu offers audio AND subtitles. */}
-                <Text style={styles.playGlyph}>⋮</Text>
-              </Pressable>
-            )}
-          </View>
-        </View>
+              <SkipButton label={`↻${SKIP_STEPS[0]}`} a11y={`Forward ${SKIP_STEPS[0]} seconds`} onPress={() => { nudge(SKIP_STEPS[0]); showBar() }} />
+              <SkipButton label={`↻${SKIP_STEPS[1]}`} a11y={`Forward ${SKIP_STEPS[1]} seconds`} onPress={() => { nudge(SKIP_STEPS[1]); showBar() }} />
+            </View>
+          )}
+        </Animated.View>
+      )}
+
+      {/* Bar hidden (phone): a touch in the bottom zone brings it back — the live
+          player's reveal zone. */}
+      {!failed && !barShown && !Platform.isTV && (
+        <Pressable style={styles.barRevealZone} onPress={showBar} />
       )}
 
       {showTracks && (
@@ -235,6 +312,20 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
         />
       )}
     </View>
+  )
+}
+
+// One ±N-seconds transport button — the relative-skip glyph and its size in one label.
+function SkipButton ({ label, a11y, onPress }: { label: string; a11y: string; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={a11y}
+      style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
+      onPress={onPress}
+    >
+      <Text style={styles.skipGlyph}>{label}</Text>
+    </Pressable>
   )
 }
 
@@ -287,6 +378,10 @@ const styles = StyleSheet.create({
   },
   title: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '800' },
   transport: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1), marginTop: theme.spacing(1) },
+  // The skip cluster: centered under the progress bar, symmetric around play/pause.
+  skipRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing(1.5), marginTop: theme.spacing(1) },
+  skipGlyph: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', textAlign: 'center' },
+  barRevealZone: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 150 },
   playBtn: { paddingHorizontal: theme.spacing(1.25), paddingVertical: 6, borderRadius: 10, backgroundColor: theme.colors.overlay },
   playBtnActive: { backgroundColor: theme.colors.surface },
   playGlyph: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', width: 22, textAlign: 'center' },

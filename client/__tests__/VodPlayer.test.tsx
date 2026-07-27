@@ -33,7 +33,7 @@ jest.mock('react-native-video', () => {
 })
 const mockSeeks: number[] = []
 
-import { VodPlayerScreen, HISTORY_STEP_SEC } from '../src/screens/VodPlayerScreen'
+import { VodPlayerScreen, HISTORY_STEP_SEC, BAR_IDLE_MS } from '../src/screens/VodPlayerScreen'
 import { TrackMenu } from '../src/components/TrackMenu'
 import { backend } from '../src/worklet'
 
@@ -72,8 +72,11 @@ function texts (tree: RendererInstance): string {
 }
 function last () { return mockVideoProps[mockVideoProps.length - 1] }
 // The Pressable COMPOSITE carries onPress; its host layers only carry the role.
+/** The play/pause control — found by its glyph (the skip cluster and the tap catcher
+ *  are Pressables too now, so "first button" stopped meaning play). */
 function pressable (tree: RendererInstance) {
-  return tree.root.findAll(n => n.props.accessibilityRole === 'button' && typeof n.props.onPress === 'function')[0]
+  return tree.root.findAll(n => n.props.accessibilityRole === 'button' && typeof n.props.onPress === 'function')
+    .filter(n => n.findAllByType(Text).some(t => ['▶', '❚❚'].includes(String(t.props.children))))[0]
 }
 
 test('plays the resolved URL directly, with no engine in the path', async () => {
@@ -115,6 +118,50 @@ test('play/pause toggles the player, and ▶ at the end replays from the top', a
   await ReactTestRenderer.act(async () => { last().onEnd() })
   await ReactTestRenderer.act(async () => { pressable(tree).props.onPress() })
   expect(mockSeeks).toContain(0)
+})
+
+test('the skip cluster nudges the playhead ±10/±30, clamped to the title', async () => {
+  const tree = await createTree(<VodPlayerScreen {...propsFor({ url: URL, title: 'Heat' })} />)
+  await ReactTestRenderer.act(async () => { last().onLoad({ duration: 100 }) })
+  await ReactTestRenderer.act(async () => { last().onProgress({ currentTime: 50 }) })
+  const skip = (label: string) => tree.root.findAll(n => n.props.accessibilityRole === 'button' && typeof n.props.onPress === 'function')
+    .filter(n => n.findAllByType(Text).some(t => String(t.props.children) === label))[0]
+  await ReactTestRenderer.act(async () => { skip('↻10').props.onPress() })
+  expect(mockSeeks).toContain(60)
+  await ReactTestRenderer.act(async () => { skip('↺30').props.onPress() })
+  expect(mockSeeks).toContain(30) // 60 − 30, chained off the optimistic playhead
+  await ReactTestRenderer.act(async () => { last().onProgress({ currentTime: 95 }) })
+  await ReactTestRenderer.act(async () => { skip('↻30').props.onPress() })
+  expect(mockSeeks).toContain(100) // clamped to the runtime
+  await ReactTestRenderer.act(async () => { last().onProgress({ currentTime: 5 }) })
+  await ReactTestRenderer.act(async () => { skip('↺10').props.onPress() })
+  expect(mockSeeks).toContain(0) // clamped to the top
+})
+
+test('the transport fades after idle, a tap brings it back, and pausing pins it', async () => {
+  jest.useFakeTimers()
+  try {
+    const tree = await createTree(<VodPlayerScreen {...propsFor({ url: URL, title: 'Heat' })} />)
+    await ReactTestRenderer.act(async () => { last().onLoad({ duration: 100 }) })
+    expect(texts(tree)).toContain('Heat') // the bar is up on entry
+
+    // Idle past BAR_IDLE_MS (+ the 350 ms fade): the bar unmounts.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(BAR_IDLE_MS + 1000) })
+    expect(texts(tree)).not.toContain('Heat')
+
+    // Any tap surface brings it back (the reveal zone / the catcher — both showBar).
+    const surfaces = tree.root.findAll(n => typeof n.props?.onPress === 'function')
+    await ReactTestRenderer.act(async () => { surfaces[surfaces.length - 1].props.onPress() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(400) })
+    expect(texts(tree)).toContain('Heat')
+
+    // Paused pins the bar: no amount of idle hides it.
+    await ReactTestRenderer.act(async () => { pressable(tree).props.onPress() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(BAR_IDLE_MS * 3) })
+    expect(texts(tree)).toContain('Heat')
+  } finally {
+    jest.useRealTimers()
+  }
 })
 
 // --- device-local watch history (D9) -----------------------------------------------

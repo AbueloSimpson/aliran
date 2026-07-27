@@ -6,7 +6,7 @@
 import React, { useRef, useEffect } from 'react'
 import { View, Text, FlatList, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
-import { ChannelRow } from './ChannelRow'
+import { ChannelRow, CHANNEL_ROW_H } from './ChannelRow'
 import { theme } from '../theme'
 
 export interface ChannelListPanelProps {
@@ -26,10 +26,12 @@ export interface ChannelListPanelProps {
 export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onActivity }: ChannelListPanelProps) {
   const listRef = useRef<FlatList<Stream>>(null)
   const playingIndex = streams.findIndex((s) => s.id === playingId)
-  // On open, bring the currently-playing channel into view. On TV the D-pad focus
-  // (hasTVPreferredFocus below) already scrolls to it; phone has no focus, so scroll
-  // explicitly. Skip when it isn't in this category's list (index < 1 covers -1 and the
-  // already-at-top 0). onScrollToIndexFailed handles the not-yet-laid-out race.
+  // On open, bring the currently-playing channel into view. Rows are EXACTLY
+  // CHANNEL_ROW_H tall, so getItemLayout + initialScrollIndex mount the list ALREADY
+  // AT the playing channel — one frame, no progressive render-scroll (QA round 2: a
+  // deep jump in a 300+ row list visibly "scrolled like crazy" while the virtualized
+  // list measured its way there). The effect below covers a zap made while the list
+  // is open; it stays instant for the same reason. onScrollToIndexFailed is the belt.
   useEffect(() => {
     if (playingIndex < 1) return
     const t = setTimeout(() => {
@@ -44,6 +46,8 @@ export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, play
         ref={listRef}
         data={streams}
         keyExtractor={(s) => s.id}
+        getItemLayout={(_, index) => ({ length: CHANNEL_ROW_H, offset: CHANNEL_ROW_H * index, index })}
+        initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
         onScrollBeginDrag={onActivity}
         onScrollToIndexFailed={(info) => {
           listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })

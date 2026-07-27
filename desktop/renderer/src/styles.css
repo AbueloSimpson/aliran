@@ -805,6 +805,12 @@ img { -webkit-user-drag: none; }
 /* The current sort, always visible above the grid (mockup screen 1). */
 .vod-sort { color: var(--c-text); }
 
+/* VOD player (QA round 2): the skip cluster centered under the progress bar, and the
+   live screen's cursor-hide rule scoped to this surface. */
+.np-skip-row { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 10px; }
+.np-skip { font-size: 14px; font-weight: 700; width: auto; padding: 0 14px; }
+.vod-player.cursor-hidden { cursor: none; }
+
 /* Recommended: a vertical stack of shelves. Each shelf row is a horizontal CAROUSEL
    (up to 50 titles — the "SEE N MORE…", right-aligned in the head, covers the rest). */
 .vod-rails { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
