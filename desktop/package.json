@@ -1,6 +1,6 @@
 {
   "name": "aliran-desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Aliran desktop player for Windows and macOS — Electron shell over @aliran/player-sdk (never published; built with electron-builder)",
   "author": "Aliran contributors",
