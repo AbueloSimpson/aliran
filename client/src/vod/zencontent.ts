@@ -169,7 +169,10 @@ function readDevBlock (): { username?: string; token?: string } | null {
 
 /** The source value the ONE list call is made with. The provider returns the same
  *  wrapper either way, so a movies-only, series-only or both-kinds operator all get
- *  the whole catalog from a single download. */
+ *  the whole catalog from a single download. VERIFIED LIVE (S54e, 2026-07-27):
+ *  getMovies.php with source=<the series source> answers the identical wrapper —
+ *  full movies + series arrays and the categories list, with each item still
+ *  carrying its own source value — so the series-only fallback is real, not a guess. */
 function listSourceOf (config: VodConfig): string {
   return config.sources?.movies || config.sources?.series || ''
 }
