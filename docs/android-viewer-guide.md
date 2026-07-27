@@ -155,7 +155,7 @@ catalog next to the live channels. Inside it:
   plays. **Start** plays the next episode where you left off.
 - Titles **resume** where you stopped watching, and the *Recently watched*
   sort surfaces what you were in the middle of.
-- On the phone, the **CC** button in the player picks subtitle and audio
+- On the phone, the **⋮** button in the player picks subtitle and audio
   languages when the title carries them.
 
 Your list and your watch history are stored **only on this device** — they

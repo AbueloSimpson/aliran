@@ -136,7 +136,7 @@ catalog next to the live channels. Inside it:
   plays. **Start** plays the next episode where you left off.
 - Titles **resume** where you stopped watching, and the *Recently watched*
   sort surfaces what you were in the middle of.
-- In the player: `Space` pauses, `←`/`→` seek, and `c` (or the **CC**
+- In the player: `Space` pauses, `←`/`→` seek, and `c` (or the **⋮**
   button) picks subtitle and audio languages when the title carries them.
   `Esc` goes back.
 
