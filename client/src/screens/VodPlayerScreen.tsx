@@ -133,7 +133,7 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
     progress.current.position = seconds
   }, [])
 
-  // The CC button follows the live bar's rule: subtitles OR a real audio choice.
+  // The tracks (⋮) button follows the live bar's rule: subtitles OR a real audio choice.
   const hasTracks = textTracks.length > 0 || audioTracks.length > 1
 
   return (
@@ -211,11 +211,12 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
             {!theme.isTV && hasTracks && (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Subtitles"
+                accessibilityLabel="Audio and subtitles"
                 style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
                 onPress={() => setShowTracks(true)}
               >
-                <Text style={styles.playGlyph}>CC</Text>
+                {/* A more-options glyph, not "CC" — the menu offers audio AND subtitles. */}
+                <Text style={styles.playGlyph}>⋮</Text>
               </Pressable>
             )}
           </View>

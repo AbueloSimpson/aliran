@@ -296,17 +296,28 @@ test('Genres shows one card per genre that has titles, then filters the grid', a
 
 // --- Recommended rails ------------------------------------------------------------
 
-test('Recommended stacks the two rails and SEE N MORE jumps to All with that sort', async () => {
+test('Recommended stacks the two rails; a carousel caps at 50 and SEE N MORE jumps to All with that sort', async () => {
+  // 55 titles: the carousel carries the first 50, "SEE 5 MORE…" covers the rest.
+  const many = Array.from({ length: 55 }, (_, i) => ({
+    id: String(i + 1), name: `Movie ${i + 1}`, nameOriginal: '', icon: '',
+    added: 1000 - i, anio: String(1970 + i), categories: []
+  }))
+  mockList.mockResolvedValue({ ok: true, items: many })
   const tree = await mount()
   await press(tree, 'RECOMMENDED')
   const t = texts(tree)
   expect(t).toContain('RECENTLY ADDED')
   expect(t).toContain('NEWEST RELEASES')
-  expect(t).toContain('SEE 1 MORE…') // 5 titles, 4 fit on a rail row
+  expect(t).toContain('SEE 5 MORE…') // 55 titles − the 50-tile carousel cap
+  expect(t).not.toContain('SEE 51 MORE…') // NOT the old fits-one-row arithmetic
+  // The shelf really is a carousel: the last-rendered list is horizontal and holds 50.
+  expect(listSpy.props.horizontal).toBe(true)
+  expect(listSpy.props.data).toHaveLength(50)
 
-  await press(tree, 'SEE 1 MORE…', 1) // the NEWEST RELEASES rail
+  await press(tree, 'SEE 5 MORE…', 1) // the NEWEST RELEASES rail
   expect(texts(tree)).toContain('Sort by: Newest releases')
-  expect(gridIds()).toEqual(['2', '5', '4', '1', '3']) // 2023, 2020, 2013, 2001, 1995
+  expect(gridIds()).toHaveLength(55) // All shows everything…
+  expect(gridIds()[0]).toEqual('55') // …newest year (2024) first
 })
 
 // --- sort -------------------------------------------------------------------------

@@ -48,7 +48,7 @@ test('subtitles: lists Off + one row per text track; selecting fires onSelectTex
   const onSelectText = jest.fn()
   const textTracks: TextTrack[] = [
     { index: 0, title: 'English' },
-    { index: 1, language: 'fr' } // no title → label falls back to the language
+    { index: 1, language: 'fr' } // no title → the code renders as its FULL name (S54 polish)
   ]
   const tree = await createTree(
     <TrackMenu {...base} textTracks={textTracks} audioTracks={[{ index: 0, title: 'Original' }]} onSelectText={onSelectText} />
@@ -56,7 +56,8 @@ test('subtitles: lists Off + one row per text track; selecting fires onSelectTex
   const labels = textList(tree)
   expect(labels).toContain('Off')
   expect(labels).toContain('English')
-  expect(labels).toContain('fr')
+  expect(labels).toContain('French') // never the bare "fr" code
+  expect(labels).not.toContain('fr')
 
   // A titled track → TITLE selection. rn-video's Android <Video> can't select embedded HLS
   // subtitles by index past the first group (it matches the within-group index while
@@ -65,8 +66,9 @@ test('subtitles: lists Off + one row per text track; selecting fires onSelectTex
   pressRow(tree, 'English')
   expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.TITLE, value: 'English' })
 
-  // A track with only a language → LANGUAGE selection.
-  pressRow(tree, 'fr')
+  // A track with only a language → LANGUAGE selection (the WIRE value stays the code
+  // even though the row reads "French").
+  pressRow(tree, 'French')
   expect(onSelectText).toHaveBeenCalledWith({ type: SelectedTrackType.LANGUAGE, value: 'fr' })
 
   // Off → DISABLED.

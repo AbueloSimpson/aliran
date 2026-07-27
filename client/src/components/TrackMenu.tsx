@@ -10,6 +10,7 @@
 import React from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { SelectedTrackType, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
+import { trackDisplayLabels } from '../lang'
 import { theme } from '../theme'
 
 // react-native-video's Android <Video> selects a TEXT track by matching the WITHIN-GROUP
@@ -55,6 +56,11 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
   const chooseText = (sel: SelectedTrack) => { onSelectText(sel); onClose() }
   const chooseAudio = (sel: SelectedTrack) => { onSelectAudio(sel); onClose() }
 
+  // Viewers read "Spanish", not "spa t2" — full language names from the track's code,
+  // the provider's own title only when the code resolves to nothing (lang.ts).
+  const textLabels = trackDisplayLabels(textTracks, 'Subtitle')
+  const audioLabels = trackDisplayLabels(audioTracks, 'Audio')
+
   return (
     <View style={styles.overlay}>
       {/* Dim backdrop — a tap anywhere outside the panel dismisses. */}
@@ -66,7 +72,7 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
           {textTracks.map((t, i) => (
             <Row
               key={t.index}
-              label={t.title || t.language || `Subtitle ${i + 1}`}
+              label={textLabels[i]}
               active={textActive(t)}
               onPress={() => chooseText(trackChoice(t))}
             />
@@ -78,7 +84,7 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
               {audioTracks.map((t, i) => (
                 <Row
                   key={t.index}
-                  label={t.title || t.language || `Audio ${i + 1}`}
+                  label={audioLabels[i]}
                   active={audioActive(t)}
                   onPress={() => chooseAudio(trackChoice(t))}
                 />

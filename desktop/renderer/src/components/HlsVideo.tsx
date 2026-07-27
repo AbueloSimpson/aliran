@@ -36,6 +36,7 @@ import React, { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import Hls from 'hls.js'
 import type { DesktopBackend } from '../bridge'
 import type { BackendMessage } from '../types'
+import { trackDisplayLabels } from '../lang'
 
 const RETRY_MS = 2500
 const STALL_MS = 12000
@@ -95,9 +96,12 @@ function isHlsUrl (url: string) {
 
 /** hls.js track descriptors -> the flat-index shape TrackMenu renders. Exported for
  *  the VOD player (S54d), which drives its own hls instance but wants the same labels
- *  and the same indexing as live. */
+ *  and the same indexing as live. Labels prefer the FULL language name from the
+ *  track's code ("Spanish", not "spa t2" — S54 polish, lang.ts); the manifest's own
+ *  name only fills in when the code resolves to nothing. */
 export function trackList (tracks: Array<{ name?: string; lang?: string }>): MediaTrack[] {
-  return tracks.map((t, i) => ({ index: i, label: t.name || t.lang || `Track ${i + 1}`, lang: t.lang || undefined }))
+  const labels = trackDisplayLabels(tracks.map((t) => ({ language: t.lang, title: t.name })), 'Track')
+  return tracks.map((t, i) => ({ index: i, label: labels[i], lang: t.lang || undefined }))
 }
 
 export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function HlsVideo ({

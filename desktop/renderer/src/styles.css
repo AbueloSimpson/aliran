@@ -805,12 +805,14 @@ img { -webkit-user-drag: none; }
 /* The current sort, always visible above the grid (mockup screen 1). */
 .vod-sort { color: var(--c-text); }
 
-/* Recommended: a vertical stack of one-row shelves, each with a "SEE N MORE…". */
+/* Recommended: a vertical stack of shelves. Each shelf row is a horizontal CAROUSEL
+   (up to 50 titles — the "SEE N MORE…", right-aligned in the head, covers the rest). */
 .vod-rails { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
 .vod-rails-item { margin-bottom: 22px; }
 .vod-rails-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.vod-rails-head .vod-chip { margin-left: auto; }
 .vod-rails-title { color: var(--c-text-dim); font-size: 11px; font-weight: 800; letter-spacing: 2px; }
-.vod-rails-row { display: flex; gap: 16px; overflow: hidden; }
+.vod-rails-row { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: thin; }
 .vod-rails-row .vod-tile { width: 150px; flex: none; }
 
 /* The A–Z rail (D5) — plain stacked letters down the right edge of the grid, drawn

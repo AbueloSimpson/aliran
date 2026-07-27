@@ -61,11 +61,10 @@ const TABS: { key: Tab; label: string }[] = [
 // walks the focus down. One page comfortably fills any window.
 const PAGE = 120
 
-// The grid's own CSS geometry (`repeat(auto-fill, minmax(150px, 1fr))`, `gap: 16px`),
-// restated so the RAILS can work out how many tiles fit before any grid has been
-// measured — a viewer who opens Recommended first must still get a full row.
-const TILE_MIN = 150
-const TILE_GAP = 16
+// A Recommended shelf carries at most this many titles — it scrolls horizontally and
+// "SEE N MORE…" is the path to the rest (user decision, S54 polish). Mirrors the RN
+// screen's RAIL_MAX.
+const RAIL_MAX = 50
 
 // Folding both titles of every item on every keystroke is real work on a 50k-title
 // catalog, and the items are stable objects — fold each one once.
@@ -137,7 +136,6 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
   const [focus, setFocus] = useState(0)
   const [shown, setShown] = useState(PAGE)
   const [columns, setColumns] = useState(1)
-  const [paneWidth, setPaneWidth] = useState(0)
   // Index of the first tile the grid is showing — the A–Z rail's highlight follows it.
   const [firstVisible, setFirstVisible] = useState(0)
   // A letter jump whose target is not rendered yet: the page grows first, then the
@@ -280,22 +278,6 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
     ro.observe(el)
     return () => ro.disconnect()
   }, [page.length, cardsMode, railsMode])
-
-  // The content pane's width, for surfaces that have no grid to read a column count
-  // out of (the Recommended rails).
-  useLayoutEffect(() => {
-    const el = paneRef.current
-    if (!el) return
-    const measure = () => setPaneWidth(el.clientWidth)
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  // How many tiles fit in one shelf row — the same arithmetic the CSS grid's auto-fill
-  // does, minus the pane's own scrollbar gutter.
-  const railTiles = Math.max(1, Math.floor((Math.max(TILE_MIN, paneWidth - 12) + TILE_GAP) / (TILE_MIN + TILE_GAP)))
 
   useEffect(() => { tileRefs.current[focus]?.scrollIntoView({ block: 'nearest' }) }, [focus, page.length])
 
@@ -514,8 +496,8 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
             <Shelf
               key={r.key}
               title={r.title}
-              items={r.items.slice(0, railTiles)}
-              more={Math.max(0, r.items.length - railTiles)}
+              items={r.items.slice(0, RAIL_MAX)}
+              more={Math.max(0, r.items.length - RAIL_MAX)}
               busyId={resolving}
               savedIds={savedIds}
               onPressItem={(it) => { void open(it) }}
