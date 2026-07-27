@@ -3221,5 +3221,18 @@ was not touched.
   history — surviving an app restart**. Phone: worklet bundle regenerated and
   byte-verified (`vod-list-set` present in the DECODED blob — the S53d
   stale-bundle lesson applied), arm64 APK built from the main checkout with the
-  baked descriptor and the byte-identical fresh blob verified INSIDE the APK;
-  the on-device pass rides the dev phone's next connection.
+  baked descriptor and the byte-identical fresh blob verified INSIDE the APK,
+  then installed and screencap-smoked on the dev phone (browse UI, series
+  detail, episode playback, subtitle switch, resume hint, My List — all live).
+- **First-device-pass polish (same day):** the phone pass found the
+  Recommended tab clipped dead (the shelf stack neither scrolled vertically
+  nor horizontally) — it is now a vertical scroll of true horizontal
+  carousels, each capped at 50 titles with the "SEE N MORE…" chip
+  right-aligned in the shelf head (both apps; the desktop shelf row scrolls
+  too). The VOD players' tracks button dropped the misleading "CC" for a
+  more-options glyph (⋮), and the track menus now spell languages out in full
+  from the track's language code ("Spanish", never "spa t2") via a mirrored
+  `lang.ts` helper — `Intl.DisplayNames` where the engine has it, a static map
+  where Hermes doesn't; on desktop the shared `trackList()` gives the live
+  player the full names as well. Wire values are untouched — selection still
+  travels by the track's own code.

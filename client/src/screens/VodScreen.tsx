@@ -29,7 +29,7 @@
 // zap ring, or the numbering. My List and the watch history are DEVICE-LOCAL (D9):
 // this screen only READS them; the worklet owns the disk.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, Image, Pressable, TextInput, FlatList, ActivityIndicator, StyleSheet, Platform, TVFocusGuideView, useWindowDimensions } from 'react-native'
+import { View, Text, Image, Pressable, TextInput, FlatList, ScrollView, ActivityIndicator, StyleSheet, Platform, TVFocusGuideView, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import type { VodConfig, VodHistoryEntry, VodListEntry } from '@aliran/react-native'
@@ -74,6 +74,10 @@ export const VOD_ROW_H = VOD_TILE_H + TILE_MB
 // The menu pane is a menu now, not a menu plus a search box, so it can be much
 // narrower than the S53 layout was (mockup proportions).
 const LEFT_PCT = theme.isTV ? 0.18 : 0.22
+
+// A Recommended carousel carries at most this many titles — "SEE N MORE…" is the
+// path to the rest (user decision, S54 polish).
+const RAIL_MAX = 50
 
 // Folding both titles of every item on every keystroke is real work on a 50k-title
 // catalog, and the items are stable objects — fold each one once.
@@ -376,21 +380,24 @@ export function VodScreen ({ navigation }: Props) {
 
     if (tab === 'recommended') {
       if (all.length === 0) return <Centered title="Nothing here yet" hint="The provider returned no titles." />
+      // The stack of shelves scrolls VERTICALLY (a second shelf must never clip dead),
+      // and each shelf is a horizontal carousel capped at RAIL_MAX titles — "SEE N
+      // MORE…" (right-aligned in the shelf head) covers the rest.
       return (
-        <View style={styles.rails}>
+        <ScrollView style={styles.rails} showsVerticalScrollIndicator={false}>
           {rails.map((r) => (
             <Rail
               key={r.key}
               title={r.title}
-              items={r.items.slice(0, columns)}
-              more={Math.max(0, r.items.length - columns)}
+              items={r.items.slice(0, RAIL_MAX)}
+              more={Math.max(0, r.items.length - RAIL_MAX)}
               busyId={resolving}
               onPressItem={(it) => { void open(it) }}
               onLongPressItem={toggleSaved}
               onSeeMore={() => seeMore(r.key)}
             />
           ))}
-        </View>
+        </ScrollView>
       )
     }
 
@@ -530,8 +537,8 @@ function Chip ({ label, onPress }: { label: string; onPress: () => void }) {
   )
 }
 
-/** One horizontal "rail" on Recommended: a heading, a single row of tiles, and the
- *  "SEE N MORE…" that opens the full grid in that same ordering. */
+/** One horizontal "rail" on Recommended: a heading with a right-aligned "SEE N MORE…",
+ *  and a horizontally scrolling carousel of up to RAIL_MAX tiles. */
 function Rail ({ title, items, more, busyId, onPressItem, onLongPressItem, onSeeMore }: {
   title: string
   items: VodItem[]
@@ -548,18 +555,22 @@ function Rail ({ title, items, more, busyId, onPressItem, onLongPressItem, onSee
         <Text style={styles.railTitle}>{title}</Text>
         {more > 0 && <Chip label={`SEE ${more} MORE…`} onPress={onSeeMore} />}
       </View>
-      <View style={styles.railRow}>
-        {items.map((it) => (
+      <FlatList
+        horizontal
+        data={items}
+        keyExtractor={(it) => it.id}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.railRow}
+        renderItem={({ item }) => (
           <PosterTile
-            key={it.id}
-            item={it}
+            item={item}
             first={false}
-            busy={busyId === it.id}
-            onPress={() => onPressItem(it)}
-            onLongPress={() => onLongPressItem(it)}
+            busy={busyId === item.id}
+            onPress={() => onPressItem(item)}
+            onLongPress={() => onLongPressItem(item)}
           />
-        ))}
-      </View>
+        )}
+      />
     </View>
   )
 }
@@ -663,7 +674,7 @@ const styles = StyleSheet.create({
 
   rails: { flex: 1 },
   rail: { marginBottom: theme.spacing(1.5) },
-  railHead: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1), marginBottom: theme.spacing(0.5) },
+  railHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: theme.spacing(1), marginBottom: theme.spacing(0.5), paddingHorizontal: GRID_PAD },
   railTitle: { color: theme.colors.textDim, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 2, flexShrink: 1 },
   railRow: { flexDirection: 'row', gap: TILE_GAP, paddingHorizontal: GRID_PAD },
 

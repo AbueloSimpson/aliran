@@ -252,7 +252,7 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
     }
   }
 
-  // The CC button follows the live bar's rule: subtitles OR a real audio choice.
+  // The tracks (⋮) button follows the live bar's rule: subtitles OR a real audio choice.
   const hasTracks = textTracks.length > 0 || audioTracks.length > 1
 
   return (
@@ -280,7 +280,7 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
               <span className="np-title-line"><span className="np-title">{title}</span></span>
             </span>
             {hasTracks && (
-              <button className="np-btn" onClick={() => setShowTracks(true)}><span className="np-btn-glyph">CC</span><span className="np-btn-label">Subtitles</span></button>
+              <button className="np-btn" onClick={() => setShowTracks(true)}><span className="np-btn-glyph">⋮</span><span className="np-btn-label">Audio & subtitles</span></button>
             )}
             <button className="np-btn" onClick={onBack}><span className="np-btn-glyph">↩</span><span className="np-btn-label">Back</span></button>
           </div>

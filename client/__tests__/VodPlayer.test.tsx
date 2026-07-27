@@ -212,12 +212,14 @@ const AUDIO_TRACKS = [
   { index: 0, title: 'Original', language: 'ja', selected: true },
   { index: 1, title: 'Dubbed', language: 'es', selected: false }
 ]
+// The tracks button wears the more-options glyph (⋮), not "CC" — the menu offers
+// audio AND subtitles (S54 polish).
 function ccButton (tree: RendererInstance) {
   return tree.root.findAll(n => n.props.accessibilityRole === 'button' && typeof n.props.onPress === 'function')
-    .filter(n => n.findAllByType(Text).some(t => String(t.props.children) === 'CC'))[0]
+    .filter(n => n.findAllByType(Text).some(t => String(t.props.children) === '⋮'))[0]
 }
 
-test('the CC button appears only once the player reports something to choose', async () => {
+test('the tracks (⋮) button appears only once the player reports something to choose', async () => {
   const tree = await createTree(<VodPlayerScreen {...propsFor(MOVIE)} />)
   await ReactTestRenderer.act(async () => { last().onLoad({ duration: 1000 }) })
   expect(ccButton(tree)).toBeUndefined()
@@ -245,7 +247,9 @@ test('the menu opens with the player-reported tracks and its choice reaches <Vid
   expect(menu.props.textTracks).toEqual(TEXT_TRACKS)
   expect(menu.props.audioTracks).toEqual(AUDIO_TRACKS)
 
-  // trackChoice prefers LANGUAGE (the ExoPlayer flat-vs-group index trap, S7 lore)
+  // trackChoice prefers LANGUAGE (the ExoPlayer flat-vs-group index trap, S7 lore).
+  // Rows read FULL language names now ("English", "Spanish" — S54 polish), while the
+  // wire value stays the track's own code.
   const row = (label: string) => menu.findAll(n => typeof n.props.onPress === 'function' && n.findAllByType(Text).some(t => String(t.props.children) === label))[0]
   await ReactTestRenderer.act(async () => { row('English').props.onPress() })
   expect(last().selectedTextTrack).toEqual({ type: 'language', value: 'en' })
@@ -254,7 +258,7 @@ test('the menu opens with the player-reported tracks and its choice reaches <Vid
   await ReactTestRenderer.act(async () => { ccButton(tree).props.onPress() })
   await ReactTestRenderer.act(async () => {
     tree.root.findByType(TrackMenu)
-      .findAll(n => typeof n.props.onPress === 'function' && n.findAllByType(Text).some(t => String(t.props.children) === 'Dubbed'))[0]
+      .findAll(n => typeof n.props.onPress === 'function' && n.findAllByType(Text).some(t => String(t.props.children) === 'Spanish'))[0]
       .props.onPress()
   })
   expect(last().selectedAudioTrack).toEqual({ type: 'language', value: 'es' })

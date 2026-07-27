@@ -142,7 +142,7 @@ on-demand catalog next to the live channels. Inside it:
   plays. **Start** plays the next episode from where you left off.
 - Titles **resume** from where you stopped watching. The *Recently watched*
   sort surfaces whatever you're in the middle of.
-- In the player: `Space` pauses, `←`/`→` seek. `c` (or the **CC** button)
+- In the player: `Space` pauses, `←`/`→` seek. `c` (or the **⋮** button)
   picks a subtitle or audio language when the title carries one. `Esc` goes
   back.
 

@@ -53,10 +53,16 @@ phone + Android TV, and the Windows desktop player).
   desktop), never sent to the panel or the provider; they power resume
   ("Start" continues a series at the right episode and position), the Recently
   watched sort, and the My List tab. Both VOD players gained the live players'
-  audio/subtitle track selection (phone CC button; desktop CC button + `c`).
+  audio/subtitle track selection (phone ⋮ button; desktop ⋮ button + `c`).
   Pinned by rebuilt jest suites (RN), new lanes in `test:desktop-vod` — incl. a
   byte-identity guard that keeps the two sort-module copies in lockstep — and
-  the flipped e2e series-source assertions.
+  the flipped e2e series-source assertions. A first-device-pass polish round
+  followed: the Recommended tab scrolls vertically and each shelf is a real
+  horizontal carousel (capped at 50 titles, "SEE N MORE…" right-aligned in the
+  shelf head), the players' tracks button wears a more-options glyph (⋮)
+  instead of "CC", and both track menus spell languages out in full
+  ("Spanish", not "spa") — on desktop the live player's menu inherits the
+  full names too.
 
 - **Movies & Series in the apps (S53b–d)** — both the phone/TV app and the desktop
   player grow a VOD section fed by the operator's external provider: a menu tile
