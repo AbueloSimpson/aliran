@@ -33,6 +33,29 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Movies & Series in the apps (S53b–d)** — both the phone/TV app and the desktop
+  player grow a VOD section fed by the operator's external provider: a menu tile
+  (present **only** while the panel-delivered `vod` payload says enabled, and a
+  brand can still switch it off with `sections.vod:false`), a searchable
+  poster-grid landing (Movies/Series switch; Series shows an honest empty state
+  until a series source exists), and a dedicated player (react-native-video on the
+  phone, hls.js/native `<video>` on desktop — the live P2P engine is never
+  involved). The app **calls the provider directly** with the viewer's own
+  account: username = app username, token = app **password** (the operator
+  provisions matching accounts on both sides); a gitignored `vod.dev` block in
+  `config/service.json` overrides the pair for dev builds, and the example file's
+  placeholder words are recognized and ignored so a half-configured copy falls
+  back to the real pass-off instead of leaking literals. Everything is
+  HTTPS-only: a cleartext `apiBase` is refused before dialing, and the provider's
+  playable URLs — which embed the account token via a literal `{token}`
+  placeholder the client fills in — are refused the substitution on anything but
+  https. The detail-response shape was **verified against the live provider**
+  (S53d): a flat object with the stream URL in `path`/`path_1080`/`path_720` and
+  the runtime as `"hh:mm:ss"`, pinned by shared fixtures in the RN jest suite and
+  `test:desktop-vod` (the two provider-client copies must change together).
+  End-to-end validated against a real provider catalog (7k+ titles): grid,
+  search, detail, playback.
+
 - **External VOD provider — the panel-owned switch (S53a)** — an operator can point
   the apps at a third-party movies/series catalog they already have an account
   with. One replicated record (`svcmeta/vod`) holds the enable bit plus the

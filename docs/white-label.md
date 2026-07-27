@@ -246,6 +246,34 @@ with your brand descriptor's `branding.colors` (see the top of this page):
 `textDim`, `accent` ↔ `accent` — the same correspondence the repo's theme test
 enforces between the stock dashboard and the stock app.
 
+## Movies & Series — the external VOD provider
+
+Both apps can show a **Movies & Series** section fed by a third-party VOD
+provider the operator already has accounts with. Design facts a brand needs:
+
+- **The panel owns the switch.** The section exists only while the operator has
+  the provider **enabled** — the "VOD provider" card on the panel dashboard's
+  Sources tab (or `PATCH /api/vod-config`, the `vod-config-set` CLI verb, or the
+  MCP tools) holds the enable bit and the coordinates. Nothing about the
+  provider lives in the brand descriptor, and a viewer picks a config change up
+  at their **next login / app start** — flipping it on requires **no client
+  rebuild**.
+- **Credential pass-off.** The app authenticates to the provider with the
+  viewer's own app account: username as `username`, app **password** as `token`.
+  The operator provisions matching accounts on both sides; the panel stores no
+  provider credential. Note the consequence honestly: the provider's playable
+  URLs embed that token as a query parameter (over https), so the viewer's app
+  password reaches the provider's media servers — treat provider accounts
+  accordingly.
+- **HTTPS-only, enforced client-side.** A cleartext `apiBase` is refused before
+  dialing, and the token is never substituted into a non-https playable URL.
+- **Brand kill-switch:** a brand that never wants the section can set
+  `sections.vod: false` in its descriptor — the tile then never renders, even
+  with the panel switch on.
+- **Never ship dev credentials.** The gitignored `vod.dev` override in
+  `config/service.json` is for local testing only — see
+  [Client build](client-build.md#the-vod-block--external-provider-dev-override-only).
+
 ## Keys and credentials
 
 - **`panelPubKey` is public** — it ships inside every APK, like the branding. Set

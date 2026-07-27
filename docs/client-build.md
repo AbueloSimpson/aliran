@@ -164,6 +164,34 @@ The build's `config/service.json` decides the flavor (mirrors the desktop player
 Precedence is **baked → persisted runtime service → Connect screen**; a baked key
 always wins and ignores any persisted one.
 
+### The `vod` block — external-provider dev override only
+
+If the operator's panel has an [external VOD provider](white-label.md#movies--series-the-external-vod-provider)
+enabled, the app shows a **Movies & Series** section — nothing about that is
+configured in the descriptor. The provider's coordinates (apiBase / service /
+sources / params) always come from the **panel** on the login payload, and in
+production the app authenticates to the provider with the **viewer's own app
+account** (username as `username`, app password as `token`).
+
+The only thing a descriptor may carry is a **dev-time credential override** for
+testing against a provider account that is not a viewer account:
+
+```json
+"vod": { "dev": { "username": "…", "token": "…" } }
+```
+
+Rules that keep this safe:
+
+- Put it **only** in your local, gitignored `config/service.json`. **Never ship a
+  build whose descriptor contains it** — the descriptor is baked into the APK's
+  JS bundle, so anyone can lift the credential out of the file.
+- The example file's placeholder words (`YOUR_USERNAME` / `YOUR_TOKEN`) are
+  recognized and **ignored**: a copied-but-unfilled block falls through to the
+  normal viewer pass-off instead of sending the literals to the provider.
+- The app refuses cleartext everywhere here: a non-https `apiBase` is never
+  dialed, and the provider's playable URLs (which embed the token via a
+  `{token}` placeholder) are only completed over https.
+
 > **Gradle gotcha:** the release JS-bundling task does not track `client/config/*.json`
 > as an input — after editing `service.json`, delete
 > `android/app/build/generated/assets/react` (or run the bundle task with
