@@ -1,13 +1,15 @@
 # Operating the panel & broadcaster
 
-Operational lore for running the demo/dev stack. The full reference is the
-[Operator guide](../operator-guide.md) and [Content management](../content-management.md).
+This page collects operational lore for running the demo/dev stack. The
+full reference is the [Operator guide](../operator-guide.md) and
+[Content management](../content-management.md).
 
 ## Broadcaster env for ingesting an external origin
 
 Run `node src/index.js` from `broadcaster/` with:
 
-- `INPUT=<hls/rtsp url or file>` — the origin to ingest (ffmpeg must be on PATH)
+- `INPUT=<hls/rtsp url or file>` — the origin to ingest (ffmpeg must be on
+  PATH)
 - `STREAM_ID=<catalog id>`
 - `PANEL_PUBKEY=<panel public key>`
 - `PUBLISHER_KEY=<secretKey from the panel's DATA_DIR/keys/publisher.json>`
@@ -15,149 +17,177 @@ Run `node src/index.js` from `broadcaster/` with:
 
 ## Re-registering a stream silently clobbers its curated title/category
 
-- **Cause:** the `register` RPC merges the catalog record, but the broadcaster always
-  sends a title and a category array — leaving `TITLE`/`CATEGORY` unset overwrites
-  curated values (title falls back to the stream id, category to `[]`).
-- **Fix:** **always set `TITLE` and `CATEGORY`** when re-registering an existing
-  stream. Poster/backdrop/logo art *is* preserved by register.
+- **Cause:** the `register` RPC merges the catalog record, but the
+  broadcaster always sends a title and a category array. Leaving
+  `TITLE`/`CATEGORY` unset overwrites curated values — title falls back to
+  the stream id, category to `[]`.
+- **Fix:** **always set `TITLE` and `CATEGORY`** when re-registering an
+  existing stream. Poster/backdrop/logo art *is* preserved by register.
 
 ## Users "have access" but can't decrypt after attaching a broadcaster
 
-- **Cause:** user grants seal the stream's encryption key. A **fresh broadcaster
-  generates a NEW key** and registers it — silently invalidating every existing grant.
+- **Cause:** user grants seal the stream's encryption key. A **fresh
+  broadcaster generates a NEW key** and registers it — silently
+  invalidating every existing grant.
 - **Fix:** when attaching a broadcaster to a stream created via `admin-cli
   add-stream`, copy the stream secret from the panel's private
-  `DATA_DIR/secrets/streams.json` into the broadcaster's `data/feed.key` **before
-  first start**. (Alternative: re-run `admin-cli grant` for every user afterwards.)
+  `DATA_DIR/secrets/streams.json` into the broadcaster's `data/feed.key`
+  **before first start**. (Alternative: re-run `admin-cli grant` for every
+  user afterwards.)
 
 ## `ELOCKED: File is locked` starting the panel or admin-cli
 
-- **admin-cli and the panel cannot run concurrently** (same Corestore): stop the
-  panel, run admin-cli, restart the panel. Registration, by contrast, *requires* the
-  running panel.
-- Right after killing a panel process, a restart can still hit `ELOCKED` for a few
-  seconds until the dead process's file locks release — retry, don't debug.
+- **admin-cli and the panel cannot run concurrently** (same Corestore):
+  stop the panel, run admin-cli, restart the panel. Registration, by
+  contrast, *requires* the running panel.
+- Right after killing a panel process, a restart can still hit `ELOCKED`
+  for a few seconds until the dead process's file locks release — retry,
+  don't debug.
 
 ## Dev processes rot
 
 Long-running dev panel/broadcaster processes wedge silently:
 
-- An hours-old **panel** can stop answering DHT connects while looking alive in the
-  process list. Health check: a small hyperswarm read of `catalog/*` from another
-  machine (seconds when healthy). Restarting the panel is always safe.
-- The broadcaster's **ffmpeg can die without a log line** while the broadcaster keeps
-  "seeding" a frozen playlist. Health check: is ffmpeg running, and is the HLS temp
-  dir's mtime advancing? Restarting the broadcaster is always safe (feed identity
-  persists in its data dir — grants stay valid *if* `feed.key` is present).
-- Clients that were connected when the panel bounced may need an app restart to shed
-  stale swarm state (see the login-stall entry in [playback](playback.md)).
+- An hours-old **panel** can stop answering DHT connects while still
+  looking alive in the process list. Health check: a small hyperswarm read
+  of `catalog/*` from another machine (seconds when healthy). Restarting
+  the panel is always safe.
+- The broadcaster's **ffmpeg can die without a log line** while the
+  broadcaster keeps "seeding" a frozen playlist. Health check: is ffmpeg
+  running, and is the HLS temp dir's mtime advancing? Restarting the
+  broadcaster is always safe (feed identity persists in its data dir —
+  grants stay valid *if* `feed.key` is present).
+- Clients that were connected when the panel bounced may need an app
+  restart to shed stale swarm state (see the login-stall entry in
+  [playback](playback.md)).
 
 ## Every channel shows `registered:false` after a panel restart
 
-- **Symptom:** the panel and broadcaster restarted around the same time (e.g. `docker
-  compose up -d --build`, host reboot); streams keep playing, but every channel sits
-  at `registered:false` and the panel catalog stops tracking liveness. Current builds
-  say why — `registerError: "no panel connection for Ns"`; older builds showed a
+- **Symptom:** the panel and broadcaster restarted around the same time
+  (`docker compose up -d --build`, or a host reboot, for example); streams
+  keep playing, but every channel sits at `registered:false` and the panel
+  catalog stops tracking liveness. Current builds say why —
+  `registerError: "no panel connection for Ns"`; older builds showed a
   silent `registerError: null`.
-- **Cause:** the panel's swarm identity is ephemeral — a restarted panel announces
-  the registration topic under a brand-new keypair. A broadcaster that resolved the
-  topic just before (or during) the restart holds a dead peer record, and hyperswarm
-  re-queries a client-mode topic only every ~10 minutes on its own.
-- **Fix:** none needed on current builds. While registrations are stranded with no
-  panel socket, the broadcaster forces fresh topic lookups (5 s → 60 s backoff) and
-  re-registers as soon as the new announce lands — typically well under a minute.
-  If `registered` stays false for several minutes anyway (or you run a pre-hardening
-  build), restart the broadcaster. Either way playback is unaffected: running feeds
-  keep streaming; only catalog liveness/registration lags.
+- **Cause:** the panel's swarm identity is ephemeral — a restarted panel
+  announces the registration topic under a brand-new keypair. A
+  broadcaster that resolved the topic just before (or during) the restart
+  holds a dead peer record, and hyperswarm re-queries a client-mode topic
+  only every ~10 minutes on its own.
+- **Fix:** none needed on current builds. While registrations are
+  stranded with no panel socket, the broadcaster forces fresh topic
+  lookups (5 s → 60 s backoff) and re-registers as soon as the new
+  announce lands — typically well under a minute. If `registered` stays
+  false for several minutes anyway (or you run a pre-hardening build),
+  restart the broadcaster. Either way playback is unaffected: running
+  feeds keep streaming, and only catalog liveness/registration lags.
 
 ## Control API dead + all viewers frozen after a few login attempts
 
-- **Symptom (pre-fix builds):** a handful of `POST /api/login` attempts against the
-  broadcaster control API — wrong passwords included — and the whole broadcaster
-  stops: control API times out, swarm replication stalls (every viewer freezes into
-  the tune-timeout error), and it never recovers on its own. Observed in production
-  2026-07-16 on a 1 GB host deep in swap: 4-5 attempts = 25+ minutes dead, container
-  restart required.
-- **Cause:** Argon2id password verification is memory-hard (64 MiB per verify at the
-  default cost) and ran synchronously on the node event loop. The login throttle
-  counts attempts per window but doesn't stop them queueing, so each verify blocked
-  the loop back-to-back — and on a swap-thrashing box one verify grinds for minutes.
-- **Fix:** none needed on current builds. Verification runs in a worker thread,
-  strictly one at a time: a concurrent login is rejected `503` immediately, and a
-  verify that outlives its budget (`loginVerifyTimeoutMs`, default 30 s) fails `503`
-  with the worker terminated and respawned. Media and the rest of the control API
-  stay responsive throughout (regression: `npm run test:login-flood`). On a pre-fix
-  build: restart the broadcaster container and keep the control port firewalled to
-  localhost/TLS-proxy only (its default binding).
-- **Panel too:** the panel's admin login (the dashboard's `POST /api/login`) shared
-  the defect, with a worse blast radius — the panel event loop also drives catalog
-  replication and the viewer login RPC, so a pre-fix panel under login flood
-  freezes every fresh app login in the fleet. Same fix, same semantics
-  (`panel/src/ops.js makeAdminVerifier`; regression:
-  `npm run test:panel-login-flood`). On a pre-fix build: restart the panel
-  container. The viewer OPRF login path itself never had the problem (its Argon2
-  grind runs on the client).
-- **Ops note:** repeated `503` on login means verifies are being rejected or timing
-  out — on a small host that's your swap-pressure alarm; check RAM before blaming
-  auth. Lower `ARGON2_MEM_KIB` for boxes this tight (it guards a localhost-only
-  admin API; existing admins keep their recorded cost until the password is rotated).
+- **Symptom (pre-fix builds):** a handful of `POST /api/login` attempts
+  against the broadcaster control API — wrong passwords included — and
+  the whole broadcaster stops: control API times out, swarm replication
+  stalls (every viewer freezes into the tune-timeout error), and it never
+  recovers on its own. Observed in production 2026-07-16 on a 1 GB host
+  deep in swap: 4-5 attempts caused 25+ minutes dead, and a container
+  restart was required.
+- **Cause:** Argon2id password verification is memory-hard (64 MiB per
+  verify at the default cost) and ran synchronously on the node event
+  loop. The login throttle counts attempts per window but doesn't stop
+  them queueing, so each verify blocked the loop back-to-back — and on a
+  swap-thrashing box one verify grinds for minutes.
+- **Fix:** none needed on current builds. Verification runs in a worker
+  thread, strictly one at a time: a concurrent login is rejected `503`
+  immediately, and a verify that outlives its budget
+  (`loginVerifyTimeoutMs`, default 30 s) fails `503` with the worker
+  terminated and respawned. Media and the rest of the control API stay
+  responsive throughout (regression: `npm run test:login-flood`). On a
+  pre-fix build: restart the broadcaster container and keep the control
+  port firewalled to localhost/TLS-proxy only (its default binding).
+- **Panel too:** the panel's admin login (the dashboard's `POST
+  /api/login`) shared the defect, with a worse blast radius — the panel
+  event loop also drives catalog replication and the viewer login RPC, so
+  a pre-fix panel under login flood freezes every fresh app login in the
+  fleet. Same fix, same semantics (`panel/src/ops.js
+  makeAdminVerifier`; regression: `npm run test:panel-login-flood`). On a
+  pre-fix build: restart the panel container. The viewer OPRF login path
+  itself never had the problem, because its Argon2 grind runs on the
+  client.
+- **Ops note:** repeated `503` on login means verifies are being rejected
+  or timing out — on a small host that's your swap-pressure alarm; check
+  RAM before blaming auth. Lower `ARGON2_MEM_KIB` for boxes this tight (it
+  guards a localhost-only admin API; existing admins keep their recorded
+  cost until the password is rotated).
 
 ## Identifying which process is which
 
-The panel and broadcaster both run as `node src/index.js` — the command line alone
-won't tell them apart. Distinguish by working directory / parent process, or when
-hunting a stuck ffmpeg, match its command line by the HLS output directory it writes.
+The panel and broadcaster both run as `node src/index.js` — the command
+line alone won't tell them apart. Distinguish by working directory or
+parent process, or when hunting a stuck ffmpeg, match its command line by
+the HLS output directory it writes.
 
 ## A channel shows colour bars / "SOURCE OFFLINE" instead of its content
 
-Working as designed. When a source fails past `SLATE_AFTER` consecutive respawns (default 3,
-counted per configured fallback url), the broadcaster loops a pre-rendered slate so the
-channel stays live with a clear message rather than sitting blank in watchdog backoff. It is
-NOT stuck: every `SLATE_RETRY_MS` (default 30 s) it drops the slate and re-probes the real
-source, and returns on its own the moment the source comes back — no operator action needed.
+This is working as designed. When a source fails past `SLATE_AFTER`
+consecutive respawns (default 3, counted per configured fallback url), the
+broadcaster loops a pre-rendered slate so the channel stays live with a
+clear message rather than sitting blank in watchdog backoff. It is NOT
+stuck: every `SLATE_RETRY_MS` (default 30 s) it drops the slate and
+re-probes the real source, and it returns on its own the moment the source
+comes back — no operator action needed.
 
-The trap for operators: a slated channel reports `state: up` and looks healthy by every other
-measure (ffmpeg alive, live edge advancing, peers connected), because it genuinely is — bars
-are flowing. To tell "showing the source" from "showing bars," check `slate.slated` in
-`GET /api/channels/:id`, or watch for the `slate-on` / `slate-retry` entries in the incident
-log. If a channel is *permanently* slated, the source itself is down — check its ffmpeg log
-ring for why. Set `SLATE_ENABLED=false` to revert to the old blank-during-backoff behaviour.
-Full detail: [Offline slate media](offline-slate.md).
+The trap for operators: a slated channel reports `state: up` and looks
+healthy by every other measure (ffmpeg alive, live edge advancing, peers
+connected), because it genuinely is — bars are flowing. To tell "showing
+the source" from "showing bars," check `slate.slated` in `GET
+/api/channels/:id`, or watch for the `slate-on` / `slate-retry` entries in
+the incident log. If a channel is *permanently* slated, the source itself
+is down — check its ffmpeg log ring for why. Set `SLATE_ENABLED=false` to
+revert to the old blank-during-backoff behaviour. Full detail:
+[Offline slate media](offline-slate.md).
 
 ## Monitoring says the control API is down right after a deploy
 
-Expected for a few moments on a **full-fleet recreate**, and now bounded. On restart the
-broadcaster auto-resumes every desired-running channel; each one's one-time startup cost
-(open the store, reconcile the drive, join the swarm, spawn ffmpeg) lands on the single Node
-event loop, so a dense enough resume can starve the authenticated `/api` for the duration of
-the ramp. At ~83 channels an unpaced resume blacked `/api` out for ~7 minutes.
+This is expected for a few moments on a **full-fleet recreate**, and it is
+now bounded. On restart the broadcaster auto-resumes every
+desired-running channel; each one's one-time startup cost (open the
+store, reconcile the drive, join the swarm, spawn ffmpeg) lands on the
+single Node event loop, so a dense enough resume can starve the
+authenticated `/api` for the duration of the ramp. At ~83 channels an
+unpaced resume blacked `/api` out for ~7 minutes.
 
 Two things fix this, both on by default:
 
-- **`RESUME_PACE`** (default on) paces the resume — it waits for the event loop to catch up
-  between channel starts, so `/api` and swarm replication stay responsive throughout. Adaptive,
-  so it barely slows a small fleet. `RESUME_PACE=0` restores the old back-to-back behaviour.
-- **`GET /healthz`** is unauthenticated and cheap, served before the auth gate, and reports
-  `{up, resuming, resumed, total, ...}`. **Point your uptime check and alerting at `/healthz`,
-  not `/api/status`** — `/api/status` needs a token and does real work, so it is the wrong probe
-  for "is the process alive". During a resume `/healthz` shows `resuming:true, resumed:45,
-  total:83` — progress, not a dead socket.
+- **`RESUME_PACE`** (default on) paces the resume — it waits for the event
+  loop to catch up between channel starts, so `/api` and swarm replication
+  stay responsive throughout. It is adaptive, so it barely slows a small
+  fleet. `RESUME_PACE=0` restores the old back-to-back behaviour.
+- **`GET /healthz`** is unauthenticated and cheap, served before the auth
+  gate, and reports `{up, resuming, resumed, total, ...}`. **Point your
+  uptime check and alerting at `/healthz`, not `/api/status`** —
+  `/api/status` needs a token and does real work, so it is the wrong probe
+  for "is the process alive". During a resume `/healthz` shows
+  `resuming:true, resumed:45, total:83` — progress, not a dead socket.
 
-If `/healthz` itself is unreachable, the process is genuinely down (or the port is blocked) —
-that is the signal to act on.
+If `/healthz` itself is unreachable, the process is genuinely down (or
+the port is blocked) — that is the signal to act on.
 
-Every HTTP surface (panel included) also serves unauthenticated Prometheus-text
-`GET /metrics` beside its `/healthz`, and `LOG_FORMAT=json` switches any service to
-one JSON object per log line — see the [operator guide's Monitoring
-section](../operator-guide.md#monitoring) for the scrape config and the log-growth
-bounds.
+Every HTTP surface (panel included) also serves unauthenticated
+Prometheus-text `GET /metrics` beside its `/healthz`, and
+`LOG_FORMAT=json` switches any service to one JSON object per log line —
+see the [operator guide's Monitoring
+section](../operator-guide.md#monitoring) for the scrape config and the
+log-growth bounds.
 
 ## Latency expectations (healthy system)
 
-- First DHT connect from a fresh client store: **30–90 s**; subsequent logins ~10 s.
-- After play: a few seconds of playlist 404s while the live edge replicates.
-- `1 peer` means the broadcaster only; more viewers = more seeders.
-- **Time-to-play jumps back to 40–55 s after every broadcaster restart?** You're on
-  `FEED_BUFFER=ram` — each restart mints a new feed identity, so viewers re-pay a cold
-  DHT discovery. Switch to the default `FEED_BUFFER=disk` for a stable, warm topic.
-  See [P2P feed buffer & tuning](feed-buffer.md).
+- First DHT connect from a fresh client store: **30–90 s**; subsequent
+  logins ~10 s.
+- After play: a few seconds of playlist 404s while the live edge
+  replicates.
+- `1 peer` means the broadcaster only; more viewers means more seeders.
+- **Time-to-play jumps back to 40–55 s after every broadcaster restart?**
+  You're on `FEED_BUFFER=ram` — each restart mints a new feed identity, so
+  viewers re-pay a cold DHT discovery. Switch to the default
+  `FEED_BUFFER=disk` for a stable, warm topic. See
+  [P2P feed buffer & tuning](feed-buffer.md).
