@@ -2,9 +2,12 @@
 
 ## Why peer-to-peer
 
-Aliran has no central media servers. Viewers replicate the stream and
-**re-seed** it to each other, so distribution capacity grows with the
-audience instead of costing more.
+Live channels in Aliran need no central media servers. Viewers replicate the
+stream and **re-seed** it to each other, so distribution capacity grows with
+the audience instead of costing more. Content from other sources — CDN
+redirect channels, an operator's external VOD provider — streams over plain
+HTTPS instead; the peer-to-peer path is the core of the platform, not a
+requirement on every channel.
 
 ## The Holepunch/Pear stack
 

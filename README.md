@@ -5,8 +5,10 @@
 **Run your own streaming service. Without the bandwidth bill.**
 
 Self-hostable, open-source, peer-to-peer OTT streaming on the
-[Holepunch/Pear](https://pears.com) stack. Viewers re-seed each other, so there are
-**no central media servers** and delivery cost stays near zero as your audience grows.
+[Holepunch](https://pears.com) stack — Android (phone + TV), Windows and macOS
+players. Viewers **re-seed** live channels to each other, so delivery scales
+through the audience instead of central media servers, and bandwidth cost stays
+near zero as it grows.
 
 [![ci](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml/badge.svg)](https://github.com/AbueloSimpson/aliran/actions/workflows/ci.yml)
 [![docs](https://github.com/AbueloSimpson/aliran/actions/workflows/docs.yml/badge.svg)](https://abuelosimpson.github.io/aliran/)
