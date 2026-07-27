@@ -1,8 +1,10 @@
 # User Management
 
-All account operations are performed with the panel's `admin-cli` or the admin HTTP
-API/dashboard — both wrap the same shared ops (the panel is the single writer of the
-signed account DB). See [reference.md](reference.md) for the full command/endpoint list.
+You manage accounts with two tools: the panel's `admin-cli`, or the admin HTTP
+API and dashboard. Both tools call the same underlying operations. The panel is
+the only service that writes to the signed account database.
+
+See [reference.md](reference.md) for the full list of commands and endpoints.
 
 ## Accounts & passwords
 
@@ -16,18 +18,23 @@ admin-cli delete-user alice           # remove the account record entirely
 admin-cli list                        # list users / streams
 ```
 
-Passwords are never stored — only an Argon2id verifier + OPRF-bound wrapped keys. See
-[security-model.md](security-model.md).
+The panel never stores passwords. It stores only an Argon2id verifier and an
+OPRF-bound wrapped key. See [security-model.md](security-model.md) for how this
+works.
 
-Deleting a user removes the record — and with it every sealed grant and device
-enrollment — from the signed DB. Session tokens that were already issued keep
-validating **offline** until they expire (inherent to signed tokens); online checks
-and any future login fail immediately.
+Deleting a user removes the account record from the signed database. This also
+removes every sealed grant and device enrollment for that user.
+
+!!! note "Already-issued sessions keep working until they expire"
+    A session token is signed and self-contained, so it validates **offline**
+    even after you delete the account. Online checks and any new login attempt
+    fail immediately. The token itself only stops working when it expires.
 
 ## Channel packages (bouquets)
 
-Per-stream grants stop scaling somewhere around a few dozen channels. A **package**
-is a named bundle ("Basic", "Sports") granted as one unit:
+Granting channels one at a time stops scaling somewhere around a few dozen
+channels. A **package** is a named bundle — "Basic", "Sports" — that you grant
+as one unit:
 
 ```bash
 admin-cli add-package basic --label "Basic" --members "news-24, kids-tv" --default
@@ -37,46 +44,60 @@ admin-cli show-package sports                     # members + the channels they 
 admin-cli remove-package sports                   # grants only it covered are removed
 ```
 
-(The CLI package commands need the store — run them with the panel stopped, or use
-the dashboard **Packages** tab / admin API against the live panel.)
+!!! note "The CLI package commands need direct store access"
+    Run them with the panel stopped. To change packages while the panel is
+    running, use the dashboard **Packages** tab or the admin API instead.
 
-Members can be explicit stream ids, **id globs** (`sports-*`, the publisher-scope
-matcher), or selectors — `category:<slug>` (a parent slug covers its `Parent/Child`
-rails) and `source:<name>` (channels imported by that remote source). Selectors
-resolve against the catalog **at reconcile time**, so a newly tagged, imported or
-created channel joins the bouquet by itself; an explicit id may name a stream that
-doesn't exist yet and materializes when it is added.
+A package member can be:
 
-Because a grant is a **sealed key**, not an ACL, a package cannot be checked at
-request time — every package change is *materialized* into per-user sealed grants
-immediately (assignment, member edits, package removal, stream add/retag/delete,
-source syncs, and panel boot all reconcile). Clients notice new keys at their next
-login, exactly like a manual grant; **no client, SDK or wire change** is involved.
+- an explicit stream id,
+- an **id glob** (`sports-*` — the same matcher publisher scopes use), or
+- a selector: `category:<slug>` (a parent slug also covers its `Parent/Child`
+  rails) or `source:<name>` (every channel imported by that remote source).
 
-Grants carry **provenance**: `manualGrants` (granted one-by-one) vs `packages`
-(assigned bouquets) — the dashboard Users tab shows package chips, manual chips and
-source auto-grant chips distinctly. The rules:
+Selectors resolve against the catalog **at reconcile time**. This means a
+channel that is newly tagged, imported, or created joins the package by itself.
+An explicit id can also name a channel that doesn't exist yet — it joins the
+package as soon as that channel is added.
 
-- **Revoking a single stream removes the manual entitlement.** If one of the user's
-  packages still covers it, the grant is re-sealed in the same request — access is
-  then attributed to the package alone (the CLI says so instead of claiming a revoke).
-- **Removing a package (or a member) removes only what nothing else covers** —
-  manual grants, other packages, and auto-grant source channels always survive.
-- **`default` packages** are assigned to every *newly created* user (beside the
-  source auto-grant hook, which keeps working unchanged). Flipping `default` later
-  never touches existing users.
-- **A source with auto-grant OFF can be package-governed** (`source:<name>` member):
-  only holders get its channels, and they follow the feed as it drifts. Turning a
-  source's auto-grant off converges formerly-auto grants away on the next reconcile
-  unless a package or manual grant covers them.
-- Revocation stays **cooperative**: removing sealed keys stops future logins from
-  recovering them, but a client that already unsealed a key needs a stream-key
-  rotation for a hard lockout (same caveat as any revoke).
+A grant is a **sealed key**, not an access-control entry, so the panel cannot
+check package membership at request time. Instead, every package change
+**materializes immediately** into per-user sealed grants: assigning a package,
+editing its members, removing it, adding or retagging or deleting a stream,
+syncing a source, and even a panel boot all trigger this reconcile step. A
+client sees its new keys at its next login — the same as a manual grant. No
+client, SDK, or wire change is involved.
 
-Upgrading a pre-package deployment migrates automatically at the first panel boot:
-every existing grant is adopted as a *manual* grant — except channels owned by an
-auto-grant source, which stay attributed to the source engine — so nothing a user
-already had is ever revoked by the upgrade.
+Each grant carries **provenance**: `manualGrants` (granted one by one) or
+`packages` (assigned as part of a bundle). The dashboard Users tab shows
+package chips, manual chips, and source auto-grant chips separately, so you can
+tell where each grant came from. The rules:
+
+- **Revoking a single stream removes the manual grant only.** If one of the
+  user's packages still covers that stream, the panel re-seals the grant in
+  the same request. Access then comes from the package alone — the CLI
+  reports this instead of claiming a plain revoke.
+- **Removing a package (or one of its members) removes only what nothing else
+  covers.** Manual grants, other packages, and auto-grant source channels
+  always survive.
+- **A `default` package is assigned to every newly created user**, alongside
+  the existing source auto-grant hook (which keeps working unchanged).
+  Flipping `default` later never touches users who already exist.
+- **A source with auto-grant off can still be package-governed** — add it as a
+  `source:<name>` member. Only package holders get its channels, and they
+  follow the source as its channel list changes. Turning a source's
+  auto-grant off moves any channels it previously auto-granted away from
+  users on the next reconcile, unless a package or manual grant still covers
+  them.
+- Revocation stays **cooperative**: removing a sealed key stops future logins
+  from recovering it, but a client that already unsealed the key needs a
+  stream-key rotation for a hard lockout. This is the same caveat as any
+  revoke.
+
+Upgrading a pre-package deployment migrates automatically at the panel's first
+boot afterward: every existing grant becomes a *manual* grant, except channels
+owned by an auto-grant source, which stay attributed to that source. Nothing a
+user already had is revoked by the upgrade.
 
 ## Devices
 
@@ -87,25 +108,30 @@ admin-cli logout-device alice <deviceId>   # drop ONE enrollment (see below)
 admin-cli logout-all alice            # bump tokenVersion -> forces re-login everywhere
 ```
 
-Device limits are enforced at login (the panel serializes count + add). A logged-out
-device with a still-valid cached session keeps working until its next panel contact or
-until the session TTL expires (enforcement latency = TTL).
+The panel enforces device limits at login, by serializing the count check and
+the add together. If you log a device out, a copy of that device with a still
+valid cached session keeps working until its next contact with the panel, or
+until the session expires — whichever comes first.
 
-**Per-device logout is cooperative session hygiene, not content protection.** It
-removes the enrollment *without* bumping `tokenVersion` (so the user's other devices
-stay logged in). The SDK's online check (`sessionLive`) sees the device is gone from
-the replicated record and drops that client to the login screen — but a hostile
-client keeps its cached token and any stream keys it already unsealed. Actually
-revoking access = revoke the grant(s) and rotate the stream key.
+!!! warning "Per-device logout is session hygiene, not content protection"
+    Logging out one device removes its enrollment **without** bumping
+    `tokenVersion`, so the user's other devices stay signed in. The SDK's
+    online check (`sessionLive`) sees the device is gone from the replicated
+    record and returns that client to the login screen — but a hostile client
+    keeps its cached token and any stream keys it already unsealed. To
+    actually revoke access, revoke the grant(s) and rotate the stream key.
 
 ## Sessions
 
-- On successful online login the client seals stream keys + a panel-signed session
-  token (TTL = grace window) in Android Keystore/StrongBox.
-- Returning users work offline while the token is valid; new/expired logins need a
-  panel node.
-- Revoke early by bumping `tokenVersion` (per user: `logout-all`, `set-password`,
-  disable) — or drop a single device cooperatively with `logout-device`.
-- Client-side: `checkSession(panelKey, token)` validates offline (signature +
-  expiry); `sessionLive(db, payload)` additionally checks the replicated record
-  online (account active, tokenVersion match, device still enrolled).
+- On a successful online login, the client seals its stream keys and a
+  panel-signed session token — valid for the grace window — into Android
+  Keystore/StrongBox.
+- A returning user works offline while the token is still valid. A new or
+  expired login needs to reach a panel node.
+- To revoke a session early, bump `tokenVersion` for that user
+  (`logout-all`, `set-password`, or `set-status disabled`), or drop a single
+  device cooperatively with `logout-device`.
+- On the client: `checkSession(panelKey, token)` validates the token offline
+  (checks the signature and the expiry). `sessionLive(db, payload)` also
+  checks the replicated record online — that the account is active, the
+  `tokenVersion` matches, and the device is still enrolled.
