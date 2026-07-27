@@ -18,6 +18,13 @@ re-seeds to other viewers.
   service…* forgets it).
 - Test/dev descriptors may carry `"dev": { "username", "password" }` — Login
   prefill + first-boot auto-login. Never in anything handed to viewers.
+- **Movies & Series** (S53) appears only while the operator's panel has an external
+  VOD provider enabled: the login payload carries the provider's coordinates and the
+  app calls that provider ITSELF, authenticating with the viewer's own account. The
+  requests run in main (`main/vod-provider.js`) — the renderer is `file://`, so CORS
+  forbids them there, and the credential is the viewer's password. A dev build may
+  override the account with `"vod": { "dev": { "username", "token" } }`; like the
+  `dev` block above, it must never ship.
 - Private package — never published to npm.
 
 Quick start (from the repo root):

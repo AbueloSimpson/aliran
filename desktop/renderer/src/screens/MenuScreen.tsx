@@ -3,23 +3,31 @@
 // wrapped in an accent rounded border — over a full-screen wallpaper. Wallpaper =
 // the featured stream's backdrop (panel curation) under a dark scrim, falling back
 // to the operator's branding.wallpaper, then a plain brand surface. The section
-// list is DATA-DRIVEN from the service descriptor (white-label §8).
+// list is DATA-DRIVEN from the service descriptor (white-label §8) AND, for Movies
+// & Series, from the PANEL: that tile exists only while the operator has an external
+// VOD provider enabled (S53 — backend.vod arrives on the login/'streams' payload and
+// is null otherwise), and a brand can still switch it off with sections.vod:false.
 
 import React, { useEffect, useMemo, useState } from 'react'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { pickHero } from '../catalog'
 
-export type MenuTarget = 'live' | 'favorites' | 'search' | 'settings' | 'exit'
+export type MenuTarget = 'live' | 'vod' | 'favorites' | 'search' | 'settings' | 'exit'
 
 interface MenuItem { key: MenuTarget; label: string; glyph: string }
 
 export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
   const [streams, setStreams] = useState<Stream[]>(backend.streams)
   const [focus, setFocus] = useState(0)
+  // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
+  // mounted before login grows the tile the moment the catalog lands.
+  const [vodEnabled, setVodEnabled] = useState<boolean>(!!backend.vod?.enabled)
 
   useEffect(() => {
-    return backend.onMessage((m) => { if (m.type === 'streams') setStreams(m.streams) })
+    return backend.onMessage((m) => {
+      if (m.type === 'streams') { setStreams(m.streams); setVodEnabled(!!m.vod?.enabled) }
+    })
   }, [])
 
   const hero = useMemo(() => pickHero(streams), [streams])
@@ -28,18 +36,21 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
   const items = useMemo<MenuItem[]>(() => {
     const s = backend.descriptor?.sections ?? {}
     const list: MenuItem[] = [{ key: 'live', label: 'Live TV', glyph: '📺' }]
+    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: 'Movies & Series', glyph: '🎬' })
     if (s.favorites !== false) list.push({ key: 'favorites', label: 'Favorites', glyph: '⭐' })
     if (s.search !== false) list.push({ key: 'search', label: 'Search', glyph: '🔍' })
     if (s.settings !== false) list.push({ key: 'settings', label: 'Settings', glyph: '⚙️' })
     if (s.exit !== false) list.push({ key: 'exit', label: 'Exit', glyph: '🚪' })
     return list
-  }, [])
+  }, [vodEnabled])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowRight') { e.preventDefault(); setFocus((i) => Math.min(items.length - 1, i + 1)) }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); setFocus((i) => Math.max(0, i - 1)) }
-      else if (e.key === 'Enter') { e.preventDefault(); onGo(items[focus].key) }
+      // items[] can grow at runtime (the VOD tile appears with the login payload) —
+      // a focus index left over from the shorter list must not crash the menu.
+      else if (e.key === 'Enter') { e.preventDefault(); const it = items[focus]; if (it) onGo(it.key) }
       else if (e.key === 'Escape') { e.preventDefault(); onGo('live') }
     }
     window.addEventListener('keydown', onKey)

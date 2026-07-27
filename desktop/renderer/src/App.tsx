@@ -6,6 +6,9 @@
 //     ├─ login   (exception path: none saved / auth failed)
 //     └─ menu    (hub: icon bar over the featured stream's wallpaper)
 //          ├─ live        one fullscreen video surface + browse/detail overlays
+//          ├─ vod         Movies & Series from the operator's external provider (S53;
+//          │              the tile only exists while the panel delivers an enabled
+//          │              provider config) → vodPlayer, a plain <video>/hls.js surface
 //          ├─ favorites   device-local ★ channels
 //          ├─ search      client-side catalog filter
 //          └─ settings    account / service / diagnostics / sign out
@@ -25,8 +28,10 @@ import { LiveScreen } from './screens/LiveScreen'
 import { FavoritesScreen } from './screens/FavoritesScreen'
 import { SearchScreen } from './screens/SearchScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
+import { VodScreen, type VodPick } from './screens/VodScreen'
+import { VodPlayerScreen } from './screens/VodPlayerScreen'
 
-type Screen = 'connect' | 'splash' | 'login' | 'menu' | 'live' | 'favorites' | 'search' | 'settings'
+type Screen = 'connect' | 'splash' | 'login' | 'menu' | 'live' | 'favorites' | 'search' | 'settings' | 'vod' | 'vodPlayer'
 
 export function App () {
   // A renderer reload mid-session (dev Ctrl+R) still has the engine logged in —
@@ -36,6 +41,9 @@ export function App () {
   const [authorizing, setAuthorizing] = useState(!!backend.creds)
   // A channel picked in Favorites/Search jumps into Live playing it.
   const [liveStart, setLiveStart] = useState<string | undefined>(undefined)
+  // The provider title the VOD grid resolved (url/title/runtime). The grid does the
+  // getMovieInfo call, so the player screen holds no provider credentials at all.
+  const [vodPick, setVodPick] = useState<VodPick | null>(null)
 
   useEffect(() => {
     return backend.onMessage((m) => {
@@ -63,5 +71,20 @@ export function App () {
   if (screen === 'favorites') return <FavoritesScreen onWatch={watch} onBack={toMenu} />
   if (screen === 'search') return <SearchScreen onWatch={watch} onBack={toMenu} />
   if (screen === 'settings') return <SettingsScreen onBack={toMenu} onSignOut={() => setScreen('login')} />
+  if (screen === 'vod') return <VodScreen onPlay={(pick) => { setVodPick(pick); setScreen('vodPlayer') }} onBack={toMenu} />
+  if (screen === 'vodPlayer') {
+    // No pick can only happen if a reload lands here — fall back to the grid rather
+    // than a blank surface.
+    if (!vodPick) return <VodScreen onPlay={(pick) => { setVodPick(pick); setScreen('vodPlayer') }} onBack={toMenu} />
+    return (
+      <VodPlayerScreen
+        key={vodPick.url}
+        url={vodPick.url}
+        title={vodPick.title}
+        durationSec={vodPick.durationSec}
+        onBack={() => setScreen('vod')}
+      />
+    )
+  }
   return <LiveScreen key={liveStart ?? 'live'} initialStreamId={liveStart} onExit={toMenu} />
 }

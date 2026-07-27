@@ -107,6 +107,32 @@ export interface VodConfig {
   params: Record<string, string>
 }
 
+/** One provider catalog row, already stripped by main/vod-provider.js to what the
+ *  poster grid renders (the raw list can be tens of megabytes). */
+export interface VodItem {
+  id: string
+  name: string
+  /** Original-language title; often differs from the localized `name`. */
+  nameOriginal: string
+  /** Poster URL, or '' when the provider has none. */
+  icon: string
+  /** Unix seconds the provider added the title (0 when unknown) — the default sort. */
+  added: number
+  /** Release year as the provider states it (string, may be ''). */
+  anio: string
+  /** Provider category ids. The mapping is unknown, so v1 carries but ignores them. */
+  categories: number[]
+}
+
+/** Why a provider call could not be answered. Deliberately coarse: the UI names
+ *  "sign-in" vs "connection" and never shows a code or a provider message. */
+export type VodErrorCode = 'auth' | 'network' | 'bad-response'
+
+export type VodListResult = { ok: true; items: VodItem[] } | { ok: false; error: VodErrorCode }
+export type VodInfoResult =
+  | { ok: true; url: string; durationSec: number | null }
+  | { ok: false; error: VodErrorCode }
+
 export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[]; vod?: VodConfig }
@@ -130,6 +156,11 @@ export type BackendMessage =
   // deduplicated or folded into an open alert — either way, "we heard you").
   // 'unsupported' = this panel predates reports or has them disabled.
   | { type: 'report-result'; ok: boolean; error?: ReportError | string; retryAfter?: number; id?: string }
+  // Answers to the two external-VOD requests (S53c). The provider is called in the
+  // MAIN process (the renderer is file:// — CORS — and the credential is the
+  // viewer's password); these carry only what the grid and the player need.
+  | { type: 'vod-list-result'; ok: boolean; items?: VodItem[]; error?: VodErrorCode }
+  | { type: 'vod-info-result'; id: string; ok: boolean; url?: string; durationSec?: number | null; error?: VodErrorCode }
   // The runtime descriptor was accepted ('set-service', public flavor) — the engine
   // is booting on it; theme/branding may re-apply.
   | { type: 'service'; descriptor: ServiceDescriptor }
@@ -156,6 +187,10 @@ export interface BrandColors {
 }
 
 export interface SectionToggles {
+  /** Movies & Series (external VOD provider, S53) — default true, but the section
+   *  only exists at all while the PANEL delivers an enabled provider config. Set
+   *  false to keep the tile off a brand that has a provider enabled. */
+  vod?: boolean
   favorites?: boolean
   search?: boolean
   settings?: boolean

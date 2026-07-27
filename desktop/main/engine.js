@@ -26,6 +26,9 @@
 //   { type:'report', category, text? }         viewer problem report (S50c) — one of
 //                                    the seven sdk/report.js categories + optional
 //                                    free text; answered with 'report-result'
+//   { type:'vod-list' }              the external VOD provider's movie catalog (S53c)
+//                                    -> 'vod-list-result'
+//   { type:'vod-info', id }          one title's playable URL -> 'vod-info-result'
 // Messages out: identical to the worklet protocol (see backend.mjs header), except
 // 'prefs' carries creds: { username } | null — no password. 'report-result'
 // { ok, error?, retryAfter?, id? } answers a 'report' (error 'unsupported' = the
@@ -34,11 +37,18 @@
 // service, sources, params }, present ONLY when the operator enabled one (absent =
 // no VOD section). The renderer's state() snapshot mirrors it as `vod: … | null`
 // for screens that mount after the one-shot message.
+// 'vod-list-result' { ok, items?, error? } and 'vod-info-result' { id, ok, url?,
+// durationSec?, error? } answer the two VOD requests (S53c). The provider is called
+// from HERE, never from the renderer: the renderer is file:// (CORS blocks it) and,
+// more importantly, the credential the provider wants IS the viewer's password,
+// which never leaves this process. Error codes are the provider module's typed
+// 'auth' | 'network' | 'bad-response' — no provider text, no HTTP codes.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { createPlayer } from '@aliran/player-sdk'
+import { listMovies, getMovieInfo } from './vod-provider.js'
 
 const TRANSIENT_LOGIN = /not connected|channel closed/i
 const LOGIN_RETRY_MS = 2500
@@ -80,6 +90,14 @@ export class EngineHost {
     // live policy to 'client-only' on metered links and restores THIS on the way back.
     this.basePolicy = 'reseed'
     this.loginToken = 0 // invalidates a stale transient-retry loop when a new login starts
+    // The pair the CURRENT session signed in with, kept in memory only (S53c). The
+    // external VOD provider is authenticated with the viewer's own app password —
+    // that is the pass-off model — and it is needed on every provider call, but
+    // readPassword() can only answer when the OS provided encryption AND the
+    // credentials were saved (a 'creds-clear'/no-safeStorage install has neither).
+    // So a successful login remembers the pair HERE: never written to disk, never
+    // sent to the renderer, gone when the process exits.
+    this.sessionCreds = null
   }
 
   storeDir () { return path.join(this.userData, 'aliran-store') }
@@ -166,6 +184,26 @@ export class EngineHost {
       : null
   }
 
+  // --- external VOD provider (S53c) ---
+
+  // What the provider client authenticates with. The descriptor's `vod.dev` block
+  // (gitignored dev configs only) WINS when it is filled in; otherwise the viewer's
+  // own login pair — app username -> username, app password -> token. This is the
+  // ONLY consumer of a decrypted password inside main, and neither half is ever
+  // returned to the renderer (publicDescriptor() drops `vod` for the same reason).
+  vodDeps () {
+    const dev = this.descriptor?.vod?.dev
+    return {
+      dev: dev && typeof dev.username === 'string' && typeof dev.token === 'string' ? { username: dev.username, token: dev.token } : null,
+      saved: this.sessionCreds || this.readPassword()
+    }
+  }
+
+  // The provider config the panel delivered at login (null = no provider/disabled).
+  vodConfig () {
+    try { return this.player ? this.player.vodConfig() : null } catch { return null }
+  }
+
   // --- engine lifecycle ---
 
   start () {
@@ -240,6 +278,7 @@ export class EngineHost {
     for (let i = 0; ; i++) {
       try {
         await this.player.login(username, password)
+        if (token === this.loginToken) this.sessionCreds = { username, password }
         if (token === this.loginToken && save) this.saveCredentials(username, password)
         return // 'streams' already relayed by the event listener
       } catch (err) {
@@ -267,6 +306,9 @@ export class EngineHost {
       this.sendPrefs()
     } else if (msg.type === 'creds-clear') {
       this.writePrefs({ ...this.readPrefs(), credsUser: null, credsEnc: null })
+      // Sign-out drops the in-memory pair too, or the next viewer on this machine
+      // would reach the provider as the previous one (S53c).
+      this.sessionCreds = null
       this.sendPrefs()
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       this.writePrefs({ ...this.readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
@@ -316,6 +358,33 @@ export class EngineHost {
           }))
           .catch((err) => this.send({ type: 'report-result', ok: false, error: String(err?.message || err) }))
       }
+    } else if (msg.type === 'vod-list') {
+      // The external provider's catalog. Like 'report', this branch ALWAYS answers —
+      // the screen awaits 'vod-list-result' and must never be left spinning. The
+      // provider module never throws and never rejects; the .catch is belt-and-braces
+      // and still yields a typed code, never an exception string (which could carry
+      // the request URL, and with it the token).
+      const config = this.vodConfig()
+      if (!config) {
+        // Defensive only: the renderer gates the whole section on the same config.
+        this.send({ type: 'vod-list-result', ok: false, error: 'bad-response' })
+      } else {
+        listMovies(config, this.vodDeps())
+          .then((res) => this.send({ type: 'vod-list-result', ...res }))
+          .catch(() => this.send({ type: 'vod-list-result', ok: false, error: 'network' }))
+      }
+    } else if (msg.type === 'vod-info' && typeof msg.id === 'string') {
+      // The reply carries the id back: the grid may have several tiles in flight and
+      // matches the answer to the tile that asked.
+      const id = msg.id
+      const config = this.vodConfig()
+      if (!config) {
+        this.send({ type: 'vod-info-result', id, ok: false, error: 'bad-response' })
+      } else {
+        getMovieInfo(config, id, this.vodDeps())
+          .then((res) => this.send({ type: 'vod-info-result', id, ...res }))
+          .catch(() => this.send({ type: 'vod-info-result', id, ok: false, error: 'network' }))
+      }
     } else if (typeof msg.username === 'string' && typeof msg.password === 'string') {
       this.login(msg.username, msg.password).catch(fail)
     } else if (typeof msg.streamId === 'string') {
@@ -332,7 +401,9 @@ export class EngineHost {
 }
 
 // The renderer only needs the presentational descriptor fields — panelPubKey rides
-// along for the Settings "service" card, but engine knobs stay main-side.
+// along for the Settings "service" card, but engine knobs stay main-side. Note what
+// is NOT here: the `vod.dev` provider credential (S53c) stays in this process, the
+// way the saved password does.
 function publicDescriptor (d) {
   return {
     panelPubKey: d.panelPubKey,

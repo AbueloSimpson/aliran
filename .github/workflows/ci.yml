@@ -97,6 +97,12 @@ jobs:
       - name: VOD library end-to-end (test:vod)
         timeout-minutes: 10
         run: npm run test:vod
+      # The desktop app's external-VOD provider client (S53c): pure functions, no
+      # network and no Electron. It runs the same fixtures as the phone app's jest
+      # suite for the twin module, so the two copies cannot drift silently — and it
+      # is the only automated guard on the desktop half (the renderer has no jest).
+      - name: Desktop external VOD provider (test:desktop-vod)
+        run: npm run test:desktop-vod
       # Reseller panel: pure logic (roles, credit ledger, store) …
       - name: Reseller panel units (test:reseller-unit)
         run: npm run test:reseller-unit

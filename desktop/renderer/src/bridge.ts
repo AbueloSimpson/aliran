@@ -4,7 +4,12 @@
 // fields exist for late-mounting screens (the one-shot replies can land before a
 // screen exists), and onMessage is the live feed.
 
-import type { BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream, VodConfig } from './types'
+import type { BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream, VodConfig, VodInfoResult, VodListResult } from './types'
+
+// A provider call the main process fails to answer would leave the grid spinning
+// forever, so every request is bounded here. The provider client's own timeout is
+// 20 s — this only fires if main itself never replies.
+const VOD_REPLY_TIMEOUT_MS = 25000
 
 class DesktopBackend {
   streams: Stream[] = []
@@ -83,6 +88,42 @@ class DesktopBackend {
    */
   sendReport (category: ReportCategory, text?: string) {
     this.send({ type: 'report', category, ...(text ? { text } : {}) })
+  }
+
+  /**
+   * The external VOD provider's movie catalog (S53c). The fetch itself happens in
+   * the MAIN process — the renderer is file://, so CORS forbids it there, and the
+   * credential the provider wants is the viewer's password, which never crosses
+   * this bridge. Promise-shaped so the screens read like the phone app's, which
+   * calls the provider module directly; the wire underneath is still the one-way
+   * send + a 'vod-list-result' on the message feed.
+   */
+  vodList (): Promise<VodListResult> {
+    return this.request<VodListResult>({ type: 'vod-list' }, (m) =>
+      m.type === 'vod-list-result'
+        ? (m.ok ? { ok: true, items: m.items ?? [] } : { ok: false, error: m.error ?? 'bad-response' })
+        : null)
+  }
+
+  /** One title's playable URL + runtime. Answers are matched by id: the grid can
+   *  have more than one tile in flight. */
+  vodInfo (id: string): Promise<VodInfoResult> {
+    return this.request<VodInfoResult>({ type: 'vod-info', id }, (m) =>
+      m.type === 'vod-info-result' && m.id === id
+        ? (m.ok && m.url ? { ok: true, url: m.url, durationSec: m.durationSec ?? null } : { ok: false, error: m.error ?? 'bad-response' })
+        : null)
+  }
+
+  // Send one message and settle on the first reply the matcher recognizes. A silent
+  // main process resolves as a connection failure rather than hanging.
+  private request<T> (msg: unknown, match: (m: BackendMessage) => T | null): Promise<T> {
+    return new Promise<T>((resolve) => {
+      let done = false
+      const finish = (v: T) => { if (!done) { done = true; clearTimeout(timer); off(); resolve(v) } }
+      const off = this.onMessage((m) => { const v = match(m); if (v) finish(v) })
+      const timer = setTimeout(() => finish({ ok: false, error: 'network' } as unknown as T), VOD_REPLY_TIMEOUT_MS)
+      this.send(msg)
+    })
   }
 
   requestPrefs () { this.send({ type: 'prefs-get' }) }
