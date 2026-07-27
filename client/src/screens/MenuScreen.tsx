@@ -3,8 +3,11 @@
 // an accent rounded border — over a full-screen wallpaper. Wallpaper = the featured
 // stream's backdrop (panel curation, S16c) under a dark scrim, falling back to the
 // operator's branding.wallpaper, then a plain brand surface (D6: no baked-in art).
-// The section list is DATA-DRIVEN from the service descriptor (white-label §8): VOD
-// stays hidden until it ships (S8); Exit is TV-only by default (D7).
+// The section list is DATA-DRIVEN from the service descriptor (white-label §8) AND,
+// for Movies & Series, from the PANEL: that tile exists only while the operator has an
+// external VOD provider enabled (S53 — backend.vod is delivered on the login/'streams'
+// payload and is null otherwise), and a brand can still switch it off with
+// sections.vod:false. Exit is TV-only by default (D7).
 import React, { useEffect, useMemo, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, Platform, BackHandler, ScrollView } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -27,9 +30,14 @@ interface MenuItem {
 
 export function MenuScreen ({ navigation }: Props) {
   const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
+  // mounted before login sees it the moment the catalog lands.
+  const [vodEnabled, setVodEnabled] = useState<boolean>(!!backend.vod?.enabled)
 
   useEffect(() => {
-    return backend.onMessage((m) => { if (m.type === 'streams') setStreams(m.streams) })
+    return backend.onMessage((m) => {
+      if (m.type === 'streams') { setStreams(m.streams); setVodEnabled(!!m.vod?.enabled) }
+    })
   }, [])
 
   const hero = useMemo(() => pickHero(streams), [streams])
@@ -40,12 +48,13 @@ export function MenuScreen ({ navigation }: Props) {
     const list: MenuItem[] = [
       { key: 'live', label: 'Live TV', glyph: '📺', go: () => navigation.navigate('Live', {}) }
     ]
+    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: 'Movies & Series', glyph: '🎬', go: () => navigation.navigate('Vod') })
     if (s.favorites !== false) list.push({ key: 'favorites', label: 'Favorites', glyph: '⭐', go: () => navigation.navigate('Favorites') })
     if (s.search !== false) list.push({ key: 'search', label: 'Search', glyph: '🔍', go: () => navigation.navigate('Search') })
     if (s.settings !== false) list.push({ key: 'settings', label: 'Settings', glyph: '⚙️', go: () => navigation.navigate('Settings') })
     if (s.exit ?? Platform.isTV) list.push({ key: 'exit', label: 'Exit', glyph: '🚪', go: () => BackHandler.exitApp() })
     return list
-  }, [navigation])
+  }, [navigation, vodEnabled])
 
   return (
     <View style={styles.container}>

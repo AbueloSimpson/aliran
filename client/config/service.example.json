@@ -11,5 +11,13 @@
     }
   },
   "bootstrap": [],
-  "//dev": "Optional local-dev block (auto-login for the worklet smoke test): \"dev\": { \"username\": \"...\", \"password\": \"...\" }. Never include it in a shipped descriptor."
+  "//dev": "Optional local-dev block (auto-login for the worklet smoke test): \"dev\": { \"username\": \"...\", \"password\": \"...\" }. Never include it in a shipped descriptor.",
+  "//vod": "Optional external VOD provider block. The provider's COORDINATES (apiBase / service / sources / params) are NEVER configured here - they come from the operator's panel at login, and the Movies & Series section only exists while the panel has a provider enabled. The only thing this block may carry is a DEV credential override, below.",
+  "vod": {
+    "_comment": "DEV ONLY. In production the app passes the VIEWER's own app username and password to the provider, so no credential belongs in a descriptor. Fill this in only in a LOCAL, GITIGNORED config/service.json when testing against a provider account that is not a viewer account, and NEVER ship a build whose descriptor contains it (public builds especially - the file is baked into the APK).",
+    "dev": {
+      "username": "YOUR_USERNAME",
+      "token": "YOUR_TOKEN"
+    }
+  }
 }

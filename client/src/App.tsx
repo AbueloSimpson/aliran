@@ -7,6 +7,9 @@
 //     ├─ Login   (exception path: no/invalid saved credentials)
 //     └─ Menu    (hub: icon bar over the featured stream's wallpaper)
 //          ├─ Live        one fullscreen video surface + browse/detail overlays
+//          ├─ Vod         Movies & Series from the operator's external provider (S53;
+//          │              the tile only exists while the panel delivers an enabled
+//          │              provider config) → VodPlayer, plain react-native-video
 //          ├─ Favorites   device-local ★ channels
 //          ├─ Search      client-side catalog filter
 //          └─ Settings    account / service / diagnostics / sign out
@@ -29,6 +32,8 @@ import { LiveScreen } from './screens/LiveScreen'
 import { FavoritesScreen } from './screens/FavoritesScreen'
 import { SearchScreen } from './screens/SearchScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
+import { VodScreen } from './screens/VodScreen'
+import { VodPlayerScreen } from './screens/VodPlayerScreen'
 
 export type RootStackParamList = {
   Splash: undefined
@@ -39,6 +44,10 @@ export type RootStackParamList = {
   Favorites: undefined
   Search: undefined
   Settings: undefined
+  Vod: undefined
+  // The provider URL is resolved on the grid (getMovieInfo) and handed over, so the
+  // player screen is a dumb surface: no provider call, no credentials.
+  VodPlayer: { url: string; title: string; durationSec?: number }
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
@@ -120,6 +129,8 @@ export default function App () {
         <Stack.Screen name="Favorites" component={FavoritesScreen} />
         <Stack.Screen name="Search" component={SearchScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
+        <Stack.Screen name="Vod" component={VodScreen} />
+        <Stack.Screen name="VodPlayer" component={VodPlayerScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   )

@@ -45,7 +45,9 @@ export interface BrandColors {
 
 // Menu-hub sections an operator can toggle. Absent = the default noted per field.
 export interface SectionToggles {
-  /** VOD catalog — default false until VOD ships (S8). */
+  /** Movies & Series (external VOD provider, S53) — default true, but the section
+   *  only exists at all while the PANEL delivers an enabled provider config. Set
+   *  false to keep the tile off a brand that has a provider enabled. */
   vod?: boolean
   /** Favorites section — default true. */
   favorites?: boolean
@@ -75,6 +77,12 @@ export interface ServiceDescriptor {
   // Dev-only auto-login credentials for the worklet smoke test (local service.json
   // is gitignored). Never present in a shipped descriptor.
   dev?: { username: string; password: string }
+  // External VOD provider (S53). The provider's COORDINATES come from the panel at
+  // login — never from here. The only thing a build may carry is a DEV credential
+  // override, for testing against a provider account that is not the viewer's own:
+  // in production the app passes the viewer's app username + password through.
+  // Gitignored configs ONLY; a shipped descriptor must never contain it.
+  vod?: { dev?: { username: string; token: string } }
 }
 
 // An operator panel public key: 32 bytes as lowercase hex — the one thing a viewer
