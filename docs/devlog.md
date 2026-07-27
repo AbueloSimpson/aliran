@@ -2988,6 +2988,177 @@ was not touched.
   `repeater_*` group, prompts line). Full required lane + `mkdocs --strict`
   green locally. NO VPS work; multi-box LIVE validation rides S20b.
 
+### S50 — Viewer problem reports: pseudonymous P2P ingest, alerts, ops push (verified)
+- **Why:** viewers had no way to tell the operator "no audio on channel X" — the
+  only feedback path was out-of-band chat. S50 builds the whole loop: a report
+  travels the EXISTING P2P RPC socket → pseudonymous storage → correlation → one
+  alert → optional ops push → dashboard/CLI/MCP triage. Built as four loop
+  segments (S50a ingest → S50b notifier + admin → S50c client path → S50d
+  MCP + docs) + the user-gated S50e deploy.
+- **Ingest core (S50a).** A `report` responder beside `login`/`session` on the
+  socket every client already holds — no new port, and no wire change for older
+  clients (the method simply does not exist on a pre-S50 panel). Reports are
+  **pseudonymous by construction**: the panel verifies the session token, then
+  immediately reduces the identity to `HMAC-SHA256(salt, userId|deviceId)`
+  sliced to 16 hex — no username and no device id is ever stored, counted,
+  returned or logged. Records live in `DATA_DIR/reports/` (atomic writes,
+  5000-record cap, retention prune) — never in the Hyperbee, which replicates
+  to every viewer. Four layers of flood control keep a real outage cheap: a
+  per-reporter throttle, per-channel storm collapse (once an alert is open only
+  a bounded sample of full records is stored), a panel-wide token-bucket
+  breaker, and correlation that opens **one** alert per channel per window and
+  extends it rather than re-firing. `REPORTS_RETENTION_DAYS=0` is a complete
+  kill switch.
+- **Notifier + admin surface (S50b).** An opened alert pushes **once**: a
+  generic webhook whose body suits ntfy, Slack and Discord at the same time
+  (`REPORTS_WEBHOOK_URL`) and/or a Telegram bot; both unset is a no-op.
+  Delivery is **fail-dark** — queued and never awaited, one attempt at a time,
+  dropped after three tries over ~30 s — so a dead endpoint can never slow
+  ingest down. Triage: a dashboard **Reports tab** (alert strip, filters,
+  grouped expandable list, per-hour chart, ack/resolve — every interpolation
+  escaped, report text is hostile), `GET/POST /api/reports…` + `/api/alerts…`,
+  and five admin-cli verbs that work beside a running panel.
+- **Client path (S50c).** `AliranPlayer.report({category, text})` attaches what
+  the engine already knows — the active channel, peer count, app
+  version/platform and a rolling 50-entry ring of the engine's own breadcrumbs
+  (fed from ONE `emit()` override, not hand-placed calls) — and proves
+  entitlement with the retained session token, never a username. It **never
+  throws**: a local 10-minute cooldown per channel+category keeps
+  button-mashing off the wire, and a panel without the responder maps to a
+  friendly "this service doesn't accept reports". Both shells got a Settings
+  modal (vertical focusable category list — a TV remote files a report in four
+  presses) and a consent line naming exactly what is sent. Rider: both shells
+  now mint a **per-install 8-byte deviceId** at first run and pass it at login
+  (until now every install collapsed onto one derived fallback id) — one-time
+  device churn on upgrade, and the id never reaches the UI layer; the panel
+  folds it into the pseudonym. The category enum is duplicated per runtime that
+  cannot import another's copy, with an e2e drift guard holding all copies
+  deep-equal.
+- **MCP + docs (S50d).** 102 → **107 tools**: `panel_list_reports`
+  (filters + `sinceHours`; long breadcrumb rings compact to `{count, sample}`
+  with `full:true` restoring), `panel_list_alerts`, `panel_ack_report`,
+  `panel_resolve_report {note}`, `panel_test_notify`. Alert ack/resolve stays
+  deliberately unwrapped — a running panel holds alerts in memory, an
+  out-of-process write would be lost. `server_set_env` gained the `REPORTS_*`
+  tunables and **refuses** `REPORTS_WEBHOOK_URL` *and*
+  `REPORTS_TELEGRAM_BOT_TOKEN`: ntfy/Slack/Discord endpoints carry their
+  credential in the URL path, so a notification endpoint is a secret and
+  belongs in `panel/.env` on the box. New docs/reports.md: the ten knobs,
+  push recipes, the alert rules, and an honest pseudonymity section —
+  pseudonymous at rest is *not* anonymous to the operator; do not tell your
+  audience otherwise.
+- **Verified:** `test:reports` in the required lane, lanes A–L (crash-fuzz over
+  the responder, throttle, dedupe, storm drill, one webhook POST per alert,
+  dead-endpoint fail-dark, sdk path, shell IPC, and a negative identity scan
+  over 25 surfaces) + `test:mcp` section AD. **Deployed 2026-07-26** (box →
+  `dbf2247`): live drill filed a desktop-UI report (CDP-driven dev build
+  against prod) plus a second distinct headless-sdk reporter → **one** channel
+  alert at a temporarily lowered threshold — set through `server_set_env`'s
+  validate-then-apply path, its first live exercise — then ack/resolve through
+  the new MCP tools, 16-hex pseudonyms everywhere, knob restored. Push wiring
+  left OFF by user decision (the shipped default); the phone leg rode the next
+  APK and closed under S52.
+
+### S51 — In-player reporting: the Report button moves onto the player (verified)
+- **Why:** the user drove the S50c Settings flow on the S22 and re-scoped it:
+  a report should be filed **from the player, about the channel being
+  watched**, and free text isn't wanted. Two user decisions captured — the
+  Settings entry is REMOVED entirely, and the flow is select-a-symptom → Send.
+- **What:** a ⚑ Report button on the now-playing bar (phone + desktop, plus
+  the `r` key on desktop) and a third ActionButton on the PLAYING channel's
+  info panel (the TV/D-pad path — offered only for the channel being watched,
+  since the engine attaches the active channel; a browsed channel would report
+  the wrong one). No free-text input anywhere — the wire still accepts `text`
+  from SDK hosts, the shipped apps send `text: null` — and the `login`
+  category is derived OUT client-side (a filter, so the enum drift guard stays
+  meaningful; reaching a channel proves login worked). Consent line updated in
+  all three copies ("anything you type" dropped). New `ReportSheet` (RN) +
+  `ReportModal` (desktop); login problems are no longer reportable from the
+  shipped apps, documented honestly in docs/reports.md.
+- **Verified:** client jest 61/61 incl. the new ReportSheet suite, both tsc,
+  full `test:reports` with the drift guards green; desktop live drill via CDP
+  against prod (bar button, `r` key, record carries `text:null` + the watched
+  channel, resolved after); a private arm64 APK on the S22 the same session.
+  Zero panel/broadcaster runtime diff — the box move to `028f69e` was a
+  consistency rebuild only.
+
+### S52 — Fix: the panel RPC re-arm is validated — the first real phone report found the wedge (verified)
+- **Why:** the user's first real phone report failed "not connected to the
+  service" while video played fine — and could never recover. The S50e/S51
+  panel redeploys dropped every client's RPC socket, and the SDK re-armed the
+  RPC on the **next** swarm connection to arrive — mid-session that is often a
+  broadcaster feed peer, because hyperswarm keeps one socket per peer across
+  every topic. Once `_call` pointed at the wrong peer, every login, session
+  check and report answered 'offline' forever: the genuine panel reconnect is
+  skipped once the slot is held. A pre-existing S46-era gap (the "first
+  connection is the panel" boot heuristic applied mid-session); reports made
+  it visible. Session-refresh and revocation checks rode the same wedge
+  silently.
+- **Fix (`sdk/player.js`):** `_maybeArmRpc()` — a candidate socket must answer
+  `hello` within a bounded probe (8 s) before it may hold the RPC slot; the
+  validated panel identity is remembered for instant re-arms; probes run
+  CONCURRENTLY so a hung candidate can never starve the real panel connection;
+  and `report()` on a dead slot kicks the panel topic's discovery and waits a
+  bounded moment for the re-arm instead of failing instantly. The lesson,
+  pinned for every future client change: in a multi-topic swarm, identify a
+  peer by what it ANSWERS (or its key) — never by arrival order.
+- **Verified:** new `test:reports` lane M (an impostor never captures or
+  starves the slot; a report lands after re-arm; a drop clears the slot), sdk
+  unit 9/9, a live-DHT hello probe through the new arm path, and the fixed APK
+  on the S22 — where the user's live phone report **landed** (distinct
+  pseudonym, channel attached, `text:null`), closing the S50e phone leg for
+  real: desktop UI + headless sdk + physical phone, all end-to-end. Client-only
+  diff: the box checkout fast-forwarded with no rebuild.
+
+### S53 — External VOD: a third-party movies/series catalog the apps call directly (verified)
+- **Why:** an operator who already has an account with an external VOD provider
+  should be able to light up a Movies & Series section without the panel
+  proxying a single byte. Built as S53a panel switch → S53b RN client →
+  S53c desktop twin → the user-gated S53d dev-build validation.
+- **The panel-owned switch (S53a).** One replicated record (`svcmeta/vod`)
+  holds the enable bit plus the coordinates (`apiBase`, `service`, per-kind
+  source values, extra params). `apiBase` must be https with no query string
+  and no embedded credentials, and `enabled:true` is refused while the
+  coordinates are blank — the section can never appear pointing nowhere.
+  Manageable from the dashboard (a card on the Sources tab), `GET/PATCH
+  /api/vod-config`, the CLI, and the MCP (`panel_vod_config` /
+  `panel_set_vod_config` — 107 → **109 tools**). The login payload carries a
+  `vod` field **only** while enabled — absent means "no VOD section", no
+  version check — and a change lands at each viewer's next login. The panel
+  stores **no viewer credential** for the provider and never proxies its calls
+  or its media.
+- **The apps (S53b/S53c).** A menu tile gated by the panel-delivered payload
+  (a brand can still switch it off with `sections.vod:false`), a searchable
+  poster-grid landing (Movies/Series switch; Series shows an honest empty
+  state until a series source exists), and a dedicated player —
+  react-native-video on the phone, hls.js/native `<video>` on desktop; the
+  live P2P engine is never involved. The app **calls the provider directly**
+  with the viewer's own account: username = app username, token = app
+  **password** (the operator provisions matching accounts on both sides); a
+  gitignored `vod.dev` block overrides the pair for dev builds, and the
+  example file's placeholder words are recognized and ignored. Everything is
+  HTTPS-only: a cleartext `apiBase` is refused before dialing, and the
+  `{token}` substitution is refused on anything but https. Desktop fetches in
+  the MAIN process (the file:// renderer would trip CORS, and saved creds live
+  in main); a new required-lane `test:desktop-vod` runs the same fixtures as
+  the RN jest suite, so the two provider-client copies must change together.
+- **Verified live (S53d).** The real `getMovieInfo` shape was captured against
+  the live provider — a flat object with the stream URL in
+  `path`/`path_1080`/`path_720`, each embedding a literal `{token}`
+  placeholder, and the runtime as `"hh:mm:ss"`; `extractMovieInfo` was re-cut
+  to try the path family first and a new `fillToken()` (https-only
+  substitution) landed in BOTH copies, fixtures swapped to the real shape.
+  Desktop CDP drive against a local dev panel: tile → grid (7 228 titles) →
+  search → detail → hls.js playback with video frames verified. Phone: the
+  S53d arm64 APK on the S22 verified tile/grid/posters/playback by screencap —
+  after a found-and-fixed stale gitignored worklet bundle (the baked
+  `app.bundle.js` predated S53a; regenerate with `npm run bundle-backend`
+  whenever sdk/ or client/backend/ changed, and byte-verify the blob inside
+  the APK). The production go/no-go finding is pinned for the enablement
+  decision: the provider's playable URLs embed the account token as
+  `?token=…` — in production that is the viewer's app password — so flipping
+  it on for real viewers is a separate, deliberate step.
+
 ### S54 — Movies & Series: the mockup browse experience, series playback, device-local lists (verified)
 - **Why:** S53 shipped a functional but minimal VOD landing (one searchable grid);
   the user supplied a five-screen reference mockup set and chose full scope. S54
