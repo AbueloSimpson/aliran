@@ -32,6 +32,9 @@
 //   { type:'vod-info', id }          one title's playable URL -> 'vod-info-result'
 //   { type:'vod-series-info', id }   one series' seasons + episodes (S54a)
 //                                    -> 'vod-series-info-result'
+//   { type:'vod-categories' }        the provider's genre NAMES (S54d) — the same
+//                                    already-downloaded catalog serves them, so this
+//                                    costs no extra request -> 'vod-categories-result'
 //   { type:'vod-prefs-set', list?, history? }   device-local VOD prefs (S54a, D9):
 //                                    "My List" and watch history, each a WHOLE-ARRAY
 //                                    replacement this process re-validates and caps
@@ -46,8 +49,9 @@
 // no VOD section). The renderer's state() snapshot mirrors it as `vod: … | null`
 // for screens that mount after the one-shot message.
 // 'vod-list-result' { ok, kind, items?, error? }, 'vod-info-result' { id, ok, url?,
-// durationSec?, error? } and 'vod-series-info-result' { id, ok, detail?, error? }
-// answer the three VOD requests (S53c, S54a). The provider is called
+// durationSec?, error? }, 'vod-series-info-result' { id, ok, detail?, error? } and
+// 'vod-categories-result' { ok, categories?, error? } answer the four VOD requests
+// (S53c, S54a, S54d). The provider is called
 // from HERE, never from the renderer: the renderer is file:// (CORS blocks it) and,
 // more importantly, the credential the provider wants IS the viewer's password,
 // which never leaves this process (episode URLs arrive with the token already
@@ -59,7 +63,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { createPlayer } from '@aliran/player-sdk'
-import { listMovies, listSeries, getMovieInfo, getSeriesInfo } from './vod-provider.js'
+import { listMovies, listSeries, listCategories, getMovieInfo, getSeriesInfo } from './vod-provider.js'
 
 const TRANSIENT_LOGIN = /not connected|channel closed/i
 const LOGIN_RETRY_MS = 2500
@@ -466,6 +470,20 @@ export class EngineHost {
         list(config, this.vodDeps())
           .then((res) => this.send({ type: 'vod-list-result', kind, ...res }))
           .catch(() => this.send({ type: 'vod-list-result', kind, ok: false, error: 'network' }))
+      }
+    } else if (msg.type === 'vod-categories') {
+      // The provider's genre NAMES (S54d) — the Genres tab labels its cards with them,
+      // and an item's `categories` are numeric INDEXES into this array, so the order is
+      // load-bearing and is passed through untouched. The same cached catalog download
+      // that served 'vod-list' answers this, so it costs no extra request. Same
+      // always-answers contract as the other three branches.
+      const config = this.vodConfig()
+      if (!config) {
+        this.send({ type: 'vod-categories-result', ok: false, error: 'bad-response' })
+      } else {
+        listCategories(config, this.vodDeps())
+          .then((res) => this.send({ type: 'vod-categories-result', ...res }))
+          .catch(() => this.send({ type: 'vod-categories-result', ok: false, error: 'network' }))
       }
     } else if (msg.type === 'vod-series-info' && typeof msg.id === 'string') {
       // One series' seasons + episodes (S54a). Same always-answers contract as

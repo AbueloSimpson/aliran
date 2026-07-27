@@ -33,6 +33,11 @@
 //      URL-encoded, a cleartext episode path reduced to '' rather than dialed, and no
 //      series source at all refused WITHOUT a request.
 //
+// S54d adds one more two-copy guard, this time on the UI side:
+//   9. the SORT module exists twice (client/src/vod/sort.ts and
+//      desktop/renderer/src/vod-sort.ts) and its code must stay identical, so the same
+//      catalog produces the same grid on a phone and on a desktop.
+//
 // Run: node tools/desktop-vod-test.mjs   (npm run test:desktop-vod)
 import fs from 'node:fs'
 import path from 'node:path'
@@ -519,6 +524,39 @@ function gateSource (rel) {
     [{ kind: 'movie', id: '1', title: '', positionSec: 1, durationSec: 2, at: 3 }], 'an over-long title is dropped, the entry is not')
   eq(gateVodHistory('nope'), [], 'a non-array history is empty, never a throw')
   ok(gateVodHistory(Array.from({ length: 500 }, (_, i) => ({ kind: 'movie', id: String(i), title: 't', positionSec: 0, durationSec: 0, at: i }))).length === 200, 'history is capped at 200')
+}
+
+// ---- K. the VOD sort module, two copies (S54d / design D4/D5/D8) ----
+// Every ordering the mockup offers is computed in the app, over the already-downloaded
+// list — and there are TWO implementations of it: client/src/vod/sort.ts (phone/TV) and
+// desktop/renderer/src/vod-sort.ts (desktop). A viewer who uses both apps must get the
+// same grid out of the same catalog, so the CODE of the two files has to stay identical.
+// Neither is importable here (both are TypeScript, and one imports the React Native
+// SDK's types), so the guard compares source with the comments and blank lines removed:
+// prose may differ per platform — the sorting must not.
+console.log('K. the phone and desktop sort modules')
+{
+  const code = (rel) => {
+    const src = fs.readFileSync(path.join(repoRoot, rel), 'utf8').replace(/\r\n/g, '\n')
+    // Everything above the first export is the file header and the platform's own
+    // imports — those legitimately differ (one imports the RN SDK's types, the other
+    // the desktop renderer's).
+    const body = src.slice(src.indexOf('export type VodSortKey'))
+    return body.split('\n').filter((l) => {
+      const t = l.trim()
+      return t !== '' && !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
+    }).join('\n')
+  }
+
+  const phone = code('client/src/vod/sort.ts')
+  const desktop = code('desktop/renderer/src/vod-sort.ts')
+  ok(phone.length > 500, 'the phone sort module was found')
+  ok(phone === desktop, 'the phone and desktop sort modules are IDENTICAL code (two-copy hazard)')
+  // The mockup's five keys, in the mockup's order, in both copies.
+  for (const key of ['added', 'az', 'yearDesc', 'yearAsc', 'watched']) {
+    ok(phone.includes(`'${key}'`), `the sort set carries ${key}`)
+  }
+  ok(!/'zA'|'za'/.test(phone), 'there is no Z-A sort (the mockup set, not a superset)')
 }
 
 if (failures > 0) { console.error(`\n${failures} FAILURE(S)`); process.exit(1) }

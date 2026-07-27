@@ -198,6 +198,9 @@ export interface VodHistoryEntry {
 export type VodErrorCode = 'auth' | 'network' | 'bad-response'
 
 export type VodListResult = { ok: true; items: VodItem[] } | { ok: false; error: VodErrorCode }
+/** The provider's genre names, in ITS order — `VodItem.categories` are indexes into
+ *  this array (S54d), so the order must never be sorted or filtered in transit. */
+export type VodCategoriesResult = { ok: true; categories: string[] } | { ok: false; error: VodErrorCode }
 export type VodInfoResult =
   | { ok: true; url: string; durationSec: number | null }
   | { ok: false; error: VodErrorCode }
@@ -238,6 +241,9 @@ export type BackendMessage =
   | { type: 'vod-list-result'; kind?: VodKind; ok: boolean; items?: VodItem[]; error?: VodErrorCode }
   | { type: 'vod-info-result'; id: string; ok: boolean; url?: string; durationSec?: number | null; error?: VodErrorCode }
   | { type: 'vod-series-info-result'; id: string; ok: boolean; detail?: VodSeriesDetail; error?: VodErrorCode }
+  // The provider's genre names (S54d) — served from the SAME cached catalog download
+  // as 'vod-list', so asking for them costs no extra provider request.
+  | { type: 'vod-categories-result'; ok: boolean; categories?: string[]; error?: VodErrorCode }
   // The runtime descriptor was accepted ('set-service', public flavor) — the engine
   // is booting on it; theme/branding may re-apply.
   | { type: 'service'; descriptor: ServiceDescriptor }

@@ -8,7 +8,8 @@
 //          ├─ live        one fullscreen video surface + browse/detail overlays
 //          ├─ vod         Movies & Series from the operator's external provider (S53;
 //          │              the tile only exists while the panel delivers an enabled
-//          │              provider config) → vodPlayer, a plain <video>/hls.js surface
+//          │              provider config) → vodSeries (a series' seasons/episodes,
+//          │              S54d) → vodPlayer, a plain <video>/hls.js surface
 //          ├─ favorites   device-local ★ channels
 //          ├─ search      client-side catalog filter
 //          └─ settings    account / service / diagnostics / sign out
@@ -29,9 +30,10 @@ import { FavoritesScreen } from './screens/FavoritesScreen'
 import { SearchScreen } from './screens/SearchScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
 import { VodScreen, type VodPick } from './screens/VodScreen'
+import { VodSeriesScreen, type VodSeriesPick } from './screens/VodSeriesScreen'
 import { VodPlayerScreen } from './screens/VodPlayerScreen'
 
-type Screen = 'connect' | 'splash' | 'login' | 'menu' | 'live' | 'favorites' | 'search' | 'settings' | 'vod' | 'vodPlayer'
+type Screen = 'connect' | 'splash' | 'login' | 'menu' | 'live' | 'favorites' | 'search' | 'settings' | 'vod' | 'vodSeries' | 'vodPlayer'
 
 export function App () {
   // A renderer reload mid-session (dev Ctrl+R) still has the engine logged in —
@@ -41,9 +43,13 @@ export function App () {
   const [authorizing, setAuthorizing] = useState(!!backend.creds)
   // A channel picked in Favorites/Search jumps into Live playing it.
   const [liveStart, setLiveStart] = useState<string | undefined>(undefined)
-  // The provider title the VOD grid resolved (url/title/runtime). The grid does the
-  // getMovieInfo call, so the player screen holds no provider credentials at all.
+  // The provider title the VOD grid (or a series' episode list) resolved
+  // (url/title/runtime + the id the player writes watch history under). The grid does
+  // the getMovieInfo call, so the player screen holds no provider credentials at all.
   const [vodPick, setVodPick] = useState<VodPick | null>(null)
+  // The series whose detail page is open (S54d, design D6) — the desktop equivalent of
+  // the phone app's VodSeries route.
+  const [seriesPick, setSeriesPick] = useState<VodSeriesPick | null>(null)
 
   useEffect(() => {
     return backend.onMessage((m) => {
@@ -71,18 +77,41 @@ export function App () {
   if (screen === 'favorites') return <FavoritesScreen onWatch={watch} onBack={toMenu} />
   if (screen === 'search') return <SearchScreen onWatch={watch} onBack={toMenu} />
   if (screen === 'settings') return <SettingsScreen onBack={toMenu} onSignOut={() => setScreen('login')} />
-  if (screen === 'vod') return <VodScreen onPlay={(pick) => { setVodPick(pick); setScreen('vodPlayer') }} onBack={toMenu} />
+  const vodGrid = (
+    <VodScreen
+      onPlay={(pick) => { setVodPick(pick); setScreen('vodPlayer') }}
+      onOpenSeries={(pick) => { setSeriesPick(pick); setScreen('vodSeries') }}
+      onBack={toMenu}
+    />
+  )
+  if (screen === 'vod') return vodGrid
+  if (screen === 'vodSeries') {
+    if (!seriesPick) return vodGrid
+    return (
+      <VodSeriesScreen
+        key={seriesPick.id}
+        pick={seriesPick}
+        onPlay={(pick) => { setVodPick(pick); setScreen('vodPlayer') }}
+        onBack={() => setScreen('vod')}
+      />
+    )
+  }
   if (screen === 'vodPlayer') {
     // No pick can only happen if a reload lands here — fall back to the grid rather
     // than a blank surface.
-    if (!vodPick) return <VodScreen onPlay={(pick) => { setVodPick(pick); setScreen('vodPlayer') }} onBack={toMenu} />
+    if (!vodPick) return vodGrid
     return (
       <VodPlayerScreen
         key={vodPick.url}
         url={vodPick.url}
         title={vodPick.title}
         durationSec={vodPick.durationSec}
-        onBack={() => setScreen('vod')}
+        id={vodPick.id}
+        kind={vodPick.kind}
+        seriesId={vodPick.seriesId}
+        resumeSec={vodPick.resumeSec}
+        // An episode goes back to the series it belongs to; a movie to the grid.
+        onBack={() => setScreen(vodPick.kind === 'episode' && seriesPick ? 'vodSeries' : 'vod')}
       />
     )
   }

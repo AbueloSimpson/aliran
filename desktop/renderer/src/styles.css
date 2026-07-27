@@ -742,16 +742,18 @@ img { -webkit-user-drag: none; }
   flex: none;
 }
 
-/* --- Movies & Series: the external VOD provider section (S53c) ---
-   Left pane = search + the Movies/Series switch; right pane = a poster grid that
+/* --- Movies & Series: the external VOD provider section (S53c, rebuilt S54d) ---
+   Left pane = the MENU (Movies / Series / Search — search is its own view now, not an
+   always-visible box); right pane = the tab bar, the sort chip and a poster grid that
    fills whatever width is left (auto-fill: the screen reads its own column count
    back out of the layout for arrow-key navigation). Focus grammar as everywhere
-   else: accent border box on the focused tile. */
+   else: accent border box on the focused tile. Colors come from the theme variables
+   only — a white-label build must keep its own palette. */
 
 .vod { height: 100%; display: flex; gap: 28px; padding: 28px 48px; min-height: 0; }
 .vod-left { width: 260px; flex: none; display: flex; flex-direction: column; }
 .vod-right { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
-.vod-search { max-width: none; margin-bottom: 14px; }
+.vod-search { max-width: none; margin-bottom: 14px; flex: none; }
 .vod-modes { display: flex; flex-direction: column; gap: 8px; }
 .vod-mode {
   background: var(--c-surface);
@@ -768,6 +770,74 @@ img { -webkit-user-drag: none; }
 .vod-mode:focus-visible { border-color: var(--c-focus); outline: none; }
 .vod-mode.active { background: var(--c-primary); color: var(--c-on-primary); }
 .vod-count { color: var(--c-text-dim); font-size: 12px; margin-top: 14px; }
+
+/* Tab bar (Recommended · My List · Genres · All) and the chip row under it — the
+   active tab wears a filled chip, exactly like the mockup. */
+.vod-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; flex: none; }
+.vod-tab {
+  background: none;
+  color: var(--c-text-dim);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 11px; font-weight: 800; letter-spacing: 1px;
+  cursor: pointer;
+}
+.vod-tab:hover { border-color: var(--c-focus); }
+.vod-tab:focus-visible { border-color: var(--c-focus); outline: none; }
+.vod-tab.active { background: var(--c-surface); color: var(--c-text); }
+
+.vod-chips { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex: none; }
+.vod-chip-spacer { flex: 1; }
+.vod-chip {
+  background: var(--c-surface);
+  color: var(--c-text-dim);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  cursor: pointer;
+}
+.vod-chip:hover { border-color: var(--c-focus); }
+.vod-chip:focus-visible { border-color: var(--c-focus); outline: none; }
+/* The current sort, always visible above the grid (mockup screen 1). */
+.vod-sort { color: var(--c-text); }
+
+/* Recommended: a vertical stack of one-row shelves, each with a "SEE N MORE…". */
+.vod-rails { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
+.vod-rails-item { margin-bottom: 22px; }
+.vod-rails-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.vod-rails-title { color: var(--c-text-dim); font-size: 11px; font-weight: 800; letter-spacing: 2px; }
+.vod-rails-row { display: flex; gap: 16px; overflow: hidden; }
+.vod-rails-row .vod-tile { width: 150px; flex: none; }
+
+/* The A–Z rail (D5) — plain stacked letters down the right edge of the grid, drawn
+   only while the alphabetical sort is in force. The letter of the first visible row
+   is the active one; clicking a letter jumps the grid to it. */
+.vod-gridrow { flex: 1; min-height: 0; display: flex; gap: 6px; }
+.vod-gridrow .vod-grid { flex: 1; min-width: 0; }
+.vod-rail {
+  flex: none;
+  width: 26px;
+  display: flex; flex-direction: column; align-items: center; justify-content: space-around;
+  padding: 4px 0;
+  overflow: hidden;
+}
+.vod-rail-letter {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--c-text-dim);
+  font: inherit;
+  font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.vod-rail-letter:hover { color: var(--c-text); }
+.vod-rail-letter:focus-visible { color: var(--c-text); outline: none; }
+.vod-rail-letter.active { color: var(--c-accent); }
 
 /* A title that would not resolve — a banner over the grid, not a screen-wide error:
    the rest of the catalog is still perfectly usable. */
@@ -818,22 +888,185 @@ img { -webkit-user-drag: none; }
   display: flex; align-items: center; justify-content: center;
   background: var(--c-overlay-strong);
 }
-.vod-year {
-  position: absolute; right: 6px; bottom: 6px;
+/* My List, from the tile itself (D9): a small button that appears on hover or focus,
+   and a right-click anywhere on the tile does the same thing. A saved title keeps its
+   badge visible so the grid says what is already on the list. */
+.vod-save {
+  position: absolute; top: 6px; right: 6px;
+  width: 24px; height: 24px;
+  display: none;
+  align-items: center; justify-content: center;
   background: var(--c-overlay-strong);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 10px; font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  color: var(--c-text);
+  border: none;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 13px; font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
 }
+.vod-tile:hover .vod-save,
+.vod-tile.focused .vod-save,
+.vod-tile:focus-within .vod-save,
+.vod-save.active { display: flex; }
+.vod-save.active { background: var(--c-primary); color: var(--c-on-primary); }
+/* The label box UNDER the poster (D8) — the title with "(year)" inline; the poster
+   year badge is gone. Two lines always, so every row in the grid is the same height. */
 .vod-tile-title {
   font-size: 12px;
   line-height: 1.3;
+  height: 2.6em;
+  text-align: center;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* Genre cards (mockup screen 2) wear the tile's clothes: the genre's first title as
+   the art, the provider's genre NAME in the label box. */
+.vod-genres .vod-tile-title { font-weight: 700; }
+
+/* --- the SORT BY menu (mockup screen 3) --- */
+.sort-overlay {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--c-overlay);
+  z-index: 40;
+}
+.sort-panel {
+  width: min(420px, 70vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--c-overlay-strong);
+  border-radius: 14px;
+  padding: 14px;
+}
+/* The mockup's coloured header bar — brand primary, so a white-label build keeps its
+   own palette (no literal color ever enters this file). */
+.sort-heading {
+  background: var(--c-primary);
+  color: var(--c-on-primary);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 11px; font-weight: 800; letter-spacing: 2px;
+}
+.sort-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.sort-row.focused { background: var(--c-surface); }
+.sort-row.active .sort-label { color: var(--c-accent); }
+.sort-label { font-size: 14px; font-weight: 600; }
+.sort-selected { color: var(--c-text-dim); font-size: 11px; font-weight: 800; letter-spacing: 1px; }
+
+/* --- series detail (mockup screen 5) --- */
+.vod-series { height: 100%; min-height: 0; overflow: hidden; }
+.vod-series-scroll { height: 100%; overflow-y: auto; padding: 28px 48px 40px; }
+.vod-series-top { display: flex; gap: 28px; }
+.vod-series-left { width: 220px; flex: none; display: flex; flex-direction: column; gap: 6px; }
+.vod-series-right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.vod-series-poster { width: 100%; }
+.vod-series-rating { display: flex; align-items: center; gap: 8px; }
+.vod-series-stars { color: var(--c-accent); font-size: 14px; letter-spacing: 1px; }
+.vod-series-rating-value { font-size: 13px; font-weight: 700; }
+.vod-series-meta { color: var(--c-text-dim); font-size: 12px; }
+.vod-series-title { font-size: 26px; font-weight: 800; }
+/* Provider plots run long — five lines until the MORE chip opens them. */
+.vod-series-plot {
+  color: var(--c-text-dim);
+  font-size: 14px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.vod-series-plot.expanded { display: block; overflow: visible; }
+.vod-series-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.vod-series-btn {
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font: inherit;
+  font-size: 12px; font-weight: 800; letter-spacing: 1px;
+  cursor: pointer;
+}
+.vod-series-btn:hover { border-color: var(--c-focus); }
+.vod-series-btn:focus-visible { border-color: var(--c-focus); outline: none; }
+.vod-series-btn.primary { background: var(--c-primary); color: var(--c-on-primary); }
+.vod-series-section { margin-top: 26px; margin-bottom: 10px; }
+
+.vod-series-seasons { display: flex; flex-wrap: wrap; gap: 14px; }
+.vod-season {
+  width: 120px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: none;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  padding: 4px;
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+.vod-season:hover, .vod-season:focus-visible, .vod-season.active { border-color: var(--c-focus); outline: none; }
+.vod-season-badge {
+  position: absolute; top: 6px; right: 6px;
+  background: var(--c-overlay-strong);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11px; font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.vod-season-label { font-size: 12px; color: var(--c-text-dim); }
+.vod-season.active .vod-season-label { color: var(--c-text); font-weight: 700; }
+
+.vod-episodes { display: flex; flex-direction: column; gap: 8px; }
+.vod-episode {
+  display: flex; align-items: center; gap: 14px;
+  background: var(--c-surface);
+  border: 2px solid transparent;
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.vod-episode:hover, .vod-episode:focus-visible { border-color: var(--c-focus); outline: none; }
+.vod-episode-num {
+  flex: none; min-width: 34px;
+  color: var(--c-text-dim);
+  font-size: 18px; font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.vod-episode-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vod-episode-title { font-size: 14px; font-weight: 700; }
+.vod-episode-plot {
+  color: var(--c-text-dim);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.vod-episode-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.vod-episode-duration {
+  background: var(--c-background);
+  border-radius: 999px;
+  padding: 2px 9px;
+  color: var(--c-text-dim);
+  font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.vod-episode-progress { color: var(--c-accent); font-size: 11px; font-weight: 700; }
 
 /* Provider playback: one plain video surface + the NowPlayingBar transport. */
 .vod-player { height: 100%; position: relative; background: var(--c-video-background); }

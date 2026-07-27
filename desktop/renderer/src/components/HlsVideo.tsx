@@ -93,7 +93,10 @@ function isHlsUrl (url: string) {
   return /\.m3u8(\?|$)/i.test(url)
 }
 
-function trackList (tracks: Array<{ name?: string; lang?: string }>): MediaTrack[] {
+/** hls.js track descriptors -> the flat-index shape TrackMenu renders. Exported for
+ *  the VOD player (S54d), which drives its own hls instance but wants the same labels
+ *  and the same indexing as live. */
+export function trackList (tracks: Array<{ name?: string; lang?: string }>): MediaTrack[] {
   return tracks.map((t, i) => ({ index: i, label: t.name || t.lang || `Track ${i + 1}`, lang: t.lang || undefined }))
 }
 

@@ -6,7 +6,8 @@
 
 import type {
   BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream,
-  VodConfig, VodHistoryEntry, VodInfoResult, VodKind, VodListEntry, VodListResult, VodSeriesInfoResult
+  VodCategoriesResult, VodConfig, VodHistoryEntry, VodInfoResult, VodKind, VodListEntry,
+  VodListResult, VodSeriesInfoResult
 } from './types'
 
 // A provider call the main process fails to answer would leave the grid spinning
@@ -113,6 +114,17 @@ class DesktopBackend {
     return this.request<VodListResult>({ type: 'vod-list', kind }, (m) =>
       m.type === 'vod-list-result' && (m.kind ?? 'movies') === kind
         ? (m.ok ? { ok: true, items: m.items ?? [] } : { ok: false, error: m.error ?? 'bad-response' })
+        : null)
+  }
+
+  /** The provider's genre NAMES, in its own order (S54d) — the Genres tab labels its
+   *  cards with them, and an item's `categories` are numeric indexes into this array.
+   *  Served from the same cached catalog download as vodList(), so calling both costs
+   *  the provider ONE request. */
+  vodCategories (): Promise<VodCategoriesResult> {
+    return this.request<VodCategoriesResult>({ type: 'vod-categories' }, (m) =>
+      m.type === 'vod-categories-result'
+        ? (m.ok ? { ok: true, categories: m.categories ?? [] } : { ok: false, error: m.error ?? 'bad-response' })
         : null)
   }
 
