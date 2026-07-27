@@ -482,6 +482,7 @@ function renderVodConfig () {
   $('#vod-api-base').value = v.apiBase || ''
   $('#vod-service').value = v.service || ''
   $('#vod-movies-source').value = (v.sources && v.sources.movies) || ''
+  $('#vod-series-source').value = (v.sources && v.sources.series) || ''
   $('#vod-params').value = kvString(v.params)
   $('#vod-enabled').checked = !!v.enabled
   const badge = $('#vod-badge')
@@ -494,6 +495,7 @@ $('#vod-form').addEventListener('submit', (e) => {
   e.preventDefault()
   const enabled = $('#vod-enabled').checked
   const movies = $('#vod-movies-source').value.trim()
+  const series = $('#vod-series-source').value.trim()
   let params
   try { params = parseKeyVals($('#vod-params').value) } catch (err) { toast(err.message, true); return }
   act(async () => {
@@ -503,7 +505,7 @@ $('#vod-form').addEventListener('submit', (e) => {
       enabled,
       apiBase: $('#vod-api-base').value.trim(),
       service: $('#vod-service').value.trim(),
-      sources: movies ? { movies } : {},
+      sources: { ...(movies ? { movies } : {}), ...(series ? { series } : {}) },
       params
     })
   }, `VOD provider ${enabled ? 'enabled' : 'disabled'} — viewers pick it up at their next login`)

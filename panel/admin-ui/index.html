@@ -182,6 +182,7 @@
           <input id="vod-api-base" placeholder="API base (https://provider.example/api)" size="34">
           <input id="vod-service" placeholder="service">
           <input id="vod-movies-source" placeholder="movies source">
+          <input id="vod-series-source" placeholder="series source">
           <input id="vod-params" placeholder="extra params (hm=1,hs=2)">
           <label class="inline"><input type="checkbox" id="vod-enabled"> enabled</label>
           <button class="btn primary">Save</button>
@@ -191,8 +192,9 @@
           authenticates with their own account). Everything here is public coordinates: the API base (<b>https only</b>, no
           query string, no embedded credentials), the provider's service and per-kind source values, plus extra query
           params passed through verbatim. <b>Enabled</b> is the switch: on, both apps show a VOD section; off — or never
-          configured — the option does not exist for viewers. Changes apply at each viewer's <b>next login</b>. Series
-          arrives later; only the movies source is configurable today.</p>
+          configured — the option does not exist for viewers. Changes apply at each viewer's <b>next login</b>. The two
+          source values are independent: leave <b>series source</b> empty and the apps show <b>Movies only</b> — the
+          Series menu item does not appear at all.</p>
       </div>
     </section>
 

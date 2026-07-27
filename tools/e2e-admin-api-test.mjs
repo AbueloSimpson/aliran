@@ -707,7 +707,10 @@ try {
     [{ apiBase: 'https://user:pass@provider.example/api' }, 'apiBase embedding credentials'],
     [{ apiBase: 'not-a-url' }, 'apiBase that is not a URL'],
     [{ enabled: true }, 'enabling an empty config'],
-    [{ sources: { series: 'series_hd' } }, 'unknown source kind'],
+    // `movies` and `series` are the two kinds the apps understand (S54a). Anything
+    // else is still refused rather than stored, so a typo can never sit in the record
+    // pretending to be a feature.
+    [{ sources: { cartoons: 'toons_hd' } }, 'unknown source kind'],
     [{ params: { 'bad key': '1' } }, 'invalid param name'],
     [{ service: 'x'.repeat(129) }, 'over-long service']
   ]) {
@@ -728,6 +731,13 @@ try {
   assert.strictEqual(r.body.apiBase, 'https://provider.example/like/api', 'trailing slashes normalized away')
   assert.deepStrictEqual(r.body.sources, { movies: 'movies_hd' }, 'movies source stored')
   assert.deepStrictEqual(r.body.params, { hm: '1', hs: '2' }, 'params stored verbatim')
+
+  // Both kinds at once (S54a). `sources` is a whole-map replacement, so a series value
+  // has to travel WITH the movies one — and an operator who never sets one keeps a
+  // movies-only record, which is what the apps read as "no Series menu".
+  r = await api('PATCH', '/api/vod-config', { sources: { movies: 'movies_hd', series: 'series_hd' } }, { token })
+  assert.strictEqual(r.status, 200, 'both source kinds accepted: ' + JSON.stringify(r.body))
+  assert.deepStrictEqual(r.body.sources, { movies: 'movies_hd', series: 'series_hd' }, 'movies AND series stored')
   assert.ok(ring.list().some((e) => e.op === 'vod-config'), 'the write landed in the activity ring as an admin audit entry')
 
   // Configured but DISABLED still delivers nothing to viewers.
@@ -758,9 +768,12 @@ try {
     enabled: true,
     apiBase: 'https://provider.example/like/api',
     service: 'demoservice',
-    sources: { movies: 'movies_hd' },
+    sources: { movies: 'movies_hd', series: 'series_hd' },
     params: { hm: '1', hs: '2' }
   }, 'an enabled provider reaches the viewer through the signed DB, verbatim')
+  // Named separately because the whole Series half of the apps hangs off this one
+  // value arriving intact on the login payload (sdk/login.js passes `sources` through).
+  assert.strictEqual(vodSession.vod.sources.series, 'series_hd', 'the SERIES source reaches the app verbatim')
 
   // …and flipping the switch off removes the field again (no client rebuild involved).
   r = await api('PATCH', '/api/vod-config', { enabled: false }, { token })
@@ -773,7 +786,7 @@ try {
   assert.ok(!('vod' in vodSession), 'disabling removes the field from the next login')
 
   const homeHtmlS = await (await fetch(base + '/')).text()
-  for (const marker of ['vod-card', 'vod-form', 'vod-enabled', 'vod-api-base']) {
+  for (const marker of ['vod-card', 'vod-form', 'vod-enabled', 'vod-api-base', 'vod-movies-source', 'vod-series-source']) {
     assert.ok(homeHtmlS.includes(marker), `dashboard carries the VOD provider card: ${marker}`)
   }
   const appJsS = await (await fetch(base + '/app.js')).text()
@@ -781,7 +794,7 @@ try {
     assert.ok(appJsS.includes(marker), `app.js wires the VOD provider card: ${marker}`)
   }
   await api('DELETE', '/api/users/vodview', undefined, { token })
-  log('S: VOD provider — null before setup, 8 validation refusals with nothing stored, CRUD + partial merge, identical PATCH appends nothing, and a REAL login sees the config only while it is enabled ✓')
+  log('S: VOD provider — null before setup, 8 validation refusals with nothing stored (incl. an unknown source kind), CRUD + partial merge, BOTH movies and series sources stored, identical PATCH appends nothing, and a REAL login sees the config — series source verbatim — only while it is enabled ✓')
 
   log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
   await cleanup(); process.exit(0)

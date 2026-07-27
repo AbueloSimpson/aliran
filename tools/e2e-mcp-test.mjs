@@ -1548,7 +1548,9 @@ try {
   for (const [patch, why] of [
     [{ apiBase: 'http://provider.example/api' }, 'cleartext apiBase'],
     [{ apiBase: 'https://provider.example/api?token=x' }, 'apiBase with a query string'],
-    [{ sources: { series: 'series_hd' } }, 'unknown source kind'],
+    // `movies` and `series` are the two kinds the apps understand (S54a); anything
+    // else is still refused rather than stored.
+    [{ sources: { cartoons: 'toons_hd' } }, 'unknown source kind'],
     [{ params: { 'bad key': '1' } }, 'invalid param name']
   ]) {
     const r = await callRaw(client, 'panel_set_vod_config', patch)
@@ -1562,8 +1564,14 @@ try {
   assert.ok(emptyEnable.isError, 'enabling an empty config must be refused')
   assert.match(emptyEnable.content[0].text, /apiBase and a service/, 'the refusal says what is missing')
   assert.deepStrictEqual(await callJson(client, 'panel_vod_config'), vodOn, 'the refused enable changed nothing')
+  // Both source kinds at once (S54a). `sources` REPLACES the whole map, so the series
+  // value has to be sent WITH the movies one — an operator who omits it keeps a
+  // movies-only record, which the apps read as "no Series menu".
+  const vodBoth = await callJson(client, 'panel_set_vod_config', { sources: { movies: 'movies_hd', series: 'series_hd' } })
+  assert.deepStrictEqual(vodBoth.sources, { movies: 'movies_hd', series: 'series_hd' }, 'movies AND series sources store together')
+  assert.deepStrictEqual((await callJson(client, 'panel_vod_config')).sources, { movies: 'movies_hd', series: 'series_hd' }, 'the read tool answers both kinds back')
   await callJson(client, 'panel_set_vod_config', { enabled: false })
-  log('AE: VOD provider config — honest null, CRUD round-trip through both tools, https/query-string/unknown-kind/empty-enable refusals in band with the record untouched ✓')
+  log('AE: VOD provider config — honest null, CRUD round-trip through both tools, both movies+series sources stored, https/query-string/unknown-kind/empty-enable refusals in band with the record untouched ✓')
 
   log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe; S50d: viewer problem reports — the honest disabled shape, filters + sinceHours, event-ring compaction with full:true, ack/resolve with a note, read-only alerts, one webhook push per opened alert plus test_notify, a negative-identity scan over every report surface, the REPORTS_* tunables settable while the notification credentials are refused, and a category-enum drift guard against the panel; S53a: the external VOD provider config — honest null, CRUD through both tools, and https/query-string/unknown-kind/empty-enable refusals in band with the stored record untouched)')
   await cleanup(); process.exit(0)

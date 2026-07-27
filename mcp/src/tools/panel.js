@@ -165,7 +165,7 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_vod_config', {
     title: 'Get the VOD provider config',
-    description: 'The external VOD provider (movies & series) the viewer APPS call directly: {enabled, apiBase, service, sources, params} — or null when the operator never configured one. Nothing in it is a secret: the panel never proxies the provider and stores no viewer credential for it (each viewer authenticates to the provider with their own account).',
+    description: 'The external VOD provider (movies & series) the viewer APPS call directly: {enabled, apiBase, service, sources (movies/series), params} — or null when the operator never configured one. Nothing in it is a secret: the panel never proxies the provider and stores no viewer credential for it (each viewer authenticates to the provider with their own account).',
     annotations: { readOnlyHint: true }
   }, async () => ok(await p.get('/api/vod-config')))
 
@@ -349,7 +349,7 @@ export function registerPanelTools (ctx, h) {
   // (that is the only way to clear a key) — send the complete map you want.
   def('panel_set_vod_config', {
     title: 'Set the VOD provider config',
-    description: 'Configure the external VOD provider the viewer APPS call directly. Partial patch merged onto the stored record. apiBase must be https with NO query string and NO embedded credentials (per-call query params go in `params`, which the client appends verbatim); `sources` currently accepts only the `movies` key (series ships later) and, like `params`, REPLACES the whole map. `enabled:true` is refused unless apiBase and service are set (here or already stored) — enabled is the switch that makes both apps show a VOD section at all. Viewers pick a change up at their NEXT login: the record is read there, not watched.',
+    description: 'Configure the external VOD provider the viewer APPS call directly. Partial patch merged onto the stored record. apiBase must be https with NO query string and NO embedded credentials (per-call query params go in `params`, which the client appends verbatim); `sources` accepts the `movies` and `series` keys (any other key is refused) and, like `params`, REPLACES the whole map — send both keys to keep both, and omit `series` entirely to leave the apps movies-only. `enabled:true` is refused unless apiBase and service are set (here or already stored) — enabled is the switch that makes both apps show a VOD section at all. Viewers pick a change up at their NEXT login: the record is read there, not watched.',
     inputSchema: {
       enabled: z.boolean().optional(),
       apiBase: z.string().optional(),

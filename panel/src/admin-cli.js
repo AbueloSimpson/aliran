@@ -549,10 +549,16 @@ async function main () {
       if (opts.enabled != null) patch.enabled = opts.enabled
       if (opts['api-base'] != null) patch.apiBase = opts['api-base'] === true ? '' : String(opts['api-base'])
       if (opts.service != null) patch.service = opts.service === true ? '' : String(opts.service)
-      if (opts['movies-source'] != null) {
-        const cur = (await ops.getVodConfig(ctx)) || {}
-        patch.sources = { ...(cur.sources || {}), movies: opts['movies-source'] === true ? '' : String(opts['movies-source']) }
-        if (!patch.sources.movies) delete patch.sources.movies
+      // Per-kind source values MERGE onto what is stored (the API replaces the whole
+      // map, so the CLI reads it back first) — editing the series source must not
+      // silently drop the movies one. A bare flag ("--movies-source" with no value)
+      // clears that kind.
+      for (const kind of ['movies', 'series']) {
+        if (opts[`${kind}-source`] == null) continue
+        const cur = patch.sources !== undefined ? patch.sources : ((await ops.getVodConfig(ctx)) || {}).sources || {}
+        const val = opts[`${kind}-source`] === true ? '' : String(opts[`${kind}-source`])
+        patch.sources = { ...cur, [kind]: val }
+        if (!val) delete patch.sources[kind]
       }
       // --params replaces the whole map ("" clears it); --param k=v merges ONE key onto
       // whatever is stored (the common "add hs=2" edit without retyping the rest).
@@ -640,9 +646,11 @@ function usage () {
                                         (package commands need the store: panel stopped, or use the dashboard)
   vod-config                            Show the external VOD provider record (svcmeta/vod)
   vod-config-set [--enabled true|false] [--api-base https://…/api] [--service X]
-                 [--movies-source Y] [--params "hm=1,hs=2"] [--param hs=2]
+                 [--movies-source Y] [--series-source Z] [--params "hm=1,hs=2"] [--param hs=2]
                                         Configure the VOD provider the APPS call directly.
-                                        --params replaces the map, --param merges one key.
+                                        --params replaces the map, --param merges one key;
+                                        each --*-source merges its kind ("" clears that kind).
+                                        No series source = the apps show movies only.
                                         Enabling needs an apiBase + service; viewers pick the
                                         change up at their NEXT login. (Needs the store: panel
                                         stopped, or use the dashboard/API.)

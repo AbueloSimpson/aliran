@@ -637,10 +637,11 @@ const VOD_KEY = 'svcmeta/vod'
 const VOD_TEXT_MAX = 128
 const VOD_PARAM_KEY_RE = /^[a-z0-9_]{1,32}$/i
 const VOD_PARAMS_MAX = 16
-// Only `movies` for now. Series ships when a real series source value exists; an
-// unknown key is REFUSED rather than stored, so a typo can never sit silently in the
-// record pretending to be a feature.
-const VOD_SOURCE_KINDS = ['movies']
+// `movies` and `series` (S54a — the provider answers BOTH lists from one movies-style
+// endpoint, so a series source is just a second source value the apps pass through).
+// An unknown key is still REFUSED rather than stored, so a typo can never sit silently
+// in the record pretending to be a feature.
+const VOD_SOURCE_KINDS = ['movies', 'series']
 
 // The provider's API root. https is required for the same reason as remote art and
 // redirect URLs — Android blocks cleartext, and the CLIENT is the one fetching it.
