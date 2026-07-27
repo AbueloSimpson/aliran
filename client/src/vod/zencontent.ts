@@ -14,11 +14,13 @@
 // with a `vod.dev {username, token}` block in the gitignored config/service.json —
 // that block must never ship (see config/service.example.json).
 //
-// SECRETS. The token is a viewer password. It appears in exactly one place — the
-// query string of the outgoing request — and NOWHERE else: every error this module
-// surfaces is a bare typed code, and the one diagnostic line it logs is redacted of
-// query strings AND of the token itself. Nothing here ever throws; callers get
-// `{ok:false, error}` and render an honest state.
+// SECRETS. The token is a viewer password. It appears in exactly two places — the
+// query string of the outgoing request, and the playable URL the provider hands back
+// (its `path` fields carry a literal `{token}` placeholder this module fills in; the
+// player cannot dial the stream without it) — and NOWHERE else: every error this
+// module surfaces is a bare typed code, and the one diagnostic line it logs is
+// redacted of query strings AND of the token itself. Nothing here ever throws;
+// callers get `{ok:false, error}` and render an honest state.
 
 import type { VodConfig } from '@aliran/react-native'
 import { backend } from '../worklet'
@@ -82,11 +84,20 @@ const listCache = new Map<string, CacheEntry>()
 /** Drop every cached list (tests, and a sign-out that changes the account). */
 export function clearVodCache (): void { listCache.clear() }
 
+// The placeholders config/service.example.json ships. Someone who copies the example
+// to config/service.json and fills in only the panel key would otherwise send these
+// literal words to the provider INSTEAD of the viewer's own account — a dev block
+// that was never filled in must fall through to the real pass-off, not break it.
+// (Same guard as the desktop twin; same spirit as refusing a 'REPLACE_…' panel key.)
+const PLACEHOLDER = /^(YOUR_|REPLACE_)/
+
+function usable (v: unknown): v is string { return typeof v === 'string' && !!v && !PLACEHOLDER.test(v) }
+
 /** Dev-block override WINS when present and complete; otherwise the logged-in pair
  *  (app username -> `username`, app password -> `token`). null = cannot call at all. */
 export function resolveCredentials (deps: VodDeps = {}): VodCredentials | null {
   const dev = deps.dev !== undefined ? deps.dev : readDevBlock()
-  if (dev && typeof dev.username === 'string' && typeof dev.token === 'string' && dev.username && dev.token) {
+  if (dev && usable(dev.username) && usable(dev.token)) {
     return { username: dev.username, token: dev.token }
   }
   const saved = deps.saved !== undefined ? deps.saved : (backend.creds ?? null)
@@ -134,21 +145,27 @@ export async function getMovieInfo (config: VodConfig, id: string, deps: VodDeps
   if (!url) return { ok: false, error: 'network' }
   const res = await getJson(url, creds.token, deps.fetchImpl)
   if (!res.ok) return res
-  return extractMovieInfo(res.json)
+  const info = extractMovieInfo(res.json)
+  if (!info.ok) return info
+  const playable = fillToken(info.url, creds.token)
+  if (!playable) return { ok: false, error: 'bad-response' }
+  return { ok: true, url: playable, durationSec: info.durationSec }
 }
 
 // ---------------------------------------------------------------------------
 // Response shaping
 // ---------------------------------------------------------------------------
 
-// TODO(S53d): the getMovieInfo response shape is UNVERIFIED — no live call has been
-// made yet. This is a deliberately wide best guess over the shapes Xtream-style
-// providers use (a url-ish field at the top level, or under `movie_data` / `info` /
-// `movie` / `data`; runtime as `duration_secs`, `duration_sec` or `duration`, either
-// numeric or "h:mm:ss"). S53d captures the REAL response and narrows this — plus the
-// fixtures in __tests__/vodProvider.test.ts, which pin today's behavior so the swap is
-// visible in a diff. It never throws: an unrecognized shape is 'bad-response'.
-const URL_FIELDS = ['url', 'stream_url', 'streamUrl', 'movie_url', 'direct_source', 'play_url', 'playUrl', 'link', 'file', 'src', 'source_url']
+// Shape VERIFIED against the live provider (S53d, 2026-07-27). The real response is
+// one FLAT object: metadata (`director`/`plot`/`cast`/`genre`/`rating`/…), a runtime
+// as `duration` "hh:mm:ss", and the playable URL in `path` (an HLS master) with
+// per-quality variants `path_1080`/`path_720` — every path embeds a literal `{token}`
+// placeholder the caller substitutes (see fillToken; extractMovieInfo itself stays a
+// pure json->fields function so the fixtures need no credential). The pre-capture
+// wide-guess fields are KEPT below the real ones as a fallback: a white-label build
+// may point at a different Xtream-style provider, and an unrecognized shape must
+// still be a typed 'bad-response', never a throw.
+const URL_FIELDS = ['path', 'path_1080', 'path_720', 'url', 'stream_url', 'streamUrl', 'movie_url', 'direct_source', 'play_url', 'playUrl', 'link', 'file', 'src', 'source_url']
 const DURATION_FIELDS = ['duration_secs', 'durationSecs', 'duration_sec', 'durationSec', 'duration']
 const INFO_CONTAINERS = ['movie_data', 'movieData', 'info', 'movie', 'data', 'result']
 
@@ -178,6 +195,16 @@ export function extractMovieInfo (json: unknown): VodInfoResult {
     if (durationSec != null) break
   }
   return { ok: true, url, durationSec }
+}
+
+/** Fill the provider's literal `{token}` placeholder with the real credential. A URL
+ *  without the placeholder passes through untouched; one that HAS it but is not https
+ *  is refused ('' -> bad-response upstream) — the token is a viewer password and this
+ *  module never puts one on a cleartext wire (same policy as composeUrl). */
+export function fillToken (url: string, token: string): string {
+  if (!url.includes('{token}')) return url
+  if (!/^https:\/\/\S+$/i.test(url)) return ''
+  return url.split('{token}').join(encodeURIComponent(token))
 }
 
 // "5525" | 5525 | "01:32:05" | "32:05" -> seconds. Anything else (0, negative, junk)

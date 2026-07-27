@@ -9,17 +9,22 @@
 //   1. credential resolution — the dev override wins, otherwise the LOGGED-IN pair
 //      (app username -> username, app PASSWORD -> token) — and the example file's
 //      placeholder words are NOT a credential;
-//   2. the token never escapes into an error, a result or a log line;
+//   2. the token never escapes into an error or a log line — its only two outlets
+//      are the outgoing query string and the playable URL (the provider's `path`
+//      embeds a `{token}` placeholder that fillToken substitutes: the player cannot
+//      dial the stream without it);
 //   3. the giant list payload is stripped to the grid's fields and sorted
 //      newest-first, and both the bare-array and wrapped-object shapes are accepted;
-//   4. extractMovieInfo answers over the shapes we GUESSED (TODO(S53d): these
-//      fixtures get swapped for the real captured response — that swap should show
-//      up here AND in the RN copy).
+//   4. extractMovieInfo answers over the REAL captured response (S53d, 2026-07-27:
+//      a flat object, url in `path`/`path_1080`/`path_720`, runtime as `duration`
+//      "hh:mm:ss") — plus the pre-capture wide-guess shapes, kept as a fallback for
+//      other Xtream-style providers. Fixture hosts are sanitized; the real capture
+//      structure is preserved verbatim.
 //
 // Run: node tools/desktop-vod-test.mjs   (npm run test:desktop-vod)
 import {
   listMovies, getMovieInfo, extractMovieInfo, resolveCredentials, clearVodCache,
-  pickList, stripItem, redact
+  pickList, stripItem, redact, fillToken
 } from '../desktop/main/vod-provider.js'
 
 let failures = 0
@@ -182,8 +187,36 @@ console.log('C. secrets')
   ok(redact('plain abc text', 'abc') === 'plain [redacted] text', 'redact() also scrubs a bare token')
 }
 
-// ---- D. extractMovieInfo (the one unknown-shape function, TODO(S53d)) ----
+// The real getMovieInfo response, captured live 2026-07-27 (S53d) and sanitized:
+// hosts are example domains and the free-text metadata is shortened, but every KEY,
+// the `{token}` placeholders, and the "hh:mm:ss" duration are structure-verbatim.
+function realInfo (over = {}) {
+  return {
+    director: 'Cho Il',
+    duration: '01:38:32',
+    genre: 'Action, Horror, Science Fiction',
+    plot: 'a synopsis',
+    cast: 'Yoo Ah-in, Park Shin-hye',
+    releasedate: '2020',
+    rating: '7.214',
+    height: '1080',
+    trailer: '',
+    path: 'https://cdn.example/vod56487Zz/index.m3u8?token={token}',
+    tmdb_id: '614696',
+    path_1080: 'https://cdn.example/vod56487Zz/vod56487Zz_1080.mp4/index.m3u8?token={token}',
+    path_720: 'https://cdn.example/vod56487Zz/vod56487Zz_720.mp4/index.m3u8?token={token}',
+    related: [{ type: 'related', list: null }],
+    ...over
+  }
+}
+
+// ---- D. extractMovieInfo (shape verified live, S53d) ----
 console.log('D. extractMovieInfo')
+{
+  eq(extractMovieInfo(realInfo()), { ok: true, url: 'https://cdn.example/vod56487Zz/index.m3u8?token={token}', durationSec: 5912 }, 'the REAL shape: `path` master + "hh:mm:ss" duration, placeholder intact')
+  eq(extractMovieInfo(realInfo({ path: undefined })).url, 'https://cdn.example/vod56487Zz/vod56487Zz_1080.mp4/index.m3u8?token={token}', 'no master -> the 1080 variant')
+  ok(extractMovieInfo(realInfo()).url.includes('{token}'), 'extractMovieInfo stays pure: the placeholder is NOT filled here')
+}
 {
   eq(extractMovieInfo({ url: 'https://cdn.example/movie.mp4', duration: 5525 }), { ok: true, url: 'https://cdn.example/movie.mp4', durationSec: 5525 }, 'a url at the top level')
   eq(extractMovieInfo({ movie_data: { direct_source: 'https://cdn.example/a.mkv', duration_secs: '7200' } }), { ok: true, url: 'https://cdn.example/a.mkv', durationSec: 7200 }, 'movie_data.direct_source + duration_secs')
@@ -197,8 +230,22 @@ console.log('D. extractMovieInfo')
   eq(extractMovieInfo([1, 2, 3]), bad, 'an array is bad-response')
 }
 
+// ---- D2. fillToken (the {token} placeholder) ----
+console.log('D2. fillToken')
+{
+  eq(fillToken('https://cdn.example/v/index.m3u8?token={token}', 'p@ss w0rd'), 'https://cdn.example/v/index.m3u8?token=p%40ss%20w0rd', 'the placeholder is filled URL-encoded')
+  eq(fillToken('https://cdn.example/x.mp4', 'tok'), 'https://cdn.example/x.mp4', 'a URL without the placeholder passes through untouched')
+  eq(fillToken('http://cdn.example/v/index.m3u8?token={token}', 'tok'), '', 'a cleartext URL never receives the token')
+}
+
 // ---- E. the detail call ----
 console.log('E. getMovieInfo')
+{
+  clearVodCache()
+  const fetchImpl = fetchReturning(realInfo())
+  const res = await getMovieInfo(CONFIG, '56487', { dev: DEV, saved: null, fetchImpl })
+  eq(res, { ok: true, url: 'https://cdn.example/vod56487Zz/index.m3u8?token=DEV_TOKEN', durationSec: 5912 }, 'end to end over the REAL shape: path chosen, token filled, runtime parsed')
+}
 {
   const fetchImpl = fetchReturning({ movie_data: { url: 'https://cdn.example/x.mp4', duration: '90:00' } })
   const res = await getMovieInfo(CONFIG, '55157', { dev: DEV, saved: null, fetchImpl })
