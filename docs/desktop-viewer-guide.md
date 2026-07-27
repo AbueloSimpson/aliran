@@ -140,11 +140,14 @@ on-demand catalog next to the live channels. Inside it:
   right-click the tile. You can also add a series from its detail page.
 - **Series** open a detail page: pick a season, pick an episode, and it
   plays. **Start** plays the next episode from where you left off.
-- Titles **resume** from where you stopped watching. The *Recently watched*
-  sort surfaces whatever you're in the middle of.
-- In the player: `Space` pauses, `←`/`→` seek. `c` (or the **⋮** button)
-  picks a subtitle or audio language when the title carries one. `Esc` goes
-  back.
+- Titles **resume** from where you stopped watching. The landing tab
+  (*Recommended*) leads with a **Continue watching** row, so a film you
+  backed out of is one click away.
+- In the player: the controls fade out over clean video — move the mouse to
+  bring them back (pausing keeps them up). Under the progress bar sit
+  **skip buttons** (30 and 10 seconds, both directions) around play/pause;
+  `Space` pauses, `←`/`→` seek, and `c` (or the **⋮** button) picks a
+  subtitle or audio language when the title carries one. `Esc` goes back.
 
 Your list and your watch history are stored **only on this computer**. The
 app never sends them to your operator or to anyone else.

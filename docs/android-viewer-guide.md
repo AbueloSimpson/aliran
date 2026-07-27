@@ -153,10 +153,14 @@ catalog next to the live channels. Inside it:
   remove a title; a series can also be added from its detail page.
 - **Series** open a detail page: pick a season, pick an episode, and it
   plays. **Start** plays the next episode where you left off.
-- Titles **resume** where you stopped watching, and the *Recently watched*
-  sort surfaces what you were in the middle of.
-- On the phone, the **⋮** button in the player picks subtitle and audio
-  languages when the title carries them.
+- Titles **resume** where you stopped watching, and the landing tab
+  (*Recommended*) leads with a **Continue watching** row — a film you backed
+  out of is one tap away.
+- On the phone, the player's controls fade out over clean video — tap the
+  screen to bring them back (pausing keeps them up). Under the progress bar
+  sit **skip buttons** (30 and 10 seconds, both directions) around
+  play/pause, and the **⋮** button picks subtitle and audio languages when
+  the title carries them.
 
 Your list and your watch history are stored **only on this device** — they
 are never sent to your operator or anyone else, and clearing the app's data

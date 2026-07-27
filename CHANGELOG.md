@@ -62,7 +62,15 @@ phone + Android TV, and the Windows desktop player).
   shelf head), the players' tracks button wears a more-options glyph (⋮)
   instead of "CC", and both track menus spell languages out in full
   ("Spanish", not "spa") — on desktop the live player's menu inherits the
-  full names too.
+  full names too. A second QA pass on real devices added: the VOD players'
+  transport now fades over clean video exactly like the live bar (tap /
+  mouse-move brings it back, pausing pins it) and gained a centered skip
+  cluster under the progress bar (±30 s and ±10 s around play/pause);
+  Recommended became the landing tab, led by a **Continue watching** row
+  built from the device-local history (unfinished titles only, episodes
+  crediting their series) so a backed-out film is one tap away; and the
+  live channel list now opens directly ON the playing channel (exact
+  fixed-row math instead of a visible virtualized scroll hunt).
 
 - **Movies & Series in the apps (S53b–d)** — both the phone/TV app and the desktop
   player grow a VOD section fed by the operator's external provider: a menu tile

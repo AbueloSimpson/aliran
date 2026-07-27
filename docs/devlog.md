@@ -3236,3 +3236,18 @@ was not touched.
   where Hermes doesn't; on desktop the shared `trackList()` gives the live
   player the full names as well. Wire values are untouched — selection still
   travels by the track's own code.
+- **QA round 2 (same day, from real-device testing against production):**
+  (1) the VOD players' transport never auto-hid — both shells now port the
+  live player's fade (5 s idle, tap/mouse-move reveal, paused pins the bar,
+  TV stays always-on); (2) a centered **skip cluster** (⟲30 ⟲10 ▶ ⟳10 ⟳30)
+  landed under the progress bar in both VOD players — the RN player gained
+  the desktop's `nudge()` clamp; (3) **Recommended is the landing tab**, led
+  by a **CONTINUE WATCHING** carousel joined from the device-local history
+  (first entry per credited id, episodes crediting their parent series,
+  finished titles — stored position 0 — excluded), so backing out of a film
+  no longer means searching for it again; (4) the live channel list opened
+  with a visible "scroll hunt" — the jump was already `animated:false`, but
+  without `getItemLayout` the virtualized list progressively rendered its
+  way to a deep index; rows are now pinned to an exact height
+  (`CHANNEL_ROW_H`) and the list mounts directly ON the playing channel
+  (`initialScrollIndex` + exact `getItemLayout`).
