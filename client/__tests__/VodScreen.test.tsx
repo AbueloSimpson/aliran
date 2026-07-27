@@ -125,6 +125,14 @@ async function press (tree: RendererInstance, label: string, nth = 0) {
   expect(p).toBeTruthy()
   await ReactTestRenderer.act(async () => { await p!.props.onPress() })
 }
+/** Long press = the My List toggle (S54c). It lives on the SAME Pressable as the open
+ *  gesture, which is the whole point: the grid gains no extra focusable on TV. */
+async function longPress (tree: RendererInstance, label: string, nth = 0) {
+  const p = pressablesLabelled(tree, label)[nth]
+  expect(p).toBeTruthy()
+  expect(typeof p!.props.onLongPress).toBe('function')
+  await ReactTestRenderer.act(async () => { p!.props.onLongPress() })
+}
 /** Press a letter INSIDE the A–Z rail (a bare "Z" also matches a poster fallback
  *  initial, so the rail subtree is the only safe place to look). */
 async function railPress (tree: RendererInstance, letter: string) {
@@ -396,6 +404,37 @@ test('My List renders the device-local watchlist and is honest when empty', asyn
   expect(gridIds()).toEqual(['3']) // the unknown id and the SERIES entry both stay out
 })
 
+test('a long press on a tile toggles My List and says what it did', async () => {
+  const spy = jest.spyOn(backend, 'setVodList').mockImplementation(() => {})
+  const tree = await mount()
+  await longPress(tree, 'Heat (1995)')
+  expect(spy).toHaveBeenCalledWith([{ kind: 'movie', id: '3' }])
+  expect(texts(tree)).toContain('Added to My List: Heat')
+
+  // newest first, and a second long press takes it back out again
+  await longPress(tree, 'Amélie (2001)')
+  expect(spy).toHaveBeenLastCalledWith([{ kind: 'movie', id: '1' }, { kind: 'movie', id: '3' }])
+  await longPress(tree, 'Heat (1995)')
+  expect(spy).toHaveBeenLastCalledWith([{ kind: 'movie', id: '1' }])
+  expect(texts(tree)).toContain('Removed from My List: Heat')
+
+  // …and the My List tab now shows exactly what was kept
+  await press(tree, 'MY LIST')
+  expect(gridIds()).toEqual(['1'])
+  spy.mockRestore()
+})
+
+test('a long press on a SERIES tile saves a series entry, not a movie one', async () => {
+  const spy = jest.spyOn(backend, 'setVodList').mockImplementation(() => {})
+  mockSeries.mockResolvedValue({ ok: true, items: SERIES })
+  const tree = await mount(VOD_BOTH)
+  await press(tree, 'SERIES')
+  await longPress(tree, 'Rick and Morty (2013)')
+  expect(spy).toHaveBeenCalledWith([{ kind: 'series', id: 's1' }])
+  expect(nav.navigate).not.toHaveBeenCalled() // a long press must not also open it
+  spy.mockRestore()
+})
+
 test('a prefs message updates My List without a remount', async () => {
   const tree = await mount()
   await press(tree, 'MY LIST')
@@ -415,7 +454,25 @@ test('selecting a movie tile resolves the URL and hands it to the player screen'
   const tree = await mount()
   await press(tree, 'Heat (1995)')
   expect(mockInfo).toHaveBeenCalledWith(VOD, '3')
-  expect(nav.navigate).toHaveBeenCalledWith('VodPlayer', { url: 'https://cdn.example/heat.mp4', title: 'Heat', durationSec: 5525 })
+  // id + kind travel with the url so the player can write the device-local history (D9).
+  expect(nav.navigate).toHaveBeenCalledWith('VodPlayer', {
+    url: 'https://cdn.example/heat.mp4', title: 'Heat', durationSec: 5525, id: '3', kind: 'movie'
+  })
+})
+
+test('a movie this device already started is handed its resume position', async () => {
+  ;(backend as any).vodHistory = [
+    { kind: 'movie', id: '3', title: 'Heat', positionSec: 754, durationSec: 5525, at: 5 },
+    { kind: 'movie', id: '1', title: 'Amélie', positionSec: 0, durationSec: 7000, at: 9 }
+  ]
+  mockInfo.mockResolvedValue({ ok: true, url: 'https://cdn.example/heat.mp4', durationSec: 5525 })
+  const tree = await mount()
+  await press(tree, 'Heat (1995)')
+  expect(nav.navigate.mock.calls[0][1].resumeSec).toBe(754)
+
+  // a finished title is stored as position 0 — it restarts, it does not "resume at 0"
+  await press(tree, 'Amélie (2001)')
+  expect(nav.navigate.mock.calls[1][1].resumeSec).toBeUndefined()
 })
 
 test('a title that will not resolve leaves the grid up and explains itself', async () => {

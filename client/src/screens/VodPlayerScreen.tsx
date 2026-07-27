@@ -13,18 +13,40 @@
 // lesson) and uses OK/Back on the surface itself.
 //
 // A playback failure shows a plain sentence. The viewer never sees an ExoPlayer code.
-import React, { useCallback, useRef, useState } from 'react'
+//
+// S54c adds two things that are NOT about the picture:
+//   - DEVICE-LOCAL watch history (D9). When the caller names the title (id + kind, plus
+//     seriesId for an episode) this screen remembers where the viewer got to — throttled
+//     to one prefs message per HISTORY_STEP_SEC of progress, flushed when the screen goes
+//     away, and NEVER on the playback path: a failed prefs write must not stop a film.
+//     A title watched past WATCHED_FRACTION stores position 0 — "seen it, start again".
+//   - Subtitle + audio track selection (D7), the same machinery the live player uses:
+//     rn-video reports the tracks it found, the app renders its own TrackMenu (native
+//     controls are off), and trackChoice() handles the ExoPlayer group-index trap. The CC
+//     button is PHONE-ONLY — on TV a focusable over the video hijacks the D-pad (S7), so
+//     the TV surface here stays exactly as focus-free as the live one.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet, PanResponder, ActivityIndicator, BackHandler } from 'react-native'
 import Video, { type VideoRef } from 'react-native-video'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
+import { SelectedTrackType, type AudioTrack, type SelectedTrack, type TextTrack, type VodHistoryEntry } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
+import { backend } from '../worklet'
+import { TrackMenu } from '../components/TrackMenu'
 import { formatDuration } from '../catalog'
 import { theme } from '../theme'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'VodPlayer'>
 
+/** Seconds of playback between two history writes. The worklet rewrites the whole prefs
+ *  file per message, so a per-second write would hammer the disk for a two-hour film. */
+export const HISTORY_STEP_SEC = 10
+/** Past this much of the runtime a title counts as watched — its stored position becomes
+ *  0 so the next "Start" plays it from the top instead of the closing credits. */
+export const WATCHED_FRACTION = 0.95
+
 export function VodPlayerScreen ({ route, navigation }: Props) {
-  const { url, title, durationSec } = route.params
+  const { url, title, durationSec, id, kind, seriesId, resumeSec } = route.params
   const player = useRef<VideoRef | null>(null)
   const [paused, setPaused] = useState(false)
   const [position, setPosition] = useState(0)
@@ -33,9 +55,69 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
 
+  // Subtitle/CC + audio tracks the player found in THIS title, plus the current picks
+  // (subtitles off, audio = the stream's default). Session-local: a track choice is not
+  // a preference, it belongs to the title being watched (D7).
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([])
+  const [textTracks, setTextTracks] = useState<TextTrack[]>([])
+  const [selectedText, setSelectedText] = useState<SelectedTrack>({ type: SelectedTrackType.DISABLED })
+  const [selectedAudio, setSelectedAudio] = useState<SelectedTrack | undefined>(undefined)
+  const [showTracks, setShowTracks] = useState(false)
+
+  // A different url is a different title: its tracks are not these tracks.
+  useEffect(() => {
+    setAudioTracks([]); setTextTracks([])
+    setSelectedText({ type: SelectedTrackType.DISABLED }); setSelectedAudio(undefined)
+    setShowTracks(false)
+  }, [url])
+
+  // --- device-local watch history (D9) ---------------------------------------------
+  // Only a NAMED title is remembered; a caller that hands over just a url plays without
+  // leaving a trace (which is also the escape hatch for anything that must not be).
+  const tracked = useMemo(
+    () => (id && (kind === 'movie' || kind === 'episode') ? { id, kind } : null),
+    [id, kind]
+  )
+  // Playback state the throttle and the flush read WITHOUT re-rendering. `written` is the
+  // playhead at the last write and starts at 0 — the top of the title — so a fresh start
+  // costs no write for its first step, while a RESUMED one (which lands far from 0) is
+  // recorded straight away.
+  const progress = useRef({ position: 0, duration: durationSec ?? 0, written: 0 })
+
+  const writeHistory = useCallback((atSec: number, runtime: number) => {
+    if (!tracked) return
+    progress.current.written = atSec
+    const done = runtime > 0 && atSec >= runtime * WATCHED_FRACTION
+    const entry: VodHistoryEntry = {
+      kind: tracked.kind,
+      id: tracked.id,
+      ...(seriesId ? { seriesId } : {}),
+      title,
+      positionSec: done ? 0 : Math.max(0, Math.floor(atSec)),
+      durationSec: Math.max(0, Math.floor(runtime)),
+      at: Date.now()
+    }
+    // Whole-array replace, newest first, one entry per title (the worklet gates and caps
+    // what it stores — the 'prefs' reply is the truth, and nothing here waits for it).
+    const rest = (backend.vodHistory || []).filter((e) => !(e && e.kind === entry.kind && e.id === entry.id))
+    try { backend.setVodHistory([entry, ...rest]) } catch { /* prefs must never break playback */ }
+  }, [tracked, seriesId, title])
+
+  // Flushing happens from an unmount cleanup, which must not re-run when a callback's
+  // identity changes — so the cleanup reads the LATEST flush through a ref.
+  const flush = useRef<() => void>(() => {})
+  flush.current = () => {
+    const p = progress.current
+    if (!tracked || p.position <= 0) return
+    if (Math.floor(p.position) === Math.floor(p.written)) return // already stored
+    writeHistory(p.position, p.duration)
+  }
+  useEffect(() => () => { flush.current() }, [])
+
   // BACK leaves the title (default pop) — nothing to unwind, but the handler makes the
-  // intent explicit and keeps a paused title from lingering behind the grid.
-  React.useEffect(() => {
+  // intent explicit and keeps a paused title from lingering behind the grid. The history
+  // flush rides the unmount that follows.
+  useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       navigation.goBack()
       return true
@@ -48,7 +130,11 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
     // Optimistic playhead: while paused no progress event confirms the jump, and the
     // bar must not snap back under the finger.
     setPosition(Math.floor(seconds))
+    progress.current.position = seconds
   }, [])
+
+  // The CC button follows the live bar's rule: subtitles OR a real audio choice.
+  const hasTracks = textTracks.length > 0 || audioTracks.length > 1
 
   return (
     <View style={styles.container}>
@@ -61,12 +147,30 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
           controls={false}
           paused={paused}
           progressUpdateInterval={1000}
+          selectedAudioTrack={selectedAudio}
+          selectedTextTrack={selectedText}
+          onAudioTracks={(e: { audioTracks?: AudioTrack[] }) => setAudioTracks(e?.audioTracks ?? [])}
+          onTextTracks={(e: { textTracks?: TextTrack[] }) => setTextTracks(e?.textTracks ?? [])}
           onLoad={(e: { duration?: number }) => {
             setLoading(false)
-            if (e?.duration && e.duration > 0) setDuration(e.duration)
+            if (e?.duration && e.duration > 0) { setDuration(e.duration); progress.current.duration = e.duration }
+            // Resume, once: the caller said where this device left off (D9). A stored
+            // position is always mid-title (a finished one is stored as 0), so there is
+            // nothing to guard against here beyond seeking twice.
+            if (resumeSec && resumeSec > 0 && progress.current.position <= 0) seek(resumeSec)
           }}
-          onProgress={(e: { currentTime: number }) => setPosition(Math.floor(e.currentTime))}
-          onEnd={() => setPaused(true)}
+          onProgress={(e: { currentTime: number }) => {
+            setPosition(Math.floor(e.currentTime))
+            progress.current.position = e.currentTime
+            if (Math.abs(e.currentTime - progress.current.written) >= HISTORY_STEP_SEC) {
+              writeHistory(e.currentTime, progress.current.duration)
+            }
+          }}
+          onEnd={() => {
+            setPaused(true)
+            // Ran to the end: stored as watched (position 0), not as "1 second left".
+            writeHistory(progress.current.duration, progress.current.duration)
+          }}
           onError={() => { setLoading(false); setFailed(true) }}
         />
       )}
@@ -104,8 +208,30 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
               </Pressable>
             )}
             <SeekBar position={position} duration={duration} onSeek={seek} />
+            {!theme.isTV && hasTracks && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Subtitles"
+                style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
+                onPress={() => setShowTracks(true)}
+              >
+                <Text style={styles.playGlyph}>CC</Text>
+              </Pressable>
+            )}
           </View>
         </View>
+      )}
+
+      {showTracks && (
+        <TrackMenu
+          textTracks={textTracks}
+          audioTracks={audioTracks}
+          selectedText={selectedText}
+          selectedAudio={selectedAudio}
+          onSelectText={setSelectedText}
+          onSelectAudio={setSelectedAudio}
+          onClose={() => setShowTracks(false)}
+        />
       )}
     </View>
   )

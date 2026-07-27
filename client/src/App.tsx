@@ -51,9 +51,22 @@ export type RootStackParamList = {
   // the provider for seasons + episodes. The grid hands over what it already knows so
   // the header renders before that call answers.
   VodSeries: { id: string; name: string; icon?: string; anio?: string }
-  // The provider URL is resolved on the grid (getMovieInfo) and handed over, so the
-  // player screen is a dumb surface: no provider call, no credentials.
-  VodPlayer: { url: string; title: string; durationSec?: number }
+  // The provider URL is resolved by whoever opens the player (getMovieInfo on the grid,
+  // getSeriesInfo on the series screen) and handed over, so the player screen is a dumb
+  // surface: no provider call, no credentials.
+  //
+  // id/kind (+seriesId for an episode) are what the player writes its DEVICE-LOCAL watch
+  // history against (S54c, D9); resumeSec is where it seeks on load. All four are
+  // optional — a caller that omits them simply plays the title without being remembered.
+  VodPlayer: {
+    url: string
+    title: string
+    durationSec?: number
+    id?: string
+    kind?: 'movie' | 'episode'
+    seriesId?: string
+    resumeSec?: number
+  }
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()

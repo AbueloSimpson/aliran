@@ -16,7 +16,10 @@
 //   Genres the provider's own genre names as cards (poster of that genre's first title)
 //          -> the same grid, filtered, with a chip back to the cards.
 //   My List the device-local watchlist (backend.vodList, S54a) joined against the
-//          cached list. S54c adds the add/remove affordances; an empty list says so.
+//          cached list; an empty list says so. LONG-PRESS any tile (movie or series,
+//          any tab) to add or remove it — a long press is the one gesture that costs
+//          the grid no extra focusable, so the D-pad path on TV is unchanged (S7) and
+//          the remote's own long-select works there (S54c).
 //   Recommended two one-row rails — Recently added and Newest releases — each with a
 //          "SEE N MORE…" that jumps to All with that ordering.
 //
@@ -119,6 +122,16 @@ export function VodScreen ({ navigation }: Props) {
 
   const { width } = useWindowDimensions()
   const listRef = useRef<FlatList<VodItem> | null>(null)
+
+  // A My-List confirmation is a FLASH, not a state: it says what just happened and then
+  // gets out of the way. (A provider failure uses setNotice directly and stays put.)
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashNotice = useCallback((text: string) => {
+    setNotice(text)
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    noticeTimer.current = setTimeout(() => { noticeTimer.current = null; setNotice(null) }, 2500)
+  }, [])
+  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current) }, [])
 
   useEffect(() => {
     return backend.onMessage((m) => {
@@ -246,9 +259,34 @@ export function VodScreen ({ navigation }: Props) {
     setResolving(item.id); setNotice(null)
     const res = await getMovieInfo(config, item.id)
     setResolving(null)
-    if (res.ok) navigation.navigate('VodPlayer', { url: res.url, title: item.name, durationSec: res.durationSec ?? undefined })
-    else setNotice(errorText(res.error).title)
-  }, [config, resolving, navigation, kind])
+    if (res.ok) {
+      // id/kind travel with the url so the player can remember where the viewer got to
+      // (D9) — and resumeSec brings them back there next time.
+      const seen = (history || []).find((h) => h && h.kind === 'movie' && h.id === item.id)
+      navigation.navigate('VodPlayer', {
+        url: res.url,
+        title: item.name,
+        durationSec: res.durationSec ?? undefined,
+        id: item.id,
+        kind: 'movie',
+        ...(seen && seen.positionSec > 0 ? { resumeSec: seen.positionSec } : {})
+      })
+    } else setNotice(errorText(res.error).title)
+  }, [config, resolving, navigation, kind, history])
+
+  // My List, from a LONG PRESS on the tile (D9). Whole-array replace, newest first; the
+  // optimistic local state keeps the grid honest for the frame or two before the worklet
+  // answers with a 'prefs', which is the truth about what was actually stored.
+  const toggleSaved = useCallback((item: VodItem) => {
+    const entryKind: VodListEntry['kind'] = kind === 'movies' ? 'movie' : 'series'
+    const current = myList || []
+    const has = current.some((e) => e && e.kind === entryKind && e.id === item.id)
+    const rest = current.filter((e) => !(e && e.kind === entryKind && e.id === item.id))
+    const next: VodListEntry[] = has ? rest : [{ kind: entryKind, id: item.id }, ...rest]
+    setMyList(next)
+    flashNotice(has ? `Removed from My List: ${item.name}` : `Added to My List: ${item.name}`)
+    try { backend.setVodList(next) } catch { /* device-local convenience, never fatal */ }
+  }, [kind, myList, flashNotice])
 
   const chooseKind = useCallback((k: Kind) => {
     setKind(k); setSearch(false); setGenre(null); setQuery(''); setNotice(null); setFirstVisible(0)
@@ -288,6 +326,7 @@ export function VodScreen ({ navigation }: Props) {
               first={index === 0}
               busy={resolving === item.id}
               onPress={() => { void open(item) }}
+              onLongPress={() => toggleSaved(item)}
             />
           )}
         />
@@ -347,6 +386,7 @@ export function VodScreen ({ navigation }: Props) {
               more={Math.max(0, r.items.length - columns)}
               busyId={resolving}
               onPressItem={(it) => { void open(it) }}
+              onLongPressItem={toggleSaved}
               onSeeMore={() => seeMore(r.key)}
             />
           ))}
@@ -492,12 +532,13 @@ function Chip ({ label, onPress }: { label: string; onPress: () => void }) {
 
 /** One horizontal "rail" on Recommended: a heading, a single row of tiles, and the
  *  "SEE N MORE…" that opens the full grid in that same ordering. */
-function Rail ({ title, items, more, busyId, onPressItem, onSeeMore }: {
+function Rail ({ title, items, more, busyId, onPressItem, onLongPressItem, onSeeMore }: {
   title: string
   items: VodItem[]
   more: number
   busyId: string | null
   onPressItem: (it: VodItem) => void
+  onLongPressItem: (it: VodItem) => void
   onSeeMore: () => void
 }) {
   if (items.length === 0) return null
@@ -509,7 +550,14 @@ function Rail ({ title, items, more, busyId, onPressItem, onSeeMore }: {
       </View>
       <View style={styles.railRow}>
         {items.map((it) => (
-          <PosterTile key={it.id} item={it} first={false} busy={busyId === it.id} onPress={() => onPressItem(it)} />
+          <PosterTile
+            key={it.id}
+            item={it}
+            first={false}
+            busy={busyId === it.id}
+            onPress={() => onPressItem(it)}
+            onLongPress={() => onLongPressItem(it)}
+          />
         ))}
       </View>
     </View>
@@ -525,20 +573,23 @@ function GenreCard ({ genre, first, onPress }: { genre: { index: number; name: s
 // Poster + title. A missing or broken `icon` falls back to the title's initial on a
 // plain surface (the ChannelInfoPanel art pattern) — a grid of grey holes reads as
 // breakage, an initial reads as "no art".
-function PosterTile ({ item, first, busy, onPress }: { item: VodItem; first: boolean; busy: boolean; onPress: () => void }) {
-  return <Tile art={item.icon} label={titleWithYear(item)} initial={item.name} first={first} busy={busy} onPress={onPress} />
+function PosterTile ({ item, first, busy, onPress, onLongPress }: { item: VodItem; first: boolean; busy: boolean; onPress: () => void; onLongPress: () => void }) {
+  return <Tile art={item.icon} label={titleWithYear(item)} initial={item.name} first={first} busy={busy} onPress={onPress} onLongPress={onLongPress} />
 }
 
 // The shared tile: a framed poster with a fixed-height LABEL BOX underneath (D8). The
 // height is fixed on purpose — the A–Z rail's scrollToIndex math depends on every row
 // being exactly VOD_ROW_H tall.
-function Tile ({ art, label, initial, first, busy, onPress }: {
+function Tile ({ art, label, initial, first, busy, onPress, onLongPress }: {
   art: string
   label: string
   initial: string
   first: boolean
   busy: boolean
   onPress: () => void
+  /** Long press = the My List toggle (D9). Absent on the genre cards, which are not
+   *  titles and have nothing to save. */
+  onLongPress?: () => void
 }) {
   const [focused, setFocused] = useState(false)
   const [broken, setBroken] = useState(false)
@@ -551,6 +602,7 @@ function Tile ({ art, label, initial, first, busy, onPress }: {
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       onPress={onPress}
+      onLongPress={onLongPress}
     >
       <View style={[styles.posterBox, focused && styles.posterBoxFocused]}>
         {showArt
