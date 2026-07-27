@@ -1,32 +1,35 @@
 # P2P feed buffer & window tuning
 
-How the live feed is delivered over the peer-to-peer network, the two buffer modes
-(`disk` vs `ram`), and how to size the HLS segment window for a good streaming
-experience. If you're chasing slow time-to-play, start here.
+This page explains how the live feed moves over the peer-to-peer network, the
+two buffer modes (`disk` vs `ram`), and how to size the HLS segment window
+for a good streaming experience. If you are chasing slow time-to-play, start
+here.
 
 ## The transport is Hypercore, not WebRTC
 
-A common misconception: Aliran is **not** "HLS P2P over WebRTC." Two independent
-layers are involved:
+A common misconception: Aliran is **not** "HLS P2P over WebRTC." Two
+independent layers are involved:
 
 - **Media format = HLS.** ffmpeg produces plain MPEG-TS segments (`seg0.ts`,
-  `seg1.ts`, …) plus an `index.m3u8` playlist, purely so any standard HLS player can
-  decode the bytes.
-- **P2P transport = Hypercore / Hyperswarm** (the Holepunch/Pear stack). The segments
-  are mirrored into an **encrypted Hyperdrive** and replicated over Hyperswarm's DHT
-  (UDP hole-punching). There is no `RTCDataChannel` anywhere — tuning WebRTC knobs
-  would be chasing a ghost.
+  `seg1.ts`, and so on) plus an `index.m3u8` playlist, purely so any
+  standard HLS player can decode the bytes.
+- **P2P transport = Hypercore / Hyperswarm** (the Holepunch/Pear stack). The
+  segments are mirrored into an **encrypted Hyperdrive** and replicated over
+  Hyperswarm's DHT (UDP hole-punching). There is no `RTCDataChannel`
+  anywhere — tuning WebRTC knobs would be chasing a ghost.
 
-The segments are the entire payload that gets shared peer-to-peer. The rolling-buffer
-work did **not** remove segments — it stopped the feed *hoarding old ones* (see below).
+The segments are the entire payload shared peer-to-peer. The rolling-buffer
+work did **not** remove segments — it stopped the feed *hoarding old ones*
+(see below).
 
 ## Buffer modes: `disk` (default) vs `ram`
 
-The live feed is a **rolling window**, not an archive: the playlist defines which
-segments exist, and everything that rotates out is deleted from the drive **and** its
-blob storage is reclaimed (`hypercore clear()` frees each segment's blocks *as it rotates
-out*). A channel that streams for days occupies **O(window)** storage in either mode. Set
-the mode with the `FEED_BUFFER` env var or a per-channel `buffer` field.
+The live feed is a **rolling window**, not an archive. The playlist defines
+which segments exist, and everything that rotates out is deleted from the
+drive **and** its blob storage is reclaimed (`hypercore clear()` frees each
+segment's blocks *as it rotates out*). A channel that streams for days
+occupies **O(window)** storage in either mode. Set the mode with the
+`FEED_BUFFER` env var or a per-channel `buffer` field.
 
 | | **`disk`** (default) | **`ram`** |
 |---|---|---|
@@ -36,89 +39,107 @@ the mode with the `FEED_BUFFER` env var or a per-channel `buffer` field.
 | Broadcaster storage | Window-bounded (tens of MB of segment data)† | Byte-flat (memory only) |
 | Best for | **Normal operation — fastest time-to-play, healthiest P2P** | Hosts that must keep the disk byte-flat |
 
-In **both** modes the **encryption key persists** (`feed.key` in the channel's store
-dir) — user grants seal it, so restarts never invalidate access. Viewers follow a
-`feedKey` change (RAM restarts) automatically: the player SDK resolves the CURRENT
-`feedKey` from the replicated catalog at play time, so no re-login is needed. A
-*re-keyed* stream (new encryption key) still needs a fresh login — that is a
-deliberate access-control boundary.
+In **both** modes the **encryption key persists** (`feed.key` in the
+channel's store dir), so user grants seal it and restarts never invalidate
+access. Viewers follow a `feedKey` change (RAM restarts) automatically — the
+player SDK resolves the CURRENT `feedKey` from the replicated catalog at play
+time, so no re-login is needed. A *re-keyed* stream (new encryption key)
+still needs a fresh login — that is a deliberate access-control boundary.
 
 ### † Disk growth: O(window), and how it can fail
 
-> **Symptom:** a `disk`-buffer channel's store dir (`DATA_DIR/channels/<id>/`) grows to
-> **gigabytes** over a long run — far past the ~tens-of-MB window — and can fill the host
-> disk (this once filled a VPS to 100 % and killed the channels).
+> **Symptom:** a `disk`-buffer channel's store dir
+> (`DATA_DIR/channels/<id>/`) grows to **gigabytes** over a long run — far
+> past the ~tens-of-MB window — and can fill the host disk (this once filled
+> a VPS to 100 % and killed the channels).
 >
-> **Cause:** the feed is a hypercore (append-only). `clear()` frees the blocks of rotated
-> segments, but reclaim used to only sweep **below the single lowest offset still
-> referenced by a live entry**. If *one* entry gets stuck at a low offset — an **orphaned
-> segment** stranded when the ffmpeg watchdog respawns (a fresh ffmpeg resets its `seg%d`
-> counter to 0 and abandons the previous run's high-numbered `.ts` files, which stay on
-> disk and never rotate out) — that entry **pins the watermark**, and *every* segment
-> above it accumulates forever. Disk mode persists the core across restarts, so the pin
-> (and the leak) survived reboots.
+> **Cause:** the feed is a hypercore (append-only). `clear()` frees the
+> blocks of rotated segments, but reclaim used to sweep only **below the
+> single lowest offset still referenced by a live entry**. If *one* entry
+> gets stuck at a low offset — an **orphaned segment** stranded when the
+> ffmpeg watchdog respawns (a fresh ffmpeg resets its `seg%d` counter to 0
+> and abandons the previous run's high-numbered `.ts` files, which stay on
+> disk and never rotate out) — that entry **pins the watermark**, and
+> *every* segment above it accumulates forever. Disk mode persists the core
+> across restarts, so the pin (and the leak) survived reboots.
 >
-> **Fix (shipped):** the mirror now frees each blob **as its segment rotates out** (and
-> when a re-put supersedes it), so reclaim no longer depends on a global watermark a stuck
-> entry could pin. On (re)start it also **reconciles** the reopened core against the fresh
-> output dir, dropping any orphaned entries a prior run stranded — expect a **large first
-> reclaim** on the next start after upgrading. Covered by the orphan-pin scenario in
-> `test:retention`.
+> **Fix (shipped):** the mirror now frees each blob **as its segment rotates
+> out** (and when a re-put supersedes it), so reclaim no longer depends on a
+> global watermark a stuck entry could pin. On (re)start it also
+> **reconciles** the reopened core against the fresh output dir, dropping
+> any orphaned entries a prior run stranded — expect a **large first
+> reclaim** on the next start after upgrading. The orphan-pin scenario is
+> covered by `test:retention`.
 
 !!! note "Two different bounds: *segment data* (automatic) vs *metadata* (rotate to bound)"
-    The rolling reclaim above bounds the **segment (blob) data** — the acute term, always
-    O(window) in both buffer modes. It does **not** bound a hypercore's **merkle tree and
-    metadata**: those are append-only and `clear()` never frees them, so they grow slowly
-    with total runtime (order ~1–2 MB/h *per channel* at a 2 s window — ~100–250 MB/day
-    across a handful of channels), independent of window size. This is a **slow disk creep,
-    not a crash risk** — but on a multi-week 24/7 channel it accumulates.
+    The rolling reclaim above bounds the **segment (blob) data** — the acute
+    term, always O(window) in both buffer modes. It does **not** bound a
+    hypercore's **merkle tree and metadata**: those are append-only, and
+    `clear()` never frees them. They grow slowly with total runtime (order
+    ~1–2 MB/h *per channel* at a 2 s window — roughly 100–250 MB/day across
+    a handful of channels), independent of window size. This is a **slow
+    disk creep, not a crash risk** — but on a multi-week 24/7 channel it
+    accumulates.
 
     Two contributors, each with its own fix:
 
-    - **Retired feed generations.** Every time a feed rotates identity — a **source change**
-      bumps `feedGen`, or a **periodic rotation** (below) — the previous generation's cores
-      are orphaned on disk, tree and all. The broadcaster now **GCs these automatically**:
-      at every start (a reopened disk store sheds prior generations) and after each rotation,
-      the retired generation's whole core directory is deleted. Nothing to configure.
-    - **A single long-lived feed's own tree.** A feed that never rotates grows its tree for
-      its whole lifetime. A broadcaster **restart does not** reset this (disk mode reopens
-      the same core); only a **feed rotation** (fresh `feedGen` → fresh core) or a re-key
-      starts the metadata over. Bound it with **periodic feed rotation** (`FEED_ROTATE_HOURS`
-      / `FEED_ROTATE_TREE_MB`, off by default) or a manual `POST /api/channels/<id>/rotate`.
-      Watching viewers follow the new `feedKey` live over the catalog (next section) — the
-      only cost is a one-time cold DHT topic for viewers returning *across* a rotation, so
-      keep rotation **infrequent** (e.g. weekly) to preserve disk mode's warm-topic benefit.
+    - **Retired feed generations.** Every time a feed rotates identity — a
+      **source change** bumps `feedGen`, or a **periodic rotation** (below)
+      — the previous generation's cores are orphaned on disk, tree and all.
+      The broadcaster now **GCs these automatically**: at every start (a
+      reopened disk store sheds prior generations) and after each rotation,
+      it deletes the retired generation's whole core directory. Nothing to
+      configure.
+    - **A single long-lived feed's own tree.** A feed that never rotates
+      grows its tree for its whole lifetime. A broadcaster **restart does
+      not** reset this (disk mode reopens the same core) — only a **feed
+      rotation** (fresh `feedGen` → fresh core) or a re-key starts the
+      metadata over. Bound it with **periodic feed rotation**
+      (`FEED_ROTATE_HOURS` / `FEED_ROTATE_TREE_MB`, off by default) or a
+      manual `POST /api/channels/<id>/rotate`. Watching viewers follow the
+      new `feedKey` live over the catalog (next section) — the only cost is
+      a one-time cold DHT topic for viewers returning *across* a rotation,
+      so keep rotation **infrequent** (weekly, for example) to preserve disk
+      mode's warm-topic benefit.
 
-    **Where the creep lands depends on the buffer mode.** In `disk` mode it is disk bytes
-    (the OS page cache absorbs the reads — node RSS stays flat). In `ram` mode those same
-    append-only files are process memory, so node RSS itself creeps (order ~10 MB/h for a
-    6-channel box at a 4 s window) and only a restart (which IS a feed rotation in `ram`
-    mode) resets it. On a small-RAM host running `ram` buffers 24/7, plan a periodic
-    restart/rotation — or use `disk` mode, which keeps RSS flat for free.
+    **Where the creep lands depends on the buffer mode.** In `disk` mode it
+    is disk bytes (the OS page cache absorbs the reads, so node RSS stays
+    flat). In `ram` mode those same append-only files are process memory,
+    so node RSS itself creeps (order ~10 MB/h for a 6-channel box at a 4 s
+    window), and only a restart (which IS a feed rotation in `ram` mode)
+    resets it. On a small-RAM host running `ram` buffers 24/7, plan a
+    periodic restart/rotation — or use `disk` mode, which keeps RSS flat for
+    free.
 
 !!! note "Fixed: unbounded per-feed metadata caches (the fast RSS leak)"
-    Before the fix, each feed's Hyperbee kept two internal caches (decoded btree nodes +
-    keys) keyed by the ever-growing append seq — ~1.5 KB of heap retained **per metadata
-    append, forever** (~24 MB/h at 6 channels, either buffer mode; this is what re-filled
-    a 1 GB box within hours). All channels' cores now share one bounded global cache
-    budget (`FEED_CACHE_MAX`, default 8192 entries ≈ 10–15 MB ceiling). Verified by a
-    6-channel soak: heap flat after the budget fills. `tools/mem-soak.mjs` reproduces and
-    measures both this and the slow creep above.
+    Before the fix, each feed's Hyperbee kept two internal caches (decoded
+    btree nodes and keys) keyed by the ever-growing append seq — about
+    1.5 KB of heap retained **per metadata append, forever** (~24 MB/h at 6
+    channels, in either buffer mode; this is what re-filled a 1 GB box
+    within hours). All channels' cores now share one bounded global cache
+    budget (`FEED_CACHE_MAX`, default 8192 entries ≈ 10–15 MB ceiling). A
+    6-channel soak verified this: heap stayed flat after the budget filled.
+    `tools/mem-soak.mjs` reproduces and measures both this and the slow
+    creep above.
 
 ### Tuning feed rotation: disk vs. warm-topic
 
-Periodic rotation is the one lever that bounds a long-lived feed's metadata tree, and it's
-**a single trade-off**: rotate more often for tighter disk, less often to preserve disk
-mode's warm-topic benefit for returning viewers. It's **off by default** — enable it only on
-long-running (multi-week) channels that actually need the bound.
+Periodic rotation is the one lever that bounds a long-lived feed's metadata
+tree. It is **a single trade-off**: rotate more often for tighter disk, or
+less often to preserve disk mode's warm-topic benefit for returning
+viewers. It is **off by default** — enable it only on long-running
+(multi-week) channels that actually need the bound.
 
-**Pick a trigger** (both `0` = off; if both set, whichever fires first):
+**Pick a trigger** (both `0` = off; if both are set, whichever fires
+first):
 
-- **`FEED_ROTATE_TREE_MB`** — rotate a channel once its merkle tree crosses *N* MB. This is
-  the **direct disk cap**: each channel's metadata is bounded to ~*N* MB, so the store's
-  steady-state ceiling is about `N × channels` plus the (small) segment windows. Rotation
-  cadence follows from the tree's growth rate, which is roughly **1–2 MB/h per channel** at a
-  2 s window (higher-bitrate, churnier channels grow faster — they hit the cap first):
+- **`FEED_ROTATE_TREE_MB`** — rotate a channel once its merkle tree crosses
+  *N* MB. This is the **direct disk cap**: each channel's metadata is
+  bounded to ~*N* MB, so the store's steady-state ceiling is about
+  `N × channels` plus the (small) segment windows. Rotation cadence follows
+  the tree's growth rate, which is roughly **1–2 MB/h per channel** at a
+  2 s window (higher-bitrate, churnier channels grow faster and hit the cap
+  first):
 
     | Cap | Busy channel (~2–4 MB/h) | Quiet channel (~1 MB/h) |
     |---|---|---|
@@ -126,128 +147,147 @@ long-running (multi-week) channels that actually need the bound.
     | `250` | every ~4–6 days | ~1.5–2 weeks |
     | `400` | every ~1–1.5 weeks | ~2–3 weeks |
 
-    Measure your own rate from the `tree_alloc` slope of a store-size sampler (order
-    ~200 kB/min total for 6 channels was observed in production) and size the cap to the
-    rotation cadence you can accept.
+    Measure your own rate from the `tree_alloc` slope of a store-size
+    sampler (order ~200 kB/min total for 6 channels was observed in
+    production), and size the cap to the rotation cadence you can accept.
 
-- **`FEED_ROTATE_HOURS`** — rotate every *N* hours regardless of size (e.g. `168` = weekly).
-  Simpler to reason about ("every channel cold-topics at most weekly"), but it does **not**
-  cap disk directly — a high-bitrate channel can still grow a large tree between rotations.
-  Prefer the size cap when disk is the constraint; prefer time when a predictable warm-topic
-  cadence is.
+- **`FEED_ROTATE_HOURS`** — rotate every *N* hours regardless of size (168
+  = weekly, for example). This is simpler to reason about ("every channel
+  cold-topics at most weekly"), but it does **not** cap disk directly — a
+  high-bitrate channel can still grow a large tree between rotations.
+  Prefer the size cap when disk is the constraint; prefer time when a
+  predictable warm-topic cadence is.
 
-- **`FEED_ROTATE_GRACE_MS`** (default `30000`) — how long the retired generation keeps
-  serving + announced after a rotation, so in-flight viewers finish following the catalog
-  before its cores are purged. Rarely needs changing.
+- **`FEED_ROTATE_GRACE_MS`** (default `30000`) — how long the retired
+  generation keeps serving and stays announced after a rotation, so
+  in-flight viewers finish following the catalog before its cores are
+  purged. This rarely needs changing.
 
-**What a rotation costs viewers.** A channel keeps streaming *through* a rotation (the new
-generation mirrors the same live window before the swap, and both serve during the grace
-window). An **actively-watching** viewer auto-follows the new `feedKey` over the catalog with
-no re-login and no re-zap — at most a brief re-buffer as the host reloads its player. The
-real cost lands on viewers **returning across** a rotation: a new generation means a new DHT
-topic, so their next join is a one-time cold discovery (~30–90 s) instead of the ~10 s warm
-rejoin. New/first-time viewers are unaffected. This is why **infrequent** rotation (a larger
-size cap, or weekly) is the recommended default for lean-back audiences: it keeps the
+**What a rotation costs viewers.** A channel keeps streaming *through* a
+rotation — the new generation mirrors the same live window before the swap,
+and both serve during the grace window. An **actively-watching** viewer
+auto-follows the new `feedKey` over the catalog with no re-login and no
+re-zap, at most a brief re-buffer as the host reloads its player. The real
+cost lands on viewers **returning across** a rotation: a new generation
+means a new DHT topic, so their next join is a one-time cold discovery
+(~30–90 s) instead of the ~10 s warm rejoin. New and first-time viewers are
+unaffected. This is why **infrequent** rotation (a larger size cap, or
+weekly) is the recommended default for lean-back audiences — it keeps the
 warm-topic experience for the overwhelming majority of returns.
 
-**Rule of thumb.** Warm-topic-first (most deployments): size cap of `250`–`400` MB, or
-`FEED_ROTATE_HOURS=168`. Disk-first (small host, many channels): a smaller size cap. Rotation
-only ever fires on a **healthy, advancing** channel, and cadences naturally stagger across
-channels — there is no synchronized mass-rotation event. Retired generations (and any left by
-source changes) are purged automatically; nothing needs manual cleanup.
+**Rule of thumb.** Warm-topic-first (most deployments): use a size cap of
+`250`–`400` MB, or `FEED_ROTATE_HOURS=168`. Disk-first (small host, many
+channels): use a smaller size cap. Rotation only ever fires on a
+**healthy, advancing** channel, and cadences naturally stagger across
+channels — there is no synchronized mass-rotation event. Retired
+generations (and any left by source changes) are purged automatically;
+nothing needs manual cleanup.
 
-**One-off / manual:** `POST /api/channels/<id>/rotate` rotates a single running disk channel
-immediately — handy to reclaim a specific channel or to prove the mechanism without waiting
-for a threshold.
+**One-off / manual:** `POST /api/channels/<id>/rotate` rotates a single
+running disk channel immediately — handy for reclaiming a specific channel,
+or for proving the mechanism without waiting for a threshold.
 
 !!! note "Unclean shutdown: a corrupt store self-heals"
-    A disk feed's cores are append-only files that must be closed cleanly. If the broadcaster
-    is killed mid-write — SIGKILL, OOM, power loss, or a `docker stop` that outruns its grace
-    period while many channels are closing — a core's oplog/tree can be **truncated**, and the
-    feed then refuses to reopen (`EPARTIALREAD` / `OPLOG_CORRUPT`), which would otherwise
-    strand that channel on **every** boot. The broadcaster **self-heals**: on start it detects
-    the corruption and rotates the channel to a **fresh generation** (new cores + `feedKey`;
-    the encryption key and grants are untouched, so viewers just follow the new key via the
-    catalog), then GCs the corrupt generation. It is logged (`self-healing to a fresh
-    generation`), and *any* boot-resume failure is now logged too — a channel never fails
-    silently. Defence-in-depth on the prevention side: the compose file sets
-    `stop_grace_period: 60s` so a clean shutdown has time to finish. RAM-buffer feeds are
-    immune (their store is fresh every start).
+    A disk feed's cores are append-only files that must be closed cleanly.
+    If the broadcaster is killed mid-write — SIGKILL, OOM, power loss, or a
+    `docker stop` that outruns its grace period while many channels are
+    closing — a core's oplog/tree can be **truncated**, and the feed then
+    refuses to reopen (`EPARTIALREAD` / `OPLOG_CORRUPT`). That would
+    otherwise strand the channel on **every** boot. The broadcaster
+    **self-heals**: on start it detects the corruption and rotates the
+    channel to a **fresh generation** (new cores + `feedKey`; the
+    encryption key and grants are untouched, so viewers just follow the new
+    key via the catalog), then GCs the corrupt generation. It logs this
+    (`self-healing to a fresh generation`), and *any* boot-resume failure is
+    now logged too — a channel never fails silently. As defence-in-depth on
+    the prevention side, the compose file sets `stop_grace_period: 60s` so
+    a clean shutdown has time to finish. RAM-buffer feeds are immune —
+    their store is fresh every start.
 
 ### Why `ram` is *slower* to join, not faster
 
-> **Symptom:** time-to-play from a fresh client store is ~40–55 s (vs ~10 s expected),
-> and it's slow again after **every** broadcaster restart.
+> **Symptom:** time-to-play from a fresh client store is ~40–55 s (vs
+> ~10 s expected), and it is slow again after **every** broadcaster
+> restart.
 >
-> **Cause:** the RAM buffer does not just hold data in memory — because a RAM-backed
-> Corestore generates a **fresh primary key on every start**, the `feedKey` and its
-> `discoveryKey` are brand new after each restart. So every viewer must:
-> 1. do a **cold Hyperswarm DHT lookup** on a topic that was only just announced
->    (this is the dominant cost — tens of seconds), and
-> 2. **cold-sync the whole current window** from the single broadcaster seed, because
->    no prior replica of *this* keypair exists anywhere.
+> **Cause:** the RAM buffer does not just hold data in memory — because a
+> RAM-backed Corestore generates a **fresh primary key on every start**,
+> the `feedKey` and its `discoveryKey` are brand new after each restart. So
+> every viewer must:
+> 1. do a **cold Hyperswarm DHT lookup** on a topic that was only just
+>    announced (this is the dominant cost — tens of seconds), and
+> 2. **cold-sync the whole current window** from the single broadcaster
+>    seed, because no prior replica of *this* keypair exists anywhere.
 >
-> A ramdisk does **not** fix this — going RAM-backed is precisely what turns "cold DHT
-> once" into "cold DHT after every restart."
+> A ramdisk does **not** fix this — going RAM-backed is precisely what
+> turns "cold DHT once" into "cold DHT after every restart."
 >
-> **Fix:** use `FEED_BUFFER=disk` (the default). A disk Corestore persists its primary
-> key, so the `feedKey`/topic stay stable across restarts: returning viewers rejoin a
-> warm topic and resume their on-disk replica. Storage still stays window-bounded via
-> the same rolling reclaim, so you keep the disk-safety win without the cold-start tax.
+> **Fix:** use `FEED_BUFFER=disk` (the default). A disk Corestore persists
+> its primary key, so the `feedKey`/topic stay stable across restarts:
+> returning viewers rejoin a warm topic and resume their on-disk replica.
+> Storage still stays window-bounded via the same rolling reclaim, so you
+> keep the disk-safety win without the cold-start tax.
 
 ### Switching an existing channel
 
-- **Globally:** set `FEED_BUFFER=disk` (or `ram`) in the broadcaster env and restart.
-- **Per channel (control API):** `PATCH /api/channels/<id> { "buffer": "disk" }`, then
-  stop/start the channel.
+- **Globally:** set `FEED_BUFFER=disk` (or `ram`) in the broadcaster env and
+  restart.
+- **Per channel (control API):** `PATCH /api/channels/<id> { "buffer":
+  "disk" }`, then stop/start the channel.
 
-Switching from `ram` → `disk` mints one new stable `feedKey` on the next start (a
-single cold discovery), after which the identity is fixed. The encryption key is
-untouched, so grants stay valid.
+Switching from `ram` to `disk` mints one new stable `feedKey` on the next
+start (a single cold discovery), after which the identity is fixed. The
+encryption key is untouched, so grants stay valid.
 
 !!! tip "Running many channels? IOPS, not space, is the wall"
-    Buffer mode above is about *one* feed's storage. When you run **many** channels the constant
-    per-segment write churn becomes **disk-IOPS-bound** — the reason traditional streaming uses a
-    ramdisk. Turn on the **scale profile** (`HLS_WORK_DIR` on tmpfs + `FEED_BUFFER=ram`) and see
-    [Scaling & capacity planning](scaling.md) for per-channel RAM/CPU/IOPS numbers and a hardware
-    sizing table.
+    Buffer mode above is about *one* feed's storage. When you run **many**
+    channels the constant per-segment write churn becomes
+    **disk-IOPS-bound** — the reason traditional streaming uses a ramdisk.
+    Turn on the **scale profile** (`HLS_WORK_DIR` on tmpfs +
+    `FEED_BUFFER=ram`) and see
+    [Scaling & capacity planning](scaling.md) for per-channel RAM/CPU/IOPS
+    numbers and a hardware sizing table.
 
 ## Sizing the segment window (`HLS_TIME` / `HLS_LIST_SIZE`)
 
-The window is `HLS_LIST_SIZE` segments of `HLS_TIME` seconds each. Defaults: **`2` s ×
-`8` ≈ 16 s**. These knobs affect live-edge latency, first-frame buffering, compression,
-and per-block P2P overhead — they do **not** touch DHT discovery latency (that's the
-buffer-mode lever above).
+The window is `HLS_LIST_SIZE` segments of `HLS_TIME` seconds each. Defaults
+are **`2` s × `8` ≈ 16 s**. These knobs affect live-edge latency,
+first-frame buffering, compression, and per-block P2P overhead — they do
+**not** touch DHT discovery latency (that is the buffer-mode lever above).
 
-- **`HLS_TIME`** is the main **startup** lever. The host player prebuffers roughly
-  `3 × HLS_TIME` before playback begins, all pulled cold from the seed. At ~3 Mbps
-  that's ~6 s of media at 2 s segments vs ~12 s at 4 s.
+- **`HLS_TIME`** is the main **startup** lever. The host player prebuffers
+  roughly `3 × HLS_TIME` before playback begins, all pulled cold from the
+  seed. At ~3 Mbps that is ~6 s of media at 2 s segments vs ~12 s at 4 s.
   - **Shorter (2 s):** faster first frame, lower live latency.
-  - **Longer (4–6 s):** better compression (fewer forced keyframes), fewer files, less
-    metadata churn — but a slower first frame. Don't go below 2 s (keyframe/compression
-    cost climbs) or above ~6 s (first-frame latency hurts).
-- **`HLS_LIST_SIZE`** is the **P2P-shareability / rebuffer-cushion** lever (window
-  depth = `HLS_LIST_SIZE × HLS_TIME`). It barely moves startup (the player starts ~3
-  segments back from the live edge regardless).
+  - **Longer (4–6 s):** better compression (fewer forced keyframes), fewer
+    files, less metadata churn — but a slower first frame. Don't go below
+    2 s (keyframe/compression cost climbs) or above ~6 s (first-frame
+    latency hurts).
+- **`HLS_LIST_SIZE`** is the **P2P-shareability / rebuffer-cushion** lever
+  (window depth = `HLS_LIST_SIZE × HLS_TIME`). It barely moves startup —
+  the player starts ~3 segments back from the live edge regardless.
   - **Small swarm (a few viewers):** `8` (≈16 s) is plenty.
-  - **Large swarm (many concurrent viewers):** `12`–`16` — deeper overlap means a
-    joiner can pull from more peers and ride out a peer dropping.
-  - **Client blip-recovery margin (same lever):** the window is also how long a
-    viewer's network may hiccup before the live edge slides past their player and the
-    picture freezes. The app self-heals that (the `<AliranVideo>` stall resync — see
+  - **Large swarm (many concurrent viewers):** `12`–`16` — a deeper overlap
+    means a joiner can pull from more peers and ride out a peer dropping.
+  - **Client blip-recovery margin (same lever):** the window is also how
+    long a viewer's network may hiccup before the live edge slides past
+    their player and the picture freezes. The app self-heals that (the
+    `<AliranVideo>` stall resync — see
     [playback](playback.md#video-freezes-while-everything-looks-healthy-clock-ticks-peers-connected)),
-    but a deeper window prevents the freeze instead of recovering from it: at `8×2 s`
-    any ~16 s Wi-Fi blip freezes mobile viewers; `12`–`16` (24–32 s) rides most of
-    them out. Cost is a proportionally larger per-channel window store — small since
-    the reclaim fix.
+    but a deeper window prevents the freeze instead of recovering from it:
+    at `8×2 s` any ~16 s Wi-Fi blip freezes mobile viewers; `12`–`16`
+    (24–32 s) rides most of them out. The cost is a proportionally larger
+    per-channel window store — small since the reclaim fix.
 
-**Recommended starting point:** `HLS_TIME=2`, `HLS_LIST_SIZE=8`, `FEED_BUFFER=disk`.
-Bump `HLS_LIST_SIZE` to `12`+ as the audience grows **or if viewers are on flaky
-networks (mobile/Wi-Fi)** — the 2026-07-16 S22 freeze happened at `8×2 s`.
+**Recommended starting point:** `HLS_TIME=2`, `HLS_LIST_SIZE=8`,
+`FEED_BUFFER=disk`. Bump `HLS_LIST_SIZE` to `12`+ as the audience grows
+**or if viewers are on flaky networks (mobile/Wi-Fi)** — the 2026-07-16 S22
+freeze happened at `8×2 s`.
 
-> **Note — keyframe alignment with `copy`:** the encoder must emit a keyframe every
-> `HLS_TIME` seconds (e.g. OBS "keyframe interval") or segments won't cut cleanly.
-> For transcoding encoders Aliran forces this automatically.
+> **Note — keyframe alignment with `copy`:** the encoder must emit a
+> keyframe every `HLS_TIME` seconds (OBS "keyframe interval", for example)
+> or segments won't cut cleanly. For transcoding encoders, Aliran forces
+> this automatically.
 
 ## Time-to-play expectations (healthy system)
 
@@ -258,15 +298,16 @@ networks (mobile/Wi-Fi)** — the 2026-07-16 S22 freeze happened at `8×2 s`.
 | Returning viewer after a **`ram`** broadcaster restart | 40–55 s (cold DHT again) |
 | After the playlist appears | a few seconds while the live edge replicates (the server *holds* requests until the content lands — no 404 churn — and streams segment bytes as blocks arrive) |
 
-`1 peer` in broadcaster status means the broadcaster only; each extra viewer is an
-extra seeder. See also the latency notes in
+`1 peer` in broadcaster status means the broadcaster only — each extra
+viewer is an extra seeder. See also the latency notes in
 [Operating the panel & broadcaster](operator.md).
 
 ## Channel zapping (switching in a warm session)
 
-Zapping is **not** the same as cold time-to-play. Once you're logged in, switching
-channels skips the panel connect + login entirely — the only cost is the target feed.
-Measured over the public DHT against a 2-channel deployment, warm session:
+Zapping is **not** the same as cold time-to-play. Once you are logged in,
+switching channels skips the panel connect and login entirely — the only
+cost is the target feed. Measured over the public DHT against a 2-channel
+deployment, warm session:
 
 | Switch | What it is | Time to playable |
 |---|---|---|
@@ -274,79 +315,92 @@ Measured over the public DHT against a 2-channel deployment, warm session:
 | → a **new** channel | cold first-zap | ~1.2 s |
 | → **back** to a watched channel | warm re-zap | **~0.3–0.4 s** |
 
-Why the shape:
+Why the shape works this way:
 
-- Each channel is its **own P2P feed with its own DHT topic**, so the *first* zap to a
-  channel this session cold-joins that topic and replicates its window. It's fast
-  (~1 s) because the broadcaster peer is already connected — it seeds every channel —
-  so there's no fresh DHT bootstrap, just the new feed's first segments.
-- The SDK **caches opened feeds and reuses them**, keeping their topics replicating in
-  the background, so zapping *back* to a recently-watched channel is near-instant — the
-  replica is already warm (`resolve()` returns in ~1 ms; the ~0.3 s is just fetching the
-  current playlist + live segment). **Disk mode extends this across sessions**: the feed
-  identity is stable, so yesterday's replica resumes instead of cold-syncing.
+- Each channel is its **own P2P feed with its own DHT topic**, so the
+  *first* zap to a channel this session cold-joins that topic and
+  replicates its window. It is fast (~1 s) because the broadcaster peer is
+  already connected — it seeds every channel — so there is no fresh DHT
+  bootstrap, just the new feed's first segments.
+- The SDK **caches opened feeds and reuses them**, keeping their topics
+  replicating in the background, so zapping *back* to a recently-watched
+  channel is near-instant — the replica is already warm (`resolve()`
+  returns in ~1 ms; the ~0.3 s is just fetching the current playlist and
+  live segment). **Disk mode extends this across sessions**: the feed
+  identity is stable, so yesterday's replica resumes instead of
+  cold-syncing.
 
 !!! note "Fixed: re-zap used to hang"
-    Before the feed-reuse fix, switching **back** to a channel opened earlier in the
-    session wedged `resolve()` — the SDK opened a *second* Hyperdrive over the same
-    store namespace and `ready()` deadlocked against the still-open first one. `serveFeed`
-    now reuses the cached feed, so flip-back is ~0.3 s. Covered by the `test:sdk`
-    zap `news → movies → news` regression.
+    Before the feed-reuse fix, switching **back** to a channel opened
+    earlier in the session wedged `resolve()` — the SDK opened a *second*
+    Hyperdrive over the same store namespace and `ready()` deadlocked
+    against the still-open first one. `serveFeed` now reuses the cached
+    feed, so flip-back is ~0.3 s. The `test:sdk` zap `news → movies → news`
+    regression covers it.
 
 ### Pre-warm: make the *first* zap warm too
 
-The SDK can **pre-warm** entitled feeds right after login — open each channel's replica
-and join its DHT topic in the background, so the cold discovery + handshake is paid
-upfront (off the play path). Then even the *first* play or zap to a channel is a cache
-hit, not a cold open. On-device (release APK, phone), with pre-warm on, the first play
-of channel 1 and the first zap to channel 2 both logged `feed:ready` with **no**
-`feed:open` — i.e. instant — where before they were cold `feed:open → feed:ready`.
+The SDK can **pre-warm** entitled feeds right after login — it opens each
+channel's replica and joins its DHT topic in the background, so the cold
+discovery and handshake are paid upfront, off the play path. Then even the
+*first* play or zap to a channel is a cache hit, not a cold open. On-device
+(release APK, phone), with pre-warm on, the first play of channel 1 and the
+first zap to channel 2 both logged `feed:ready` with **no** `feed:open` —
+instant — where before they were cold `feed:open → feed:ready`.
 
-Enable it with the `prewarm` option (`AliranPlayer` / the RN binding's `start()`):
+Enable it with the `prewarm` option (`AliranPlayer` / the RN binding's
+`start()`):
 
 - `false` (SDK default) — off.
 - `true` — warm **all** entitled feeds.
-- a **positive integer** — cap to that many, warming **lowest curated order first** (the
-  channels a viewer is likeliest to reach). The app ships a bounded cap so a large lineup
-  doesn't join hundreds of topics at once.
+- a **positive integer** — cap to that many, warming **lowest curated order
+  first** (the channels a viewer is likeliest to reach). The app ships a
+  bounded cap so a large lineup doesn't join hundreds of topics at once.
 
-It's **bandwidth-cheap**: replication is sparse, so pre-warm warms the *connection*, not
-a full download — segments only transfer when a feed is actually served. Pre-warmed feeds
-share the same single-flight cache as played feeds, so a play that races the warm reuses
-the one open (never a second Hyperdrive on the same namespace).
+It is **bandwidth-cheap**: replication is sparse, so pre-warm warms the
+*connection*, not a full download — segments only transfer when a feed is
+actually served. Pre-warmed feeds share the same single-flight cache as
+played feeds, so a play that races the warm reuses the one open — never a
+second Hyperdrive on the same namespace.
 
 ### How segment bytes reach the player (progressive serving)
 
-The localhost media server (shared core `sdk/serve.js`, used by the SDK engine, the
-Android worklet, and the desktop tools) is tuned for zap latency:
+The localhost media server (shared core `sdk/serve.js`, used by the SDK
+engine, the Android worklet, and the desktop tools) is tuned for zap
+latency:
 
-- **Block-progressive bodies:** a segment response streams 64 KB hypercore blocks to
-  the player *as they replicate* — ExoPlayer starts parsing the first block while the
-  tail is still in flight (every segment starts on a keyframe, so decode can begin
-  from the first bytes). `test:serve` proves first-byte-before-full-blob with a gated
-  replication pipe.
-- **Availability wait:** a playlist/segment that hasn't replicated yet is *held*
-  (bounded at 6 s) and served the moment it lands, instead of 404ing the player into
-  its 2.5 s retry remount.
-- **Live-edge read-ahead:** each playlist request kicks off a *parallel* background
-  download of the newest 3 segments, so replication overlaps the player's strictly
-  sequential fetch pattern instead of being demand-paged segment by segment.
+- **Block-progressive bodies:** a segment response streams 64 KB hypercore
+  blocks to the player *as they replicate*. ExoPlayer starts parsing the
+  first block while the tail is still in flight (every segment starts on a
+  keyframe, so decode can begin from the first bytes). `test:serve` proves
+  first-byte-before-full-blob with a gated replication pipe.
+- **Availability wait:** a playlist or segment that hasn't replicated yet is
+  *held* (bounded at 6 s) and served the moment it lands, instead of
+  404ing the player into its 2.5 s retry remount.
+- **Live-edge read-ahead:** each playlist request kicks off a *parallel*
+  background download of the newest 3 segments, so replication overlaps
+  the player's strictly sequential fetch pattern instead of being
+  demand-paged segment by segment.
 
 ### Zap prefetch: keep the neighbors' live edge warm (optional)
 
-`zapPrefetch` (SDK option / RN `start()` option; **off by default**) goes one step past
-pre-warm: while a channel plays, the SDK keeps the **newest segment** of the
-next/previous channels in curated zap order replicated locally (following each
-neighbor's *current* catalog `feedKey`), so a CH+/CH− zap starts from warm bytes —
-typically shaving the target's first-segment fetch off the switch entirely.
+`zapPrefetch` (SDK option / RN `start()` option; **off by default**) goes
+one step past pre-warm: while a channel plays, the SDK keeps the **newest
+segment** of the next/previous channels in curated zap order replicated
+locally (following each neighbor's *current* catalog `feedKey`), so a CH+/CH−
+zap starts from warm bytes — typically shaving the target's first-segment
+fetch off the switch entirely.
 
-- `true` — one neighbor each way, refreshed every 3 s (`{ neighbors: 1, intervalMs: 3000 }`).
-- `{ neighbors, intervalMs }` — widen the warm ring / change the cadence.
+- `true` — one neighbor each way, refreshed every 3 s (`{ neighbors: 1,
+  intervalMs: 3000 }`).
+- `{ neighbors, intervalMs }` — widen the warm ring or change the cadence.
 
-**The cost is standing bandwidth, which is why it's off by default:** a live feed
-rotates a new segment every `HLS_TIME` seconds, so keeping a neighbor's newest segment
-warm downloads ≈ that channel's full bitrate for as long as you're watching — ~2×
-your playing channel's bandwidth with `neighbors: 1` (one ahead + one behind). Enable
-it for lean-back TV profiles where zap feel beats data budgets; leave it off for
-metered/mobile viewers. Covered by the `test:sdk` zap-prefetch section (a neighbor's
-newest segment must be fully local without ever being served over HTTP).
+**The cost is standing bandwidth, which is why it's off by default:** a live
+feed rotates a new segment every `HLS_TIME` seconds, so keeping a
+neighbor's newest segment warm downloads roughly that channel's full
+bitrate for as long as you're watching — about 2× your playing channel's
+bandwidth with `neighbors: 1` (one ahead and one behind). Enable it for
+lean-back TV profiles where zap feel beats data budgets; leave it off for
+metered or mobile viewers. The `test:sdk` zap-prefetch section covers it —
+a neighbor's newest segment must be fully local without ever being served
+over HTTP.

@@ -1,10 +1,11 @@
 # @aliran/player-sdk
 
-Headless Aliran player engine — the same core the Android app's Bare worklet runs,
-usable from any Node (or Bare) host. It connects to a panel over the DHT, replicates
-the signed catalog DB, performs the OPRF login (no plaintext password ever leaves the
-process), and serves entitled encrypted feeds + catalog art on a localhost Range HTTP
-server that any HLS-capable player can consume.
+Headless Aliran player engine — the same core the Android app's Bare worklet
+runs, usable from any Node (or Bare) host. It connects to a panel over the DHT,
+replicates the signed catalog DB, performs the OPRF login (no plaintext
+password ever leaves the process), and serves entitled encrypted feeds and
+catalog art on a localhost Range HTTP server that any HLS-capable player can
+consume.
 
 ## Install
 
@@ -12,10 +13,11 @@ server that any HLS-capable player can consume.
 npm install @aliran/player-sdk
 ```
 
-Node >= 20 (or the Bare runtime — see below). TypeScript definitions ship with the
-package (`index.d.ts`). Inside the [Aliran monorepo](https://github.com/AbueloSimpson/aliran)
-this is the `sdk/` npm workspace; the Android app's worklet consumes the very same
-code via `file:` (see `client/backend`).
+You need Node >= 20 (or the Bare runtime — see below). TypeScript definitions
+ship with the package (`index.d.ts`). Inside the
+[Aliran monorepo](https://github.com/AbueloSimpson/aliran) this is the `sdk/`
+npm workspace; the Android app's worklet consumes the very same code via
+`file:` (see `client/backend`).
 
 ```js
 import { createPlayer } from '@aliran/player-sdk'
@@ -32,8 +34,8 @@ const { localUrl } = await player.resolve(streams[0].id)
 
 ## API
 
-`createPlayer(opts)` (Node) or `new AliranPlayer({ ...opts, http, fs })` (any runtime —
-inject `node:http`/`node:fs` or `bare-http1`/`bare-fs`):
+Call `createPlayer(opts)` (Node) or `new AliranPlayer({ ...opts, http, fs })`
+(any runtime — inject `node:http`/`node:fs` or `bare-http1`/`bare-fs`):
 
 | Member | Description |
 |---|---|
@@ -45,108 +47,115 @@ inject `node:http`/`node:fs` or `bare-http1`/`bare-fs`):
 | `assetUrl(path)` | Catalog art path → localhost URL (after login). |
 | `stop()` | Full teardown. |
 
-Events: `ready` · `streams` (display list — emitted at login, and **re-emitted live**
-whenever the panel edits the catalog: the SDK watches the replicated `catalog/` range,
-so title/isLive/art changes push to the host without polling or re-login; a newly
-*granted* stream still requires the next login) · `status`
-(`{state: 'feed:open'|'feed:ready'}`) · `peers` (count, every 3 s while serving) ·
-`recovered` (corrupt store purged + retried) · `error` ·
+Events: `ready` · `streams` (display list — emitted at login, and **re-emitted
+live** whenever the panel edits the catalog: the SDK watches the replicated
+`catalog/` range, so title/isLive/art changes push to the host without polling
+or re-login; a newly *granted* stream still requires the next login) · `status`
+(`{state: 'feed:open'|'feed:ready'}`) · `peers` (count, every 3 s while
+serving) · `recovered` (corrupt store purged + retried) · `error` ·
 `fallback` (`{streamId, url, reason: 'timeout'|'stall'}`) ·
 `source-changed` (`{streamId, source, url}`) ·
-`feed-changed` (`{streamId, feedKey, url}` — the stream being watched had its `feedKey`
-rotated in the catalog (broadcaster source change / RAM restart); the SDK re-resolved and
-swapped the served feed behind the **same** localhost `url`, so the host just reloads the
-player to flush the stale playlist — no re-login or `resolve()` needed). The emitter never
-throws on unhandled `error`.
+`feed-changed` (`{streamId, feedKey, url}` — the stream being watched had its
+`feedKey` rotated in the catalog (broadcaster source change / RAM restart);
+the SDK re-resolved and swapped the served feed behind the **same** localhost
+`url`, so the host just reloads the player to flush the stale playlist — no
+re-login or `resolve()` needed). The emitter never throws on unhandled `error`.
 
 ## Redirect channels — the CDN path
 
-A catalog entry can be a **redirect channel** instead of a P2P feed: the admin panel
-stores `{ redirect: true, url: 'https://…' }` on the record, and `resolve()` returns
-that URL verbatim with `source: 'cdn'` and **no `port`** — no feed open, no swarm
-join, no watchdogs. The host player fetches the URL directly (any HLS the platform
-player supports); its errors are the host's to surface. Because the URL rides the
-replicated catalog, an admin edit reaches viewers on their **next tune** — no
-re-login. Entitlement is unchanged: the channel appears only for granted users.
+A catalog entry can be a **redirect channel** instead of a P2P feed: the admin
+panel stores `{ redirect: true, url: 'https://…' }` on the record, and
+`resolve()` returns that URL verbatim with `source: 'cdn'` and **no `port`** —
+no feed open, no swarm join, no watchdogs. The host player fetches the URL
+directly (any HLS the platform player supports), and its errors are the host's
+to surface. Because the URL rides the replicated catalog, an admin edit
+reaches viewers on their **next tune** — no re-login. Entitlement is
+unchanged: the channel appears only for granted users.
 
-This is the **only** CDN mechanism in the product. A channel is either P2P (kept
-playing by the tune self-heal ladder) or a redirect — **P2P channels have no CDN
-failover, by design**.
+This is the **only** CDN mechanism in the product. A channel is either P2P
+(kept playing by the tune self-heal ladder) or a redirect — **P2P channels
+have no CDN failover, by design**.
 
 ## Hybrid mode (internal — test harness only)
 
 The engine retains a config-driven `hybrid` option
 (`mode: 'p2p-only'|'hybrid'|'cdn-only'`, a global `cdnUrl` template, and the
-`fallback` / `source-changed` events) from before redirect channels existed. It is
-**not a product path** — the app never configures it — and it survives as
-infrastructure for the e2e harness (`test:sdk` uses it to prove the
-serving-health verdicts). Leave it unset: the default `p2p-only` is the shipped
-behavior.
+`fallback` / `source-changed` events) from before redirect channels existed.
+It is **not a product path** — the app never configures it — and it survives
+as infrastructure for the e2e harness (`test:sdk` uses it to prove the
+serving-health verdicts). Leave it unset: the default `p2p-only` is the
+shipped behavior.
 
 ## Zap latency
 
-The localhost server (`serve.js`, shared with the desktop tools) is tuned for fast
-channel switching: segment bodies stream **block-progressively** (bytes reach the
-player as they replicate — no waiting for the full blob), a not-yet-replicated
-playlist/segment request is **held briefly and served on arrival** instead of 404ing,
-and each playlist request **read-aheads the newest segments in parallel**. Two
-warm-up options stack on top:
+The localhost server (`serve.js`, shared with the desktop tools) is tuned for
+fast channel switching: segment bodies stream **block-progressively** (bytes
+reach the player as they replicate — no waiting for the full blob), a
+not-yet-replicated playlist/segment request is **held briefly and served on
+arrival** instead of 404ing, and each playlist request **read-aheads the
+newest segments in parallel**. Two warm-up options stack on top:
 
-- `prewarm` — open entitled feeds' DHT topics right after login so the *first* zap is
-  warm. `false` (default) | `true` (all) | integer cap (lowest curated order first).
-  Bandwidth-cheap: warms connections, not downloads.
+- `prewarm` — open entitled feeds' DHT topics right after login so the *first*
+  zap is warm. `false` (default) | `true` (all) | integer cap (lowest curated
+  order first). Bandwidth-cheap: it warms connections, not downloads.
 - `zapPrefetch` — while a stream plays, keep the **newest segment** of the
-  next/previous channels in curated zap order replicated locally, so CH+/CH− starts
-  from warm bytes. **Off by default — costs standing bandwidth** (≈ each neighbor's
-  full bitrate while playing). `true` = the adaptive defaults below, or pass an
-  object to tune `{ neighbors, intervalMs, directional, stallMs, resumeMs,
-  minHeadroom }`.
+  next/previous channels in curated zap order replicated locally, so CH+/CH−
+  starts from warm bytes. **Off by default — costs standing bandwidth**
+  (≈ each neighbor's full bitrate while playing). `true` uses the adaptive
+  defaults below, or pass an object to tune `{ neighbors, intervalMs,
+  directional, stallMs, resumeMs, minHeadroom }`.
 
 ### Smooth zapping (S21): runtime toggle + adaptive gate
 
-`zapPrefetch` is designed to be a **user-facing choice** (the app surfaces it as
-"Smooth zapping — uses more data"):
+`zapPrefetch` is designed to be a **user-facing choice** (the app surfaces it
+as "Smooth zapping — uses more data"):
 
-- **Runtime switch** — `player.setZapPrefetch(true | false | cfg)` applies mid-play:
-  OFF stops the warm loop and drops every standing download instantly; ON re-arms
-  against the active stream. Echoed as a `'zap-prefetch'` `{enabled}` event.
-- **Adaptive gate** — prefetch must never compete with playback or surprise someone
-  on a paid connection, so the engine suspends the warm loop (dropping its
-  downloads, keeping the tick alive to observe recovery) whenever:
+- **Runtime switch** — `player.setZapPrefetch(true | false | cfg)` applies
+  mid-play: OFF stops the warm loop and drops every standing download
+  instantly; ON re-arms against the active stream. This is echoed as a
+  `'zap-prefetch'` `{enabled}` event.
+- **Adaptive gate** — prefetch must never compete with playback or surprise
+  someone on a paid connection, so the engine suspends the warm loop
+  (dropping its downloads, keeping the tick alive to observe recovery)
+  whenever:
   - the host reports a **metered/expensive network** via
-    `player.setNetworkProfile({ expensive })` (lifts the moment it is cheap again);
+    `player.setNetworkProfile({ expensive })` (this lifts the moment it is
+    cheap again);
   - the **active playlist stops advancing** for `stallMs` (default 12 s — the
-    viewer's own stream is starving); resumes after `resumeMs` (default 60 s) of
-    clean advance;
-  - neighbor segments download **slower than `minHeadroom`× realtime** (default 3×,
-    two thin samples in a row) — the pipe has no room for a second stream.
-  Suspensions/resumes surface as `'zap-prefetch'` `{state:'suspended',reason}` /
-  `{state:'resumed'}` events (`reason: 'metered' | 'stall' | 'thin'`).
+    viewer's own stream is starving), and resumes after `resumeMs` (default
+    60 s) of clean advance;
+  - neighbor segments download **slower than `minHeadroom`× realtime**
+    (default 3×, two thin samples in a row) — the pipe has no room for a
+    second stream.
+  Suspensions/resumes surface as `'zap-prefetch'` `{state:'suspended',reason}`
+  / `{state:'resumed'}` events (`reason: 'metered' | 'stall' | 'thin'`).
 - **Directional** (`directional: true`, the default) — once the viewer's surf
-  direction is known (an adjacent-channel move), only that side is warmed, halving
-  the standing cost for the common CH+/CH+/CH+ pattern; a menu jump resets to both
-  sides. The channel just left stays warm in the feed cache regardless.
+  direction is known (an adjacent-channel move), the engine warms only that
+  side, halving the standing cost for the common CH+/CH+/CH+ pattern; a menu
+  jump resets to both sides. The channel just left stays warm in the feed
+  cache regardless.
 
 ## Upload policy
 
-`createPlayer({ uploadPolicy: 'reseed' | 'client-only' })` — `'reseed'` (default)
-joins feed/assets topics announced (`server: true`): blocks this viewer replicated
-are served back to other viewers on request (opportunistic, demand-driven upload
-that strengthens the swarm). `'client-only'` joins **unannounced** (`server:
-false`): the peer is not discoverable on those topics, so other viewers can never
-dial it — practically **zero viewer-to-viewer upload** by construction, at the
-swarm-wide cost of one fewer re-seeder. Boot-time option; `setUploadPolicy()`
-switches it live (re-joins the active topics and drops standing reseed
-connections without blipping playback). See the
-[viewer bandwidth page](https://abuelosimpson.github.io/aliran/kb/viewer-bandwidth/)
+`createPlayer({ uploadPolicy: 'reseed' | 'client-only' })` — `'reseed'`
+(default) joins feed/assets topics announced (`server: true`): other viewers
+can request the blocks this viewer replicated (opportunistic, demand-driven
+upload that strengthens the swarm). `'client-only'` joins **unannounced**
+(`server: false`): the peer is not discoverable on those topics, so other
+viewers can never dial it — this gives practically **zero viewer-to-viewer
+upload** by construction, at the swarm-wide cost of one fewer re-seeder. It is
+a boot-time option; `setUploadPolicy()` switches it live (re-joins the active
+topics and drops standing reseed connections without blipping playback). See
+the [viewer bandwidth page](https://abuelosimpson.github.io/aliran/kb/viewer-bandwidth/)
 for measured numbers.
 
 ## Swarm tuning
 
-`createPlayer({ swarm: { maxPeers } })` raises the total-connection budget of the
-engine's single Hyperswarm (lib default 64 — plenty for a viewer). Ordinary viewers
-should omit it; SDK-based **seed nodes** and the repeater appliance raise it into the
-hundreds so they can hold big fan-out while re-seeding.
+`createPlayer({ swarm: { maxPeers } })` raises the total-connection budget of
+the engine's single Hyperswarm (lib default 64 — plenty for a viewer).
+Ordinary viewers should omit it; SDK-based **seed nodes** and the repeater
+appliance raise it into the hundreds so they can hold big fan-out while
+re-seeding.
 
 `swarm: { bootstrap: [{ host, port }, …] }` points the engine at custom DHT
 bootstrap nodes — for local DHT testnets (`hyperdht/testnet.js`, used by
@@ -154,25 +163,26 @@ bootstrap nodes — for local DHT testnets (`hyperdht/testnet.js`, used by
 
 **UDP socket buffers** (`swarm: { rcvbufMb, sndbufMb }`, MiB): all peer streams
 multiplex over the engine's **one UDP socket pair**, so when a socket buffer
-overflows the kernel drops datagrams silently and playback stalls with nothing in
-any log. By default the engine requests a **2 MiB receive buffer** (a viewer is
-download-dominant — the whole stream funnels into the receive side while the JS
-thread is busy decrypting) and leaves **send untouched** (reseed upload is
-opportunistic and never buffer-bound on a typical uplink). `0` disables a
-direction; raise `sndbufMb` on SDK-based seed nodes. Semantics mirror the server
-envs `SWARM_RCVBUF_MB`/`SWARM_SNDBUF_MB` (see the
+overflows, the kernel drops datagrams silently and playback stalls with
+nothing in any log. By default the engine requests a **2 MiB receive buffer**
+(a viewer is download-dominant — the whole stream funnels into the receive
+side while the JS thread is busy decrypting) and leaves **send untouched**
+(reseed upload is opportunistic and never buffer-bound on a typical uplink).
+`0` disables a direction; raise `sndbufMb` on SDK-based seed nodes. Semantics
+mirror the server envs `SWARM_RCVBUF_MB`/`SWARM_SNDBUF_MB` (see the
 [network tuning page](https://abuelosimpson.github.io/aliran/kb/network-tuning/)).
-Best-effort everywhere: on hosts where `/proc` is unreadable (Android, Windows,
-macOS) the request still applies — only clamp *detection* degrades — and the
-outcome is emitted as a `status` event `{ state: 'net:tuned', message }`.
+This is best-effort everywhere: on hosts where `/proc` is unreadable (Android,
+Windows, macOS) the request still applies — only clamp *detection* degrades —
+and the outcome is emitted as a `status` event `{ state: 'net:tuned', message }`.
 
-The on-disk store is a **disposable replica cache**: corruption (e.g. a crash mid-write →
-`OPLOG_CORRUPT`) is detected, the store is purged and the operation retried once —
-in-memory entitlements survive, everything re-replicates from peers (`recover.js`,
-verified by `npm run test:corrupt`).
+The on-disk store is a **disposable replica cache**: the engine detects
+corruption (e.g. a crash mid-write → `OPLOG_CORRUPT`), purges the store, and
+retries the operation once — in-memory entitlements survive, and everything
+re-replicates from peers (`recover.js`, verified by `npm run test:corrupt`).
 
 **Partial adoption:** you can keep your own catalog/metadata and use only
-`login()` + `resolve()` for the video URL — video travels P2P, metadata stays yours.
+`login()` + `resolve()` for the video URL — video travels P2P, metadata stays
+yours.
 
 ## Layout
 

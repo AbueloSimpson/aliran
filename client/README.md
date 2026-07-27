@@ -1,12 +1,12 @@
 # @aliran/client
 
 The Aliran app — **React Native (`react-native-tvos`)** targeting **Android phone +
-TV** from one codebase. Embeds the P2P backend (Bare) via `react-native-bare-kit` and
-plays with `react-native-video`.
+TV** from one codebase. It embeds the P2P backend (Bare) via
+`react-native-bare-kit` and plays with `react-native-video`.
 
-> This folder is a **source skeleton** (`src/`, `backend/`, `config/`). The native
-> Android project is generated once with the RN CLI, then these are copied in. Full
-> steps: [`../docs/client-build.md`](../docs/client-build.md).
+> This folder is a **source skeleton** (`src/`, `backend/`, `config/`). You
+> generate the native Android project once with the RN CLI, then copy these in.
+> Full steps: [`../docs/client-build.md`](../docs/client-build.md).
 
 ## Layout
 
@@ -42,19 +42,21 @@ npm run bundle-backend        # -> backend/app.bundle
 npm run android               # phone or Android TV emulator/device
 ```
 
-**Flavors** (S36, mirrors the desktop player): a BAKED `panelPubKey` ships in the APK,
-boots directly, and is never changeable at runtime. The committed keyless
+**Flavors** (S36, mirrors the desktop player): a BAKED `panelPubKey` ships in the
+APK, boots directly, and never changes at runtime. The committed keyless
 `config/service.public.json` (`panelPubKey: ""`) instead routes first run to a
 **Connect screen** (panel key + username + password, persisted on-device after a
 successful sign-in) and adds Settings → **"Change service…"**. Precedence:
-baked → persisted runtime service → Connect. When rebuilding after swapping
-`config/service.json`, delete `android/app/build/generated/assets/react` first — the
-gradle JS-bundle task does not track config JSON as an input (see docs/client-build.md).
+baked → persisted runtime service → Connect. When you rebuild after swapping
+`config/service.json`, delete `android/app/build/generated/assets/react` first —
+the gradle JS-bundle task does not track config JSON as an input (see
+docs/client-build.md).
 
 ## Requirements
 
-Real native build (NOT Expo Go): JDK 17, Android Studio + SDK 34 + NDK + CMake. Test on
-a **phone** and an **Android TV** target. See [`../docs/client-build.md`](../docs/client-build.md).
+You need a real native build (NOT Expo Go): JDK 17, Android Studio + SDK 34 +
+NDK + CMake. Test on a **phone** and an **Android TV** target. See
+[`../docs/client-build.md`](../docs/client-build.md).
 
 ## Status / TODO
 

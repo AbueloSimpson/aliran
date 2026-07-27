@@ -1,21 +1,23 @@
 # Backup, restore & key rotation
 
-The operational safety runbooks: what to back up (and what not to bother with),
-how to restore it, how to keep a warm standby, and how to rotate every credential
-in the system — including the honest list of what *cannot* be rotated.
+These are the operational safety runbooks: what to back up (and what not to
+bother with), how to restore it, how to keep a warm standby, and how to
+rotate every credential in the system — including the honest list of what
+*cannot* be rotated.
 
-One mental model up front. Every byte an Aliran deployment holds is one of three
-things:
+One mental model up front. Every byte an Aliran deployment holds is one of
+three things:
 
-- **Identity** — the panel's signing keypair and OPRF key (`DATA_DIR/keys/`).
-  Losing them ends the deployment (every client pins the public key); leaking
-  them re-enables offline password brute-force. They cannot be rotated in place.
+- **Identity** — the panel's signing keypair and OPRF key
+  (`DATA_DIR/keys/`). Losing them ends the deployment, because every client
+  pins the public key. Leaking them re-enables offline password
+  brute-force. They cannot be rotated in place.
 - **Data** — things with real replacement cost: the panel's account/catalog
   store, the reseller's credit ledger, the library's ingested titles, admin
   credential files.
-- **Cache** — things that rebuild themselves: broadcaster feed stores (a lost
-  feed re-mints and viewers follow via the catalog), the repeater's entire store,
-  client-side replicas. Never worth backing up.
+- **Cache** — things that rebuild themselves: broadcaster feed stores (a
+  lost feed re-mints and viewers follow via the catalog), the repeater's
+  entire store, client-side replicas. These are never worth backing up.
 
 ## What to back up
 
@@ -30,16 +32,19 @@ things:
 
 ## Cold backup (the only safe kind)
 
-Corestores must not be copied while their service is writing — a mid-write copy
-can capture a torn tree. Stop, copy, start. The windows are short and cheap:
+Corestores must not be copied while their service is writing — a mid-write
+copy can capture a torn tree. Stop, copy, start. The windows are short and
+cheap:
 
-- **Panel stopped** = new logins pause. Existing viewers keep playing (catalog
-  replicas + P2P serving don't involve the panel), broadcasters keep streaming.
-- **Reseller stopped** = the dashboard is briefly down; nothing else notices.
+- **Panel stopped** = new logins pause. Existing viewers keep playing
+  (catalog replicas + P2P serving don't involve the panel), and
+  broadcasters keep streaming.
+- **Reseller stopped** = the dashboard is briefly down; nothing else
+  notices.
 - **Library stopped** = VOD titles pause serving for the window.
 
-With the shipped compose file, `deploy/backup.sh` does stop → tar → start per
-service and writes timestamped archives:
+With the shipped compose file, `deploy/backup.sh` does stop → tar → start
+per service and writes timestamped archives:
 
 ```sh
 ./deploy/backup.sh                       # panel only (the default), to ./backups/
@@ -56,10 +61,11 @@ docker compose start panel
 ```
 
 **Cadence**: the panel store is small — cron it hourly and keep a few days
-(`0 * * * * cd /opt/aliran && ./deploy/backup.sh -o /srv/backups panel reseller`).
-Copy archives **off the box** (scp/rclone/object storage). **Encrypt them at
-rest** — a panel backup contains the OPRF key and signing secret; treat the
-archive with the same care as `DATA_DIR/keys/` itself.
+(`0 * * * * cd /opt/aliran && ./deploy/backup.sh -o /srv/backups panel
+reseller`). Copy archives **off the box** (scp/rclone/object storage).
+**Encrypt them at rest** — a panel backup contains the OPRF key and
+signing secret, so treat the archive with the same care as
+`DATA_DIR/keys/` itself.
 
 `npm run test:backup` proves mechanically that a cold copy of the panel
 `DATA_DIR` is *complete* — a panel reopened from the copy serves the same
@@ -69,16 +75,17 @@ catalog, verifies the same admins, and signs with the same identity.
 
 `deploy/restore.sh` is the scripted counterpart of `backup.sh` (verify the
 archive → stop → **replace** the volume contents → start). It refuses a
-non-empty volume or an archive whose name doesn't match the service unless you
-pass `--force` — restoring over live data is deliberately the loud path:
+non-empty volume or an archive whose name doesn't match the service unless
+you pass `--force` — restoring over live data is deliberately the loud
+path:
 
 ```sh
 ./deploy/restore.sh panel backups/panel-<stamp>.tar.gz            # empty volume
 ./deploy/restore.sh --force panel backups/panel-<stamp>.tar.gz    # replace live data
 ```
 
-(The [MCP server](../mcp.md) wraps the same script as `server_restore`, with
-`server_list_backups` to find the archive.) By hand it is:
+(The [MCP server](../mcp.md) wraps the same script as `server_restore`,
+with `server_list_backups` to find the archive.) By hand it is:
 
 ```sh
 docker compose stop panel
@@ -91,18 +98,20 @@ curl -s 127.0.0.1:3210/healthz     # up + swarm connections climbing
 
 Then log in to the dashboard and spot-check a user and a stream.
 
-**The sharp edge — restore freshness.** The panel's store is an *append-only,
-signed* log. Restoring a snapshot rewinds it; everything the panel writes after
-the restore re-uses sequence numbers that newer replicas may have already seen
-with different content. A client that replicated past your snapshot point will
-refuse the forked history and its catalog stops updating until its local app
-storage is cleared (desktop: delete the store dir; Android: clear app data —
-login state is re-derived, nothing of value lives on the client). Broadcasters
-re-register on their next start, which re-fills catalog records that post-date
-the snapshot. So:
+**The sharp edge — restore freshness.** The panel's store is an
+*append-only, signed* log. Restoring a snapshot rewinds it. Everything the
+panel writes after the restore re-uses sequence numbers that newer
+replicas may have already seen with different content. A client that
+replicated past your snapshot point refuses the forked history, and its
+catalog stops updating until its local app storage is cleared (desktop:
+delete the store dir; Android: clear app data — login state is re-derived,
+nothing of value lives on the client). Broadcasters re-register on their
+next start, which re-fills catalog records that post-date the snapshot.
+So:
 
-- **Restore the newest backup you have**, always — freshness directly limits how
-  many clients can be stranded. Hourly backups make this a non-event.
+- **Restore the newest backup you have**, always — freshness directly
+  limits how many clients can be stranded. Hourly backups make this a
+  non-event.
 - Treat restore as the *last* resort; the standby flow below avoids most
   restores entirely.
 - After any restore, restart the broadcasters (`docker compose restart
@@ -110,32 +119,35 @@ the snapshot. So:
 
 ## Warm standby & failover
 
-Availability without any protocol machinery: keep a second box that always holds
-the latest cold snapshot (rsync the backup archives, or the untarred `DATA_DIR`),
-with the repo cloned and `.env` in place.
+You can get availability without any protocol machinery: keep a second box
+that always holds the latest cold snapshot (rsync the backup archives, or
+the untarred `DATA_DIR`), with the repo cloned and `.env` in place.
 
 **The one hard rule: never run two panels with the same keys at the same
-time.** Both would sign appends independently under one identity — a permanent
-fork, strictly worse than downtime. The failover discipline is therefore:
+time.** Both would sign appends independently under one identity — a
+permanent fork, strictly worse than downtime. The failover discipline is
+therefore:
 
 1. Confirm the primary is actually dead (or stop it yourself:
-   `docker compose stop panel` — a reachable primary must be stopped first).
+   `docker compose stop panel` — a reachable primary must be stopped
+   first).
 2. Start the panel on the standby from the latest snapshot.
-3. Done. There is no DNS, no IP, no load balancer: clients and broadcasters find
-   the panel by its public key on the DHT, wherever it announces from. The
-   restore-freshness caveat above applies identically — your recovery point is
-   the last snapshot sync.
-4. When the old primary box comes back, **wipe its panel data before it ever
-   starts** (or keep the service disabled) — it must not announce with stale
-   state.
+3. Done. There is no DNS, no IP, no load balancer: clients and
+   broadcasters find the panel by its public key on the DHT, wherever it
+   announces from. The restore-freshness caveat above applies identically
+   — your recovery point is the last snapshot sync.
+4. When the old primary box comes back, **wipe its panel data before it
+   ever starts** (or keep the service disabled) — it must not announce
+   with stale state.
 
 The broadcaster needs no failover choreography: run it wherever, restore
-`channels.json` + `.env`, start, and it re-registers everything it carries.
+`channels.json` + `.env`, start, and it re-registers everything it
+carries.
 
 ## Rotation matrix
 
-What rotates, how, and what it costs. Everything here is wire-compatible — no
-player or SDK updates are ever involved.
+This shows what rotates, how, and what it costs. Everything here is
+wire-compatible — no player or SDK updates are ever involved.
 
 | Credential | How to rotate | Blast radius |
 |---|---|---|
@@ -155,10 +167,12 @@ player or SDK updates are ever involved.
 
 A backup you have never restored is a hope, not a plan.
 
-- `npm run test:backup` runs the automated completeness drill on every CI push.
-- Quarterly, do the real thing: restore the latest panel archive onto a scratch
-  box (or the standby) and log in to the dashboard. **Point the drill panel at a
-  black-hole bootstrap** (`BOOTSTRAP=127.0.0.1:9` in its `.env`) so it never
-  announces on the public DHT next to the live one — the never-two-writers rule
-  applies to drills too. Total cost is about five minutes — the first time you
-  discover a broken backup must not be during an outage.
+- `npm run test:backup` runs the automated completeness drill on every CI
+  push.
+- Quarterly, do the real thing: restore the latest panel archive onto a
+  scratch box (or the standby) and log in to the dashboard. **Point the
+  drill panel at a black-hole bootstrap** (`BOOTSTRAP=127.0.0.1:9` in its
+  `.env`) so it never announces on the public DHT next to the live one —
+  the never-two-writers rule applies to drills too. Total cost is about
+  five minutes — the first time you discover a broken backup should not be
+  during an outage.
