@@ -9,7 +9,8 @@
 //          ├─ Live        one fullscreen video surface + browse/detail overlays
 //          ├─ Vod         Movies & Series from the operator's external provider (S53;
 //          │              the tile only exists while the panel delivers an enabled
-//          │              provider config) → VodPlayer, plain react-native-video
+//          │              provider config) → VodSeries (series detail) and
+//          │              VodPlayer, plain react-native-video
 //          ├─ Favorites   device-local ★ channels
 //          ├─ Search      client-side catalog filter
 //          └─ Settings    account / service / diagnostics / sign out
@@ -33,6 +34,7 @@ import { FavoritesScreen } from './screens/FavoritesScreen'
 import { SearchScreen } from './screens/SearchScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
 import { VodScreen } from './screens/VodScreen'
+import { VodSeriesScreen } from './screens/VodSeriesScreen'
 import { VodPlayerScreen } from './screens/VodPlayerScreen'
 
 export type RootStackParamList = {
@@ -45,6 +47,10 @@ export type RootStackParamList = {
   Search: undefined
   Settings: undefined
   Vod: undefined
+  // A series never plays directly (S54, D3): its tile opens a detail screen that asks
+  // the provider for seasons + episodes. The grid hands over what it already knows so
+  // the header renders before that call answers.
+  VodSeries: { id: string; name: string; icon?: string; anio?: string }
   // The provider URL is resolved on the grid (getMovieInfo) and handed over, so the
   // player screen is a dumb surface: no provider call, no credentials.
   VodPlayer: { url: string; title: string; durationSec?: number }
@@ -130,6 +136,7 @@ export default function App () {
         <Stack.Screen name="Search" component={SearchScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
         <Stack.Screen name="Vod" component={VodScreen} />
+        <Stack.Screen name="VodSeries" component={VodSeriesScreen} />
         <Stack.Screen name="VodPlayer" component={VodPlayerScreen} />
       </Stack.Navigator>
     </NavigationContainer>
