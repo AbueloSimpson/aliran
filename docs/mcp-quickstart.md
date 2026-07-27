@@ -1,16 +1,18 @@
 # Quickstart — AI assistant
 
-A step-by-step path from *nothing* to *asking an AI to run your Aliran service*.
+A step-by-step path from *nothing* to *asking an AI to run your Aliran
+service*.
 
 Prefer to drive it yourself in a terminal? The
-**[terminal quickstart](quickstart-terminal.md)** covers the same ground with Docker
-Compose. Both end in the same place — pick one.
+**[terminal quickstart](quickstart-terminal.md)** covers the same ground with
+Docker Compose. Both end in the same place — pick one.
 
-For the concepts, the full tool catalog and the security model, see the
-[MCP server overview](mcp.md); this page is the hands-on walkthrough. At the end
-you'll have the MCP wired into **your MCP client of choice** — Claude Desktop,
-Claude Code, Codex CLI, Cursor, VS Code, Windsurf, Cline, Gemini CLI, … — verified
-by the built-in **doctor**, and you'll have run your first tool calls.
+For the concepts, the full tool catalog, and the security model, see the
+[MCP server overview](mcp.md); this page is the hands-on walkthrough. At the
+end you'll have the MCP wired into **your MCP client of choice** — Claude
+Desktop, Claude Code, Codex CLI, Cursor, VS Code, Windsurf, Cline, Gemini
+CLI, … — verified by the built-in **doctor**, and you'll have run your first
+tool calls.
 
 ## What you need
 
@@ -23,8 +25,8 @@ by the built-in **doctor**, and you'll have run your first tool calls.
 
 ## Step 1 — Get the code
 
-The MCP server ships inside the Aliran repo (it reads the `docs/` corpus from the
-checkout for its `docs_search` tool and resources):
+The MCP server ships inside the Aliran repo. It reads the `docs/` corpus from
+the checkout for its `docs_search` tool and resources:
 
 ```bash
 git clone https://github.com/AbueloSimpson/aliran
@@ -34,8 +36,8 @@ npm install
 
 ## Step 2 — Create your config
 
-The config file is the **only** place secrets live — the AI model never sees it,
-only tool results.
+The config file is the **only** place secrets live — the AI model never sees
+it, only tool results.
 
 ```bash
 cd mcp
@@ -44,8 +46,8 @@ chmod 600 config.json          # it holds credentials — keep it owner-only
 $EDITOR config.json
 ```
 
-Decide how the MCP reaches the panel (`:3210`) and broadcaster (`:3310`) — they
-bind loopback on the box, so there are two roads:
+Decide how the MCP reaches the panel (`:3210`) and broadcaster (`:3310`) —
+they bind loopback on the box, so there are two roads:
 
 ```mermaid
 flowchart LR
@@ -62,9 +64,11 @@ flowchart LR
 ```
 
 - **Road A — explicit `url`:** you already publish the dashboards behind
-  [Caddy TLS](kb/public-dashboards.md). Put those `https://` urls in the config.
+  [Caddy TLS](kb/public-dashboards.md). Put those `https://` urls in the
+  config.
 - **Road B — SSH tunnel (default):** omit `url` and the MCP opens an SSH
-  local-forward tunnel with the key in `ssh.keyPath`. Nothing public is required.
+  local-forward tunnel with the key in `ssh.keyPath`. Nothing public is
+  required.
 
 ```jsonc
 {
@@ -77,8 +81,8 @@ flowchart LR
 ```
 
 Any of `panel` / `broadcaster` / `ssh` may be omitted — only the tools whose
-backend is configured get registered. `user`/`pass` are the **dashboard admin**
-logins; if the box is fresh, put the credentials you *want* here and
+backend is configured get registered. `user`/`pass` are the **dashboard
+admin** logins. If the box is fresh, put the credentials you *want* here, and
 `server_install` will create those admins for you. Running the
 [reseller panel](reseller-panel.md) or the VOD library as well? Optional
 `"reseller"` / `"library"` blocks (same shape; tunnel ports `:3330` / `:3320`)
@@ -138,12 +142,13 @@ args = ['/home/op/aliran/mcp/src/index.js', '--config', '/home/op/aliran/mcp/con
 RESULT: all checks passed.
 ```
 
-The doctor prints every snippet with **your absolute paths already filled in** — Step 4
-is mostly copy-paste.
+The doctor prints every snippet with **your absolute paths already filled
+in** — Step 4 is mostly copy-paste.
 
-- The default run probes only the **unauthenticated** `/healthz` endpoints, so a
-  debugging loop can never trip the login throttle (10 attempts / 900 s). Add
-  `--login` once to also verify the credentials with one real login per service.
+- The default run probes only the **unauthenticated** `/healthz` endpoints, so
+  a debugging loop can never trip the login throttle (10 attempts / 900 s).
+  Add `--login` once to also verify the credentials with one real login per
+  service.
 - Exit codes: `0` all good · `1` a configured backend failed · `2` the config
   itself is unusable — handy in provisioning scripts.
 
@@ -159,11 +164,12 @@ Common doctor failures:
 
 ## Step 4 — Wire it into your AI client (any MCP client)
 
-The Aliran MCP is a standard local-stdio MCP server with **no client coupling** —
-you cannot be locked into one vendor's app. Every client below launches it with the
-same two facts (`command: node`, `args: [entry, --config, path]`), each in its own
-config format. The [doctor](#step-3-run-the-doctor) prints all of these snippets
-with your absolute paths filled in.
+The Aliran MCP is a standard local-stdio MCP server with **no client
+coupling** — you cannot be locked into one vendor's app. Every client below
+launches it with the same two facts (`command: node`, `args: [entry,
+--config, path]`), each in its own config format. The
+[doctor](#step-3-run-the-doctor) prints all of these snippets with your
+absolute paths filled in.
 
 ### The universal JSON shape
 
@@ -189,14 +195,14 @@ Claude Desktop, Cursor, Windsurf, Cline and Gemini CLI all accept the same
 | Cline | the extension's MCP settings (`cline_mcp_settings.json`) |
 | Gemini CLI | `~/.gemini/settings.json` — add the `mcpServers` key |
 
-Then **fully restart** the client (Claude Desktop: quit from the tray/menu-bar icon —
-closing the window is not enough). In a new conversation, the client's tools UI
-should list **aliran**.
+Then **fully restart** the client (Claude Desktop: quit from the
+tray/menu-bar icon — closing the window is not enough). In a new
+conversation, the client's tools UI should list **aliran**.
 
 ### Codex CLI (OpenAI)
 
-`~/.codex/config.toml` — note the single-quoted TOML *literal* strings, which keep
-Windows backslash paths intact:
+`~/.codex/config.toml` — note the single-quoted TOML *literal* strings, which
+keep Windows backslash paths intact:
 
 ```toml
 [mcp_servers.aliran]
@@ -232,23 +238,26 @@ claude mcp add aliran -- node /path/to/aliran/mcp/src/index.js --config /path/to
 ### Client differences that matter
 
 - **Destructive-tool confirmations are advisory.** Aliran annotates purges,
-  stop/rotate and server updates with the MCP `destructiveHint`, but *honoring* it
-  is the client's job — Claude clients prompt before running them; some others
-  ignore hints entirely. Verify yours prompts, or phrase destructive intent
-  explicitly. The secrets guarantee is client-independent (enforced server-side:
-  no tool result ever contains a password or private key).
+  stop/rotate, and server updates with the MCP `destructiveHint`, but
+  *honoring* it is the client's job — Claude clients prompt before running
+  them; some others ignore hints entirely. Verify yours prompts, or phrase
+  destructive intent explicitly. The secrets guarantee is client-independent,
+  because it is enforced server-side: no tool result ever contains a
+  password or private key.
 - **Resources support varies.** Some clients surface MCP *resources*
-  (`mcp://aliran/docs/*`), some only tools. That's why `docs_search` is a **tool**:
-  docs-grounded answers work in every client either way.
-- **107 tools is a large catalog.** Capable models handle it fine; weaker models
-  pick tools less reliably — a client consideration, not a server setting.
-- Any other MCP client that can launch a **local stdio server** works the same way —
-  give it `node` + the two args and consult that client's docs for where they go.
+  (`mcp://aliran/docs/*`), some only tools. That's why `docs_search` is a
+  **tool**: docs-grounded answers work in every client either way.
+- **107 tools is a large catalog.** Capable models handle it fine; weaker
+  models pick tools less reliably — a client consideration, not a server
+  setting.
+- Any other MCP client that can launch a **local stdio server** works the
+  same way — give it `node` + the two args and consult that client's docs
+  for where they go.
 
 ## Step 5 — First conversation
 
-Ask something read-only first — you'll get the client's standard permission prompt
-on the first use of each tool:
+Ask something read-only first — you'll get the client's standard permission
+prompt on the first use of each tool:
 
 > **You:** What's the status of my Aliran panel?
 >
@@ -293,8 +302,8 @@ panel/broadcaster passwords and the SSH key never appear in any tool result.
 
 ## Step 6 — Install a fresh server (optional)
 
-With an `ssh` block configured and a bare Ubuntu box, this is the novice-operator
-headline: no terminal, ever.
+With an `ssh` block configured and a bare Ubuntu box, this is the
+novice-operator headline: no terminal, ever.
 
 > **You:** Run a preflight check on my server, then install Aliran on it.
 >
@@ -309,19 +318,20 @@ headline: no terminal, ever.
 > The publisher key was written directly into the server's broadcaster `.env` —
 > it never left the box. Both dashboards are enabled.
 
-The `PUBLISHER_KEY` secret is minted on the box and written to the box; only the
-panel **public** key returns through the conversation — that's the
+The `PUBLISHER_KEY` secret is minted on the box and written to the box; only
+the panel **public** key returns through the conversation. That is the
 [secrets-stay-local guarantee](mcp.md#the-secrets-stay-local-guarantee).
-Afterwards: *"check the server status"* (`server_status`), *"show me the logs"*
-(`server_logs`), and later *"update my deployment"* (`server_update`).
+Afterwards: *"check the server status"* (`server_status`), *"show me the
+logs"* (`server_logs`), and later *"update my deployment"* (`server_update`).
 
 ## Sharing your setup safely
 
-Writing internal runbooks, or pasting output into an issue? Tool *results* never
-contain a password or private key by design, so conversations are safe to share.
-Never share `config.json`, a `.env` file, or a terminal showing passwords or keys.
-Your panel **public** key is safe to show — it ships inside every client build.
-Consider redacting your server hostname/IP and real viewer usernames.
+Writing internal runbooks, or pasting output into an issue? Tool *results*
+never contain a password or private key by design, so conversations are safe
+to share. Never share `config.json`, a `.env` file, or a terminal showing
+passwords or keys. Your panel **public** key is safe to show — it ships
+inside every client build. Consider redacting your server hostname/IP and
+real viewer usernames.
 
 ## Troubleshooting
 
