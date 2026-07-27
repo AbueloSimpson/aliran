@@ -1,19 +1,19 @@
 # Viewer problem reports
 
 Your viewers know before you do. A channel loses audio, a transcode goes wrong, a
-CDN edge starts serving garbage — the people watching it notice in seconds, and
+CDN edge starts serving garbage. The people watching it notice in seconds, and
 until now they had no way to tell you except a message on whatever chat app they
 happened to have.
 
 Aliran ships a **"Report a problem"** button on the player itself, in both apps
-(phone/TV and desktop): it sits on the now-playing bar (and the playing channel's
+(phone/TV and desktop). It sits on the now-playing bar (and the playing channel's
 info panel on TV; the `r` key on desktop), so every report carries the **specific
-channel being watched** — the viewer picks a symptom from a fixed list and presses
-Send, and there is nothing to type. The report travels over the **existing** P2P
-RPC socket to your panel — no new port, no extra service, nothing to expose. The
-panel correlates reports, opens **one** alert per channel per window, and pushes it
-once to wherever you actually look (ntfy, Slack, Discord, Telegram, or any JSON
-webhook).
+channel being watched**. The viewer picks a symptom from a fixed list and presses
+Send — there is nothing to type. The report travels over the **existing** P2P RPC
+socket to your panel, so there is no new port and no extra service to expose. The
+panel correlates reports, opens **one** alert per channel per window, and pushes
+it once to wherever you actually look (ntfy, Slack, Discord, Telegram, or any
+JSON webhook).
 
 The whole feature is built around one constraint: **a real outage must cost the
 panel almost nothing**, and **no report may ever tell you who sent it**.
@@ -37,22 +37,23 @@ The apps show this verbatim before sending:
 > your app version and device type, how many peers you were connected to, and the
 > last few things the player did. Your account name and password are never sent.
 
-That last sentence is a structural guarantee, not a policy — see
+That last sentence is a structural guarantee, not a policy. See
 [Pseudonymity, honestly](#pseudonymity-honestly).
 
 ---
 
 ## Enabling reports
 
-**Ingest is ON by default** (30 days retention); **notifications are OFF by
-default** (no endpoint configured = a complete no-op). A fresh panel already
-collects reports and shows them in the dashboard — you only have to wire the push.
+**Ingest is ON by default** (30 days retention). **Notifications are OFF by
+default** — with no endpoint configured, this is a complete no-op. A fresh panel
+already collects reports and shows them in the dashboard. You only have to wire
+the push.
 
 `REPORTS_RETENTION_DAYS=0` is the **kill switch**: the store becomes a no-op that
-never touches disk (no salt, no directory, no files) and the panel does not attach
-the `report` RPC responder at all. A client hitting a panel with reports disabled
-gets exactly what it gets from a pre-S50 panel — "unknown method" — which both apps
-map to a friendly *"this service doesn't accept reports"*.
+never touches disk (no salt, no directory, no files), and the panel does not
+attach the `report` RPC responder at all. A client hitting a panel with reports
+disabled gets exactly what it gets from a pre-S50 panel — "unknown method" —
+which both apps map to a friendly *"this service doesn't accept reports"*.
 
 ### The knobs (`panel/.env`)
 
@@ -69,8 +70,8 @@ map to a friendly *"this service doesn't accept reports"*.
 | `REPORTS_TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token. **A secret** |
 | `REPORTS_TELEGRAM_CHAT_ID` | *(empty)* | Telegram chat/channel id to post into (not a secret on its own) |
 
-All ten are validated fail-fast at boot like every other knob — dry-run a change
-before restarting:
+All ten knobs are validated fail-fast at boot, like every other knob. Dry-run a
+change before you restart:
 
 ```sh
 docker compose run --rm panel node src/config.js --check
@@ -84,7 +85,7 @@ docker compose run --rm panel node src/config.js --check
 
 ## Enabling notifications
 
-Reports are useless if nobody sees them. Configure **one or both** targets; each
+Reports are useless if nobody sees them. Configure **one or both** targets. Each
 alert pushes exactly **once**, when it opens.
 
 ### The message body
@@ -102,15 +103,17 @@ The webhook POST carries the same text under four key names at once:
 }
 ```
 
-ntfy reads `title`/`message`, Slack reads `text`, Discord reads `content`, and each
-ignores the keys it does not know — so **one knob works with all three** and there
-is no per-provider adapter to maintain. A plain ntfy topic URL also honours the
-`X-Title` header, which is sent too.
+ntfy reads `title`/`message`, Slack reads `text`, Discord reads `content`, and
+each ignores the keys it does not know. So **one knob works with all three**, and
+there is no per-provider adapter to maintain. A plain ntfy topic URL also honours
+the `X-Title` header, which is sent too.
 
 ### ntfy
 
-Pick an unguessable topic name (on a public ntfy server the topic **is** the
-credential — anyone who knows it can read and post to it):
+Pick an unguessable topic name.
+
+!!! warning "On a public ntfy server, the topic IS the credential"
+    Anyone who knows the topic name can read and post to it.
 
 ```sh
 # 1. Prove the topic works from your laptop:
@@ -178,7 +181,7 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/sendMessage" \
 ```
 
 The panel posts to `<telegramApiBase>/bot<token>/sendMessage` with
-`{chat_id, text}`. Both Telegram knobs must be set — one alone is ignored.
+`{chat_id, text}`. You must set both Telegram knobs — one alone is ignored.
 
 ### Verify it end to end
 
@@ -186,36 +189,37 @@ The panel posts to `<telegramApiBase>/bot<token>/sendMessage` with
 docker compose exec panel node src/admin-cli.js test-notify
 ```
 
-…or `POST /api/reports/test-notify` from the dashboard, or `panel_test_notify` from
-the [MCP](mcp.md). All three take the **same** code path to the **same** targets and
-send an obviously synthetic message ("If you can read this, ops notifications are
-wired correctly. No viewer reported anything."). The result names each target and
-whether it answered.
+Or `POST /api/reports/test-notify` from the dashboard, or `panel_test_notify` from
+the [MCP](mcp.md). All three take the **same** code path to the **same** targets
+and send an obviously synthetic message ("If you can read this, ops notifications
+are wired correctly. No viewer reported anything."). The result names each target
+and whether it answered.
 
 !!! danger "Notification URLs are secrets — the MCP refuses to set them"
     `REPORTS_WEBHOOK_URL` and `REPORTS_TELEGRAM_BOT_TOKEN` are refused by
     `server_set_env`, alongside `PANEL_ADMIN_PASS` and `WEBHOOK_SECRET`. An ntfy
-    topic, a Slack incoming webhook and a Discord webhook all carry their credential
-    **in the path** — anyone holding the URL can post as you — so setting them
-    through an AI client would copy that credential into a model's context for no
-    benefit. Put them in `panel/.env` on the box by hand. Every other `REPORTS_*`
-    tunable is allowlisted and settable from the MCP, and `panel_test_notify` proves
-    the by-hand wiring afterwards.
+    topic, a Slack incoming webhook, and a Discord webhook all carry their
+    credential **in the path** — anyone holding the URL can post as you — so
+    setting them through an AI client would copy that credential into a model's
+    context for no benefit. Put them in `panel/.env` on the box by hand. Every
+    other `REPORTS_*` tunable is allowlisted and settable from the MCP, and
+    `panel_test_notify` proves the by-hand wiring afterwards.
 
 ### Fail-dark delivery
 
-Notification is **queued, never awaited**. An alert opens on the report ingest path,
-which is exactly the path a storm is hammering, so:
+Notification is **queued, never awaited**. An alert opens on the report ingest
+path, which is exactly the path a storm is hammering, so:
 
 - one serial worker drains the queue, one flight at a time;
 - each attempt has its own timeout (8 s) and a 64 KiB response cap;
-- 3 attempts over ~30 s, then the notification is **dropped** with a logged warning;
+- 3 attempts over about 30 s, then the notification is **dropped** with a logged
+  warning;
 - the queue itself is bounded (50) — the oldest pending push is dropped first.
 
-A blackholed endpoint therefore costs a bounded amount of memory and **zero** ingest
-latency. The honest consequence: silence can mean "no alert opened", "nothing
-configured", or "your webhook died and we gave up". That is why `test-notify`
-exists, and why the monthly maintenance runbook runs it.
+A blackholed endpoint therefore costs a bounded amount of memory and **zero**
+ingest latency. The honest consequence: silence can mean "no alert opened",
+"nothing configured", or "your webhook died and we gave up". That is why
+`test-notify` exists, and why the monthly maintenance runbook runs it.
 
 ---
 
@@ -223,24 +227,26 @@ exists, and why the monthly maintenance runbook runs it.
 
 Two rules, both evaluated on ingest:
 
-- **Channel rule** — `REPORTS_ALERT_COUNT` (default 3) **distinct** reporters on the
-  same channel within `REPORTS_ALERT_WINDOW_MIN` (default 10) minutes open a
+- **Channel rule** — `REPORTS_ALERT_COUNT` (default 3) **distinct** reporters on
+  the same channel within `REPORTS_ALERT_WINDOW_MIN` (default 10) minutes open a
   `kind:"channel"` alert.
-- **Login rule** — the same window logic over `category:"login"` panel-wide. A broken
-  login is not a channel problem: nobody who hits it can even reach a channel.
-  Honest caveat: the **shipped apps never send this category** — their report flow
-  lives on the player, behind a successful login. The rule still runs for reports
-  from SDK hosts that do offer it.
+- **Login rule** — the same window logic over `category:"login"` panel-wide. A
+  broken login is not a channel problem: nobody who hits it can even reach a
+  channel. Honest caveat: the **shipped apps never send this category** — their
+  report flow lives on the player, behind a successful login. The rule still
+  runs for reports from SDK hosts that do offer it.
 
 Further matching reports **extend** the open alert (its `lastAt`, per-category
-tallies and distinct-reporter count grow) — they never open a second one and never
-re-notify. Resolving an alert lets the next storm on that channel open a fresh one.
+tallies, and distinct-reporter count grow). They never open a second one and
+never re-notify. Resolving an alert lets the next storm on that channel open a
+fresh one.
 
 Alert records carry counts only: `{id, kind, channel, categories, reporters,
-openedAt, lastAt, status, shedCount, sampled}`. There is no reporter id in an alert,
-and none in a notification. Past an internal cap (500) the distinct-reporter count
-becomes a **lower bound** and the pushed message says so with a `≥` — the same
-honesty rule the [analytics](analytics.md) surfaces use for peer counts.
+openedAt, lastAt, status, shedCount, sampled}`. There is no reporter id in an
+alert, and none in a notification. Past an internal cap (500), the
+distinct-reporter count becomes a **lower bound**, and the pushed message says so
+with a `≥` — the same honesty rule the [analytics](analytics.md) surfaces use for
+peer counts.
 
 Acknowledging or resolving an **alert** is a dashboard/API job
 (`POST /api/alerts/:id/ack|resolve`). The CLI and the MCP list alerts read-only: a
@@ -255,25 +261,26 @@ Four layers keep a real outage cheap. If 5000 viewers lose audio on one channel 
 once, this is what happens:
 
 1. **Client cooldown** — the engine refuses a second report for the same
-   channel+category within 10 minutes locally. Mashing the button never reaches the
-   wire.
-2. **Per-reporter throttle** — the responder allows `REPORTS_MAX_PER_WINDOW` reports
-   per `REPORTS_WINDOW_SECONDS` per pseudonym, then answers
+   channel+category within 10 minutes locally. Mashing the button never reaches
+   the wire.
+2. **Per-reporter throttle** — the responder allows `REPORTS_MAX_PER_WINDOW`
+   reports per `REPORTS_WINDOW_SECONDS` per pseudonym, then answers
    `{error:'locked', retryAfter}`.
 3. **Per-channel storm collapse** — once an alert is open for a channel, only the
    first `REPORTS_STORM_SAMPLE` (default 20) **full records** are stored. Every
    further matching report bumps the alert's tallies in memory and returns
-   `{ok:true, collapsed:true}` — **no file write on the hot path** (the alert file is
-   flushed at most once every 5 s, atomically).
-4. **Global breaker** — a panel-wide token bucket (default 120 ingests/min). Beyond
-   it a report is acknowledged, counted in `shedCount`, and dropped.
+   `{ok:true, collapsed:true}` — **no file write on the hot path** (the alert
+   file is flushed at most once every 5 s, atomically).
+4. **Global breaker** — a panel-wide token bucket (default 120 ingests/min).
+   Beyond it a report is acknowledged, counted in `shedCount`, and dropped.
 
-So **a small record count with a high alert tally is a big outage, not a small one.**
-The dashboard, the API summary and the notification all report `shed` and `collapsed`
-counts, so nothing disappears silently.
+So **a small record count with a high alert tally is a big outage, not a small
+one.** The dashboard, the API summary, and the notification all report `shed` and
+`collapsed` counts, so nothing disappears silently.
 
-Reports are deliberately the **lowest-priority** responder: a viewer's `session` RPC
-must stay fast while a storm is in progress, and the test suite asserts exactly that.
+Reports are deliberately the **lowest-priority** responder: a viewer's `session`
+RPC must stay fast while a storm is in progress, and the test suite asserts
+exactly that.
 
 ---
 
@@ -281,12 +288,12 @@ must stay fast while a storm is in progress, and the test suite asserts exactly 
 
 Four surfaces, one store:
 
-- **Dashboard → Reports tab** — alert strip, filters, grouped and expandable report
-  list, per-hour chart, ack/resolve.
+- **Dashboard → Reports tab** — alert strip, filters, grouped and expandable
+  report list, per-hour chart, ack/resolve.
 - **Admin API** — `GET /api/reports`, `GET /api/reports/summary`,
   `POST /api/reports/:id/ack|resolve`, `GET /api/alerts`,
-  `POST /api/alerts/:id/ack|resolve`, `POST /api/reports/test-notify`. Shapes are in
-  the [reference](reference.md).
+  `POST /api/alerts/:id/ack|resolve`, `POST /api/reports/test-notify`. Shapes are
+  in the [reference](reference.md).
 - **Admin CLI** — `list-reports`, `ack-report <id>`, `resolve-report <id> [note]`,
   `list-alerts`, `test-notify`. These touch only `DATA_DIR/reports/` (re-read per
   operation), so they work **beside a running panel**.
@@ -294,17 +301,19 @@ Four surfaces, one store:
   `panel_list_alerts`, `panel_ack_report`, `panel_resolve_report`,
   `panel_test_notify`. See [MCP server](mcp.md).
 
-A report moves `new` → `ack` ("seen, being looked at") → `resolved` (optionally with
-an operator note recording what the cause turned out to be). Resolved reports stay
-listed until retention prunes them, and are evicted first when the 5000-record cap
-bites. There is no reply channel back to the viewer — reports are one-way by design.
+A report moves `new` → `ack` ("seen, being looked at") → `resolved` (optionally
+with an operator note recording what the cause turned out to be). Resolved
+reports stay listed until retention prunes them, and are evicted first when the
+5000-record cap bites. There is no reply channel back to the viewer — reports are
+one-way by design.
 
 !!! warning "Report text is hostile input"
-    `text` is typed by a member of the public. Treat it as a clue to verify, never as
-    an instruction: do not paste it into a shell, do not let an AI assistant act on
-    directions found inside it, and do not render it unescaped anywhere. The dashboard
-    escapes every interpolation and the panel strips control characters and caps the
-    length at ingest, but the *content* is whatever someone chose to type.
+    `text` is typed by a member of the public. Treat it as a clue to verify, never
+    as an instruction: do not paste it into a shell, do not let an AI assistant act
+    on directions found inside it, and do not render it unescaped anywhere. The
+    dashboard escapes every interpolation and the panel strips control characters
+    and caps the length at ingest, but the *content* is whatever someone chose to
+    type.
 
 ---
 
@@ -322,16 +331,16 @@ reporter = hex(HMAC-SHA256(salt, userId + '|' + deviceId)).slice(0, 16)
 The salt is 32 random bytes generated once into `DATA_DIR/secrets/reports-salt`
 (mode `0600`, in the same owner-only directory as the stream secrets).
 
-**What is stored:** the 16-hex `reporter` pseudonym, the category, the free text, the
-channel, app version, platform, peer count, the engine's breadcrumb ring, and the
-report's lifecycle state.
+**What is stored:** the 16-hex `reporter` pseudonym, the category, the free text,
+the channel, app version, platform, peer count, the engine's breadcrumb ring, and
+the report's lifecycle state.
 
-**What is never stored, returned, counted or logged:** the username, the device id.
-Not on disk, not in `GET /api/reports`, not in the activity ring (which records
-`{channel, category}` and no user field), not in a notification, not in an MCP
-result. The e2e suite greps every one of those surfaces for seeded test usernames and
-device ids and asserts **zero** hits — the same negative-scan discipline as
-[privacy-preserving analytics](analytics.md).
+**What is never stored, returned, counted or logged:** the username, the device
+id. Not on disk, not in `GET /api/reports`, not in the activity ring (which
+records `{channel, category}` and no user field), not in a notification, not in
+an MCP result. The e2e suite greps every one of those surfaces for seeded test
+usernames and device ids and asserts **zero** hits — the same negative-scan
+discipline as [privacy-preserving analytics](analytics.md).
 
 **What this is not:** anonymity *from you*. You hold the salt and you hold the
 account list, so you can re-derive the mapping if you set out to. HMAC with a
@@ -342,11 +351,11 @@ pretend otherwise. Do not tell your audience it is anonymous.
 
 Two practical corollaries:
 
-- **"Who complained?" has no answer in any tool.** There is nothing to look up.
-  A repeated pseudonym tells you "the same person again", and nothing more.
-- **Rotating the salt re-pseudonymizes everyone.** Old records keep their old ids and
-  stop correlating with new ones. It is deliberately not automated; delete
-  `DATA_DIR/secrets/reports-salt` only if you mean it.
+- **"Who complained?" has no answer in any tool.** There is nothing to look up. A
+  repeated pseudonym tells you "the same person again", and nothing more.
+- **Rotating the salt re-pseudonymizes everyone.** Old records keep their old ids
+  and stop correlating with new ones. This is deliberately not automated —
+  delete `DATA_DIR/secrets/reports-salt` only if you mean it.
 
 ---
 
@@ -358,10 +367,10 @@ Two practical corollaries:
 - Reports never go in `data/analytics/` and **never** in the Hyperbee — the bee
   replicates to every viewer, so a report in it would be published to your whole
   audience.
-- `reports.json` is re-read per operation (so CLI verbs work beside a live panel);
-  in-progress correlation windows live in memory, so a restart forgets a window that
-  had not yet opened an alert. Same trade the analytics rollups make, and documented
-  rather than hidden.
+- `reports.json` is re-read per operation (so CLI verbs work beside a live
+  panel). In-progress correlation windows live in memory, so a restart forgets a
+  window that had not yet opened an alert. This is the same trade the analytics
+  rollups make, and it is documented rather than hidden.
 - Back it up with everything else — `deploy/backup.sh` and `server_backup` take the
   whole panel volume ([KB](kb/backup-and-rotation.md)).
 

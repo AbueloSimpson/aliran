@@ -1,17 +1,20 @@
 # Developer tour — run it locally
 
-For **contributors and developers** who want the stack running from the repo, without
-Docker. Node processes straight from the workspaces, so you can edit and restart.
+For **contributors and developers** who want the stack running from the
+repo, without Docker. This runs Node processes straight from the workspaces,
+so you can edit and restart.
 
 !!! tip "Running a service, not hacking on one?"
-    Use the **[terminal quickstart](quickstart-terminal.md)** (Docker Compose — the
-    supported deployment path) or the **[AI quickstart](mcp-quickstart.md)**. This page
-    is the development setup, not a deployment guide.
+    Use the **[terminal quickstart](quickstart-terminal.md)** (Docker
+    Compose — the supported deployment path) or the
+    **[AI quickstart](mcp-quickstart.md)**. This page is the development
+    setup, not a deployment guide.
 
 ## 5-minute tour
 
-> Prerequisites: Node.js 20+, `ffmpeg`. (The Android app additionally needs the native
-> toolchain — see [client-build.md](client-build.md).)
+!!! note "Prerequisites"
+    Node.js 20+, `ffmpeg`. (The Android app additionally needs the native
+    toolchain — see [client-build.md](client-build.md).)
 
 ```bash
 git clone https://github.com/AbueloSimpson/aliran
@@ -34,8 +37,9 @@ npm install
 node src/index.js
 ```
 
-For the app, follow [client-build.md](client-build.md) to generate the native project,
-set your panel public key in `client/config/service.json`, and build the APK.
+For the app, follow [client-build.md](client-build.md) to generate the
+native project, set your panel public key in
+`client/config/service.json`, and build the APK.
 
 ## Where things live
 
@@ -54,13 +58,14 @@ set your panel public key in `client/config/service.json`, and build the APK.
 
 ## Current status
 
-Pre-1.0, actively developed — the whole pipeline is verified end to end on real
-infrastructure: the deploy pack on a VPS, live channels (pull and push ingest), and
-the Android app (phone + TV) playing P2P over the public DHT. Every subsystem has an
-e2e suite (`npm run test:sdk`, `test:admin-api`, `test:broadcaster-api`,
-`test:repeater`, …) and `tools/acceptance-remote.mjs` proves a deployment from any
-machine. Remaining before 1.0 (panel HA, the hardening/security-review pass):
-see the [Roadmap](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md).
+Aliran is pre-1.0 and actively developed. The whole pipeline is verified end
+to end on real infrastructure: the deploy pack on a VPS, live channels (pull
+and push ingest), and the Android app (phone + TV) playing P2P over the
+public DHT. Every subsystem has an e2e suite (`npm run test:sdk`,
+`test:admin-api`, `test:broadcaster-api`, `test:repeater`, …), and
+`tools/acceptance-remote.mjs` proves a deployment from any machine. See the
+[Roadmap](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md) for
+what remains before 1.0 (panel HA, the hardening/security-review pass).
 
 ## Next steps
 
