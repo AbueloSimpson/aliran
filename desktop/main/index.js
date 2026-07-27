@@ -169,7 +169,10 @@ function loadDescriptor () {
 
 function readDescriptor (p) {
   try {
-    const d = JSON.parse(fs.readFileSync(p, 'utf8'))
+    // Strip a UTF-8 BOM before parsing: Notepad and PowerShell both write one,
+    // and JSON.parse throws on it — which silently turned an operator's baked
+    // descriptor into "absent" (the app then behaved keyless).
+    const d = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, ''))
     if (d?.panelPubKey && !String(d.panelPubKey).startsWith('REPLACE_')) return d
   } catch { /* absent/invalid — try the next source */ }
   return null
