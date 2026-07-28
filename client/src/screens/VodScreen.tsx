@@ -104,6 +104,11 @@ export function VodScreen ({ navigation }: Props) {
   // finds it right there under CONTINUE WATCHING instead of searching again.
   const [tab, setTab] = useState<Tab>('recommended')
   const [search, setSearch] = useState(false)
+  // What the search field holds while typing. The COMMITTED `query` only updates on
+  // the keyboard's search/Done action — filtering per keystroke re-rendered the grid
+  // under the field on every letter, and the fresh first tile's TV preferred-focus
+  // yanked Android focus off the input (keyboard closed after each character).
+  const [draft, setDraft] = useState('')
   const [query, setQuery] = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
   // One sort per screen, kept across kind and tab switches (D4).
@@ -316,7 +321,7 @@ export function VodScreen ({ navigation }: Props) {
   }, [kind, myList, flashNotice])
 
   const chooseKind = useCallback((k: Kind) => {
-    setKind(k); setSearch(false); setGenre(null); setQuery(''); setNotice(null); setFirstVisible(0)
+    setKind(k); setSearch(false); setGenre(null); setQuery(''); setDraft(''); setNotice(null); setFirstVisible(0)
   }, [])
   const chooseTab = useCallback((t: Tab) => {
     setTab(t); setSearch(false); setGenre(null); setFirstVisible(0)
@@ -389,8 +394,11 @@ export function VodScreen ({ navigation }: Props) {
             autoCorrect={false}
             // Never autoFocus: on TV that traps the remote inside the IME (S50c).
             autoFocus={false}
-            value={query}
-            onChangeText={setQuery}
+            value={draft}
+            onChangeText={setDraft}
+            // Type the whole query, then the keyboard's search action runs it.
+            returnKeyType="search"
+            onSubmitEditing={() => { setQuery(draft); setFirstVisible(0) }}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setSearchFocused(false)}
           />
@@ -632,7 +640,10 @@ function Tile ({ art, label, initial, first, busy, onPress, onLongPress }: {
     <Pressable
       style={styles.tile}
       accessibilityRole="button"
-      hasTVPreferredFocus={first}
+      // TV-only: D-pad entry into the grid should land on the first tile. On the
+      // PHONE this same flag stole focus from the search field on every results
+      // re-render (a new first tile mounts preferred → input blurs, keyboard closes).
+      hasTVPreferredFocus={first && Platform.isTV}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       onPress={onPress}

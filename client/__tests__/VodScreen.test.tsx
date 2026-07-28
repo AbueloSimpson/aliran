@@ -250,23 +250,38 @@ test('a provider with no movies source, and one with no series source, are hones
 
 // --- search is its own view -------------------------------------------------------
 
-test('Search opens its own view and filters both titles, ignoring case and accents', async () => {
+test('Search filters on SUBMIT (never per keystroke), ignoring case and accents', async () => {
   const tree = await mount()
   await press(tree, 'SEARCH')
   const input = tree.root.findByType(TextInput)
 
+  // Typing alone must NOT re-filter: the per-keystroke grid re-render blurred the
+  // field on device (the fresh first tile's TV preferred-focus stole Android focus,
+  // closing the keyboard after every letter). The keyboard's search action commits.
   await ReactTestRenderer.act(async () => { input.props.onChangeText('amelie') }) // accent-insensitive
   let t = texts(tree)
+  expect(t).toContain('Heat (1995)') // still the unfiltered grid
+  await ReactTestRenderer.act(async () => { input.props.onSubmitEditing() })
+  t = texts(tree)
   expect(t).toContain('Amélie (2001)')
   expect(t).not.toContain('Heat (1995)')
 
   await ReactTestRenderer.act(async () => { input.props.onChangeText('FABULEUX') }) // matches nameOriginal
+  await ReactTestRenderer.act(async () => { input.props.onSubmitEditing() })
   t = texts(tree)
   expect(t).toContain('Amélie (2001)')
   expect(t).not.toContain('Sick Girl (2023)')
 
   await ReactTestRenderer.act(async () => { input.props.onChangeText('zzz') })
+  await ReactTestRenderer.act(async () => { input.props.onSubmitEditing() })
   expect(texts(tree)).toContain('No matches')
+})
+
+test('grid tiles never claim TV preferred focus on the phone (it steals the keyboard)', async () => {
+  const tree = await mount()
+  await press(tree, 'SEARCH')
+  const grabby = tree.root.findAll(n => n.props?.hasTVPreferredFocus === true)
+  expect(grabby).toHaveLength(0) // Platform.isTV is false in jest = the phone case
 })
 
 test('the search field never autofocuses (it must not trap a TV remote)', async () => {
