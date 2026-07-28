@@ -58,6 +58,7 @@
       <div class="card toolbar">
         <input id="stream-search" type="search" placeholder="search title or id…">
         <select id="stream-cat" title="category"><option value="">all categories</option></select>
+        <button class="btn ghost small" id="stream-cat-manage" type="button" title="manage the category vocabulary (labels, order, visibility, rename/merge)">manage…</button>
         <select id="stream-state" title="status">
           <option value="">any status</option>
           <option value="live">live</option>
@@ -71,20 +72,16 @@
           <button class="btn small" id="streams-prev" title="previous page">‹</button>
           <span id="streams-page" class="muted mono"></span>
           <button class="btn small" id="streams-next" title="next page">›</button>
+          <select id="stream-pp" title="rows per page">
+            <option value="20">20 / page</option>
+            <option value="50" selected>50 / page</option>
+            <option value="100">100 / page</option>
+            <option value="0">all</option>
+          </select>
         </div>
+        <button class="btn primary" id="stream-add-btn" type="button">＋ Add stream</button>
       </div>
-      <details class="card collapse">
-        <summary>Add stream</summary>
-        <form id="add-stream-form" class="row-form">
-          <input id="ns-id" placeholder="id (e.g. news-24)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-          <input id="ns-title" placeholder="Title">
-          <input id="ns-category" placeholder="Category">
-          <input id="ns-feed" placeholder="Feed key (hex, optional)">
-          <input id="ns-url" placeholder="Redirect URL (https://…, optional — CDN redirect channel)">
-          <button class="btn primary">Add</button>
-        </form>
-      </details>
-      <div class="card table-card">
+      <div class="card table-card scroll">
         <table id="streams-table">
           <thead><tr>
             <th>ID</th><th>Name</th><th>Status</th><th>Category</th><th>Origin</th><th>Order</th><th class="actions-col"></th>

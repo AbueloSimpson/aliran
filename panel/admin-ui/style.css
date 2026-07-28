@@ -141,6 +141,19 @@ td .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .toolbar input[type=search] { flex: 1; min-width: 180px; }
 .pager { display: flex; gap: 6px; align-items: center; }
 .pager .btn[disabled] { opacity: .4; cursor: default; }
+.pager select { padding: 4px 6px; font-size: 12px; }
+
+/* Boxed listing: the table scrolls inside a fixed frame, header stays pinned.
+   The th bottom rule must be a shadow — a border would scroll away with the row. */
+.table-card.scroll { max-height: 62vh; overflow-y: auto; }
+.table-card.scroll thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--panel); box-shadow: 0 1px 0 var(--border);
+}
+
+/* category chips in the streams table filter on click */
+.chip.cat-chip { cursor: pointer; }
+.chip.cat-chip:hover { border-color: var(--accent-dim); color: var(--text); }
 
 /* Collapsible add/create forms — closed by default so lists lead the page. */
 details.collapse { padding: 0; margin-bottom: 16px; }

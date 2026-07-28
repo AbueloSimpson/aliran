@@ -253,8 +253,7 @@ function renderUsers () {
 
 // Streams tab view state (client-side: /api/streams returns the full catalog):
 // text search, category / status / origin filters, and a page cursor.
-const STREAM_PAGE = 20
-const streamView = { q: '', cat: '', state: '', src: '', page: 0 }
+const streamView = { q: '', cat: '', state: '', src: '', page: 0, per: 50 } // per: 0 = all
 let openStreamId = null // channel whose inline editor row is expanded (null = none)
 
 function filteredStreams () {
@@ -292,9 +291,10 @@ function renderStreams () {
   streamView.src = srcSel.value
 
   const hits = filteredStreams()
-  const pages = Math.max(1, Math.ceil(hits.length / STREAM_PAGE))
+  const per = streamView.per > 0 ? streamView.per : (hits.length || 1)
+  const pages = Math.max(1, Math.ceil(hits.length / per))
   if (streamView.page >= pages) streamView.page = pages - 1
-  const pageStreams = hits.slice(streamView.page * STREAM_PAGE, (streamView.page + 1) * STREAM_PAGE)
+  const pageStreams = hits.slice(streamView.page * per, (streamView.page + 1) * per)
 
   $('#stream-count').textContent = hits.length === streams.length
     ? `${streams.length} channel${streams.length === 1 ? '' : 's'}`
@@ -313,7 +313,7 @@ function renderStreams () {
       <td class="mono muted">${esc(s.id)}</td>
       <td><button class="link-btn stream-name" title="open this channel's editor">${esc(s.title)}</button>${s.featured ? ' <span class="badge featured" title="hero hint: featured live streams are preferred for the client hero slot">★</span>' : ''}</td>
       <td><span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>${s.redirect ? ' <span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢</span>' : ''}</td>
-      <td>${(s.category || []).map((c) => `<span class="chip">${esc(c)}</span>`).join(' ') || '<span class="muted">—</span>'}</td>
+      <td>${(s.category || []).map((c) => `<span class="chip cat-chip" data-cat="${esc(c)}" title="filter the list by this category">${esc(c)}</span>`).join(' ') || '<span class="muted">—</span>'}</td>
       <td class="muted">${s.source
         ? `<span title="imported from channel source &quot;${esc(s.source)}&quot; — the feed overwrites mapped fields on every sync">⇣ ${esc(s.source)}</span>`
         : s.origin
@@ -330,6 +330,13 @@ function renderStreams () {
     })
     tr.querySelector('[data-act=edit]').addEventListener('click', () => editMeta(s))
     tr.querySelector('[data-act=del]').addEventListener('click', () => deleteStream(s))
+    for (const el of tr.querySelectorAll('.cat-chip')) {
+      el.addEventListener('click', () => {
+        streamView.cat = el.dataset.cat
+        streamView.page = 0
+        renderStreams()
+      })
+    }
     tbody.appendChild(tr)
     if (open) {
       const dtr = document.createElement('tr')
@@ -1265,26 +1272,43 @@ async function removePackageEntry (p) {
 
 // ---------------------------------------------------------------- stream actions
 
-$('#add-stream-form').addEventListener('submit', async (e) => {
-  e.preventDefault()
+async function addStreamDlg () {
+  const v = await dialog('Add stream', [
+    { name: 'id', label: 'ID — permanent identifier (letters, digits, . _ -)', placeholder: 'news-24' },
+    { name: 'title', label: 'Title (blank = the id)' },
+    { name: 'category', label: 'Category' },
+    { name: 'feedKey', label: 'Feed key (hex, optional — usually set when the broadcaster registers)' },
+    { name: 'url', label: 'Redirect URL (https://…, optional — CDN redirect channel, no P2P feed)', placeholder: 'https://cdn.example.com/ch/index.m3u8' }
+  ], { okLabel: 'Add' })
+  if (!v) return
+  const id = v.id.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) return toast('id must start alphanumeric and use only letters, digits, . _ -', true)
   const body = {
-    id: $('#ns-id').value.trim(),
-    title: $('#ns-title').value.trim() || undefined,
-    category: $('#ns-category').value.trim() || undefined,
-    feedKey: $('#ns-feed').value.trim() || undefined,
-    url: $('#ns-url').value.trim() || undefined // makes it a redirect channel (S23)
+    id,
+    title: v.title.trim() || undefined,
+    category: v.category.trim() || undefined,
+    feedKey: v.feedKey.trim() || undefined,
+    url: v.url.trim() || undefined // makes it a redirect channel (S23)
   }
   try {
     const r = await api('POST', '/api/streams', body)
-    e.target.reset()
     await refresh()
-    await dialog(`Stream "${r.id}" registered`, [], {
-      okLabel: 'Done',
-      body: `<p>Encryption key — give it to the broadcaster. <b>It is shown only once:</b></p>
-             <div class="keybox mono">${esc(r.encryptionKey)}</div>
-             <p>The key is kept panel-private; viewers receive it sealed per-user at login.</p>`
-    })
+    if (r.encryptionKey) {
+      await dialog(`Stream "${r.id}" registered`, [], {
+        okLabel: 'Done',
+        body: `<p>Encryption key — give it to the broadcaster. <b>It is shown only once:</b></p>
+               <div class="keybox mono">${esc(r.encryptionKey)}</div>
+               <p>The key is kept panel-private; viewers receive it sealed per-user at login.</p>`
+      })
+    } else toast(`stream "${r.id}" registered`)
   } catch (err) { toast(err.message, true) }
+}
+$('#stream-add-btn').addEventListener('click', () => addStreamDlg())
+$('#stream-cat-manage').addEventListener('click', () => document.querySelector('[data-tab=categories]').click())
+$('#stream-pp').addEventListener('change', () => {
+  streamView.per = parseInt($('#stream-pp').value, 10) || 0
+  streamView.page = 0
+  renderStreams()
 })
 
 async function editMeta (s) {
