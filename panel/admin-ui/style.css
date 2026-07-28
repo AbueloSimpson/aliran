@@ -83,6 +83,11 @@ header {
 .head-titles { display: flex; flex-direction: column; gap: 1px; }
 #page-title { margin: 0; font-size: 20px; }
 #page-sub { margin: 0; font-size: 12px; }
+
+/* Tab sections that set their own display MUST restate [hidden] (the id rule
+   outranks the UA sheet's [hidden] { display: none } — same pitfall as
+   #login-view above), or their content shows below EVERY other tab. */
+#reports-section[hidden], #analytics-section[hidden], #overview-section[hidden] { display: none; }
 main { padding: 20px 24px 60px; max-width: 1360px; }
 
 .tab {
