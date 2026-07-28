@@ -104,27 +104,38 @@ PATCH /api/sources/anime         {"intervalMs": 43200000}         # any field; e
 DELETE /api/sources/anime        # purges its channels; ?keepChannels=1 detaches them instead
 ```
 
-**Feed format** — `{"channels": [...]}` (or a bare array), one object per channel:
+**Feed format** — `{"channels": [...]}` (or a bare array), one object per channel.
+[`docs/demo/channels.json`](demo/channels.json) is a complete example, and the
+dashboard carries the same reference: **Sources → feed format…**, or the collapsed
+block inside **Add source**.
 
 ```jsonc
-{ "id": "demotv.es.629a06…",               // → stream id "<prefix><id>" (prefix defaults to "<source>.")
-  "name": "Moon Cat",                      // → title
-  "logo": "https://…/logo.png",            // → logo art (https; invalid/http logos degrade to no art)
-  "url":  "https://…/index.m3u8",          // → the redirect playback URL (https required — entry skipped otherwise)
-  "provider": "demotv",                    // → description "via demotv" (optional)
+{ "id": "demotv.es.629a06…",               // REQUIRED → stream id "<prefix><id>" (prefix defaults to "<source>.")
+  "url":  "https://…/index.m3u8",          // REQUIRED → the redirect playback URL (https; entry skipped otherwise)
+  "name": "Moon Cat",                      // → title, cut at 200 chars (absent → the id becomes the title)
+  "logo": "https://…/logo.png",            // → logo art (https; an invalid logo costs the art, not the channel)
+  "description": "Cartoons, all day.",     // → seeded on the FIRST import only, then yours (see sync policy)
   "epg": [ { "title": "…", "start": "…", "stop": "…" } ] }   // NOT imported — see EPG below
 ```
 
-Feed position becomes the curation `order`. The **category label is yours**, set
-on the source — the feed's own category strings are ignored, so a provider never
-names your rails.
+The id must survive prefixing: `<prefix><id>` keeps to letters, digits, `_ . -`
+and 64 characters. An entry with no id, a malformed id, or an id already used in
+the same feed is **skipped with a reason** — the rest of the feed still imports.
+
+Feed position becomes the curation `order`; an `order` field in the entry is
+ignored. The **category label is yours**, set on the source — the feed's own
+category strings are ignored, so a provider never names your rails. Every other
+field is ignored.
 
 **Sync policy:**
 
-- **The feed wins on the fields it maps** (title, description, url, logo, order,
-  category). Manual edits to those on an imported channel are overwritten on the
-  next sync. Curation fields it does not map (`featured`, an explicit `isLive`
-  flip) stick.
+- **The feed wins on the fields it maps** (title, url, logo, order, category).
+  Manual edits to those on an imported channel are overwritten on the next sync.
+  Curation fields it does not map (`featured`, the parental-control `restricted`
+  flag, an explicit `isLive` flip) stick.
+- **The description is yours after the first import.** A feed-provided
+  `description` seeds the channel when it is created, and no later sync overwrites
+  it — so a synopsis you write in the dashboard survives.
 - **A channel that leaves the feed is removed** — a full purge, including grants.
   Removing the whole source purges everything it owns, unless you detach it with
   *keep channels*.

@@ -251,6 +251,14 @@ dialog h2 { margin: 0 0 14px; font-size: 16px; }
 .keybox + p { color: var(--warn); font-size: 12px; margin: 6px 0 0; }
 ul.devices { margin: 0; padding-left: 18px; }
 ul.devices li { margin-bottom: 6px; }
+/* A JSON sample inside a dialog: scrolls sideways instead of widening the dialog. */
+.codebox {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; margin: 8px 0 0; font-size: 12px; line-height: 1.45;
+  overflow-x: auto; white-space: pre;
+}
+ul.spec-list { margin: 8px 0 0; padding-left: 16px; }
+ul.spec-list li { margin-bottom: 5px; }
 
 /* ---- toast ---- */
 #toast {

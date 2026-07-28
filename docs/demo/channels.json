@@ -1,0 +1,33 @@
+{
+  "channels": [
+    {
+      "id": "moon-cat",
+      "url": "https://cdn.example/live/moon-cat/index.m3u8",
+      "name": "Moon Cat",
+      "logo": "https://cdn.example/art/moon-cat.png",
+      "description": "Cartoons, all day."
+    },
+    {
+      "id": "harbour-news",
+      "url": "https://cdn.example/live/harbour/index.m3u8?token=abc123",
+      "name": "Harbour News",
+      "logo": "https://cdn.example/art/harbour.png"
+    },
+    {
+      "id": "deep-blue",
+      "url": "https://cdn.example/live/deep-blue/master.m3u8",
+      "name": "Deep Blue",
+      "epg": [
+        {
+          "title": "Reef Watch",
+          "start": "2026-07-19T00:00:00Z",
+          "stop": "2026-07-19T01:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "no-name-channel",
+      "url": "https://cdn.example/live/spare/index.m3u8"
+    }
+  ]
+}
