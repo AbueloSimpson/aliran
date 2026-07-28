@@ -123,14 +123,11 @@
     </section>
 
     <section id="packages-section" hidden>
-      <form id="add-package-form" class="card row-form">
-        <strong>Add package</strong>
-        <input id="npk-name" placeholder="name (e.g. basic)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-        <input id="npk-label" placeholder="display label (blank = name)">
-        <input id="npk-members" placeholder="members: ids, globs, category:/source: — e.g. news-24, sports-*, category:Deportes, source:anime">
-        <label class="inline"><input type="checkbox" id="npk-default"> default for new users</label>
-        <button class="btn primary">Add</button>
-      </form>
+      <div class="card toolbar">
+        <span class="muted">Named channel bundles (bouquets) granted to users as one unit.</span>
+        <span class="spacer"></span>
+        <button class="btn primary" id="package-add-btn" type="button">＋ Add package</button>
+      </div>
       <div class="card table-card">
         <table id="packages-table">
           <thead><tr>

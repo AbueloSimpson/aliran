@@ -1244,18 +1244,74 @@ async function removeSourceEntry (s) {
 
 // ---------------------------------------------------------------- package actions
 
-$('#add-package-form').addEventListener('submit', (e) => {
-  e.preventDefault()
-  const name = $('#npk-name').value.trim()
-  act(async () => {
-    await api('POST', '/api/packages', {
-      name,
-      label: $('#npk-label').value.trim() || undefined,
-      members: $('#npk-members').value,
-      default: $('#npk-default').checked
-    })
-    e.target.reset()
-  }, `package "${name}" created — assign it on the Users tab`)
+// Package add/edit dialog with a channel PICKER: one checkbox per catalog
+// channel (filterable), so members are ticked instead of typed from memory.
+// Globs and category:/source: selectors keep a text box — they can't be a
+// checkbox, they resolve against future channels too. Checkbox state lives in
+// `picked`, kept current by change listeners, so the result never depends on
+// dialog DOM surviving close (same pattern as openSourceChannels).
+async function packageDlg ({ title, okLabel, isNew = false, name = '', label = '', members = [], isDefault = false, holders = 0 }) {
+  const idSet = new Set(streams.map((s) => s.id))
+  const memberSet = new Set(members)
+  const advanced = members.filter((m) => !idSet.has(m)) // globs, selectors, ids not in the catalog (yet)
+  const sorted = [...streams].sort((a, b) => a.id.localeCompare(b.id))
+  const picked = new Map(sorted.map((s) => [s.id, memberSet.has(s.id)]))
+  const rows = sorted.map((s) =>
+    `<label class="inline ch-row"><input type="checkbox" data-id="${esc(s.id)}"${memberSet.has(s.id) ? ' checked' : ''}>
+       <span>${esc(s.title)}</span> <span class="mono muted">${esc(s.id)}</span></label>`).join('')
+  const fields = []
+  if (isNew) fields.push({ name: 'name', label: 'Name — permanent id (letters, digits, . _ -)', value: name, placeholder: 'basic' })
+  fields.push({ name: 'label', label: 'Display label (blank = the name)', value: label })
+  fields.push({ name: 'advanced', label: 'Extra members — id globs / selectors, comma-separated (sports-*, category:News, source:anime)', value: advanced.join(', ') })
+  fields.push({ name: 'default', label: 'default for new users (existing users are not touched)', type: 'checkbox', value: isDefault })
+  const p = dialog(title, fields, {
+    okLabel,
+    body: (isNew ? '' : `<p class="muted">Member edits materialize immediately for the <b>${holders} holder(s)</b>: missing keys are sealed, keys only this package covered are removed.</p>`) +
+      `<div class="dlg-tools">
+         <input id="pk-filter" placeholder="filter channels…">
+         <span id="pk-count" class="muted"></span>
+       </div>
+       <div class="ch-list" id="pk-list">${rows || '<p class="muted">no channels in the catalog yet — extra members below still work</p>'}</div>`
+  })
+  // dialog() has already put the body in the DOM — wire it up
+  const list = $('#pk-list')
+  const count = $('#pk-count')
+  const showCount = () => { count.textContent = `${[...picked.values()].filter(Boolean).length} selected` }
+  showCount()
+  for (const box of list.querySelectorAll('input[type=checkbox]')) {
+    box.addEventListener('change', () => { picked.set(box.dataset.id, box.checked); showCount() })
+  }
+  const filter = $('#pk-filter')
+  filter.addEventListener('keydown', (e) => { if (e.key === 'Enter') e.preventDefault() }) // Enter filters, never submits
+  filter.addEventListener('input', () => {
+    const q = filter.value.trim().toLowerCase()
+    for (const row of list.querySelectorAll('.ch-row')) {
+      const s = row.textContent.toLowerCase()
+      row.hidden = q !== '' && !s.includes(q)
+    }
+  })
+  const v = await p
+  if (!v) return null
+  const chosen = sorted.filter((s) => picked.get(s.id)).map((s) => s.id)
+  const adv = v.advanced.split(',').map((x) => x.trim()).filter(Boolean)
+  return {
+    name: isNew ? v.name.trim() : undefined,
+    label: v.label.trim(),
+    members: chosen.concat(adv).join(', '),
+    default: v.default
+  }
+}
+
+$('#package-add-btn').addEventListener('click', async () => {
+  const v = await packageDlg({ title: 'Add package', okLabel: 'Add', isNew: true })
+  if (!v) return
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v.name)) return toast('name must start alphanumeric and use only letters, digits, . _ -', true)
+  act(() => api('POST', '/api/packages', {
+    name: v.name,
+    label: v.label || undefined,
+    members: v.members,
+    default: v.default
+  }), `package "${v.name}" created — assign it on the Users tab`)
 })
 
 function showPackageResolved (p) {
@@ -1269,16 +1325,17 @@ function showPackageResolved (p) {
 }
 
 async function editPackage (p) {
-  const v = await dialog(`Edit package ${p.name}`, [
-    { name: 'label', label: 'Display label', value: p.label },
-    { name: 'members', label: 'Members (comma-separated: ids, id globs, category:<slug>, source:<name>)', type: 'textarea', value: p.members.join(', ') },
-    { name: 'default', label: 'default for new users (existing users are not touched)', type: 'checkbox', value: !!p.default }
-  ], {
-    body: `<p class="muted">Member edits materialize immediately for the <b>${p.holders} holder(s)</b>: missing keys are sealed, keys only this package covered are removed.</p>`
+  const v = await packageDlg({
+    title: `Edit package ${p.name}`,
+    okLabel: 'Save',
+    label: p.label,
+    members: p.members,
+    isDefault: !!p.default,
+    holders: p.holders
   })
   if (!v) return
   act(async () => {
-    const r = await api('PATCH', `/api/packages/${p.name}`, { label: v.label.trim(), members: v.members, default: v.default })
+    const r = await api('PATCH', `/api/packages/${p.name}`, { label: v.label, members: v.members, default: v.default })
     toast(`"${p.name}" updated — sealed ${r.reconciled.sealed}, removed ${r.reconciled.removed} grant(s)`)
   })
 }
