@@ -171,9 +171,31 @@ following only the docs.
   written into the box `.env` server-side. `test:mcp` in the required lane.
   **Published on npm** — `npx @aliran/mcp` runs it anywhere, with the docs corpus
   bundled at pack time. See [docs/mcp.md](docs/mcp.md)
-- ⬜ Runtime **service-descriptor QR** so one generic APK connects to any operator
-  (the desktop player already ships this as the public build's Connect screen)
-- ⬜ Concurrency limits, rental windows, blackout dates (entitlement-time features)
+- ⬜ **Service pairing code** — a 12-character alias for the panel public key
+  (`A3K7-9QF2-M4XR`), so a viewer never types 64 hex characters on a phone keyboard
+  or a TV remote. The code is **derived** from the key with a memory-hard KDF, so
+  there is no registry and nothing to mint: the panel computes its own code at
+  startup and announces on a topic derived from it, the client derives the same
+  topic from what the viewer typed, receives the full descriptor, and verifies it
+  by recomputing the code. The code carries **no credentials** — the viewer still
+  signs in — so it is not a secret and an operator can print it anywhere. Length
+  decided 2026-07: 12 characters (60 bits), because the attack to defeat is
+  grinding a colliding keypair to phish subscriber credentials, not reading a key
+  that is public already. A QR is a later phone-only layer over the same
+  descriptor; Android TV boxes have no camera, which is why the typed code comes
+  first. (The rest of the runtime-descriptor work already ships — see the public
+  keyless flavor in [docs/client-build.md](docs/client-build.md).)
+- ❌ **Concurrency limits, rental windows, blackout dates — dropped (2026-07),
+  deliberately.** Blackouts are already handled where they belong: the source feed
+  itself goes dark for the window, so there is nothing for the platform to enforce,
+  and an operator who needs a channel hidden can stop it or unpublish it by hand.
+  The other two would need a play-time checkpoint the architecture does not have —
+  grants are sealed keys and a returning viewer runs offline on a cached session, so
+  any such limit would be advisory, defeatable by a modified client, and would trade
+  away the offline-first property for a guarantee it cannot make. `maxDevices`
+  already covers the practical household case, and the real revocation boundary
+  stays stream-key rotation (see
+  [docs/security-model.md](docs/security-model.md))
 
 ---
 
