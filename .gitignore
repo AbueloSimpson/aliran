@@ -59,8 +59,9 @@ mcp/config.json
 mcp/docs-bundle/
 mcp/*.tgz
 
-# Claude Code personal project settings (machine-specific permissions)
-.claude/settings.local.json
+# Claude Code local workspace — personal permissions, dev-server launch configs
+# and scratch worktrees. Editor/assistant tooling stays out of the public repo.
+.claude/
 
 # Project-scope MCP client wiring for the aliran MCP server (machine-local
 # absolute paths — each operator generates their own via `--doctor`)
