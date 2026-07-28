@@ -114,6 +114,7 @@ import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for th
 import http from 'bare-http1'
 import fs from 'bare-fs'
 import b4a from 'b4a'
+import hcrypto from 'hypercore-crypto'
 import { AliranPlayer } from '@aliran/player-sdk/player.js'
 
 const IPC = BareKit.IPC
@@ -228,11 +229,24 @@ function readPrefs () {
       // is plain JSON on the device, so what comes back is no more trustworthy than
       // what went in, and a corrupt entry must not reach a screen.
       vodList: gateVodList(p && p.vodList),
-      vodHistory: gateVodHistory(p && p.vodHistory)
+      vodHistory: gateVodHistory(p && p.vodHistory),
+      // Parental controls: PIN digest (salted blake2b — kept worklet-side) + the
+      // hide-restricted toggle. A DEVICE policy: sign-out (creds-clear) keeps it.
+      parental: p && p.parental && typeof p.parental.salt === 'string' && /^[0-9a-f]{32}$/.test(p.parental.salt) &&
+        typeof p.parental.hash === 'string' && /^[0-9a-f]{64}$/.test(p.parental.hash)
+        ? { salt: p.parental.salt, hash: p.parental.hash, hide: p.parental.hide === true }
+        : null
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, service: null, deviceId: null, vodList: [], vodHistory: [] }
+    return { creds: null, favorites: [], smoothZapping: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null }
   }
+}
+
+// Salted PIN digest for the parental gate. blake2b via hypercore-crypto (already in
+// the bundle graph). A casual-snooping barrier on the viewer's own device, not a
+// security boundary — the 4-8 digit space is trivially brute-forceable by design.
+function pinDigest (saltHex, pin) {
+  return b4a.toString(hcrypto.hash(b4a.from(saltHex + '|aliran-parental|' + pin)), 'hex')
 }
 
 function writePrefs (prefs) {
@@ -243,7 +257,12 @@ function writePrefs (prefs) {
 
 // The deviceId is deliberately NOT in the 'prefs' reply: nothing in the UI needs it,
 // and an identifier that never crosses into the RN layer cannot be logged there.
-function sendPrefs () { const { deviceId, ...rest } = readPrefs(); send({ type: 'prefs', ...rest }) }
+// The parental PIN digest stays worklet-side the same way — the UI only learns
+// that a PIN exists and the hide toggle; verification is a message round-trip.
+function sendPrefs () {
+  const { deviceId, parental, ...rest } = readPrefs()
+  send({ type: 'prefs', ...rest, parental: parental ? { hide: parental.hide } : null })
+}
 
 // Per-install device id (S50c): 8 random bytes, minted once and persisted. Read on
 // every boot rather than cached, so a `pm clear` (which wipes prefs) yields a fresh
@@ -323,6 +342,22 @@ IPC.on('data', (data) => {
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       writePrefs({ ...readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
       sendPrefs()
+    } else if (msg.type === 'parental-set-pin' && typeof msg.pin === 'string' && /^\d{4,8}$/.test(msg.pin)) {
+      // Create/replace the PIN (the UI verifies the old one first when changing).
+      const salt = b4a.toString(hcrypto.randomBytes(16), 'hex')
+      const prev = readPrefs()
+      writePrefs({ ...prev, parental: { salt, hash: pinDigest(salt, msg.pin), hide: prev.parental ? prev.parental.hide : false } })
+      sendPrefs()
+    } else if (msg.type === 'parental-clear') {
+      writePrefs({ ...readPrefs(), parental: null })
+      sendPrefs()
+    } else if (msg.type === 'parental-hide-set' && typeof msg.hide === 'boolean') {
+      const prev = readPrefs()
+      if (prev.parental) writePrefs({ ...prev, parental: { ...prev.parental, hide: msg.hide } })
+      sendPrefs()
+    } else if (msg.type === 'parental-verify' && typeof msg.pin === 'string') {
+      const rec = readPrefs().parental
+      send({ type: 'parental-verify', ok: !!rec && pinDigest(rec.salt, msg.pin) === rec.hash, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
     } else if (msg.type === 'vod-list-set' && Array.isArray(msg.entries)) {
       // Device-local "My List" (S54a, D9): whole-array replace, gated + capped HERE.
       writePrefs({ ...readPrefs(), vodList: gateVodList(msg.entries) })

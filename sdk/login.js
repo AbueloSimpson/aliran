@@ -59,6 +59,7 @@ export async function login (call, db, username, password, { deviceId, deviceLab
         logo: cat.value.logo,
         order: cat.value.order,
         featured: cat.value.featured,
+        restricted: cat.value.restricted === true, // access control: players PIN-gate this channel
         feedKey: cat.value.feedKey,
         redirect: cat.value.redirect === true, // S23 redirect channel: viewers play `url`, no P2P feed
         url: cat.value.url ?? null,

@@ -14,10 +14,15 @@ import type { RootStackParamList } from '../App'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
+import { PinEntryModal, PinSetupModal } from '../components/PinModal'
 
 const service = loadServiceDescriptor()
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>
+
+// Parental modal state machine: set up a new PIN, change it, or verify the current
+// one before a destructive/visibility change ('remove' / 'toggle').
+type PinModalState = null | { kind: 'setup' } | { kind: 'change' } | { kind: 'verify'; then: 'remove' | 'toggle' }
 
 export function SettingsScreen ({ navigation }: Props) {
   const [username, setUsername] = useState<string | null>(backend.creds?.username ?? null)
@@ -29,6 +34,10 @@ export function SettingsScreen ({ navigation }: Props) {
   // "Smooth zapping" (S21): user-facing switch for the engine's adjacent-channel
   // prefetch. null in prefs = never set -> the app default (off) applies.
   const [smoothZap, setSmoothZap] = useState<boolean>(backend.smoothZapping ?? false)
+  // Parental controls (device policy — the worklet stores the PIN digest; the UI
+  // only ever sees "a PIN exists" + the hide toggle).
+  const [parental, setParental] = useState<{ hide: boolean } | null>(backend.parental)
+  const [pinModal, setPinModal] = useState<PinModalState>(null)
 
   useEffect(() => {
     backend.requestPrefs()
@@ -36,6 +45,7 @@ export function SettingsScreen ({ navigation }: Props) {
       if (m.type === 'prefs') {
         setUsername(m.creds?.username ?? null)
         setSmoothZap(m.smoothZapping ?? false)
+        setParental(m.parental ?? null)
       }
       if (m.type === 'streams') setChannels(m.streams.length)
       if (m.type === 'status' && typeof m.peers === 'number') setPeers(m.peers)
@@ -87,6 +97,28 @@ export function SettingsScreen ({ navigation }: Props) {
         />
       </View>
 
+      <Text style={styles.groupTitle}>PARENTAL CONTROLS</Text>
+      <View style={styles.group}>
+        {!parental && (
+          <>
+            <Row label="PIN" value="not set — access-controlled channels are hidden" />
+            <ActionRow label="Set PIN…" onPress={() => setPinModal({ kind: 'setup' })} />
+          </>
+        )}
+        {parental && (
+          <>
+            <ToggleRow
+              label="Hide restricted channels"
+              hint="Off: access-controlled channels show in the lists and ask for the PIN before playing. On: they disappear from the lists entirely. Changing this asks for the PIN."
+              value={parental.hide}
+              onToggle={() => setPinModal({ kind: 'verify', then: 'toggle' })}
+            />
+            <ActionRow label="Change PIN…" onPress={() => setPinModal({ kind: 'change' })} />
+            <ActionRow label="Remove PIN…" onPress={() => setPinModal({ kind: 'verify', then: 'remove' })} danger />
+          </>
+        )}
+      </View>
+
       <Text style={styles.groupTitle}>SERVICE</Text>
       <View style={styles.group}>
         <Row label="Service" value={(hasBakedKey() ? service.name : backend.service?.name) ?? service.name} />
@@ -126,7 +158,44 @@ export function SettingsScreen ({ navigation }: Props) {
           <Text style={styles.signOutHint}>Forgets this service's panel key and sign-in, then returns to the Connect screen.</Text>
         </>
       )}
+
+      <PinSetupModal
+        visible={pinModal?.kind === 'setup' || pinModal?.kind === 'change'}
+        change={pinModal?.kind === 'change'}
+        onDone={() => setPinModal(null)} // the worklet's 'prefs' reply updates `parental`
+        onClose={() => setPinModal(null)}
+      />
+      <PinEntryModal
+        visible={pinModal?.kind === 'verify'}
+        title={pinModal?.kind === 'verify' && pinModal.then === 'remove' ? 'Remove PIN' : 'Hide restricted channels'}
+        hint={pinModal?.kind === 'verify' && pinModal.then === 'remove'
+          ? 'Enter the current PIN to remove it. Access-controlled channels go back to being hidden.'
+          : 'Enter the PIN to change the visibility of access-controlled channels.'}
+        onOk={() => {
+          if (pinModal?.kind === 'verify') {
+            if (pinModal.then === 'remove') backend.parentalClear()
+            else backend.parentalSetHide(!(parental?.hide ?? false))
+          }
+          setPinModal(null)
+        }}
+        onClose={() => setPinModal(null)}
+      />
     </ScrollView>
+  )
+}
+
+// Focusable one-line action button rendered as a settings row (phone tap + TV d-pad).
+function ActionRow ({ label, onPress, danger }: { label: string; onPress: () => void; danger?: boolean }) {
+  const [focused, setFocused] = useState(false)
+  return (
+    <Pressable
+      style={[styles.actionRow, focused && styles.actionRowFocused]}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      <Text style={[styles.actionRowText, danger && styles.actionRowDanger]}>{label}</Text>
+    </Pressable>
   )
 }
 
@@ -205,5 +274,12 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing(2), backgroundColor: theme.colors.surface, borderRadius: 10,
     paddingVertical: 14, alignItems: 'center', borderWidth: Math.max(theme.focusRing, 1), borderColor: 'transparent'
   },
-  changeServiceFocused: { borderColor: theme.colors.focus, backgroundColor: theme.colors.background }
+  changeServiceFocused: { borderColor: theme.colors.focus, backgroundColor: theme.colors.background },
+  actionRow: {
+    paddingVertical: theme.isTV ? 12 : 10, borderRadius: 8,
+    borderWidth: Math.max(theme.focusRing, 1), borderColor: 'transparent'
+  },
+  actionRowFocused: { borderColor: theme.colors.focus },
+  actionRowText: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700' },
+  actionRowDanger: { color: theme.colors.live }
 })

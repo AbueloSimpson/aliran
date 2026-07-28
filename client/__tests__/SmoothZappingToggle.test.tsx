@@ -8,6 +8,14 @@ import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
 import { Text } from 'react-native'
+
+// RN's own jest mock for Modal requireActual()s virtualized-lists ESM this preset
+// cannot parse — replace it with a visibility-honoring passthrough (ReportSheet
+// pattern; Settings mounts the parental PIN modals).
+jest.mock('react-native/Libraries/Modal/Modal', () => ({
+  __esModule: true,
+  default: ({ visible, children }: { visible?: boolean; children?: unknown }) => (visible ? children : null)
+}))
 import { SettingsScreen } from '../src/screens/SettingsScreen'
 import { backend } from '../src/worklet'
 

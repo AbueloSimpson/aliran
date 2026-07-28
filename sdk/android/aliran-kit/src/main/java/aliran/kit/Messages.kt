@@ -19,6 +19,8 @@ data class Stream(
     /** Panel curation: rail sort key (lower first; null sorts last). */
     val order: Int? = null,
     val featured: Boolean = false,
+    /** Access control: PIN-gate this channel (parental control); hide it while no PIN is set. */
+    val restricted: Boolean = false,
     val epgUrl: String? = null,
     val epgId: String? = null,
     /** Record class (S8a): "vod" = on-demand title, "live"/null = live channel. */
@@ -108,6 +110,7 @@ sealed class BackendMessage {
                         logo = s.optStringOrNull("logo"),
                         order = if (s.has("order") && !s.isNull("order")) s.optInt("order") else null,
                         featured = s.optBoolean("featured", false),
+                        restricted = s.optBoolean("restricted", false),
                         epgUrl = s.optStringOrNull("epgUrl"),
                         epgId = s.optStringOrNull("epgId"),
                         type = s.optStringOrNull("type"),

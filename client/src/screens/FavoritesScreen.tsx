@@ -6,6 +6,7 @@ import { View, Text, FlatList, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
+import { visibleStreams } from '../parental'
 import { channelNumbers, sortByCuration } from '../catalog'
 import { ChannelRow } from '../components/ChannelRow'
 import { SectionLoading } from '../components/SectionLoading'
@@ -14,14 +15,14 @@ import { theme } from '../theme'
 type Props = NativeStackScreenProps<RootStackParamList, 'Favorites'>
 
 export function FavoritesScreen ({ navigation }: Props) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   const [loaded, setLoaded] = useState(backend.prefsLoaded)
 
   useEffect(() => {
     backend.requestPrefs()
     return backend.onMessage((m) => {
-      if (m.type === 'streams') setStreams(m.streams)
+      if (m.type === 'streams') setStreams(visibleStreams(m.streams))
       if (m.type === 'prefs') { setFavorites(m.favorites); setLoaded(true) }
     })
   }, [])

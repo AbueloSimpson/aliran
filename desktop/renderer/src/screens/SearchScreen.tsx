@@ -7,15 +7,16 @@ import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { channelNumbers, sortByCuration } from '../catalog'
 import { ChannelList } from '../components/ChannelList'
+import { visibleStreams } from '../parental'
 
 export function SearchScreen ({ onWatch, onBack }: { onWatch: (streamId: string) => void; onBack: () => void }) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     inputRef.current?.focus()
-    return backend.onMessage((m) => { if (m.type === 'streams') setStreams(m.streams) })
+    return backend.onMessage((m) => { if (m.type === 'streams') setStreams(visibleStreams(m.streams)) })
   }, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])

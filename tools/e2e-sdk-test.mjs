@@ -166,7 +166,7 @@ try {
     devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
   })
   await db.put('catalog/news', { title: 'News 24', category: ['news'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: 'assets/news/poster.png', status: 'live', epgUrl: 'https://epg.example.com/news.json', epgId: 'news-24' })
-  await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live', order: 1, featured: true })
+  await db.put('catalog/movies', { title: 'Movies', category: ['movies'], type: 'live', protection: 'self', feedKey: b4a.toString(feed2.key, 'hex'), isLive: true, poster: null, status: 'live', order: 1, featured: true, restricted: true })
   await db.put('catalog/shopping', { title: 'Shopping', category: ['shopping'], type: 'live', protection: 'self', feedKey: b4a.toString(feed3.key, 'hex'), isLive: true, poster: null, status: 'live' })
   await db.put('catalog/sports', { title: 'Sports', category: ['sports'], type: 'live', protection: 'self', feedKey: b4a.toString(feed4.key, 'hex'), isLive: true, poster: null, status: 'live' })
   await db.put('catalog/radio', { title: 'Radio', category: ['radio'], type: 'live', protection: 'self', feedKey: b4a.toString(feed5.key, 'hex'), isLive: true, poster: null, status: 'live' })
@@ -219,6 +219,10 @@ try {
   // Curation passthrough (S16c): order/featured reach the display list untouched.
   const dispMovies = streams.find(x => x.id === 'movies')
   if (dispMovies.order !== 1 || dispMovies.featured !== true) throw new Error('curation fields missing from login display list: ' + JSON.stringify({ order: dispMovies.order, featured: dispMovies.featured }))
+  // Access control passthrough: restricted reaches the display list (parental PIN gating
+  // is the HOST's job — the flag must arrive); unflagged channels read false, not absent.
+  if (dispMovies.restricted !== true) throw new Error('restricted missing from login display list')
+  if (disp.restricted !== false) throw new Error('unflagged channel must carry restricted:false')
   if (dispMovies.epgUrl !== undefined || dispMovies.epgId !== undefined) throw new Error('a channel with no EPG must not grow epg pointers')
   if (disp.order != null || disp.featured) throw new Error('uncurated stream must not grow curation values')
 

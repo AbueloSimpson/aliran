@@ -1738,6 +1738,9 @@ export class AliranPlayer extends Emitter {
       isLive: cat.isLive,
       order: cat.order,
       featured: cat.featured,
+      // Access control: the host must PIN-gate this channel (parental control) and
+      // hide it entirely while no PIN is configured on the device.
+      restricted: cat.restricted === true,
       poster: this._artUrl(port, cat.poster),
       backdrop: this._artUrl(port, cat.backdrop),
       logo: this._artUrl(port, cat.logo),

@@ -19,6 +19,14 @@ jest.mock('../src/config', () => {
   return { ...actual, hasBakedKey: () => mockFlavor.baked }
 })
 
+// RN's own jest mock for Modal requireActual()s virtualized-lists ESM this preset
+// cannot parse — replace it with a visibility-honoring passthrough (ReportSheet
+// pattern; Settings mounts the parental PIN modals).
+jest.mock('react-native/Libraries/Modal/Modal', () => ({
+  __esModule: true,
+  default: ({ visible, children }: { visible?: boolean; children?: unknown }) => (visible ? children : null)
+}))
+
 import { ConnectScreen } from '../src/screens/ConnectScreen'
 import { SplashScreen } from '../src/screens/SplashScreen'
 import { SettingsScreen } from '../src/screens/SettingsScreen'

@@ -12,13 +12,14 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { pickHero } from '../catalog'
+import { visibleStreams } from '../parental'
 
 export type MenuTarget = 'live' | 'vod' | 'favorites' | 'search' | 'settings' | 'exit'
 
 interface MenuItem { key: MenuTarget; label: string; glyph: string }
 
 export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [focus, setFocus] = useState(0)
   // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
   // mounted before login grows the tile the moment the catalog lands.
@@ -26,7 +27,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
 
   useEffect(() => {
     return backend.onMessage((m) => {
-      if (m.type === 'streams') { setStreams(m.streams); setVodEnabled(!!m.vod?.enabled) }
+      if (m.type === 'streams') { setStreams(visibleStreams(m.streams)); setVodEnabled(!!m.vod?.enabled) }
     })
   }, [])
 

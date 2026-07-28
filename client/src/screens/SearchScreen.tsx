@@ -6,6 +6,7 @@ import { View, Text, TextInput, FlatList, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
+import { visibleStreams } from '../parental'
 import { channelNumbers, sortByCuration } from '../catalog'
 import { ChannelRow } from '../components/ChannelRow'
 import { theme } from '../theme'
@@ -13,14 +14,14 @@ import { theme } from '../theme'
 type Props = NativeStackScreenProps<RootStackParamList, 'Search'>
 
 export function SearchScreen ({ navigation }: Props) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   const [query, setQuery] = useState('')
   const [focused, setFocused] = useState(false)
 
   useEffect(() => {
     return backend.onMessage((m) => {
-      if (m.type === 'streams') setStreams(m.streams)
+      if (m.type === 'streams') setStreams(visibleStreams(m.streams))
       if (m.type === 'prefs') setFavorites(m.favorites)
     })
   }, [])

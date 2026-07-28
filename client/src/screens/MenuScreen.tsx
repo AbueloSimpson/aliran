@@ -13,6 +13,7 @@ import { View, Text, Image, Pressable, StyleSheet, Platform, BackHandler, Scroll
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
+import { visibleStreams } from '../parental'
 import { loadServiceDescriptor } from '../config'
 import { pickHero } from '../catalog'
 import { theme } from '../theme'
@@ -29,14 +30,17 @@ interface MenuItem {
 }
 
 export function MenuScreen ({ navigation }: Props) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
   // mounted before login sees it the moment the catalog lands.
   const [vodEnabled, setVodEnabled] = useState<boolean>(!!backend.vod?.enabled)
 
   useEffect(() => {
     return backend.onMessage((m) => {
-      if (m.type === 'streams') { setStreams(m.streams); setVodEnabled(!!m.vod?.enabled) }
+      if (m.type === 'streams') { setStreams(visibleStreams(m.streams)); setVodEnabled(!!m.vod?.enabled) }
+      // A parental change in Settings (this screen stays mounted under the stack)
+      // can re-hide/reveal restricted channels — recompute the wallpaper pick.
+      if (m.type === 'prefs') setStreams(visibleStreams(backend.streams))
     })
   }, [])
 

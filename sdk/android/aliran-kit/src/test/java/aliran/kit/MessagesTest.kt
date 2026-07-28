@@ -12,7 +12,7 @@ class MessagesTest {
 
     @Test fun `streams parse with catalog fields`() {
         val m = BackendMessage.parse(
-            """{"type":"streams","streams":[{"id":"news","title":"News 24","category":["Featured"],"isLive":true,"order":1,"featured":true,"type":"live"}]}"""
+            """{"type":"streams","streams":[{"id":"news","title":"News 24","category":["Featured"],"isLive":true,"order":1,"featured":true,"restricted":true,"type":"live"}]}"""
         ) as BackendMessage.Streams
         assertEquals(1, m.streams.size)
         val s = m.streams[0]
@@ -22,6 +22,7 @@ class MessagesTest {
         assertEquals(true, s.isLive)
         assertEquals(1, s.order)
         assertEquals(true, s.featured)
+        assertEquals(true, s.restricted)
     }
 
     @Test fun `port carries url source streamId recordType`() {

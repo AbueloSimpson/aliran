@@ -25,6 +25,8 @@ import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { channelNumbers, categoryModel, isVod, pickHero, splitCategory, subLabel, zapOrder } from '../catalog'
 import { HlsVideo, type HlsVideoHandle, type MediaTrack, type TuneEvent } from '../components/HlsVideo'
+import { markUnlocked, needsPin, visibleStreams } from '../parental'
+import { PinEntryModal } from '../components/PinModal'
 import { TunePill, type TunePillPhase } from '../components/TunePill'
 import { ChannelList } from '../components/ChannelList'
 import { CategoryRail } from '../components/CategoryRail'
@@ -53,9 +55,16 @@ function clockText (d: Date) {
 }
 
 export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; initialStreamId?: string }) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
-  const [playingId, setPlayingId] = useState<string | null>(() => initialStreamId ?? lastStreamId ?? pickHero(backend.streams)?.id ?? null)
+  // Parental gate (device-local): a restricted channel about to play while the PIN
+  // is set but this session hasn't unlocked yet — the PIN modal resolves it.
+  const [pinTarget, setPinTarget] = useState<Stream | null>(null)
+  const [playingId, setPlayingId] = useState<string | null>(() => {
+    const candidate = initialStreamId ?? lastStreamId ?? pickHero(visibleStreams(backend.streams))?.id ?? null
+    const s = backend.streams.find((x) => x.id === candidate)
+    return s && needsPin(s) ? null : candidate // the mount effect below raises the PIN modal
+  })
   const [overlay, setOverlay] = useState<Overlay>(() => ((initialStreamId ?? lastStreamId) ? 'none' : 'list'))
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
   // Two-level category browse: `selected` is the group key whose channels show;
@@ -107,7 +116,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
   useEffect(() => {
     backend.requestPrefs()
     return backend.onMessage((m) => {
-      if (m.type === 'streams') setStreams(m.streams)
+      if (m.type === 'streams') setStreams(visibleStreams(m.streams))
       if (m.type === 'prefs') setFavorites(m.favorites)
       // Broadcaster rotated the channel we're watching: the SDK re-resolved behind
       // the same URL and HlsVideo remounts. Clear any prior playback error (that had
@@ -189,13 +198,24 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
   const playing = streams.find((s) => s.id === playingId) ?? null
   const playingVod = !!playing && isVod(playing)
 
+  // A restricted entry channel (jumped in from Favorites/Search, or resumed):
+  // raise the PIN modal once on mount instead of autoplaying it.
+  useEffect(() => {
+    const candidate = initialStreamId ?? lastStreamId
+    if (playingId || !candidate) return
+    const s = backend.streams.find((x) => x.id === candidate)
+    if (s && needsPin(s)) setPinTarget(s)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // First streams push after a cold navigation: start the hero channel.
   useEffect(() => {
-    if (!playingId && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
+    if (!playingId && !pinTarget && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
   function play (s: Stream, { collapse = false }: { collapse?: boolean } = {}) {
+    if (needsPin(s)) { setPinTarget(s); return } // resolved by the PIN modal
     if (s.id !== playingId) {
       setPlayingId(s.id)
       setPeers(null)
@@ -257,6 +277,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (showTracks) return // TrackMenu captures its own keys
+      if (pinTarget) return // PIN modal owns its keys (Esc via its capture listener)
       if (reportOpen) { if (e.key === 'Escape') { e.preventDefault(); setReportOpen(false) } return } // modal owns its keys
       const ov = overlayRef.current
       if (ov === 'none') {
@@ -287,7 +308,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streams, playingId, error, railItems, railFocus, infoStream, showTracks, reportOpen, textTracks, audioTracks, playingVod, playing])
+  }, [streams, playingId, error, railItems, railFocus, infoStream, showTracks, reportOpen, pinTarget, textTracks, audioTracks, playingVod, playing])
 
   function toggleVodPause () {
     // ▶ on a finished title replays from the top (unpausing at the end is a no-op —
@@ -440,6 +461,26 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
       {/* "Report a problem" (S51) — from the bar's Report button or the `r` key. The
           engine attaches the ACTIVE stream, so it is only reachable during playback. */}
       {reportOpen && <ReportModal channelTitle={playing?.title} onClose={() => setReportOpen(false)} />}
+
+      {/* Parental gate: a restricted channel was picked while locked. One correct
+          PIN unlocks the rest of the app session. */}
+      {pinTarget && (
+        <PinEntryModal
+          title="Enter PIN"
+          hint={`"${pinTarget.title ?? pinTarget.id}" is access controlled.`}
+          onOk={() => {
+            markUnlocked()
+            const s = pinTarget
+            setPinTarget(null)
+            play(s, { collapse: true })
+          }}
+          onClose={() => {
+            setPinTarget(null)
+            // The mount-time case: nothing playing yet — fall back to the hero.
+            if (!playingIdRef.current && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -33,6 +33,8 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranVideo, SelectedTrackType, type AliranVideoHandle, type TuneEvent, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
+import { markUnlocked, needsPin, visibleStreams } from '../parental'
+import { PinEntryModal } from '../components/PinModal'
 import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
@@ -72,9 +74,16 @@ function clockText (d: Date) {
 }
 
 export function LiveScreen ({ route }: Props) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
-  const [playingId, setPlayingId] = useState<string | null>(() => route.params?.streamId ?? lastStreamId ?? pickHero(backend.streams)?.id ?? null)
+  // Parental gate (device policy): a restricted channel about to play while the PIN
+  // is set but this session hasn't unlocked yet — the PIN modal resolves it.
+  const [pinTarget, setPinTarget] = useState<Stream | null>(null)
+  const [playingId, setPlayingId] = useState<string | null>(() => {
+    const candidate = route.params?.streamId ?? lastStreamId ?? pickHero(visibleStreams(backend.streams))?.id ?? null
+    const s = backend.streams.find(x => x.id === candidate)
+    return s && needsPin(s) ? null : candidate // the mount effect below raises the PIN modal
+  })
   const [overlay, setOverlay] = useState<Overlay>((route.params?.streamId || lastStreamId) ? 'none' : 'list')
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
   // Two-level category browse: `selected` is the group key whose channels show
@@ -132,7 +141,7 @@ export function LiveScreen ({ route }: Props) {
   useEffect(() => {
     backend.requestPrefs() // favorites may not be loaded yet
     return backend.onMessage((m) => {
-      if (m.type === 'streams') setStreams(m.streams)
+      if (m.type === 'streams') setStreams(visibleStreams(m.streams))
       if (m.type === 'prefs') setFavorites(m.favorites)
       // Broadcaster rotated the channel we're watching (source change / restart): the SDK
       // re-resolved the feed behind the same URL and AliranVideo remounts. Clear any prior
@@ -204,14 +213,25 @@ export function LiveScreen ({ route }: Props) {
   // app-owned, and the SDK's live self-heal is off (it keys on the port recordType).
   const playingVod = !!playing && isVod(playing)
 
+  // A restricted entry channel (jumped in from Favorites/Search, or resumed):
+  // raise the PIN modal once on mount instead of autoplaying it.
+  useEffect(() => {
+    const candidate = route.params?.streamId ?? lastStreamId
+    if (playingId || !candidate) return
+    const s = backend.streams.find(x => x.id === candidate)
+    if (s && needsPin(s)) setPinTarget(s)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // First streams push after a cold navigation: start the hero channel (the tuning
   // indicator arms itself — mounting <AliranVideo> fires onTune 'start').
   useEffect(() => {
-    if (!playingId && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
+    if (!playingId && !pinTarget && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
   function play (s: Stream, { collapse = false }: { collapse?: boolean } = {}) {
+    if (needsPin(s)) { setPinTarget(s); return } // resolved by the PIN modal
     if (s.id !== playingId) {
       setPlayingId(s.id)
       setPeers(null)
@@ -509,6 +529,24 @@ export function LiveScreen ({ route }: Props) {
           stream, so this sheet is only reachable while one is playing. */}
       <ReportSheet visible={reportOpen} channelTitle={playing?.title} onClose={() => setReportOpen(false)} />
 
+      {/* Parental gate: a restricted channel was picked while locked. One correct
+          PIN unlocks the rest of the app session. */}
+      <PinEntryModal
+        visible={!!pinTarget}
+        title="Enter PIN"
+        hint={pinTarget ? `"${pinTarget.title ?? pinTarget.id}" is access controlled.` : undefined}
+        onOk={() => {
+          markUnlocked()
+          const s = pinTarget
+          setPinTarget(null)
+          if (s) play(s, { collapse: true })
+        }}
+        onClose={() => {
+          setPinTarget(null)
+          // The mount-time case: nothing playing yet — fall back to the hero.
+          if (!playingIdRef.current && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
+        }}
+      />
     </View>
   )
 }

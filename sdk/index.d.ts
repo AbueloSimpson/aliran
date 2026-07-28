@@ -13,6 +13,8 @@ export interface Stream {
   order?: number | null
   /** Panel curation hint: featured stream (hero / menu wallpaper pick). */
   featured?: boolean
+  /** Access control: PIN-gate this channel (parental control); hide it while no PIN is set. */
+  restricted?: boolean
   /** Localhost URL (P2P-served art) or absolute https URL (hybrid art passthrough). */
   poster?: string
   backdrop?: string

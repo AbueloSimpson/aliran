@@ -17,6 +17,8 @@ export interface Stream {
   order?: number | null
   /** Panel curation hint: featured stream (hero / menu wallpaper pick). */
   featured?: boolean
+  /** Access control: PIN-gate this channel (parental control); hidden while no PIN is set. */
+  restricted?: boolean
   /** Public https JSON feed with this channel's program schedule (fetched on demand). */
   epgUrl?: string
   /** This channel's id INSIDE the epgUrl feed (matches feed `channels[].id`). */

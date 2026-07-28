@@ -66,6 +66,8 @@ export interface Stream {
   order?: number | null
   /** Panel curation hint: featured stream (hero / menu wallpaper pick). */
   featured?: boolean
+  /** Access control: PIN-gate this channel (parental control); hide it while no PIN is set. */
+  restricted?: boolean
   /** EPG feed URL (S27): a public https JSON of channels+schedules the app fetches
    *  on demand for this channel's program guide. Set on source-imported channels. */
   epgUrl?: string
@@ -216,7 +218,12 @@ export type BackendMessage =
   // runtime-entered operator service — null/absent unless a keyless build saved one.
   // vodList/vodHistory (S54a): the device-local VOD arrays, absent on worklet bundles
   // older than the field — treat as empty, never as "the user has nothing saved".
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[] }
+  // parental: the device parental-control state — null = no PIN on this device;
+  // { hide } = a PIN exists (the digest itself never crosses into the RN layer).
+  // Absent on worklet bundles older than the field — treat as null.
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null }
+  // Answer to parentalVerify(): did the submitted PIN match? tag echoes the request's.
+  | { type: 'parental-verify'; ok: boolean; tag?: string }
   // Answer to sendReport() (S50c). ok=true means the panel accepted it (possibly
   // deduplicated or collapsed into an open alert — either way, "we heard you").
   // error 'unsupported' = this panel predates reports or has them disabled; 'cooldown'
@@ -296,6 +303,9 @@ export class AliranBackend {
    *  (500 / 200), so what lands back on the next {type:'prefs'} is the truth. */
   vodList: VodListEntry[] = []
   vodHistory: VodHistoryEntry[] = []
+  /** Parental controls (device-local): null = no PIN set; { hide } = PIN exists +
+   *  the hide-restricted-channels toggle. The PIN digest stays in the worklet. */
+  parental: { hide: boolean } | null = null
   prefsLoaded = false
 
   private worklet: WorkletInstance | null = null
@@ -426,6 +436,33 @@ export class AliranBackend {
 
   isFavorite (streamId: string) { return this.favorites.includes(streamId) }
 
+  /** Create/replace the parental PIN (4-8 digits; the caller verifies the old one
+   *  first when changing). The worklet salts + hashes it and answers with 'prefs'. */
+  parentalSetPin (pin: string) { this.send({ type: 'parental-set-pin', pin }) }
+  /** Remove the PIN entirely — restricted channels go back to being hidden. */
+  parentalClear () { this.parental = null; this.send({ type: 'parental-clear' }) }
+  /** Set the hide-restricted-channels toggle (only meaningful while a PIN exists). */
+  parentalSetHide (hide: boolean) {
+    if (this.parental) this.parental = { ...this.parental, hide } // optimistic; 'prefs' confirms
+    this.send({ type: 'parental-hide-set', hide })
+  }
+
+  /** Verify a PIN against the stored digest (worklet round-trip). Resolves false on
+   *  a wrong PIN, no PIN, or an engine that never answers (3 s timeout). */
+  parentalVerify (pin: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const tag = Math.random().toString(36).slice(2, 10)
+      const timer = setTimeout(() => { off(); resolve(false) }, 3000)
+      const off = this.onMessage((m) => {
+        if (m.type !== 'parental-verify' || m.tag !== tag) return
+        clearTimeout(timer)
+        off()
+        resolve(m.ok === true)
+      })
+      this.send({ type: 'parental-verify', pin, tag })
+    })
+  }
+
   /**
    * Replace the device-local VOD "My List" (S54a, D9). Whole-array replace, newest
    * first — the worklet gates the shapes and caps the length, then answers with a
@@ -460,7 +497,7 @@ export class AliranBackend {
         const msg = JSON.parse(line) as BackendMessage
         // Never log the raw 'prefs' line — it can carry the saved password.
         if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.prefsLoaded = true }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
           this.port = msg.port ?? null

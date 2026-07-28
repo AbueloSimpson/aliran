@@ -9,6 +9,12 @@
 
 import React, { useEffect, useState } from 'react'
 import { backend } from '../bridge'
+import { clearPin, hasPin, hideRestricted, setHideRestricted } from '../parental'
+import { PinEntryModal, PinSetupModal } from '../components/PinModal'
+
+// Parental modal state machine: set up a new PIN, change it, or verify the current
+// one before a destructive/visibility change ('remove' / 'toggle').
+type PinModalState = null | { kind: 'setup' } | { kind: 'change' } | { kind: 'verify'; then: 'remove' | 'toggle' }
 
 export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; onBack: () => void }) {
   const [username, setUsername] = useState<string | null>(backend.creds?.username ?? null)
@@ -16,6 +22,9 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
   const [smoothZap, setSmoothZap] = useState<boolean>(backend.smoothZapping ?? false)
+  const [pinSet, setPinSet] = useState<boolean>(hasPin)
+  const [hideR, setHideR] = useState<boolean>(hideRestricted)
+  const [pinModal, setPinModal] = useState<PinModalState>(null)
 
   useEffect(() => {
     backend.requestPrefs()
@@ -74,6 +83,41 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
         </div>
       </div>
 
+      <div className="settings-group-title">PARENTAL CONTROLS</div>
+      <div className="settings-group">
+        {!pinSet && (
+          <>
+            <div className="settings-row">
+              <span className="row-label">PIN</span>
+              <span className="row-value">not set — access-controlled channels are hidden</span>
+            </div>
+            <div className="settings-row">
+              <button className="settings-btn" onClick={() => setPinModal({ kind: 'setup' })}>Set PIN…</button>
+            </div>
+          </>
+        )}
+        {pinSet && (
+          <>
+            <div
+              className="toggle-row"
+              role="switch"
+              aria-checked={hideR}
+              onClick={() => setPinModal({ kind: 'verify', then: 'toggle' })}
+            >
+              <span className="toggle-texts">
+                <span className="row-label">Hide restricted channels</span>
+                <span className="toggle-hint">Off: access-controlled channels show in the lists and ask for the PIN before playing. On: they disappear from the lists entirely. Changing this asks for the PIN.</span>
+              </span>
+              <span className={'toggle-pill' + (hideR ? ' on' : '')}>{hideR ? 'ON' : 'OFF'}</span>
+            </div>
+            <div className="settings-row">
+              <button className="settings-btn" onClick={() => setPinModal({ kind: 'change' })}>Change PIN…</button>
+              <button className="settings-btn danger" onClick={() => setPinModal({ kind: 'verify', then: 'remove' })}>Remove PIN…</button>
+            </div>
+          </>
+        )}
+      </div>
+
       <div className="settings-group-title">SERVICE</div>
       <div className="settings-group">
         <Row label="Service" value={d?.name ?? '—'} />
@@ -98,6 +142,31 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
           <button className="change-service" onClick={() => backend.clearService()}>Change service…</button>
           <div className="signout-hint">Forgets this service's panel key and sign-in, then restarts the app.</div>
         </>
+      )}
+
+      {(pinModal?.kind === 'setup' || pinModal?.kind === 'change') && (
+        <PinSetupModal
+          change={pinModal.kind === 'change'}
+          onDone={() => { setPinSet(true); setPinModal(null) }}
+          onClose={() => setPinModal(null)}
+        />
+      )}
+      {pinModal?.kind === 'verify' && (
+        <PinEntryModal
+          title={pinModal.then === 'remove' ? 'Remove PIN' : 'Hide restricted channels'}
+          hint={pinModal.then === 'remove'
+            ? 'Enter the current PIN to remove it. Access-controlled channels go back to being hidden.'
+            : 'Enter the PIN to change the visibility of access-controlled channels.'}
+          onOk={() => {
+            if (pinModal.then === 'remove') { clearPin(); setPinSet(false); setHideR(false) } else {
+              const next = !hideR
+              setHideRestricted(next)
+              setHideR(next)
+            }
+            setPinModal(null)
+          }}
+          onClose={() => setPinModal(null)}
+        />
       )}
     </div>
   )

@@ -7,15 +7,16 @@ import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { channelNumbers, sortByCuration } from '../catalog'
 import { ChannelList } from '../components/ChannelList'
+import { visibleStreams } from '../parental'
 
 export function FavoritesScreen ({ onWatch, onBack }: { onWatch: (streamId: string) => void; onBack: () => void }) {
-  const [streams, setStreams] = useState<Stream[]>(backend.streams)
+  const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
 
   useEffect(() => {
     backend.requestPrefs()
     return backend.onMessage((m) => {
-      if (m.type === 'streams') setStreams(m.streams)
+      if (m.type === 'streams') setStreams(visibleStreams(m.streams))
       if (m.type === 'prefs') setFavorites(m.favorites)
     })
   }, [])
