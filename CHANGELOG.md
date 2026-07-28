@@ -18,6 +18,16 @@ phone + Android TV, and the Windows desktop player).
 
 ### Fixed
 
+- **Dashboard: hidden tabs leaked their content** — the Reports, Analytics and
+  Overview sections rendered their content below every other tab (their layout
+  rule overrode the browser's `[hidden]` handling). All three now hide
+  correctly.
+
+- **Dashboard: unreadable chart hour labels** — the analytics and reports bar
+  charts stretched their hour labels with the chart width, which smeared them
+  into unreadable shapes at full-screen sizes. Labels now render outside the
+  chart at a fixed size.
+
 - **Panel RPC re-arm is validated** — found live: after a panel restart
   dropped the RPC socket, the engine re-armed the RPC on the **next** swarm
   connection to arrive, which mid-session is often a broadcaster feed peer
@@ -32,6 +42,33 @@ phone + Android TV, and the Windows desktop player).
   report lands after re-arm).
 
 ### Added
+
+- **Parental controls: access-controlled channels + a device-local PIN** — an
+  operator can mark a channel `restricted` (dashboard: a PIN badge, a toggle in
+  the channel editor, and a status filter; CLI: `set-meta --restricted`). The
+  flag is catalog metadata: it travels to the apps with the channel record, a
+  broadcaster re-register keeps it, and a source sync keeps it. Entitlements do
+  not change — the flag controls playback, not access. In both apps the rules
+  are: (1) with no PIN on the device, restricted channels do not appear in any
+  list; (2) after you set a PIN in Settings, they appear, and the app asks for
+  the PIN before it plays one (one entry per app session); (3) a Settings
+  toggle can hide them from the lists again. The PIN is saved only on the
+  device as a salted digest — the panel never sees it. Set, change and remove
+  the PIN in Settings; each change asks for the current PIN first. Pinned by
+  SDK e2e passthrough asserts, panel e2e create/edit/re-register asserts, and
+  new app unit tests for the visibility rules and the PIN message protocol.
+
+- **Admin dashboard reorganization** — the panel dashboard gets a sidebar with
+  icons and grouped sections (Content / People / Monitoring), a page title with
+  a one-line description per tab, and a boxed channel table that scrolls inside
+  its frame with a pinned header. The Streams tab gains text search, category /
+  status / origin filters, a rows-per-page control, and a compact row layout —
+  click a channel's name to open its editor inline. "Add stream" and "Add
+  package" open as dialogs, and the package dialog now picks member channels
+  from a filterable checkbox list instead of a typed id list. On the Users tab,
+  channels granted through a source or one-by-one now fold into one chip each
+  ("⇣ source · N" / "▤ N channels"), so a user's row stays one line at any
+  catalog size. Long explainer paragraphs collapse behind one-line toggles.
 
 - **Movies & Series: the full browse experience + series playback** — the
   VOD section of both apps is rebuilt around a reference mockup set, and the
