@@ -29,16 +29,19 @@
   <aside id="sidebar">
     <h1 class="brand">Aliran <span>panel</span></h1>
     <nav>
-      <button class="tab active" data-tab="streams">Streams</button>
-      <button class="tab" data-tab="users">Users</button>
-      <button class="tab" data-tab="packages">Packages</button>
-      <button class="tab" data-tab="admins">Admins</button>
-      <button class="tab" data-tab="publishers">Publishers</button>
-      <button class="tab" data-tab="sources">Sources</button>
-      <button class="tab" data-tab="categories">Categories</button>
-      <button class="tab" data-tab="reports">Reports <span id="rp-badge" class="badge alert" title="open correlation alerts — acknowledging one clears it from here" hidden></span></button>
-      <button class="tab" data-tab="analytics">Analytics</button>
-      <button class="tab" data-tab="overview">Overview</button>
+      <div class="nav-label">Content</div>
+      <button class="tab active" data-tab="streams"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/></svg>Streams</button>
+      <button class="tab" data-tab="categories"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>Categories</button>
+      <button class="tab" data-tab="packages"><svg viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8"/></svg>Packages</button>
+      <button class="tab" data-tab="sources"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Sources</button>
+      <div class="nav-label">People</div>
+      <button class="tab" data-tab="users"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>Users</button>
+      <button class="tab" data-tab="publishers"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 010 8.4M7.8 16.2a6 6 0 010-8.4M19 5a10 10 0 010 14M5 19A10 10 0 015 5"/></svg>Publishers</button>
+      <button class="tab" data-tab="admins"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V6z"/></svg>Admins</button>
+      <div class="nav-label">Monitoring</div>
+      <button class="tab" data-tab="reports"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0"/></svg>Reports <span id="rp-badge" class="badge alert" title="open correlation alerts — acknowledging one clears it from here" hidden></span></button>
+      <button class="tab" data-tab="analytics"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>Analytics</button>
+      <button class="tab" data-tab="overview"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Overview</button>
     </nav>
     <div class="side-foot">
       <span id="who" class="muted"></span>

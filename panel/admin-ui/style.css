@@ -61,6 +61,17 @@ body {
 }
 #sidebar .brand { padding: 0 10px; }
 #sidebar nav { display: flex; flex-direction: column; gap: 2px; }
+.nav-label {
+  margin: 12px 12px 4px; font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+  text-transform: uppercase; color: var(--muted); opacity: .7;
+}
+#sidebar nav .nav-label:first-child { margin-top: 0; }
+.tab svg {
+  width: 16px; height: 16px; flex: none;
+  fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  opacity: .8;
+}
+.tab.active svg { color: var(--accent); opacity: 1; }
 .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 0 10px; }
 .side-foot .muted { overflow: hidden; text-overflow: ellipsis; }
 #content { flex: 1; min-width: 0; }
@@ -76,6 +87,7 @@ main { padding: 20px 24px 60px; max-width: 1360px; }
   background: none; border: none; color: var(--muted); font: inherit; font-weight: 600;
   padding: 8px 12px; cursor: pointer; text-align: left; border-radius: 8px;
   border-left: 3px solid transparent;
+  display: flex; align-items: center; gap: 10px;
 }
 .tab:hover { background: var(--panel-2); color: var(--text); }
 .tab.active { color: var(--text); background: var(--panel-2); border-left-color: var(--accent); }
