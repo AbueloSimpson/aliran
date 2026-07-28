@@ -26,53 +26,81 @@
 
 <!-- ============ app ============ -->
 <div id="app-view" hidden>
-  <header>
+  <aside id="sidebar">
     <h1 class="brand">Aliran <span>panel</span></h1>
-    <div id="status-chips" class="chips"></div>
-    <div class="spacer"></div>
-    <span id="who" class="muted"></span>
-    <button class="btn ghost" id="logout-btn">Sign out</button>
-  </header>
+    <nav>
+      <button class="tab active" data-tab="streams">Streams</button>
+      <button class="tab" data-tab="users">Users</button>
+      <button class="tab" data-tab="packages">Packages</button>
+      <button class="tab" data-tab="admins">Admins</button>
+      <button class="tab" data-tab="publishers">Publishers</button>
+      <button class="tab" data-tab="sources">Sources</button>
+      <button class="tab" data-tab="categories">Categories</button>
+      <button class="tab" data-tab="reports">Reports <span id="rp-badge" class="badge alert" title="open correlation alerts — acknowledging one clears it from here" hidden></span></button>
+      <button class="tab" data-tab="analytics">Analytics</button>
+      <button class="tab" data-tab="overview">Overview</button>
+    </nav>
+    <div class="side-foot">
+      <span id="who" class="muted"></span>
+      <button class="btn ghost" id="logout-btn">Sign out</button>
+    </div>
+  </aside>
 
-  <nav>
-    <button class="tab active" data-tab="streams">Streams</button>
-    <button class="tab" data-tab="users">Users</button>
-    <button class="tab" data-tab="packages">Packages</button>
-    <button class="tab" data-tab="admins">Admins</button>
-    <button class="tab" data-tab="publishers">Publishers</button>
-    <button class="tab" data-tab="sources">Sources</button>
-    <button class="tab" data-tab="categories">Categories</button>
-    <button class="tab" data-tab="reports">Reports <span id="rp-badge" class="badge alert" title="open correlation alerts — acknowledging one clears it from here" hidden></span></button>
-    <button class="tab" data-tab="analytics">Analytics</button>
-    <button class="tab" data-tab="overview">Overview</button>
-  </nav>
+  <div id="content">
+  <header>
+    <h2 id="page-title">Streams</h2>
+    <div class="spacer"></div>
+    <div id="status-chips" class="chips"></div>
+  </header>
 
   <main>
     <section id="streams-section">
-      <form id="add-stream-form" class="card row-form">
-        <strong>Add stream</strong>
-        <input id="ns-id" placeholder="id (e.g. news-24)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-        <input id="ns-title" placeholder="Title">
-        <input id="ns-category" placeholder="Category">
-        <input id="ns-feed" placeholder="Feed key (hex, optional)">
-        <input id="ns-url" placeholder="Redirect URL (https://…, optional — CDN redirect channel)">
-        <button class="btn primary">Add</button>
-      </form>
-      <div id="streams-list" class="cards"></div>
+      <div class="card toolbar">
+        <input id="stream-search" type="search" placeholder="search title or id…">
+        <select id="stream-cat" title="category"><option value="">all categories</option></select>
+        <select id="stream-state" title="status">
+          <option value="">any status</option>
+          <option value="live">live</option>
+          <option value="idle">idle</option>
+          <option value="redirect">redirect</option>
+        </select>
+        <select id="stream-src" title="origin"><option value="">any origin</option></select>
+        <span class="spacer"></span>
+        <span id="stream-count" class="muted"></span>
+        <div class="pager">
+          <button class="btn small" id="streams-prev" title="previous page">‹</button>
+          <span id="streams-page" class="muted mono"></span>
+          <button class="btn small" id="streams-next" title="next page">›</button>
+        </div>
+      </div>
+      <details class="card collapse">
+        <summary>Add stream</summary>
+        <form id="add-stream-form" class="row-form">
+          <input id="ns-id" placeholder="id (e.g. news-24)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+          <input id="ns-title" placeholder="Title">
+          <input id="ns-category" placeholder="Category">
+          <input id="ns-feed" placeholder="Feed key (hex, optional)">
+          <input id="ns-url" placeholder="Redirect URL (https://…, optional — CDN redirect channel)">
+          <button class="btn primary">Add</button>
+        </form>
+      </details>
+      <div id="streams-list" class="cards stream-grid"></div>
     </section>
 
     <section id="users-section" hidden>
-      <form id="add-user-form" class="card row-form">
-        <strong>Create user</strong>
-        <input id="nu-name" placeholder="username" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-        <input id="nu-pass" type="password" placeholder="password" required autocomplete="new-password">
-        <button class="btn primary">Create</button>
-      </form>
-      <div class="card row-form">
-        <strong>Search</strong>
-        <input id="user-search" placeholder="username prefix…">
+      <div class="card toolbar">
+        <input id="user-search" type="search" placeholder="search username prefix…">
+        <span class="spacer"></span>
         <span id="user-count" class="muted"></span>
       </div>
+      <details class="card collapse">
+        <summary>Create user</summary>
+        <form id="add-user-form" class="row-form">
+          <input id="nu-name" placeholder="username" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+          <input id="nu-pass" type="password" placeholder="password" required autocomplete="new-password">
+          <button class="btn primary">Create</button>
+        </form>
+      </details>
       <div class="card table-card">
         <table id="users-table">
           <thead><tr>
@@ -317,6 +345,7 @@
       </div>
     </section>
   </main>
+  </div>
 </div>
 
 <!-- generic modal -->

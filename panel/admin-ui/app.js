@@ -23,6 +23,8 @@ let obsTimer = null // 10 s observability poll, runs only while the Overview tab
 let anTimer = null // 60 s analytics poll, runs only while the Analytics tab is open
 let rpTimer = null // 30 s reports poll, runs only while the Reports tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
+const SINGLES_CAP = 12 // per-channel chips shown per user row before "+N more…"
+const expandedGrants = new Set() // usernames whose full chip list is expanded
 
 // ---------------------------------------------------------------- api
 
@@ -88,6 +90,8 @@ const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sour
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
+    const name = tab.dataset.tab
+    $('#page-title').textContent = name[0].toUpperCase() + name.slice(1)
     for (const name of TAB_NAMES) $('#' + name + '-section').hidden = tab.dataset.tab !== name
     if (tab.dataset.tab === 'overview') startObsPoll()
     else stopObsPoll()
@@ -187,15 +191,46 @@ function renderUsers () {
       chip.querySelector('.x').addEventListener('click', () => removeUserPackage(u, name))
       grants.appendChild(chip)
     }
+    // Auto-granted source channels fold into ONE chip per source ("⇣ name · N") —
+    // with auto-grant sources a user holds every imported channel, and hundreds of
+    // per-channel chips made the row unreadable. Individual revokes of auto grants
+    // only lasted until the source's next sync anyway; manage those on Sources.
     const manual = new Set(u.manualGrants || [])
+    const srcOf = new Map(streams.map((s) => [s.id, s.source || null]))
+    const bySource = new Map()
+    const singles = []
     for (const g of u.grants) {
       if (pkgIds.has(g) && !manual.has(g)) continue // folded into the package chip
+      if (!manual.has(g)) {
+        const src = srcOf.get(g)
+        if (src) { bySource.set(src, (bySource.get(src) || 0) + 1); continue }
+      }
+      singles.push(g)
+    }
+    for (const [name, n] of [...bySource].sort()) {
+      const chip = document.createElement('span')
+      chip.className = 'chip auto'
+      chip.title = `${n} channel(s) auto-granted by source "${name}" — the source engine owns these; a manual revoke lasts only until its next sync (manage on the Sources tab)`
+      chip.innerHTML = `⇣ <b>${esc(name)}</b> · ${n}`
+      grants.appendChild(chip)
+    }
+    const showAll = expandedGrants.has(u.username)
+    const shown = showAll || singles.length <= SINGLES_CAP ? singles : singles.slice(0, SINGLES_CAP)
+    for (const g of shown) {
       const auto = !manual.has(g)
       const chip = document.createElement('span')
       chip.className = 'chip' + (auto ? ' auto' : '')
       if (auto) chip.title = 'auto-granted by a channel source (auto-grant) — a revoke lasts only until that source\'s next sync'
       chip.innerHTML = `${esc(g)} <button class="x" title="revoke">✕</button>`
       chip.querySelector('.x').addEventListener('click', () => revokeGrant(u.username, g))
+      grants.appendChild(chip)
+    }
+    if (shown.length < singles.length) {
+      const chip = document.createElement('span')
+      chip.className = 'chip more'
+      chip.textContent = `+${singles.length - shown.length} more…`
+      chip.title = 'show every channel chip for this user'
+      chip.addEventListener('click', () => { expandedGrants.add(u.username); renderUsers() })
       grants.appendChild(chip)
     }
     if (grants.childElementCount === 0) grants.innerHTML = '<span class="muted">—</span>'
@@ -216,10 +251,60 @@ function renderUsers () {
     (userPrefix ? `prefix "${userPrefix}" — ` : '') + `${users.length} shown` + (usersNext ? ', more available' : '')
 }
 
+// Streams tab view state (client-side: /api/streams returns the full catalog):
+// text search, category / status / origin filters, and a page cursor.
+const STREAM_PAGE = 20
+const streamView = { q: '', cat: '', state: '', src: '', page: 0 }
+
+function filteredStreams () {
+  const q = streamView.q.toLowerCase()
+  return streams.filter((s) =>
+    (!q || s.id.toLowerCase().includes(q) || (s.title || '').toLowerCase().includes(q)) &&
+    (!streamView.cat || (s.category || []).includes(streamView.cat)) &&
+    (!streamView.state ||
+      (streamView.state === 'live'
+        ? s.isLive
+        : streamView.state === 'redirect' ? !!s.redirect : !s.isLive && !s.redirect)) &&
+    (!streamView.src || (streamView.src === '(manual)' ? !s.source : s.source === streamView.src)))
+}
+
+// Rebuild a filter <select>'s options (keeping its "all" first option), holding on
+// to the current pick when it still exists.
+function fillSelect (sel, values, current) {
+  while (sel.options.length > 1) sel.remove(1)
+  for (const v of values) {
+    const o = document.createElement('option')
+    o.value = v
+    o.textContent = v
+    sel.appendChild(o)
+  }
+  sel.value = values.includes(current) ? current : ''
+}
+
 function renderStreams () {
+  const catSel = $('#stream-cat')
+  const srcSel = $('#stream-src')
+  fillSelect(catSel, [...new Set(streams.flatMap((s) => s.category || []))].sort(), streamView.cat)
+  streamView.cat = catSel.value
+  const srcNames = [...new Set(streams.map((s) => s.source).filter(Boolean))].sort()
+  fillSelect(srcSel, srcNames.length ? ['(manual)', ...srcNames] : [], streamView.src)
+  streamView.src = srcSel.value
+
+  const hits = filteredStreams()
+  const pages = Math.max(1, Math.ceil(hits.length / STREAM_PAGE))
+  if (streamView.page >= pages) streamView.page = pages - 1
+  const pageStreams = hits.slice(streamView.page * STREAM_PAGE, (streamView.page + 1) * STREAM_PAGE)
+
+  $('#stream-count').textContent = hits.length === streams.length
+    ? `${streams.length} channel${streams.length === 1 ? '' : 's'}`
+    : `${hits.length} of ${streams.length} channels`
+  $('#streams-page').textContent = `${streamView.page + 1}/${pages}`
+  $('#streams-prev').disabled = streamView.page === 0
+  $('#streams-next').disabled = streamView.page >= pages - 1
+
   const list = $('#streams-list')
   list.innerHTML = ''
-  for (const s of streams) {
+  for (const s of pageStreams) {
     const card = document.createElement('div')
     card.className = 'card stream-card'
     card.innerHTML = `
@@ -276,8 +361,31 @@ function renderStreams () {
     })
     list.appendChild(card)
   }
-  if (streams.length === 0) list.innerHTML = '<div class="card muted">No streams yet — add one above.</div>'
+  if (hits.length === 0) {
+    list.innerHTML = streams.length
+      ? '<div class="card muted">No channels match the current filters.</div>'
+      : '<div class="card muted">No streams yet — add one above.</div>'
+  }
 }
+
+let streamSearchTimer = null
+$('#stream-search').addEventListener('input', () => {
+  clearTimeout(streamSearchTimer)
+  streamSearchTimer = setTimeout(() => {
+    streamView.q = $('#stream-search').value.trim()
+    streamView.page = 0
+    renderStreams()
+  }, 150)
+})
+for (const [sel, key] of [['#stream-cat', 'cat'], ['#stream-state', 'state'], ['#stream-src', 'src']]) {
+  $(sel).addEventListener('change', () => {
+    streamView[key] = $(sel).value
+    streamView.page = 0
+    renderStreams()
+  })
+}
+$('#streams-prev').addEventListener('click', () => { streamView.page--; renderStreams() })
+$('#streams-next').addEventListener('click', () => { streamView.page++; renderStreams() })
 
 // Enrolled broadcaster identities (S26): per-site keys + channel scopes.
 function renderPublishers () {
