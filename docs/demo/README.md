@@ -1,11 +1,12 @@
 # Demo assets
 
-`channels.json` — an example of the **source feed** a panel imports as a category
-of redirect channels (Sources tab → Add source). It shows the two required fields
-(`id`, `url`), the optional ones (`name`, `logo`, `description`), an entry that
-carries only the required pair, and an `epg` array the panel leaves in the file.
-See [Content Management](../content-management.md#remote-channel-sources-provider-feeds)
-for the field rules and the sync policy.
+`channels.json` — an example of the **source feed**. A panel imports this file as
+a category of redirect channels (Sources tab → Add source). It shows the two
+required fields (`id` and `url`) and the three optional fields (`name`, `logo`
+and `description`). It also shows an entry with the required fields only, and an
+`epg` array that the panel leaves in the file. For the field rules and the sync
+policy, see
+[Content Management](../content-management.md#remote-channel-sources-provider-feeds).
 
 `epg.json` — an example of the program-guide feed format the platform consumes
 (`catalog epgUrl`/`epgId` → `{channels:[{id, epg:[{title, start, stop}]}]}`, ISO

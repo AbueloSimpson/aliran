@@ -105,9 +105,9 @@ DELETE /api/sources/anime        # purges its channels; ?keepChannels=1 detaches
 ```
 
 **Feed format** — `{"channels": [...]}` (or a bare array), one object per channel.
-[`docs/demo/channels.json`](demo/channels.json) is a complete example, and the
-dashboard carries the same reference: **Sources → feed format…**, or the collapsed
-block inside **Add source**.
+[`docs/demo/channels.json`](demo/channels.json) is a complete example. The
+dashboard holds the same reference: click **feed format…** on the Sources tab, or
+open the collapsed block inside **Add source**.
 
 ```jsonc
 { "id": "demotv.es.629a06…",               // REQUIRED → stream id "<prefix><id>" (prefix defaults to "<source>.")
@@ -118,14 +118,15 @@ block inside **Add source**.
   "epg": [ { "title": "…", "start": "…", "stop": "…" } ] }   // NOT imported — see EPG below
 ```
 
-The id must survive prefixing: `<prefix><id>` keeps to letters, digits, `_ . -`
-and 64 characters. An entry with no id, a malformed id, or an id already used in
-the same feed is **skipped with a reason** — the rest of the feed still imports.
+The panel adds the prefix to the id. The result must contain only letters,
+digits, `_ . -`, and 64 characters at most. The panel **skips** an entry with no
+id, a bad id, or an id it already used, and it gives a reason for each one. It
+imports the rest of the feed.
 
-Feed position becomes the curation `order`; an `order` field in the entry is
-ignored. The **category label is yours**, set on the source — the feed's own
-category strings are ignored, so a provider never names your rails. Every other
-field is ignored.
+The position in the array sets the curation `order`, and the panel ignores an
+`order` field in the entry. **You own the category label**, which you set on the
+source. The panel ignores category strings in the feed, so a provider never names
+your rails. The panel also ignores all other fields.
 
 **Sync policy:**
 
@@ -133,9 +134,9 @@ field is ignored.
   Manual edits to those on an imported channel are overwritten on the next sync.
   Curation fields it does not map (`featured`, the parental-control `restricted`
   flag, an explicit `isLive` flip) stick.
-- **The description is yours after the first import.** A feed-provided
-  `description` seeds the channel when it is created, and no later sync overwrites
-  it — so a synopsis you write in the dashboard survives.
+- **You own the description after the first import.** The panel copies a
+  `description` from the feed when it creates the channel. No later sync writes
+  over it, so a synopsis you write in the dashboard stays.
 - **A channel that leaves the feed is removed** — a full purge, including grants.
   Removing the whole source purges everything it owns, unless you detach it with
   *keep channels*.

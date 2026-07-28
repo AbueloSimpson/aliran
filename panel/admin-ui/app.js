@@ -638,7 +638,7 @@ function renderCategories () {
       <td${c.group ? ' class="muted" title="no channel carries this slug — the total counts the rails below it"' : ''}>${c.channels}</td>
       <td class="muted">${c.order != null ? c.order : '—'}</td>
       <td>${c.group
-        ? '<span class="chip" title="a prefix its rails share (Movies/English, Movies/Español) — no channel carries it on its own. Edit it to give the group a label and an order; rename it to move every rail below it.">group</span>'
+        ? '<span class="chip" title="a prefix that its rails share (Movies/English, Movies/Español). No channel carries it on its own. Edit it to give the group a label and an order. Rename it to move every rail below it.">group</span>'
         : (c.hidden ? '<span class="badge disabled">hidden</span> ' : '') + (c.registered ? '' : '<span class="chip" title="in use on channels but has no presentation entry yet">unregistered</span>')}</td>
       <td><div class="row-actions">
         <button class="btn small" data-act="edit">edit</button>
@@ -1279,7 +1279,7 @@ async function addCategoryDlg () {
 // toolbar's "feed format…" button, because an operator pasting a URL is exactly the
 // person who needs to know what the file must contain.
 const FEED_FORMAT_HTML = `
-  <p class="muted footnote">Publish <span class="mono">{"channels":[…]}</span> or a bare array at the URL. One object is one channel:</p>
+  <p class="muted footnote">Publish <span class="mono">{"channels":[…]}</span> at the URL, or a bare array. One object is one channel:</p>
   <pre class="codebox mono">{
   "channels": [
     {
@@ -1292,29 +1292,33 @@ const FEED_FORMAT_HTML = `
   ]
 }</pre>
   <ul class="muted footnote spec-list">
-    <li><b>id</b> — required. The panel builds the channel id as <span class="mono">&lt;prefix&gt;&lt;id&gt;</span>; the prefix
-      defaults to the source name and a dot. The result must keep to letters, digits, <span class="mono">_ . -</span> and
-      64 characters. The panel skips an entry with no id, a bad id, or an id it already used.</li>
-    <li><b>url</b> — required. This is the address viewers play. Start it with <span class="mono">https://</span>. A query
-      string is correct — the panel asks for no file extension. The panel skips an entry with no url or a plain http url.</li>
-    <li><b>name</b> — optional. This becomes the title, cut at 200 characters. Without a name the panel uses the id.</li>
-    <li><b>logo</b> — optional. Use an <span class="mono">https://</span> address. A bad logo costs the art only: the channel
-      still imports.</li>
-    <li><b>description</b> — optional, and the panel writes it <b>once</b>, at the first import. Your own synopsis stays
-      after that. Later syncs never write over it.</li>
-    <li><b>Order comes from the position in the array.</b> The first entry sorts first. The panel ignores an
+    <li><b>id</b> — required. The panel adds the prefix to this id to make the channel id
+      (<span class="mono">&lt;prefix&gt;&lt;id&gt;</span>). The prefix is the source name and a dot, unless you change it.
+      The result must contain only letters, digits, <span class="mono">_ . -</span>, and 64 characters at most. The panel
+      skips an entry with no id, a bad id, or an id it already used.</li>
+    <li><b>url</b> — required. Viewers play this address. Start it with <span class="mono">https://</span>. The panel
+      accepts a query string, and it does not need a file extension. The panel skips an entry with no url, or with a
+      plain http url.</li>
+    <li><b>name</b> — optional. This becomes the title. The panel cuts it at 200 characters. The panel uses the id when
+      an entry has no name.</li>
+    <li><b>logo</b> — optional. Use an <span class="mono">https://</span> address. A bad logo removes the art only. The
+      panel still imports the channel.</li>
+    <li><b>description</b> — optional. The panel writes it <b>once</b>, at the first import. Your own synopsis stays
+      after that, because later syncs do not write over it.</li>
+    <li><b>The position in the array sets the order.</b> The first entry shows first. The panel ignores an
       <span class="mono">order</span> field.</li>
-    <li><b>The category is yours, not the feed's.</b> Every entry joins the category you set on this source. The panel
+    <li><b>You own the category, not the provider.</b> Every entry joins the category you set on this source. The panel
       ignores category strings in the file.</li>
-    <li>The panel ignores all other fields. Keep a schedule (<span class="mono">epg</span>) in the file: the apps read it
-      from this same URL, and the panel stores none of it.</li>
-    <li>Limits per feed: <b>500 channels</b> and <b>5 MB</b> by default, and 30 seconds to answer. The panel imports the
-      first 500 entries and reports the rest as over cap.</li>
-    <li>Serve the file over <b>https</b>. Send an <span class="mono">ETag</span> if you can — the panel then does no work
+    <li>The panel ignores all other fields. Keep a schedule (<span class="mono">epg</span>) in the file. The apps read the
+      schedule from this same URL, and the panel stores none of it.</li>
+    <li>Each feed has limits: <b>500 channels</b>, <b>5 MB</b>, and 30 seconds to answer. The panel imports the first 500
+      entries. It reports the other entries as over cap.</li>
+    <li>Serve the file over <b>https</b>. Send an <span class="mono">ETag</span> if you can. The panel then does no work
       on an unchanged feed.</li>
-    <li><b>An entry that leaves the feed is deleted</b>, together with its key and every grant for it. Keep an entry in the
-      file for as long as you want the channel.</li>
-    <li>The panel never touches a manual channel or another source's channel. It reports a clash as a conflict and skips it.</li>
+    <li><b>The panel deletes an entry that leaves the feed.</b> It deletes the channel key and every grant for it at the
+      same time. Keep an entry in the file for as long as you want the channel.</li>
+    <li>The panel never changes a manual channel, or a channel from a different source. It skips a clash of ids and
+      reports it as a conflict.</li>
   </ul>`
 
 $('#source-add-btn').addEventListener('click', () => addSourceDlg())
@@ -1327,7 +1331,7 @@ async function addSourceDlg () {
     { name: 'category', label: 'Category label (the rail viewers see)', placeholder: 'Anime' }
   ], {
     okLabel: 'Add',
-    body: `<p class="muted">The panel pulls the feed immediately and materializes it as a category of <b>redirect channels</b>.</p>
+    body: `<p class="muted">The panel pulls the feed immediately. It then makes a category of <b>redirect channels</b> from it.</p>
            <p class="muted">The sync interval, the channel id prefix and auto-grant keep their defaults. Change them with
            <b>edit</b> on the row.</p>
            <details class="footnote"><summary>What the feed JSON must contain</summary>${FEED_FORMAT_HTML}</details>`
