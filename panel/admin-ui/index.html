@@ -127,9 +127,10 @@
       <div class="card toolbar">
         <span class="muted">Named channel bundles (bouquets) granted to users as one unit.</span>
         <span class="spacer"></span>
+        <span id="package-count" class="muted"></span>
         <button class="btn primary" id="package-add-btn" type="button">＋ Add package</button>
       </div>
-      <div class="card table-card">
+      <div class="card table-card scroll">
         <table id="packages-table">
           <thead><tr>
             <th>Package</th><th>Members</th><th>Resolves to</th><th>Holders</th><th>Default</th><th class="actions-col"></th>
@@ -149,13 +150,13 @@
     </section>
 
     <section id="admins-section" hidden>
-      <form id="add-admin-form" class="card row-form">
-        <strong>Add admin</strong>
-        <input id="na-name" placeholder="name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-        <input id="na-pass" type="password" placeholder="password (min 8 chars)" required minlength="8" autocomplete="new-password">
-        <button class="btn primary">Add</button>
-      </form>
-      <div class="card table-card">
+      <div class="card toolbar">
+        <span class="muted">Panel operators. Each one signs in with a personal account.</span>
+        <span class="spacer"></span>
+        <span id="admin-count" class="muted"></span>
+        <button class="btn primary" id="admin-add-btn" type="button">＋ Add admin</button>
+      </div>
+      <div class="card table-card scroll">
         <table id="admins-table">
           <thead><tr>
             <th>Admin</th><th>Status</th><th>Created</th><th class="actions-col"></th>
@@ -169,13 +170,13 @@
     </section>
 
     <section id="publishers-section" hidden>
-      <form id="add-publisher-form" class="card row-form">
-        <strong>Enroll publisher</strong>
-        <input id="np-name" placeholder="site name (e.g. east)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-        <input id="np-scopes" placeholder="channel scopes: streamId globs, comma-separated (e.g. east-*,sports-1)">
-        <button class="btn primary">Enroll</button>
-      </form>
-      <div class="card table-card">
+      <div class="card toolbar">
+        <span class="muted">Broadcaster sites. Each site registers channels with its own scoped key.</span>
+        <span class="spacer"></span>
+        <span id="publisher-count" class="muted"></span>
+        <button class="btn primary" id="publisher-add-btn" type="button">＋ Enroll publisher</button>
+      </div>
+      <div class="card table-card scroll">
         <table id="publishers-table">
           <thead><tr>
             <th>Publisher</th><th>Status</th><th>Channel scopes</th><th>Key</th><th>Added</th><th class="actions-col"></th>
@@ -192,14 +193,13 @@
     </section>
 
     <section id="sources-section" hidden>
-      <form id="add-source-form" class="card row-form">
-        <strong>Add source</strong>
-        <input id="nsrc-name" placeholder="name (e.g. anime)" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-        <input id="nsrc-url" placeholder="feed URL (https://…/channels.json)" required>
-        <input id="nsrc-category" placeholder="category label (e.g. Anime)" required>
-        <button class="btn primary">Add</button>
-      </form>
-      <div class="card table-card">
+      <div class="card toolbar">
+        <span class="muted">Provider feeds. Each feed becomes a category of redirect channels.</span>
+        <span class="spacer"></span>
+        <span id="source-count" class="muted"></span>
+        <button class="btn primary" id="source-add-btn" type="button">＋ Add source</button>
+      </div>
+      <div class="card table-card scroll">
         <table id="sources-table">
           <thead><tr>
             <th>Source</th><th>Category</th><th>Channels</th><th>Every</th><th>Last sync</th><th>State</th><th class="actions-col"></th>
@@ -240,15 +240,13 @@
     </section>
 
     <section id="categories-section" hidden>
-      <form id="add-category-form" class="card row-form">
-        <strong>Add / edit category</strong>
-        <input id="ncat-slug" placeholder="slug (e.g. Nacional/Norte)" required>
-        <input id="ncat-label" placeholder="display label (blank = slug)">
-        <input id="ncat-order" type="number" min="0" max="9999" placeholder="order">
-        <label class="inline"><input type="checkbox" id="ncat-hidden"> hidden</label>
-        <button class="btn primary">Save</button>
-      </form>
-      <div class="card table-card">
+      <div class="card toolbar">
+        <input id="category-search" type="search" placeholder="search slug or label…">
+        <span class="spacer"></span>
+        <span id="category-count" class="muted"></span>
+        <button class="btn primary" id="category-add-btn" type="button">＋ Add category</button>
+      </div>
+      <div class="card table-card scroll">
         <table id="categories-table">
           <thead><tr>
             <th>Category</th><th>Label</th><th>Channels</th><th>Order</th><th>State</th><th class="actions-col"></th>

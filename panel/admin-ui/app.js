@@ -462,6 +462,9 @@ $('#streams-next').addEventListener('click', () => { streamView.page++; renderSt
 function renderPublishers () {
   const tbody = $('#publishers-table tbody')
   tbody.innerHTML = ''
+  $('#publisher-count').textContent = publishers.length
+    ? `${publishers.length} publisher${publishers.length === 1 ? '' : 's'}`
+    : ''
   for (const p of publishers) {
     const revoked = p.status !== 'active'
     const tr = document.createElement('tr')
@@ -484,7 +487,7 @@ function renderPublishers () {
     tbody.appendChild(tr)
   }
   if (publishers.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted">no publishers enrolled — broadcasters are using the shared legacy key. Enroll each site above to give it its own scoped key.</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">no publishers enrolled — broadcasters are using the shared legacy key. Use ＋ Enroll publisher to give each site its own scoped key.</td></tr>'
   }
 }
 
@@ -494,8 +497,10 @@ function renderPublishers () {
 // to join — sorting the slugs already groups them.
 function renderCategories () {
   const tbody = $('#categories-table tbody')
+  const count = $('#category-count')
   tbody.innerHTML = ''
   if (!categories.length) {
+    count.textContent = ''
     tbody.innerHTML = '<tr><td colspan="6" class="muted">no categories yet — they appear as soon as a channel carries one</td></tr>'
     return
   }
@@ -505,7 +510,19 @@ function renderCategories () {
   const ordered = []
   for (const r of roots) { ordered.push([r, 0]); for (const k of kids(r.slug)) ordered.push([k, 1]) }
   for (const o of orphans) ordered.push([o, 1]) // parent slug never registered/in use
-  for (const [c, depth] of ordered) {
+  // Search keeps a matching child's parent on screen, so the tree never shows an
+  // indented row with nothing above it.
+  const q = $('#category-search').value.trim().toLowerCase()
+  const hit = (c) => c.slug.toLowerCase().includes(q) || (c.label || '').toLowerCase().includes(q)
+  const shown = q === '' ? ordered : ordered.filter(([c, depth]) => hit(c) || (depth === 0 && kids(c.slug).some(hit)))
+  count.textContent = q === ''
+    ? `${categories.length} categor${categories.length === 1 ? 'y' : 'ies'}`
+    : `${shown.length} of ${categories.length}`
+  if (!shown.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">no category matches "${esc(q)}"</td></tr>`
+    return
+  }
+  for (const [c, depth] of shown) {
     const tr = document.createElement('tr')
     tr.innerHTML = `
       <td>${depth ? '<span class="muted">└ </span>' : ''}<b>${esc(c.slug.split('/').pop())}</b>${depth ? '' : ''}<br><span class="mono muted">${esc(c.slug)}</span></td>
@@ -594,6 +611,9 @@ function fmtInterval (ms) {
 function renderSources () {
   const tbody = $('#sources-table tbody')
   tbody.innerHTML = ''
+  $('#source-count').textContent = channelSources.length
+    ? `${channelSources.length} source${channelSources.length === 1 ? '' : 's'} · ${channelSources.reduce((n, s) => n + s.channels, 0)} channels`
+    : ''
   for (const s of channelSources) {
     const disabled = s.enabled === false
     const rep = s.lastReport
@@ -630,7 +650,7 @@ function renderSources () {
     tbody.appendChild(tr)
   }
   if (channelSources.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="muted">no sources yet — add a provider feed above and its channels appear as a category</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">no sources yet — use ＋ Add source to pull a provider feed. Its channels then appear as a category.</td></tr>'
   }
 }
 
@@ -696,6 +716,9 @@ $('#vod-form').addEventListener('submit', (e) => {
 function renderPackages () {
   const tbody = $('#packages-table tbody')
   tbody.innerHTML = ''
+  $('#package-count').textContent = channelPackages.length
+    ? `${channelPackages.length} package${channelPackages.length === 1 ? '' : 's'}`
+    : ''
   for (const p of channelPackages) {
     const tr = document.createElement('tr')
     tr.innerHTML = `
@@ -714,13 +737,16 @@ function renderPackages () {
     tbody.appendChild(tr)
   }
   if (channelPackages.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="muted">no packages yet — define a bouquet above, then assign it to users</td></tr>'
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">no packages yet — use ＋ Add package to define a bouquet, then assign it on the Users tab</td></tr>'
   }
 }
 
 function renderAdmins () {
   const tbody = $('#admins-table tbody')
   tbody.innerHTML = ''
+  $('#admin-count').textContent = admins.length
+    ? `${admins.length} admin${admins.length === 1 ? '' : 's'}`
+    : ''
   for (const a of admins) {
     const isSelf = a.name === who
     const tr = document.createElement('tr')
@@ -960,15 +986,22 @@ async function showDevices (username) {
 
 // ---------------------------------------------------------------- admin actions
 
-$('#add-admin-form').addEventListener('submit', (e) => {
-  e.preventDefault()
-  const username = $('#na-name').value.trim()
-  const password = $('#na-pass').value
-  act(async () => {
-    await api('POST', '/api/admins', { username, password })
-    $('#na-name').value = ''; $('#na-pass').value = ''
-  }, `created admin "${username}"`)
-})
+$('#admin-add-btn').addEventListener('click', () => addAdminDlg())
+
+async function addAdminDlg () {
+  const v = await dialog('Add admin', [
+    { name: 'username', label: 'Name (letters, digits, . _ -)', placeholder: 'operator' },
+    { name: 'password', label: 'Password (min 8 chars)', type: 'password' }
+  ], {
+    okLabel: 'Add',
+    body: '<p class="muted">Every admin has full rights, and can remove other admins. Accounts live in the panel-private <span class="mono">secrets/admins.json</span>.</p>'
+  })
+  if (!v) return
+  const username = v.username.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(username)) return toast('name must start alphanumeric and use only letters, digits, . _ -', true)
+  if ((v.password || '').length < 8) return toast('password must be at least 8 characters', true)
+  act(() => api('POST', '/api/admins', { username, password: v.password }), `created admin "${username}"`)
+}
 
 async function changeAdminPassword (name) {
   const isSelf = name === who
@@ -1009,13 +1042,22 @@ async function removeAdminAccount (name) {
 
 // ---------------------------------------------------------------- publisher actions
 
-$('#add-publisher-form').addEventListener('submit', async (e) => {
-  e.preventDefault()
-  const name = $('#np-name').value.trim()
-  const scopes = $('#np-scopes').value.split(',').map((s) => s.trim()).filter(Boolean)
+$('#publisher-add-btn').addEventListener('click', () => enrollPublisherDlg())
+
+async function enrollPublisherDlg () {
+  const v = await dialog('Enroll publisher', [
+    { name: 'name', label: 'Site name (letters, digits, . _ -)', placeholder: 'east' },
+    { name: 'scopes', label: 'Channel scopes — streamId globs, comma-separated (blank = none yet)', placeholder: 'east-*,sports-1' }
+  ], {
+    okLabel: 'Enroll',
+    body: '<p class="muted">The site gets its own registration key. The key is valid only for the channel ids its scopes match. The panel shows the secret <b>once</b>, immediately after this step.</p>'
+  })
+  if (!v) return
+  const name = v.name.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return toast('name must start alphanumeric and use only letters, digits, . _ -', true)
+  const scopes = v.scopes.split(',').map((s) => s.trim()).filter(Boolean)
   try {
     const p = await api('POST', '/api/publishers', { name, scopes })
-    e.target.reset()
     await refresh()
     await dialog(`Publisher "${p.name}" enrolled`, [], {
       okLabel: 'Done',
@@ -1026,7 +1068,7 @@ $('#add-publisher-form').addEventListener('submit', async (e) => {
              Registrations outside the scopes are rejected with <span class="mono">out-of-scope</span>.</p>`
     })
   } catch (err) { toast(err.message, true) }
-})
+}
 
 async function editPublisherScopes (p) {
   const v = await dialog(`Channel scopes — ${p.name}`, [
@@ -1070,34 +1112,57 @@ async function removePublisherEntry (name) {
 
 // ---------------------------------------------------------------- source actions
 
-// Upsert: the same form creates a presentation entry for a category already in use on
+// Upsert: the same dialog creates a presentation entry for a category already in use on
 // channels, or edits one that exists. There is no "create a category" as such — a
 // category exists because a channel carries it.
-$('#add-category-form').addEventListener('submit', (e) => {
-  e.preventDefault()
-  const order = $('#ncat-order').value
-  act(async () => {
-    await api('POST', '/api/categories', {
-      slug: $('#ncat-slug').value.trim(),
-      label: $('#ncat-label').value.trim() || undefined,
-      order: order === '' ? null : Number(order),
-      hidden: $('#ncat-hidden').checked
-    })
-    e.target.reset()
-  }, 'category saved')
-})
+$('#category-add-btn').addEventListener('click', () => addCategoryDlg())
+$('#category-search').addEventListener('input', renderCategories)
 
-$('#add-source-form').addEventListener('submit', async (e) => {
-  e.preventDefault()
-  const name = $('#nsrc-name').value.trim()
-  const body = { name, url: $('#nsrc-url').value.trim(), category: $('#nsrc-category').value.trim() }
+async function addCategoryDlg () {
+  const v = await dialog('Add category', [
+    { name: 'slug', label: 'Slug — the value channels carry (Parent/Child = a two-level rail)', placeholder: 'Nacional/Norte' },
+    { name: 'label', label: 'Display label (blank = the slug)' },
+    { name: 'order', label: 'Order (0-9999, blank = unset)', type: 'number', min: 0, max: 9999 },
+    { name: 'hidden', label: 'Hidden', type: 'checkbox', value: false }
+  ], {
+    okLabel: 'Save',
+    body: `<p class="muted">This writes the <b>presentation</b> entry: label, order and visibility. A channel joins a category
+           because it carries the slug, so a new slug shows <b>0 channels</b> until a channel or a source uses it.</p>
+           <p class="muted">The same dialog also saves over an entry that exists — give it the same slug.</p>`
+  })
+  if (!v) return
+  const slug = v.slug.trim()
+  if (!slug) return toast('a slug is required', true)
+  act(() => api('POST', '/api/categories', {
+    slug,
+    label: v.label.trim() || undefined,
+    order: v.order === '' ? null : Number(v.order),
+    hidden: v.hidden
+  }), `category "${slug}" saved`)
+}
+
+$('#source-add-btn').addEventListener('click', () => addSourceDlg())
+
+async function addSourceDlg () {
+  const v = await dialog('Add source', [
+    { name: 'name', label: 'Name — permanent id (letters, digits, . _ -)', placeholder: 'anime' },
+    { name: 'url', label: 'Feed URL (https://)', placeholder: 'https://provider.example/channels.json' },
+    { name: 'category', label: 'Category label (the rail viewers see)', placeholder: 'Anime' }
+  ], {
+    okLabel: 'Add',
+    body: `<p class="muted">The panel pulls the feed immediately and materializes it as a category of <b>redirect channels</b>.</p>
+           <p class="muted">The sync interval, the channel id prefix and auto-grant keep their defaults. Change them with
+           <b>edit</b> on the row.</p>`
+  })
+  if (!v) return
+  const name = v.name.trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return toast('name must start alphanumeric and use only letters, digits, . _ -', true)
   try {
-    await api('POST', '/api/sources', body)
-    e.target.reset()
+    await api('POST', '/api/sources', { name, url: v.url.trim(), category: v.category.trim() })
     toast(`source "${name}" added — pulling the feed…`)
     await syncSourceNow(name)
   } catch (err) { toast(err.message, true) }
-})
+}
 
 async function syncSourceNow (name) {
   toast(`syncing "${name}"…`)

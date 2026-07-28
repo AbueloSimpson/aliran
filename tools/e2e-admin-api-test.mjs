@@ -197,7 +197,7 @@ try {
   assert.match(home.headers.get('content-type'), /text\/html/)
   const homeHtml = await home.text()
   assert.ok(homeHtml.includes('Aliran'), 'index.html is the dashboard')
-  for (const marker of ['data-tab="admins"', 'data-tab="overview"', 'user-search', 'users-more', 'add-admin-form', 'activity-feed']) {
+  for (const marker of ['data-tab="admins"', 'data-tab="overview"', 'user-search', 'users-more', 'admin-add-btn', 'activity-feed']) {
     assert.ok(homeHtml.includes(marker), `dashboard carries the S16b surface: ${marker}`)
   }
   for (const f of ['app.js', 'style.css']) {
@@ -562,7 +562,7 @@ try {
   assert.ok(kindsP.has('admin:publisher-status'), 'publisher revokes recorded')
   assert.ok(r.body.activity.some((e) => e.type === 'register' && e.origin === 'east'), 'register activity attributes origin')
   const homeHtmlP = await (await fetch(base + '/')).text()
-  for (const marker of ['data-tab="publishers"', 'add-publisher-form', 'publishers-table']) {
+  for (const marker of ['data-tab="publishers"', 'publisher-add-btn', 'publishers-table']) {
     assert.ok(homeHtmlP.includes(marker), `dashboard carries the publishers card: ${marker}`)
   }
   const appJsP = await (await fetch(base + '/app.js')).text()
