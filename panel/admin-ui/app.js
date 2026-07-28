@@ -23,7 +23,7 @@ let obsTimer = null // 10 s observability poll, runs only while the Overview tab
 let anTimer = null // 60 s analytics poll, runs only while the Analytics tab is open
 let rpTimer = null // 30 s reports poll, runs only while the Reports tab is open
 const artCache = new Map() // 'assets/<id>/<file>' -> blob object URL
-const SINGLES_CAP = 12 // per-channel chips shown per user row before "+N more…"
+const SINGLES_INLINE = 3 // per-channel chips shown inline; more fold into one bundle chip
 const expandedGrants = new Set() // usernames whose full chip list is expanded
 
 // ---------------------------------------------------------------- api
@@ -228,24 +228,34 @@ function renderUsers () {
       chip.innerHTML = `⇣ <b>${esc(name)}</b> · ${n}`
       grants.appendChild(chip)
     }
+    // Per-channel grants collapse into ONE bundle chip past a handful — like a
+    // package, just unnamed. Click to expand into revocable chips, and back.
     const showAll = expandedGrants.has(u.username)
-    const shown = showAll || singles.length <= SINGLES_CAP ? singles : singles.slice(0, SINGLES_CAP)
-    for (const g of shown) {
-      const auto = !manual.has(g)
-      const chip = document.createElement('span')
-      chip.className = 'chip' + (auto ? ' auto' : '')
-      if (auto) chip.title = 'auto-granted by a channel source (auto-grant) — a revoke lasts only until that source\'s next sync'
-      chip.innerHTML = `${esc(g)} <button class="x" title="revoke">✕</button>`
-      chip.querySelector('.x').addEventListener('click', () => revokeGrant(u.username, g))
-      grants.appendChild(chip)
-    }
-    if (shown.length < singles.length) {
+    if (!showAll && singles.length > SINGLES_INLINE) {
       const chip = document.createElement('span')
       chip.className = 'chip more'
-      chip.textContent = `+${singles.length - shown.length} more…`
-      chip.title = 'show every channel chip for this user'
+      chip.innerHTML = `▤ <b>${singles.length}</b> channels`
+      chip.title = 'individually granted channels — click to list them'
       chip.addEventListener('click', () => { expandedGrants.add(u.username); renderUsers() })
       grants.appendChild(chip)
+    } else {
+      for (const g of singles) {
+        const auto = !manual.has(g)
+        const chip = document.createElement('span')
+        chip.className = 'chip' + (auto ? ' auto' : '')
+        if (auto) chip.title = 'auto-granted by a channel source (auto-grant) — a revoke lasts only until that source\'s next sync'
+        chip.innerHTML = `${esc(g)} <button class="x" title="revoke">✕</button>`
+        chip.querySelector('.x').addEventListener('click', () => revokeGrant(u.username, g))
+        grants.appendChild(chip)
+      }
+      if (showAll && singles.length > SINGLES_INLINE) {
+        const chip = document.createElement('span')
+        chip.className = 'chip more'
+        chip.textContent = 'collapse'
+        chip.title = 'fold these back into one bundle chip'
+        chip.addEventListener('click', () => { expandedGrants.delete(u.username); renderUsers() })
+        grants.appendChild(chip)
+      }
     }
     if (grants.childElementCount === 0) grants.innerHTML = '<span class="muted">—</span>'
     tr.querySelector('[data-act=devices]').addEventListener('click', () => showDevices(u.username))
