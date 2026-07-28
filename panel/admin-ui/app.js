@@ -87,11 +87,25 @@ async function enterApp () {
 }
 
 const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'reports', 'analytics', 'overview']
+// One-line topbar description per tab, shown under the page title.
+const TAB_SUBTITLES = {
+  streams: 'the live channel catalog your viewers see',
+  users: 'viewer accounts, devices and channel entitlements',
+  packages: 'channel bouquets granted to users as one unit',
+  admins: 'accounts for this dashboard',
+  publishers: 'broadcaster site identities and their channel scopes',
+  sources: 'remote channel feeds and the external VOD provider',
+  categories: 'the rail vocabulary — labels, order, visibility',
+  reports: 'viewer problem reports and correlation alerts',
+  analytics: 'aggregate usage counts — no per-user tracking exists',
+  overview: 'panel health and recent activity'
+}
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
     const name = tab.dataset.tab
     $('#page-title').textContent = name[0].toUpperCase() + name.slice(1)
+    $('#page-sub').textContent = TAB_SUBTITLES[name] || ''
     for (const name of TAB_NAMES) $('#' + name + '-section').hidden = tab.dataset.tab !== name
     if (tab.dataset.tab === 'overview') startObsPoll()
     else stopObsPoll()

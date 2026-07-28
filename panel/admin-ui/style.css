@@ -80,7 +80,9 @@ header {
   padding: 13px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
   position: sticky; top: 0; z-index: 5;
 }
-#page-title { margin: 0; font-size: 17px; }
+.head-titles { display: flex; flex-direction: column; gap: 1px; }
+#page-title { margin: 0; font-size: 20px; }
+#page-sub { margin: 0; font-size: 12px; }
 main { padding: 20px 24px 60px; max-width: 1360px; }
 
 .tab {
