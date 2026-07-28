@@ -156,10 +156,19 @@ details.collapse .row-form { padding: 12px 16px; margin-bottom: 0; }
 .chip.more { cursor: pointer; border-style: dashed; }
 .chip.more:hover { color: var(--text); border-color: var(--accent-dim); }
 
-/* ---- stream cards ---- */
-.stream-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 12px; }
-.stream-card { display: flex; gap: 14px; transition: border-color .12s; }
-.stream-card:hover { border-color: var(--accent-dim); }
+/* ---- streams table: text listing, name click expands the inline editor ---- */
+.link-btn {
+  background: none; border: none; padding: 0; font: inherit; font-weight: 600;
+  color: var(--text); cursor: pointer; text-align: left;
+}
+.link-btn:hover { color: var(--accent); text-decoration: underline dotted; }
+tr.stream-row.open td { border-bottom: none; background: var(--panel-2); }
+tr.stream-row.open .stream-name { color: var(--accent); }
+.stream-detail-row td { background: rgba(0, 0, 0, .18); padding: 14px 16px; }
+#streams-table .chip { padding: 1px 8px; }
+
+/* ---- stream detail (the expanded editor) ---- */
+.stream-card { display: flex; gap: 14px; }
 .stream-poster {
   width: 84px; height: 120px; flex: none; border-radius: 8px; overflow: hidden;
   background: var(--panel-2); border: 1px solid var(--border);

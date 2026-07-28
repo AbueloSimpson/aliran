@@ -84,7 +84,14 @@
           <button class="btn primary">Add</button>
         </form>
       </details>
-      <div id="streams-list" class="cards stream-grid"></div>
+      <div class="card table-card">
+        <table id="streams-table">
+          <thead><tr>
+            <th>ID</th><th>Name</th><th>Status</th><th>Category</th><th>Origin</th><th>Order</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="users-section" hidden>

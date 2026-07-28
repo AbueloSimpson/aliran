@@ -255,6 +255,7 @@ function renderUsers () {
 // text search, category / status / origin filters, and a page cursor.
 const STREAM_PAGE = 20
 const streamView = { q: '', cat: '', state: '', src: '', page: 0 }
+let openStreamId = null // channel whose inline editor row is expanded (null = none)
 
 function filteredStreams () {
   const q = streamView.q.toLowerCase()
@@ -302,70 +303,99 @@ function renderStreams () {
   $('#streams-prev').disabled = streamView.page === 0
   $('#streams-next').disabled = streamView.page >= pages - 1
 
-  const list = $('#streams-list')
-  list.innerHTML = ''
+  const tbody = $('#streams-table tbody')
+  tbody.innerHTML = ''
   for (const s of pageStreams) {
-    const card = document.createElement('div')
-    card.className = 'card stream-card'
-    card.innerHTML = `
-      <div class="stream-poster">${s.poster ? '' : 'no poster'}</div>
-      <div class="stream-body">
-        <div class="stream-head">
-          <h3>${esc(s.title)}</h3>
-          <span class="mono muted">${esc(s.id)}</span>
-          <span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>
-          ${s.redirect ? '<span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢ REDIRECT</span>' : ''}
-          ${s.origin ? `<span class="chip" title="registered by enrolled publisher &quot;${esc(s.origin)}&quot; (last register)">⇡ ${esc(s.origin)}</span>` : ''}
-          ${s.source ? `<span class="chip" title="imported from channel source &quot;${esc(s.source)}&quot; — the feed overwrites mapped fields on every sync">⇣ ${esc(s.source)}</span>` : ''}
-          ${s.featured ? '<span class="badge featured">★ FEATURED</span>' : ''}
-          ${(s.category || []).map((c) => `<span class="chip">${esc(c)}</span>`).join('')}
-        </div>
-        <p class="stream-desc">${esc(s.description) || '<i>no description</i>'}</p>
-        <div class="mono muted">${s.redirect
-          ? `url: ${esc(s.url || '')}`
-          : `feed: ${s.feedKey ? esc(s.feedKey.slice(0, 16)) + '…' : '(not set)'}`}</div>
-        <div class="art-row"></div>
-        <div class="stream-foot">
-          <button class="btn small" data-act="edit">Edit metadata</button>
-          <label class="curation" title="rail position for client UIs — lower sorts first; empty = unordered">order
-            <input type="number" min="0" max="9999" step="1" class="order-input" value="${s.order ?? ''}" placeholder="—"></label>
-          <label class="curation" title="hero hint: featured live streams are preferred for the client hero slot">
-            <input type="checkbox" class="featured-input" ${s.featured ? 'checked' : ''}> featured</label>
-          <span class="spacer"></span>
-          <button class="btn small danger" data-act="delete">Delete</button>
-        </div>
-      </div>`
-    if (s.poster) loadArt(card.querySelector('.stream-poster'), s.poster)
-    const artRow = card.querySelector('.art-row')
-    for (const kind of ['poster', 'backdrop', 'logo']) {
-      const slot = document.createElement('div')
-      slot.className = 'art-slot'
-      slot.innerHTML = `<div class="art-thumb">${s[kind] ? '' : '—'}</div>
-        <button class="btn small" data-act="upload">${kind}</button>
-        <button class="btn small" data-act="url" title="use a remote https:// image URL instead of an upload">url</button>`
-      if (s[kind]) loadArt(slot.querySelector('.art-thumb'), s[kind])
-      slot.querySelector('[data-act=upload]').addEventListener('click', () => uploadArt(s.id, kind))
-      slot.querySelector('[data-act=url]').addEventListener('click', () => setArtUrl(s, kind))
-      artRow.appendChild(slot)
+    const open = openStreamId === s.id
+    const tr = document.createElement('tr')
+    tr.className = 'stream-row' + (open ? ' open' : '')
+    tr.innerHTML = `
+      <td class="mono muted">${esc(s.id)}</td>
+      <td><button class="link-btn stream-name" title="open this channel's editor">${esc(s.title)}</button>${s.featured ? ' <span class="badge featured" title="hero hint: featured live streams are preferred for the client hero slot">★</span>' : ''}</td>
+      <td><span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>${s.redirect ? ' <span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢</span>' : ''}</td>
+      <td>${(s.category || []).map((c) => `<span class="chip">${esc(c)}</span>`).join(' ') || '<span class="muted">—</span>'}</td>
+      <td class="muted">${s.source
+        ? `<span title="imported from channel source &quot;${esc(s.source)}&quot; — the feed overwrites mapped fields on every sync">⇣ ${esc(s.source)}</span>`
+        : s.origin
+          ? `<span title="registered by enrolled publisher &quot;${esc(s.origin)}&quot; (last register)">⇡ ${esc(s.origin)}</span>`
+          : '—'}</td>
+      <td class="muted">${s.order ?? '—'}</td>
+      <td><div class="row-actions">
+        <button class="btn small" data-act="edit">edit</button>
+        <button class="btn small danger" data-act="del" title="delete this channel">✕</button>
+      </div></td>`
+    tr.querySelector('.stream-name').addEventListener('click', () => {
+      openStreamId = open ? null : s.id
+      renderStreams()
+    })
+    tr.querySelector('[data-act=edit]').addEventListener('click', () => editMeta(s))
+    tr.querySelector('[data-act=del]').addEventListener('click', () => deleteStream(s))
+    tbody.appendChild(tr)
+    if (open) {
+      const dtr = document.createElement('tr')
+      dtr.className = 'stream-detail-row'
+      const td = document.createElement('td')
+      td.colSpan = 7
+      td.appendChild(streamDetailCard(s))
+      dtr.appendChild(td)
+      tbody.appendChild(dtr)
     }
-    card.querySelector('[data-act=edit]').addEventListener('click', () => editMeta(s))
-    card.querySelector('[data-act=delete]').addEventListener('click', () => deleteStream(s))
-    card.querySelector('.order-input').addEventListener('change', (e) => {
-      const raw = e.target.value.trim()
-      act(() => api('PATCH', `/api/streams/${s.id}`, { order: raw === '' ? null : parseInt(raw, 10) }),
-        raw === '' ? `order cleared for "${s.id}"` : `order ${raw} for "${s.id}"`)
-    })
-    card.querySelector('.featured-input').addEventListener('change', (e) => {
-      act(() => api('PATCH', `/api/streams/${s.id}`, { featured: e.target.checked }),
-        `"${s.id}" is ${e.target.checked ? 'now' : 'no longer'} featured`)
-    })
-    list.appendChild(card)
   }
   if (hits.length === 0) {
-    list.innerHTML = streams.length
-      ? '<div class="card muted">No channels match the current filters.</div>'
-      : '<div class="card muted">No streams yet — add one above.</div>'
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">${streams.length
+      ? 'No channels match the current filters.'
+      : 'No streams yet — add one with the form above.'}</td></tr>`
   }
+}
+
+// The expanded per-channel editor, shown under its table row when the name is
+// clicked: poster, description, feed/url line, art slots and curation controls.
+function streamDetailCard (s) {
+  const card = document.createElement('div')
+  card.className = 'stream-card'
+  card.innerHTML = `
+    <div class="stream-poster">${s.poster ? '' : 'no poster'}</div>
+    <div class="stream-body">
+      <p class="stream-desc">${esc(s.description) || '<i>no description</i>'}</p>
+      <div class="mono muted">${s.redirect
+        ? `url: ${esc(s.url || '')}`
+        : `feed: ${s.feedKey ? esc(s.feedKey.slice(0, 16)) + '…' : '(not set)'}`}</div>
+      <div class="art-row"></div>
+      <div class="stream-foot">
+        <button class="btn small" data-act="edit">Edit metadata</button>
+        <label class="curation" title="rail position for client UIs — lower sorts first; empty = unordered">order
+          <input type="number" min="0" max="9999" step="1" class="order-input" value="${s.order ?? ''}" placeholder="—"></label>
+        <label class="curation" title="hero hint: featured live streams are preferred for the client hero slot">
+          <input type="checkbox" class="featured-input" ${s.featured ? 'checked' : ''}> featured</label>
+        <span class="spacer"></span>
+        <button class="btn small danger" data-act="delete">Delete</button>
+      </div>
+    </div>`
+  if (s.poster) loadArt(card.querySelector('.stream-poster'), s.poster)
+  const artRow = card.querySelector('.art-row')
+  for (const kind of ['poster', 'backdrop', 'logo']) {
+    const slot = document.createElement('div')
+    slot.className = 'art-slot'
+    slot.innerHTML = `<div class="art-thumb">${s[kind] ? '' : '—'}</div>
+      <button class="btn small" data-act="upload">${kind}</button>
+      <button class="btn small" data-act="url" title="use a remote https:// image URL instead of an upload">url</button>`
+    if (s[kind]) loadArt(slot.querySelector('.art-thumb'), s[kind])
+    slot.querySelector('[data-act=upload]').addEventListener('click', () => uploadArt(s.id, kind))
+    slot.querySelector('[data-act=url]').addEventListener('click', () => setArtUrl(s, kind))
+    artRow.appendChild(slot)
+  }
+  card.querySelector('[data-act=edit]').addEventListener('click', () => editMeta(s))
+  card.querySelector('[data-act=delete]').addEventListener('click', () => deleteStream(s))
+  card.querySelector('.order-input').addEventListener('change', (e) => {
+    const raw = e.target.value.trim()
+    act(() => api('PATCH', `/api/streams/${s.id}`, { order: raw === '' ? null : parseInt(raw, 10) }),
+      raw === '' ? `order cleared for "${s.id}"` : `order ${raw} for "${s.id}"`)
+  })
+  card.querySelector('.featured-input').addEventListener('change', (e) => {
+    act(() => api('PATCH', `/api/streams/${s.id}`, { featured: e.target.checked }),
+      `"${s.id}" is ${e.target.checked ? 'now' : 'no longer'} featured`)
+  })
+  return card
 }
 
 let streamSearchTimer = null
