@@ -23,6 +23,22 @@ phone + Android TV, and the Windows desktop player).
   rule overrode the browser's `[hidden]` handling). All three now hide
   correctly.
 
+- **Dashboard: category rails with no parent entry dangled** — a two-level rail
+  is written `Parent/Child`, but nothing has to carry the parent slug on its
+  own. The Categories tab could only nest a child under a parent that existed
+  as its own row, so every other child fell to the bottom of the table under a
+  tree marker that pointed at nothing — on a production catalog, most of the
+  list, including its two largest rails. A prefix that is in use without being
+  a category now gets its own heading row, which counts the channels of the
+  rails below it and offers the two actions that apply to it (edit, rename).
+
+- **Docs: the source feed format described fields that do not exist** — the
+  content-management guide documented a `provider` key that becomes a "via
+  *provider*" description, and listed the description among the fields a sync
+  overwrites. Neither is true: descriptions come from a `description` key, and
+  the panel writes one only when it creates the channel, so an operator's
+  synopsis survives every later sync.
+
 - **Dashboard: unreadable chart hour labels** — the analytics and reports bar
   charts stretched their hour labels with the chart width, which smeared them
   into unreadable shapes at full-screen sizes. Labels now render outside the
@@ -69,6 +85,20 @@ phone + Android TV, and the Windows desktop player).
   channels granted through a source or one-by-one now fold into one chip each
   ("⇣ source · N" / "▤ N channels"), so a user's row stays one line at any
   catalog size. Long explainer paragraphs collapse behind one-line toggles.
+
+  A second pass brings every remaining tab to the same shape: Sources,
+  Categories, Publishers and Admins each get a toolbar with a row count and an
+  "add" dialog in place of an inline form, and their tables scroll inside the
+  same boxed frame. Categories gains a search box. **Every listing table now
+  sorts by column** — one click ascending, a second descending, a third back to
+  the table's natural order; blank cells stay at the bottom in both directions.
+
+- **Dashboard: the source feed format, in the dashboard** — the Sources tab has
+  a "feed format…" button, and "Add source" repeats the reference under its
+  fields. It gives the required keys (`id`, `url`), the optional ones (`name`,
+  `logo`, `description`), the id rules, the per-feed limits, and the fact that
+  an entry which leaves the feed takes its channel and grants with it.
+  [`docs/demo/channels.json`](docs/demo/channels.json) is a copyable example.
 
 - **Movies & Series: the full browse experience + series playback** — the
   VOD section of both apps is rebuilt around a reference mockup set, and the
