@@ -288,7 +288,9 @@ function filteredStreams () {
     (!streamView.state ||
       (streamView.state === 'live'
         ? s.isLive
-        : streamView.state === 'redirect' ? !!s.redirect : !s.isLive && !s.redirect)) &&
+        : streamView.state === 'redirect'
+          ? !!s.redirect
+          : streamView.state === 'restricted' ? !!s.restricted : !s.isLive && !s.redirect)) &&
     (!streamView.src || (streamView.src === '(manual)' ? !s.source : s.source === streamView.src)))
 }
 
@@ -336,7 +338,7 @@ function renderStreams () {
     tr.innerHTML = `
       <td class="mono muted">${esc(s.id)}</td>
       <td><button class="link-btn stream-name" title="open this channel's editor">${esc(s.title)}</button>${s.featured ? ' <span class="badge featured" title="hero hint: featured live streams are preferred for the client hero slot">★</span>' : ''}</td>
-      <td><span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>${s.redirect ? ' <span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢</span>' : ''}</td>
+      <td><span class="badge ${s.isLive ? 'live' : 'idle'}">${s.isLive ? 'LIVE' : esc(s.status || 'idle')}</span>${s.redirect ? ' <span class="badge redirect" title="CDN redirect channel — viewers play the URL, not a P2P feed">⇢</span>' : ''}${s.restricted ? ' <span class="badge restricted" title="access controlled — players require the parental PIN before playing">PIN</span>' : ''}</td>
       <td>${(s.category || []).map((c) => `<span class="chip cat-chip" data-cat="${esc(c)}" title="filter the list by this category">${esc(c)}</span>`).join(' ') || '<span class="muted">—</span>'}</td>
       <td class="muted">${s.source
         ? `<span title="imported from channel source &quot;${esc(s.source)}&quot; — the feed overwrites mapped fields on every sync">⇣ ${esc(s.source)}</span>`
@@ -398,6 +400,8 @@ function streamDetailCard (s) {
           <input type="number" min="0" max="9999" step="1" class="order-input" value="${s.order ?? ''}" placeholder="—"></label>
         <label class="curation" title="hero hint: featured live streams are preferred for the client hero slot">
           <input type="checkbox" class="featured-input" ${s.featured ? 'checked' : ''}> featured</label>
+        <label class="curation" title="access controlled — players require the parental PIN before playing this channel">
+          <input type="checkbox" class="restricted-input" ${s.restricted ? 'checked' : ''}> restricted</label>
         <span class="spacer"></span>
         <button class="btn small danger" data-act="delete">Delete</button>
       </div>
@@ -425,6 +429,12 @@ function streamDetailCard (s) {
   card.querySelector('.featured-input').addEventListener('change', (e) => {
     act(() => api('PATCH', `/api/streams/${s.id}`, { featured: e.target.checked }),
       `"${s.id}" is ${e.target.checked ? 'now' : 'no longer'} featured`)
+  })
+  card.querySelector('.restricted-input').addEventListener('change', (e) => {
+    act(() => api('PATCH', `/api/streams/${s.id}`, { restricted: e.target.checked }),
+      e.target.checked
+        ? `"${s.id}" is access controlled — players ask for the parental PIN (viewers pick it up at next catalog sync)`
+        : `"${s.id}" is no longer access controlled`)
   })
   return card
 }
@@ -1402,7 +1412,8 @@ async function editMeta (s) {
     { name: 'epgUrl', label: 'EPG feed URL (https:// program guide the app fetches; empty = none)', value: s.epgUrl || '', placeholder: 'https://provider.example/anime.json' },
     { name: 'epgId', label: 'EPG channel id (this channel\'s id inside that feed)', value: s.epgId || '', placeholder: 'demotv.es.629a06…' },
     { name: 'status', label: 'Status', type: 'select', options: ['idle', 'live', 'offline'], value: s.status },
-    { name: 'isLive', label: 'Live now', type: 'checkbox', value: s.isLive }
+    { name: 'isLive', label: 'Live now', type: 'checkbox', value: s.isLive },
+    { name: 'restricted', label: 'access controlled — players require the parental PIN before playing', type: 'checkbox', value: !!s.restricted }
   ])
   if (!v) return
   const body = {
@@ -1411,6 +1422,7 @@ async function editMeta (s) {
     category: v.category.split(',').map((x) => x.trim()).filter(Boolean),
     status: v.status,
     isLive: v.isLive,
+    restricted: v.restricted,
     url: v.url.trim(), // always sent: empty clears the redirect (explicit status/isLive above win over defaulting)
     epgUrl: v.epgUrl.trim(), // always sent: empty clears the program-guide pointer
     epgId: v.epgId.trim()

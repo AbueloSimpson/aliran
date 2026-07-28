@@ -252,6 +252,9 @@ ul.devices li { margin-bottom: 6px; }
 .curation input[type=number] { width: 72px; padding: 3px 8px; }
 .badge.featured { background: #78350f; color: #fde68a; }
 .badge.redirect { background: #1e3a8a; color: #bfdbfe; }
+/* access controlled (parental PIN) — deliberately not brand-tinted, like the
+   status badges: it must mean the same thing under every white-label brand */
+.badge.restricted { background: #4c1d95; color: #ddd6fe; }
 .stream-foot .spacer { flex: 1; }
 
 /* ---- dialogs: destructive warnings ---- */

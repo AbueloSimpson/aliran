@@ -302,12 +302,14 @@ try {
   r = await api('PATCH', '/api/streams/movie-night', { order: null }, { token })
   assert.strictEqual(r.status, 200)
   assert.strictEqual((await db.get('catalog/movie-night')).value.order, null, 'null clears order')
-  r = await api('POST', '/api/streams', { id: 'temp-curated', order: 2, featured: true }, { token })
+  r = await api('POST', '/api/streams', { id: 'temp-curated', order: 2, featured: true, restricted: true }, { token })
   assert.strictEqual(r.status, 201)
   assert.strictEqual(r.body.catalog.order, 2, 'add-stream accepts order')
   assert.strictEqual(r.body.catalog.featured, true, 'add-stream accepts featured')
-  r = await api('PATCH', '/api/streams/movie-night', { order: 5, featured: true, epgUrl: 'https://epg.example/g.json', epgId: 'mn' }, { token })
+  assert.strictEqual(r.body.catalog.restricted, true, 'add-stream accepts restricted (parental control)')
+  r = await api('PATCH', '/api/streams/movie-night', { order: 5, featured: true, restricted: 'true', epgUrl: 'https://epg.example/g.json', epgId: 'mn' }, { token })
   assert.strictEqual(r.status, 200)
+  assert.strictEqual((await db.get('catalog/movie-night')).value.restricted, true, 'string restricted coerced to bool')
 
   // a broadcaster re-register must NOT erase admin curation/art/EPG — AND (S27e) must not
   // change the admin-owned title/description/category of an EXISTING channel: the panel is
@@ -325,6 +327,7 @@ try {
   assert.deepStrictEqual(cat2.category, ['film'], 'panel-authoritative: re-register does NOT change an existing category')
   assert.strictEqual(cat2.order, 5, 'register preserves order')
   assert.strictEqual(cat2.featured, true, 'register preserves featured')
+  assert.strictEqual(cat2.restricted, true, 'register preserves restricted (parental control)')
   assert.strictEqual(cat2.poster, 'assets/movie-night/poster.png', 'register preserves art')
   assert.strictEqual(cat2.epgUrl, 'https://epg.example/g.json', 'register preserves admin EPG pointer (epgUrl)')
   assert.strictEqual(cat2.epgId, 'mn', 'register preserves admin EPG pointer (epgId)')
@@ -670,11 +673,11 @@ try {
   assert.deepStrictEqual(r.body.packages, [], 'removed package stripped from the user')
   assert.ok(!r.body.grants.includes('pkg-b'), 'its grants went with it')
   const homeHtmlR = await (await fetch(base + '/')).text()
-  for (const marker of ['data-tab="packages"', 'add-package-form', 'packages-table']) {
+  for (const marker of ['data-tab="packages"', 'package-add-btn', 'packages-table']) {
     assert.ok(homeHtmlR.includes(marker), `dashboard carries the packages tab: ${marker}`)
   }
   const appJsR = await (await fetch(base + '/app.js')).text()
-  for (const marker of ['api/packages', 'renderPackages', 'removeUserPackage']) {
+  for (const marker of ['api/packages', 'renderPackages', 'removeUserPackage', 'packageDlg']) {
     assert.ok(appJsR.includes(marker), `app.js wires the package flows: ${marker}`)
   }
   await api('DELETE', '/api/users/quser', undefined, { token })

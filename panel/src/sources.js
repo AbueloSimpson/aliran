@@ -380,6 +380,7 @@ async function applyFeed (ctx, name, mapped) {
         logo: m.logo,
         order: m.order,
         featured: false,
+        restricted: false, // admin flags after import; the update path spreads ...cur, so the flag survives syncs
         status: 'live',
         source: name,
         epgUrl: m.epgUrl,

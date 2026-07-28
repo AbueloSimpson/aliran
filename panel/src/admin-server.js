@@ -46,9 +46,9 @@
 //   PATCH  /api/packages/:name               edit label/members/default (member edits materialize for every holder)
 //   DELETE /api/packages/:name               remove + strip from users (grants covered only by it are removed; manual ones survive)
 //   GET    /api/streams
-//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?,url?}
+//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?,restricted?,url?}
 //                                            url (https) makes it a REDIRECT channel: viewers play the url, no P2P feed
-//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,url?,...}
+//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,restricted?,url?,...}
 //   DELETE /api/streams/:id                  FULL purge (catalog+secret+grants+art)
 //   POST   /api/streams/:id/art/:kind        raw image body (content-type → extension)
 //   GET    /api/assets/:id/:file             art bytes from the assets drive (authed)

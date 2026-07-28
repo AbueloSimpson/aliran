@@ -280,6 +280,9 @@ export async function addStream (ctx, id, opts = {}) {
     logo: null,
     order: opts.order != null ? normOrder(opts.order) : null,
     featured: normBool(opts.featured),
+    // Access control: players treat a restricted channel as parental-PIN-gated
+    // by default. Catalog metadata only — entitlements are unaffected.
+    restricted: normBool(opts.restricted),
     epgUrl: opts.epgUrl != null ? normEpgUrl(opts.epgUrl) : null, // S27 program-guide pointers (optional)
     epgId: opts.epgId != null ? normEpgId(opts.epgId) : null,
     status: opts.feedKey || url ? 'live' : 'idle'
@@ -357,6 +360,7 @@ export async function setMeta (ctx, id, fields = {}) {
   if (fields.isLive != null) c.isLive = normBool(fields.isLive)
   if (fields.order !== undefined) c.order = normOrder(fields.order) // null clears
   if (fields.featured != null) c.featured = normBool(fields.featured)
+  if (fields.restricted != null) c.restricted = normBool(fields.restricted)
   // EPG pointers (S27): a public https feed URL + this channel's id inside it. The app
   // fetches the guide on demand; the schedule never enters the catalog. Works on ANY
   // channel (P2P or redirect) — sources set these automatically on imported channels.

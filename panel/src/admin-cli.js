@@ -391,6 +391,7 @@ async function main () {
         isLive: opts.live != null ? opts.live : undefined,
         order: opts.order != null ? String(opts.order) : undefined, // ops validates (0-9999 | 'null')
         featured: opts.featured != null ? opts.featured : undefined,
+        restricted: opts.restricted != null ? opts.restricted : undefined,
         epgUrl: opts['epg-url'] != null ? str(opts['epg-url']) || '' : undefined, // '' clears
         epgId: opts['epg-id'] != null ? str(opts['epg-id']) || '' : undefined
       })
@@ -610,7 +611,8 @@ function usage () {
   delete-stream <id>                    FULL purge: catalog + private key + grants + art
   grant <u> <streamId>                  Entitle a user to a stream
   revoke <u> <streamId>                 Remove an entitlement
-  set-meta <id> [--title --feed --live --order <n|null> --featured [true|false] --poster ...]
+  set-meta <id> [--title --feed --live --order <n|null> --featured [true|false] --restricted [true|false] --poster ...]
+                                        (--restricted marks the channel access-controlled: players ask for the parental PIN)
                                         (art fields take an 'assets/…' path or an https:// URL; '' clears)
                 [--epg-url https://…/guide.json --epg-id <id-in-that-feed>]  Attach a program guide ('' clears)
   set-max-devices <u> <n>               Concurrent device limit
