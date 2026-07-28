@@ -91,7 +91,7 @@
       <div class="card table-card scroll">
         <table id="streams-table">
           <thead><tr>
-            <th>ID</th><th>Name</th><th>Status</th><th>Category</th><th>Origin</th><th>Order</th><th class="actions-col"></th>
+            <th data-sort="id">ID</th><th data-sort="title">Name</th><th data-sort="status">Status</th><th data-sort="category">Category</th><th data-sort="origin">Origin</th><th data-sort="order">Order</th><th class="actions-col"></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -115,7 +115,7 @@
       <div class="card table-card scroll">
         <table id="users-table">
           <thead><tr>
-            <th>User</th><th>Status</th><th>Grants</th><th>Devices</th><th>Max</th><th class="actions-col"></th>
+            <th data-sort="username" title="sorts the rows loaded so far">User</th><th data-sort="status" title="sorts the rows loaded so far">Status</th><th data-sort="grants" title="sorts the rows loaded so far">Grants</th><th data-sort="devices" title="sorts the rows loaded so far">Devices</th><th data-sort="max" title="sorts the rows loaded so far">Max</th><th class="actions-col"></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -133,7 +133,7 @@
       <div class="card table-card scroll">
         <table id="packages-table">
           <thead><tr>
-            <th>Package</th><th>Members</th><th>Resolves to</th><th>Holders</th><th>Default</th><th class="actions-col"></th>
+            <th data-sort="name">Package</th><th>Members</th><th data-sort="resolved">Resolves to</th><th data-sort="holders">Holders</th><th data-sort="default">Default</th><th class="actions-col"></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -159,7 +159,7 @@
       <div class="card table-card scroll">
         <table id="admins-table">
           <thead><tr>
-            <th>Admin</th><th>Status</th><th>Created</th><th class="actions-col"></th>
+            <th data-sort="name">Admin</th><th data-sort="status">Status</th><th data-sort="created">Created</th><th class="actions-col"></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -179,7 +179,7 @@
       <div class="card table-card scroll">
         <table id="publishers-table">
           <thead><tr>
-            <th>Publisher</th><th>Status</th><th>Channel scopes</th><th>Key</th><th>Added</th><th class="actions-col"></th>
+            <th data-sort="name">Publisher</th><th data-sort="status">Status</th><th>Channel scopes</th><th>Key</th><th data-sort="added">Added</th><th class="actions-col"></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -202,7 +202,7 @@
       <div class="card table-card scroll">
         <table id="sources-table">
           <thead><tr>
-            <th>Source</th><th>Category</th><th>Channels</th><th>Every</th><th>Last sync</th><th>State</th><th class="actions-col"></th>
+            <th data-sort="name">Source</th><th data-sort="category">Category</th><th data-sort="channels">Channels</th><th data-sort="interval">Every</th><th data-sort="lastSync">Last sync</th><th data-sort="state">State</th><th class="actions-col"></th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -249,7 +249,7 @@
       <div class="card table-card scroll">
         <table id="categories-table">
           <thead><tr>
-            <th>Category</th><th>Label</th><th>Channels</th><th>Order</th><th>State</th><th class="actions-col"></th>
+            <th data-sort="slug">Category</th><th data-sort="label">Label</th><th data-sort="channels">Channels</th><th data-sort="order">Order</th><th>State</th><th class="actions-col"></th>
           </tr></thead>
           <tbody></tbody>
         </table>

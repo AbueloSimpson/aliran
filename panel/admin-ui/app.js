@@ -174,7 +174,15 @@ $('#users-more').addEventListener('click', () => loadUsers(false).catch((err) =>
 function renderUsers () {
   const tbody = $('#users-table tbody')
   tbody.innerHTML = ''
-  for (const u of users) {
+  // Sorts the loaded rows only — the list is server-paged behind "Load more".
+  const rows = sortRows('users-table', users, {
+    username: (u) => u.username,
+    status: (u) => u.status,
+    grants: (u) => (u.grants || []).length,
+    devices: (u) => u.devices,
+    max: (u) => u.maxDevices ?? null
+  })
+  for (const u of rows) {
     const tr = document.createElement('tr')
     tr.innerHTML = `
       <td><b>${esc(u.username)}</b></td>
@@ -294,6 +302,66 @@ function filteredStreams () {
     (!streamView.src || (streamView.src === '(manual)' ? !s.source : s.source === streamView.src)))
 }
 
+// ---------------------------------------------------------------- column sorting
+//
+// Any <th data-sort="key"> becomes a sort control. One click sorts ascending, a
+// second flips to descending, a third clears the sort — every table has a natural
+// order worth getting back to (catalog order on streams, the tree on categories),
+// so an operator is never stuck in a sorted view. The state is per table and lives
+// only in the page; a reload starts from the natural order again.
+const sortState = {} // tableId -> { key, dir } — dir 1 = ascending, -1 = descending, 0 = off
+
+function wireSort (tableId, render) {
+  sortState[tableId] = { key: null, dir: 0 }
+  for (const th of $('#' + tableId).querySelectorAll('thead th[data-sort]')) {
+    th.classList.add('sortable')
+    th.tabIndex = 0
+    th.addEventListener('click', () => {
+      const st = sortState[tableId]
+      if (st.key === th.dataset.sort) st.dir = st.dir === 1 ? -1 : 0
+      else { st.key = th.dataset.sort; st.dir = 1 }
+      if (st.dir === 0) st.key = null
+      markSort(tableId)
+      render()
+    })
+    th.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); th.click() } })
+  }
+}
+
+function markSort (tableId) {
+  const st = sortState[tableId]
+  for (const th of $('#' + tableId).querySelectorAll('thead th[data-sort]')) {
+    th.dataset.dir = st.key === th.dataset.sort ? (st.dir === 1 ? 'asc' : 'desc') : ''
+  }
+}
+
+// Sort a COPY of `rows` by the picked column. `cols` maps each data-sort key to a
+// value getter; numbers compare numerically, everything else as text with numeric
+// collation (so "ch-2" lands before "ch-10"). A getter returns null or '' for a cell
+// that shows "—", and those rows sink to the bottom whichever way the column runs —
+// a descending sort must not fill the first page with blanks. An unsorted table
+// returns the array it was given, untouched.
+function sortRows (tableId, rows, cols) {
+  const st = sortState[tableId]
+  const get = st && st.key && cols[st.key]
+  if (!get) return rows
+  const blank = (v) => v == null || v === ''
+  return [...rows].sort((a, b) => {
+    const x = get(a); const y = get(b)
+    if (blank(x) || blank(y)) return blank(x) && blank(y) ? 0 : blank(x) ? 1 : -1
+    if (typeof x === 'number' && typeof y === 'number') return (x - y) * st.dir
+    return String(x).localeCompare(String(y), undefined, { numeric: true }) * st.dir
+  })
+}
+
+wireSort('streams-table', () => { streamView.page = 0; renderStreams() }) // a re-sort starts at page 1
+wireSort('users-table', renderUsers)
+wireSort('categories-table', renderCategories)
+wireSort('packages-table', renderPackages)
+wireSort('sources-table', renderSources)
+wireSort('publishers-table', renderPublishers)
+wireSort('admins-table', renderAdmins)
+
 // Rebuild a filter <select>'s options (keeping its "all" first option), holding on
 // to the current pick when it still exists.
 function fillSelect (sel, values, current) {
@@ -316,7 +384,14 @@ function renderStreams () {
   fillSelect(srcSel, srcNames.length ? ['(manual)', ...srcNames] : [], streamView.src)
   streamView.src = srcSel.value
 
-  const hits = filteredStreams()
+  const hits = sortRows('streams-table', filteredStreams(), {
+    id: (s) => s.id,
+    title: (s) => s.title || '',
+    status: (s) => (s.isLive ? 'live' : s.status || 'idle'),
+    category: (s) => (s.category || []).join(', '),
+    origin: (s) => s.source || s.origin || '',
+    order: (s) => s.order ?? null
+  })
   const per = streamView.per > 0 ? streamView.per : (hits.length || 1)
   const pages = Math.max(1, Math.ceil(hits.length / per))
   if (streamView.page >= pages) streamView.page = pages - 1
@@ -465,7 +540,12 @@ function renderPublishers () {
   $('#publisher-count').textContent = publishers.length
     ? `${publishers.length} publisher${publishers.length === 1 ? '' : 's'}`
     : ''
-  for (const p of publishers) {
+  const rows = sortRows('publishers-table', publishers, {
+    name: (p) => p.name,
+    status: (p) => p.status,
+    added: (p) => p.addedAt || null
+  })
+  for (const p of rows) {
     const revoked = p.status !== 'active'
     const tr = document.createElement('tr')
     tr.innerHTML = `
@@ -504,9 +584,17 @@ function renderCategories () {
     tbody.innerHTML = '<tr><td colspan="6" class="muted">no categories yet — they appear as soon as a channel carries one</td></tr>'
     return
   }
-  const roots = categories.filter((c) => !c.parent)
-  const kids = (p) => categories.filter((c) => c.parent === p)
-  const orphans = categories.filter((c) => c.parent && !roots.some((r) => r.slug === c.parent))
+  // A sort applies WITHIN each level — roots against roots, a parent's children
+  // against each other — so the tree keeps its shape whichever column you pick.
+  const cs = (list) => sortRows('categories-table', list, {
+    slug: (c) => c.slug,
+    label: (c) => c.label || '',
+    channels: (c) => c.channels,
+    order: (c) => c.order ?? null
+  })
+  const roots = cs(categories.filter((c) => !c.parent))
+  const kids = (p) => cs(categories.filter((c) => c.parent === p))
+  const orphans = cs(categories.filter((c) => c.parent && !roots.some((r) => r.slug === c.parent)))
   const ordered = []
   for (const r of roots) { ordered.push([r, 0]); for (const k of kids(r.slug)) ordered.push([k, 1]) }
   for (const o of orphans) ordered.push([o, 1]) // parent slug never registered/in use
@@ -614,7 +702,15 @@ function renderSources () {
   $('#source-count').textContent = channelSources.length
     ? `${channelSources.length} source${channelSources.length === 1 ? '' : 's'} · ${channelSources.reduce((n, s) => n + s.channels, 0)} channels`
     : ''
-  for (const s of channelSources) {
+  const rows = sortRows('sources-table', channelSources, {
+    name: (s) => s.name,
+    category: (s) => s.category,
+    channels: (s) => s.channels,
+    interval: (s) => s.intervalMs || 86400000,
+    lastSync: (s) => s.lastSync || null, // never synced sinks to the bottom
+    state: (s) => (s.enabled === false ? 'paused' : 'enabled')
+  })
+  for (const s of rows) {
     const disabled = s.enabled === false
     const rep = s.lastReport
     const tr = document.createElement('tr')
@@ -719,7 +815,13 @@ function renderPackages () {
   $('#package-count').textContent = channelPackages.length
     ? `${channelPackages.length} package${channelPackages.length === 1 ? '' : 's'}`
     : ''
-  for (const p of channelPackages) {
+  const rows = sortRows('packages-table', channelPackages, {
+    name: (p) => p.name,
+    resolved: (p) => p.resolved.length,
+    holders: (p) => p.holders,
+    default: (p) => (p.default ? 0 : 1)
+  })
+  for (const p of rows) {
     const tr = document.createElement('tr')
     tr.innerHTML = `
       <td><b>${esc(p.name)}</b>${p.label !== p.name ? `<br><span class="muted">${esc(p.label)}</span>` : ''}</td>
@@ -747,7 +849,12 @@ function renderAdmins () {
   $('#admin-count').textContent = admins.length
     ? `${admins.length} admin${admins.length === 1 ? '' : 's'}`
     : ''
-  for (const a of admins) {
+  const rows = sortRows('admins-table', admins, {
+    name: (a) => a.name,
+    status: (a) => a.status,
+    created: (a) => a.createdAt || null
+  })
+  for (const a of rows) {
     const isSelf = a.name === who
     const tr = document.createElement('tr')
     tr.innerHTML = `

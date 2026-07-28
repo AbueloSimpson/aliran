@@ -170,6 +170,14 @@ td .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
   background: var(--panel); box-shadow: 0 1px 0 var(--border);
 }
 
+/* Sortable headers: click cycles ascending → descending → natural order. The idle
+   glyph is dim so a sorted column reads as the only marked one. */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover, th.sortable:focus-visible { color: var(--text); }
+th.sortable::after { content: '↕'; margin-left: 6px; opacity: .3; font-size: 11px; }
+th.sortable[data-dir=asc]::after { content: '↑'; opacity: 1; color: var(--accent); }
+th.sortable[data-dir=desc]::after { content: '↓'; opacity: 1; color: var(--accent); }
+
 /* category chips in the streams table filter on click */
 .chip.cat-chip { cursor: pointer; }
 .chip.cat-chip:hover { border-color: var(--accent-dim); color: var(--text); }
