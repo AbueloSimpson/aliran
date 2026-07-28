@@ -592,43 +592,69 @@ function renderCategories () {
     channels: (c) => c.channels,
     order: (c) => c.order ?? null
   })
-  const roots = cs(categories.filter((c) => !c.parent))
+  const real = categories.filter((c) => !c.parent)
+  const realSlugs = new Set(real.map((r) => r.slug))
   const kids = (p) => cs(categories.filter((c) => c.parent === p))
-  const orphans = cs(categories.filter((c) => c.parent && !roots.some((r) => r.slug === c.parent)))
+  // A parent slug is often IN USE without being a category itself: production carries
+  // Movies/English and Movies/Español, but nothing is tagged plain "Movies". Give each
+  // such prefix a heading row of its own — without one its children dangle at the
+  // bottom of the table under a stray tree marker, which is where the biggest rails
+  // (85 and 57 channels) ended up. A heading owns no channels, so its count is the
+  // total of the rails below it.
+  const groups = [...new Set(categories.filter((c) => c.parent && !realSlugs.has(c.parent)).map((c) => c.parent))]
+    .map((slug) => ({
+      slug,
+      label: slug,
+      group: true, // no presentation entry, no membership — a heading and nothing else
+      channels: categories.filter((c) => c.parent === slug).reduce((n, c) => n + c.channels, 0),
+      order: null,
+      hidden: false,
+      registered: false
+    }))
+  // Slug order is the baseline the API already returns rows in — re-apply it so a
+  // heading takes its alphabetical place instead of trailing the real entries.
+  const tops = real.concat(groups).sort((a, b) => a.slug.localeCompare(b.slug, undefined, { numeric: true }))
   const ordered = []
-  for (const r of roots) { ordered.push([r, 0]); for (const k of kids(r.slug)) ordered.push([k, 1]) }
-  for (const o of orphans) ordered.push([o, 1]) // parent slug never registered/in use
+  for (const t of cs(tops)) { ordered.push([t, 0]); for (const k of kids(t.slug)) ordered.push([k, 1]) }
   // Search keeps a matching child's parent on screen, so the tree never shows an
   // indented row with nothing above it.
   const q = $('#category-search').value.trim().toLowerCase()
   const hit = (c) => c.slug.toLowerCase().includes(q) || (c.label || '').toLowerCase().includes(q)
   const shown = q === '' ? ordered : ordered.filter(([c, depth]) => hit(c) || (depth === 0 && kids(c.slug).some(hit)))
+  const realShown = shown.filter(([c]) => !c.group).length // headings are not categories
   count.textContent = q === ''
     ? `${categories.length} categor${categories.length === 1 ? 'y' : 'ies'}`
-    : `${shown.length} of ${categories.length}`
-  if (!shown.length) {
+    : `${realShown} of ${categories.length}`
+  if (!realShown) {
     tbody.innerHTML = `<tr><td colspan="6" class="muted">no category matches "${esc(q)}"</td></tr>`
     return
   }
   for (const [c, depth] of shown) {
     const tr = document.createElement('tr')
+    if (c.group) tr.className = 'cat-group'
     tr.innerHTML = `
       <td>${depth ? '<span class="muted">└ </span>' : ''}<b>${esc(c.slug.split('/').pop())}</b>${depth ? '' : ''}<br><span class="mono muted">${esc(c.slug)}</span></td>
-      <td>${c.label !== c.slug ? esc(c.label) : '<span class="muted">—</span>'}</td>
-      <td>${c.channels}</td>
+      <td>${c.group || c.label === c.slug ? '<span class="muted">—</span>' : esc(c.label)}</td>
+      <td${c.group ? ' class="muted" title="no channel carries this slug — the total counts the rails below it"' : ''}>${c.channels}</td>
       <td class="muted">${c.order != null ? c.order : '—'}</td>
-      <td>${c.hidden ? '<span class="badge disabled">hidden</span> ' : ''}${c.registered ? '' : '<span class="chip" title="in use on channels but has no presentation entry yet">unregistered</span>'}</td>
+      <td>${c.group
+        ? '<span class="chip" title="a prefix its rails share (Movies/English, Movies/Español) — no channel carries it on its own. Edit it to give the group a label and an order; rename it to move every rail below it.">group</span>'
+        : (c.hidden ? '<span class="badge disabled">hidden</span> ' : '') + (c.registered ? '' : '<span class="chip" title="in use on channels but has no presentation entry yet">unregistered</span>')}</td>
       <td><div class="row-actions">
         <button class="btn small" data-act="edit">edit</button>
         <button class="btn small" data-act="rename">rename</button>
-        <button class="btn small" data-act="merge">merge</button>
-        <button class="btn small danger" data-act="forget"${c.registered ? '' : ' disabled'}>forget</button>
+        ${c.group
+          ? '' // merge moves channels and this heading has none; forget needs an entry to drop
+          : `<button class="btn small" data-act="merge">merge</button>
+        <button class="btn small danger" data-act="forget"${c.registered ? '' : ' disabled'}>forget</button>`}
       </div></td>`
     tr.querySelector('[data-act=edit]').addEventListener('click', () => editCategory(c))
     tr.querySelector('[data-act=rename]').addEventListener('click', () => renameCategoryDlg(c))
-    tr.querySelector('[data-act=merge]').addEventListener('click', () => mergeCategoryDlg(c))
-    const forget = tr.querySelector('[data-act=forget]')
-    if (c.registered) forget.addEventListener('click', () => forgetCategory(c))
+    if (!c.group) {
+      tr.querySelector('[data-act=merge]').addEventListener('click', () => mergeCategoryDlg(c))
+      const forget = tr.querySelector('[data-act=forget]')
+      if (c.registered) forget.addEventListener('click', () => forgetCategory(c))
+    }
     tbody.appendChild(tr)
   }
 }

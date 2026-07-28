@@ -178,6 +178,11 @@ th.sortable::after { content: '↕'; margin-left: 6px; opacity: .3; font-size: 1
 th.sortable[data-dir=asc]::after { content: '↑'; opacity: 1; color: var(--accent); }
 th.sortable[data-dir=desc]::after { content: '↓'; opacity: 1; color: var(--accent); }
 
+/* A category heading row stands for a slug prefix its rails share, not a category
+   of its own — tinted so the rails below it read as a group. */
+tr.cat-group > td { background: var(--panel-2); }
+tr.cat-group b { color: var(--muted); }
+
 /* category chips in the streams table filter on click */
 .chip.cat-chip { cursor: pointer; }
 .chip.cat-chip:hover { border-color: var(--accent-dim); color: var(--text); }
