@@ -18,7 +18,7 @@ phone + Android TV, and the Windows desktop player).
 
 ### Fixed
 
-- **Panel RPC re-arm is validated (S52)** — found live: after a panel restart
+- **Panel RPC re-arm is validated** — found live: after a panel restart
   dropped the RPC socket, the engine re-armed the RPC on the **next** swarm
   connection to arrive, which mid-session is often a broadcaster feed peer
   (hyperswarm keeps one socket per peer across every topic). Login, session
@@ -33,7 +33,7 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
-- **Movies & Series: the full browse experience + series playback (S54)** — the
+- **Movies & Series: the full browse experience + series playback** — the
   VOD section of both apps is rebuilt around a reference mockup set, and the
   provider config grows a second per-kind source: `sources.series` (CLI
   `vod-config-set --series-source`, the `/api/vod-config` `sources` map, a new
@@ -76,7 +76,7 @@ phone + Android TV, and the Windows desktop player).
   on the phone it rides alongside the hardware volume keys; TV remotes keep
   owning volume as before).
 
-- **Movies & Series in the apps (S53b–d)** — both the phone/TV app and the desktop
+- **Movies & Series in the apps** — both the phone/TV app and the desktop
   player grow a VOD section fed by the operator's external provider: a menu tile
   (present **only** while the panel-delivered `vod` payload says enabled, and a
   brand can still switch it off with `sections.vod:false`), a searchable
@@ -93,13 +93,13 @@ phone + Android TV, and the Windows desktop player).
   playable URLs — which embed the account token via a literal `{token}`
   placeholder the client fills in — are refused the substitution on anything but
   https. The detail-response shape was **verified against the live provider**
-  (S53d): a flat object with the stream URL in `path`/`path_1080`/`path_720` and
+  a flat object with the stream URL in `path`/`path_1080`/`path_720` and
   the runtime as `"hh:mm:ss"`, pinned by shared fixtures in the RN jest suite and
   `test:desktop-vod` (the two provider-client copies must change together).
   End-to-end validated against a real provider catalog (7k+ titles): grid,
   search, detail, playback.
 
-- **External VOD provider — the panel-owned switch (S53a)** — an operator can point
+- **External VOD provider — the panel-owned switch** — an operator can point
   the apps at a third-party movies/series catalog they already have an account
   with. One replicated record (`svcmeta/vod`) holds the enable bit plus the
   coordinates (`apiBase`, `service`, per-kind source values, extra query params);
@@ -115,7 +115,7 @@ phone + Android TV, and the Windows desktop player).
   version check on the client — and a change lands at each viewer's next login.
   The apps' VOD section itself ships next.
 
-- **In-player problem reporting (S51)** — the "Report a problem" flow moved from
+- **In-player problem reporting** — the "Report a problem" flow moved from
   Settings onto the **player itself**: a Report button on the now-playing bar
   (phone + desktop, plus the `r` key on desktop) and on the playing channel's
   info panel (TV/D-pad). Reports therefore always carry the **channel being
@@ -129,7 +129,7 @@ phone + Android TV, and the Windows desktop player).
 - **Viewer problem reports (panel ingest core)** — viewers can report a problem
   ("no audio on channel X") over the **existing** P2P RPC socket: a new `report`
   responder beside `login`/`session`, no new port and no wire change for older
-  clients (the method simply does not exist on a pre-S50 panel). Reports are
+  clients (the method simply does not exist on an older panel). Reports are
   **pseudonymous by construction**: the panel verifies the session token, then
   immediately reduces the identity to `HMAC-SHA256(salt, userId|deviceId)` sliced
   to 16 hex — no username and no device id is ever stored, counted, returned or
@@ -162,7 +162,7 @@ phone + Android TV, and the Windows desktop player).
   error/status/fallback breadcrumbs — and proves entitlement with the retained
   session token, never a username. It **never throws**: a local 10-minute
   cooldown per channel+category means mashing the button during a real outage
-  never reaches the wire, and a panel without the responder (pre-S50, or reports
+  never reaches the wire, and a panel without the responder (too old, or reports
   disabled) maps to a friendly "this service doesn't accept reports" rather than
   an error. The category enum is duplicated per runtime that cannot import
   another's copy (panel, engine, RN binding, desktop renderer) with an e2e drift
@@ -228,7 +228,7 @@ phone + Android TV, and the Windows desktop player).
   **[quickstart walkthrough](docs/mcp-quickstart.md)** (config → doctor →
   per-client wiring incl. an advisory-hints caveat → first prompts → fresh-server
   install, with diagrams and a troubleshooting table). See [docs/mcp.md](docs/mcp.md).
-- **MCP ops completeness (S49a)** — the four P0 gaps that still forced an operator
+- **MCP ops completeness** — the four P0 gaps that still forced an operator
   out of the MCP, closed (59 → **73 tools**): **(1) env tuning + restart** —
   `server_set_env {service, pairs}` upserts documented, **allowlisted** env knobs
   (secrets like `PUBLISHER_KEY` refused — they have dedicated server-side flows)
@@ -247,7 +247,7 @@ phone + Android TV, and the Windows desktop player).
   `restore.sh` are also executable now and invoked via `sh` — the committed
   `backup.sh` mode bit had made `./deploy/backup.sh` fail on a fresh clone).
   **(3) analytics** — `panel_analytics` / `broadcaster_analytics {days?}` expose
-  the S48 aggregate-only rollups (counts and "≥ N" lower bounds only — no new
+  the aggregate-only analytics rollups (counts and "≥ N" lower bounds only — no new
   identity surface). **(4) admin accounts** — list/add/remove/set-password ×
   panel **and** broadcaster, with generated-and-returned passwords like
   `panel_create_user`, and an explicit caveat that rotating the account the MCP
@@ -258,7 +258,7 @@ phone + Android TV, and the Windows desktop player).
   output through the ssh stub; newline-injection guard; restart; list/restore
   incl. the refusal path; and a whole-log assert that no tool ever used
   `--force-recreate`).
-- **MCP content + business coverage (S49b)** — the P1 gaps: content curation and
+- **MCP content + business coverage** — the P1 gaps: content curation and
   the two previously-unwrapped services (73 → **101 tools**). **Categories**:
   `panel_set_category` (presentation: label/order/hidden),
   `panel_rename_category` / `panel_merge_categories` (rewrite the tag across
@@ -288,7 +288,7 @@ phone + Android TV, and the Windows desktop player).
   sections **Q–V** over an in-process REAL reseller service (pointed at the
   test's real panel; the mint is asserted against the actual ledger) and a
   fake-TitleManager library control server — no DHT, no ffmpeg.
-- **Viewer reports through the MCP + the operator guide (S50d)** — the reporting
+- **Viewer reports through the MCP + the operator guide** — the reporting
   feature reaches the AI-operated path and the docs site (102 → **107 tools**).
   Five new panel tools: `panel_list_reports` (status/channel/category filters,
   raw epoch-ms `since` **plus** a `sinceHours` convenience, `limit`),
@@ -313,7 +313,7 @@ phone + Android TV, and the Windows desktop player).
   anonymous to the operator — do not tell your audience otherwise). `test:mcp`
   grew section **AD**, driving the tools against a real reports store + notifier
   stub, plus a category-enum drift guard against `panel/src/reports.js`.
-- **MCP scale + DX (S49c)** — the P2/P3 tail; completes the S49
+- **MCP scale + DX** — the P2/P3 tail; completes the
   operator-coverage arc (101 → **102 tools** + 6 prompts). **Multi-host SSH**:
   the config's `ssh` block optionally names extra boxes
   (`hosts: {name: {host, user, keyPath?, port?, repoDir?}}` + `default`; the
@@ -366,7 +366,7 @@ phone + Android TV, and the Windows desktop player).
   channels join by themselves. User records gain **grant provenance**
   (`manualGrants` vs `packages`); revoking a stream now removes the *manual*
   entitlement (a covering package re-seals it in the same request), removing a
-  package removes only what nothing else covers, and S27 source auto-grants are
+  package removes only what nothing else covers, and source auto-grants are
   never touched by package reconciles (with auto-grant OFF, a `source:` member
   hands that source to package governance). `default` packages are auto-assigned
   to newly created users beside the source auto-grant hook. Pre-package records
@@ -571,7 +571,7 @@ phone + Android TV, and the Windows desktop player).
   and survives as e2e-harness infrastructure; **P2P channels have no CDN failover,
   by design**.)
 - Bounded hyperbee caches across every store (long-uptime heap safety).
-- **npm-ready packaging (S32)** for `@aliran/core` / `@aliran/player-sdk` /
+- **npm-ready packaging** for `@aliran/core` / `@aliran/player-sdk` /
   `@aliran/react-native` (0.1.0): registry-publishable metadata (`files`,
   `repository`, `publishConfig`, semver-ranged `@aliran/core` dep — the workspace
   and the app's `file:` graph still resolve it locally), hand-maintained TypeScript
@@ -660,7 +660,7 @@ phone + Android TV, and the Windows desktop player).
 - Windows desktop player (Electron): the engine (`@aliran/player-sdk`) runs in the
   main process on the stock N-API prebuilds; the sandboxed React renderer plays the
   localhost/redirect HLS with hls.js behind a three-call IPC bridge speaking the
-  worklet message protocol. Full S18 parity — splash auto-auth (credentials wrapped
+  worklet message protocol. Full parity with the Android app — splash auto-auth (credentials wrapped
   with `safeStorage`/DPAPI, password never re-enters the renderer), menu hub,
   fullscreen live TV with category rail + numbered list + detail panel, the live
   EPG now/next guide (the shared plain-TS data layer from `@aliran/react-native`),
@@ -698,7 +698,7 @@ phone + Android TV, and the Windows desktop player).
   absorbs viewer fan-out off the origin. It holds no grants and cannot watch what it
   serves. Ships with its own deploy pack and testnet-proven e2e.
 
-**Library (`library/`) — VOD (S8a)**
+**Library (`library/`) — VOD**
 - Standalone VOD service (deliberately NOT the broadcaster — no live-pipeline
   lifecycle applies to a static seed; runs on separate hardware so ingest bursts
   never touch a loaded live box): operator-registered video **files** become
@@ -715,7 +715,7 @@ phone + Android TV, and the Windows desktop player).
 - Panel: the catalog gains the **vod record class** — `durationSec`
   (payload-owned, like `feedKey`), **no `isLive`** (liveness is not a property a
   title has), status `'available'`/`'unavailable'` — additively beside `'live'`
-  (byte-identical live records, so S29 idempotence is unaffected); grants/sealing,
+  (byte-identical live records, so register idempotence is unaffected); grants/sealing,
   panel-authoritative metadata and blobsKey enrichment apply to titles unchanged.
 - SDK: `resolve()` returns `type`/`durationSec` and for vod arms **none** of the
   live machinery (tune watchdog, zap-prefetch gate, hybrid probes, `feed-changed`
@@ -725,7 +725,7 @@ phone + Android TV, and the Windows desktop player).
   + RN mirror types carry `type`/`durationSec`/`status`. New required-lane
   **`test:vod`** e2e proves the whole chain on a local testnet, including that the
   watchdog provably does NOT arm for vod and DOES for live across zaps.
-- **App VOD playback (S8a stage 2)**: the worklet forwards the engine's
+- **App VOD playback**: the worklet forwards the engine's
   `type`/`durationSec` as **`recordType`/`durationSec` on the `port` IPC reply**;
   `<AliranVideo>` disarms its live-edge stall-resync ladder while the served
   record is vod (a paused/seeking/finished playhead is by design — a resync would
@@ -826,7 +826,7 @@ phone + Android TV, and the Windows desktop player).
   overriding any of the 11 shared theme tokens) rebrand the dashboard with no
   source edits — served as public `/branding.json`/`.css` +
   `/branding/logo|favicon|login-bg`, layered after the byte-identical shared
-  theme block (the S19 seam, wired up); without a favicon file the tab dot
+  theme block (the theme seam, wired up); without a favicon file the tab dot
   follows the accent. Full manual (variables, image formats/sizes, what each
   token paints): docs/white-label.md.
 - **Automated credit top-ups**: `WEBHOOK_SECRET` enables
@@ -852,7 +852,7 @@ phone + Android TV, and the Windows desktop player).
   [operator guide](docs/operator-guide.md) and the
   [network-tuning KB page](docs/kb/network-tuning.md) (which also covers conntrack and fd
   limits); `test:nettune` in the required CI lane.
-- The **viewer engine now tunes its swarm too** (S33) — asymmetrically: 2 MiB receive
+- The **viewer engine now tunes its swarm too** — asymmetrically: 2 MiB receive
   (a viewer's whole download funnels into one socket pair while the worklet thread is
   busy decrypting), send left at the OS/udx default (reseed upload is opportunistic).
   SDK option `swarm: { rcvbufMb, sndbufMb }` overrides, mirroring the server envs. The

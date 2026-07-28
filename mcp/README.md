@@ -165,13 +165,13 @@ destructive-annotation presence, docs search, the re-login-on-401 path, the SSH
 executor against a command stub (which runs the REAL `config.js --check` for the
 `server_set_env` validate-then-revert path, and covers the `server_restore`
 refusal), category/source/art curation, the reseller oversight set (the credit
-mint asserted against the real ledger), and the library title lifecycle. S49c adds:
+mint asserted against the real ledger), and the library title lifecycle. On top of that:
 a SECOND fake box through the same stub (multi-host routing, per-host repoDir, the
 publisher key landing on the named box), `repeater_status` in all three
 status-server states, the list filters + grant-summary compaction, hls bounds +
 the feedKey/`key` redaction, the prompt runbooks with a tool-name drift guard,
 `server_update {dryRun}`, and an `npm pack` probe that runs the doctor from the
-unpacked tarball (docs resolving from `docs-bundle/`). S50d adds the reports
+unpacked tarball (docs resolving from `docs-bundle/`). The suite also covers the reports
 surface against a REAL reports store + notifier stub (filters, `sinceHours`,
 event-ring compaction, ack/resolve, alerts, `test_notify`), the
 `REPORTS_*` allowlist/refusal split, and a category-enum drift guard against

@@ -132,7 +132,7 @@ Two flows need this:
 
 `server_install` deliberately stays default-box-only: it installs the full
 panel+broadcaster stack, a one-box affair. Broadcaster-only scale-out installs
-are an S20b follow-up; multi-box **live** validation rides the same milestone.
+are a planned follow-up; multi-box **live** validation rides the same milestone.
 
 ## Prompts: guided runbooks
 
@@ -345,7 +345,7 @@ can add the two config blocks and get their control APIs wrapped:
 Both services join `diagnose_healthz` and the `--doctor` probes automatically
 once configured.
 
-## Scope (v1 — S49 complete)
+## Scope (v1)
 
 Panel admin + broadcaster control + reseller/library oversight + install/maintain
 + multi-host SSH (repeaters and extra boxes reachable by name, `repeater_status`
@@ -353,5 +353,5 @@ included) + prompts-as-runbooks + docs. What deliberately stays out: reseller
 **daily driving** (their own panel exists for it), client/app **builds** (signing
 keys belong on a build machine), a repeater **install orchestrator** (the by-hand
 recipe is three commands; see the multi-host section), and remote (HTTP)
-transport — local stdio only. Multi-box **live** validation rides S20b when the
-hardware lands.
+transport — local stdio only. Multi-box **live** validation rides the planned
+scale-out milestone when the hardware lands.

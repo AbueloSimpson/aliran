@@ -1,7 +1,7 @@
 # Aliran desktop player (Windows)
 
 The Windows sibling of the Android app: one Electron application that logs in over
-the DHT, browses the S18 interface (menu hub, category rail, numbered channel list,
+the DHT, browses the same interface (menu hub, category rail, numbered channel list,
 detail panel with the program guide), plays live P2P and redirect channels, and
 re-seeds to other viewers.
 
@@ -18,7 +18,7 @@ re-seeds to other viewers.
   service…* forgets it).
 - Test/dev descriptors may carry `"dev": { "username", "password" }` — Login
   prefill + first-boot auto-login. Never in anything handed to viewers.
-- **Movies & Series** (S53) appears only while the operator's panel has an external
+- **Movies & Series** appears only while the operator's panel has an external
   VOD provider enabled: the login payload carries the provider's coordinates and the
   app calls that provider ITSELF, authenticating with the viewer's own account. The
   requests run in main (`main/vod-provider.js`) — the renderer is `file://`, so CORS

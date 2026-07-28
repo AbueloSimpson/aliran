@@ -33,7 +33,7 @@
 | `set-package <name> [--label --members "…" --default true\|false]` / `remove-package <name>` | Edit a package (member edits materialize for every holder; `""` clears members) / remove it (grants only it covered are removed) |
 | `list-packages` / `show-package <name>` | Packages + resolved/holder counts / one package with the channels it resolves to now |
 | `set-user-packages <u> <p1,p2\|"">` | Replace a user's package list — seals/removes grants immediately (package commands need the store: panel stopped, or use the dashboard/API) |
-| `list-reports [--status --channel --category --limit]` | [Viewer problem reports](reports.md) (S50). Reporters are 16-hex pseudonyms — no username or device id is stored anywhere |
+| `list-reports [--status --channel --category --limit]` | [Viewer problem reports](reports.md). Reporters are 16-hex pseudonyms — no username or device id is stored anywhere |
 | `ack-report <id>` / `resolve-report <id> [note]` | Acknowledge / close one report |
 | `list-alerts [--status open\|ack\|resolved]` | Correlation alerts. **Read-only here** — a running panel holds alerts in memory and flushes lazily, so ack/resolve them in the dashboard/API |
 | `test-notify` | Send a synthetic ops notification through the configured webhook / Telegram targets (needs the panel's `REPORTS_*` env in this shell) |
@@ -86,8 +86,8 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
 | `GET /api/status` | Counts: users, streams, live, admins |
 | `GET /api/observability` | Uptime, memory, swarm peers, data size/disk free + last-200 activity ring (in-memory — cleared by a restart) |
-| `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) (S48) → `{enabled, retentionDays, days:[{date, hours:{H:{logins:{ok,failed}, sessions, onlineApps:{min,max,mean,samples}, catalog?}}, day:{uniqueViewers}}], current}` — UTC day rollups (default 7, capped at retention) + the reduced in-progress hour. Counts only, never an identity |
-| `GET /api/reports?status&channel&category&since&limit` | [Pseudonymous viewer problem reports](reports.md) (S50) → `{enabled, reports:[{id, at, lastAt, count, reporter, category, text, channel, appVersion, platform, peers, events, status, ackAt, resolvedAt, note}]}`. `reporter` is a 16-hex HMAC pseudonym — **never** a username or device id |
+| `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) → `{enabled, retentionDays, days:[{date, hours:{H:{logins:{ok,failed}, sessions, onlineApps:{min,max,mean,samples}, catalog?}}, day:{uniqueViewers}}], current}` — UTC day rollups (default 7, capped at retention) + the reduced in-progress hour. Counts only, never an identity |
+| `GET /api/reports?status&channel&category&since&limit` | [Pseudonymous viewer problem reports](reports.md) → `{enabled, reports:[{id, at, lastAt, count, reporter, category, text, channel, appVersion, platform, peers, events, status, ackAt, resolvedAt, note}]}`. `reporter` is a 16-hex HMAC pseudonym — **never** a username or device id |
 | `GET /api/reports/summary` | Badge + chart source → `{enabled, retentionDays, total, new, ack, resolved, openAlerts, shed, collapsed, byChannel, byCategory, byHour[24]}` — counts only |
 | `POST /api/reports/:id/ack` · `POST /api/reports/:id/resolve` `{note?}` | Acknowledge / close one report (the note is operator text, control-stripped and capped) |
 | `POST /api/reports/test-notify` | Send a synthetic notification through the **real** configured targets → `{enabled, targets, results:[{target, ok, status?, attempts, error?}]}` |
@@ -118,7 +118,7 @@ Login attempts are rate-limited (`LOCKOUT_THRESHOLD`/`LOCKOUT_SECONDS`).
 | `GET /api/sources/:name/channels` | Imported + excluded entries — the channels-dialog data (`{feedId,id,title,order,excluded}`) |
 | `DELETE /api/sources/:name` | Remove a source — **purges its channels** (`?keepChannels=1` detaches them as manual redirect channels instead) |
 | `POST /api/sources/:name/sync` | Pull + diff + grant now → the sync report (`added/updated/removed/skipped/conflicts/granted/notModified`) |
-| `GET/PATCH /api/vod-config` | External VOD provider (S53): the replicated `svcmeta/vod` record (`null` when never configured) / partial merge of `{enabled,apiBase,service,sources,params}`. `apiBase` is https with **no query string and no embedded credentials**; `sources` (`movies` and/or `series`) and `params` replace their whole map; `enabled:true` is refused without an apiBase + service. Viewers pick a change up at their **next login** |
+| `GET/PATCH /api/vod-config` | External VOD provider: the replicated `svcmeta/vod` record (`null` when never configured) / partial merge of `{enabled,apiBase,service,sources,params}`. `apiBase` is https with **no query string and no embedded credentials**; `sources` (`movies` and/or `series`) and `params` replace their whole map; `enabled:true` is refused without an apiBase + service. Viewers pick a change up at their **next login** |
 | `GET/POST /api/packages` | Channel packages (bouquets): list (+ resolved-channel and holder counts) / add (`{name,label?,members?,default?}` — members: stream ids, id globs, `category:<slug>`, `source:<name>`) |
 | `GET /api/packages/:name` · `PATCH /api/packages/:name` | One package + the ids it resolves to right now / edit label/members/default (member edits materialize for every holder) |
 | `DELETE /api/packages/:name` | Remove a package + strip it from users — grants only it covered are removed; manual grants and auto-grant source channels survive |
@@ -156,7 +156,7 @@ are preserved.
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
 | `GET /metrics` | **Unauthenticated** Prometheus text: process stats + channel count, boot-resume progress, incidents gauge, plus per-channel [analytics](analytics.md) lines from the last 5-min sample: `aliran_broadcaster_channel_peers{stream_id}` (a **lower bound** on audience) and `aliran_broadcaster_channel_egress_bytes_total{stream_id}` |
 | `GET /api/status` | Channels, running count, panel configured |
-| `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) (S48) → `{enabled, retentionDays, days:[{date, hours:{H:{channels:{id:{peers:{min,max,mean,samples}, egressBytes, respawns}}, incidents}}}], current}` — per-channel UTC day rollups + the in-progress hour. Stream ids and counts only, never a peer key or IP |
+| `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) → `{enabled, retentionDays, days:[{date, hours:{H:{channels:{id:{peers:{min,max,mean,samples}, egressBytes, respawns}}, incidents}}}], current}` — per-channel UTC day rollups + the in-progress hour. Stream ids and counts only, never a peer key or IP |
 | `GET /api/capabilities` | ffmpeg probe: input protocols + deep-verified encoders (`{listed,verified,error?}`) |
 | `GET/POST /api/channels` | List (+ live status) / add (`{id,title,category,input,transcode,buffer,…}`) |
 | `GET /api/channels/:id` | Status: `state` (`stopped·starting·up·waiting-input·backoff`), running, ffmpegUp, peers, registered, playlist, watchdog, `slate` (`{slated,file,since,failures}` — `slated:true` means viewers see the offline slate, not the source, even though `state` is `up`), `detectedProfile` (`{codec,width,height}` the slate matches against), `ingest.pushUrl` (push kinds; uses `PUBLIC_HOST`) |
@@ -309,7 +309,7 @@ without `force`, and echoes exactly what was overwritten and from which archive.
 Rotating or removing the admin account the MCP itself logs in with requires
 updating the operator's local mcp config afterwards.
 
-S49c behaviors worth knowing: **multi-host** — `ssh.hosts` names extra boxes
+Multi-host and ergonomics behaviors worth knowing: **multi-host** — `ssh.hosts` names extra boxes
 (repeaters, scale-out broadcasters; each entry may carry its own `keyPath`/`port`/
 `repoDir`), the `host` parameter routes a tool there, and `panel_add_publisher
 {host}` writes the minted `PUBLISHER_KEY` into **that** box's `broadcaster/.env`
@@ -324,7 +324,7 @@ take `hlsTime` (1-30) / `hlsListSize` (2-60); `panel_add_stream` takes `feedKey`
 from the result; an omitted one is generated and returned once), and
 `panel_set_stream_meta` takes `feedKey`.
 
-S49b behaviors worth knowing: `panel_rename_category` / `panel_merge_categories`
+Content-curation behaviors worth knowing: `panel_rename_category` / `panel_merge_categories`
 **rewrite the category tag across every catalog record** (package `category:` member
 selectors are strings re-resolved after the move — update them to the new slug), and
 `panel_delete_category` drops only the registry entry, keeping membership.

@@ -42,7 +42,7 @@ npm run bundle-backend        # -> backend/app.bundle
 npm run android               # phone or Android TV emulator/device
 ```
 
-**Flavors** (S36, mirrors the desktop player): a BAKED `panelPubKey` ships in the APK,
+**Flavors** (mirrors the desktop player): a BAKED `panelPubKey` ships in the APK,
 boots directly, and is never changeable at runtime. The committed keyless
 `config/service.public.json` (`panelPubKey: ""`) instead routes first run to a
 **Connect screen** (panel key + username + password, persisted on-device after a
@@ -67,7 +67,7 @@ a **phone** and an **Android TV** target. See [`../docs/client-build.md`](../doc
 - [ ] Localhost Range server mapping to the decrypting Hyperdrive + `/assets`
 - [ ] Live catalog `bee.watch()` → stream list; peer-count status
 - [ ] Dual phone+TV manifest (leanback + touchscreen-optional), cleartext localhost
-- [x] Runtime service descriptor (S36): one generic keyless APK connects to any
+- [x] Runtime service descriptor: one generic keyless APK connects to any
       operator via the first-run Connect screen (panel key + credentials, persisted;
       Settings → "Change service…") — the Android analogue of the desktop player's
       public flavor. A QR/deep-link shortcut for the key stays a possible future nicety.

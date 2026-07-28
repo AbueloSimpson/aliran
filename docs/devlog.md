@@ -84,7 +84,7 @@ the bottom. The concise shipped-feature summary lives in
   across playbacks) — art fields arrive in `{type:'streams'}` as ready-to-use URLs.
 - Android release builds permit cleartext HTTP **only to loopback** via a network
   security config — required for the on-device media/assets server (API 28+ blocks
-  cleartext by default; also needed by the S6c video player).
+  cleartext by default; also needed by the in-app video player).
 - **Player screen — live P2P playback verified on-device**: tapping a channel sends
   `{streamId}` to the worklet, which replicates the encrypted feed over the DHT,
   re-seeds it, and serves it on the session's localhost port; `react-native-video`
@@ -386,7 +386,7 @@ the bottom. The concise shipped-feature summary lives in
 
 ### Panel dashboard UI for the admin surface (verified)
 - The web dashboard (`panel/admin-ui/`, still vanilla no-build HTML/JS) now covers
-  the full S16a admin surface:
+  the full admin-API surface:
   - **Admins tab** — add/remove admins and rotate passwords from the browser;
     rotating or removing **your own** account warns explicitly and signs you out
     (the API kills the token server-side; the UI drops to the login view).
@@ -566,7 +566,7 @@ the bottom. The concise shipped-feature summary lives in
   chrome-free (its own overlays own all badges).
 
 ### Feat: broadcaster reliability — auto-resume, isLive:false on stop, ffmpeg log ring (verified)
-- Completes S15b (the ffmpeg **watchdog** and feed-rotation landed earlier in `6e38b90`).
+- Completes the broadcaster-reliability arc (the ffmpeg **watchdog** and feed-rotation landed earlier in `6e38b90`).
 - **Auto-resume on boot.** A started channel now persists its desired state
   (`desiredRunning` in `channels.json`); `ChannelManager.init()` reconciles the registry on
   boot and restarts channels that were running — no more "the broadcaster rebooted and the
@@ -575,7 +575,7 @@ the bottom. The concise shipped-feature summary lives in
 - **`isLive:false` on stop — zero panel changes.** The per-channel panel Hyperswarms are
   replaced by ONE manager-owned **`PanelLink`** (`broadcaster/src/panel-link.js`) with a
   per-stream, latest-state-wins op queue. `start()` enqueues the live register; `stop()`
-  enqueues `{streamId, feedKey, isLive:false}` and waits ≤5 s for it to land (the S1 catalog
+  enqueues `{streamId, feedKey, isLive:false}` and waits ≤5 s for it to land (the original catalog
   live-push flips watching clients instantly); a graceful shutdown does the same for running
   channels while keeping them marked for auto-resume. Register cycles are **serialized** —
   the panel keeps one challenge per socket, so interleaved hello→register pairs on a shared
@@ -586,7 +586,7 @@ the bottom. The concise shipped-feature summary lives in
 - **Per-channel ffmpeg log ring** (`hls.js` `onLine` → a 400-line `{t,line}` ring on the
   Channel): the raw stderr diagnostics for "why won't this source play." It survives ffmpeg
   respawns (a watchdog restart appends a marker line) and clears on an operator start. The
-  control-API/UI surface for it lands with S15c.
+  control-API/UI surface for it lands in the next entry.
 - `test:broadcaster-api` adds **Test M** (log ring populated; watchdog respawns a killed
   ffmpeg with a restart marker; stop flips the panel catalog to `isLive:false`) and **Test N**
   (a second `ChannelManager` over the same dataDir auto-resumes a `desiredRunning` channel and
@@ -610,9 +610,9 @@ the bottom. The concise shipped-feature summary lives in
   passthrough, drive path → localhost). `test:sdk` regression-clean.
 
 ### Feat: broadcaster control API + UI for ingest/transcode/logs (verified live)
-- **API:** `GET /api/capabilities` (the S15a ffmpeg probe: protocols + deep-verified
+- **API:** `GET /api/capabilities` (the boot-time ffmpeg probe: protocols + deep-verified
   encoders); `GET /api/channels/:id/logs?lines=N` → `{lines:[{t,line}], running,
-  restarts, state}` (the S15b log ring, ≤400 lines); channel status gains a top-level
+  restarts, state}` (the per-channel log ring, ≤400 lines); channel status gains a top-level
   **`state`** (`stopped · starting · up · waiting-input · backoff`) and, for push
   channels, **`ingest.pushUrl`** (rtmp/srt/udp URL built from `PUBLIC_HOST`).
 - **Control UI:** add-form ingest-kind selector that hides push protocols the host
@@ -908,7 +908,7 @@ Groundwork for the keyless repeater appliance (regional super-peers that mirror
   (maxPeers=2 → a 3rd concurrent viewer on that one channel is refused while a
   second channel still accepts). SDK unit tests cover the `swarm` option plumbing.
 
-### Repeater appliance — keyless regional super-peer (`repeater/`, S20)
+### Repeater appliance — keyless regional super-peer (`repeater/`)
 - **New first-class component `repeater/`** — the Open-Connect analog for the
   swarm: a standalone hosted app (operator- or ISP-run) that mirrors chosen
   channels' live windows and serves them to viewers, moving fan-out **off the
@@ -929,7 +929,7 @@ Groundwork for the keyless repeater appliance (regional super-peers that mirror
   watermark so cleared blocks are never re-fetched. feedKey rotations re-target
   the mirror through the public catalog watch, unattended, and PURGE the old
   feed's blocks from disk.
-- **Deploy pack** (S13 pattern): `repeater/Dockerfile`,
+- **Deploy pack** (the established pattern): `repeater/Dockerfile`,
   `deploy/docker-compose.repeater.yml` (standalone box),
   `deploy/systemd/aliran-repeater.service`, `.env.example`, README; new operator
   page `docs/repeater.md` (ISP-hosting model, sizing = pure I/O, security story).
@@ -965,7 +965,7 @@ Groundwork for the keyless repeater appliance (regional super-peers that mirror
   FAIL, exit 1, no hang; a default run then hit the real wedge on 3/6 first tunes
   and the fresh-resolve retry recovered ALL three in ~7 s → 6/6 PASS, exit 0.
   A wedge that a fresh resolve clears immediately is more evidence for the
-  wedged-connection-reuse theory from the S20 rollout notes.
+  wedged-connection-reuse theory from the repeater rollout notes.
 
 ### Fix: the wedge behind that acceptance hang — a media read committed to a reclaimed blob never ends (fixed in the SDK serving core)
 The acceptance deadline+retry above treated the symptom; instrumenting the live VPS
@@ -1078,7 +1078,7 @@ the fallback already spent.
   positive path (a genuinely seeded feed still auto-returns to P2P through the new
   servable gate).
 
-### Smooth zapping — user toggle over adaptive zapPrefetch + viewer-bandwidth docs (S21, verified)
+### Smooth zapping — user toggle over adaptive zapPrefetch + viewer-bandwidth docs (verified)
 - **The zapPrefetch that shipped OFF in the zap-latency pass is now a product
   feature**: a "Smooth zapping — uses more data" switch in the app's Settings
   (default OFF, persisted beside the other device prefs, applied live mid-play and
@@ -1116,7 +1116,7 @@ the fallback already spent.
   PASS; client jest grows a SmoothZappingToggle suite (10/10 with the existing
   suites), `tsc` clean; worklet bundle re-packs.
 
-### Redirect channels — a CDN-link channel class in the catalog (S23, verified)
+### Redirect channels — a CDN-link channel class in the catalog (verified)
 - **New channel class**: a catalog record can carry `{ redirect: true, url: 'https://…' }`
   — viewers play the operator's URL **directly** instead of a P2P feed. P2P channels
   are untouched (no CDN backup, no hybrid config needed anywhere).
@@ -1144,7 +1144,7 @@ the fallback already spent.
   purge. Docs: `docs/content-management.md` + SDK README sections.
 
 
-### Remote channel sources — provider JSON feeds as categories (S27, verified)
+### Remote channel sources — provider JSON feeds as categories (verified)
 - **The idea**: a provider publishes a prepared channel list (id/name/logo/https
   HLS url per entry — e.g. a GitHub-raw `anime-es.json` refreshed daily); the
   operator registers it once as a **source** with a rail label ("Anime") and the
@@ -1192,7 +1192,7 @@ the fallback already spent.
   through the dashboard, real GitHub ETag answering the second sync with
   "not modified", stream cards showing LIVE / ⇢ REDIRECT / ⇣ anime / Anime chips.
 
-### Sources: per-channel deselect — the exclude list (S27b, verified)
+### Sources: per-channel deselect — the exclude list (verified)
 - **Ask:** the import shows what the feed added — the operator wants to UNCHECK some
   of them. New per-source `exclude` list of FEED ids ({id, title} — the label is
   captured at exclusion time so the dialog can name entries that no longer exist in
@@ -1215,10 +1215,10 @@ the fallback already spent.
   it was appended after the alphabetical bulk, which is exactly the kind of feed
   drift the ownership/diff machinery shrugs at.)
 
-### Program guide (EPG) — fetched on demand from the same provider JSON (S27, verified)
+### Program guide (EPG) — fetched on demand from the same provider JSON (verified)
 - **The answer to "how does EPG work remotely with the same JSON?":** the schedule
   never enters the catalog (append-only replicated bee — a day of programs per
-  category would grow every client's store forever). Since S27 every imported channel
+  category would grow every client's store forever). Since remote sources landed, every imported channel
   carries `epgUrl` (the same feed URL) + `epgId` (its id inside the feed); now the APP
   fetches that JSON over https on demand and renders the guide client-side.
 - **SDK** (`sdk/player.js` `_display`, `sdk/login.js`, `sdk/react-native` `Stream`):
@@ -1251,7 +1251,7 @@ the fallback already spent.
   channel via setMeta + http rejection) → A0–J. On-device install deferred (phone off
   wireless adb).
 
-### Bounded disk metadata — orphaned-generation GC + periodic feed rotation (S28, verified)
+### Bounded disk metadata — orphaned-generation GC + periodic feed rotation (verified)
 
 The `disk` buffer keeps *segment data* O(window) via blob reclaim, but a hypercore's
 append-only **merkle tree / metadata** is never freed by `clear()`. It grows for a feed's
@@ -1362,7 +1362,7 @@ trap, `/proc` parsing and its non-Linux fallback, a real bound UDX socket, and t
 asserts whichever outcome is correct for the host, so stock-kernel CI exercises clamp detection
 against a real undersized ceiling. See `docs/kb/network-tuning.md`.
 
-### Panel control-plane disk: idempotent register + the probe-core leak (S29, verified)
+### Panel control-plane disk: idempotent register + the probe-core leak (verified)
 
 Three fixes to unbounded growth in the panel's own on-disk state, found chasing
 `aliran_panel-data` size on the live box.
@@ -1382,7 +1382,7 @@ the heartbeat **is** its retry timer.
 drive on its own corestore. Those cores are **keyed** (metadata by feedKey, blobs by the key
 inside the encrypted bee header), so corestore files them under `cores/<discovery-key>/`
 regardless of the `blobs-probe:` namespace — and `drive.close()` only ended the session; the
-directories stayed on disk forever. Harmless while feedKeys were stable, but **S28's periodic
+directories stayed on disk forever. Harmless while feedKeys were stable, but **the periodic
 rotation mints a fresh feedKey per rotation** and re-enqueues the enricher, so the control plane
 grew with rotations × channels, without bound (this was the 2.1 GB). Each probe now `purge()`s
 the cores it opened (close every session, unlink storage; corestore's `rmdir` takes the
@@ -1393,7 +1393,7 @@ second corestore replicating on the panel's existing connections would clobber t
 
 **Reclaiming what older builds stranded.** Purging new probes bounds new growth, but nothing
 collects the cores a pre-purge build already wrote. `openStore()` now sweeps them, reusing the
-GC the broadcaster has trusted since S28 — which moved to `@aliran/core/store-gc.js` (panel/
+GC the broadcaster already trusted — which moved to `@aliran/core/store-gc.js` (panel/
 cannot import from broadcaster/; both images vendor core/). Two fail-safe guards: all **three**
 cores the panel owns must resolve (the signed bee + the assets drive's metadata and blobs
 cores) or it deletes nothing, and anything the Corestore currently holds open is kept
@@ -1412,7 +1412,7 @@ sortable/filterable table that **sorts by urgency** by default (retrying > waiti
 on air > stopped) so problems surface at the top, plus five KPI tiles all derived from real
 control-API values — deliberately **no** CPU/RAM/disk bars, because the control API exposes no
 host metrics and inventing them would be a lie. "Peer links", not "peers": the number sums
-per-channel swarm connections and one S21 zap-prefetch viewer holds several, so it is not a
+per-channel swarm connections and one zap-prefetch viewer holds several, so it is not a
 viewer count. The uptime column shows how long the **current** ffmpeg has been alive
 (`watchdog.lastRestartAt`), not when the operator pressed Start — at ~2.5 respawns/channel/hour
 those differ by hours, and only the ffmpeg clock says whether media is actually flowing.
@@ -1445,14 +1445,14 @@ long-standing "manual edits to mapped fields don't stick" wart: a source feed de
 channels carry its category and reasserts that on every sync; the operator owns how it looks.
 Documented honestly — renaming a **source-owned** rail via catmeta is undone by the next real
 re-sync (a 304 sync leaves it alone); rename the source's category instead. Rename cascades to
-children and de-duplicates on collision; every put is gated by the S29 idempotency rule so a
+children and de-duplicates on collision; every put is gated by the register idempotency rule so a
 no-op costs zero appends. Key ordering was verified before choosing the prefix: catalog scans
 are bounded `gt:'catalog/' lt:'catalog0'`, and `catmeta/` sorts above `catalog0`, so the new
 keyspace is invisible to them. Surfaced as a Categories tab (tree view, inline edit, rename,
 merge, forget) with admin-cli parity. Tests: admin-api group Q and sources group K, both
 negative-checked.
 
-### Runtime upload policy + a bounded feed cache (S25, verified)
+### Runtime upload policy + a bounded feed cache (verified)
 
 **Network-adaptive upload.** `uploadPolicy` was fixed at construction and the RN client never
 set it, so every viewer re-seeded on every network; the metered gate only suspended prefetch.
@@ -1534,7 +1534,7 @@ emits byte-identical arguments; they are **input** options asserted to land befo
 it, ffmpeg would apply them to the output). Editable per channel in the dashboard. Tests: args
 group M (unit conversion, placement, bounds, partial-update inheritance).
 
-### Offline slate — a dead source loops "SOURCE OFFLINE" instead of going blank (S30, verified in production)
+### Offline slate — a dead source loops "SOURCE OFFLINE" instead of going blank (verified in production)
 
 When a channel's source died it sat in watchdog backoff and viewers saw **nothing**. Now the
 channel loops a pre-rendered slate (SMPTE bars + "SOURCE OFFLINE / PLEASE STAND BY") so it
@@ -1582,7 +1582,7 @@ during the same window. Media is rendered into the image at build time by
 Pure functions (`pickSlate` / `pickSlateFile` / `parseVideoProfile`) covered by `test:args`.
 Full detail: `docs/kb/offline-slate.md`.
 
-### S32 — SDK productization: npm-ready packages, TypeScript defs, example, docs (verified)
+### SDK productization: npm-ready packages, TypeScript defs, example, docs (verified)
 - **All three consumer packages made registry-publishable at 0.1.0** — `@aliran/core`,
   `@aliran/player-sdk`, `@aliran/react-native`: `files` whitelists (tarballs carry
   exactly the runtime + README: 10 / 8 / 7 files, proven by `npm pack --dry-run`),
@@ -1615,7 +1615,7 @@ Full detail: `docs/kb/offline-slate.md`.
   `mkdocs build --strict` green.
 
 ### Publishing the dashboards — the exposure pattern, folded back into the repo (verified)
-- The S13 deploy pack shipped `deploy/Caddyfile.example` with no auth guidance. The
+- The original deploy pack shipped `deploy/Caddyfile.example` with no auth guidance. The
   pattern that survived contact with a real deployment (the broadcaster dashboard went
   public over TLS on 2026-07-21) now lives in the repo: `basic_auth` **scoped to the
   UI only** (`@ui not path /api/*`), a bcrypt placeholder (`caddy hash-password`,
@@ -1644,9 +1644,9 @@ Full detail: `docs/kb/offline-slate.md`.
   config verbatim.
 
 
-### S33 — viewer-path swarm socket tuning (verified on the S22 over the live VPS)
-The deliberately-deferred half of the socket-buffer work (the servers were tuned in
-S29): the viewer engine's single Hyperswarm now sizes its UDP buffers too. An earlier
+### Viewer-path swarm socket tuning (verified on the S22 over the live VPS)
+The deliberately-deferred half of the socket-buffer work (the servers were tuned
+earlier): the viewer engine's single Hyperswarm now sizes its UDP buffers too. An earlier
 session had tried this and reverted it as "no value on a phone" — that assessment was
 half right, and the half matters: a phone's **uplink** does cap first, but that only
 disqualifies tuning the *send* side. A viewer is **download-dominant** — every watched
@@ -1684,10 +1684,10 @@ semantics).
   immutable and lack the file), `@aliran/player-sdk` 0.1.1 (requires `core ^0.1.1`),
   `@aliran/react-native` 0.1.1 (SwarmConfig mirror). All three lockfiles regenerated;
   publish remains a maintainer action (core → player-sdk → react-native, one at a
-  time). Suites: `test:nettune` (new group F), sdk unit (new S33 group), **full
+  time). Suites: `test:nettune` (new group F), sdk unit (new socket-tuning group), **full
   `test:sdk` e2e**, client `tsc` + jest 10/10.
 
-### S8a — the VOD library: a separate service for on-demand titles (verified)
+### The VOD library: a separate service for on-demand titles (verified)
 
 VOD landed as a **new top-level deployable, `library/`** — an explicit architecture
 decision, not an accident of code placement: the broadcaster is a live pipeline
@@ -1714,8 +1714,8 @@ different hardware.
 - **The panel gained a record CLASS, not a new pipeline**: `type:'vod'` carries
   `durationSec` (payload-owned, like feedKey) and **omits `isLive` entirely** —
   liveness is not a property a title has. The conditional sits exactly in isLive's
-  slot in the record builder, so a live record's key order — and therefore its S29
-  byte-compare against pre-S8a records — is unchanged (test:register stayed green
+  slot in the record builder, so a live record's key order — and therefore its idempotency
+  byte-compare against pre-VOD records — is unchanged (test:register stayed green
   untouched). Grants/sealing, panel-authoritative descriptive metadata, curation
   preservation and blobsKey enrichment (a future keyless title mirror needs it)
   apply to titles verbatim.
@@ -1736,7 +1736,7 @@ different hardware.
   of the tail (the end credits).
 - **`test:vod`** runs the whole chain on a LOCAL DHT testnet (deterministic → the
   REQUIRED CI lane, which now installs ffmpeg): generate a real file → control-API
-  ingest (copy remux) → vod record class asserted field-by-field (including S29
+  ingest (copy remux) → vod record class asserted field-by-field (including register
   idempotence for the class) → blobsKey enrichment → grant → SDK login/resolve →
   **ffprobe validates the SERVED url** (12.0 s over P2P) → Range read on the LAST
   segment (seek-style random access, no sequential fetch led there) → a 10 s
@@ -1756,7 +1756,7 @@ different hardware.
   `test:core`/`corrupt`/`args`/`retention`/`nettune`/`sources` PASS. Stage 2 (the
   app: Library rail, seek UI, S22 on-device) is a follow-up card.
 
-### S8a stage 2 — VOD in the app: Library rail, transport UI, live machinery interplay (verified on the S22 over the live VPS)
+### VOD stage 2 — VOD in the app: Library rail, transport UI, live machinery interplay (verified on the S22 over the live VPS)
 
 The app half of the on-demand library. The worklet (`client/backend/backend.mjs`)
 now forwards the engine's ResolveResult `type`/`durationSec` as
@@ -1785,7 +1785,7 @@ h:mm:ss), and a tap-or-drag **seek bar built in pure JS** (PanResponder — no
 native slider dependency to autolink); the bar stays up while paused (the play
 control must not fade away), and end-of-title parks on ▶ which replays from the
 top. TV renders the row display-only — nothing focusable enters the D-pad zap
-path (the S7 lesson).
+path (the TV-shell lesson).
 
 Verified end-to-end against **production infrastructure** (the live VPS panel +
 its ~84-channel lineup), first on the emulator and then **on the S22 itself**:
@@ -1821,11 +1821,11 @@ production panel afterwards (stop the library BEFORE the purge — its register
 heartbeat resurrects a purged record); publisher `library1` stays enrolled for
 future library deployments.
 
-### S35 — Windows desktop player: full TV-app parity on Electron (verified against the live VPS)
+### Windows desktop player: full TV-app parity on Electron (verified against the live VPS)
 
 The roadmap's DRM-hardening and geo items were dropped (2026-07-22) and the effort
 moved into a **Windows desktop player** — Electron shell, full parity with the
-Android app's S18 experience. New top-level `desktop/` workspace (private, never
+Android app's experience. New top-level `desktop/` workspace (private, never
 published), built in three pushed stages.
 
 **Architecture.** The engine (`@aliran/player-sdk`) runs in the Electron **main
@@ -1849,7 +1849,7 @@ frozen-live-edge ladder (12 s still playhead → live-edge reload → second fai
 tears the wedged transport via `reconnectActiveFeed()`), fatal-network retry
 remounts, one `recoverMediaError()` before a media-error remount, and a **clean
 per-channel codec error** instead of a retry loop when the host GPU can't decode a
-stream. VOD (S8a) rides the same surface — recordType disarms the ladder and the
+stream. VOD rides the same surface — recordType disarms the ladder and the
 bar grows a seek/pause transport (implemented to the same contracts; a live-VPS
 vod pass awaits an operator library deployment with granted titles).
 
@@ -1884,7 +1884,7 @@ toggle persisting + echoing; and the **HEVC verdict: two HEVC 1080p lineup
 channels play at full 1920×1080** on this box (platform
 hardware decode; `MediaSource.isTypeSupported('hvc1')` true) — on hosts without
 it the player surfaces the clean codec error. Screenshots:
-`aliran-ops/s35-screenshots/01…12`. The engine logged the S33 socket tuning
+`aliran-ops/s35-screenshots/01…12`. The engine logged the swarm socket tuning
 (`recv 2 MiB`) on desktop too. `tsc` clean, `node --check` clean,
 `mkdocs build --strict` green. Docs: `docs/desktop-player.md` + nav/README/
 CHANGELOG. Gotchas kept for the next session: electron postinstall's zip
@@ -1894,7 +1894,7 @@ pinned when electron is hoisted to the workspace root; the packaged and dev apps
 share `%APPDATA%\aliran-desktop` (userData follows package.json `name`), so the
 single-instance lock spans them — close one before launching the other.
 
-### S35 follow-up — the PUBLIC flavor: runtime panel-key entry (verified)
+### Desktop player follow-up — the PUBLIC flavor: runtime panel-key entry (verified)
 
 Same-day user decision: the baked-descriptor build is the *operator* ("aliran
 ops") flavor; the public distribution must let anyone running their own
@@ -1919,10 +1919,10 @@ earlier session upgraded: the portable exe's "instant exit" was the
 single-instance lock against the still-running dev app (shared userData), not a
 packaging fault.
 
-### S36 — public Android APK: runtime service descriptor, phone + TV (verified)
+### Public Android APK: runtime service descriptor, phone + TV (verified)
 
 The Android analogue of the desktop player's public flavor: one keyless APK
-(phone + Android TV — the manifest has declared both since S7) that connects to
+(phone + Android TV — the manifest has declared both from the start) that connects to
 any operator's service at runtime. `config/service.json` still decides the
 flavor at build time; the new committed keyless `config/service.public.json`
 (`panelPubKey: ""` as the deliberate marker — `REPLACE_` still throws) routes
@@ -1959,7 +1959,7 @@ focus traversal to every control), force-stop → relaunch auto-authorize, and
 another force-stop). Client jest 12 suites / 55 tests green, tsc clean,
 `mkdocs build --strict` green. Docs: `docs/android-viewer-guide.md` (install/
 "unknown sources", Connect, separate phone and TV/D-pad sections, honest
-privacy/bandwidth incl. the S25 cellular no-reseed behavior, troubleshooting)
+privacy/bandwidth incl. the cellular no-reseed behavior, troubleshooting)
 with rights-clean captures in `docs/img/android/`.
 
 Two emulator-lab gotchas worth keeping: QEMU's user-mode NAT + router hairpin
@@ -2110,7 +2110,7 @@ an **Android 5.1 emulator** installs and runs it — EngineNotice + the
 "watch demo stream" fallback playing plain HLS via ExoPlayer, zero linker
 errors, an OS no Aliran build has ever touched — and a **modern emulator**
 runs the FULL P2P path: worklet boot, OPRF login over the public DHT against
-the production panel (after teaching the demo the S5b lesson: `ready` precedes
+the production panel (after teaching the demo the boot-order lesson: `ready` precedes
 the panel link, so login retries on "not connected"), the real catalog, and a
 live channel rendering through the ported player. Lore for the KB: the old
 Android 5.1 default emulator image balloons its AVD to ~4.3 GB regardless of
@@ -2402,7 +2402,7 @@ was not touched.
   `user.wrapped[streamId]` is the stream secret sealed to the user's public key and
   clients unseal at login, so a package cannot be a runtime membership check. It has
   to **materialize** into sealed per-stream grants, and the machinery for exactly
-  that already existed in the S27 source auto-grant reconcile. S44 generalizes it.
+  that already existed in the source auto-grant reconcile. Packages generalize it.
 - **Model:** a plain registry `DATA_DIR/packages.json` (`{ name: { label, members,
   default, addedAt } }`); members are explicit stream ids, id globs (`sports-*`,
   the publisher-scope matcher), or selectors `category:<slug>` (a parent slug
@@ -2413,11 +2413,11 @@ was not touched.
   (`manualGrants[]` + `packages[]`), with `wrapped` remaining the wire format:
   `seal(manual ∪ resolved members)`.
 - **The reconcile engine** (`panel/src/packages.js`) converges every user in one
-  pass: lazily migrates pre-S44 records (grants adopted as *manual*, except
+  pass: lazily migrates pre-package records (grants adopted as *manual*, except
   channels owned by an auto-grant source — the source engine keeps re-sealing
   those, and adopting them would misattribute whole imported lineups), seals
   missing entitled keys, and removes wrapped entries no provenance covers —
-  manual, any held package, or an auto-grant source (the carve-out that keeps S27
+  manual, any held package, or an auto-grant source (the carve-out that keeps source
   auto-grant behavior byte-identical; without it, a removal would just flap back
   on the next sync). Runs on package CRUD, user assignment, `createUser` (default
   packages, beside the untouched source auto-grant hook), stream add/retag/delete,
@@ -2444,11 +2444,11 @@ was not touched.
   CRUD validation, selector resolution (incl. parent→child), sealed
   materialization (seal shape ≡ a manual grant's), provenance union,
   revoke-with-covering-package, package-removal-keeps-manual, reconcile triggers
-  (add/retag/delete, pre-declared member), default packages beside the S27
+  (add/retag/delete, pre-declared member), default packages beside the source
   auto-grant hook, package-governed auto-grant-OFF sources following feed drift
   with no flap-back, auto-grant coexistence (package ops never touch auto grants;
   flipping auto-grant off converges them away; re-enable restores), additive
-  pre-S44 migration with correct attribution, and converged-reconcile
+  pre-package migration with correct attribution, and converged-reconcile
   bee-frugality (zero appends). The admin-api suite grew section R (endpoint
   surface over real HTTP beside a live-swarm viewer login), A–R green. Dashboard
   browser-verified against a seeded throwaway panel: Packages tab, provenance
@@ -2459,7 +2459,7 @@ was not touched.
 
 ### Reseller × channel packages — bouquets become the reseller's product unit (verified)
 
-- **The S44 follow-up, reseller-side only** (`reseller/` — nothing under `panel/`
+- **The channel-packages follow-up, reseller-side only** (`reseller/` — nothing under `panel/`
   changed): the reseller panel now consumes the panel's channel packages as the
   thing a reseller actually sells. **Locked cost model: credits stay purely
   TIME-based** (1 credit = 1 month, unchanged) — a package carries **no credit
@@ -2483,7 +2483,7 @@ was not touched.
 - **Dashboard:** the Add-account form gains a package multi-select (live
   resolved-channel counts, `default` packages pre-checked) beside the
   per-stream picker labeled **"extra channels (one-offs)"** (that picker is new
-  too — the S38-era UI never had one, only the API); the row menu gains
+  too — the earlier UI never had one, only the API); the row menu gains
   *Channels & packages…* — the live entitlement with provenance chips
   (▣ package / `one-off` / dashed `auto`, matching the panel's Users-tab chip
   language; auto rows offer no revoke since a source sync would re-seal them) —
@@ -2506,7 +2506,7 @@ was not touched.
   the time-only statement), reference (route table), CHANGELOG;
   `mkdocs build --strict` green.
 
-### S46 — Aliran MCP server (`mcp/`): AI-operable install, config, maintenance & support
+### Aliran MCP server (`mcp/`): AI-operable install, config, maintenance & support
 - **Why:** Aliran is self-hostable, but self-hosting assumes server literacy the
   target operator often lacks. A new **Model Context Protocol** *server* lets any
   MCP-capable AI client (Claude Desktop, Claude Code) operate a deployment on the
@@ -2557,11 +2557,11 @@ was not touched.
   secret never appears in a tool result. Ran `test:core`, `test:packages`,
   `test:admin-api`, `test:mcp` green + `node --check` + `mkdocs build --strict`.
 - **v1 scope:** panel + broadcaster + install/maintain + docs. Reseller/library/repeater
-  deferred (reseller was mid-change under S45); local stdio only (no remote HTTP mode).
+  deferred (reseller was mid-change at the time); local stdio only (no remote HTTP mode).
   npm-publish for `npx @aliran/mcp` is a follow-up. **No VPS work** this segment (a real
   install against a throwaway box is optional post-merge validation the user runs).
 
-### S46 follow-up — MCP onboarding: `--doctor` self-check + quickstart walkthrough
+### MCP onboarding follow-up: `--doctor` self-check + quickstart walkthrough
 - **Why:** the MCP shipped with reference docs but no guided *onboarding* — the
   target operator (non-server-literate) needs "am I set up right?" answered by a
   tool, not by reading. Two pieces close that.
@@ -2609,7 +2609,7 @@ was not touched.
 
 ### Desktop Electron shell 37 → 43 + dev-descriptor auto-login (verified)
 
-- **The scheduled hardening follow-up** (the one `npm audit` HIGH the S42 pass left
+- **The scheduled hardening follow-up** (the one `npm audit` HIGH the dependency-audit pass left
   tracked — electron ≤39.8.4 renderer-process CVEs in the desktop build dep, never
   a shipped crypto path). `desktop/` now builds on **Electron 43.2.0** (+
   electron-builder 26.15.3), app version 0.2.0. **Zero API changes needed**: the
@@ -2628,7 +2628,7 @@ was not touched.
   `WebAssembly.Memory(): could not allocate memory` on the memory-tight build
   box; handing it a ready .ico removes that step from every future build (mac
   keeps deriving its .icns from the PNG on the roomier CI runner).
-- **Verified:** dev boot-smoke over CDP (the S37 pattern, pointed at the real
+- **Verified:** dev boot-smoke over CDP (the established pattern, pointed at the real
   DHT): baked-descriptor run reached `ready` + **329 entitled streams** + a
   mounted live screen against the **production panel** in ~7 s with no saved
   credentials on disk (proving the new dev-creds path); keyless run (descriptor
@@ -2638,7 +2638,7 @@ was not touched.
   `config/` resource, panel-key hex and password needles absent from both exes
   and the asar). tsc clean. Private keyed test builds live outside the repo.
 
-### S48 — Privacy-preserving analytics: aggregate only, server-side only (verified)
+### Privacy-preserving analytics: aggregate only, server-side only (verified)
 - The ROADMAP privacy-analytics item, built on the core insight that **per-user
   watch tracking is architecturally impossible here**: viewers replicate P2P and
   never report playback; the panel sees logins but no viewing, the broadcaster
@@ -2687,7 +2687,7 @@ was not touched.
   ledger is the business analytics).
 - **The honesty rule** on every surface + `docs/analytics.md`: origin-side peer
   counts are a LOWER BOUND on audience (viewers serve each other) — labeled
-  "≥ N", never presented as a viewer count (the S38 no-invented-metrics rule).
+  "≥ N", never presented as a viewer count (the no-invented-metrics rule).
 - **Verified:** new required-lane **`test:analytics`** — rollup/rollover/
   boot-reload/prune math on a fake clock; the retention=0 kill switch (no dir
   ever created); REAL viewer logins over a loopback SecretStream pair through
@@ -2700,7 +2700,7 @@ was not touched.
   device ids, IPs and any 64-hex run: ZERO hits. `test:config` grew the
   ANALYTICS_RETENTION_DAYS probes. Full required battery + `mkdocs --strict`
   green locally. NO VPS work — deploy rides a later user-decided image rebuild
-  (a broadcaster rebuild disturbs the running scale test; the S44 panel-only
+  (a broadcaster rebuild disturbs the running scale test; a panel-only
   precedent exists).
 
 ### MCP channel tools — typed `input`/`transcode`: the end of the silent source swap (verified)
@@ -2742,15 +2742,15 @@ was not touched.
   broadcaster-side refusal. Both new blocks were confirmed to FAIL against the
   pre-fix sources. Full required lane (15 suites) green.
 
-### S49a — MCP ops completeness: env tuning, restore, analytics, admins (verified)
-- **Why:** the S49 gap analysis (a source-level inventory of all 59 tools vs every
+### MCP ops completeness: env tuning, restore, analytics, admins (verified)
+- **Why:** the MCP gap analysis (a source-level inventory of all 59 tools vs every
   service's admin surface) found four P0 lifecycle blockers that still forced an
   operator out of the MCP: no way to set an env knob or restart to apply anything
   (three shipped flows literally end "restart to apply" with no tool able to),
-  backup without restore, the S48 analytics endpoints unwrapped, and admin-account
+  backup without restore, the analytics endpoints unwrapped, and admin-account
   management missing entirely. This lands all four — 59 → **73 tools**.
 - **`server_set_env` — validate before you restart.** Every service config is
-  fail-fast at boot *by design* (S40), which is exactly wrong for a remote agent:
+  fail-fast at boot *by design*, which is exactly wrong for a remote agent:
   a typo'd knob + restart = service down. So all four service configs
   (panel/broadcaster/library/reseller) gained a **`node src/config.js --check`**
   dry-run mode — direct-run detection, problem list on stdout, exit 0/1, the
@@ -2779,8 +2779,8 @@ was not touched.
   committed non-executable, so `server_backup`'s `./deploy/backup.sh` failed on a
   fresh clone — both scripts are `755` now and invoked via `sh`.
 - **Analytics + admins.** `panel_analytics` / `broadcaster_analytics {days?}` are
-  plain GET passthroughs of the S48 aggregate-only endpoints (counts and "≥ N"
-  lower bounds; no new identity surface — the S48 invariant holds by
+  plain GET passthroughs of the aggregate-only analytics endpoints (counts and "≥ N"
+  lower bounds; no new identity surface — the aggregate-only invariant holds by
   construction). Admin CRUD (list/add/remove/set-password) landed twice — panel
   admin API and broadcaster control API — with the `panel_create_user`
   generated-password pattern, and the honest caveat that rotating the account the
@@ -2799,11 +2799,11 @@ was not touched.
   "configuration OK"; bad = exit 1 naming the knob, no stack trace). Full
   required lane green; docs (mcp.md, reference.md catalog, configuration.md,
   backup-and-rotation.md, quickstart, mcp/README) updated; `mkdocs --strict`
-  green. NO VPS work — post-merge live validation is the user's call (S46
-  precedent).
+  green. NO VPS work — post-merge live validation is the user's call (the
+  established precedent).
 
-### S49b — MCP content + business coverage: categories, curation, art, reseller, library (verified)
-- **Why:** the S49 gap analysis' P1 tier — the content-curation jobs (categories,
+### MCP content + business coverage: categories, curation, art, reseller, library (verified)
+- **Why:** the MCP gap analysis' P1 tier — the content-curation jobs (categories,
   source deselection, channel art) still needed the dashboard, and two whole
   services (the reseller panel, the VOD library) had zero MCP coverage despite
   their box-level plumbing (`server_logs`/`server_set_env`/`server_backup`/
@@ -2827,7 +2827,7 @@ was not touched.
   route (imported entries from the catalog + excluded entries from the registry,
   with captured labels), and `panel_set_source` gained the `exclude` field the
   PATCH always accepted ({id,title} objects or bare id strings — REPLACES the
-  list). The S27b fact rides along: an exclusion CHANGE nulls the source ETag so
+  list). The exclusion-ETag fact rides along: an exclusion CHANGE nulls the source ETag so
   the next sync re-pulls the full body; the test seeds a fake ETag in the
   registry file and asserts it survives a same-ids write but dies on a real
   change — no gratuitous refetch, no masked exclusion.
@@ -2889,18 +2889,18 @@ was not touched.
   services. Tool floor 95 (actual 101), annotation lists extended, doctor
   markers updated (groups line + reseller/library healthz + credentials). Full
   required lane + `mkdocs --strict` green locally. NO VPS work (no reseller or
-  library instance runs on the box; S46 precedent).
+  library instance runs on the box; the established precedent).
 
-### S49c — MCP scale + DX: multi-host SSH, repeater reach, ergonomics, prompts, publish prep (verified)
-- **Why:** the S49 gap analysis' P2/P3 tail — the last tier between "the MCP
+### MCP scale + DX: multi-host SSH, repeater reach, ergonomics, prompts, publish prep (verified)
+- **Why:** the MCP gap analysis' P2/P3 tail — the last tier between "the MCP
   covers the single-box lifecycle" and "the MCP covers the deployment". One host
   meant repeater appliances and future scale-out boxes were unreachable (and
   `panel_add_publisher`'s env-write could only ever land on THE box); 350-channel
   catalogs flooded agent context on every list/user call; a handful of documented
   API fields had no schema; multi-step procedures lived only in docs; and the
   package could not be published without losing its docs resources. Closes
-  G10–G17: 101 → **102 tools** (`repeater_status`) + **6 prompts**, and the S49
-  arc is complete.
+  G10–G17: 101 → **102 tools** (`repeater_status`) + **6 prompts**, and the
+  operator-coverage arc is complete.
 - **Multi-host SSH (G10).** `ssh.hosts` optionally names extra boxes
   (`{name: {host, user, keyPath?, port?, repoDir?, sshBin?}}` + `default`); the
   single-host shape normalizes unchanged, and the resolved default is hoisted so
@@ -2911,7 +2911,7 @@ was not touched.
   host cannot strand a freshly-minted secret) and writes `PUBLISHER_NAME`/
   `PUBLISHER_KEY` into the NAMED box's `broadcaster/.env`. `server_install`
   deliberately stays default-box-only: it installs the full panel+broadcaster
-  stack — a broadcaster-only scale-out install is an S20b follow-up, and a
+  stack — a broadcaster-only scale-out install is a planned follow-up, and a
   repeater install is a three-command by-hand recipe the docs (and the
   `repeater_status` description) point at. The doctor probes each named host
   with one cheap echo.
@@ -2920,7 +2920,7 @@ was not touched.
   so status is SSH-shaped: `docker compose -f deploy/docker-compose.repeater.yml
   ps` + a logs tail, then `STATUS_PORT` is read from the box's `repeater/.env` —
   set, the tool curls `127.0.0.1:<port>/metrics` ON the box loopback and
-  surfaces the text (S48 served-bytes counters included); unset, the result says
+  surfaces the text (served-bytes counters included); unset, the result says
   "not enabled … zero listening sockets by design" honestly instead of erroring;
   set-but-dead gets its own distinct message.
 - **List ergonomics (G11) — one mechanism, everywhere.** `panel_list_streams`
@@ -2933,7 +2933,7 @@ was not touched.
   longer than 12 ids collapse to `{count, sample: first 8}` + a note naming
   `full:true`; short lists pass through untouched so small deployments never see
   the summary shape. `panel_revoke_grant` derives `stillGranted` BEFORE
-  compaction, so the S45 covered-revoke honesty survives the summary.
+  compaction, so the covered-revoke honesty survives the summary.
 - **Schema gaps (G12).** `broadcaster_add/update_channel` gained `hlsTime`
   (1-30) / `hlsListSize` (2-60) — bounds mirror `channel.js normalizeMeta`, the
   fake manager mirrors them for the round-trip, and the test text-matches the
@@ -2969,8 +2969,8 @@ was not touched.
   whitelist (src / docs-bundle / config.example.json / README), `prepack` runs
   `scripts/bundle-docs.mjs` (copies the repo docs corpus into `docs-bundle/`,
   gitignored), and `defaultDocsDir` chains repo checkout → bundled copy → the
-  old degrade-to-empty. Publishing itself stays the user's release step (S32/S33
-  precedent).
+  old degrade-to-empty. Publishing itself stays the user's release step (the
+  established precedent).
 - **Verified:** `test:mcp` sections **W–AC**. W drives a SECOND fake box through
   the SAME ssh stub (the seam grew `--state`/`--log` argv + cwd capture instead
   of being forked): per-host command logs + env stores are asserted disjoint,
@@ -2986,18 +2986,18 @@ was not touched.
   tarball and runs `--doctor` from it — docs resolve from `docs-bundle/`
   (45 docs) with exit 0. Doctor markers updated in lockstep (named-host line,
   `repeater_*` group, prompts line). Full required lane + `mkdocs --strict`
-  green locally. NO VPS work; multi-box LIVE validation rides S20b.
+  green locally. NO VPS work; multi-box LIVE validation rides the scale-out milestone.
 
-### S50 — Viewer problem reports: pseudonymous P2P ingest, alerts, ops push (verified)
+### Viewer problem reports: pseudonymous P2P ingest, alerts, ops push (verified)
 - **Why:** viewers had no way to tell the operator "no audio on channel X" — the
-  only feedback path was out-of-band chat. S50 builds the whole loop: a report
+  only feedback path was out-of-band chat. This entry builds the whole loop: a report
   travels the EXISTING P2P RPC socket → pseudonymous storage → correlation → one
   alert → optional ops push → dashboard/CLI/MCP triage. Built as four loop
-  segments (S50a ingest → S50b notifier + admin → S50c client path → S50d
-  MCP + docs) + the user-gated S50e deploy.
-- **Ingest core (S50a).** A `report` responder beside `login`/`session` on the
+  segments (ingest → notifier + admin → client path → MCP + docs) + the
+  user-gated deploy.
+- **Ingest core.** A `report` responder beside `login`/`session` on the
   socket every client already holds — no new port, and no wire change for older
-  clients (the method simply does not exist on a pre-S50 panel). Reports are
+  clients (the method simply does not exist on an older panel). Reports are
   **pseudonymous by construction**: the panel verifies the session token, then
   immediately reduces the identity to `HMAC-SHA256(salt, userId|deviceId)`
   sliced to 16 hex — no username and no device id is ever stored, counted,
@@ -3009,7 +3009,7 @@ was not touched.
   breaker, and correlation that opens **one** alert per channel per window and
   extends it rather than re-firing. `REPORTS_RETENTION_DAYS=0` is a complete
   kill switch.
-- **Notifier + admin surface (S50b).** An opened alert pushes **once**: a
+- **Notifier + admin surface.** An opened alert pushes **once**: a
   generic webhook whose body suits ntfy, Slack and Discord at the same time
   (`REPORTS_WEBHOOK_URL`) and/or a Telegram bot; both unset is a no-op.
   Delivery is **fail-dark** — queued and never awaited, one attempt at a time,
@@ -3018,7 +3018,7 @@ was not touched.
   grouped expandable list, per-hour chart, ack/resolve — every interpolation
   escaped, report text is hostile), `GET/POST /api/reports…` + `/api/alerts…`,
   and five admin-cli verbs that work beside a running panel.
-- **Client path (S50c).** `AliranPlayer.report({category, text})` attaches what
+- **Client path.** `AliranPlayer.report({category, text})` attaches what
   the engine already knows — the active channel, peer count, app
   version/platform and a rolling 50-entry ring of the engine's own breadcrumbs
   (fed from ONE `emit()` override, not hand-placed calls) — and proves
@@ -3034,7 +3034,7 @@ was not touched.
   folds it into the pseudonym. The category enum is duplicated per runtime that
   cannot import another's copy, with an e2e drift guard holding all copies
   deep-equal.
-- **MCP + docs (S50d).** 102 → **107 tools**: `panel_list_reports`
+- **MCP + docs.** 102 → **107 tools**: `panel_list_reports`
   (filters + `sinceHours`; long breadcrumb rings compact to `{count, sample}`
   with `full:true` restoring), `panel_list_alerts`, `panel_ack_report`,
   `panel_resolve_report {note}`, `panel_test_notify`. Alert ack/resolve stays
@@ -3057,10 +3057,10 @@ was not touched.
   validate-then-apply path, its first live exercise — then ack/resolve through
   the new MCP tools, 16-hex pseudonyms everywhere, knob restored. Push wiring
   left OFF by user decision (the shipped default); the phone leg rode the next
-  APK and closed under S52.
+  APK and closed with the RPC re-arm fix below.
 
-### S51 — In-player reporting: the Report button moves onto the player (verified)
-- **Why:** the user drove the S50c Settings flow on the S22 and re-scoped it:
+### In-player reporting: the Report button moves onto the player (verified)
+- **Why:** the user drove the reports Settings flow on the S22 and re-scoped it:
   a report should be filed **from the player, about the channel being
   watched**, and free text isn't wanted. Two user decisions captured — the
   Settings entry is REMOVED entirely, and the flow is select-a-symptom → Send.
@@ -3082,15 +3082,15 @@ was not touched.
   Zero panel/broadcaster runtime diff — the box move to `028f69e` was a
   consistency rebuild only.
 
-### S52 — Fix: the panel RPC re-arm is validated — the first real phone report found the wedge (verified)
+### Fix: the panel RPC re-arm is validated — the first real phone report found the wedge (verified)
 - **Why:** the user's first real phone report failed "not connected to the
-  service" while video played fine — and could never recover. The S50e/S51
+  service" while video played fine — and could never recover. The recent
   panel redeploys dropped every client's RPC socket, and the SDK re-armed the
   RPC on the **next** swarm connection to arrive — mid-session that is often a
   broadcaster feed peer, because hyperswarm keeps one socket per peer across
   every topic. Once `_call` pointed at the wrong peer, every login, session
   check and report answered 'offline' forever: the genuine panel reconnect is
-  skipped once the slot is held. A pre-existing S46-era gap (the "first
+  skipped once the slot is held. A pre-existing gap from the MCP era (the "first
   connection is the panel" boot heuristic applied mid-session); reports made
   it visible. Session-refresh and revocation checks rode the same wedge
   silently.
@@ -3106,16 +3106,16 @@ was not touched.
   starves the slot; a report lands after re-arm; a drop clears the slot), sdk
   unit 9/9, a live-DHT hello probe through the new arm path, and the fixed APK
   on the S22 — where the user's live phone report **landed** (distinct
-  pseudonym, channel attached, `text:null`), closing the S50e phone leg for
+  pseudonym, channel attached, `text:null`), closing the reports phone leg for
   real: desktop UI + headless sdk + physical phone, all end-to-end. Client-only
   diff: the box checkout fast-forwarded with no rebuild.
 
-### S53 — External VOD: a third-party movies/series catalog the apps call directly (verified)
+### External VOD: a third-party movies/series catalog the apps call directly (verified)
 - **Why:** an operator who already has an account with an external VOD provider
   should be able to light up a Movies & Series section without the panel
-  proxying a single byte. Built as S53a panel switch → S53b RN client →
-  S53c desktop twin → the user-gated S53d dev-build validation.
-- **The panel-owned switch (S53a).** One replicated record (`svcmeta/vod`)
+  proxying a single byte. Built as panel switch → RN client →
+  desktop twin → the user-gated dev-build validation.
+- **The panel-owned switch.** One replicated record (`svcmeta/vod`)
   holds the enable bit plus the coordinates (`apiBase`, `service`, per-kind
   source values, extra params). `apiBase` must be https with no query string
   and no embedded credentials, and `enabled:true` is refused while the
@@ -3127,7 +3127,7 @@ was not touched.
   version check — and a change lands at each viewer's next login. The panel
   stores **no viewer credential** for the provider and never proxies its calls
   or its media.
-- **The apps (S53b/S53c).** A menu tile gated by the panel-delivered payload
+- **The apps.** A menu tile gated by the panel-delivered payload
   (a brand can still switch it off with `sections.vod:false`), a searchable
   poster-grid landing (Movies/Series switch; Series shows an honest empty
   state until a series source exists), and a dedicated player —
@@ -3142,7 +3142,7 @@ was not touched.
   the MAIN process (the file:// renderer would trip CORS, and saved creds live
   in main); a new required-lane `test:desktop-vod` runs the same fixtures as
   the RN jest suite, so the two provider-client copies must change together.
-- **Verified live (S53d).** The real `getMovieInfo` shape was captured against
+- **Verified live.** The real `getMovieInfo` shape was captured against
   the live provider — a flat object with the stream URL in
   `path`/`path_1080`/`path_720`, each embedding a literal `{token}`
   placeholder, and the runtime as `"hh:mm:ss"`; `extractMovieInfo` was re-cut
@@ -3150,23 +3150,23 @@ was not touched.
   substitution) landed in BOTH copies, fixtures swapped to the real shape.
   Desktop CDP drive against a local dev panel: tile → grid (7 228 titles) →
   search → detail → hls.js playback with video frames verified. Phone: the
-  S53d arm64 APK on the S22 verified tile/grid/posters/playback by screencap —
+  dev arm64 APK on the S22 verified tile/grid/posters/playback by screencap —
   after a found-and-fixed stale gitignored worklet bundle (the baked
-  `app.bundle.js` predated S53a; regenerate with `npm run bundle-backend`
+  `app.bundle.js` predated the VOD switch; regenerate with `npm run bundle-backend`
   whenever sdk/ or client/backend/ changed, and byte-verify the blob inside
   the APK). The production go/no-go finding is pinned for the enablement
   decision: the provider's playable URLs embed the account token as
   `?token=…` — in production that is the viewer's app password — so flipping
   it on for real viewers is a separate, deliberate step.
 
-### S54 — Movies & Series: the mockup browse experience, series playback, device-local lists (verified)
-- **Why:** S53 shipped a functional but minimal VOD landing (one searchable grid);
-  the user supplied a five-screen reference mockup set and chose full scope. S54
-  rebuilds the section in BOTH apps to that pattern and lights up the series half
-  of the provider catalog. Built as four loop segments (S54a plumbing → S54b RN
-  browse → S54c RN series/lists/player → S54d desktop twin) + this user-gated
+### Movies & Series: the mockup browse experience, series playback, device-local lists (verified)
+- **Why:** external VOD shipped a functional but minimal landing (one searchable grid);
+  the user supplied a five-screen reference mockup set and chose full scope. This
+  entry rebuilds the section in BOTH apps to that pattern and lights up the series half
+  of the provider catalog. Built as four loop segments (plumbing → RN
+  browse → RN series/lists/player → desktop twin) + this user-gated
   validation pass.
-- **One download, three lists (S54a).** The panel's provider config grew
+- **One download, three lists.** The panel's provider config grew
   `sources.series` (CLI `--series-source`, API `sources` map, dashboard field —
   `VOD_SOURCE_KINDS` is now `['movies','series']`). The provider answers movies,
   series AND the genre names from the SAME `getMovies.php` wrapper, so the cache
@@ -3179,7 +3179,7 @@ was not touched.
   value>` returns the identical full wrapper — so a series-only config works on
   the same single download; the finding is pinned as a comment in both provider
   copies.
-- **The browse structure (S54b/S54d).** Left menu Movies / Series / Search
+- **The browse structure (both apps).** Left menu Movies / Series / Search
   (search is its own view — the always-visible inline input is gone), tabs
   Recommended · My List · Genres · All, an always-visible "Sort by" chip over the
   five-option mockup sort set (Recently added default / A-Z / Newest releases /
@@ -3191,9 +3191,9 @@ was not touched.
   "(year)" inline; the overlay badge deleted). The two sort modules are
   line-identical mirrors — a comment-stripped source-identity lane in
   `test:desktop-vod` fails the build if they drift.
-- **Series detail + resume + tracks (S54c/S54d).** Series grid → detail (poster,
+- **Series detail + resume + tracks (both apps).** Series grid → detail (poster,
   ★ rating from `rating`/2, date range, genres, expandable plot, season tiles
-  with episode-count badges) → episode list (duration chips via the S53
+  with episode-count badges) → episode list (duration chips via the shared
   `parseDuration`) → playback. Watch history writes from the players every 10 s
   (flush on back/unmount; >95 % watched stores position 0 = "watched"), resume
   seeks once on load, and a series' **Start** continues at the newest episode
@@ -3205,7 +3205,7 @@ was not touched.
   (`vodList` 500 / `vodHistory` 200, whole-array replace, hostile-input rule);
   nothing is ever sent to the panel or the provider, and the docs now say so in
   plain words (white-label privacy section + both viewer guides).
-- **Verified (S54e):** full unit ladder at the tip (client jest 20 suites/167
+- **Verified:** full unit ladder at the tip (client jest 20 suites/167
   tests + tsc, `test:desktop-vod`, desktop tsc + build, `test:admin-api` — its
   lane S proves a REAL login carries the series source verbatim — `test:mcp`,
   `test:config`, `mkdocs --strict`). Dev-panel drill: series source PATCHed into
@@ -3219,7 +3219,7 @@ was not touched.
   Start resuming mid-episode, My List add/remove from tile and detail, real
   audio/subtitle switching (spa/eng/ara) via `c`, and **everything — list and
   history — surviving an app restart**. Phone: worklet bundle regenerated and
-  byte-verified (`vod-list-set` present in the DECODED blob — the S53d
+  byte-verified (`vod-list-set` present in the DECODED blob — the
   stale-bundle lesson applied), arm64 APK built from the main checkout with the
   baked descriptor and the byte-identical fresh blob verified INSIDE the APK,
   then installed and screencap-smoked on the dev phone (browse UI, series
@@ -3258,5 +3258,5 @@ was not touched.
   localStorage and adds an `m` mute key; RN rides rn-video's
   `volume`/`muted` props (`AliranVideo` needed no change — its existing
   `videoProps` spread carries them), session-local beside the hardware
-  keys. TV stays control-free (S7): remotes own volume. Muting keeps the
+  keys. TV stays control-free by design: remotes own volume. Muting keeps the
   level so unmuting restores it; dragging the slider unmutes.

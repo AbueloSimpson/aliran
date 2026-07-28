@@ -32,7 +32,7 @@ the panel public key, so records are provably authentic. Namespaces:
 - `user/<username>` → `{ salt, verifier, argon, pub, encPriv,
   wrapped:{ [streamId]: sealedStreamKey }, manualGrants[], packages[],
   devices[], tokenVersion, maxDevices, status }`.
-  `manualGrants`/`packages` (S44) record **why** each grant exists — granted by
+  `manualGrants`/`packages` record **why** each grant exists — granted by
   hand, or granted through a channel package. They are plain provenance metadata,
   not secrets, and nothing outside the panel reads them. `wrapped` stays the wire
   format clients unseal at login. A **package cannot be a runtime check**, because
@@ -220,7 +220,7 @@ floor (19 MiB, t=2) and in RFC 9106 territory.
   `/metrics` answer from cheap synchronous sources only. Admin login verifies
   single-flight in a worker (503 on overlap), so a login flood cannot stall the
   event loop or replication.
-- **Key hygiene.** No secret is logged: the S40 config-validation echoes cover
+- **Key hygiene.** No secret is logged: the config-validation echoes cover
   only non-secret ints and bools, hex key env vars print length-only, and error
   messages carry no key material. Key and credential **files** are `0600`; their
   **directories** (`keys/`, `secrets/`) are now created `0700`.

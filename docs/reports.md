@@ -52,7 +52,8 @@ the push.
 `REPORTS_RETENTION_DAYS=0` is the **kill switch**: the store becomes a no-op that
 never touches disk (no salt, no directory, no files), and the panel does not
 attach the `report` RPC responder at all. A client hitting a panel with reports
-disabled gets exactly what it gets from a pre-S50 panel — "unknown method" —
+disabled gets exactly what it gets from a panel too old to have the feature —
+"unknown method" —
 which both apps map to a friendly *"this service doesn't accept reports"*.
 
 ### The knobs (`panel/.env`)
@@ -380,7 +381,7 @@ Two practical corollaries:
 
 | Symptom | Cause |
 |---|---|
-| The app says "this service doesn't accept reports" | The panel has `REPORTS_RETENTION_DAYS=0`, or it is older than S50. The RPC method genuinely does not exist |
+| The app says "this service doesn't accept reports" | The panel has `REPORTS_RETENTION_DAYS=0`, or it predates the reports feature. The RPC method genuinely does not exist |
 | The app says you already reported this | The 10-minute client-side cooldown for that channel+category, or a panel throttle lock echoed back as a cooldown |
 | Reports arrive but no alert opens | Fewer than `REPORTS_ALERT_COUNT` **distinct** reporters inside the window — one person reporting five times is one reporter |
 | An alert opened but nothing was pushed | No target configured, or delivery failed three times and was dropped (fail-dark, logged as a warning). Run `test-notify` |

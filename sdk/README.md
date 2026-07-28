@@ -102,7 +102,7 @@ warm-up options stack on top:
   object to tune `{ neighbors, intervalMs, directional, stallMs, resumeMs,
   minHeadroom }`.
 
-### Smooth zapping (S21): runtime toggle + adaptive gate
+### Smooth zapping: runtime toggle + adaptive gate
 
 `zapPrefetch` is designed to be a **user-facing choice** (the app surfaces it as
 "Smooth zapping — uses more data"):

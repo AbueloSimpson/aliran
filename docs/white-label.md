@@ -235,7 +235,7 @@ Practical rules:
 The overrides are served as `/branding.css`, layered **after** the
 stylesheet's built-in shared theme block — that block stays byte-identical
 across the panel/broadcaster/reseller dashboards (`npm run test:theme`), so
-white-labelling never forks the source. This wires up the S19 seam for the
+white-labelling never forks the source. This wires up the theme seam for the
 reseller dashboard specifically; the panel and broadcaster dashboards are
 operator-internal and keep the stock brand (rebrand them in source if you must
 — the same 11 tokens, same block, edit all three sheets or none).
