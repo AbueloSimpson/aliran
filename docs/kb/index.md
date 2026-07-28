@@ -1,7 +1,7 @@
 # Knowledge base
 
-Field-tested **symptom → cause → fix** entries, distilled from building and operating
-Aliran. Each page is grep-friendly: search for the error text you're seeing.
+Field-tested **symptom → cause → fix** entries from building and running Aliran.
+Each page is easy to search — look for the error text you see.
 
 | Page | Covers |
 |---|---|
@@ -17,6 +17,6 @@ Aliran. Each page is grep-friendly: search for the error text you're seeing.
 | [Android & React Native builds](android-build.md) | Toolchain traps, emulator crashes/rot, dependency pinning, stale JS bundles |
 | [Bare worklet & bundling](bare-worklet.md) | bare-pack flags, shims, native addons, worklet debugging, hyper-stack API traps |
 
-If your issue isn't here, check the [FAQ](../faq.md) or open a
-[GitHub issue](https://github.com/AbueloSimpson/aliran/issues) — fixed issues that
-taught us something get added to these pages.
+If your issue isn't here, check the [FAQ](../faq.md), or open a
+[GitHub issue](https://github.com/AbueloSimpson/aliran/issues). We add fixed
+issues that taught us something to these pages.

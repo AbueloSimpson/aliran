@@ -4,9 +4,9 @@ Developer tools for testing the P2P streaming path **without an Android build**.
 
 ## Desktop viewer
 
-Replicates a broadcaster's encrypted feed over Hyperswarm and serves it on localhost,
-so you can play it in VLC / a browser. This is the reference implementation the client's
-Bare worklet mirrors (`client/backend/backend.mjs`).
+This replicates a broadcaster's encrypted feed over Hyperswarm and serves it on
+localhost, so you can play it in VLC or a browser. It is the reference
+implementation the client's Bare worklet mirrors (`client/backend/backend.mjs`).
 
 ```bash
 # 1. Start the broadcaster (prints feedKey + encKey)
@@ -19,16 +19,18 @@ node ../tools/viewer.js <feedKeyHex> <encryptionKeyHex>
 
 ## End-to-end test
 
-Spins up a broadcaster + a fresh viewer peer over the real DHT and validates the
-delivered media with `ffprobe`. Requires `ffmpeg`/`ffprobe` on PATH and outbound UDP.
+This spins up a broadcaster and a fresh viewer peer over the real DHT, and
+validates the delivered media with `ffprobe`. It requires `ffmpeg`/`ffprobe` on
+PATH and outbound UDP.
 
 ```bash
 node tools/e2e-stream-test.mjs   # exits 0 on PASS
 ```
 
-This is the automated proof of the **v0.1 "it streams"** milestone: an encrypted feed is
-produced by ffmpeg, seeded on Hyperswarm, discovered + replicated by a separate peer,
-served over localhost with HTTP Range, and confirmed to be valid H.264/AAC.
+This is the automated proof of the **v0.1 "it streams"** milestone: ffmpeg
+produces an encrypted feed, Hyperswarm seeds it, a separate peer discovers and
+replicates it, the result is served over localhost with HTTP Range, and the
+test confirms it is valid H.264/AAC.
 
 ## Login end-to-end test (v0.2)
 
@@ -36,10 +38,11 @@ served over localhost with HTTP Range, and confirmed to be valid H.264/AAC.
 node tools/e2e-login-test.mjs    # exits 0 on PASS
 ```
 
-Proof of the **v0.2 secure-login** milestone: a panel serves the OPRF login RPC and
-replicates a signed account/catalog DB; a client logs in (proof-of-work → blinded OPRF →
-verify → unwrap its keys), resolves the granted stream, replicates the encrypted feed,
-and plays it (ffprobe-validated). Wrong passwords are rejected.
+This is proof of the **v0.2 secure-login** milestone: a panel serves the OPRF
+login RPC and replicates a signed account/catalog DB. A client logs in
+(proof-of-work → blinded OPRF → verify → unwrap its keys), resolves the
+granted stream, replicates the encrypted feed, and plays it
+(ffprobe-validated). Wrong passwords are rejected.
 
 ## All tests
 

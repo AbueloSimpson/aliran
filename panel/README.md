@@ -1,7 +1,7 @@
 # @aliran/panel
 
 The **origin of truth** for an Aliran deployment: a single-writer, panel-signed
-Hyperbee holding the account DB + stream catalog, an assets Hyperdrive, the
+Hyperbee holding the account DB and stream catalog, an assets Hyperdrive, the
 throttled **OPRF login** service, and an optional **admin HTTP API**.
 
 ## Run
@@ -14,8 +14,8 @@ node src/admin-cli.js create-user alice
 node src/index.js            # start the panel node
 ```
 
-To manage the panel from a browser, create an admin and enable the admin API +
-dashboard — they run inside the panel process (the store is single-writer):
+To manage the panel from a browser, create an admin and enable the admin API and
+dashboard — they run inside the panel process, since the store is single-writer:
 
 ```bash
 node src/admin-cli.js add-admin root   # prompts for a password (min 8 chars)
@@ -46,8 +46,8 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
 - [x] Session token signing + `tokenVersion` revocation + device-limit enforcement
 - [x] Assets Hyperdrive + `upload-art`
 - [x] Broadcaster auto-registration (publisher-signed `register` RPC), **idempotent**:
-      an unchanged re-register (the broadcaster's 5-min heartbeat) is compared against
-      the stored record and appends nothing to the append-only bee — see
+      the panel compares an unchanged re-register (the broadcaster's 5-min heartbeat)
+      against the stored record and appends nothing to the append-only bee — see
       [docs/kb/scaling.md](../docs/kb/scaling.md) "The panel's own disk"
 - [x] Per-publisher keys + channel scopes: enrolled per-site keypairs
       (`add-publisher`, `/api/publishers`, dashboard Publishers tab), streamId-glob
@@ -66,5 +66,5 @@ admin-ui/            the dashboard (plain HTML/JS/CSS, no build step)
       Users-tab provenance chips; zero wire/SDK/app change (`npm run test:packages`)
 - [ ] HA / threshold OPRF across replicas
 
-See [`../docs/security-model.md`](../docs/security-model.md). Prefer vetted crypto
-libraries over hand-rolled primitives.
+See [`../docs/security-model.md`](../docs/security-model.md). Prefer vetted
+crypto libraries over hand-rolled primitives.

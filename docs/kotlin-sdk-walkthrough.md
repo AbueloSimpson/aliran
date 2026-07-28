@@ -2,27 +2,30 @@
 
 This is the step-by-step guide for **`aliran-kit`**, the native Kotlin SDK
 ([`sdk/android/`](https://github.com/AbueloSimpson/aliran/tree/main/sdk/android)
-in the repo). You'll build an app that ships as **one APK with `minSdk 21`**
-and behaves per device:
+in the repo). You'll build an app that ships as **one APK with `minSdk 21`**.
+It behaves per device:
 
 - **Android 10+** — the full P2P engine: login over the DHT, catalog, live
-  playback, re-seeding. Same engine bundle and protocol as the official apps.
-- **Android 5.0 – 9** — the engine physically cannot load (its native runtime
-  needs a libc feature added in Android 10), so the SDK stays **silently
-  inert** and hands you two things instead: a **detection hook** and a
-  ready-made **notice screen with an action button** — the seam where *you*
-  offer the viewer your own delivery (typically plain HLS from your CDN).
+  playback, re-seeding. Same engine bundle and protocol as the official
+  apps.
+- **Android 5.0 – 9** — the engine physically cannot load, because its
+  native runtime needs a libc feature added in Android 10. So the SDK
+  stays **silently inert** and hands you two things instead: a
+  **detection hook**, and a ready-made **notice screen with an action
+  button**. This is the seam where *you* offer the viewer your own
+  delivery, typically plain HLS from your CDN.
 
 Every snippet below is the pattern of the repo's
-[`demo/MainActivity.kt`](https://github.com/AbueloSimpson/aliran/blob/main/sdk/android/demo/src/main/java/aliran/demo/MainActivity.kt),
-which was verified end-to-end on an Android 5.1 emulator (notice → fallback
-HLS playing) and a modern one (full P2P against a production panel).
+[`demo/MainActivity.kt`](https://github.com/AbueloSimpson/aliran/blob/main/sdk/android/demo/src/main/java/aliran/demo/MainActivity.kt).
+This was verified end-to-end on an Android 5.1 emulator (notice →
+fallback HLS playing) and a modern one (full P2P against a production
+panel).
 
 ## 0. Get the library building
 
-`aliran-kit` is consumed from the repo for now (no Maven artifact yet). One-time
-prerequisites — the engine runtime is vendored from the React Native package's
-checkout:
+`aliran-kit` is consumed from the repo for now — there is no Maven
+artifact yet. One-time prerequisites: the engine runtime is vendored from
+the React Native package's checkout:
 
 ```bash
 git clone https://github.com/AbueloSimpson/aliran && cd aliran
@@ -35,16 +38,17 @@ cd sdk/android
 ./gradlew :demo:assembleDebug             # the runnable reference APK
 ```
 
-To use it from your own project, include the module
-(`includeBuild`/`include` from your settings.gradle, or copy `aliran-kit/`
-into your project) and depend on it:
+To use it from your own project, include the module — `includeBuild`/
+`include` from your settings.gradle, or copy `aliran-kit/` into your
+project — and depend on it:
 
 ```kotlin
 dependencies { implementation(project(":aliran-kit")) }
 ```
 
-Your app manifest needs `INTERNET` and — for the P2P path — cleartext
-permitted **to loopback only** (the engine serves HLS on `127.0.0.1`); copy
+Your app manifest needs `INTERNET` and, for the P2P path, cleartext
+permitted **to loopback only** (the engine serves HLS on `127.0.0.1`).
+Copy
 [`demo/src/main/res/xml/network_security_config.xml`](https://github.com/AbueloSimpson/aliran/blob/main/sdk/android/demo/src/main/res/xml/network_security_config.xml).
 
 ## 1. The hook: detect an incompatible device
@@ -61,21 +65,22 @@ if (AliranBackend.isSupported()) {
 }
 ```
 
-`isSupported()` is `false` on any Android below 10. In that state the whole
-backend is **inert by contract**: `start()` and every other method are safe
-no-ops, nothing throws, nothing queues, no listener ever fires — so even code
-that forgets the check cannot crash the app. The engine's native library is
-never even class-loaded on these devices.
+`isSupported()` is `false` on any Android below 10. In that state the
+whole backend is **inert by contract**: `start()` and every other method
+are safe no-ops, nothing throws, nothing queues, and no listener ever
+fires. So even code that forgets the check cannot crash the app. The
+engine's native library is never even class-loaded on these devices.
 
 ## 2. The notice + the CDN switch (your side)
 
-`EngineNotice` is the ready-made screen for the unsupported branch: honest
-default copy, your branding, and an **action button that is the switch** —
-wire `onAction` to mount your own delivery. The SDK deliberately provides the
-notice and the switch, never the content: what plays after the press is yours.
+`EngineNotice` is the ready-made screen for the unsupported branch:
+honest default copy, your branding, and an **action button that is the
+switch**. Wire `onAction` to mount your own delivery. The SDK
+deliberately provides the notice and the switch, never the content —
+what plays after the press is yours.
 
-Here is the complete fallback, using ExoPlayer (which `aliran-kit` already
-brings in, and which plays plain HLS down to Android 5.0):
+Here is the complete fallback, using ExoPlayer. `aliran-kit` already
+brings ExoPlayer in, and it plays plain HLS down to Android 5.0:
 
 ```kotlin
 import aliran.kit.EngineNotice
@@ -113,14 +118,14 @@ private fun startCdnPlayback() {
 // release fallbackPlayer in onDestroy()
 ```
 
-The action button is focusable with visible feedback, so the same code works
-on TV boxes with a D-pad. Omit `actionLabel`/`onAction` and the screen is a
-plain informational notice.
+The action button is focusable with visible feedback, so the same code
+works on TV boxes with a D-pad. Omit `actionLabel`/`onAction` and the
+screen is a plain informational notice.
 
 **The one old-device trap:** Android **below 7.1.1 does not trust Let's
-Encrypt's root certificate**. If your CDN's HTTPS chain is Let's-Encrypt-only,
-the fallback fails TLS on exactly the devices it exists for — serve it from a
-host with a classic certificate chain.
+Encrypt's root certificate**. If your CDN's HTTPS chain is
+Let's-Encrypt-only, the fallback fails TLS on exactly the devices it
+exists for. Serve it from a host with a classic certificate chain.
 
 ## 3. The supported path (Android 10+): full P2P
 
@@ -157,11 +162,12 @@ private fun play(stream: Stream) {
 }
 ```
 
-`AliranPlayerView` carries the official apps' playback contracts so you don't
-reimplement them: the ~1 s zap buffer, the engine-driven tune lifecycle
-(drive your "tuning…" indicator from `onTune`, not raw player events), the
-frozen-live-edge self-heal ladder, feed-rotation rebuilds, and the vod seek
-transport (auto-enabled when the engine reports a vod title).
+`AliranPlayerView` carries the official apps' playback contracts, so you
+don't reimplement them: the ~1 s zap buffer, the engine-driven tune
+lifecycle (drive your "tuning…" indicator from `onTune`, not raw player
+events), the frozen-live-edge self-heal ladder, feed-rotation rebuilds,
+and the vod seek transport (auto-enabled when the engine reports a vod
+title).
 
 ## 4. Run it
 
@@ -170,11 +176,11 @@ transport (auto-enabled when the engine reports a vod title).
 adb install demo/build/outputs/apk/debug/demo-debug.apk
 ```
 
-On a modern device you get login → channel list → live P2P playback; on an
-Android 5–9 device (or emulator) you get the notice, and the button plays the
-fallback stream. The demo bakes its service descriptor from
-`demo/src/main/assets/service.json` (gitignored — copy
-`demo/service.example.json` and fill in your panel key and a dev account).
+On a modern device you get login → channel list → live P2P playback. On
+an Android 5–9 device (or emulator) you get the notice, and the button
+plays the fallback stream. The demo bakes its service descriptor from
+`demo/src/main/assets/service.json`. This file is gitignored — copy
+`demo/service.example.json` and fill in your panel key and a dev account.
 
 ## Reference
 
