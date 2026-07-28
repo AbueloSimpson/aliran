@@ -12,7 +12,9 @@ const isTV = Platform.isTV
 // Phone GUI scale: the 10-foot type/spacing ramp reads a touch large up close, so trim
 // the PHONE by this factor (TV keeps full 10-foot sizing). Applied to type, spacing,
 // safe margins and card sizes below — one knob to tune the overall density.
-const SCALE = isTV ? 1 : 0.80
+// Tuned on the S22 across three rounds: 0.85 → 0.80 → 0.68 (a further 15% cut —
+// the lettering still read too large on device).
+const SCALE = isTV ? 1 : 0.68
 const px = (n: number) => Math.round(n * SCALE)
 
 const DEFAULT_COLORS = {
