@@ -266,6 +266,15 @@ ul.devices li { margin-bottom: 6px; }
 #user-search { min-width: 220px; }
 .footnote { font-size: 12px; }
 
+/* Long explainer footnotes collapse behind a one-line toggle. */
+details.footnote { margin-top: 2px; }
+details.footnote summary { cursor: pointer; list-style: none; color: var(--muted); font-size: 12px; }
+details.footnote summary::-webkit-details-marker { display: none; }
+details.footnote summary::before { content: '▸ '; font-size: 11px; }
+details.footnote[open] summary::before { content: '▾ '; }
+details.footnote summary:hover { color: var(--text); }
+details.footnote p { margin: 6px 0 0; }
+
 /* ---- overview / observability (S16b) ---- */
 .card-title { margin: 0 0 10px; font-size: 14px; }
 .card-title .muted { font-weight: 400; font-size: 12px; }
@@ -322,7 +331,12 @@ ul.report-list li { margin-bottom: 3px; }
 /* ---- analytics tab (S48): hand-rolled inline-SVG charts, no dependency ---- */
 #analytics-section { display: flex; flex-direction: column; gap: 12px; }
 .an-chart svg { display: block; width: 100%; height: 84px; }
-.an-chart .an-labels text { fill: var(--muted); font-size: 8px; font-family: ui-monospace, Consolas, monospace; }
+/* Hour labels: HTML strip under the svg (in-svg text would stretch with it). */
+.an-x { position: relative; height: 14px; }
+.an-x span {
+  position: absolute; top: 1px; color: var(--muted);
+  font-size: 10px; font-family: ui-monospace, Consolas, monospace;
+}
 #an-days-table td { font-variant-numeric: tabular-nums; }
 
 /* ---- VOD provider card (S53): a row-form inside a card on the Sources tab ---- */

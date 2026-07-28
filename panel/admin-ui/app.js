@@ -1554,15 +1554,18 @@ function barsSvg (slots, series, colors, { h = 84 } = {}) {
     }
     rects += `<rect x="${(i * bw).toFixed(2)}%" y="0" width="${bw.toFixed(2)}%" height="${h - 12}" fill="transparent"><title>${esc(slots[i])} — ${series.map((s) => `${s.label} ${s.values[i] || 0}`).join(', ')} (total ${total})</title></rect>`
   }
-  // Sparse hour labels: first, last, and every 12th slot.
+  // Sparse hour labels: first, last, and every 12th slot. They live OUTSIDE the
+  // svg — preserveAspectRatio="none" stretches the svg to the card width, which
+  // turns in-svg <text> into giant horizontally-smeared garble.
   let labels = ''
   for (let i = 0; i < n; i++) {
     if (i !== 0 && i !== n - 1 && i % 12 !== 0) continue
-    labels += `<text x="${(i * bw + bw / 2).toFixed(2)}%" y="${h - 2}" text-anchor="middle">${esc(slots[i].slice(-3))}</text>`
+    const pos = i === 0 ? 'left:0' : i === n - 1 ? 'right:0' : `left:${(i * bw + bw / 2).toFixed(2)}%;transform:translateX(-50%)`
+    labels += `<span style="${pos}">${esc(slots[i].slice(-3))}</span>`
   }
   return `<svg viewBox="0 0 100 ${h}" preserveAspectRatio="none" role="img">` +
     `<line x1="0" y1="${h - 12}" x2="100%" y2="${h - 12}" stroke="var(--border)" stroke-width="1"></line>` +
-    rects + `<g class="an-labels">${labels}</g></svg>`
+    rects + `</svg><div class="an-x">${labels}</div>`
 }
 
 // Flatten the API's day rollups into the last `hoursBack` hour slots (UTC),

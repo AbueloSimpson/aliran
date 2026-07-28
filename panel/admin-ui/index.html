@@ -136,6 +136,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <details class="footnote"><summary>How packages work</summary>
       <p class="muted footnote">A package (bouquet) is a named bundle of channels granted as <b>one unit</b> — assign it on the
         Users tab (the <b>+ grant</b> dialog or a package chip's ✕). Grants stay <b>cryptographic</b>: every change here is
         materialized into per-user sealed keys immediately; clients pick new ones up at their next login. Members can be stream
@@ -143,7 +144,7 @@
         <span class="mono">source:&lt;name&gt;</span> that resolve against the catalog on every change — a newly tagged or
         imported channel joins the bouquet by itself. Removing a package (or a member) removes the grants only it covered;
         manual grants and <b>auto-grant</b> source channels are never touched. A viewer that already unsealed a key may have it
-        cached — a hard lockout is a stream-key rotation. Registry lives in <span class="mono">DATA_DIR/packages.json</span>.</p>
+        cached — a hard lockout is a stream-key rotation. Registry lives in <span class="mono">DATA_DIR/packages.json</span>.</p></details>
     </section>
 
     <section id="admins-section" hidden>
@@ -161,8 +162,9 @@
           <tbody></tbody>
         </table>
       </div>
+      <details class="footnote"><summary>About admin accounts</summary>
       <p class="muted footnote">Admin accounts live in the panel-private <span class="mono">secrets/admins.json</span>.
-        If you ever lock yourself out, recover from the box with <span class="mono">admin-cli add-admin</span>.</p>
+        If you ever lock yourself out, recover from the box with <span class="mono">admin-cli add-admin</span>.</p></details>
     </section>
 
     <section id="publishers-section" hidden>
@@ -180,11 +182,12 @@
           <tbody></tbody>
         </table>
       </div>
+      <details class="footnote"><summary>How publisher keys work</summary>
       <p class="muted footnote">Each broadcaster site gets its <b>own</b> registration key, valid only for the channel ids
         its scopes match — a leaked key can no longer touch other sites' channels, and revoking one site is a status flip
         here instead of re-keying everyone. The secret is shown <b>once</b> at enrollment; put it in that site's
         broadcaster <span class="mono">.env</span> as <span class="mono">PUBLISHER_KEY</span> together with
-        <span class="mono">PUBLISHER_NAME</span>. Registry lives in the panel-private <span class="mono">secrets/publishers.json</span>.</p>
+        <span class="mono">PUBLISHER_NAME</span>. Registry lives in the panel-private <span class="mono">secrets/publishers.json</span>.</p></details>
     </section>
 
     <section id="sources-section" hidden>
@@ -203,13 +206,14 @@
           <tbody></tbody>
         </table>
       </div>
+      <details class="footnote"><summary>How sources work</summary>
       <p class="muted footnote">A source pulls a provider-prepared JSON of channels on its interval and materializes it as a
         <b>category of redirect channels</b> — viewers play each entry's URL, no P2P feed. The feed is data only: entries are
         validated like admin input, and a source can never touch manual channels or another source's ids. Channels that
         <b>leave the feed are removed</b> (grants included). P2P channels tagged with the same category share the rail.
         Oversized feeds are capped (500 channels by default, <span class="mono">sources.maxChannels</span>) and invalid
         entries skipped — the report line under <b>Last sync</b> opens the full details. Registry lives in
-        <span class="mono">DATA_DIR/sources.json</span>.</p>
+        <span class="mono">DATA_DIR/sources.json</span>.</p></details>
 
       <div class="card" id="vod-card">
         <h3 class="card-title">VOD provider <span class="muted">(ZenContent)</span> <span id="vod-badge" class="badge disabled">not configured</span></h3>
@@ -222,6 +226,7 @@
           <label class="inline"><input type="checkbox" id="vod-enabled"> enabled</label>
           <button class="btn primary">Save</button>
         </form>
+        <details class="footnote"><summary>How the VOD provider works</summary>
         <p class="muted footnote">A separate <b>movies &amp; series catalog</b> the apps fetch <b>directly</b> from the provider —
           this panel never proxies its calls or its media, and it stores <b>no viewer credential</b> for it (each viewer
           authenticates with their own account). Everything here is public coordinates: the API base (<b>https only</b>, no
@@ -229,7 +234,7 @@
           params passed through verbatim. <b>Enabled</b> is the switch: on, both apps show a VOD section; off — or never
           configured — the option does not exist for viewers. Changes apply at each viewer's <b>next login</b>. The two
           source values are independent: leave <b>series source</b> empty and the apps show <b>Movies only</b> — the
-          Series menu item does not appear at all.</p>
+          Series menu item does not appear at all.</p></details>
       </div>
     </section>
 
@@ -250,12 +255,13 @@
           <tbody></tbody>
         </table>
       </div>
+      <details class="footnote"><summary>How categories work</summary>
       <p class="muted footnote">Categories are stored <b>on each channel</b> as plain strings — that stays the wire format, so
         the apps need no change. This tab manages the <b>vocabulary</b>: display label, sort order, visibility, and bulk
         rename/merge. A two-level rail is written <span class="mono">Parent/Child</span>, and renaming a parent moves its
         children with it. <b>Membership vs presentation:</b> a source feed decides <i>which</i> channels carry its category and
         reasserts that on every sync — so to move an imported rail, rename the <b>source's</b> category on the Sources tab.
-        Everything here (label / order / hidden) is yours and survives a sync.</p>
+        Everything here (label / order / hidden) is yours and survives a sync.</p></details>
     </section>
 
     <section id="reports-section" hidden>
@@ -294,6 +300,7 @@
         <div id="rp-chart" class="an-chart"></div>
       </div>
       <div id="rp-list" class="cards"></div>
+      <details class="footnote"><summary>Privacy and alert mechanics</summary>
       <p class="muted footnote"><b>Who reported this?</b> Nobody knows from here — and that is deliberate. The panel verifies the
         viewer's session token, then immediately reduces the identity to <span class="mono">HMAC(salt, user|device)</span> sliced to
         16 hex. That <b>reporter</b> pseudonym is all that is stored, deduped and counted; no username and no device id ever reaches
@@ -305,7 +312,7 @@
         (a dead endpoint is dropped after 3 attempts — it can never slow the panel down). During a storm only a bounded sample of full
         records is kept; the rest are counted on the alert, and reports past
         <span class="mono">REPORTS_GLOBAL_PER_MIN</span> are shed. <span class="mono">REPORTS_RETENTION_DAYS=0</span> turns the whole
-        feature off, including the RPC method.</p>
+        feature off, including the RPC method.</p></details>
     </section>
 
     <section id="analytics-section" hidden>
@@ -329,6 +336,7 @@
           <tbody></tbody>
         </table>
       </div>
+      <details class="footnote"><summary>What these numbers mean</summary>
       <p class="muted footnote"><b>What this is — and is not.</b> Every number here is an <b>aggregate count</b> the panel
         already observes as a side effect of serving: login outcomes, session tokens issued, and how many peers hold the
         catalog connection. Per-user watch tracking <b>does not exist</b> in Aliran — viewers replicate streams peer-to-peer
@@ -338,7 +346,7 @@
         and treat all peer counts as a <b>lower bound (≥)</b>: viewers also serve each other. Rollups live in
         <span class="mono">DATA_DIR/analytics/</span> (retention <span id="an-retention"></span> days;
         <span class="mono">ANALYTICS_RETENTION_DAYS=0</span> disables collection entirely). See
-        <span class="mono">docs/analytics.md</span>.</p>
+        <span class="mono">docs/analytics.md</span>.</p></details>
     </section>
 
     <section id="overview-section" hidden>
