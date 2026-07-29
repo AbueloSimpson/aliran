@@ -1,0 +1,69 @@
+# Aliran broadcaster on a HARDWARE-ENCODE host — bare-metal systemd unit.
+#
+# This is aliran-broadcaster.service with the three changes an NVENC/NVDEC host needs.
+# Use it INSTEAD of that unit, not alongside it. Setup: deploy/gpu/README.md
+#
+#   sudo cp deploy/gpu/aliran-broadcaster-gpu.service \
+#           /etc/systemd/system/aliran-broadcaster.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aliran-broadcaster
+#
+# Verify BEFORE starting channels — an unverified encoder is a start-time refusal, not a
+# crash, but you want to know now:  sudo -u aliran deploy/gpu/verify-gpu.sh
+
+[Unit]
+Description=Aliran broadcaster, GPU transcode host (ingest -> encrypted P2P feed; control API/UI)
+Documentation=https://abuelosimpson.github.io/aliran/kb/gpu-transcoding/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=aliran
+Group=aliran
+WorkingDirectory=/opt/aliran/broadcaster
+EnvironmentFile=-/opt/aliran/broadcaster/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+
+# ⚠ CHANGE 1 — the memory cap must be raised, or every transcoding channel is recycled
+# roughly every 30 seconds, permanently. FFMPEG_MAX_RSS_MB defaults to 150, which is right
+# for a `copy` channel (13-30 MB remuxing) and an order of magnitude too low for one that
+# re-encodes: measured steady state is 233 MB with GPU decode and 439 MB with CPU decode.
+# The broadcaster applies FFMPEG_MAX_RSS_TRANSCODE_MB to re-encoding channels for exactly
+# this reason; it is set here so the unit is self-documenting even if .env omits it.
+# Symptom if it is wrong: restarts == memRecycles, channel flapping up<->backoff.
+Environment=FFMPEG_MAX_RSS_TRANSCODE_MB=900
+
+# ⚠ CHANGE 2 — device access. ProtectSystem=strict still allows /dev nodes, but the default
+# unit's hardening blocks them, so both of these are required for any hardware encoder.
+#   render, video      — /dev/dri (VAAPI) and the NVIDIA character devices
+#   PrivateDevices     — must be OFF; it hides /dev/nvidia* and /dev/dri entirely
+SupplementaryGroups=render video
+PrivateDevices=false
+
+# NVIDIA's own device nodes. Listing them explicitly documents what is needed and keeps the
+# rest of /dev hidden. nvidia-uvm/nvidia-uvm-tools appear once the driver is loaded; a host
+# with several cards also exposes /dev/nvidia1, /dev/nvidia2 and so on — add them as needed.
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia-modeset rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+DeviceAllow=/dev/nvidia0 rw
+# DeviceAllow=/dev/nvidia1 rw
+# VAAPI / QSV hosts instead want the render node:
+# DeviceAllow=/dev/dri/renderD128 rw
+
+# ⚠ CHANGE 3 — the CUDA JIT cache. The driver writes compiled kernels under $HOME, and with
+# ProtectHome=true it has nowhere to put them; it still runs, but recompiles on every start.
+# Give it a writable directory and point it there.
+Environment=CUDA_CACHE_PATH=/opt/aliran/broadcaster/data/.nv
+ReadWritePaths=/opt/aliran/broadcaster/data
+
+# Hardening otherwise unchanged from the non-GPU unit.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
