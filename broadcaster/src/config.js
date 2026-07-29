@@ -86,6 +86,15 @@ export const config = {
   // stalled edge: same backoff/marker machinery, no feed rotation, sub-window viewer blip.
   // 0 disables. Linux-only (/proc); harmlessly inert elsewhere.
   ffmpegMaxRssMb: int(process.env.FFMPEG_MAX_RSS_MB, 150),
+  // ⚠ A TRANSCODING channel needs its own, far larger cap. The 150 MB above is right for a
+  // `copy` channel (remux only: 13–30 MB fresh), but decoding and encoding hold real frame
+  // buffers. Measured on a live 1080p production source: 233 MB steady with GPU decode,
+  // 439 MB with CPU decode — the CPU path is the HEAVIER one, because decoded frames sit in
+  // system memory instead of on the card. Against a 150 MB cap every transcoding channel is
+  // therefore recycled every ~30 s forever, which is exactly what happened the first time
+  // one ran on real hardware (restarts == memRecycles). This floor is ~2x the worst measured
+  // steady state, so a genuine leak is still caught while normal operation is not.
+  ffmpegMaxRssTranscodeMb: int(process.env.FFMPEG_MAX_RSS_TRANSCODE_MB, 900),
   // Offline slate: loop pre-rendered "SOURCE OFFLINE" media when a source is dead, so the
   // channel stays live with a clear message instead of going blank in watchdog backoff.
   // The slate is remuxed with -c copy, so a slated channel costs ~0 CPU and `copy` channels

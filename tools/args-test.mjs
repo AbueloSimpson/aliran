@@ -12,7 +12,7 @@ import {
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
   isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool,
-  resolveHwDecode
+  resolveHwDecode, rssCapMb
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -590,6 +590,26 @@ for (const line of [
   'No capable devices found' // the 8-bit/pixel-format error — a CPU-path problem
 ]) assert.ok(!HW_DECODE_FAIL_RE.test(line), 'must NOT trigger fallback: ' + line)
 log('R: GPU decode path (scale_cuda, pinning, arg ordering, validation, fallback signatures) ✓')
+
+// ===== W: the ffmpeg RSS cap has to know whether the channel transcodes =====
+// ⚠ FOUND ON REAL HARDWARE, not here: the first GPU channel showed restarts == memRecycles,
+// recycling every ~30 s. The 150 MB default is correct for a `copy` channel (13-30 MB
+// remuxing) but a transcoding channel legitimately holds 233 MB with GPU decode and 439 MB
+// with CPU decode on a live 1080p source. One global number cannot serve both, and the
+// tighter one silently makes transcoding unusable while looking like a healthy watchdog.
+const CFG = { ffmpegMaxRssMb: 150, ffmpegMaxRssTranscodeMb: 900 }
+assert.strictEqual(rssCapMb({ transcode: { encoder: 'copy' } }, CFG), 150, 'copy keeps the tight remux cap')
+assert.strictEqual(rssCapMb({}, CFG), 900, 'no transcode block = libx264 default = transcoding')
+assert.strictEqual(rssCapMb({ transcode: { encoder: 'libx264' } }, CFG), 900)
+assert.strictEqual(rssCapMb({ transcode: { encoder: 'h264_nvenc' } }, CFG), 900)
+assert.strictEqual(rssCapMb({ transcode: { encoder: 'hevc_nvenc' } }, CFG), 900)
+// 0 disables the whole mechanism and must stay disabled.
+assert.strictEqual(rssCapMb({ transcode: { encoder: 'h264_nvenc' } }, { ffmpegMaxRssMb: 0, ffmpegMaxRssTranscodeMb: 900 }), 0,
+  'FFMPEG_MAX_RSS_MB=0 disables the cap for every channel')
+// An operator who raises the base above the floor means it — never lower their number.
+assert.strictEqual(rssCapMb({ transcode: { encoder: 'h264_nvenc' } }, { ffmpegMaxRssMb: 2000, ffmpegMaxRssTranscodeMb: 900 }), 2000,
+  'an explicit base above the floor wins')
+log('W: RSS cap is encoder-aware (copy stays tight, transcode gets headroom) ✓')
 
 // ===== V: 24/7 stability, timestamp base, and HTTP source access =====
 // CFR: a variable-frame-rate source segments unevenly and players stutter at the joins.
