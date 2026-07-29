@@ -18,6 +18,19 @@ phone + Android TV, and the Windows desktop player).
 
 ### Fixed
 
+- **Desktop packaging: the build swept in the SDK's native-app source trees** —
+  found while auditing an artifact. The desktop shell depends on
+  `@aliran/player-sdk`, which in this repo is a workspace package: the dependency
+  resolves through a symlink to the whole `sdk/` directory, so electron-builder
+  packed `sdk/android/` and `sdk/react-native/` into `app.asar` alongside the JS
+  engine the shell actually imports. Neither subtree is reachable from desktop
+  code, and `sdk/android/` is where a developer's gitignored, local-only demo
+  descriptor lives — so a build made on a working machine could bake local
+  credentials into a shipped artifact. Until now the only defense was a manual
+  "clear that directory before packaging" step, which is exactly the kind of step
+  that gets skipped. The packaging config now excludes both subtrees, so the
+  artifact no longer depends on the state of the developer's working tree.
+
 - **Dashboard: hidden tabs leaked their content** — the Reports, Analytics and
   Overview sections rendered their content below every other tab (their layout
   rule overrode the browser's `[hidden]` handling). All three now hide
