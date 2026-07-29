@@ -33,7 +33,7 @@ import net from 'net'
 import dgram from 'dgram'
 import path from 'path'
 import os from 'os'
-import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS, pickSlateFile, parseVideoProfile } from './hls.js'
+import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS, pickSlateFile, parseVideoProfile, NVENC_ENCODERS, HW_DECODE_FAIL_RE } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
 import { makeEgressMeter } from './analytics.js'
@@ -239,9 +239,30 @@ export function normalizeTranscode (value) {
     if (!PRESETS.has(value.preset)) bad('transcode.preset must be fast, balanced or quality')
     t.preset = value.preset
   }
+  // 'auto' (the default) means "use the GPU decoder when this host has one" and is
+  // resolved against the capability probe at spawn time; true/false pin the choice.
+  // An explicit `true` is a promise the host must keep, so start() refuses if it cannot.
+  if (value.hwDecode !== undefined) {
+    if (value.hwDecode !== 'auto' && typeof value.hwDecode !== 'boolean') {
+      bad('transcode.hwDecode must be true, false or "auto"')
+    }
+    t.hwDecode = value.hwDecode
+  }
+  if (value.gpu !== undefined && value.gpu !== null) {
+    t.gpu = intInRange(value.gpu, 0, 15, 'transcode.gpu')
+  }
   if (t.encoder === 'copy') {
     if (t.resolution !== 'source' || t.fps !== 'source') bad('encoder "copy" cannot change resolution/fps (leave them "source")')
     if (t.videoBitrateKbps != null) bad('encoder "copy" cannot set videoBitrateKbps')
+  }
+  // Both settings are NVIDIA-only. Accepting them silently on another encoder would be a
+  // lie the operator only discovers by reading ffmpeg args: `copy` decodes nothing, and a
+  // CPU encoder would need an explicit hwdownload we deliberately do not build. Only an
+  // EXPLICIT request is an error — the 'auto' default has to stay harmless on every
+  // encoder, and is neutralised at resolution time instead (hwDecodeResolved).
+  if (!NVENC_ENCODERS.has(t.encoder)) {
+    if (t.hwDecode === true) bad(`encoder "${t.encoder}" cannot use transcode.hwDecode (NVENC only)`)
+    if (t.gpu != null) bad(`encoder "${t.encoder}" cannot use transcode.gpu (NVENC only)`)
   }
   return t
 }
@@ -805,6 +826,16 @@ class Channel {
       input = { kind: 'file', path: run.slateFile }
       transcode = { ...(this.meta.transcode || {}), encoder: 'copy' }
       ingestTuning = null
+    } else {
+      // Resolve hwDecode to a real boolean here rather than in the pure arg builder, which
+      // has no way to see the host. `run.hwDecodeFailed` is the per-source fallback: this
+      // SOURCE has already proved it cannot ride the CUDA path (see the onLine matcher
+      // below), so every later respawn of this run stays on the CPU decoder. It is
+      // deliberately sticky for the life of the run and NOT persisted — a PATCH or an
+      // operator restart re-tries the GPU, so a transient failure cannot demote a channel
+      // permanently, while a genuinely undecodable source is only retried once per start.
+      const hwDecode = !run.hwDecodeFailed && this.manager.hwDecodeResolved(this.meta.transcode)
+      transcode = { ...(this.meta.transcode || {}), hwDecode }
     }
     const proc = startFfmpeg({
       input,
@@ -821,6 +852,15 @@ class Channel {
         if (!run.slated) {
           const p = parseVideoProfile(line)
           if (p) this.detectedProfile = p
+        }
+        // GPU decode just refused this source. ffmpeg is already dying (exit 218) and the
+        // watchdog will respawn on its own — all we do is make sure the NEXT spawn drops
+        // the CUDA path. Logged as an explicit marker so an operator reading the ring sees
+        // a decision rather than an unexplained change in the ffmpeg command line.
+        if (transcode?.hwDecode === true && !run.hwDecodeFailed && HW_DECODE_FAIL_RE.test(line)) {
+          run.hwDecodeFailed = true
+          this._log('[aliran] GPU decode failed for this source — respawning with CPU decode')
+          try { this.manager.incidents.record('hwdecode-fallback', { channel: this.meta.id }) } catch {}
         }
       },
       onExit: (code) => {
@@ -1349,9 +1389,12 @@ export class ChannelManager {
   logs (id, lines) { return this._get(id).logs(lines) }
 
   // One ffmpeg capability probe per process, shared by every start().
+  // `_capsValue` is the same result kept synchronously reachable, because the respawn path
+  // needs to know whether GPU decode works without being able to await anything.
   capabilities () {
     if (!this._caps) {
       this._caps = probeCapabilities({ vaapiDevice: this.config.vaapiDevice })
+        .then((v) => { this._capsValue = v; return v })
         .catch((err) => { this._caps = null; throw err })
     }
     return this._caps
@@ -1381,7 +1424,26 @@ export class ChannelManager {
       }
     }
 
+    // Only an EXPLICIT hwDecode:true is a hard requirement. 'auto' resolves to whatever
+    // the host can do, so it must never block a start — that is the whole point of auto.
+    if (meta.transcode?.hwDecode === true && !caps.hwDecode?.cuda?.verified) {
+      bad('transcode.hwDecode is on but GPU decode is not usable on this host' +
+        (caps.hwDecode?.cuda?.error ? ` (${caps.hwDecode.cuda.error})` : ''))
+    }
+
     if (isPushInput(input)) await assertPortFree(input)
+  }
+
+  // Resolve hwDecode 'auto' against the probe. Cached caps only — never awaited on the
+  // spawn path, where a slow probe would stall a respawn; an unprobed host just means
+  // "not yet known to work", i.e. the CPU path, which is always correct if slower.
+  hwDecodeResolved (transcode) {
+    const encoder = transcode?.encoder ?? TRANSCODE_DEFAULTS.encoder
+    if (!NVENC_ENCODERS.has(encoder)) return false // 'auto' can only ever mean off here
+    const want = transcode?.hwDecode ?? TRANSCODE_DEFAULTS.hwDecode
+    if (want !== 'auto') return want === true
+    const caps = this._capsValue
+    return Boolean(caps?.hwDecode?.cuda?.verified)
   }
 
   // Ports already claimed by push channels (uniqueness domain for allocPort).

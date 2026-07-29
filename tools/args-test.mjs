@@ -6,7 +6,7 @@ import path from 'path'
 import {
   ffmpegArgs, inputArgs, encodeArgs, hwDeviceArgs, hlsMuxArgs,
   upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs,
-  pickSlateFile, parseVideoProfile
+  pickSlateFile, parseVideoProfile, hwDecodeArgs, HW_DECODE_FAIL_RE
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
@@ -78,12 +78,20 @@ assert.deepStrictEqual(encodeArgs(null, HLS), [
 assert.ok(encodeArgs(null, { time: 4, listSize: 6 }).includes('expr:gte(t,n_forced*4)'), 'keyframes follow hls.time')
 assert.deepStrictEqual(encodeArgs({ encoder: 'copy' }, HLS),
   ['-c:v', 'copy', '-c:a', 'aac', '-ar', '48000', '-b:a', '128k'], 'copy: no keyframe forcing, audio still aac')
+// -pix_fmt yuv420p on the CPU-decode nvenc path is LOAD-BEARING, not cosmetic: H.264
+// NVENC is 8-bit only, and without it a High 10 source reaches the encoder as yuv420p10le
+// and is refused with "No capable devices found" — which reads like a missing GPU. Verified
+// against ffmpeg 6.1.1 on an RTX 4090: fails without it, encodes with it, 8-bit unaffected.
 assert.deepStrictEqual(encodeArgs({ encoder: 'h264_nvenc', preset: 'balanced', videoBitrateKbps: 2500, fps: 30, resolution: '720p' }, HLS), [
-  '-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'll',
+  '-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'll', '-forced-idr', '1', '-pix_fmt', 'yuv420p',
   '-force_key_frames', 'expr:gte(t,n_forced*2)',
   '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k',
   '-r', '30', '-vf', 'scale=-2:720',
   '-c:a', 'aac', '-ar', '48000', '-b:a', '128k'])
+// Both nvenc flags below are load-bearing and were verified against real ffmpeg, so they
+// get their own named assertions — a future "tidy up the arg list" must fail loudly here.
+assert.ok(encodeArgs({ encoder: 'h264_nvenc' }, HLS).includes('-forced-idr'),
+  'nvenc ignores -force_key_frames without -forced-idr: segments never cut and the live window never rolls')
 assert.deepStrictEqual(encodeArgs({ encoder: 'h264_qsv', preset: 'quality' }, HLS), [
   '-c:v', 'h264_qsv', '-preset', 'slow',
   '-force_key_frames', 'expr:gte(t,n_forced*2)',
@@ -469,4 +477,102 @@ log('P: adaptive boot-resume pacing (idle→1 sample, busy→bounded, recovers�
 }
 log('Q: bounded-concurrency resume pool (bound respected, overlaps, failure-isolated, seq fallback) ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing)')
+// ===== R: GPU decode path (CUVID → scale_cuda → nvenc) + device pinning =====
+// Every expectation here was checked against real ffmpeg 6.1.1 on a 2x RTX 4090 host
+// before it was written down — the arg vectors this builder produces were run against
+// that box and the resulting HLS output inspected, not merely eyeballed as strings.
+// Measured there, 1080p30 → 720p/3000k over 30 s of content:
+//   full CUDA (cuvid → scale_cuda → nvenc)  1.6 CPU-s   = 0.053 cores per realtime stream
+//   nvenc with CPU decode + CPU scale      12.9 CPU-s   = 0.43  cores
+//   libx264 veryfast                       25.0 CPU-s   = 0.83  cores
+// So the CUDA path is ~8x cheaper than the nvenc path it replaces. CPU is not the real
+// ceiling either way: NVENC on GeForce caps at 8 concurrent encode sessions per GPU.
+
+// 'auto' is NOT self-resolving in the pure builder — it has no way to see the host, so it
+// means "off" here and channel.js turns it into a real boolean against the probe.
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: 'auto' }, { kind: 'pull', url: 'http://o/s' }), [],
+  'unresolved auto = off in the pure builder')
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: false }, { kind: 'pull', url: 'http://o/s' }), [])
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, { kind: 'pull', url: 'http://o/s' }),
+  ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'])
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true, gpu: 1 }, { kind: 'pull', url: 'http://o/s' }),
+  ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-hwaccel_device', '1'], 'gpu pins the DECODER too')
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true, gpu: 0 }, { kind: 'pull', url: 'http://o/s' }).slice(-2),
+  ['-hwaccel_device', '0'], 'gpu 0 is a real selection, not a falsy skip')
+// A CPU encoder or `copy` never takes the CUDA path, and lavfi has no bitstream to decode.
+for (const enc of ['libx264', 'copy', 'h264_qsv', 'h264_vaapi']) {
+  assert.deepStrictEqual(hwDecodeArgs({ encoder: enc, hwDecode: true }, { kind: 'pull', url: 'http://o/s' }), [], `${enc}: no cuda decode`)
+}
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, { kind: 'test' }), [],
+  'test input synthesises raw frames — nothing to hw-decode')
+assert.ok(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, { kind: 'file', path: '/m/a.mp4' }).length > 0, 'file input decodes')
+
+// On the GPU the scaler must be scale_cuda (plain scale would need a download first), and
+// -pix_fmt must be ABSENT — it would force the frame back to system memory.
+const gpuArgs = encodeArgs({ encoder: 'h264_nvenc', hwDecode: true, resolution: '720p', videoBitrateKbps: 3000 }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.ok(gpuArgs.includes('scale_cuda=-2:720'), 'gpu path scales on the card')
+assert.ok(!gpuArgs.includes('scale=-2:720'), 'no cpu scaler on the gpu path')
+assert.ok(!gpuArgs.includes('-pix_fmt'), 'no -pix_fmt on the gpu path (would download the frame)')
+const cpuArgs = encodeArgs({ encoder: 'h264_nvenc', hwDecode: false, resolution: '720p' }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.ok(cpuArgs.includes('scale=-2:720') && !cpuArgs.join(' ').includes('scale_cuda'), 'cpu path scales on the cpu')
+assert.deepStrictEqual(cpuArgs.slice(0, 10),
+  ['-c:v', 'h264_nvenc', '-preset', 'p2', '-tune', 'll', '-forced-idr', '1', '-pix_fmt', 'yuv420p'], 'cpu path forces 8-bit')
+assert.ok(gpuArgs.includes('-forced-idr'), 'the GPU path needs forced IDR just as much as the CPU one')
+// resolution 'source' on the GPU: frames stay CUDA with no filter at all, which nvenc takes directly.
+const gpuNoScale = encodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.ok(!gpuNoScale.includes('-vf'), 'no filter needed when not rescaling')
+assert.deepStrictEqual(encodeArgs({ encoder: 'h264_nvenc', hwDecode: true, gpu: 1 }, HLS, { kind: 'pull', url: 'http://o/s' }).slice(0, 10),
+  ['-c:v', 'h264_nvenc', '-preset', 'p2', '-tune', 'll', '-forced-idr', '1', '-gpu', '1'], 'gpu pins the ENCODER too')
+
+// Full assembly: -hwaccel is a per-input option, so it must land before the -i it applies
+// to. Getting this order wrong makes ffmpeg ignore it and silently decode on the CPU —
+// which is exactly the failure this whole path exists to avoid, and it is invisible in
+// the output, so the ordering is asserted rather than assumed.
+const gpuFull = ffmpegArgs({
+  input: { kind: 'pull', url: 'http://origin:81/CH/mpegts' },
+  transcode: { encoder: 'h264_nvenc', hwDecode: true, gpu: 1, resolution: '720p' },
+  hls: HLS
+}, outDir)
+assert.ok(gpuFull.indexOf('-hwaccel') < gpuFull.indexOf('-i'), '-hwaccel precedes its -i')
+assert.ok(gpuFull.indexOf('-hwaccel_device') < gpuFull.indexOf('-i'), '-hwaccel_device precedes its -i')
+assert.ok(gpuFull.indexOf('-gpu') > gpuFull.indexOf('-i'), '-gpu is an OUTPUT option')
+assert.ok(gpuFull.includes('scale_cuda=-2:720'))
+// The slate forces `copy`, so a slated channel must never carry GPU decode flags.
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'copy', hwDecode: true }, { kind: 'file', path: 'slate-720p-h264-aac.ts' }), [],
+  'slated channels (forced copy) stay off the GPU')
+
+// Validation: auto is harmless everywhere, explicit requests are NVENC-only.
+assert.strictEqual(normalizeTranscode({}).hwDecode, 'auto', 'auto is the default')
+assert.strictEqual(normalizeTranscode({}).gpu, null)
+assert.strictEqual(normalizeTranscode({ encoder: 'h264_nvenc', hwDecode: true }).hwDecode, true)
+assert.strictEqual(normalizeTranscode({ encoder: 'h264_nvenc', gpu: '1' }).gpu, 1, 'numeric-string gpu coerced')
+throws(() => normalizeTranscode({ hwDecode: 'yes' }), /hwDecode/)
+throws(() => normalizeTranscode({ encoder: 'libx264', hwDecode: true }), /NVENC only/)
+throws(() => normalizeTranscode({ encoder: 'copy', hwDecode: true }), /NVENC only/)
+throws(() => normalizeTranscode({ encoder: 'libx264', gpu: 0 }), /NVENC only/)
+throws(() => normalizeTranscode({ encoder: 'h264_nvenc', gpu: 16 }), /transcode.gpu/)
+throws(() => normalizeTranscode({ encoder: 'h264_nvenc', gpu: -1 }), /transcode.gpu/)
+// 'auto' must survive on a CPU encoder rather than being rejected — it is the default that
+// every existing channel already carries.
+assert.strictEqual(normalizeTranscode({ encoder: 'libx264' }).hwDecode, 'auto')
+
+// The fallback trigger: these are the REAL stderr lines an RTX 4090 emitted when CUVID
+// declined a High 10 source. ffmpeg substitutes the software decoder without a word, so
+// the failure surfaces at the filter graph — matching only decoder-shaped errors would
+// miss it entirely and leave the channel respawning into the same wall forever.
+for (const line of [
+  "Impossible to convert between the formats supported by the filter 'graph 0 input from stream 0:0' and the filter 'auto_scale_0'",
+  'Failed to inject frame into filter network: Function not implemented',
+  'Error while filtering: Function not implemented',
+  '[h264 @ 0x55] Failed setup for format cuda: hwaccel initialisation returned error'
+]) assert.ok(HW_DECODE_FAIL_RE.test(line), 'must trigger CPU fallback: ' + line)
+// Ordinary flaky-source noise must NOT demote a channel off the GPU.
+for (const line of [
+  'Error while decoding stream #0:0: Invalid data found when processing input',
+  "[hls @ 0x55] Skip ('#EXT-X-VERSION:3')",
+  'Connection to tcp://origin:81 failed: Connection refused',
+  'No capable devices found' // the 8-bit/pixel-format error — a CPU-path problem
+]) assert.ok(!HW_DECODE_FAIL_RE.test(line), 'must NOT trigger fallback: ' + line)
+log('R: GPU decode path (scale_cuda, pinning, arg ordering, validation, fallback signatures) ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing + gpu decode path)')

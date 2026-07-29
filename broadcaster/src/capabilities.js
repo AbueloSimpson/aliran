@@ -6,8 +6,16 @@
 //   1. parse `ffmpeg -protocols` / `-encoders` — what the build claims
 //   2. deep-verify every listed h264 HW encoder by really encoding 8 test frames;
 //      without the matching GPU/driver the encoder fails at open time.
+//
+// The CUDA decode path (hwDecode) gets the same deep verification, and needs it more than
+// the encoders do: `-hwaccel cuda` never fails on its own — ffmpeg quietly substitutes the
+// software decoder — so only running the WHOLE chain (cuvid → scale_cuda → nvenc) tells
+// the truth about whether it works. Hence a real encoded sample rather than lavfi frames.
 
 import { spawn } from 'child_process'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
 
 export const HW_H264_ENCODERS = ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf']
 
@@ -88,5 +96,39 @@ export async function probeCapabilities ({ vaapiDevice = '/dev/dri/renderD128', 
       : { listed: true, verified: false, error: bestErrorLine(r.err) || 'probe encode failed' }
   }))
 
-  return { ffmpeg: true, version, protocols, encoders }
+  const hwDecode = { cuda: await probeCudaDecode(encoders, listed, timeoutMs) }
+
+  return { ffmpeg: true, version, protocols, encoders, hwDecode }
+}
+
+// Deep-verify decode→scale→encode entirely on the GPU, exactly as hls.js builds it.
+//
+// Two-step because lavfi cannot exercise a decoder: step 1 writes a real ~1 s H.264
+// elementary stream to a temp file, step 2 decodes THAT with -hwaccel cuda and pushes the
+// GPU frames through scale_cuda into nvenc. A host without CUVID fails at the filter,
+// not the decoder (ffmpeg substitutes the software decoder without a word), which is why
+// the probe cannot be a simple "-hwaccel cuda -f null -".
+//
+// Skipped entirely when nvenc did not verify — there is no CUDA path to take without it.
+async function probeCudaDecode (encoders, listed, timeoutMs) {
+  if (!encoders.h264_nvenc || !encoders.h264_nvenc.verified) {
+    return { verified: false, error: 'h264_nvenc not usable on this host' }
+  }
+  const sample = path.join(os.tmpdir(), `aliran-cuda-probe-${process.pid}-${Date.now()}.h264`)
+  try {
+    // 640x360 keeps the sample comfortably above NVDEC's minimum raster.
+    const mk = ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30',
+      '-frames:v', '30', '-c:v', listed.has('libx264') ? 'libx264' : 'h264_nvenc']
+    if (listed.has('libx264')) mk.push('-preset', 'ultrafast')
+    mk.push('-pix_fmt', 'yuv420p', '-f', 'h264', sample)
+    const made = await runFfmpeg(mk, timeoutMs)
+    if (!made.ok) return { verified: false, error: bestErrorLine(made.err) || 'could not build probe sample' }
+
+    const r = await runFfmpeg(['-v', 'error', '-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda',
+      '-i', sample, '-vf', 'scale_cuda=-2:180', '-c:v', 'h264_nvenc', '-frames:v', '10',
+      '-f', 'null', '-'], timeoutMs)
+    return r.ok ? { verified: true } : { verified: false, error: bestErrorLine(r.err) || 'cuda decode probe failed' }
+  } finally {
+    try { fs.unlinkSync(sample) } catch {}
+  }
 }

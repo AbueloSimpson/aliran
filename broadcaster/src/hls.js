@@ -22,10 +22,17 @@ export const TRANSCODE_DEFAULTS = {
   fps: 'source',
   videoBitrateKbps: null, // null = encoder default rate control (x264 CRF)
   audioBitrateKbps: 128,
-  preset: 'fast'
+  preset: 'fast',
+  // 'auto' = let the host decide (channel.js resolves it against the capability
+  // probe before the args are built); true/false force it. See hwDecodeArgs.
+  hwDecode: 'auto',
+  gpu: null // null = ffmpeg's default device; N pins decode+encode to that GPU
 }
 
 const RES_HEIGHT = { '1080p': 1080, '720p': 720, '480p': 480, '360p': 360 }
+
+// Encoders that take the NVIDIA path (-gpu, CUVID decode, scale_cuda).
+export const NVENC_ENCODERS = new Set(['h264_nvenc'])
 
 // fast/balanced/quality → per-encoder speed/quality flag. vaapi has no preset
 // concept (rate control only); amf uses -quality and is the least battle-tested
@@ -140,11 +147,68 @@ export function hwDeviceArgs (encoder, vaapiDevice) {
   return []
 }
 
+// CUVID decode straight into GPU memory, so the whole chain (decode → scale → encode)
+// stays on the card and the CPU only demuxes and muxes. Measured on a 2x RTX 4090 box,
+// 1080p30 → 720p/3000k: 1.6 CPU-seconds per 30 s of content vs 12.9 for CPU-decode+nvenc
+// and 25.0 for libx264 veryfast — ~8x less CPU than the path this replaces.
+//
+// INPUT options, so they must precede the -i they apply to.
+//
+// Deliberately NOT applied when:
+//   - the encoder is not nvenc — a CPU encoder would need an explicit hwdownload, and
+//     `copy` decodes nothing at all.
+//   - the input is `test` — lavfi synthesises raw frames, there is no bitstream to decode.
+//   - hwDecode is 'auto'/false — 'auto' is resolved to a real boolean by channel.js
+//     against the capability probe; an unresolved 'auto' reaching here means "off", so
+//     the pure builder never depends on host state it cannot see.
+//
+// ⚠ `-hwaccel cuda` does NOT fail loudly on a codec CUVID cannot handle (10-bit H.264,
+// say): ffmpeg silently falls back to the SOFTWARE decoder and then the scale_cuda filter
+// below dies on CPU frames with "Impossible to convert between the formats" / "Function
+// not implemented", exit 218. That is a per-SOURCE failure the capability probe cannot
+// predict, so channel.js watches for that signature and respawns without hw decode.
+export function hwDecodeArgs (transcode, input) {
+  const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  if (t.hwDecode !== true) return []
+  if (!NVENC_ENCODERS.has(t.encoder)) return []
+  const kind = (input && input.kind) || (typeof input === 'string' ? upgradeInputString(input).kind : null)
+  if (kind === 'test') return []
+  const out = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda']
+  if (t.gpu != null) out.push('-hwaccel_device', String(t.gpu))
+  return out
+}
+
+// Is this transcode spec actually going to decode on the GPU? encodeArgs needs to know,
+// because the filter and pixel-format rules differ between GPU and CPU frames.
+function cudaFrames (t, input) {
+  return hwDecodeArgs(t, input).length > 0
+}
+
+// ffmpeg stderr that means "this SOURCE cannot ride the CUDA path" — as opposed to "this
+// HOST has no CUDA", which the capability probe already caught at start(). Every line here
+// was observed on a real 2x RTX 4090 box feeding a High 10 source through -hwaccel cuda:
+// CUVID declines the profile, ffmpeg silently swaps in the software decoder, and the
+// mismatch surfaces at the filter graph rather than at the decoder. The channel watchdog
+// matches these to respawn once on the CPU path instead of retrying a doomed config
+// forever (see channel.js _spawnFfmpeg).
+export const HW_DECODE_FAIL_RE = new RegExp([
+  'impossible to convert between the formats', // scale_cuda handed CPU frames
+  'failed to inject frame into filter network',
+  'function not implemented', // the errno the above collapses into
+  'failed setup for format cuda',
+  'no decoder surfaces left', // CUVID surface pool exhausted
+  'hwaccel initialisation returned error',
+  'cannot load libcuda'
+].join('|'), 'i')
+
 // Output-side codec options. `transcode` may be null/partial; defaults preserve
 // pre-S15a behavior except -g 60 → -force_key_frames, which aligns keyframes to
 // segment boundaries for every encoder regardless of source fps.
-export function encodeArgs (transcode, hls) {
+// `input` is only consulted to tell GPU frames from CPU frames (see hwDecodeArgs);
+// omitting it assumes a real bitstream, which is what every non-test channel is.
+export function encodeArgs (transcode, hls, input = null) {
   const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  const onGpu = cudaFrames(t, input)
   const out = []
 
   if (t.encoder === 'copy') {
@@ -156,7 +220,29 @@ export function encodeArgs (transcode, hls) {
     const preset = PRESET_FLAGS[t.encoder]
     if (preset) out.push(preset.flag, preset[t.preset])
     if (t.encoder === 'libx264') out.push('-tune', 'zerolatency', '-pix_fmt', 'yuv420p')
-    if (t.encoder === 'h264_nvenc') out.push('-tune', 'll')
+    if (NVENC_ENCODERS.has(t.encoder)) {
+      out.push('-tune', 'll')
+      // ⚠ LOAD-BEARING: nvenc silently IGNORES -force_key_frames without this, so the HLS
+      // muxer finds no keyframe to cut on. Measured on ffmpeg 6.1.1 / RTX 4090 with the
+      // args main ships today: 13 s of input came out as ONE 12.9 s segment instead of
+      // seven 2 s ones. `-tune ll` is what makes it fatal rather than merely wrong — low
+      // latency means no periodic IDR, so the only keyframe is the first and the segment
+      // grows without bound: the live window never rolls, delete_segments never trims, and
+      // a late joiner has nothing playable to start from. (Dropping the tune is not a fix
+      // — you just get nvenc's own 250-frame GOP, i.e. 8 s segments at 30 fps.)
+      // -forced-idr is preferred over -g N because it keeps the keyframe cadence tied to
+      // hls.time without having to know the source fps, which is the whole reason this
+      // builder uses -force_key_frames instead of -g in the first place.
+      out.push('-forced-idr', '1')
+      if (t.gpu != null) out.push('-gpu', String(t.gpu))
+      // H.264 NVENC is 8-bit only. Without this a High 10 source arrives as yuv420p10le
+      // and nvenc refuses it with the thoroughly misleading "No capable devices found",
+      // which reads like a missing GPU rather than a pixel format (measured: the shipped
+      // args fail on any 10-bit source today). Only on the CPU-decode path — with CUDA
+      // frames the conversion is scale_cuda's job and -pix_fmt would force a pointless
+      // GPU→CPU download.
+      if (!onGpu) out.push('-pix_fmt', 'yuv420p')
+    }
     out.push('-force_key_frames', `expr:gte(t,n_forced*${hls.time})`)
     if (t.videoBitrateKbps != null) {
       out.push('-b:v', `${t.videoBitrateKbps}k`, '-maxrate', `${t.videoBitrateKbps}k`, '-bufsize', `${t.videoBitrateKbps * 2}k`)
@@ -164,7 +250,8 @@ export function encodeArgs (transcode, hls) {
     if (t.fps !== 'source') out.push('-r', String(t.fps))
     const filters = []
     const height = RES_HEIGHT[t.resolution]
-    if (height) filters.push(`scale=-2:${height}`)
+    // scale_cuda keeps the frame on the card; plain scale would need it downloaded first.
+    if (height) filters.push(onGpu ? `scale_cuda=-2:${height}` : `scale=-2:${height}`)
     if (t.encoder === 'h264_vaapi') filters.push('format=nv12', 'hwupload') // vaapi encodes GPU surfaces only
     if (filters.length) out.push('-vf', filters.join(','))
   }
@@ -276,8 +363,11 @@ export function ffmpegArgs (spec, outDir) {
   return [
     ...hwDeviceArgs(encoder, spec.vaapiDevice),
     ...ingestTuningArgs(spec.ingestTuning),
+    // -hwaccel is a PER-INPUT option: it applies to the -i that follows it, so it has to
+    // sit immediately before inputArgs and after any global device bootstrap.
+    ...hwDecodeArgs(spec.transcode, spec.input),
     ...inputArgs(spec.input),
-    ...encodeArgs(spec.transcode, spec.hls),
+    ...encodeArgs(spec.transcode, spec.hls, spec.input),
     ...hlsMuxArgs(spec.hls, outDir)
   ]
 }
