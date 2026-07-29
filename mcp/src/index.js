@@ -120,17 +120,21 @@ async function main () {
     if (!svc) return null
     if (svc.url) return makeHttpClient(svc, { dataDir: config.dataDir })
     try {
-      const localPort = await freePort()
+      // A pinned `localPort` makes recovery predictable — the operator repairs the
+      // forward by hand with a port they already know, instead of reading one out of
+      // an error message. Unset keeps the old behaviour: any free port.
+      const localPort = svc.localPort || await freePort()
       const t = await ssh.openTunnel({ localPort, remotePort })
       tunnels.push(t)
       logerr(`opened SSH tunnel 127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort} for ${svc.name}`)
-      // The tunnel outlives its ssh process: a dead forward is reopened on the next
+      // The tunnel outlives its ssh process: a broken forward is rebuilt on the next
       // call instead of disabling the service until the AI client restarts.
       const reachability = {
         describe: `through the SSH tunnel to ${config.ssh.host}:${remotePort}`,
-        ensure: async () => {
-          const revived = await t.ensure()
-          if (revived) logerr(`reopened the SSH tunnel for ${svc.name} (127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort})`)
+        repair: async () => {
+          const rebuilt = await t.repair()
+          if (rebuilt) logerr(`rebuilt the SSH tunnel for ${svc.name} (127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort})`)
+          return rebuilt
         }
       }
       return makeHttpClient(svc, { baseUrl: `http://127.0.0.1:${localPort}`, dataDir: config.dataDir, reachability })

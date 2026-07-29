@@ -89,15 +89,33 @@ library) with the same key — no public dashboard needed. `user`/`pass` are the
 reused as the credentials `server_install` provisions). The reseller login
 should be the **root admin principal** (the operator-oversight identity).
 
-A tunnel **repairs itself**. The SSH connection carries keepalives, so it gives up
-and exits when the box or the network goes away instead of hanging on a half-dead
-connection. The MCP notices, and reopens the forward on the next tool call — on the
-same local port, so nothing you configured changes. This matters because the MCP
-restarts services itself: `server_update` and `server_backup` both stop the panel,
-which drops the connection through it. You keep working, and you do not restart
-your AI client. If a call still fails after the reopen, the service on the box is
-the problem — the error says so, and `server_status` and `server_logs` tell you
-what happened.
+A tunnel **repairs itself**. The SSH connection carries keepalives, so it exits when
+the box or the network goes away. But it does not exit immediately. A connection that
+dies quietly keeps the ssh process alive and listening for approximately three
+minutes, and every tool call fails in that time. So the MCP does not trust the
+process. A failed call is the test: the MCP rebuilds the forward on the same local
+port and sends the request again. You keep working, and you do not restart your AI
+client. Concurrent calls share one rebuild. A cooldown prevents a rebuild loop when
+the service, and not the tunnel, is down.
+
+The error then tells you which side is at fault. If the MCP rebuilt the forward and
+reached the box, the box is up and the service does not answer — read `server_status`
+and `server_logs`. If the MCP could not reopen the forward, SSH to the box is the
+problem, not the service.
+
+A stopped service does not break the forward by itself. The tunnel goes to the box,
+not into the container, so `server_update` and `server_backup` do not drop it. Those
+commands only make the service stop answering until it starts again.
+
+To pin the local end of a tunnel, give the service a `localPort`:
+
+```jsonc
+"panel": { "user": "admin", "pass": "…", "localPort": 13210 }
+```
+
+The MCP then always uses that port. You can repair a forward by hand with a port you
+know, instead of reading one out of an error message. Without `localPort` the MCP
+takes any free port.
 
 Any of `panel`, `broadcaster`, `reseller`, `library`, `ssh` may be omitted; only
 the tools whose backend is configured are registered.

@@ -42,13 +42,25 @@ phone + Android TV, and the Windows desktop player).
   watched the ssh process after it started, and nothing ever reopened it: when the
   connection went away, every `panel_*` call failed with "unreachable at
   `http://127.0.0.1:<random port>`" — a port the operator never chose — and the
-  only way back was a full client restart. The MCP triggers this itself, because
-  `server_update` and `server_backup` both stop the panel. Now the forward runs
-  with keepalives so a dead connection **exits** instead of hanging half-open, the
-  handle notices, and the next tool call reopens it on the same local port and
-  replays the request. Concurrent calls share one reconnect. When a call still
-  fails after the reopen, the error names the box and points at `server_status` /
-  `server_logs`, because at that point the service really is down.
+  only way back was a full client restart. Now the forward runs with keepalives so a
+  dead connection **exits** instead of hanging half-open, the handle notices, and the
+  next tool call reopens it on the same local port and replays the request.
+  Concurrent calls share one reconnect.
+
+  Keepalives alone were not enough, and measuring the box showed why. Restarting a
+  service does **not** drop the forward: the tunnel goes to the box, not into the
+  container, so it rides a restart straight through. What strands a forward is the
+  connection under it dying quietly — and that leaves the ssh process alive and
+  listening until the keepalives run out, roughly three minutes in which every call
+  fails against a tunnel that looks healthy. The MCP no longer trusts the process. A
+  failed call is now the probe: it **rebuilds** the forward even when ssh still looks
+  alive, on the same local port, then replays. A cooldown keeps a genuinely-down
+  service from thrashing ssh. The error also stopped guessing — it separates "the
+  forward rebuilt and reached the box, so the service is not answering"
+  (`server_status` / `server_logs`) from "the forward could not be reopened, so SSH
+  to the box is the fault", and it no longer claims a reopen that never happened. A
+  new per-service `localPort` pins the local end, so a hand-repaired forward uses a
+  port the operator already knows.
 
 - **Dashboard: category rails with no parent entry dangled** — a two-level rail
   is written `Parent/Child`, but nothing has to carry the parent slug on its

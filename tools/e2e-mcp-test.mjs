@@ -91,6 +91,7 @@ import { startReseller } from '../reseller/src/index.js'
 import { addPrincipal } from '../reseller/src/control-auth.js'
 import { makeSsh } from '../mcp/src/ssh.js'
 import { makeHttpClient } from '../mcp/src/http-client.js'
+import { loadConfig } from '../mcp/src/config.js'
 import { addAdmin as libAddAdmin } from '../library/src/control-auth.js'
 import { startControlServer as startLibraryControlServer } from '../library/src/control-server.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -1649,50 +1650,132 @@ try {
     await Promise.all([tun.ensure(), tun.ensure(), tun.ensure()])
     assert.strictEqual(kids.length, 3, 'three concurrent ensure() calls share a single reconnect')
 
-    // The http client replays the request through the revived forward, so a dead
+    // Measured on the live box (2026-07-29): a `docker compose restart` of the panel
+    // does NOT kill the forward's ssh process. network_mode:host means the tunnel
+    // targets the BOX's loopback and opens a channel per connection, so container
+    // churn never touches the ssh master — it rides straight through. What strands a
+    // forward is the connection under it dying quietly (a NAT or conntrack entry
+    // dropped while a long build pegs the box), and THAT leaves the ssh child alive,
+    // listening, and useless until ServerAlive* gives up ~3 minutes later.
+    //
+    // So a live child is not evidence of a working forward. ensure() believes the
+    // process; repair() believes the caller, who just watched a request fail.
+    assert.strictEqual(await tun.ensure(), false, 'ensure() trusts a live ssh child and rebuilds nothing')
+    assert.strictEqual(kids.length, 3, 'so nothing was respawned')
+    assert.strictEqual(await tun.repair(), true, 'repair() rebuilds the forward under a live-but-stranded ssh child')
+    assert.strictEqual(kids.length, 4, 'the stranded child was replaced')
+    assert.strictEqual(tun.alive, true, 'and the tunnel serves again')
+    assert.strictEqual(tun.localPort, lp, 'on the very same local port the caller already holds')
+
+    // A down SERVICE also fails every call. Rebuilding a healthy tunnel on each one
+    // would turn one outage into two, so a repeat inside the cooldown is suppressed.
+    assert.strictEqual(await tun.repair(), false, 'a second repair inside the cooldown is suppressed')
+    assert.strictEqual(kids.length, 4, 'and spawns no further ssh')
+
+    // A child that has actually exited is rebuilt regardless — there is no working
+    // tunnel left for the cooldown to protect.
+    kids[3].die()
+    await new Promise((r) => setTimeout(r, 50))
+    assert.strictEqual(await tun.repair(), true, 'a dead forward is rebuilt even inside the cooldown')
+    assert.strictEqual(kids.length, 5, 'exactly one replacement')
+
+    // Concurrent tool calls must share one rebuild too, not race several ssh children.
+    const lp2 = await aFreePort()
+    const tun2 = await ssh.openTunnel({ localPort: lp2, remotePort: 3310, timeoutMs: 8000, repairCooldownMs: 0 })
+    const spawned = kids.length
+    const together = await Promise.all([tun2.repair(), tun2.repair(), tun2.repair()])
+    assert.deepStrictEqual(together, [true, true, true], 'every concurrent caller is told the forward is back')
+    assert.strictEqual(kids.length, spawned + 1, 'three concurrent repairs share a single rebuild')
+    assert.strictEqual(await tun2.repair(), true, 'once the cooldown has passed a later failure rebuilds again')
+    assert.strictEqual(kids.length, spawned + 2, 'and that is a second, separate rebuild')
+    tun2.close()
+
+    // The http client replays the request through the rebuilt forward, so a broken
     // tunnel costs one retry instead of disabling the service until a restart.
     let hits = 0
     const svcPort = await aFreePort()
     const svcSrv = http.createServer((req, res) => { hits++; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true })) })
     const listen = () => new Promise((r) => svcSrv.listen(svcPort, '127.0.0.1', r))
-    let ensured = 0
-    let reviveTo = null // what ensure() should do to the "forward" before the replay
+    let repairs = 0
+    let repairTo = null // what repair() should do to the "forward" before the replay
+    let repairResult = true
+    let repairFails = null
     const client = makeHttpClient({ name: 'panel', timeoutMs: 3000 }, {
       baseUrl: `http://127.0.0.1:${svcPort}`,
       dataDir: dirs.mcp,
       reachability: {
         describe: 'through the SSH tunnel to box.example:3210',
-        ensure: async () => { ensured++; if (reviveTo) await reviveTo() }
+        repair: async () => { repairs++; if (repairFails) throw new Error(repairFails); if (repairTo) await repairTo(); return repairResult }
       }
     })
 
-    // 1. Nothing is listening (the forward is dead): ensure() brings it back and the
+    // 1. Nothing is listening (the forward is broken): repair() brings it back and the
     //    SAME call succeeds on the replay — the operator never sees a failure.
-    reviveTo = listen
-    const revivedOk = await client.healthz()
-    assert.deepStrictEqual(revivedOk, { ok: true }, 'a dead forward is revived and the request replayed')
-    assert.strictEqual(ensured, 1, 'the client asked for the tunnel once')
+    repairTo = listen
+    const rebuiltOk = await client.healthz()
+    assert.deepStrictEqual(rebuiltOk, { ok: true }, 'a broken forward is rebuilt and the request replayed')
+    assert.strictEqual(repairs, 1, 'the client asked for the tunnel once')
     assert.strictEqual(hits, 1, 'the service saw the request exactly once')
 
     // 2. A live forward costs no extra work.
     await client.healthz()
-    assert.strictEqual(ensured, 1, 'a healthy call never touches the tunnel')
+    assert.strictEqual(repairs, 1, 'a healthy call never touches the tunnel')
 
-    // 3. The service is genuinely down: reviving cannot save it, and the message must
-    //    blame the service — with the box named, not a bare loopback port.
+    // 3. The service is genuinely down. Rebuilding the forward needs a working SSH
+    //    connection, so a rebuild that SUCCEEDED proves the box is up and narrows the
+    //    fault to the service — say exactly that, and name the box, not a bare
+    //    loopback port.
     await new Promise((r) => svcSrv.close(r))
-    reviveTo = null
+    repairTo = null
+    repairResult = true
     await assert.rejects(() => client.healthz(), (err) => {
       assert.match(err.message, /unreachable through the SSH tunnel to box\.example:3210/, 'the error names the route, not a bare loopback port')
+      assert.match(err.message, /rebuilt and reached the box/, 'a successful rebuild is reported as proof the box is up')
       assert.match(err.message, /server_status/, 'and it tells the operator what to run next')
       return true
     }, 'a service that stays down still errors after the retry')
-    assert.strictEqual(ensured, 2, 'exactly one revive attempt per failed call')
+    assert.strictEqual(repairs, 2, 'exactly one repair attempt per failed call')
+
+    // 4. The rebuild was suppressed as too recent: the tunnel is NOT claimed to have
+    //    been reopened — the old message said so unconditionally, which sent the
+    //    operator hunting a service fault that was really a stale forward.
+    repairResult = false
+    await assert.rejects(() => client.healthz(), (err) => {
+      assert.match(err.message, /rebuilt moments ago/, 'a suppressed rebuild is described honestly')
+      assert.ok(!/rebuilt and reached the box/.test(err.message), 'and never claims a rebuild that did not happen')
+      return true
+    }, 'a suppressed repair still surfaces a clear error')
+
+    // 5. SSH itself is down: blame the box, and do NOT send the operator after a
+    //    service that was never shown to be at fault.
+    repairFails = 'ssh: connect to host box.example port 22: Network is unreachable'
+    await assert.rejects(() => client.healthz(), (err) => {
+      assert.match(err.message, /the SSH forward is down and could not be reopened/, 'the error blames the forward')
+      assert.match(err.message, /SSH to the box is the problem, not the service/, 'and points at the box')
+      assert.ok(!/not answering/.test(err.message), 'without accusing the service')
+      return true
+    }, 'an unreopenable forward is reported as an SSH fault')
+    repairFails = null
+
+    // A pinned local port makes recovery predictable: the operator repairs a forward
+    // by hand with a port they already know instead of reading one out of an error.
+    const cfgFile = path.join(dirs.mcp, 'tunnel-port-config.json')
+    const cfgWith = (localPort) => {
+      fs.writeFileSync(cfgFile, JSON.stringify({ panel: { user: 'a', pass: 'b', localPort }, ssh: { host: 'box.example', user: 'root' } }))
+      return cfgFile
+    }
+    const quiet = { logger: () => {} }
+    assert.strictEqual(loadConfig(cfgWith(41999), quiet).panel.localPort, 41999, 'a pinned tunnel localPort survives the config load')
+    assert.strictEqual(loadConfig(cfgWith(undefined), quiet).panel.localPort, null, 'and is null when unset, so the tunnel takes any free port')
+    for (const bad of [0, 70000, 'abc', 3.5]) {
+      assert.throws(() => loadConfig(cfgWith(bad), quiet), /localPort/, `a localPort of ${JSON.stringify(bad)} is refused at load, not at tunnel-open time`)
+    }
+
     for (const k of kids) { try { k.kill() } catch {} }
     tun.close()
     assert.strictEqual(tun.alive, false, 'close() leaves the handle dead')
   }
-  log('AF: SSH tunnel lifecycle — keepalive/ExitOnForwardFailure argv, death detected, ensure() revives the same local port, concurrent revives share one attempt, the http client retries through it and names the box when the service is genuinely down ✓')
+  log('AF: SSH tunnel lifecycle — keepalive/ExitOnForwardFailure argv, death detected, ensure() revives the same local port, repair() rebuilds a live-but-stranded forward with a cooldown so a down service cannot thrash ssh, concurrent revives and rebuilds each share one attempt, the http client retries through it and tells box-fault from service-fault from suppressed-rebuild, pinned localPort validated at load ✓')
 
   log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe; S50d: viewer problem reports — the honest disabled shape, filters + sinceHours, event-ring compaction with full:true, ack/resolve with a note, read-only alerts, one webhook push per opened alert plus test_notify, a negative-identity scan over every report surface, the REPORTS_* tunables settable while the notification credentials are refused, and a category-enum drift guard against the panel; S53a: the external VOD provider config — honest null, CRUD through both tools, and https/query-string/unknown-kind/empty-enable refusals in band with the stored record untouched)')
   await cleanup(); process.exit(0)

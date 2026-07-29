@@ -94,6 +94,11 @@ using the same key — no public dashboard required. `user`/`pass` are the
 **dashboard admin** logins (created by `add-admin`, or by `server_install`); the
 reseller login should be the **root admin principal**.
 
+A tunnel repairs itself: a failed call rebuilds the forward on the same local port
+and replays the request, so a dropped SSH connection costs one retry instead of a
+client restart. Add `"localPort": 13210` to a service to pin the local end of its
+tunnel — handy when you want to reopen a forward by hand. Omitted = any free port.
+
 You can omit any of `panel`, `broadcaster`, `reseller`, `library`, `ssh` — only
 the tools whose backend is configured get registered.
 

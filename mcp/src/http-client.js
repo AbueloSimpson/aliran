@@ -80,31 +80,46 @@ export function makeHttpClient (svc, { baseUrl, dataDir, reachability } = {}) {
     }
   }
 
-  // A transport failure on a tunneled service is usually a dead SSH forward, not a
-  // dead box — the panel restarts on every `server_update`, and any network change
-  // can drop the ssh connection. Revive the forward once and replay the request, so
-  // the operator never has to restart their AI client to get the tools back. Only
+  const describeErr = (e) => (e && e.name === 'AbortError' ? `timeout ${timeoutMs}ms` : (e && e.message) || e)
+
+  // A transport failure on a tunneled service is usually a broken SSH forward, not a
+  // dead box — any network change can drop the ssh connection, and a long build on
+  // the box can silently strand it. Rebuild the forward once and replay the request,
+  // so the operator never has to restart their AI client to get the tools back. Only
   // the transport is retried: an answered 4xx/5xx is the service's verdict and is
   // returned untouched by the caller.
+  //
+  // The rebuild doubles as the diagnosis. Reaching the box needs a working SSH
+  // connection, so a forward that rebuilt PROVES the box and its sshd are up, which
+  // narrows a still-failing call to the service itself. Saying that only when it was
+  // actually established is the point: the old message claimed the forward had been
+  // reopened even when nothing had been reopened at all.
   async function rawFetch (method, apiPath, body, bearer, raw) {
     try {
       return await attempt(method, apiPath, body, bearer, raw)
     } catch (err) {
-      const why = err && err.name === 'AbortError' ? `timeout ${timeoutMs}ms` : (err && err.message) || err
       lastError = { at: Date.now(), message: String((err && err.message) || err) }
-      if (reachability) {
-        try {
-          await reachability.ensure()
-          return await attempt(method, apiPath, body, bearer, raw)
-        } catch (err2) {
-          const why2 = err2 && err2.name === 'AbortError' ? `timeout ${timeoutMs}ms` : (err2 && err2.message) || err2
-          lastError = { at: Date.now(), message: String((err2 && err2.message) || err2) }
-          throw new ApiError('unreachable', `${svc.name} API unreachable ${reachability.describe} (${why2}). ` +
-            'The SSH forward was reopened and the call still failed, so the service itself is probably down — ' +
-            'check it with server_status / server_logs.')
-        }
+      if (!reachability) throw new ApiError('unreachable', `${svc.name} API unreachable at ${base} (${describeErr(err)})`)
+
+      let rebuilt = false
+      try {
+        rebuilt = await (reachability.repair ? reachability.repair() : reachability.ensure())
+      } catch (errT) {
+        lastError = { at: Date.now(), message: String((errT && errT.message) || errT) }
+        throw new ApiError('unreachable', `${svc.name} API unreachable ${reachability.describe}: the SSH forward is down and could not be reopened (${describeErr(errT)}). ` +
+          'SSH to the box is the problem, not the service — check the box itself.')
       }
-      throw new ApiError('unreachable', `${svc.name} API unreachable at ${base} (${why})`)
+
+      try {
+        return await attempt(method, apiPath, body, bearer, raw)
+      } catch (err2) {
+        lastError = { at: Date.now(), message: String((err2 && err2.message) || err2) }
+        throw new ApiError('unreachable', `${svc.name} API unreachable ${reachability.describe} (${describeErr(err2)}). ` + (rebuilt
+          ? 'The SSH forward was rebuilt and reached the box, so the box is up and it is this service that is not answering — ' +
+            'check it with server_status / server_logs.'
+          : 'The forward was rebuilt moments ago, so this is most likely the service still coming back after a restart — ' +
+            'retry shortly, then check server_status / server_logs.'))
+      }
     }
   }
 

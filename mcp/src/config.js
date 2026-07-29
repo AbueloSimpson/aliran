@@ -117,7 +117,14 @@ function normalizeBearer (name, v) {
   if (!username || !password) throw new ConfigError(`"${name}" needs "user" and "pass"`)
   const url = v.url ? String(v.url).replace(/\/+$/, '') : null
   if (url && !/^https?:\/\//.test(url)) throw new ConfigError(`"${name}.url" must start with http:// or https://`)
-  return { name, url, username: String(username), password: String(password), timeoutMs: v.timeoutMs || 15000 }
+  // Pin the tunnel's local port so a hand-repaired forward always uses the same
+  // address as the one this process opened. Unset = any free port, as before.
+  let localPort = null
+  if (v.localPort != null) {
+    localPort = Number(v.localPort)
+    if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw new ConfigError(`"${name}.localPort" must be a port number between 1 and 65535`)
+  }
+  return { name, url, localPort, username: String(username), password: String(password), timeoutMs: v.timeoutMs || 15000 }
 }
 
 function normalizeSsh (v) {

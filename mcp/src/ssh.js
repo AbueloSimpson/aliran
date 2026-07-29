@@ -117,18 +117,38 @@ export function makeSsh (ssh, { exec, spawnTunnel } = {}) {
     })
   }
 
+  // Resolve once nothing is accepting on the local port. Rebuilding a forward has
+  // to wait for the old ssh to actually let go: ExitOnForwardFailure would kill the
+  // replacement outright, and worse, the port poll in spawnForward would connect to
+  // the corpse and report the new tunnel up when it never started.
+  function portFree (localPort, timeoutMs = 3000) {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + timeoutMs
+      const probe = () => {
+        const s = net.connect({ host: '127.0.0.1', port: localPort }, () => {
+          s.destroy()
+          if (Date.now() > deadline) resolve(false)
+          else setTimeout(probe, 50)
+        })
+        s.on('error', () => { s.destroy(); resolve(true) })
+      }
+      probe()
+    })
+  }
+
   // Open an SSH local-forward tunnel: local 127.0.0.1:localPort → remote
   // remoteHost:remotePort. Resolves once the local port accepts a connection.
   //
-  // The handle stays useful after the child dies. `ensure()` reopens the SAME
-  // local port on demand, so a caller that holds `http://127.0.0.1:<port>` never
-  // has to learn a new address — the http client calls it before giving up, which
-  // is what turns "restart your AI client" into a retry nobody sees. Reconnects
-  // are single-flight: concurrent tool calls share one attempt.
-  async function openTunnel ({ localPort, remoteHost = '127.0.0.1', remotePort, timeoutMs = 15000 }) {
+  // The handle stays useful after the child dies. `ensure()` and `repair()` reopen
+  // the SAME local port on demand, so a caller that holds `http://127.0.0.1:<port>`
+  // never has to learn a new address — the http client calls repair() before giving
+  // up, which is what turns "restart your AI client" into a retry nobody sees.
+  // Reconnects are single-flight: concurrent tool calls share one attempt.
+  async function openTunnel ({ localPort, remoteHost = '127.0.0.1', remotePort, timeoutMs = 15000, repairCooldownMs = 15000 }) {
     let child = null
     let reviving = null
     let closed = false
+    let lastRepairAt = 0
 
     const watch = (c) => {
       child = c
@@ -136,6 +156,15 @@ export function makeSsh (ssh, { exec, spawnTunnel } = {}) {
     }
 
     watch(await spawnForward({ localPort, remoteHost, remotePort, timeoutMs }))
+
+    const revive = () => {
+      if (!reviving) {
+        reviving = spawnForward({ localPort, remoteHost, remotePort, timeoutMs })
+          .then((c) => { watch(c); return true })
+          .finally(() => { reviving = null })
+      }
+      return reviving
+    }
 
     return {
       localPort,
@@ -145,11 +174,34 @@ export function makeSsh (ssh, { exec, spawnTunnel } = {}) {
       ensure () {
         if (closed) throw new SshError('tunnel is closed')
         if (child) return Promise.resolve(false)
-        if (!reviving) {
-          reviving = spawnForward({ localPort, remoteHost, remotePort, timeoutMs })
-            .then((c) => { watch(c); return true })
-            .finally(() => { reviving = null })
-        }
+        return revive()
+      },
+      // The caller ran a request through this forward and it failed. A LIVE ssh
+      // child proves nothing here: when the TCP connection to the box is half-dead
+      // — a NAT or conntrack entry dropped while a long `docker compose build`
+      // pegged the box is the usual way — ssh keeps listening locally and keeps
+      // accepting, and only notices once the keepalives run out. That is
+      // ServerAliveInterval x CountMax, three minutes in which every tool call
+      // fails against a forward whose process looks perfectly healthy. The request
+      // that just failed IS the probe, so rebuild now rather than wait ssh out.
+      //
+      // Resolves true when a forward was (re)built, false when a rebuild was
+      // suppressed as too recent. Rate-limiting matters: when it is the SERVICE
+      // that is down, every call fails, and tearing down a working tunnel on each
+      // one would turn one outage into two.
+      repair () {
+        if (closed) throw new SshError('tunnel is closed')
+        if (reviving) return reviving
+        if (!child) return revive()
+        if (Date.now() - lastRepairAt < repairCooldownMs) return Promise.resolve(false)
+        lastRepairAt = Date.now()
+        const dying = child
+        child = null // so the exit handler cannot null out the replacement
+        try { dying.kill() } catch {}
+        reviving = portFree(localPort)
+          .then(() => spawnForward({ localPort, remoteHost, remotePort, timeoutMs }))
+          .then((c) => { watch(c); return true })
+          .finally(() => { reviving = null })
         return reviving
       },
       close () { closed = true; try { if (child) child.kill() } catch {} ; child = null }
