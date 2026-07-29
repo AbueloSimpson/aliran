@@ -24,6 +24,15 @@ files:
   - renderer/index.html
   - renderer/dist/**
   - package.json
+  # @aliran/player-sdk is a workspace dependency: it resolves through the hoisted
+  # node_modules symlink to the whole sdk/ directory, so electron-builder packs the
+  # native-app subtrees as well as the JS engine the shell actually imports. The
+  # android/ tree also holds demo/src/main/assets/service.json — gitignored, local
+  # only, and carrying a real panel key plus demo account credentials, which must
+  # never ship. Exclude both subtrees here, because a packaging step you must
+  # remember to do by hand is a packaging step that eventually does not happen.
+  - "!node_modules/@aliran/player-sdk/android/**"
+  - "!node_modules/@aliran/player-sdk/react-native/**"
 extraResources:
   # The operator service descriptor (gitignored — per-deployment, never in the repo).
   # Directory+filter form so a PUBLIC build — packaged with NO config/service.json —
