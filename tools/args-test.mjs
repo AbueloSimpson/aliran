@@ -591,6 +591,53 @@ for (const line of [
 ]) assert.ok(!HW_DECODE_FAIL_RE.test(line), 'must NOT trigger fallback: ' + line)
 log('R: GPU decode path (scale_cuda, pinning, arg ordering, validation, fallback signatures) ✓')
 
+// ===== V: 24/7 stability, timestamp base, and HTTP source access =====
+// CFR: a variable-frame-rate source segments unevenly and players stutter at the joins.
+assert.ok(encodeArgs({ encoder: 'libx264', fpsMode: 'cfr' }, HLS).includes('-fps_mode'), 'cfr forces constant frame rate')
+assert.ok(!encodeArgs({ encoder: 'libx264' }, HLS).includes('-fps_mode'), 'source frame rate is the default')
+throws(() => normalizeTranscode({ encoder: 'copy', fpsMode: 'cfr' }), /copy/)
+throws(() => normalizeTranscode({ fpsMode: 'vfr' }), /fpsMode/)
+// "Too many packets buffered for output stream" is an ABORT, not a warning.
+assert.deepStrictEqual(encodeArgs({ maxMuxQueue: 2048 }, HLS).slice(-2).length, 2)
+assert.ok(encodeArgs({ maxMuxQueue: 2048 }, HLS).includes('-max_muxing_queue_size'))
+assert.strictEqual(normalizeTranscode({ maxMuxQueue: 2048 }).maxMuxQueue, 2048)
+throws(() => normalizeTranscode({ maxMuxQueue: 10 }), /maxMuxQueue/)
+// Audio drift: the failure nobody sees until hours in, because every segment is fine.
+assert.ok(encodeArgs({ audioSync: true }, HLS).join(' ').includes('aresample=async=1'), 'drift correction applied')
+assert.ok(!encodeArgs({}, HLS).includes('-af'), 'no audio filter by default')
+throws(() => normalizeTranscode({ audioCodec: 'copy', audioSync: true }), /audioSync/)
+// Timestamp base — copyts PRESERVES the source timeline, avoid_negative_ts REWRITES it.
+// Both at once is contradictory and ffmpeg picks silently, so validation refuses it.
+assert.deepStrictEqual(encodeArgs({ avoidNegativeTs: true }, HLS).filter((a) => a === 'make_zero'), ['make_zero'])
+assert.ok(encodeArgs({ copyTs: true }, HLS).includes('-copyts'))
+assert.ok(encodeArgs({ copyTs: true }, HLS).includes('-start_at_zero'), 'copyts pairs with start_at_zero')
+throws(() => normalizeTranscode({ copyTs: true, avoidNegativeTs: true }), /opposites/)
+// HTTP source access. ⚠ These are AVOptions of the http protocol — emitting them for a
+// udp/srt/rtmp input makes ffmpeg fail on an unrecognised option, so they must appear on
+// the http branch ONLY. That scoping is the whole point of these assertions.
+const httpTune = { userAgent: 'Aliran/1.0', headers: 'X-Token: abc\r\n', rwTimeoutMs: 8000 }
+const httpArgs = inputArgs({ kind: 'pull', url: 'http://o:81/CH/mpegts' }, httpTune)
+assert.ok(httpArgs.includes('-user_agent') && httpArgs.includes('Aliran/1.0'))
+assert.ok(httpArgs.includes('-headers') && httpArgs.includes('X-Token: abc\r\n'))
+assert.deepStrictEqual(httpArgs.slice(httpArgs.indexOf('-rw_timeout'), httpArgs.indexOf('-rw_timeout') + 2),
+  ['-rw_timeout', '8000000'], 'rw_timeout converted to microseconds')
+assert.ok(httpArgs.indexOf('-user_agent') < httpArgs.indexOf('-i'), 'source options precede -i')
+for (const url of ['udp://239.0.0.1:1234', 'srt://o:9000', 'rtmp://o/app/key']) {
+  const a = inputArgs({ kind: 'pull', url }, httpTune)
+  assert.ok(!a.includes('-user_agent') && !a.includes('-headers') && !a.includes('-rw_timeout'),
+    'http-only options must NOT reach ' + url)
+}
+assert.ok(!inputArgs({ kind: 'udp', port: 5003, timeoutMs: 10000 }, httpTune).includes('-user_agent'),
+  'nor a push listener')
+assert.ok(inputArgs({ kind: 'pull', url: 'https://cdn/live/master.m3u8' }, httpTune).includes('-user_agent'),
+  'but they DO apply to an HLS pull')
+// Operators type headers one per line; ffmpeg needs CRLF-terminated lines.
+assert.strictEqual(normalizeIngestTuning({ headers: 'X-A: 1\nX-B: 2' }).headers, 'X-A: 1\r\nX-B: 2\r\n')
+throws(() => normalizeIngestTuning({ headers: 'not a header' }), /header/)
+throws(() => normalizeIngestTuning({ userAgent: 'a\nb' }), /userAgent/)
+throws(() => normalizeIngestTuning({ rwTimeoutMs: 10 }), /rwTimeoutMs/)
+log('V: cfr, mux queue, audio drift, timestamp base, HTTP source access (http-scoped) ✓')
+
 // ===== U: HEVC output (hevc_nvenc + libx265) =====
 // hevc_nvenc is in the NVENC family, so it must inherit EVERY nvenc rule — the forced-IDR
 // that makes HLS segment at all, device pinning, the 8-bit pin, and the CUDA decode path.

@@ -364,6 +364,24 @@ export function normalizeTranscode (value) {
   }
   if (value.logo !== undefined) t.logo = normalizeLogo(value.logo)
   if (value.subtitles !== undefined) t.subtitles = normalizeSubtitles(value.subtitles)
+  if (value.fpsMode !== undefined) {
+    if (value.fpsMode !== 'source' && value.fpsMode !== 'cfr') bad('transcode.fpsMode must be "source" or "cfr"')
+    t.fpsMode = value.fpsMode
+  }
+  if (value.maxMuxQueue !== undefined && value.maxMuxQueue !== null) {
+    t.maxMuxQueue = intInRange(value.maxMuxQueue, 64, 65536, 'transcode.maxMuxQueue')
+  }
+  for (const key of ['audioSync', 'avoidNegativeTs', 'copyTs']) {
+    if (value[key] === undefined) continue
+    if (typeof value[key] !== 'boolean') bad(`transcode.${key} must be true or false`)
+    t[key] = value[key]
+  }
+  // copyts PRESERVES the source timeline; avoid_negative_ts REWRITES it to start at zero.
+  // Asking for both is asking for opposite things, and ffmpeg resolves it silently — so
+  // say no here rather than let an operator wonder which one won.
+  if (t.copyTs && t.avoidNegativeTs) {
+    bad('transcode.copyTs and transcode.avoidNegativeTs are opposites — pick one')
+  }
   if (t.encoder === 'copy') {
     if (t.resolution !== 'source' || t.fps !== 'source') bad('encoder "copy" cannot change resolution/fps (leave them "source")')
     if (t.videoBitrateKbps != null) bad('encoder "copy" cannot set videoBitrateKbps')
@@ -371,6 +389,12 @@ export function normalizeTranscode (value) {
     // passed through untouched — the frames are never decoded.
     if (t.logo) bad('encoder "copy" cannot burn in a logo (the video is never decoded)')
     if (t.subtitles) bad('encoder "copy" cannot burn in subtitles (the video is never decoded)')
+    if (t.fpsMode === 'cfr') bad('encoder "copy" cannot change frame rate (frames are passed through)')
+  }
+  // aresample re-encodes by definition, so there is nothing for it to act on when the
+  // audio is being copied through untouched.
+  if (t.audioCodec === 'copy' && t.audioSync) {
+    bad('audioCodec "copy" cannot use audioSync (drift correction has to re-encode)')
   }
   // Both settings are NVIDIA-only. Accepting them silently on another encoder would be a
   // lie the operator only discovers by reading ffmpeg args: `copy` decodes nothing, and a
@@ -464,6 +488,26 @@ export function normalizeIngestTuning (value, existing = null) {
     const raw = value[key] !== undefined ? value[key] : existing?.[key]
     if (raw != null && raw !== '') out[key] = raw === true || /^(1|true|yes)$/i.test(String(raw))
   }
+  // HTTP-only source options (see httpSourceArgs). Applied by inputArgs on the http(s)
+  // branch only — on any other scheme ffmpeg would reject them as unknown options.
+  const ua = value.userAgent !== undefined ? value.userAgent : existing?.userAgent
+  if (ua != null && String(ua) !== '') {
+    const s = String(ua)
+    if (s.length > 256 || /[\r\n]/.test(s)) bad('ingestTuning.userAgent must be ≤256 chars with no newlines')
+    out.userAgent = s
+  }
+  const hdr = value.headers !== undefined ? value.headers : existing?.headers
+  if (hdr != null && String(hdr) !== '') {
+    const s = String(hdr)
+    if (s.length > 1024) bad('ingestTuning.headers must be ≤1024 chars')
+    // ffmpeg requires CRLF-terminated header lines and mis-parses anything else, so accept
+    // the natural one-per-line form an operator types and normalise it for them.
+    const lines = s.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    for (const l of lines) if (!/^[A-Za-z0-9-]+:\s?.+$/.test(l)) bad(`ingestTuning.headers: "${l.slice(0, 40)}" is not a Name: value header`)
+    out.headers = lines.map((l) => l + '\r\n').join('')
+  }
+  const rw = value.rwTimeoutMs !== undefined ? value.rwTimeoutMs : existing?.rwTimeoutMs
+  if (rw != null && rw !== '') out.rwTimeoutMs = intInRange(rw, 1000, 120000, 'ingestTuning.rwTimeoutMs')
   return Object.keys(out).length ? out : null
 }
 

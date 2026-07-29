@@ -34,8 +34,16 @@ export const TRANSCODE_DEFAULTS = {
   // judges best. 'all' keeps every audio track as its own PID in the same MPEG-TS
   // segments, which is what a multi-language IPTV source needs.
   audioTracks: 'first',
-  logo: null, // { path, corner, marginPx, heightPx, alpha } — see logoFilters
-  subtitles: null // { path } — burn an external .srt/.ass into the picture
+  logo: null, // { path, corner, marginPx, heightPx } — see logoFilters
+  subtitles: null, // { path } — burn an external .srt/.ass into the picture
+  // --- 24/7 stability. Each answers a failure that only appears on a long-running live
+  // channel, which is exactly why none of them are ffmpeg defaults.
+  fpsMode: 'source', // 'cfr' forces a constant frame rate
+  maxMuxQueue: null, // packets — guards the "Too many packets buffered" abort
+  audioSync: false, // aresample=async — corrects audio drifting away from video
+  // --- timestamp base, alongside ingestTuning's genpts/igndts.
+  avoidNegativeTs: false,
+  copyTs: false
 }
 
 // Named presets, plus free-form '<W>x<H>' handled by parseResolution.
@@ -128,7 +136,23 @@ export function urlScheme (url) {
 // sources to realtime; live sources (push listeners, rtsp/rtmp/srt/udp pulls and
 // live HLS playlists) pace themselves — -re on those starves the reader and adds
 // drift, so it is applied ONLY to test/file and plain-http VOD pulls.
-export function inputArgs (input) {
+// HTTP(S)-ONLY source options. These are AVOptions of the http protocol, so emitting them
+// for a udp/srt/rtmp input makes ffmpeg fail on an unrecognised option — which is why they
+// live inside the http branch rather than alongside the scheme-agnostic ingest tuning.
+//   user_agent  — many providers vary or gate on it; the ffmpeg default is a giveaway.
+//   headers     — auth tokens, Referer, cookies. MUST end CRLF or ffmpeg mis-parses it.
+//   rw_timeout  — fail a hung socket fast instead of waiting on the watchdog's stall
+//                 detector, which only fires after the live edge has been frozen ~20 s.
+function httpSourceArgs (tuning) {
+  if (!tuning) return []
+  const out = []
+  if (tuning.userAgent) out.push('-user_agent', tuning.userAgent)
+  if (tuning.headers) out.push('-headers', tuning.headers)
+  if (tuning.rwTimeoutMs != null) out.push('-rw_timeout', String(tuning.rwTimeoutMs * 1000)) // µs
+  return out
+}
+
+export function inputArgs (input, ingestTuning = null) {
   const t = upgradeInputString(input)
   switch (t.kind) {
     case 'test':
@@ -146,14 +170,15 @@ export function inputArgs (input) {
       // PlayReady need a licence-server handshake and a CDM, neither of which ffmpeg has.
       const cenc = t.cencKey ? ['-cenc_decryption_key', t.cencKey] : []
       if (scheme === 'http' || scheme === 'https') {
+        const HTTP = [...httpSourceArgs(ingestTuning), ...HTTP_RECONNECT]
         // -allowed_extensions ALL lets the HLS demuxer accept SSAI / ad-beacon segment URLs
         // that don't end in .ts (Amagi/DistroTV and many FAST channels) — without it ffmpeg
         // rejects the playlist ("not in allowed_segment_extensions"). It only RELAXES a filter,
         // so it's harmless for plain .ts feeds, and the operator already trusts the pull URL.
-        if (/\.m3u8($|\?)/i.test(t.url)) return [...HTTP_RECONNECT, ...cenc, '-allowed_extensions', 'ALL', '-i', t.url]
+        if (/\.m3u8($|\?)/i.test(t.url)) return [...HTTP, ...cenc, '-allowed_extensions', 'ALL', '-i', t.url]
         // A DASH manifest is live-by-default like the HLS one above: no -re, and it is the
         // only place a CENC key is any use.
-        if (/\.mpd($|\?)/i.test(t.url)) return [...HTTP_RECONNECT, ...cenc, '-i', t.url]
+        if (/\.mpd($|\?)/i.test(t.url)) return [...HTTP, ...cenc, '-i', t.url]
         // ⚠ LIVE IS THE DEFAULT for an unknown http(s) pull, and -re is now opt-IN by file
         // extension. The old rule was ".m3u8 = live, everything else = a VOD file needing
         // realtime pacing" — false for raw mpegts over http, which is what most IPTV
@@ -165,8 +190,8 @@ export function inputArgs (input) {
         // share of the restarts. Guessing "live" for an unknown URL is also the safer
         // error: a live source read without -re is correct, whereas a live source read
         // WITH -re degrades continuously.
-        if (VOD_FILE_RE.test(t.url)) return [...HTTP_RECONNECT, ...cenc, '-re', '-i', t.url]
-        return [...HTTP_RECONNECT, ...cenc, '-reconnect_at_eof', '1', '-i', t.url]
+        if (VOD_FILE_RE.test(t.url)) return [...HTTP, ...cenc, '-re', '-i', t.url]
+        return [...HTTP, ...cenc, '-reconnect_at_eof', '1', '-i', t.url]
       }
       return ['-i', t.url] // rtmp(s)/srt/udp pulls
     }
@@ -439,6 +464,23 @@ export function encodeArgs (transcode, hls, input = null) {
       out.push('-b:v', `${t.videoBitrateKbps}k`, '-maxrate', `${t.videoBitrateKbps}k`, '-bufsize', `${t.videoBitrateKbps * 2}k`)
     }
     if (t.fps !== 'source') out.push('-r', String(t.fps))
+    // A VARIABLE-frame-rate source segments badly: the muxer cuts on wall-clock but the
+    // frames arrive unevenly, so EXTINF durations wander and players stutter at the joins.
+    // HLS wants CFR. Not the default because forcing it on an already-constant source only
+    // adds frame duplication/drops for nothing. (-fps_mode replaced -vsync in ffmpeg 5.0;
+    // the production container runs 5.1.9, so it is safe here.)
+    if (t.fpsMode === 'cfr') out.push('-fps_mode', 'cfr')
+    // "Too many packets buffered for output stream" is a hard ABORT, not a warning, and it
+    // is reached whenever one stream runs ahead of another — a long GOP, a sparse audio
+    // track, an upstream hiccup. The default queue is small; raising it turns a dead
+    // channel into a brief memory bump.
+    if (t.maxMuxQueue != null) out.push('-max_muxing_queue_size', String(t.maxMuxQueue))
+    // Timestamp base. avoid_negative_ts make_zero rebases a stream that starts negative
+    // (common after genpts); copyts preserves the SOURCE timeline instead, and pairs with
+    // start_at_zero so the first segment still begins at 0 rather than at an arbitrary
+    // upstream offset. They are opposite strategies — validation refuses both at once.
+    if (t.avoidNegativeTs) out.push('-avoid_negative_ts', 'make_zero')
+    if (t.copyTs) out.push('-copyts', '-start_at_zero')
     // Scaling, subtitle burn-in and the hardware round trips all live in videoChain; a
     // logo turns the chain into a -filter_complex that was already emitted above.
     if (chain.vf) out.push('-vf', chain.vf)
@@ -450,6 +492,12 @@ export function encodeArgs (transcode, hls, input = null) {
   } else {
     out.push('-c:a', t.audioCodec, '-ar', String(t.audioSampleRate), '-b:a', `${t.audioBitrateKbps}k`)
     if (t.audioChannels != null) out.push('-ac', String(t.audioChannels))
+    // Audio DRIFT is the classic 24/7 live failure: a source whose audio clock runs a
+    // fraction off video walks visibly out of sync over hours, and nothing in the pipeline
+    // notices because every segment is individually fine. aresample=async stretches or
+    // pads audio to keep it pinned to the video timeline. It re-encodes audio by
+    // definition, so `copy` cannot use it — validation refuses that combination.
+    if (t.audioSync) out.push('-af', 'aresample=async=1:first_pts=0')
   }
   return out
 }
@@ -578,7 +626,9 @@ export function ffmpegArgs (spec, outDir) {
     // -hwaccel is a PER-INPUT option: it applies to the -i that follows it, so it has to
     // sit immediately before inputArgs and after any global device bootstrap.
     ...hwDecodeArgs(spec.transcode, spec.input),
-    ...inputArgs(spec.input),
+    // ingestTuning also carries HTTP-only source options, which inputArgs applies only on
+    // the http(s) branch (they would make ffmpeg fail on a udp/srt input).
+    ...inputArgs(spec.input, spec.ingestTuning),
     // The logo is input 1 — it must follow the main -i and precede the graph that uses it.
     ...logoInputArgs(spec.transcode),
     ...encodeArgs(spec.transcode, spec.hls, spec.input),

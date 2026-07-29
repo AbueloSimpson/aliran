@@ -896,6 +896,13 @@ async function editChannel (id) {
     { name: 'genPts', label: 'Generate missing timestamps (genpts)', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.genPts ? 'yes' : 'no', title: 'Synthesise PTS for a source whose timestamps are missing or jump backwards. Without it the segmenter writes wrong EXTINF durations, or ffmpeg refuses packets with "non monotonically increasing dts". The segmenter needs a sane timeline more than the original one.' },
     { name: 'ignoreDts', label: 'Ignore DTS (igndts)', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.ignoreDts ? 'yes' : 'no', title: 'Let PTS drive and disregard DTS entirely. Use when DTS is the broken half; pairs with genpts on badly damaged sources.' },
     { name: 'ignoreDecodeErrors', label: 'Ignore decode errors', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.ignoreDecodeErrors ? 'yes' : 'no', title: 'Carry on through bitstream errors instead of treating them as fatal. Different from "tolerate corrupt packets": that drops bad packets at the container, this tells the DECODER to keep going with what it got.' },
+    { name: 'userAgent', label: 'HTTP User-Agent (blank = ffmpeg default)', value: c.ingestTuning?.userAgent || '', placeholder: 'Mozilla/5.0 …', title: 'Many providers gate or vary on User-Agent, and ffmpeg’s default is a giveaway. HTTP sources only.' },
+    { name: 'headers', label: 'Extra HTTP headers (one per line)', type: 'textarea', value: (c.ingestTuning?.headers || '').replace(/\r\n/g, '\n').trim(), placeholder: 'X-Auth-Token: …\nReferer: https://…', title: 'Auth tokens, Referer, cookies. Written one "Name: value" per line — CRLF termination is added for you. HTTP sources only.' },
+    { name: 'rwTimeoutMs', label: 'HTTP read timeout ms (blank = none)', type: 'number', value: c.ingestTuning?.rwTimeoutMs ?? '', title: 'Fail a hung socket fast. Without it a frozen source waits on the watchdog stall detector, which only fires after the live edge has not moved for ~20 s. HTTP sources only.' },
+    { name: 'fpsMode', label: 'Frame rate mode', type: 'select', options: [{ value: 'source', label: 'follow source' }, { value: 'cfr', label: 'constant (CFR)' }], value: c.transcode?.fpsMode || 'source', title: 'A variable-frame-rate source segments unevenly — EXTINF durations wander and players stutter at the joins. HLS wants CFR. Not the default because forcing it on an already-constant source only adds duplicated or dropped frames.' },
+    { name: 'maxMuxQueue', label: 'Max muxing queue packets (blank = ffmpeg default)', type: 'number', value: c.transcode?.maxMuxQueue ?? '', title: '"Too many packets buffered for output stream" is a hard abort, not a warning. Raising this turns a dead channel into a brief memory bump. 2048 is a sane starting point.' },
+    { name: 'audioSync', label: 'Correct audio drift', type: 'select', options: ['no', 'yes'], value: c.transcode?.audioSync ? 'yes' : 'no', title: 'On a 24/7 channel a source whose audio clock runs slightly off video walks visibly out of sync over hours, and nothing notices because every segment is individually fine. Re-encodes audio, so it cannot be combined with audio codec "copy".' },
+    { name: 'tsMode', label: 'Timestamp handling', type: 'select', options: [{ value: 'default', label: 'leave alone' }, { value: 'avoidNegative', label: 'rebase to zero' }, { value: 'copyTs', label: 'preserve source timeline' }], value: c.transcode?.copyTs ? 'copyTs' : (c.transcode?.avoidNegativeTs ? 'avoidNegative' : 'default'), title: 'Rebase fixes a stream that starts at a negative timestamp (common after generating PTS). Preserve keeps the upstream timeline instead. They are opposite strategies, so this is one control rather than two checkboxes.' },
     { name: 'hlsTime', label: 'HLS segment seconds (1-30)', type: 'number', value: c.hls?.time },
     { name: 'hlsListSize', label: 'HLS window segments (2-60)', type: 'number', value: c.hls?.listSize }
   ], {
@@ -986,8 +993,15 @@ async function editChannel (id) {
     audioCodec: v.audioCodec,
     audioSampleRate: Number(v.audioSampleRate),
     audioChannels: v.audioChannels === '' ? null : Number(v.audioChannels),
+    audioSync: v.audioSync === 'yes',
     ...(v.audioBitrateKbps !== '' ? { audioBitrateKbps: Number(v.audioBitrateKbps) } : {})
   }
+  // One control, two mutually exclusive flags — the validator rejects both together.
+  const ts = {
+    avoidNegativeTs: v.tsMode === 'avoidNegative',
+    copyTs: v.tsMode === 'copyTs'
+  }
+  const stability = { maxMuxQueue: v.maxMuxQueue === '' ? null : Number(v.maxMuxQueue), ...ts }
   const logoPath = v.logoPath.trim()
   const subsPath = v.subtitlesPath.trim()
   const resolution = v.resolution === 'custom' ? v.resolutionCustom.trim() : v.resolution
@@ -995,13 +1009,15 @@ async function editChannel (id) {
     return toast('custom resolution must look like 1280x720', true)
   }
   body.transcode = v.encoder === 'copy'
-    ? { encoder: 'copy', ...audio }
+    ? { encoder: 'copy', ...audio, ...stability } // fpsMode is refused on copy
     : {
         encoder: v.encoder,
         resolution,
         fps: v.fps === 'source' ? 'source' : Number(v.fps),
+        fpsMode: v.fpsMode,
         preset: v.preset,
         ...audio,
+        ...stability,
         // Always sent, so clearing the box actually removes the logo/subtitles rather than
         // leaving the stored value in place (normalizeTranscode treats null as "clear").
         logo: logoPath
@@ -1035,7 +1051,10 @@ async function editChannel (id) {
     discardCorrupt: v.discardCorrupt === 'yes',
     genPts: v.genPts === 'yes',
     ignoreDts: v.ignoreDts === 'yes',
-    ignoreDecodeErrors: v.ignoreDecodeErrors === 'yes'
+    ignoreDecodeErrors: v.ignoreDecodeErrors === 'yes',
+    userAgent: v.userAgent.trim(),
+    headers: v.headers.trim(),
+    rwTimeoutMs: num(v.rwTimeoutMs)
   }
   if (v.hlsTime !== '') body.hlsTime = v.hlsTime
   if (v.hlsListSize !== '') body.hlsListSize = v.hlsListSize
