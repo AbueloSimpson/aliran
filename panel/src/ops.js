@@ -741,6 +741,11 @@ export async function statusSummary (ctx) {
   const streams = await listStreams(ctx)
   return {
     panelKey: b4a.toString(ctx.keys.signing.publicKey, 'hex'),
+    // The 12-character alias for that key (core/pairing.js), derived once at boot and
+    // handed in by src/index.js — never computed here, because this endpoint is polled.
+    // null when the panel was started without it (tests, embedders).
+    pairingCode: ctx.pairingCode || null,
+    serviceName: ctx.config?.serviceName || null,
     users,
     streams: streams.length,
     live: streams.filter((s) => s.isLive).length,

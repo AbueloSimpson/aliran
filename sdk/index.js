@@ -9,6 +9,8 @@ import { AliranPlayer } from './player.js'
 export { AliranPlayer }
 export { panelClient, login, checkSession, sessionLive } from './login.js'
 export { isCorruptionError, withRecovery } from './recover.js'
+// Pairing codes: turn the 12 characters a viewer typed into the operator's panel key.
+export { resolvePairingCode, PairingError, PAIRING_ERRORS } from './pairing.js'
 // Problem-report vocabulary for host UIs (categories, labels, the consent line, caps).
 export { REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, REPORT_CONSENT, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DETAIL_MAX, REPORT_COOLDOWN_MS, isReportCategory, reportCategoryLabel } from './report.js'
 

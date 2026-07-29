@@ -147,6 +147,22 @@ export interface SavedCredentials { username: string; password: string }
  *  Connect screen. Builds with a baked descriptor never save one (baked wins). */
 export interface SavedService { panelPubKey: string; name?: string }
 
+/** Why a pairing code did not resolve. 'malformed' — not a 12-character code, nothing
+ *  left the device; 'timeout' — no service answered it; 'unverified' — a peer answered
+ *  with a panel key that does not own the code, so it was refused. */
+export type PairingErrorCode = 'malformed' | 'timeout' | 'unverified'
+
+/** What resolvePairing() hands back. On ok the panel key is verified: the engine
+ *  re-derived the code from it and got what the viewer typed. */
+export interface PairingResult {
+  ok: boolean
+  panelPubKey?: string
+  name?: string
+  code?: string
+  error?: PairingErrorCode | string
+  message?: string
+}
+
 /** Panel-delivered external VOD provider config (S53) — the operator's switch plus the
  *  coordinates the APP uses to call the provider DIRECTLY. The panel never proxies the
  *  provider's calls or media and stores no viewer credential for it: each viewer
@@ -224,6 +240,11 @@ export type BackendMessage =
   | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null }
   // Answer to parentalVerify(): did the submitted PIN match? tag echoes the request's.
   | { type: 'parental-verify'; ok: boolean; tag?: string }
+  // Answer to resolvePairing(): the panel key a service pairing code stands for, after
+  // the engine verified it by re-deriving the code. error 'malformed' = not a code;
+  // 'timeout' = nobody answered it; 'unverified' = a peer DID answer and could not
+  // prove it owns the code — never treat that as "try again", it is a wrong service.
+  | { type: 'pair-result'; ok: boolean; panelPubKey?: string; name?: string; code?: string; error?: PairingErrorCode | string; message?: string; tag?: string }
   // Answer to sendReport() (S50c). ok=true means the panel accepted it (possibly
   // deduplicated or collapsed into an open alert — either way, "we heard you").
   // error 'unsupported' = this panel predates reports or has them disabled; 'cooldown'
@@ -421,6 +442,34 @@ export class AliranBackend {
   /** Persist "remember me" credentials (device-local; sign-out clears them). */
   saveCredentials (username: string, password: string) { this.send({ type: 'creds-save', username, password }) }
   clearCredentials () { this.creds = null; this.send({ type: 'creds-clear' }) }
+  /**
+   * Resolve a 12-character SERVICE PAIRING CODE ('A3K7-9QF2-M4XR') to the operator's
+   * panel public key, so a viewer never types 64 hex characters on a TV remote.
+   *
+   * The engine finds the service over the DHT and VERIFIES the answer by re-deriving
+   * the code from the key it received — an `ok` result is a key that provably owns the
+   * code. It persists nothing: connect() with the key, log in, and save the service
+   * only once both worked, exactly as with a typed key.
+   *
+   * Resolves (never rejects) — a failure arrives as { ok: false, error }. Waits up to
+   * 45 s: the engine's own search is 30 s, and this must outlast it to report the
+   * engine's reason rather than its own timeout.
+   */
+  resolvePairing (code: string): Promise<PairingResult> {
+    return new Promise((resolve) => {
+      const tag = Math.random().toString(36).slice(2, 10)
+      const timer = setTimeout(() => { off(); resolve({ ok: false, error: 'timeout' }) }, 45000)
+      const off = this.onMessage((m) => {
+        if (m.type !== 'pair-result' || m.tag !== tag) return
+        clearTimeout(timer)
+        off()
+        const { type, tag: _tag, ...result } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+        resolve(result as PairingResult)
+      })
+      this.send({ type: 'pair-resolve', code, tag })
+    })
+  }
+
   /** Persist the runtime-entered operator service (keyless public builds; S36). */
   saveService (service: SavedService) { this.service = service; this.send({ type: 'service-save', service }) }
   /** Forget the runtime service ("Change service…" — never affects a baked key). */

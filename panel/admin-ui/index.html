@@ -351,6 +351,21 @@
 
     <section id="overview-section" hidden>
       <div class="card">
+        <h3 class="card-title">Service pairing code</h3>
+        <div class="pairing">
+          <div class="pairing-code mono" id="pairing-code">—</div>
+          <button class="btn small" id="pairing-copy" type="button">Copy</button>
+        </div>
+        <p class="muted">Give this code to a viewer. The viewer types it on the app Connect screen instead of the
+          64-character panel key. The code contains no password — the viewer signs in with their own account.</p>
+        <details class="footnote"><summary>More about the pairing code</summary>
+          <p class="muted footnote">The panel calculates the code from its public key
+            (<span class="mono" id="pairing-key"></span>). Thus there is nothing to create and nothing to expire — every
+            panel start gives the same code. You can print the code on a card or an invoice. If you rotate the panel
+            key, the code changes with it, so print it only on material that you can print again. The app calculates the
+            code back from the key it receives and refuses a service that does not match.</p></details>
+      </div>
+      <div class="card">
         <h3 class="card-title">Panel health</h3>
         <div id="obs-chips" class="chips"></div>
       </div>

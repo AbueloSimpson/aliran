@@ -70,6 +70,34 @@ engine — hosts only ever see catalog metadata and localhost URLs. The
 store directory is a disposable replica cache: corruption is detected,
 purged, and re-replicated from peers automatically.
 
+### Pairing codes
+
+If your app asks a viewer which service to use, ask for the 12-character
+[service pairing code](operator-guide.md#the-service-pairing-code) rather
+than the 64-character panel key:
+
+```js
+import { resolvePairingCode } from '@aliran/player-sdk'
+
+const service = await resolvePairingCode('A3K7-9QF2-M4XR')
+// → { panelPubKey, name, branding, code }
+const player = createPlayer({ panelPubKey: service.panelPubKey, storeDir: './aliran-store' })
+```
+
+The call finds the service over the DHT, then **calculates the code
+again** from the panel key it received. It resolves only on a match, so
+`panelPubKey` is always a key that owns the code. It rejects with a
+`PairingError` whose `code` is:
+
+| `code` | What happened |
+|---|---|
+| `malformed` | The input is not a pairing code. Nothing left the device. |
+| `timeout` | No service answered within 30 s (override with `timeoutMs`). |
+| `unverified` | A peer answered with a key that does **not** own the code. Treat this as a wrong service, never as a retry. |
+
+In React Native, call `backend.resolvePairing(code)` instead — the search
+runs in the worklet and resolves with `{ ok, panelPubKey, name, error }`.
+
 ## React Native
 
 ```tsx

@@ -6,7 +6,9 @@ import {
   randomSalt, deriveVerifier, verify, wrapKeyFrom, wrap, unwrap,
   userKeyPair, sealTo, sealOpen,
   authKeyPair, authSign, authVerify,
-  signToken, verifyToken, tokenValid
+  signToken, verifyToken, tokenValid,
+  pairingCode, normalizePairingCode, formatPairingCode, pairingTopic, pairingCodeMatches,
+  PAIRING_CODE_LENGTH, CROCKFORD_ALPHABET
 } from './index.js'
 
 let passed = 0
@@ -123,6 +125,81 @@ test('session token sign/verify/expiry/tamper', () => {
   assert.strictEqual(verifyToken(panel.publicKey, token.slice(0, -2) + 'xx'), null, 'tampered sig must fail')
   assert.ok(tokenValid(panel.publicKey, token, now), 'unexpired token valid')
   assert.strictEqual(tokenValid(panel.publicKey, token, now + 2000), null, 'expired token invalid')
+})
+
+// 9. Pairing code: a deterministic 12-character Crockford alias for a panel key.
+test('pairing code is deterministic, 12 Crockford characters, grouped by 4', () => {
+  const key = b4a.toString(authKeyPair().publicKey, 'hex')
+  const code = pairingCode(key)
+  assert.strictEqual(code, pairingCode(key), 'same key must give the same code')
+  assert.ok(/^[^-]{4}-[^-]{4}-[^-]{4}$/.test(code), 'display form is XXXX-XXXX-XXXX, got ' + code)
+  const canonical = normalizePairingCode(code)
+  assert.strictEqual(canonical.length, PAIRING_CODE_LENGTH)
+  for (const ch of canonical) assert.ok(CROCKFORD_ALPHABET.includes(ch), 'non-Crockford character ' + ch)
+  assert.ok(!/[ILOU]/.test(canonical), 'the confusable characters must never be emitted')
+  // The 32 raw bytes and their hex are the same key, so they must give the same code.
+  const kp = authKeyPair()
+  assert.strictEqual(pairingCode(kp.publicKey), pairingCode(b4a.toString(kp.publicKey, 'hex')))
+  assert.strictEqual(pairingCode(kp.publicKey), pairingCode(b4a.toString(kp.publicKey, 'hex').toUpperCase()))
+})
+
+// 10. The code FOLLOWS the key: a different panel key is a different code.
+test('pairing code changes with the panel key', () => {
+  const seen = new Set()
+  for (let i = 0; i < 8; i++) seen.add(pairingCode(authKeyPair().publicKey))
+  assert.strictEqual(seen.size, 8, 'distinct keys collided')
+  // A one-bit change is enough — the KDF output is not a truncation of the key.
+  const kp = authKeyPair()
+  const flipped = b4a.from(kp.publicKey); flipped[0] ^= 1
+  assert.notStrictEqual(pairingCode(kp.publicKey), pairingCode(flipped))
+})
+
+// 11. Malformed input is refused rather than given a plausible-looking code.
+test('pairing code rejects malformed input', () => {
+  for (const bad of ['', 'not-a-key', 'ab'.repeat(31), 'zz'.repeat(32), 'ab'.repeat(33), null, undefined, 42, {}, b4a.alloc(31), b4a.alloc(33)]) {
+    assert.throws(() => pairingCode(bad), TypeError, 'accepted ' + JSON.stringify(bad))
+  }
+})
+
+// 12. Normalization: what a viewer types vs. what the code is.
+test('pairing code normalizes viewer typing and rejects non-codes', () => {
+  const canonical = 'A3K79QF2M4XR'
+  assert.strictEqual(normalizePairingCode('a3k7-9qf2-m4xr'), canonical) // lowercase + dashes
+  assert.strictEqual(normalizePairingCode('  A3K7 9QF2 M4XR '), canonical) // spaces
+  assert.strictEqual(normalizePairingCode('A3K7.9QF2_M4XR'), canonical) // other separators
+  // Crockford decoding: the excluded characters read as their digits.
+  assert.strictEqual(normalizePairingCode('a3k7-9qf2-m4xi'), 'A3K79QF2M4X1')
+  assert.strictEqual(normalizePairingCode('OL-K79QF2M4XR'), '01K79QF2M4XR')
+  // Not codes.
+  for (const bad of ['', 'A3K7-9QF2', 'A3K7-9QF2-M4XRX', 'A3K7-9QF2-M4X!', 'A3K7-9QF2-M4XU', null, 42, {}]) {
+    assert.strictEqual(normalizePairingCode(bad), null, 'accepted ' + JSON.stringify(bad))
+  }
+  assert.strictEqual(formatPairingCode(canonical), 'A3K7-9QF2-M4XR')
+})
+
+// 13. The topic is a pure function of the code — the panel announces on it, the client
+//     joins it holding nothing else — and it is NOT the panel key's own topic.
+test('pairing topic derives from the code alone', () => {
+  const key = b4a.toString(authKeyPair().publicKey, 'hex')
+  const code = pairingCode(key)
+  const topic = pairingTopic(code)
+  assert.strictEqual(topic.length, 32)
+  assert.ok(b4a.equals(topic, pairingTopic('  ' + code.toLowerCase().replace(/-/g, ' ') + '  ')), 'typing variants must reach the same topic')
+  assert.ok(!b4a.equals(topic, pairingTopic(pairingCode(authKeyPair().publicKey))), 'different codes must not share a topic')
+  assert.throws(() => pairingTopic('nope'), TypeError)
+})
+
+// 14. Verification by recomputation — the check that makes a substituted panel key
+//     useless to whoever answered on the topic.
+test('pairing code verifies against its own key only', () => {
+  const kp = authKeyPair()
+  const code = pairingCode(kp.publicKey)
+  assert.strictEqual(pairingCodeMatches(kp.publicKey, code), true)
+  assert.strictEqual(pairingCodeMatches(b4a.toString(kp.publicKey, 'hex'), code.toLowerCase()), true)
+  assert.strictEqual(pairingCodeMatches(authKeyPair().publicKey, code), false) // impostor panel
+  assert.strictEqual(pairingCodeMatches(kp.publicKey, 'A3K7-9QF2-M4XR'), false) // wrong code
+  assert.strictEqual(pairingCodeMatches(kp.publicKey, 'garbage'), false)
+  assert.strictEqual(pairingCodeMatches('not-a-key', code), false) // never throws on bad input
 })
 
 console.log(`\nRESULT: PASS ✅  (${passed} tests)`)

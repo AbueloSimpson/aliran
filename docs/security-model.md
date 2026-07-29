@@ -136,6 +136,46 @@ answer for multi-admin trust.
 - A directly connected peer can observe the panel's public IP. This is not
   anonymous unless you add a relay or VPN.
 
+## The service pairing code
+
+A viewer can reach a panel with a 12-character **pairing code** (`A3K7-9QF2-M4XR`)
+instead of the 64-character panel public key. See
+[the operator guide](operator-guide.md#the-service-pairing-code).
+
+The panel calculates the code from its own public key with **Argon2id**, then keeps
+the first 60 bits and writes them in Crockford base32. Thus:
+
+- No registry exists. The panel creates nothing and stores nothing.
+- The code holds **no password**. It is not a secret.
+- The panel announces on a DHT topic that comes from the code.
+
+**How the app verifies the service.** The topic is public, so any peer can answer
+on it. The app therefore trusts no answer. It calculates the code again from the
+panel key in the answer. If that code does not equal the code the viewer typed, the
+app refuses the answer and continues to look. After a match, the app opens the
+panel database **by key**, exactly as a typed key does. The panel key stays the
+root of trust.
+
+**The attack this prices out.** An attacker wants a keypair whose code is the same
+as a true operator's code. A viewer would then pair with the attacker panel and
+type a true username and password into it. The attacker holds that panel's OPRF
+key, so the attacker can attack the password offline afterwards.
+
+Two properties make this expensive:
+
+- **60 bits.** The attacker must search approximately 2^60 keypairs.
+- **A memory-hard step.** Each candidate costs one Argon2id evaluation at
+  interactive limits (approximately 70 ms and 64 MiB on a desktop CPU). Memory
+  hardness limits how much a GPU or an ASIC helps.
+
+The length is 12 characters, not 8, to keep this margin. The purpose is **not** to
+hide the panel key: the panel key is public, and every viewer replicates the
+catalog by it.
+
+**What the code does not do.** It gives no entitlement. A viewer who pairs still
+signs in with a username and a password, and still receives only the channels the
+operator granted.
+
 ## No DRM, no geo-locking — deliberately
 
 Aliran does **not** implement DRM or geo-restriction, and neither is planned. The

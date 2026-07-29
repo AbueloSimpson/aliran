@@ -4,7 +4,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `init` | Generates the panel's signing key and OPRF key. Stores them in the gitignored data directory. |
+| `init` | Generates the panel's signing key and OPRF key. Stores them in the gitignored data directory. Prints the panel public key and the [service pairing code](operator-guide.md#the-service-pairing-code). |
 | `create-user <u>` / `set-password <u>` | Creates a user, or rotates a password. Stores an Argon2id verifier. |
 | `set-status <u> <active\|disabled>` | Disables or re-enables an account. Disabling also revokes the account's sessions. |
 | `delete-user <u>` | Deletes the account record. Tokens already issued keep working offline until they expire. |
@@ -97,7 +97,7 @@ the replicated database. Login attempts are rate-limited
 | `GET /healthz` | **Unauthenticated** liveness check → `{up, uptimeSec, swarmConnections}`. It's cheap and synchronous, and served before the auth gate. Point uptime checks here. |
 | `GET /metrics` | **Unauthenticated** Prometheus text: uptime, RSS/heap, swarm connections, plus [analytics](analytics.md) counters (`aliran_panel_logins_{ok,failed}_total`, `aliran_panel_sessions_issued_total`, `aliran_panel_catalog_channels{class}`). |
 | `POST /api/login` `{username,password}` | → `{token, expiresAt}` |
-| `GET /api/status` | Counts: users, streams, live, admins |
+| `GET /api/status` | Counts: users, streams, live, admins. Also `panelKey`, `serviceName`, and `pairingCode` — the [service pairing code](operator-guide.md#the-service-pairing-code) the panel derived at boot (`null` when the panel started without one). |
 | `GET /api/observability` | Uptime, memory, swarm peers, data size and disk free, plus the last-200 activity ring. The ring is in-memory, so a restart clears it. |
 | `GET /api/analytics?days=N` | [Aggregate-only analytics](analytics.md) → `{enabled, retentionDays, days:[{date, hours:{H:{logins:{ok,failed}, sessions, onlineApps:{min,max,mean,samples}, catalog?}}, day:{uniqueViewers}}], current}`. UTC day rollups, default 7 and capped at the retention setting, plus the reduced in-progress hour. Counts only — never an identity. |
 | `GET /api/reports?status&channel&category&since&limit` | [Pseudonymous viewer problem reports](reports.md) → `{enabled, reports:[{id, at, lastAt, count, reporter, category, text, channel, appVersion, platform, peers, events, status, ackAt, resolvedAt, note}]}`. `reporter` is a 16-hex HMAC pseudonym. It is **never** a username or device id. |

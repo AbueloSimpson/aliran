@@ -5,8 +5,8 @@
 // screen exists), and onMessage is the live feed.
 
 import type {
-  BackendMessage, EngineState, ReportCategory, SavedIdentity, ServiceDescriptor, Stream,
-  VodCategoriesResult, VodConfig, VodHistoryEntry, VodInfoResult, VodKind, VodListEntry,
+  BackendMessage, EngineState, PairingResult, ReportCategory, SavedIdentity, ServiceDescriptor,
+  Stream, VodCategoriesResult, VodConfig, VodHistoryEntry, VodInfoResult, VodKind, VodListEntry,
   VodListResult, VodSeriesInfoResult
 } from './types'
 
@@ -14,6 +14,10 @@ import type {
 // forever, so every request is bounded here. The provider client's own timeout is
 // 20 s — this only fires if main itself never replies.
 const VOD_REPLY_TIMEOUT_MS = 25000
+// Pairing is a cold DHT search plus one memory-hard verification. Main gives up at
+// 30 s; this must outlast that, so the viewer reads main's reason and not a generic
+// "network" from here.
+const PAIR_REPLY_TIMEOUT_MS = 45000
 
 class DesktopBackend {
   streams: Stream[] = []
@@ -146,14 +150,31 @@ class DesktopBackend {
         : null)
   }
 
+  /**
+   * Resolve a 12-character SERVICE PAIRING CODE ('A3K7-9QF2-M4XR') to the operator's
+   * panel public key, so a viewer never types 64 hex characters.
+   *
+   * Main finds the service over the DHT and VERIFIES the answer by re-deriving the
+   * code from the key it received — an `ok` result is a key that provably owns the
+   * code. It persists nothing: call setService() with the key and let the login prove
+   * it, exactly as with a typed key. Waits out main's own 30 s search.
+   */
+  resolvePairing (code: string): Promise<PairingResult> {
+    return this.request<PairingResult>({ type: 'pair-resolve', code }, (m) => {
+      if (m.type !== 'pair-result') return null
+      const { type, ...result } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+      return result
+    }, PAIR_REPLY_TIMEOUT_MS)
+  }
+
   // Send one message and settle on the first reply the matcher recognizes. A silent
   // main process resolves as a connection failure rather than hanging.
-  private request<T> (msg: unknown, match: (m: BackendMessage) => T | null): Promise<T> {
+  private request<T> (msg: unknown, match: (m: BackendMessage) => T | null, timeoutMs = VOD_REPLY_TIMEOUT_MS): Promise<T> {
     return new Promise<T>((resolve) => {
       let done = false
       const finish = (v: T) => { if (!done) { done = true; clearTimeout(timer); off(); resolve(v) } }
       const off = this.onMessage((m) => { const v = match(m); if (v) finish(v) })
-      const timer = setTimeout(() => finish({ ok: false, error: 'network' } as unknown as T), VOD_REPLY_TIMEOUT_MS)
+      const timer = setTimeout(() => finish({ ok: false, error: 'network' } as unknown as T), timeoutMs)
       this.send(msg)
     })
   }

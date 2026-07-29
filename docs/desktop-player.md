@@ -88,12 +88,16 @@ phone app's baked-vs-runtime descriptor paths:
    viewers never see a key. One build per deployment, like a branded APK.
 2. **Public build** — packaged with **no** `service.json`. First run opens
    a **Connect screen**: the viewer enters the three things any Aliran
-   operator hands out — the **panel public key**, a **username**, and a
-   **password**. The app connects over the DHT, signs in, and persists
-   the key in the user profile (`aliran-service.json` under the app's
-   user-data dir). Every later launch auto-authorizes like an operator
-   build. *Settings → Change service…* forgets the key and saved sign-in,
-   and restarts to the Connect screen.
+   operator hands out — the **service pairing code** (12 characters in
+   three groups of four, `A3K7-9QF2-M4XR`), a **username**, and a
+   **password**. One click swaps the code boxes for the full 64-character
+   **panel public key**, for operators who hand that out instead. The app
+   resolves the code over the DHT, checks that the key it receives really
+   owns that code, signs in, and persists the key in the user profile
+   (`aliran-service.json` under the app's user-data dir). Every later
+   launch auto-authorizes like an operator build. *Settings → Change
+   service…* forgets the key and saved sign-in, and restarts to the
+   Connect screen.
 
 A baked descriptor always wins over a runtime-entered one. So an operator
 build ignores any previously stored key on the machine.
@@ -208,8 +212,10 @@ works around).
 
 | Symptom | Cause / fix |
 |---|---|
-| Connect screen at start | The build has no baked descriptor (public flavor / dev without `config/service.json`) — enter the operator's panel key + account; it persists. |
+| Connect screen at start | The build has no baked descriptor (public flavor / dev without `config/service.json`) — enter the operator's pairing code (or panel key) + account; it persists. |
 | Login/Connect spins ~1 min then "Cannot reach the service" | The DHT is unreachable — check the network — or (public flavor) the panel key is wrong/mistyped; the main process already retried the transient window for you. |
+| "No service answered that code" | The pairing code is mistyped, or the panel is down / unreachable. Re-check the code with the operator, then press Connect again. |
+| "A service answered that code but could not prove it owns it" | Do **not** retry blindly and do **not** enter your password. The app found a peer whose panel key does not match the code, and refused it. Confirm the code with your operator. |
 | SmartScreen blocks first run | Unsigned build (see §4): *More info → Run anyway*. |
 | A channel shows the codec error | The host GPU can't decode that channel's codec (usually HEVC on an older PC) — every other channel keeps working. |
 | Frequent `store:reset` status lines | The disposable replica cache self-healed after unclean exits; if constant, check disk health/space under the app's user-data dir. |

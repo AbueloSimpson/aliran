@@ -249,6 +249,27 @@ export type BackendMessage =
   // The runtime descriptor was accepted ('set-service', public flavor) — the engine
   // is booting on it; theme/branding may re-apply.
   | { type: 'service'; descriptor: ServiceDescriptor }
+  // Answer to 'pair-resolve': the panel key a SERVICE PAIRING CODE stands for, after
+  // main verified it by re-deriving the code from that key. error 'malformed' = not a
+  // code; 'timeout' = nobody answered; 'unverified' = a peer answered and could not
+  // prove it owns the code — a wrong service, never a retry.
+  | { type: 'pair-result'; ok: boolean; panelPubKey?: string; name?: string; code?: string; error?: PairingErrorCode | string; message?: string }
+
+/** Why a pairing code did not resolve. 'malformed' — not a 12-character code, nothing
+ *  left the machine; 'timeout' — no service answered it; 'unverified' — a peer answered
+ *  with a panel key that does not own the code, so it was refused. */
+export type PairingErrorCode = 'malformed' | 'timeout' | 'unverified'
+
+/** What resolvePairing() hands back. On ok the panel key is verified: main re-derived
+ *  the code from it and got what the viewer typed. */
+export interface PairingResult {
+  ok: boolean
+  panelPubKey?: string
+  name?: string
+  code?: string
+  error?: PairingErrorCode | string
+  message?: string
+}
 
 // Brandable color token set — same contract as the phone app's service descriptor
 // (client/src/config.ts). Anything omitted falls back to the theme defaults.

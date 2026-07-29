@@ -3,6 +3,7 @@
 //   OPRF login  : oprfKeyGen, blind/evaluate/finalize, evaluateFull (enrollment)
 //   Passwords   : randomSalt, deriveVerifier, verify
 //   Key wrapping: wrapKeyFrom, wrap, unwrap
+//   Pairing code: pairingCode, normalizePairingCode, pairingTopic, pairingCodeMatches
 //
 // Enrollment (panel/admin, holds password + oprfKey):
 //   rwd      = evaluateFull(oprfKey, password)
@@ -24,3 +25,4 @@ export * from './keybox.js'
 export * from './pow.js'
 export * from './token.js'
 export * from './session.js'
+export * from './pairing.js'

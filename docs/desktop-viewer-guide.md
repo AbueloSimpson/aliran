@@ -68,15 +68,22 @@ come from your operator — you don't need to figure out anything yourself:
 
 | Field | What it looks like |
 |---|---|
-| **Panel public key** | a long code of 64 letters/digits (`0–9`, `a–f`), e.g. `e79c2…` — paste it exactly |
+| **Pairing code** | 12 characters in three boxes of four, like `A3K7-9QF2-M4XR` — the boxes move you along as you type, and a pasted code fills all three |
 | **Username** | your account name on that service |
 | **Password** | your account password |
 
 There's no server address or URL to enter. This isn't an oversight — the app
-finds your service on a global peer-to-peer network using the key alone. The
-key is public: it identifies the service, but it doesn't unlock anything. Your
+finds your service on a global peer-to-peer network from the code alone. The
+code is public: it names the service, but it doesn't unlock anything. Your
 password is what signs you in, and it never leaves your computer in readable
 form.
+
+Type the code in upper or lower case — either works. If your card shows an `O`
+or an `I`, type it as you see it; the app reads them as zero and one.
+
+Some operators hand out a **panel key** instead: 64 letters and digits
+(`0–9`, `a–f`), e.g. `e79c2…`. Press **Enter the 64-character panel key
+instead** and paste it there. Both routes reach the same service.
 
 ![The Connect screen with the three fields filled in](img/desktop/connect.png)
 

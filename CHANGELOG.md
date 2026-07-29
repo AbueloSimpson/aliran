@@ -59,6 +59,37 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Service pairing code: 12 characters instead of 64** — a viewer connecting a
+  public (keyless) build no longer types a 64-hex panel key on a phone keyboard
+  or a TV remote. The Connect screen now opens on a **pairing code** —
+  `A3K7-9QF2-M4XR`, three groups of four that advance themselves as you type —
+  and the 64-hex field is one press away for operators who hand out a key
+  instead. Both routes reach the same service.
+
+  The code is **derived** from the panel public key, not assigned: Argon2id over
+  the key, truncated to 60 bits, written in Crockford base32 (no I/L/O/U, so
+  nothing is misread off a TV screen). So there is no registry, nothing to mint
+  and nothing to expire — every panel start computes the same code, and the
+  reseller panel can compute a customer's code locally from the key it already
+  holds. The panel announces on a swarm topic derived from the code and answers
+  a `describe` request with its descriptor; the client derives the same topic
+  from what the viewer typed, and then **verifies by recomputing** — it derives
+  the code from the panel key it received and refuses the answer unless the two
+  match. A squatter on the topic therefore cannot substitute its own panel,
+  which is the attack the length is chosen against: grinding a colliding keypair
+  to phish subscriber credentials costs ~2^60 memory-hard evaluations, not a
+  lookup. The code carries **no credentials** — the viewer still signs in — so
+  an operator can print it on a card, a receipt or a web page.
+
+  Operators find the code on the dashboard **Overview** tab (with a Copy
+  button); the panel prints it at every start, and `admin-cli init` prints it
+  beside the new keys. `SERVICE_NAME` sets the service name the app shows while
+  pairing, before sign-in. New `test:pairing` e2e proves a client holding *only*
+  the code reaches the panel and logs in, and that an impostor answering on the
+  topic is rejected rather than followed. A QR remains a later phone-only layer
+  over the same descriptor — TV boxes have no camera, which is why the typed
+  code comes first.
+
 - **Parental controls: access-controlled channels + a device-local PIN** — an
   operator can mark a channel `restricted` (dashboard: a PIN badge, a toggle in
   the channel editor, and a status filter; CLI: `set-meta --restricted`). The

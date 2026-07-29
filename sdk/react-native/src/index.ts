@@ -1,5 +1,5 @@
 export { AliranBackend } from './backend'
-export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, VodConfig, VodListEntry, VodHistoryEntry } from './backend'
+export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, PairingResult, PairingErrorCode, VodConfig, VodListEntry, VodHistoryEntry } from './backend'
 export { AliranVideo, SelectedTrackType } from './AliranVideo'
 export type { AliranVideoProps, AliranVideoHandle, TuneEvent, TunePhase, SelectedTrack, AudioTrack, TextTrack } from './AliranVideo'
 // Ready-made "engine can't run here" screen for single-APK builds: render in the

@@ -11,6 +11,7 @@ import readline from 'readline'
 import { Writable } from 'stream'
 import fs from 'fs'
 import path from 'path'
+import { pairingCode } from '@aliran/core'
 import { config } from './config.js'
 import { initKeys, openKeys } from './keys.js'
 import { openStore } from './store.js'
@@ -73,6 +74,9 @@ async function main () {
     const { publicKeyHex, publisherSecretHex } = initKeys(config.dataDir)
     console.log('Panel initialized.')
     console.log('Panel public key (give to clients):\n  ' + publicKeyHex)
+    // The same key in the form a viewer can actually type on a TV remote. Derived, so
+    // it is available the moment the keypair exists — no panel boot needed.
+    console.log('Service pairing code (viewers type this instead):\n  ' + pairingCode(publicKeyHex))
     console.log('Publisher key (put in the broadcaster .env as PUBLISHER_KEY):\n  ' + publisherSecretHex)
     console.log('Keys are in ' + config.dataDir + '/keys (gitignored — BACK UP).')
     return

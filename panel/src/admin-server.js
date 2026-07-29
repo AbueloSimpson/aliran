@@ -107,9 +107,10 @@ const CONTENT_EXT = {
 }
 
 // ctx = { config, keys, db, assets, dataDir, swarm?, activity?, analytics?, reports?,
-// notifier? } (open panel store; swarm, activity ring, analytics, the reports store
-// and the ops notifier are optional — observability, /api/analytics and
-// /api/reports degrade gracefully to their "off" shapes without them).
+// notifier?, pairingCode? } (open panel store; swarm, activity ring, analytics, the
+// reports store and the ops notifier are optional — observability, /api/analytics and
+// /api/reports degrade gracefully to their "off" shapes without them. pairingCode is
+// the boot-derived service code, echoed by /api/status; absent = null there).
 // opts = { host, port, sessionTtlMs, lockout: { threshold, seconds }, loginVerifyTimeoutMs }.
 // Resolves to { server, host, port, close } once listening (port 0 → ephemeral).
 export function startAdminServer (ctx, opts = {}) {

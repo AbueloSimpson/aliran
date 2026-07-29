@@ -42,6 +42,11 @@
 //                                        (S36 runtime descriptor: the public keyless app
 //                                        persists the operator service entered on its
 //                                        Connect screen; baked builds never send these)
+//        { type:'pair-resolve', code, tag? }  -> resolve a 12-character SERVICE PAIRING
+//                                        CODE to the operator's panel key over the DHT
+//                                        (core/pairing.js). Answers 'pair-result'.
+//                                        Persists nothing: the Connect screen still has
+//                                        to prove the key with a login.
 //        { type:'favorites-set', favorites: [streamId] }   (each replies with 'prefs')
 //        { type:'vod-list-set', entries }          device-local "My List" (S54a, D9):
 //                                        [{kind:'movie'|'series', id}], newest first.
@@ -100,6 +105,9 @@
 //          arrays, empty on a build that never wrote one)
 //        { type:'report-result', ok, error?, retryAfter?, id? }   (answer to 'report';
 //          error 'unsupported' = the panel predates reports / has them disabled)
+//        { type:'pair-result', ok, panelPubKey?, name?, code?, error?, message?, tag? }
+//          (answer to 'pair-resolve'; error 'malformed' | 'timeout' | 'unverified' —
+//          'unverified' means a peer answered and could NOT prove it owns the code)
 //
 // Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
 // the app-private files dir, the stated tradeoff; sign-out clears them) + favorites
@@ -116,6 +124,7 @@ import fs from 'bare-fs'
 import b4a from 'b4a'
 import hcrypto from 'hypercore-crypto'
 import { AliranPlayer } from '@aliran/player-sdk/player.js'
+import { resolvePairingCode } from '@aliran/player-sdk/pairing.js'
 
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
@@ -355,6 +364,15 @@ IPC.on('data', (data) => {
       const prev = readPrefs()
       if (prev.parental) writePrefs({ ...prev, parental: { ...prev.parental, hide: msg.hide } })
       sendPrefs()
+    } else if (msg.type === 'pair-resolve' && typeof msg.code === 'string') {
+      // Service pairing code → the operator's panel key. Runs on its OWN swarm and
+      // touches neither the player nor the prefs: the Connect screen persists the
+      // service only after the key it gets back also logs in. The SDK verifies the
+      // answer by re-deriving the code, so a rejected pairing surfaces here as an
+      // ordinary failure rather than a key the app would go on to trust.
+      resolvePairingCode(msg.code)
+        .then((s) => send({ type: 'pair-result', ok: true, panelPubKey: s.panelPubKey, name: s.name, code: s.code, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) }))
+        .catch((err) => send({ type: 'pair-result', ok: false, error: err.code || 'failed', message: String((err && err.message) || err), ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) }))
     } else if (msg.type === 'parental-verify' && typeof msg.pin === 'string') {
       const rec = readPrefs().parental
       send({ type: 'parental-verify', ok: !!rec && pinDigest(rec.salt, msg.pin) === rec.hash, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })

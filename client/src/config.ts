@@ -85,9 +85,26 @@ export interface ServiceDescriptor {
   vod?: { dev?: { username: string; token: string } }
 }
 
-// An operator panel public key: 32 bytes as lowercase hex — the one thing a viewer
-// types on the Connect screen (everything else is DHT discovery).
+// An operator panel public key: 32 bytes as lowercase hex.
 export const PANEL_KEY_RE = /^[0-9a-f]{64}$/
+
+// The SERVICE PAIRING CODE is the short way to say the same thing: 12 Crockford
+// base32 characters in three groups of four ('A3K7-9QF2-M4XR'), derived from the panel
+// key (core/pairing.js). It exists because 64 hex characters are brutal on a phone
+// keyboard and worse on a TV remote.
+export const PAIRING_GROUPS = 3
+export const PAIRING_GROUP_SIZE = 4
+
+// Keep a typed group to characters the alphabet actually has, and fold the confusable
+// ones the way Crockford decodes them — a viewer reading a printed card types O for 0
+// and I for 1, and should see the right character appear. The engine re-normalizes and
+// VERIFIES; this only decides what the field accepts.
+export function cleanPairingInput (s: string): string {
+  return s.toUpperCase()
+    .replace(/O/g, '0')
+    .replace(/[IL]/g, '1')
+    .replace(/[^0-9ABCDEFGHJKMNPQRSTVWXYZ]/g, '')
+}
 
 export function loadServiceDescriptor (): ServiceDescriptor {
   // An EMPTY panelPubKey is the deliberate keyless marker (the committed

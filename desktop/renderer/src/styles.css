@@ -89,6 +89,30 @@ img { -webkit-user-drag: none; }
 .connect-key { width: 460px; font-size: 13px; font-family: Consolas, monospace; }
 .connect-status { color: var(--c-text-dim); font-size: 14px; }
 
+/* The service pairing code: three short boxes, big wide-tracked type. Read off a
+   printed card and typed by hand, so legibility beats compactness. */
+.pair-groups { display: flex; gap: 12px; }
+.pair-group {
+  width: 120px;
+  padding: 12px 8px;
+  text-align: center;
+  font-family: Consolas, monospace;
+  font-size: 26px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+/* Switches between the code and the 64-hex key — a link, not a second call to action. */
+.connect-switch {
+  background: none;
+  border: none;
+  padding: 4px;
+  color: var(--c-accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.connect-switch:hover { text-decoration: underline; }
+
 .change-service {
   display: block;
   width: 100%;

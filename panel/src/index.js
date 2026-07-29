@@ -1,6 +1,8 @@
 // Aliran panel node — origin of truth + login authority.
 //
 //   - announce on the HyperDHT under a topic derived from the panel public key
+//   - announce on a second topic derived from the SERVICE PAIRING CODE, so a viewer
+//     can reach this panel with 12 typed characters instead of 64 hex ones
 //   - replicate the signed account/catalog Hyperbee to clients (read-only)
 //   - serve the login RPC: proof-of-work admission + per-(user,peer) throttling +
 //     oblivious OPRF evaluation (the brute-force choke point). The panel never sees the
@@ -12,6 +14,7 @@
 import Hyperswarm from 'hyperswarm'
 import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
+import { pairingCode, pairingTopic } from '@aliran/core'
 import { config } from './config.js'
 import { openKeys } from './keys.js'
 import { openStore } from './store.js'
@@ -36,8 +39,21 @@ export async function startPanel () {
 
   const { store, db, assets } = await openStore(config.dataDir, keys)
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
+  // Service pairing code: a 12-character alias for the key above, DERIVED from it with
+  // a memory-hard KDF (core/pairing.js). Nothing is minted or stored — it is a property
+  // of this key, so every boot computes the same code, and rotating the panel key
+  // changes it. ~70 ms and 64 MiB, once, right here.
+  const code = pairingCode(panelPubKey)
+  // What `describe` answers on the pairing topic. Public display text plus the key the
+  // code is an alias for; NO credentials — the viewer signs in with their own account
+  // afterwards, exactly as if they had typed the 64 hex characters. (No branding field
+  // yet: the apps theme themselves from their build's own descriptor, so a
+  // panel-delivered palette would have nowhere to land. The client accepts one if a
+  // later panel sends it.)
+  const descriptor = { panelPubKey, name: config.serviceName }
   console.log('=== Aliran panel ===')
   console.log('Panel public key:', panelPubKey)
+  console.log('Service pairing code:', code, '(what a viewer types instead of the key)')
   console.log('====================')
 
   // Legacy-publisher sunset nudge (S42): if named publishers are enrolled but the
@@ -107,13 +123,18 @@ export async function startPanel () {
   const enrich = makeBlobsKeyEnricher({ store, swarm, db, dataDir: config.dataDir })
   swarm.on('connection', (socket) => {
     store.replicate(socket) // clients replicate the signed account/catalog DB
-    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, analytics, enrich, legacyPublisher: config.legacyPublisher, reports, reportThrottle })
+    attachLoginRpc(socket, { keys, difficulty: config.pow.difficulty, throttle, db, dataDir: config.dataDir, sessionTtlMs, activity, analytics, enrich, legacyPublisher: config.legacyPublisher, reports, reportThrottle, descriptor })
   })
 
   const topic = hcrypto.hash(keys.signing.publicKey)
   swarm.join(topic, { server: true, client: false })
+  // Second rendezvous, same swarm and same connection handler: a client that holds only
+  // the pairing code finds the panel here, calls `describe`, and continues on the key it
+  // gets back. Announcing costs one more DHT topic and nothing else.
+  swarm.join(pairingTopic(code), { server: true, client: false })
   await swarm.flush()
   console.log('Panel announced on the DHT. Serving login + catalog replication…')
+  console.log(`Pairing: viewers may enter ${code} on the app's Connect screen instead of the panel key.`)
   enrich.sweep().catch(() => {}) // heal pre-upgrade records / registers missed while down
 
   // Admin HTTP API (in-process — the Corestore is single-writer, so it can't run
@@ -123,7 +144,10 @@ export async function startPanel () {
     if (Object.keys(loadAdmins(config.dataDir)).length === 0) {
       console.warn('Admin API enabled but no admins exist — create one: node src/admin-cli.js add-admin <name>')
     }
-    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity, analytics, reports, notifier }, {
+    // pairingCode is passed in ALREADY DERIVED: /api/status is polled by every open
+    // dashboard, and the KDF that makes the code hard to grind would make that endpoint
+    // expensive to serve. It is constant for the life of the keypair anyway.
+    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity, analytics, reports, notifier, pairingCode: code }, {
       host: config.admin.host,
       port: config.admin.port,
       sessionTtlMs: config.admin.sessionTtlHours * 3600000,

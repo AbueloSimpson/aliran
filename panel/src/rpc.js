@@ -73,8 +73,10 @@ export function makeThrottle (threshold, windowSec, { maxKeys = 20000 } = {}) {
 // `reports` is the optional pseudonymous problem-report store (src/reports.js, S50a) —
 // omitted (or disabled) means the `report` method simply does not exist, exactly as on
 // a pre-S50 panel; `reportThrottle` is its SHARED per-reporter limiter (created once in
-// src/index.js so it spans connections — a viewer reconnecting must not reset it).
-export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, analytics = null, enrich = null, legacyPublisher = true, reports = null, reportThrottle = null }) {
+// src/index.js so it spans connections — a viewer reconnecting must not reset it);
+// `descriptor` is the public service descriptor answered to `describe` (pairing codes)
+// — omitted means that method does not exist either.
+export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, db, dataDir, sessionTtlMs = 30 * 86400000, devicePolicy = 'evict', activity = null, analytics = null, enrich = null, legacyPublisher = true, reports = null, reportThrottle = null, descriptor = null }) {
   const oprf = oprfKey || (keys && keys.oprf)
   const rpc = new ProtomuxRPC(socket)
   const peerHex = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : 'anon'
@@ -82,6 +84,20 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
   let sessionChallenge = null // issued in the login response, consumed by `session`
 
   rpc.respond('hello', () => json({ challenge: b4a.toString(challenge, 'hex'), difficulty }))
+
+  // "Describe yourself" — the answer to a pairing code (see core/pairing.js). A client
+  // that joined the pairing topic knows only the 12 characters the viewer typed; this
+  // hands back the panel key those characters are an alias for, plus the display name
+  // and branding the Connect screen shows while it dials.
+  //
+  // Deliberately unauthenticated and free of any secret: everything here is public
+  // (the panel key is what every viewer replicates the catalog by), it is answered
+  // before any login, and it carries NO credentials — the viewer types their own.
+  // The client does not trust it either: it re-derives the code from panelPubKey and
+  // discards the answer unless the two match, which is what stops a squatter on the
+  // topic from substituting its own panel. Constant, so it is built once per boot and
+  // this responder cannot be turned into work.
+  if (descriptor) rpc.respond('describe', () => json(descriptor))
 
   rpc.respond('login', (reqBuf) => {
     let req

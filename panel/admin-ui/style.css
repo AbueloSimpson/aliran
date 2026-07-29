@@ -299,6 +299,12 @@ details.footnote[open] summary::before { content: '▾ '; }
 details.footnote summary:hover { color: var(--text); }
 details.footnote p { margin: 6px 0 0; }
 
+/* ---- service pairing code (Overview) ---- */
+/* Set large and wide-tracked: an operator reads this aloud down a phone line, and a
+   viewer copies it onto a TV remote. Selectable as one unit for a manual copy. */
+.pairing { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.pairing-code { font-size: 26px; font-weight: 600; letter-spacing: .12em; color: var(--accent); user-select: all; }
+
 /* ---- overview / observability (S16b) ---- */
 .card-title { margin: 0 0 10px; font-size: 14px; }
 .card-title .muted { font-weight: 400; font-size: 12px; }

@@ -82,11 +82,42 @@ afterEach(async () => {
   for (const t of mounted.splice(0)) await ReactTestRenderer.act(() => { t.unmount() })
 })
 
+// Connect opens on the PAIRING CODE (12 characters, three groups) — one press
+// switches to the 64-hex panel key.
+async function useKeyField (tree: RendererInstance) {
+  await ReactTestRenderer.act(() => { pressable(tree, 'Enter the 64-character panel key instead').props.onPress() })
+}
+
 async function fillAndSubmit (tree: RendererInstance, key: string, user = 'viewer', pass = 'pw') {
+  if (!tree.root.findAllByType(TextInput).some(i => i.props.placeholder === 'Panel public key (64 characters)')) await useKeyField(tree)
   await ReactTestRenderer.act(() => { input(tree, 'Panel public key (64 characters)').props.onChangeText(key) })
   await ReactTestRenderer.act(() => { input(tree, 'Username').props.onChangeText(user) })
   await ReactTestRenderer.act(() => { input(tree, 'Password').props.onChangeText(pass) })
   await ReactTestRenderer.act(() => { pressable(tree, 'Connect').props.onPress() })
+}
+
+// The three code groups, in order.
+function codeGroups (tree: RendererInstance) {
+  return tree.root.findAllByType(TextInput).filter(i => i.props.placeholder === '––––')
+}
+
+async function typeCode (tree: RendererInstance, code: string, user = 'viewer', pass = 'pw') {
+  const groups = codeGroups(tree)
+  for (let i = 0; i < groups.length; i++) {
+    await ReactTestRenderer.act(() => { groups[i].props.onChangeText(code.slice(i * 4, i * 4 + 4)) })
+  }
+  await ReactTestRenderer.act(() => { input(tree, 'Username').props.onChangeText(user) })
+  await ReactTestRenderer.act(() => { input(tree, 'Password').props.onChangeText(pass) })
+  await ReactTestRenderer.act(() => { pressable(tree, 'Connect').props.onPress() })
+}
+
+// Answer the pair-resolve the screen just sent (tagged, as resolvePairing() expects).
+// Async act: resolvePairing() settles a promise, so the screen's state lands a
+// microtask later — a sync act would leave it outside React's batch.
+async function pairAnswer (answer: Record<string, unknown>) {
+  const req = sentMessages().filter(x => x.type === 'pair-resolve').pop()
+  if (!req) throw new Error('no pair-resolve was sent')
+  await ReactTestRenderer.act(async () => { workletSays({ type: 'pair-result', ...answer, tag: req.tag }) })
 }
 
 test('Connect rejects a malformed panel key without touching the worklet', async () => {
@@ -96,6 +127,71 @@ test('Connect rejects a malformed panel key without touching the worklet', async
   await fillAndSubmit(tree, 'not-a-key')
   expect(texts(tree).some(t => t.includes('64 characters'))).toBe(true)
   expect(sentMessages()).toEqual([]) // nothing sent — the key never left the screen
+})
+
+test('Connect opens on the pairing code: three groups, filtered and self-advancing', async () => {
+  const navigation = { replace: jest.fn() } as any
+  const tree = await mount(<ConnectScreen navigation={navigation} route={{} as any} />)
+
+  const groups = codeGroups(tree)
+  expect(groups).toHaveLength(3)
+  expect(groups.every(g => g.props.maxLength === 4)).toBe(true)
+  expect(groups[0].props.hasTVPreferredFocus).toBe(true) // the remote lands here
+
+  // Typing is folded to the alphabet: lowercase up, O -> 0, I/L -> 1, separators
+  // dropped — a viewer reading a printed card gets the character they expect.
+  await ReactTestRenderer.act(() => { groups[0].props.onChangeText('a-o il') })
+  expect(codeGroups(tree)[0].props.value).toBe('A011')
+  // U is not in Crockford base32, so the field never accepts it.
+  await ReactTestRenderer.act(() => { groups[1].props.onChangeText('9uqf') })
+  expect(codeGroups(tree)[1].props.value).toBe('9QF')
+})
+
+test('Connect resolves a pairing code, then runs the ordinary connect -> login flow', async () => {
+  const navigation = { replace: jest.fn() } as any
+  const tree = await mount(<ConnectScreen navigation={navigation} route={{} as any} />)
+
+  await typeCode(tree, 'A3K79QF2M4XR')
+  // The code goes to the engine; the panel key is not known to the screen yet.
+  expect(sentMessages()).toEqual([expect.objectContaining({ type: 'pair-resolve', code: 'A3K79QF2M4XR' })])
+  expect(sentMessages().some(m => m.panelPubKey)).toBe(false)
+
+  // The engine answers with the VERIFIED key + the operator's own service name.
+  await pairAnswer({ ok: true, panelPubKey: KEY, name: 'Nice Operator TV' })
+  expect(sentMessages().filter(m => m.panelPubKey).pop()).toEqual(expect.objectContaining({ panelPubKey: KEY }))
+
+  // From here it is the same sequence a typed key takes — and the persisted service
+  // carries the name the operator's panel gave, not the build's.
+  await ReactTestRenderer.act(() => { workletSays({ type: 'ready' }) })
+  await ReactTestRenderer.act(() => { workletSays({ type: 'streams', streams: [] }) })
+  expect(sentMessages()).toEqual(expect.arrayContaining([
+    { type: 'service-save', service: { panelPubKey: KEY, name: 'Nice Operator TV' } },
+    { type: 'creds-save', username: 'viewer', password: 'pw' }
+  ]))
+  expect(navigation.replace).toHaveBeenCalledWith('Menu')
+})
+
+test('Connect never connects on a pairing code the engine could not verify', async () => {
+  const navigation = { replace: jest.fn() } as any
+  const tree = await mount(<ConnectScreen navigation={navigation} route={{} as any} />)
+
+  // An incomplete code fails on the screen — nothing is sent anywhere.
+  await typeCode(tree, 'A3K79QF2')
+  expect(texts(tree).some(t => t.includes('12 characters'))).toBe(true)
+  expect(sentMessages()).toEqual([])
+
+  // A peer answered but could not prove it owns the code: say so, and do NOT dial it.
+  await typeCode(tree, 'A3K79QF2M4XR')
+  await pairAnswer({ ok: false, error: 'unverified' })
+  expect(texts(tree).some(t => t.includes('could not prove it owns it'))).toBe(true)
+  expect(sentMessages().some(m => m.panelPubKey)).toBe(false)
+
+  // Nobody answered at all: a different message, still no connect.
+  await typeCode(tree, 'A3K79QF2M4XR')
+  await pairAnswer({ ok: false, error: 'timeout' })
+  expect(texts(tree).some(t => t.includes('No service answered'))).toBe(true)
+  expect(sentMessages().some(m => m.panelPubKey)).toBe(false)
+  expect(navigation.replace).not.toHaveBeenCalled()
 })
 
 test('Connect sequences connect -> ready -> login and persists ONLY on success', async () => {

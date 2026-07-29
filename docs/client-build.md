@@ -171,14 +171,40 @@ desktop player:
 - **Public (keyless) flavor.** Copy the committed
   `config/service.public.json` to `config/service.json` instead — its
   `panelPubKey` is the empty string, the deliberate keyless marker. First
-  run shows a **Connect screen** asking for the operator's panel key,
-  username, and password. These persist on the device
+  run shows a **Connect screen** asking which service to use, plus a
+  username and a password. These persist on the device
   (`aliran-prefs.json`, only after a successful sign-in), and Settings
   gains **"Change service…"** to forget them and reconnect. One generic
   APK connects to any operator's panel, phone and TV alike.
 
 Precedence is **baked → persisted runtime service → Connect screen**. A
 baked key always wins, and it ignores any persisted one.
+
+### The Connect screen — the pairing code, or the key
+
+The Connect screen accepts the service in two forms. Both give the same
+result.
+
+- **The service pairing code** (the default). 12 characters in three
+  groups of four, for example `A3K7-9QF2-M4XR`. The groups advance
+  themselves as the viewer types. This is the form to give a viewer: the
+  panel key is 64 characters, which is slow on a phone keyboard and very
+  slow on a TV remote.
+- **The panel public key.** The full 64 characters. One press on
+  *"Enter the 64-character panel key instead"* shows this field.
+
+The operator finds the code in the panel dashboard, on the **Overview**
+tab. See
+[the operator guide](operator-guide.md#the-service-pairing-code).
+
+The app resolves a pairing code over the peer-to-peer network, then
+**calculates the code again** from the panel key it receives. If the two
+codes do not agree, the app refuses that service. Thus a different
+service cannot take the place of the operator's own. See
+[the security model](security-model.md#the-service-pairing-code).
+
+The code holds **no password**. The viewer signs in with their own
+account after the app finds the service.
 
 ### The `vod` block — external-provider dev override only
 

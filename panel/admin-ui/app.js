@@ -133,6 +133,7 @@ async function refresh () {
     `<span class="chip"><b>${status.live}</b> live</span>` +
     `<span class="chip"><b>${status.admins}</b> admins</span>` +
     `<span class="chip mono" title="panel public key">${esc(status.panelKey.slice(0, 12))}…</span>`
+  renderPairing(status)
   renderStreams()
   renderAdmins()
   renderPublishers()
@@ -1747,6 +1748,23 @@ function fmtUptime (sec) {
   const m = Math.floor((sec % 3600) / 60)
   return (d ? d + 'd ' : '') + (h ? h + 'h ' : '') + m + 'm'
 }
+
+// The service pairing code (Overview). A property of the panel KEY, not of any tab —
+// it never changes while the panel runs, so it rides the /api/status refresh rather
+// than the 10 s observability poll. A panel started without one (an embedder, a test)
+// simply shows nothing.
+function renderPairing (status) {
+  const card = $('#pairing-code').closest('.card')
+  card.hidden = !status.pairingCode
+  if (!status.pairingCode) return
+  $('#pairing-code').textContent = status.pairingCode
+  $('#pairing-key').textContent = status.panelKey
+}
+
+$('#pairing-copy').addEventListener('click', async () => {
+  const code = $('#pairing-code').textContent
+  try { await navigator.clipboard.writeText(code); toast('Pairing code copied') } catch { toast('Could not copy — select the code by hand', true) }
+})
 
 async function loadObservability () {
   const o = await api('GET', '/api/observability')

@@ -29,6 +29,10 @@ const mib = (v, d) => { const n = int(v, d); return Number.isFinite(n) && n > 0 
 export const config = {
   dataDir: process.env.DATA_DIR || './data',
   relayOnly: bool(process.env.RELAY_ONLY, false),
+  // The operator's service name. The panel shows it to a client that pairs with the
+  // service pairing code, BEFORE any login — the viewer sees which service the 12
+  // characters they typed reached. Public display text, nothing more.
+  serviceName: (process.env.SERVICE_NAME || 'Aliran').trim().slice(0, 64),
   argon2: {
     memKiB: int(process.env.ARGON2_MEM_KIB, 262144),
     time: int(process.env.ARGON2_TIME, 3)

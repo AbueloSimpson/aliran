@@ -207,10 +207,46 @@ stderr ring. The last line is usually the diagnosis.
 
 ## F. Point the client at your panel
 
-Build or brand the client with your **panel public key** (build-time config), or
-generate a **service-descriptor QR** for runtime pairing. See
-[client-build.md](client-build.md). Nothing else is needed — clients reach the
-panel through the DHT, not an IP or domain.
+You have two ways to do this. See [client-build.md](client-build.md).
+
+- **Build or brand the client with your panel public key.** The key ships in the
+  app. The viewer sees no Connect screen.
+- **Give the viewer your service pairing code.** The public app asks for it on
+  first run. One app connects to any operator.
+
+Nothing else is necessary. Apps reach the panel through the DHT, not through an IP
+address or a domain.
+
+### The service pairing code
+
+The pairing code is a short name for your panel public key. It has 12 characters in
+three groups of four:
+
+```
+A3K7-9QF2-M4XR
+```
+
+Find your code in the dashboard, on the **Overview** tab. The panel also prints it
+at each start, and `admin-cli init` prints it with the new keys.
+
+Give the code to your viewers. A viewer types it on the app Connect screen instead
+of the 64-character key. 64 characters are slow to type on a phone, and very slow
+on a TV remote.
+
+Facts to know before you print it:
+
+- **The code holds no password.** The viewer signs in with their own account. Thus
+  the code is not a secret. Print it on a card, a receipt or your web site.
+- **The panel calculates the code from its key.** You do not create a code, and no
+  code expires. Every panel start gives the same code.
+- **The code follows the key.** If you rotate the panel key, the code changes.
+  Print the code only on material that you can print again.
+- **The app verifies the service.** The app calculates the code again from the key
+  it receives. If the two codes do not agree, the app refuses that service. See
+  [the security model](security-model.md#the-service-pairing-code).
+
+Set `SERVICE_NAME` in the panel `.env` to your service name. The app shows this
+name while a viewer pairs, before the viewer signs in.
 
 ## G. The VOD library (optional)
 

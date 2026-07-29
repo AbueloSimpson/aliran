@@ -317,6 +317,38 @@ export const REPORT_COOLDOWN_MS: number
 export function isReportCategory(v: unknown): v is ReportCategory
 export function reportCategoryLabel(v: string): string
 
+// --- pairing.js (service pairing codes) ---
+
+/** What a resolved pairing code hands back. `code` is the display form of what the
+ *  viewer typed; `name`/`branding` are unsigned display text from the panel. */
+export interface PairedService {
+  panelPubKey: string
+  name: string | null
+  branding: Record<string, unknown> | null
+  code: string
+}
+
+/** 'malformed' — not a code, nothing was sent; 'timeout' — nobody answered;
+ *  'unverified' — a peer answered with a key that does not own the code. */
+export type PairingErrorCode = 'malformed' | 'timeout' | 'unverified'
+
+export class PairingError extends Error {
+  code: PairingErrorCode
+}
+
+export const PAIRING_ERRORS: Record<PairingErrorCode, PairingErrorCode>
+
+/**
+ * Turn the 12 characters a viewer typed ('A3K7-9QF2-M4XR') into the operator's panel
+ * public key. Joins a swarm topic derived from the code alone, asks whoever answers to
+ * describe itself, and VERIFIES by re-deriving the code from the key it received — an
+ * answer that fails that check is discarded, never used.
+ */
+export function resolvePairingCode(
+  code: string,
+  opts?: { swarm?: unknown; bootstrap?: string[]; timeoutMs?: number }
+): Promise<PairedService>
+
 // --- recover.js (store-corruption recovery) ---
 
 /** True for known store-corruption shapes (EPARTIALREAD, OPLOG_CORRUPT, ...). */

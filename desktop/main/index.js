@@ -20,6 +20,7 @@ import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolvePairingCode } from '@aliran/player-sdk/pairing.js'
 import { EngineHost } from './engine.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -59,6 +60,7 @@ function main () {
     ipcMain.on('aliran:msg', (_e, msg) => {
       if (msg && msg.type === 'set-service') return setService(msg)
       if (msg && msg.type === 'service-clear') return clearService()
+      if (msg && msg.type === 'pair-resolve') return resolvePairing(msg)
       engine.handle(msg)
     })
     ipcMain.handle('aliran:state', () => engine.state())
@@ -116,6 +118,20 @@ function main () {
     engine.descriptorSource = 'runtime'
     engine.start()
     send({ type: 'service', descriptor: engine.state().descriptor })
+  }
+
+  // The Connect screen's short path: a 12-character SERVICE PAIRING CODE instead of
+  // the 64-hex panel key. The SDK joins a topic derived from the code alone, asks
+  // whoever answers to describe itself, and VERIFIES by re-deriving the code from the
+  // key it got back — so what comes out here is a key that provably owns the code, or
+  // an error. Nothing is persisted: the renderer follows up with 'set-service', and
+  // the login still has to prove the key.
+  function resolvePairing (msg) {
+    const send = (m) => { if (win && !win.isDestroyed()) win.webContents.send('aliran:event', m) }
+    if (engine.descriptor) return // a service is already active — the screen is not up
+    resolvePairingCode(String(msg.code || ''))
+      .then((s) => send({ type: 'pair-result', ok: true, panelPubKey: s.panelPubKey, name: s.name, code: s.code }))
+      .catch((err) => send({ type: 'pair-result', ok: false, error: err?.code || 'failed', message: String(err?.message || err) }))
   }
 
   // "Change service": forget the runtime descriptor AND the saved credentials
