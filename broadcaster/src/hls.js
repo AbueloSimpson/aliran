@@ -526,7 +526,25 @@ export function ingestTuningArgs (t) {
   if (t.probesizeKB != null) out.push('-probesize', String(t.probesizeKB * 1024))
   if (t.analyzeDurationMs != null) out.push('-analyzeduration', String(t.analyzeDurationMs * 1000)) // ffmpeg wants µs
   if (t.threadQueueSize != null) out.push('-thread_queue_size', String(t.threadQueueSize))
-  if (t.discardCorrupt) out.push('-fflags', '+discardcorrupt')
+  // ⚠ -fflags is ONE option: repeating it OVERRIDES rather than accumulates, so a second
+  // -fflags would silently discard the first. Every flag has to be combined into one value.
+  //   discardcorrupt — drop corrupt packets instead of aborting (marginal RF/HDMI chains
+  //     produce them constantly).
+  //   genpts — SYNTHESISE missing presentation timestamps. A stream whose PTS are absent or
+  //     non-monotonic makes the HLS muxer emit wrong EXTINF durations or refuse the packet
+  //     outright ("Application provided invalid, non monotonically increasing dts"); the
+  //     segmenter needs a sane timeline more than it needs the original one.
+  //   igndts — ignore DTS entirely and let PTS drive. Pairs with genpts on sources whose
+  //     DTS is the broken half; on its own it is the lighter fix.
+  const fflags = []
+  if (t.discardCorrupt) fflags.push('+discardcorrupt')
+  if (t.genPts) fflags.push('+genpts')
+  if (t.ignoreDts) fflags.push('+igndts')
+  if (fflags.length) out.push('-fflags', fflags.join(''))
+  // Keep decoding through bitstream errors rather than treating them as fatal. Separate
+  // from discardcorrupt: that one is about the CONTAINER dropping bad packets, this is the
+  // DECODER being told to carry on with what it got.
+  if (t.ignoreDecodeErrors) out.push('-err_detect', 'ignore_err')
   return out
 }
 

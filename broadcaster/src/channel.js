@@ -452,8 +452,12 @@ export function normalizeIngestTuning (value, existing = null) {
     if (!Number.isInteger(n) || n < lo || n > hi) bad(`ingestTuning.${key} must be an integer ${lo}-${hi} (or null for the ffmpeg default)`)
     out[key] = n
   }
-  const dc = value.discardCorrupt !== undefined ? value.discardCorrupt : existing?.discardCorrupt
-  if (dc != null && dc !== '') out.discardCorrupt = dc === true || /^(1|true|yes)$/i.test(String(dc))
+  // Boolean tolerance switches. Each is the answer to a specific way a bad IPTV source
+  // breaks — see ingestTuningArgs in hls.js for what each one actually does.
+  for (const key of ['discardCorrupt', 'genPts', 'ignoreDts', 'ignoreDecodeErrors']) {
+    const raw = value[key] !== undefined ? value[key] : existing?.[key]
+    if (raw != null && raw !== '') out[key] = raw === true || /^(1|true|yes)$/i.test(String(raw))
+  }
   return Object.keys(out).length ? out : null
 }
 

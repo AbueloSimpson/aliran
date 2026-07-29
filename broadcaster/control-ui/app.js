@@ -884,6 +884,9 @@ async function editChannel (id) {
     { name: 'analyzeDurationMs', label: 'Analyze duration ms (blank = default ~5000)', type: 'number', value: c.ingestTuning?.analyzeDurationMs ?? '', title: 'How long ffmpeg may study the stream before deciding what is in it. Raise alongside probe size for irregular encoders.' },
     { name: 'threadQueueSize', label: 'Input queue packets (blank = ffmpeg default)', type: 'number', value: c.ingestTuning?.threadQueueSize ?? '', title: 'REAL input buffering: queue depth between demuxer and encoder. Raise to 512-4096 if the log says Thread message queue blocking — a bursty push source is overflowing it and dropping packets.' },
     { name: 'discardCorrupt', label: 'Tolerate corrupt packets', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.discardCorrupt ? 'yes' : 'no', title: 'Keep going through corrupt TS packets instead of aborting — marginal RF/HDMI capture chains produce them constantly.' },
+    { name: 'genPts', label: 'Generate missing timestamps (genpts)', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.genPts ? 'yes' : 'no', title: 'Synthesise PTS for a source whose timestamps are missing or jump backwards. Without it the segmenter writes wrong EXTINF durations, or ffmpeg refuses packets with "non monotonically increasing dts". The segmenter needs a sane timeline more than the original one.' },
+    { name: 'ignoreDts', label: 'Ignore DTS (igndts)', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.ignoreDts ? 'yes' : 'no', title: 'Let PTS drive and disregard DTS entirely. Use when DTS is the broken half; pairs with genpts on badly damaged sources.' },
+    { name: 'ignoreDecodeErrors', label: 'Ignore decode errors', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.ignoreDecodeErrors ? 'yes' : 'no', title: 'Carry on through bitstream errors instead of treating them as fatal. Different from "tolerate corrupt packets": that drops bad packets at the container, this tells the DECODER to keep going with what it got.' },
     { name: 'hlsTime', label: 'HLS segment seconds (1-30)', type: 'number', value: c.hls?.time },
     { name: 'hlsListSize', label: 'HLS window segments (2-60)', type: 'number', value: c.hls?.listSize }
   ], {
@@ -1020,7 +1023,10 @@ async function editChannel (id) {
     probesizeKB: num(v.probesizeKB),
     analyzeDurationMs: num(v.analyzeDurationMs),
     threadQueueSize: num(v.threadQueueSize),
-    discardCorrupt: v.discardCorrupt === 'yes'
+    discardCorrupt: v.discardCorrupt === 'yes',
+    genPts: v.genPts === 'yes',
+    ignoreDts: v.ignoreDts === 'yes',
+    ignoreDecodeErrors: v.ignoreDecodeErrors === 'yes'
   }
   if (v.hlsTime !== '') body.hlsTime = v.hlsTime
   if (v.hlsListSize !== '') body.hlsListSize = v.hlsListSize

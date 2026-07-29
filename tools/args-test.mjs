@@ -591,6 +591,35 @@ for (const line of [
 ]) assert.ok(!HW_DECODE_FAIL_RE.test(line), 'must NOT trigger fallback: ' + line)
 log('R: GPU decode path (scale_cuda, pinning, arg ordering, validation, fallback signatures) ✓')
 
+// ===== T: the rest of the demuxer tolerance switches =====
+// ⚠ -fflags is ONE option — a second -fflags OVERRIDES the first rather than adding to it,
+// so every flag has to end up in a single combined value. Emitting two would silently drop
+// whichever came first, and the channel would look configured while behaving as if it were
+// not. That is the whole reason these are asserted together.
+assert.deepStrictEqual(ingestTuningArgs({ discardCorrupt: true, genPts: true, ignoreDts: true }),
+  ['-fflags', '+discardcorrupt+genpts+igndts'], 'all container flags combine into ONE -fflags')
+assert.strictEqual(ingestTuningArgs({ discardCorrupt: true, genPts: true }).filter((a) => a === '-fflags').length, 1,
+  'never more than one -fflags')
+assert.deepStrictEqual(ingestTuningArgs({ genPts: true }), ['-fflags', '+genpts'])
+assert.deepStrictEqual(ingestTuningArgs({ ignoreDecodeErrors: true }), ['-err_detect', 'ignore_err'],
+  'decoder tolerance is its own option, not an fflag')
+assert.deepStrictEqual(ingestTuningArgs({ discardCorrupt: true, ignoreDecodeErrors: true }),
+  ['-fflags', '+discardcorrupt', '-err_detect', 'ignore_err'], 'container and decoder switches are independent')
+assert.deepStrictEqual(ingestTuningArgs({}), [], 'nothing set = ffmpeg defaults, byte-identical to before')
+// They are INPUT options, so they must precede -i or ffmpeg applies them to the output.
+const tunedFull = ffmpegArgs({
+  input: { kind: 'pull', url: 'http://origin:81/CH/mpegts' },
+  ingestTuning: { probesizeKB: 20000, analyzeDurationMs: 15000, threadQueueSize: 1024, discardCorrupt: true, genPts: true, ignoreDecodeErrors: true },
+  hls: HLS
+}, outDir)
+for (const flag of ['-probesize', '-analyzeduration', '-thread_queue_size', '-fflags', '-err_detect']) {
+  assert.ok(tunedFull.indexOf(flag) >= 0 && tunedFull.indexOf(flag) < tunedFull.indexOf('-i'), flag + ' precedes -i')
+}
+assert.strictEqual(normalizeIngestTuning({ genPts: 'yes', ignoreDts: 1, ignoreDecodeErrors: true }).genPts, true,
+  'string/number truthiness accepted from a form post')
+assert.strictEqual(normalizeIngestTuning({ genPts: 'no' }).genPts, false)
+log('T: genpts / igndts / ignore_err — combined fflags, input-side placement ✓')
+
 // ===== S: multi-audio, custom raster, audio format, logo, burn-in subs, CENC =====
 // Every filter graph asserted here was run through real ffmpeg 6.1.1 on an RTX 4090
 // before being written down — including the two that FAIL there, which is how the
