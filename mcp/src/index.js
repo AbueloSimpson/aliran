@@ -114,34 +114,55 @@ async function main () {
   }
 
   // Resolve reachability: explicit url wins; otherwise open an SSH local-forward
-  // tunnel to the loopback API on the box (needs the ssh block). A service whose
-  // tunnel can't be opened is left unconfigured (its tools aren't registered).
+  // tunnel to the loopback API on the box (needs the ssh block).
+  //
+  // The tunnel is opened EAGERLY but is not required. A forward that cannot open
+  // at startup used to return null here, which unregistered every panel_* and
+  // broadcaster_* tool for the life of the process — so a box that was briefly
+  // unreachable when the AI client launched (a VPN still connecting is enough)
+  // cost the operator their whole toolset until they restarted the client. That
+  // is precisely the "restart your client" failure the tunnel work removed from
+  // every other code path, surviving at startup. Now the tools are registered
+  // either way and the first call opens the forward, so a slow network costs one
+  // slow call instead of a dead session.
   async function clientFor (svc, remotePort) {
     if (!svc) return null
     if (svc.url) return makeHttpClient(svc, { dataDir: config.dataDir })
-    try {
-      // A pinned `localPort` makes recovery predictable — the operator repairs the
-      // forward by hand with a port they already know, instead of reading one out of
-      // an error message. Unset keeps the old behaviour: any free port.
-      const localPort = svc.localPort || await freePort()
-      const t = await ssh.openTunnel({ localPort, remotePort })
-      tunnels.push(t)
-      logerr(`opened SSH tunnel 127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort} for ${svc.name}`)
-      // The tunnel outlives its ssh process: a broken forward is rebuilt on the next
-      // call instead of disabling the service until the AI client restarts.
-      const reachability = {
-        describe: `through the SSH tunnel to ${config.ssh.host}:${remotePort}`,
-        repair: async () => {
-          const rebuilt = await t.repair()
-          if (rebuilt) logerr(`rebuilt the SSH tunnel for ${svc.name} (127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort})`)
-          return rebuilt
-        }
+    if (!ssh) return null
+    // A pinned `localPort` makes recovery predictable — the operator repairs the
+    // forward by hand with a port they already know, instead of reading one out of
+    // an error message. Unset keeps the old behaviour: any free port.
+    const localPort = svc.localPort || await freePort()
+    const where = `127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort}`
+    let tunnel = null
+    let opening = null
+
+    // Single-flight, so concurrent first calls share one open attempt.
+    const open = () => {
+      if (!opening) {
+        opening = ssh.openTunnel({ localPort, remotePort })
+          .then((t) => { tunnel = t; tunnels.push(t); logerr(`opened SSH tunnel ${where} for ${svc.name}`); return true })
+          .finally(() => { opening = null })
       }
-      return makeHttpClient(svc, { baseUrl: `http://127.0.0.1:${localPort}`, dataDir: config.dataDir, reachability })
-    } catch (err) {
-      logerr(`could not reach ${svc.name} (${err.message}) — its tools are disabled`)
-      return null
+      return opening
     }
+
+    try {
+      await open()
+    } catch (err) {
+      logerr(`could not open the SSH tunnel for ${svc.name} yet (${err.message}) — its tools stay registered and the next call will open it`)
+    }
+
+    const reachability = {
+      describe: `through the SSH tunnel to ${config.ssh.host}:${remotePort}`,
+      repair: async () => {
+        if (!tunnel) return open() // never came up at startup: open it now
+        const rebuilt = await tunnel.repair()
+        if (rebuilt) logerr(`rebuilt the SSH tunnel for ${svc.name} (${where})`)
+        return rebuilt
+      }
+    }
+    return makeHttpClient(svc, { baseUrl: `http://127.0.0.1:${localPort}`, dataDir: config.dataDir, reachability })
   }
 
   const panel = await clientFor(config.panel, 3210)

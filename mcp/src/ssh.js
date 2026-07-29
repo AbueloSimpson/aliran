@@ -72,6 +72,16 @@ export function makeSsh (ssh, { exec, spawnTunnel } = {}) {
     const cmd = cwd ? `cd ${shq(cwd)} && ${remoteCommand}` : remoteCommand
     const argv = [...binPrefix, ...baseArgs(), cmd]
     const res = await runExec(argv, { timeoutMs })
+    // Exit 255 with nothing on stdout is ssh ITSELF failing to connect, not the
+    // remote command failing. That difference has to survive `allowFail`, which
+    // means "let me read the command's own failure" and never "report an
+    // unreachable box as an empty result". The read-only diagnostics all pass
+    // allowFail and return only stdout/stderr, so without this a dead SSH route
+    // renders as blank output with no error anywhere — which reads as "the box
+    // answered, and had nothing to say".
+    if (res.code === 255 && !res.stdout.trim()) {
+      throw new SshError(`cannot reach ${ssh.user}@${ssh.host} over SSH (ssh exit 255): ${res.stderr.trim() || 'ssh gave no reason'}`, { code: 'unreachable', stderr: res.stderr })
+    }
     if (!allowFail && res.code !== 0) {
       throw new SshError(`remote command failed (exit ${res.code}): ${remoteCommand}\n${(res.stderr || res.stdout || '').trim()}`, { code: 'remote', stderr: res.stderr })
     }
@@ -112,7 +122,19 @@ export function makeSsh (ssh, { exec, spawnTunnel } = {}) {
           if (Date.now() > deadline) { settled = true; try { child.kill() } catch {}; reject(new SshError(`tunnel to ${ssh.host}:${remotePort} did not come up in ${timeoutMs}ms: ${stderr.trim()}`)) } else setTimeout(poll, 250)
         })
       }
-      child.on('exit', (code) => { if (!settled) { settled = true; reject(new SshError(`ssh tunnel exited (code ${code}): ${stderr.trim()}`)) } })
+      // 'close', not 'exit'. 'exit' fires as soon as the process is gone, which
+      // can be BEFORE its stderr has been delivered to us — and rejecting there
+      // throws away the one line that says why. The operator is then told
+      // "ssh tunnel exited (code 255): " with an empty reason, which is exactly
+      // the failure that cannot be diagnosed. 'close' waits for the pipes.
+      child.on('close', (code) => {
+        if (settled) return
+        settled = true
+        const why = stderr.trim() || (code === 255
+          ? "ssh gave no reason — 255 is ssh's OWN failure code, so suspect the key, the host key, or the network, not the service"
+          : 'no diagnostic output')
+        reject(new SshError(`ssh tunnel exited (code ${code}): ${why}`))
+      })
       setTimeout(poll, 250)
     })
   }

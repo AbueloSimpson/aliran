@@ -1600,19 +1600,36 @@ try {
   {
     const kids = []
     // A fake ssh child: listens on the forward's local port like the real one, and
-    // `kill()` (or die()) drops it exactly as a dropped SSH connection would.
+    // `kill()` (or die()) drops it exactly as a dropped SSH connection would. It
+    // emits stderr and BOTH 'exit' and 'close', because the real child does and
+    // the ordering between them is the bug this lane guards.
+    let failNextSpawn = null // { code, stderr }: the next ssh dies instead of listening
     const fakeSpawn = (argv) => {
       const forward = argv.find((a) => /^\d+:/.test(String(a))) || ''
       const localPort = Number(String(forward).split(':')[0])
       const handlers = {}
-      const server = net.createServer((s) => s.destroy())
-      server.listen(localPort, '127.0.0.1')
+      const onStderr = []
       const child = {
         argv,
-        stderr: null,
+        server: null,
+        stderr: { on (ev, fn) { if (ev === 'data') onStderr.push(fn) } },
         on (ev, fn) { handlers[ev] = fn },
-        kill () { try { server.close() } catch {} ; if (handlers.exit) handlers.exit(0) },
-        die () { try { server.close() } catch {} ; if (handlers.exit) handlers.exit(255) }
+        end (code, text) {
+          try { if (child.server) child.server.close() } catch {}
+          if (text) for (const fn of onStderr) fn(Buffer.from(text))
+          if (handlers.exit) handlers.exit(code)
+          if (handlers.close) handlers.close(code)
+        },
+        kill () { child.end(0) },
+        die () { child.end(255) }
+      }
+      if (failNextSpawn) {
+        const { code, stderr } = failNextSpawn
+        failNextSpawn = null
+        setTimeout(() => child.end(code, stderr), 10) // never binds the port
+      } else {
+        child.server = net.createServer((s) => s.destroy())
+        child.server.listen(localPort, '127.0.0.1')
       }
       kids.push(child)
       return child
@@ -1771,11 +1788,62 @@ try {
       assert.throws(() => loadConfig(cfgWith(bad), quiet), /localPort/, `a localPort of ${JSON.stringify(bad)} is refused at load, not at tunnel-open time`)
     }
 
+    // A tunnel that dies must say WHY. Rejecting on 'exit' raced ssh's stderr and
+    // produced "ssh tunnel exited (code 255): " with the reason discarded — the
+    // one failure an operator cannot diagnose, seen live behind a Claude Desktop
+    // server that showed a green "running" badge and had no working tools.
+    const lpLoud = await aFreePort()
+    failNextSpawn = { code: 255, stderr: 'Permission denied (publickey).' }
+    await assert.rejects(() => ssh.openTunnel({ localPort: lpLoud, remotePort: 3210, timeoutMs: 4000 }),
+      (err) => {
+        assert.match(err.message, /Permission denied \(publickey\)/, "ssh's own stderr reaches the operator")
+        return true
+      }, 'a forward that cannot open rejects with the reason attached')
+
+    // And when ssh really says nothing, say so plainly instead of a bare colon.
+    const lpMute = await aFreePort()
+    failNextSpawn = { code: 255, stderr: '' }
+    await assert.rejects(() => ssh.openTunnel({ localPort: lpMute, remotePort: 3210, timeoutMs: 4000 }),
+      (err) => {
+        assert.match(err.message, /255 is ssh's OWN failure code/, 'a silent 255 is explained, not left blank')
+        assert.ok(!/\(code 255\):\s*$/.test(err.message), 'the message never ends in an empty reason')
+        return true
+      }, 'a silent ssh failure still explains itself')
+
+    // A forward that fails at startup must not be permanent. index.js keeps the
+    // tools registered and opens it on the next call, so the same local port has
+    // to work on a later attempt.
+    const lpLate = await aFreePort()
+    failNextSpawn = { code: 255, stderr: 'network is unreachable' }
+    await assert.rejects(() => ssh.openTunnel({ localPort: lpLate, remotePort: 3210, timeoutMs: 4000 }), /network is unreachable/, 'the first attempt fails')
+    const lateTun = await ssh.openTunnel({ localPort: lpLate, remotePort: 3210, timeoutMs: 4000 })
+    assert.strictEqual(lateTun.alive, true, 'and a later attempt on the same local port succeeds')
+    lateTun.close()
+
+    // `allowFail` means "let me read the command's own failure", never "report an
+    // unreachable box as an empty result". Every read-only diagnostic passes it and
+    // returns only stdout/stderr, so a dead SSH route used to render as blank
+    // output with no error — which reads as "the box answered, and said nothing".
+    let execNext = null
+    const sshExec = makeSsh({ host: 'box.example', user: 'root' }, { exec: () => Promise.resolve(execNext) })
+    execNext = { code: 255, stdout: '', stderr: 'ssh: connect to host box.example port 22: Connection refused' }
+    await assert.rejects(() => sshExec.run('docker compose ps', { allowFail: true }), (err) => {
+      assert.match(err.message, /cannot reach root@box\.example over SSH/, 'an unreachable box is an error, not an empty answer')
+      assert.match(err.message, /Connection refused/, "and carries ssh's reason")
+      return true
+    }, 'exit 255 with no stdout throws even under allowFail')
+
+    // A command that genuinely ran and failed still comes back for the caller to read.
+    execNext = { code: 1, stdout: 'no such service\n', stderr: '' }
+    const ranAndFailed = await sshExec.run('docker compose ps', { allowFail: true })
+    assert.strictEqual(ranAndFailed.code, 1, 'a real command failure is still returned under allowFail')
+    assert.match(ranAndFailed.stdout, /no such service/, 'with its output intact')
+
     for (const k of kids) { try { k.kill() } catch {} }
     tun.close()
     assert.strictEqual(tun.alive, false, 'close() leaves the handle dead')
   }
-  log('AF: SSH tunnel lifecycle — keepalive/ExitOnForwardFailure argv, death detected, ensure() revives the same local port, repair() rebuilds a live-but-stranded forward with a cooldown so a down service cannot thrash ssh, concurrent revives and rebuilds each share one attempt, the http client retries through it and tells box-fault from service-fault from suppressed-rebuild, pinned localPort validated at load ✓')
+  log('AF: SSH tunnel lifecycle — keepalive/ExitOnForwardFailure argv, death detected, ensure() revives the same local port, repair() rebuilds a live-but-stranded forward with a cooldown, concurrent revives and rebuilds each share one attempt, the http client tells box-fault from service-fault from suppressed-rebuild, a dying tunnel reports the real ssh stderr instead of an empty reason, a startup failure is not permanent, allowFail never turns an unreachable box into an empty result, pinned localPort validated at load ✓')
 
   log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe; S50d: viewer problem reports — the honest disabled shape, filters + sinceHours, event-ring compaction with full:true, ack/resolve with a note, read-only alerts, one webhook push per opened alert plus test_notify, a negative-identity scan over every report surface, the REPORTS_* tunables settable while the notification credentials are refused, and a category-enum drift guard against the panel; S53a: the external VOD provider config — honest null, CRUD through both tools, and https/query-string/unknown-kind/empty-enable refusals in band with the stored record untouched)')
   await cleanup(); process.exit(0)
