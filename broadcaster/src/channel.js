@@ -272,6 +272,25 @@ export function normalizeSubtitles (value) {
   return { path: assetPath(value.path, 'transcode.subtitles.path') }
 }
 
+// Which RSS ceiling applies to this channel's ffmpeg. The cap exists to catch the live-HLS
+// demuxer's slow accumulation on long pulls, and that only works if the ceiling sits above
+// normal operation — so it cannot be one number for every channel: a `copy` channel remuxes
+// in 13-30 MB while a transcoding one legitimately holds 233-439 MB of frame buffers
+// (measured on a live 1080p source; the CPU-decode path is the heavier of the two).
+//
+// Found the hard way: the first GPU channel to run on real hardware showed restarts ==
+// memRecycles, recycling every ~30 s against the 150 MB copy-tuned cap. Nothing in the test
+// suite caught it because every synthetic channel is either `copy` or short-lived.
+export function rssCapMb (meta, config) {
+  const base = config.ffmpegMaxRssMb || 0
+  if (base <= 0) return 0 // disabled outright
+  const encoder = meta?.transcode?.encoder ?? TRANSCODE_DEFAULTS.encoder
+  if (encoder === 'copy') return base
+  // Never LOWER than the operator's explicit setting — raising FFMPEG_MAX_RSS_MB above the
+  // transcode floor has to keep meaning what it says.
+  return Math.max(base, config.ffmpegMaxRssTranscodeMb || 0)
+}
+
 // Resolve transcode.hwDecode ('auto' | true | false) against a capability probe, once per
 // start(). Pure so the decision is unit-testable and so a stubbed probe behaves exactly
 // like a real one — the run captures the answer, which is why a respawn never has to await
@@ -1111,7 +1130,7 @@ class Channel {
         // Memory cap (independent of the edge checks above — a leaking pull is usually
         // still advancing). Push listeners are exempt: a kill would drop the publisher's
         // connection, and the accumulation is a pull-demuxer behavior anyway.
-        const capMb = this.manager.config.ffmpegMaxRssMb || 0
+        const capMb = rssCapMb(this.meta, this.manager.config)
         if (capMb > 0 && !isPush) {
           const memMb = procMemMb(run.ff.pid, this.manager.config.procDir)
           wd.memMb = memMb
