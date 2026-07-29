@@ -102,27 +102,36 @@ steady state, so a real leak is still caught).
 ## HEVC output
 
 `hevc_nvenc` and `libx265` roughly halve bitrate at the same quality, which
-on a P2P feed is bandwidth every viewer stops having to re-seed. The trade
-is decoder reach, so HEVC is an operator choice per channel and never a
-default.
+on a P2P feed is bandwidth every viewer stops having to re-seed.
+
+**The apps already play HEVC.** A production fleet has run 19 HEVC channels as
+`copy` — passing an upstream HEVC bitstream straight through — and both the
+desktop shell and the Android app decode them. HEVC output is therefore not a
+new client risk: the only thing that changes is which encoder produced the
+bitstream, and NVENC emits standard HEVC Main 8-bit like any other.
+
+HEVC stays an explicit per-channel choice rather than a default, because the
+set of devices that can decode it is narrower than for H.264 — but on a fleet
+whose viewers already watch HEVC channels, that is a known quantity rather
+than a gamble.
 
 Three things to know before you use it:
 
 - **The tag is required.** HEVC in HLS needs `-tag:v hvc1`, which the
   broadcaster adds automatically. Without it a range of players refuse the
   stream. ffmpeg's own HLS muxer warns about this.
-- **Playback depends on the client transmuxing.** Media Source Extensions
-  reject `video/mp2t; codecs="hvc1…"` outright. The desktop shell plays HEVC
-  only because hls.js converts the MPEG-TS segments to fMP4 in JavaScript
-  first. A player that hands `.ts` straight to a `<video>` element will fail
-  on HEVC while working normally on H.264.
+- **On the desktop, playback depends on the client transmuxing.** Media Source
+  Extensions reject `video/mp2t; codecs="hvc1…"` outright. The desktop shell
+  plays HEVC only because hls.js converts the MPEG-TS segments to fMP4 in
+  JavaScript first — which is exactly why it works today. Keep that in mind if
+  you ever add a path that hands `.ts` straight to a `<video>` element: it
+  would fail on HEVC while working normally on H.264.
 - **Changing an existing channel to HEVC is a restart, not a live switch.** A
   codec change is the one thing a player cannot absorb mid-playlist.
 
-Verified on the test host: a live H.264 feed transcoded to `hevc_nvenc` 720p
-replicated over the DHT to a fresh viewer, and hls.js 1.6 with Chromium
-decoded it with no errors at 1280×720. Chromium decodes HEVC in MP4;
-Electron bundles its own Chromium build and needs its own check.
+Verified for the transcoded path specifically: a live H.264 feed re-encoded to
+`hevc_nvenc` 720p replicated over the DHT to a fresh viewer, and hls.js 1.6
+with Chromium decoded it with no errors at 1280×720.
 
 ## Traps
 

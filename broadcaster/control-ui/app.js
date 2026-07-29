@@ -754,13 +754,14 @@ function gpuOptions (current) {
   return opts
 }
 
-// HEVC roughly halves bitrate at the same quality — real bandwidth saved on a P2P feed —
-// but narrows which viewer devices can decode it, so it is labelled rather than hidden and
-// never a default.
+// HEVC roughly halves bitrate at the same quality — real bandwidth saved on a P2P feed.
+// Both apps already decode it (fleets run HEVC channels as `copy` today), so the label says
+// what it costs and gains rather than warning the operator off it. Still never a default:
+// the set of devices that can decode HEVC is narrower than for H.264.
 const ENCODER_NOTE = {
   h264_amf: ' (EXPERIMENTAL)',
-  hevc_nvenc: ' (HEVC — smaller, fewer devices)',
-  libx265: ' (HEVC, software — smaller, fewer devices)'
+  hevc_nvenc: ' (HEVC — about half the bitrate)',
+  libx265: ' (HEVC, software — about half the bitrate, ~8x the CPU of hevc_nvenc)'
 }
 
 function encoderOptions (current) {
