@@ -709,7 +709,7 @@ async function startStop (id, btn) {
 // GPU decode is an NVIDIA-only path (broadcaster/src/hls.js hwDecodeArgs), and the
 // validator rejects hwDecode/gpu on any other encoder — so these two controls only appear
 // for the encoders that can actually use them.
-const NVENC_UI = ['h264_nvenc']
+const NVENC_UI = ['h264_nvenc', 'hevc_nvenc']
 
 // Mirrors broadcaster/src/hls.js CUSTOM_RES_RE — a free-form raster alongside the presets.
 const CUSTOM_RES_UI = /^\d{2,5}x\d{2,5}$/
@@ -754,13 +754,22 @@ function gpuOptions (current) {
   return opts
 }
 
+// HEVC roughly halves bitrate at the same quality — real bandwidth saved on a P2P feed —
+// but narrows which viewer devices can decode it, so it is labelled rather than hidden and
+// never a default.
+const ENCODER_NOTE = {
+  h264_amf: ' (EXPERIMENTAL)',
+  hevc_nvenc: ' (HEVC — smaller, fewer devices)',
+  libx265: ' (HEVC, software — smaller, fewer devices)'
+}
+
 function encoderOptions (current) {
-  const names = ['copy', 'libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf']
+  const names = ['copy', 'libx264', 'h264_nvenc', 'hevc_nvenc', 'libx265', 'h264_qsv', 'h264_vaapi', 'h264_amf']
   return names.map((name) => {
     if (name === 'copy') return { value: 'copy', label: 'copy (passthrough — no re-encode)' }
     const e = caps?.encoders?.[name]
     const usable = !caps || (e && e.verified) // unknown probe = optimistic; start() re-checks
-    const label = name + (name === 'h264_amf' ? ' (EXPERIMENTAL)' : '') + (usable ? '' : ' — unavailable')
+    const label = name + (ENCODER_NOTE[name] || '') + (usable ? '' : ' — unavailable')
     return {
       value: name,
       label,

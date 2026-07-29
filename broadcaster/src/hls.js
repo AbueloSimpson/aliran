@@ -57,15 +57,34 @@ export function parseResolution (resolution) {
   return m ? { w: parseInt(m[1], 10), h: parseInt(m[2], 10) } : null
 }
 
-// Encoders that take the NVIDIA path (-gpu, CUVID decode, scale_cuda).
-export const NVENC_ENCODERS = new Set(['h264_nvenc'])
+// Encoders that take the NVIDIA path (-gpu, CUVID decode, scale_cuda, -forced-idr).
+// hevc_nvenc behaves identically to h264_nvenc for all of it — same preset scale, same
+// forced-IDR requirement, same CUDA surface handling — so it belongs to the same family.
+export const NVENC_ENCODERS = new Set(['h264_nvenc', 'hevc_nvenc'])
+
+// Software encoders: compiled in means usable, and both want the same low-latency tuning
+// and an explicit 8-bit pixel format (x265 otherwise happily emits 10-bit from a 10-bit
+// source, which is correct but not what a compatibility-first live channel wants).
+export const SOFTWARE_ENCODERS = new Set(['libx264', 'libx265'])
+
+// HEVC output, whoever produced it. These need -tag:v hvc1: ffmpeg's HLS muxer says so
+// itself ("Stream HEVC is not hvc1, you should use tag:v hvc1 to set it"), and without the
+// tag a range of players refuse HEVC in HLS outright. Harmless on MPEG-TS, required the
+// moment anything downstream repackages to fMP4 — and a silent no-play on a viewer's device
+// is the most expensive kind of bug to chase.
+export const HEVC_ENCODERS = new Set(['hevc_nvenc', 'libx265'])
 
 // fast/balanced/quality → per-encoder speed/quality flag. vaapi has no preset
 // concept (rate control only); amf uses -quality and is the least battle-tested
 // of the four hw paths (surface as EXPERIMENTAL in the UI).
 const PRESET_FLAGS = {
   libx264: { flag: '-preset', fast: 'veryfast', balanced: 'medium', quality: 'slow' },
+  // x265 is far slower than x264 at the same named preset, so 'quality' stops at 'slow'
+  // rather than reaching for anything beyond it — a live encoder that cannot keep up with
+  // realtime is not higher quality, it is a stalled channel.
+  libx265: { flag: '-preset', fast: 'veryfast', balanced: 'medium', quality: 'slow' },
   h264_nvenc: { flag: '-preset', fast: 'p2', balanced: 'p4', quality: 'p6' },
+  hevc_nvenc: { flag: '-preset', fast: 'p2', balanced: 'p4', quality: 'p6' },
   h264_qsv: { flag: '-preset', fast: 'veryfast', balanced: 'medium', quality: 'slow' },
   h264_amf: { flag: '-quality', fast: 'speed', balanced: 'balanced', quality: 'quality' }
 }
@@ -388,7 +407,7 @@ export function encodeArgs (transcode, hls, input = null) {
     out.push('-c:v', t.encoder)
     const preset = PRESET_FLAGS[t.encoder]
     if (preset) out.push(preset.flag, preset[t.preset])
-    if (t.encoder === 'libx264') out.push('-tune', 'zerolatency', '-pix_fmt', 'yuv420p')
+    if (SOFTWARE_ENCODERS.has(t.encoder)) out.push('-tune', 'zerolatency', '-pix_fmt', 'yuv420p')
     if (NVENC_ENCODERS.has(t.encoder)) {
       out.push('-tune', 'll')
       // ⚠ LOAD-BEARING: nvenc silently IGNORES -force_key_frames without this, so the HLS
@@ -404,14 +423,17 @@ export function encodeArgs (transcode, hls, input = null) {
       // builder uses -force_key_frames instead of -g in the first place.
       out.push('-forced-idr', '1')
       if (t.gpu != null) out.push('-gpu', String(t.gpu))
-      // H.264 NVENC is 8-bit only. Without this a High 10 source arrives as yuv420p10le
+      // H.264 NVENC is 8-bit ONLY: without this a High 10 source arrives as yuv420p10le
       // and nvenc refuses it with the thoroughly misleading "No capable devices found",
       // which reads like a missing GPU rather than a pixel format (measured: the shipped
-      // args fail on any 10-bit source today). Only on the CPU-decode path — with CUDA
-      // frames the conversion is scale_cuda's job and -pix_fmt would force a pointless
-      // GPU→CPU download.
+      // args fail on any 10-bit source today). hevc_nvenc COULD emit Main10, but a live
+      // channel is pinned to 8-bit deliberately — 10-bit narrows the set of viewer devices
+      // that can decode it, and the point of transcoding here is reach, not mastering.
+      // Only on the CPU-decode path — with CUDA frames the conversion is scale_cuda's job
+      // and -pix_fmt would force a pointless GPU→CPU download.
       if (!onGpu) out.push('-pix_fmt', 'yuv420p')
     }
+    if (HEVC_ENCODERS.has(t.encoder)) out.push('-tag:v', 'hvc1')
     out.push('-force_key_frames', `expr:gte(t,n_forced*${hls.time})`)
     if (t.videoBitrateKbps != null) {
       out.push('-b:v', `${t.videoBitrateKbps}k`, '-maxrate', `${t.videoBitrateKbps}k`, '-bufsize', `${t.videoBitrateKbps * 2}k`)

@@ -17,7 +17,16 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
-export const HW_H264_ENCODERS = ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf']
+// Deep-verified by really encoding a few frames — "listed" only means compiled in, and a
+// build routinely lists an encoder whose hardware is absent (this host lists h264_qsv with
+// no Intel GPU anywhere). hevc_nvenc is here for the same reason as the h264 ones: the same
+// driver can support one and not the other.
+export const HW_ENCODERS = ['h264_nvenc', 'hevc_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf']
+// Back-compat: the old name meant the same list before HEVC output existed.
+export const HW_H264_ENCODERS = HW_ENCODERS
+
+// Software encoders need no device, so compiled-in is the whole test.
+const SW_ENCODERS = ['libx264', 'libx265']
 
 function runCmd (cmd, args, timeoutMs) {
   return new Promise((resolve) => {
@@ -77,11 +86,10 @@ export async function probeCapabilities ({ vaapiDevice = '/dev/dri/renderD128', 
     if (m) listed.add(m[1])
   }
 
-  const encoders = {
-    // Software encode: if it is compiled in, it works.
-    libx264: { listed: listed.has('libx264'), verified: listed.has('libx264') }
-  }
-  await Promise.all(HW_H264_ENCODERS.map(async (name) => {
+  const encoders = {}
+  // Software encode: if it is compiled in, it works.
+  for (const name of SW_ENCODERS) encoders[name] = { listed: listed.has(name), verified: listed.has(name) }
+  await Promise.all(HW_ENCODERS.map(async (name) => {
     if (!listed.has(name)) {
       encoders[name] = { listed: false, verified: false }
       return
@@ -137,9 +145,12 @@ async function probeGpus (timeoutMs) {
 //
 // Skipped entirely when nvenc did not verify — there is no CUDA path to take without it.
 async function probeCudaDecode (encoders, listed, timeoutMs) {
-  if (!encoders.h264_nvenc || !encoders.h264_nvenc.verified) {
-    return { verified: false, error: 'h264_nvenc not usable on this host' }
-  }
+  // GPU decode is independent of which codec we ENCODE to, so either nvenc proves the
+  // CUDA path is live — the probe just needs some nvenc to terminate the chain with.
+  const enc = encoders.h264_nvenc?.verified
+    ? 'h264_nvenc'
+    : (encoders.hevc_nvenc?.verified ? 'hevc_nvenc' : null)
+  if (!enc) return { verified: false, error: 'no usable NVENC encoder on this host' }
   const sample = path.join(os.tmpdir(), `aliran-cuda-probe-${process.pid}-${Date.now()}.h264`)
   try {
     // 640x360 keeps the sample comfortably above NVDEC's minimum raster.
@@ -151,7 +162,7 @@ async function probeCudaDecode (encoders, listed, timeoutMs) {
     if (!made.ok) return { verified: false, error: bestErrorLine(made.err) || 'could not build probe sample' }
 
     const r = await runFfmpeg(['-v', 'error', '-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda',
-      '-i', sample, '-vf', 'scale_cuda=-2:180', '-c:v', 'h264_nvenc', '-frames:v', '10',
+      '-i', sample, '-vf', 'scale_cuda=-2:180', '-c:v', enc, '-frames:v', '10',
       '-f', 'null', '-'], timeoutMs)
     return r.ok ? { verified: true } : { verified: false, error: bestErrorLine(r.err) || 'cuda decode probe failed' }
   } finally {

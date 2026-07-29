@@ -62,7 +62,13 @@ const PASSPHRASE_RE = /^[A-Za-z0-9._-]{10,79}$/
 const PUSH_KINDS = new Set(['rtmp', 'srt', 'udp'])
 const KEY_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 
-const ENCODERS = new Set(['libx264', 'copy', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf'])
+// HEVC output (hevc_nvenc / libx265) roughly halves bitrate at the same quality, which on a
+// P2P feed is bandwidth every viewer stops having to re-seed. The trade is decoder reach:
+// Android/ExoPlayer is generally fine, but the desktop shell depends on Chromium's platform
+// HEVC support, which is not universal — so it is an operator choice per channel, never a
+// default. A codec change is also the one thing a player cannot absorb mid-playlist (see
+// SLATE_VARIANTS), so switching an existing channel to HEVC is a restart, not a live swap.
+const ENCODERS = new Set(['libx264', 'libx265', 'copy', 'h264_nvenc', 'hevc_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf'])
 const RESOLUTIONS = new Set(['source', '1080p', '720p', '480p', '360p'])
 const FPS_VALUES = new Set([24, 25, 30, 50, 60])
 const PRESETS = new Set(['fast', 'balanced', 'quality'])

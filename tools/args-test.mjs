@@ -591,6 +591,42 @@ for (const line of [
 ]) assert.ok(!HW_DECODE_FAIL_RE.test(line), 'must NOT trigger fallback: ' + line)
 log('R: GPU decode path (scale_cuda, pinning, arg ordering, validation, fallback signatures) ✓')
 
+// ===== U: HEVC output (hevc_nvenc + libx265) =====
+// hevc_nvenc is in the NVENC family, so it must inherit EVERY nvenc rule — the forced-IDR
+// that makes HLS segment at all, device pinning, the 8-bit pin, and the CUDA decode path.
+// Missing any one of them reproduces a bug already fixed for h264_nvenc.
+const hevcGpu = encodeArgs({ encoder: 'hevc_nvenc', hwDecode: true, gpu: 1, resolution: '720p' }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.deepStrictEqual(hevcGpu.slice(0, 10),
+  ['-c:v', 'hevc_nvenc', '-preset', 'p2', '-tune', 'll', '-forced-idr', '1', '-gpu', '1'],
+  'hevc_nvenc gets forced-idr and device pinning exactly like h264_nvenc')
+assert.ok(hevcGpu.includes('scale_cuda=-2:720'), 'and the GPU scaler')
+// ⚠ ffmpeg's own HLS muxer asks for this: "Stream HEVC is not hvc1, you should use tag:v
+// hvc1 to set it". Without the tag a range of players simply refuse HEVC in HLS — a silent
+// no-play on a viewer's device, which is the most expensive kind of bug to chase.
+assert.deepStrictEqual(hevcGpu.slice(hevcGpu.indexOf('-tag:v'), hevcGpu.indexOf('-tag:v') + 2), ['-tag:v', 'hvc1'],
+  'hevc_nvenc output is tagged hvc1')
+assert.ok(encodeArgs({ encoder: 'libx265' }, HLS).includes('hvc1'), 'libx265 output is tagged hvc1 too')
+assert.ok(!encodeArgs({ encoder: 'h264_nvenc' }, HLS).includes('-tag:v'), 'h264 needs no tag')
+assert.ok(!encodeArgs({ encoder: 'copy' }, HLS).includes('-tag:v'), 'copy must not be re-tagged')
+assert.ok(!hevcGpu.includes('-pix_fmt'), 'no -pix_fmt on the GPU path')
+assert.ok(encodeArgs({ encoder: 'hevc_nvenc', hwDecode: false }, HLS).includes('-pix_fmt'),
+  'CPU path pins 8-bit — hevc_nvenc COULD emit Main10, and a live channel deliberately does not')
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'hevc_nvenc', hwDecode: true }, { kind: 'pull', url: 'http://o/s' }),
+  ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'], 'hevc_nvenc takes the CUDA decode path too')
+assert.strictEqual(resolveHwDecode({ encoder: 'hevc_nvenc' }, CUDA_OK), true, 'auto resolves for hevc_nvenc')
+// libx265 is a software encoder: same zerolatency + 8-bit treatment as libx264, no -gpu.
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx265', preset: 'quality' }, HLS).slice(0, 8),
+  ['-c:v', 'libx265', '-preset', 'slow', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p'])
+assert.ok(!encodeArgs({ encoder: 'libx265' }, HLS).includes('-forced-idr'), 'forced-idr is an nvenc option only')
+throws(() => normalizeTranscode({ encoder: 'libx265', gpu: 0 }), /NVENC only/)
+assert.strictEqual(normalizeTranscode({ encoder: 'hevc_nvenc', gpu: 1 }).gpu, 1, 'hevc_nvenc accepts a device pin')
+assert.strictEqual(normalizeTranscode({ encoder: 'libx265' }).encoder, 'libx265')
+// The offline slate already knew about HEVC before the encoder existed — a channel whose
+// OUTPUT is hevc must get an hevc slate, or the codec change breaks playback mid-playlist.
+assert.strictEqual(pickSlateFile({ codec: 'hevc', height: 1080 }), 'slate-1080p-hevc-aac.ts')
+assert.strictEqual(pickSlateFile({ codec: 'hevc', height: 720 }), 'slate-720p-hevc-aac.ts')
+log('U: HEVC output — nvenc family rules inherited, libx265 software path, hevc slate ✓')
+
 // ===== T: the rest of the demuxer tolerance switches =====
 // ⚠ -fflags is ONE option — a second -fflags OVERRIDES the first rather than adding to it,
 // so every flag has to end up in a single combined value. Emitting two would silently drop
