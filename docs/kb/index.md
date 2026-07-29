@@ -10,6 +10,7 @@ Each page is easy to search — look for the error text you see.
 | [Viewer bandwidth & battery](viewer-bandwidth.md) | Measured costs (idle/watching/smooth-zapping), the adaptive prefetch gate, upload policy, metered networks |
 | [Network tuning (socket buffers)](network-tuning.md) | Stalling under load with no errors, `RcvbufErrors`/`SndbufErrors`, the `net.core.*mem_max` clamp, conntrack, fd limits |
 | [Repeater in production (worked example)](repeater-production-example.md) | A real contained edge deploy, measured: the buffer clamp before/after, a stock viewer pulling 46 % off the repeater, retention plateau, footprint, teardown |
+| [GPU transcoding (NVENC/NVDEC)](gpu-transcoding.md) | Measured cost per channel, the memory cap that recycles every transcoding channel, HEVC output and why playback needs hls.js, silent `-hwaccel cuda` failure, `overlay_cuda` crashes, session limits |
 | [Operating the panel & broadcaster](operator.md) | Env vars, grants breaking, `ELOCKED`, wedged processes, login-flood freeze, latency expectations |
 | [Backup, restore & key rotation](backup-and-rotation.md) | What to back up (and what's disposable), cold-backup + restore runbooks, the restore-freshness fork hazard, warm standby & never-two-writers failover, the full credential rotation matrix |
 | [Offline slate media](offline-slate.md) | The looped "source offline" files: fleet codec/resolution spread, `-stream_loop` timestamp behaviour, why `+genpts` isn't needed, tone choice |

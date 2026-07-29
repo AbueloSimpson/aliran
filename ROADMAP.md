@@ -135,11 +135,14 @@ following only the docs.
   plainly in [docs/security-model.md](docs/security-model.md). Operators with
   territorial-licensing obligations must satisfy them contractually / at the
   content source rather than expecting the platform to enforce borders
-- ⬜ **GPU transcode pack** (separate package): a dedicated bare-metal deploy pack for
-  hardware-encode hosts — NVIDIA driver + NVENC setup (VAAPI/QSV variants), systemd
-  units, capability-probe verification recipe; optionally a Docker variant via
-  nvidia-container-toolkit. Today GPU encoders work on the bare-metal path with
-  vendor drivers installed; this packages it as a first-class, tested offering
+- ✅ **GPU transcode pack** (`deploy/gpu/`): NVIDIA driver + NVENC setup recipe, a
+  systemd unit for a hardware-encode host, a compose override for
+  nvidia-container-toolkit, and `verify-gpu.sh` — which really encodes and decodes
+  instead of grepping a feature list. **NVENC is verified on real hardware** (2× RTX
+  4090): GPU decode measured at ~0.05 cores per realtime stream against 0.83 for
+  libx264, HEVC output (`hevc_nvenc`/`libx265`), and the full chain proven to a
+  playing viewer. **VAAPI and QSV remain unexercised on hardware** and the pack says
+  so. Measurements and traps: [GPU transcoding](docs/kb/gpu-transcoding.md)
 - ✅ **Per-publisher registration keys + channel scopes**: each broadcaster site
   (e.g. each carrier downlink location) is enrolled with its own keypair and
   admin-assigned channel-id scopes (`add-publisher` / the dashboard's Publishers

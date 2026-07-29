@@ -57,13 +57,20 @@ inside the containers).
 !!! note "Use Docker (section A) unless you have a reason not to"
     This path exists for environments where Docker is unavailable or disallowed,
     and for hosts that need **direct GPU access** for hardware transcode. NVENC,
-    VAAPI, and QSV all need vendor drivers on the host; the stock compose file
-    does no GPU device passthrough. This is the less-exercised path — the Docker
-    route is what production and CI run. A dedicated, separately-packaged
-    **GPU transcode pack** (bare metal + NVIDIA driver stack) is planned; see the
-    [Roadmap](https://github.com/AbueloSimpson/aliran/blob/main/ROADMAP.md).
-    You also inherit your distro's ffmpeg. Verify protocols and encoders with the
+    VAAPI, and QSV all need vendor drivers on the host. This is the
+    less-exercised path — the Docker route is what production and CI run. You
+    also inherit your distro's ffmpeg, so verify protocols and encoders with the
     dashboard's capability probe before you rely on SRT or a GPU encoder.
+
+!!! tip "Transcoding on a GPU? Use the GPU pack"
+    `deploy/gpu/` carries a systemd unit for a hardware-encode host, a compose
+    override for `nvidia-container-toolkit` (so the Docker route works too), and
+    `verify-gpu.sh`, which really encodes and decodes rather than grepping a
+    feature list. Read
+    [GPU transcoding](kb/gpu-transcoding.md) first — it has the measured costs
+    and the traps, including the memory ceiling you **must** raise or every
+    transcoding channel is recycled every ~30 seconds. NVENC is verified on real
+    hardware; VAAPI and QSV are not.
 
 ```bash
 sudo apt-get install -y nodejs npm ffmpeg     # or NodeSource for Node 24
@@ -194,13 +201,18 @@ Each channel has a typed input. Set it per-channel in the **control dashboard**
   with `copy`.
 
 Per-channel **transcode** (Edit dialog): `copy` passthrough (cheapest), `libx264`,
-or GPU encoders (`h264_nvenc`/`h264_qsv`/`h264_vaapi`/`h264_amf`). An unusable
-encoder is disabled with its probe error shown — there is no silent fallback.
+HEVC (`hevc_nvenc`/`libx265`), or the other GPU encoders
+(`h264_nvenc`/`h264_qsv`/`h264_vaapi`/`h264_amf`). An unusable encoder is disabled
+with its probe error shown — there is no silent fallback. The same dialog also
+carries GPU decode and device pinning, resolution (presets or a free-form `WxH`),
+audio codec and multi-track selection, a burned-in logo and subtitles, and the
+demuxer tolerance switches a difficult source needs.
 
-!!! note "GPU encoders need vendor drivers and, under Docker, GPU passthrough"
-    The stock compose file does not wire up GPU device passthrough, so today
-    this effectively means the bare-metal path (section B). A dedicated GPU
-    transcode pack is planned (Roadmap).
+!!! note "GPU encoders need vendor drivers and, under Docker, device passthrough"
+    The stock compose file does no GPU passthrough. Use `deploy/gpu/` — it has a
+    compose override for `nvidia-container-toolkit` and a bare-metal systemd unit,
+    plus a verification script. Start with
+    [GPU transcoding](kb/gpu-transcoding.md).
 
 When a source misbehaves, the channel card's **Logs** dialog shows the live ffmpeg
 stderr ring. The last line is usually the diagnosis.

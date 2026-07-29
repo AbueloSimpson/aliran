@@ -79,6 +79,7 @@ nav:
           - Playback & client runtime: kb/playback.md
           - P2P feed buffer & tuning: kb/feed-buffer.md
           - Scaling & capacity planning: kb/scaling.md
+          - GPU transcoding (NVENC/NVDEC): kb/gpu-transcoding.md
           - Network tuning (socket buffers): kb/network-tuning.md
           - Repeater in production (worked example): kb/repeater-production-example.md
           - Viewer bandwidth & battery: kb/viewer-bandwidth.md

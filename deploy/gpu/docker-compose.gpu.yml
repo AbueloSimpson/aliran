@@ -1,0 +1,39 @@
+# Aliran broadcaster with GPU transcoding, via nvidia-container-toolkit.
+#
+# An OVERRIDE, not a replacement — compose merges it over the base file, so the broadcaster
+# keeps network_mode: host, its 60 s stop grace and its volumes:
+#
+#   docker compose -f docker-compose.yml -f deploy/gpu/docker-compose.gpu.yml up -d broadcaster
+#
+# Requires nvidia-container-toolkit on the HOST and the driver already working there
+# (`nvidia-smi` must print your cards). Setup + verification: deploy/gpu/README.md
+#
+# ⚠ The toolkit does NOT install a driver. It exposes the host's driver to the container.
+# A container can never have a newer driver than its host.
+services:
+  broadcaster:
+    # Reserve the NVIDIA devices. `count: all` exposes every card; pin a subset with
+    # `device_ids: ['0']` (or ['1']) when the host shares its GPUs with something else —
+    # which is the normal case, and the reason transcode.gpu exists per channel too.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              # device_ids: ['1']
+              capabilities: [gpu, video]
+    environment:
+      # `video` is the capability NVENC/NVDEC need and it is NOT implied by `compute`.
+      # Without it nvidia-smi works inside the container while every encode fails — one of
+      # the more confusing ways this can go wrong.
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      NVIDIA_VISIBLE_DEVICES: all
+      # ⚠ REQUIRED on any transcoding host. The 150 MB default suits `copy` channels;
+      # re-encoding holds 233 MB (GPU decode) to 439 MB (CPU decode), so against the
+      # default the watchdog recycles every transcoding channel about every 30 seconds.
+      # See docs/kb/gpu-transcoding.md.
+      FFMPEG_MAX_RSS_TRANSCODE_MB: "900"
+      # Keep the driver's compiled-kernel cache on the data volume, or it is rebuilt on
+      # every container start.
+      CUDA_CACHE_PATH: /data/.nv
