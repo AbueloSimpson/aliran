@@ -47,8 +47,15 @@ function defaultExec (argv, { timeoutMs = 120000, input } = {}) {
   })
 }
 
-export function makeSsh (ssh, { exec } = {}) {
+// Spawn seam for tunnels (mirrors `exec` for commands): the suite drives the real
+// argv-building and the whole open/die/revive lifecycle against a fake ssh.
+function defaultSpawnTunnel (argv) {
+  return spawn(argv[0], argv.slice(1), { stdio: ['ignore', 'ignore', 'pipe'] })
+}
+
+export function makeSsh (ssh, { exec, spawnTunnel } = {}) {
   const runExec = exec || defaultExec
+  const spawnTun = spawnTunnel || defaultSpawnTunnel
   const binPrefix = Array.isArray(ssh.sshBin) ? ssh.sshBin.slice() : [ssh.sshBin || 'ssh']
 
   function baseArgs (extra = []) {
@@ -71,21 +78,34 @@ export function makeSsh (ssh, { exec } = {}) {
     return res
   }
 
-  // Open an SSH local-forward tunnel: local 127.0.0.1:localPort → remote
-  // remoteHost:remotePort. Resolves once the local port accepts a connection.
-  // Long-lived; NOT routed through the exec seam. Only used for real deployments.
-  function openTunnel ({ localPort, remoteHost = '127.0.0.1', remotePort, timeoutMs = 15000 }) {
+  // One ssh -N -L child, up to the point the local port accepts a connection.
+  //
+  // Keepalives are not optional here. A forward with no ServerAlive* sits on a
+  // half-dead TCP connection indefinitely: the box reboots, the laptop changes
+  // network, or a NAT drops the idle flow, and ssh never notices. The operator
+  // then sees API calls fail against a loopback port that is not listening at
+  // all, which reads like a broken box. With these, ssh gives up after roughly
+  // three minutes of silence and EXITS — which `openTunnel` below can observe
+  // and act on. ExitOnForwardFailure turns "the port is already taken" into an
+  // immediate error instead of a tunnel that is up but forwards nothing.
+  const TUNNEL_OPTS = [
+    '-o', 'ServerAliveInterval=30',
+    '-o', 'ServerAliveCountMax=6',
+    '-o', 'ExitOnForwardFailure=yes'
+  ]
+
+  function spawnForward ({ localPort, remoteHost, remotePort, timeoutMs }) {
     return new Promise((resolve, reject) => {
-      const args = [...binPrefix.slice(1), ...baseArgs(['-N', '-L', `${localPort}:${remoteHost}:${remotePort}`])]
+      const args = [...binPrefix.slice(1), ...baseArgs([...TUNNEL_OPTS, '-N', '-L', `${localPort}:${remoteHost}:${remotePort}`])]
       let child
-      try { child = spawn(binPrefix[0], args, { stdio: ['ignore', 'ignore', 'pipe'] }) } catch (err) { return reject(new SshError(`cannot open tunnel: ${err.message}`)) }
+      try { child = spawnTun([binPrefix[0], ...args]) } catch (err) { return reject(new SshError(`cannot open tunnel: ${err.message}`)) }
       let stderr = ''
-      child.stderr.on('data', (c) => { stderr += c })
+      if (child.stderr) child.stderr.on('data', (c) => { stderr += c })
       let settled = false
       const deadline = Date.now() + timeoutMs
       const poll = () => {
         if (settled) return
-        const probe = net.connect({ host: '127.0.0.1', port: localPort }, () => { probe.destroy(); if (!settled) { settled = true; resolve({ localPort, close: () => { try { child.kill() } catch {} } }) } })
+        const probe = net.connect({ host: '127.0.0.1', port: localPort }, () => { probe.destroy(); if (!settled) { settled = true; resolve(child) } })
         probe.on('error', () => {
           probe.destroy()
           if (settled) return
@@ -95,6 +115,45 @@ export function makeSsh (ssh, { exec } = {}) {
       child.on('exit', (code) => { if (!settled) { settled = true; reject(new SshError(`ssh tunnel exited (code ${code}): ${stderr.trim()}`)) } })
       setTimeout(poll, 250)
     })
+  }
+
+  // Open an SSH local-forward tunnel: local 127.0.0.1:localPort → remote
+  // remoteHost:remotePort. Resolves once the local port accepts a connection.
+  //
+  // The handle stays useful after the child dies. `ensure()` reopens the SAME
+  // local port on demand, so a caller that holds `http://127.0.0.1:<port>` never
+  // has to learn a new address — the http client calls it before giving up, which
+  // is what turns "restart your AI client" into a retry nobody sees. Reconnects
+  // are single-flight: concurrent tool calls share one attempt.
+  async function openTunnel ({ localPort, remoteHost = '127.0.0.1', remotePort, timeoutMs = 15000 }) {
+    let child = null
+    let reviving = null
+    let closed = false
+
+    const watch = (c) => {
+      child = c
+      c.on('exit', () => { if (child === c) child = null })
+    }
+
+    watch(await spawnForward({ localPort, remoteHost, remotePort, timeoutMs }))
+
+    return {
+      localPort,
+      get alive () { return !!child },
+      // Resolves when the forward is usable again; rejects with the open error.
+      // A live tunnel makes this a no-op, so callers may call it freely.
+      ensure () {
+        if (closed) throw new SshError('tunnel is closed')
+        if (child) return Promise.resolve(false)
+        if (!reviving) {
+          reviving = spawnForward({ localPort, remoteHost, remotePort, timeoutMs })
+            .then((c) => { watch(c); return true })
+            .finally(() => { reviving = null })
+        }
+        return reviving
+      },
+      close () { closed = true; try { if (child) child.kill() } catch {} ; child = null }
+    }
   }
 
   return {

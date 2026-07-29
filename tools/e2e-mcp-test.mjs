@@ -89,6 +89,8 @@ import { startControlServer } from '../broadcaster/src/control-server.js'
 import { normalizeInput, normalizeTranscode } from '../broadcaster/src/channel.js'
 import { startReseller } from '../reseller/src/index.js'
 import { addPrincipal } from '../reseller/src/control-auth.js'
+import { makeSsh } from '../mcp/src/ssh.js'
+import { makeHttpClient } from '../mcp/src/http-client.js'
 import { addAdmin as libAddAdmin } from '../library/src/control-auth.js'
 import { startControlServer as startLibraryControlServer } from '../library/src/control-server.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -1586,6 +1588,111 @@ try {
   assert.deepStrictEqual((await callJson(client, 'panel_vod_config')).sources, { movies: 'movies_hd', series: 'series_hd' }, 'the read tool answers both kinds back')
   await callJson(client, 'panel_set_vod_config', { enabled: false })
   log('AE: VOD provider config — honest null, CRUD round-trip through both tools, both movies+series sources stored, https/query-string/unknown-kind/empty-enable refusals in band with the record untouched ✓')
+
+  // ---- AF: SSH tunnel lifecycle — keepalives, death, revive-on-demand ----
+  //
+  // Found live: `server_update` restarts the panel container, the ssh forward's
+  // process went away, and every panel_* tool then failed with "unreachable at
+  // http://127.0.0.1:<random port>" until the whole AI client was restarted. The
+  // tunnel is driven here through the spawnTunnel seam against a fake ssh that
+  // holds a real listener, so open → die → revive is exercised without an sshd.
+  {
+    const kids = []
+    // A fake ssh child: listens on the forward's local port like the real one, and
+    // `kill()` (or die()) drops it exactly as a dropped SSH connection would.
+    const fakeSpawn = (argv) => {
+      const forward = argv.find((a) => /^\d+:/.test(String(a))) || ''
+      const localPort = Number(String(forward).split(':')[0])
+      const handlers = {}
+      const server = net.createServer((s) => s.destroy())
+      server.listen(localPort, '127.0.0.1')
+      const child = {
+        argv,
+        stderr: null,
+        on (ev, fn) { handlers[ev] = fn },
+        kill () { try { server.close() } catch {} ; if (handlers.exit) handlers.exit(0) },
+        die () { try { server.close() } catch {} ; if (handlers.exit) handlers.exit(255) }
+      }
+      kids.push(child)
+      return child
+    }
+    const aFreePort = () => new Promise((resolve, reject) => {
+      const srv = net.createServer(); srv.once('error', reject)
+      srv.listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)) })
+    })
+    const ssh = makeSsh({ host: 'box.example', user: 'root', keyPath: '/dev/null' }, { spawnTunnel: fakeSpawn })
+    const lp = await aFreePort()
+    const tun = await ssh.openTunnel({ localPort: lp, remotePort: 3210, timeoutMs: 8000 })
+    assert.strictEqual(tun.alive, true, 'a freshly opened tunnel reports alive')
+    assert.strictEqual(tun.localPort, lp, 'the handle keeps the local port the caller was given')
+
+    // Keepalives are the whole reason a dead forward becomes observable at all.
+    const argv = kids[0].argv.join(' ')
+    for (const opt of ['ServerAliveInterval=30', 'ServerAliveCountMax=6', 'ExitOnForwardFailure=yes']) {
+      assert.ok(argv.includes(opt), `the tunnel argv carries ${opt}`)
+    }
+    assert.ok(argv.includes(`-L ${lp}:127.0.0.1:3210`.replace(/ /g, ' ')) || argv.includes(`${lp}:127.0.0.1:3210`), 'the forward is built from the requested ports')
+
+    kids[0].die() // the ssh connection drops, exactly as it did on the live box
+    await new Promise((r) => setTimeout(r, 50))
+    assert.strictEqual(tun.alive, false, 'the handle notices its ssh process died')
+
+    const revived = await tun.ensure()
+    assert.strictEqual(revived, true, 'ensure() reopens a dead forward')
+    assert.strictEqual(tun.alive, true, 'and the handle is alive again')
+    assert.strictEqual(kids.length, 2, 'exactly one new ssh child was spawned')
+    assert.strictEqual(await tun.ensure(), false, 'ensure() on a live tunnel is a no-op')
+
+    // Concurrent tool calls must share one reconnect, not race a second ssh.
+    kids[1].die()
+    await new Promise((r) => setTimeout(r, 50))
+    await Promise.all([tun.ensure(), tun.ensure(), tun.ensure()])
+    assert.strictEqual(kids.length, 3, 'three concurrent ensure() calls share a single reconnect')
+
+    // The http client replays the request through the revived forward, so a dead
+    // tunnel costs one retry instead of disabling the service until a restart.
+    let hits = 0
+    const svcPort = await aFreePort()
+    const svcSrv = http.createServer((req, res) => { hits++; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true })) })
+    const listen = () => new Promise((r) => svcSrv.listen(svcPort, '127.0.0.1', r))
+    let ensured = 0
+    let reviveTo = null // what ensure() should do to the "forward" before the replay
+    const client = makeHttpClient({ name: 'panel', timeoutMs: 3000 }, {
+      baseUrl: `http://127.0.0.1:${svcPort}`,
+      dataDir: dirs.mcp,
+      reachability: {
+        describe: 'through the SSH tunnel to box.example:3210',
+        ensure: async () => { ensured++; if (reviveTo) await reviveTo() }
+      }
+    })
+
+    // 1. Nothing is listening (the forward is dead): ensure() brings it back and the
+    //    SAME call succeeds on the replay — the operator never sees a failure.
+    reviveTo = listen
+    const revivedOk = await client.healthz()
+    assert.deepStrictEqual(revivedOk, { ok: true }, 'a dead forward is revived and the request replayed')
+    assert.strictEqual(ensured, 1, 'the client asked for the tunnel once')
+    assert.strictEqual(hits, 1, 'the service saw the request exactly once')
+
+    // 2. A live forward costs no extra work.
+    await client.healthz()
+    assert.strictEqual(ensured, 1, 'a healthy call never touches the tunnel')
+
+    // 3. The service is genuinely down: reviving cannot save it, and the message must
+    //    blame the service — with the box named, not a bare loopback port.
+    await new Promise((r) => svcSrv.close(r))
+    reviveTo = null
+    await assert.rejects(() => client.healthz(), (err) => {
+      assert.match(err.message, /unreachable through the SSH tunnel to box\.example:3210/, 'the error names the route, not a bare loopback port')
+      assert.match(err.message, /server_status/, 'and it tells the operator what to run next')
+      return true
+    }, 'a service that stays down still errors after the retry')
+    assert.strictEqual(ensured, 2, 'exactly one revive attempt per failed call')
+    for (const k of kids) { try { k.kill() } catch {} }
+    tun.close()
+    assert.strictEqual(tun.alive, false, 'close() leaves the handle dead')
+  }
+  log('AF: SSH tunnel lifecycle — keepalive/ExitOnForwardFailure argv, death detected, ensure() revives the same local port, concurrent revives share one attempt, the http client retries through it and names the box when the service is genuinely down ✓')
 
   log('\nRESULT: PASS ✅  (MCP tools + resources; write chain materialized sealed grants; destructive/readOnly annotations; docs resources + search; re-login-on-401; SSH executor via command stub with the publisher secret staying server-side; broadcaster control tools; onboarding doctor incl. reseller/library probes + named hosts; typed channel input/transcode; S49a: analytics passthroughs, admins CRUD live-verified, set_env validate-then-apply with the revert path on the REAL check-config, restart, list/restore backups; S49b: categories with honest selector coupling, source exclude curation with the ETag reset, stream art from the operator disk with zero base64, reseller oversight with the mint echoed against the real ledger, library titles over the control-API shapes, 4-service diagnose sweep; S49c: multi-host SSH through the extended stub seam with add_publisher targeting the named box, repeater_status in all three status-server states, list filters + user-summary compaction with full recovery, hls bounds + feedKey/key with the supplied secret redacted, 6 prompt runbooks with the tool-name drift guard, update dryRun with zero build/up, npm-pack prep with the unpacked-tarball docs probe; S50d: viewer problem reports — the honest disabled shape, filters + sinceHours, event-ring compaction with full:true, ack/resolve with a note, read-only alerts, one webhook push per opened alert plus test_notify, a negative-identity scan over every report surface, the REPORTS_* tunables settable while the notification credentials are refused, and a category-enum drift guard against the panel; S53a: the external VOD provider config — honest null, CRUD through both tools, and https/query-string/unknown-kind/empty-enable refusals in band with the stored record untouched)')
   await cleanup(); process.exit(0)

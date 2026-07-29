@@ -41,7 +41,10 @@ function writeJsonFile (file, obj) {
 // svc = normalized { name, url, username, password, timeoutMs } (config.js).
 // baseUrl overrides svc.url (index.js passes a tunnel URL when there is no direct
 // url). dataDir is where the token cache lives.
-export function makeHttpClient (svc, { baseUrl, dataDir } = {}) {
+// `reachability` (index.js passes one for a tunneled service) = { ensure, describe }:
+// `ensure()` revives the SSH forward if its ssh process died, `describe` names the
+// route for error messages. Without it the client behaves exactly as before.
+export function makeHttpClient (svc, { baseUrl, dataDir, reachability } = {}) {
   const base = (baseUrl || svc.url || '').replace(/\/+$/, '')
   const timeoutMs = svc.timeoutMs || 15000
   const tokenFile = path.join(dataDir || '.', 'state', `${svc.name}-token.json`)
@@ -55,7 +58,7 @@ export function makeHttpClient (svc, { baseUrl, dataDir } = {}) {
 
   // raw = { buf, contentType }: send the bytes as-is (art uploads) instead of a
   // JSON body. Mutually exclusive with `body`.
-  async function rawFetch (method, apiPath, body, bearer, raw) {
+  async function attempt (method, apiPath, body, bearer, raw) {
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), timeoutMs)
     if (timer.unref) timer.unref()
@@ -72,12 +75,36 @@ export function makeHttpClient (svc, { baseUrl, dataDir } = {}) {
       let json = null
       try { json = await res.json() } catch {}
       return { status: res.status, json }
-    } catch (err) {
-      lastError = { at: Date.now(), message: String((err && err.message) || err) }
-      const why = err && err.name === 'AbortError' ? `timeout ${timeoutMs}ms` : (err && err.message) || err
-      throw new ApiError('unreachable', `${svc.name} API unreachable at ${base} (${why})`)
     } finally {
       clearTimeout(timer)
+    }
+  }
+
+  // A transport failure on a tunneled service is usually a dead SSH forward, not a
+  // dead box — the panel restarts on every `server_update`, and any network change
+  // can drop the ssh connection. Revive the forward once and replay the request, so
+  // the operator never has to restart their AI client to get the tools back. Only
+  // the transport is retried: an answered 4xx/5xx is the service's verdict and is
+  // returned untouched by the caller.
+  async function rawFetch (method, apiPath, body, bearer, raw) {
+    try {
+      return await attempt(method, apiPath, body, bearer, raw)
+    } catch (err) {
+      const why = err && err.name === 'AbortError' ? `timeout ${timeoutMs}ms` : (err && err.message) || err
+      lastError = { at: Date.now(), message: String((err && err.message) || err) }
+      if (reachability) {
+        try {
+          await reachability.ensure()
+          return await attempt(method, apiPath, body, bearer, raw)
+        } catch (err2) {
+          const why2 = err2 && err2.name === 'AbortError' ? `timeout ${timeoutMs}ms` : (err2 && err2.message) || err2
+          lastError = { at: Date.now(), message: String((err2 && err2.message) || err2) }
+          throw new ApiError('unreachable', `${svc.name} API unreachable ${reachability.describe} (${why2}). ` +
+            'The SSH forward was reopened and the call still failed, so the service itself is probably down — ' +
+            'check it with server_status / server_logs.')
+        }
+      }
+      throw new ApiError('unreachable', `${svc.name} API unreachable at ${base} (${why})`)
     }
   }
 

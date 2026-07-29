@@ -23,6 +23,20 @@ phone + Android TV, and the Windows desktop player).
   rule overrode the browser's `[hidden]` handling). All three now hide
   correctly.
 
+- **MCP: a dropped SSH tunnel disabled the panel tools until you restarted your
+  AI client** — found live. Services bind loopback on the box, so the MCP reaches
+  them through an SSH local-forward. That forward carried no keepalives, nothing
+  watched the ssh process after it started, and nothing ever reopened it: when the
+  connection went away, every `panel_*` call failed with "unreachable at
+  `http://127.0.0.1:<random port>`" — a port the operator never chose — and the
+  only way back was a full client restart. The MCP triggers this itself, because
+  `server_update` and `server_backup` both stop the panel. Now the forward runs
+  with keepalives so a dead connection **exits** instead of hanging half-open, the
+  handle notices, and the next tool call reopens it on the same local port and
+  replays the request. Concurrent calls share one reconnect. When a call still
+  fails after the reopen, the error names the box and points at `server_status` /
+  `server_logs`, because at that point the service really is down.
+
 - **Dashboard: category rails with no parent entry dangled** — a two-level rail
   is written `Parent/Child`, but nothing has to carry the parent slug on its
   own. The Categories tab could only nest a child under a parent that existed

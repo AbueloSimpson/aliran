@@ -124,7 +124,16 @@ async function main () {
       const t = await ssh.openTunnel({ localPort, remotePort })
       tunnels.push(t)
       logerr(`opened SSH tunnel 127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort} for ${svc.name}`)
-      return makeHttpClient(svc, { baseUrl: `http://127.0.0.1:${localPort}`, dataDir: config.dataDir })
+      // The tunnel outlives its ssh process: a dead forward is reopened on the next
+      // call instead of disabling the service until the AI client restarts.
+      const reachability = {
+        describe: `through the SSH tunnel to ${config.ssh.host}:${remotePort}`,
+        ensure: async () => {
+          const revived = await t.ensure()
+          if (revived) logerr(`reopened the SSH tunnel for ${svc.name} (127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort})`)
+        }
+      }
+      return makeHttpClient(svc, { baseUrl: `http://127.0.0.1:${localPort}`, dataDir: config.dataDir, reachability })
     } catch (err) {
       logerr(`could not reach ${svc.name} (${err.message}) — its tools are disabled`)
       return null

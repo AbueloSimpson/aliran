@@ -89,6 +89,16 @@ library) with the same key — no public dashboard needed. `user`/`pass` are the
 reused as the credentials `server_install` provisions). The reseller login
 should be the **root admin principal** (the operator-oversight identity).
 
+A tunnel **repairs itself**. The SSH connection carries keepalives, so it gives up
+and exits when the box or the network goes away instead of hanging on a half-dead
+connection. The MCP notices, and reopens the forward on the next tool call — on the
+same local port, so nothing you configured changes. This matters because the MCP
+restarts services itself: `server_update` and `server_backup` both stop the panel,
+which drops the connection through it. You keep working, and you do not restart
+your AI client. If a call still fails after the reopen, the service on the box is
+the problem — the error says so, and `server_status` and `server_logs` tell you
+what happened.
+
 Any of `panel`, `broadcaster`, `reseller`, `library`, `ssh` may be omitted; only
 the tools whose backend is configured are registered.
 
