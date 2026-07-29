@@ -291,6 +291,14 @@ function transcodeSummary (t) {
   if (t.fps && t.fps !== 'source') bits.push(t.fps + 'fps')
   if (t.videoBitrateKbps != null) bits.push(t.videoBitrateKbps + 'kbps')
   if (t.preset && t.preset !== 'balanced') bits.push(t.preset)
+  // Only worth showing when it is not the default: 'auto' is what every channel carries.
+  if (t.hwDecode === true) bits.push('GPU decode')
+  else if (t.hwDecode === false && NVENC_UI.includes(t.encoder)) bits.push('CPU decode')
+  if (t.gpu != null) bits.push('gpu' + t.gpu)
+  if (t.audioTracks === 'all') bits.push('all audio')
+  if (t.audioCodec && t.audioCodec !== 'aac') bits.push(t.audioCodec)
+  if (t.logo?.path) bits.push('logo')
+  if (t.subtitles?.path) bits.push('subs')
   return bits.join(' · ')
 }
 
@@ -418,6 +426,22 @@ function updateStatus (c) {
   // healthy but its primary source is down, and nobody would otherwise notice.
   if (c.sourceIndex > 0) {
     bits.push(`<span class="badge warn" title="primary source is failing — now pulling backup ${c.sourceIndex} of ${(c.sourceCount || 1) - 1}: ${esc(c.activeSource || '')}\nThe watchdog re-probes the primary automatically.">BACKUP ${c.sourceIndex}</span>`)
+  }
+  // SLATE is the other "healthy-looking but wrong" state, and the more misleading of the
+  // two: a slated channel has ffmpeg up, a playlist, and peers — every other badge on this
+  // row is green — while viewers are watching SOURCE OFFLINE bars. Without this the only
+  // way to notice is to play the channel yourself.
+  if (c.slate?.slated) {
+    const since = c.slate.since ? ` for ${fmtUp(Date.now() - c.slate.since)}` : ''
+    bits.push(`<span class="badge err" title="viewers are seeing the offline slate${since}, NOT the source — ${c.slate.failures || 0} consecutive failed respawns. The watchdog re-probes the real source periodically and drops the slate as soon as it comes back.">SLATE</span>`)
+  }
+  // Where the DECODE runs. 'auto' + the per-source CPU fallback mean the operator cannot
+  // infer this from the channel's settings, and the difference is ~8x in CPU cost, so a
+  // channel that quietly dropped to the CPU is worth seeing at a glance.
+  if (c.hwDecode?.active) {
+    bits.push(`<span class="badge ok" title="decoding on the GPU (NVDEC)${c.hwDecode.gpu != null ? ' — device ' + c.hwDecode.gpu : ''}">GPU</span>`)
+  } else if (c.hwDecode?.fellBack) {
+    bits.push('<span class="badge warn" title="GPU decode was requested but THIS SOURCE could not be decoded by the GPU (CUVID declined it — e.g. a 10-bit stream), so the watchdog fell back to the CPU decoder. The channel is fine, it just costs more CPU. A restart re-tries the GPU.">CPU (fell back)</span>')
   }
   if (c.registered) bits.push('<span class="badge ok">reg</span>')
   else if (c.registerError) bits.push(`<span class="badge err" title="${esc(c.registerError)}">reg ✗</span>`)
@@ -682,13 +706,70 @@ async function startStop (id, btn) {
 // Encoder choices come from the capability probe: everything the validator accepts is
 // listed, but an encoder that is not deep-verified on THIS host renders disabled with
 // the probe error as its tooltip — no silent fallback, no mystery start failures.
+// GPU decode is an NVIDIA-only path (broadcaster/src/hls.js hwDecodeArgs), and the
+// validator rejects hwDecode/gpu on any other encoder — so these two controls only appear
+// for the encoders that can actually use them.
+const NVENC_UI = ['h264_nvenc', 'hevc_nvenc']
+
+// Mirrors broadcaster/src/hls.js CUSTOM_RES_RE — a free-form raster alongside the presets.
+const CUSTOM_RES_UI = /^\d{2,5}x\d{2,5}$/
+
+// auto / on / off. 'on' is a hard requirement the host must satisfy, so it renders disabled
+// with the probe's own error as the tooltip when GPU decode is not usable here — same rule
+// as an unverified encoder: no silent fallback, no mystery start failures.
+function hwDecodeOptions () {
+  const cuda = caps?.hwDecode?.cuda
+  const usable = !caps || !!cuda?.verified // unknown probe = optimistic; start() re-checks
+  return [
+    {
+      value: 'auto',
+      label: usable ? 'auto — GPU when the host supports it' : 'auto — CPU here (no GPU decode on this host)',
+      title: 'Recommended. Resolved against the host probe each time the channel starts, and falls back to the CPU by itself if a particular source turns out to be undecodable on the GPU.'
+    },
+    {
+      value: 'on',
+      label: 'on — require GPU decode' + (usable ? '' : ' — unavailable'),
+      disabled: !usable,
+      title: usable ? 'Refuses to start if the host cannot decode on the GPU.' : (cuda?.error || 'GPU decode is not usable on this host')
+    },
+    { value: 'off', label: 'off — always decode on the CPU', title: 'Costs roughly 8x the CPU of the GPU path on the same channel. Pick it to leave the GPU free for other work.' }
+  ]
+}
+
+// Device picker built from nvidia-smi (caps.gpus). Naming the card matters because the
+// realistic deployment is a SHARED box — "which one is the live encoder already using" is
+// the question an index alone cannot answer.
+function gpuOptions (current) {
+  const list = caps?.gpus || []
+  const opts = [{ value: '', label: 'auto — let ffmpeg choose', title: 'ffmpeg uses its default device, normally GPU 0.' }]
+  for (const g of list) {
+    const mem = g.memoryMb ? ` · ${Math.round(g.memoryMb / 1024)} GB` : ''
+    opts.push({ value: String(g.index), label: `${g.index}: ${g.name}${mem}` })
+  }
+  // A configured index the probe did not list (nvidia-smi missing, or the card was pulled)
+  // must still render, or opening Edit would silently reset it to auto on save.
+  if (current != null && !list.some((g) => g.index === current)) {
+    opts.push({ value: String(current), label: `${current} — not detected on this host`, title: 'Configured previously. Either nvidia-smi is unavailable here or this device is gone.' })
+  }
+  return opts
+}
+
+// HEVC roughly halves bitrate at the same quality — real bandwidth saved on a P2P feed —
+// but narrows which viewer devices can decode it, so it is labelled rather than hidden and
+// never a default.
+const ENCODER_NOTE = {
+  h264_amf: ' (EXPERIMENTAL)',
+  hevc_nvenc: ' (HEVC — smaller, fewer devices)',
+  libx265: ' (HEVC, software — smaller, fewer devices)'
+}
+
 function encoderOptions (current) {
-  const names = ['copy', 'libx264', 'h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf']
+  const names = ['copy', 'libx264', 'h264_nvenc', 'hevc_nvenc', 'libx265', 'h264_qsv', 'h264_vaapi', 'h264_amf']
   return names.map((name) => {
     if (name === 'copy') return { value: 'copy', label: 'copy (passthrough — no re-encode)' }
     const e = caps?.encoders?.[name]
     const usable = !caps || (e && e.verified) // unknown probe = optimistic; start() re-checks
-    const label = name + (name === 'h264_amf' ? ' (EXPERIMENTAL)' : '') + (usable ? '' : ' — unavailable')
+    const label = name + (ENCODER_NOTE[name] || '') + (usable ? '' : ' — unavailable')
     return {
       value: name,
       label,
@@ -729,16 +810,99 @@ async function editChannel (id) {
     { name: 'passphrase', label: 'SRT passphrase (10-79 chars; empty = unencrypted)', value: input.passphrase ?? '', title: 'SRT + passphrase = authenticated push (enforced by the SRT handshake)' },
     { name: 'latencyMs', label: 'SRT latency ms (20-5000)', type: 'number', value: input.latencyMs ?? '' },
     { name: 'timeoutMs', label: 'UDP idle timeout ms (1000-60000)', type: 'number', value: input.timeoutMs ?? '' },
+    {
+      name: 'cencKey',
+      label: 'CENC decryption key (encrypted DASH, blank = none)',
+      value: input.cencKey || '',
+      placeholder: '32 hex characters',
+      title: 'Decrypts a CENC/ClearKey .mpd source using a key you already hold. This is NOT a DRM client — Widevine and PlayReady need a licence server and a CDM, which ffmpeg does not have.'
+    },
     { name: 'encoder', label: 'Encoder', type: 'select', options: encoderOptions(t.encoder), value: t.encoder || 'libx264' },
-    { name: 'resolution', label: 'Resolution', type: 'select', options: ['source', '1080p', '720p', '480p', '360p'], value: t.resolution || 'source' },
+    {
+      name: 'resolution',
+      label: 'Resolution',
+      type: 'select',
+      options: ['source', '1080p', '720p', '480p', '360p', 'custom'],
+      value: CUSTOM_RES_UI.test(t.resolution || '') ? 'custom' : (t.resolution || 'source')
+    },
+    {
+      name: 'resolutionCustom',
+      label: 'Custom size (WxH, both even)',
+      value: CUSTOM_RES_UI.test(t.resolution || '') ? t.resolution : '',
+      placeholder: '1280x720',
+      title: 'Both numbers must be even — H.264 subsamples chroma 2x2 and rejects an odd raster. A preset scales by height and keeps the aspect; an explicit WxH is used exactly as typed, so it can letterbox or stretch.'
+    },
     { name: 'fps', label: 'Frame rate', type: 'select', options: ['source', '24', '25', '30', '50', '60'], value: String(t.fps ?? 'source') },
     { name: 'videoBitrateKbps', label: 'Video bitrate kbps (blank = quality-based)', type: 'number', value: t.videoBitrateKbps ?? '' },
     { name: 'audioBitrateKbps', label: 'Audio bitrate kbps (blank = 128)', type: 'number', value: t.audioBitrateKbps ?? '' },
+    {
+      name: 'audioTracks',
+      label: 'Audio tracks',
+      type: 'select',
+      options: [
+        { value: 'first', label: 'first only (ffmpeg picks)' },
+        { value: 'all', label: 'keep every track (multi-language)' }
+      ],
+      value: t.audioTracks || 'first',
+      title: 'A multi-language source carries several audio tracks. The default keeps only the one ffmpeg judges best, which is how the wrong language ends up on air; "keep every track" carries them all as separate PIDs in the same segments.'
+    },
+    { name: 'audioCodec', label: 'Audio codec', type: 'select', options: ['aac', 'mp2', 'opus', 'copy'], value: t.audioCodec || 'aac' },
+    { name: 'audioSampleRate', label: 'Audio sample rate', type: 'select', options: ['48000', '44100'], value: String(t.audioSampleRate ?? 48000) },
+    {
+      name: 'audioChannels',
+      label: 'Audio channels',
+      type: 'select',
+      options: [{ value: '', label: 'keep source layout' }, { value: '1', label: 'mono' }, { value: '2', label: 'stereo' }, { value: '6', label: '5.1' }],
+      value: t.audioChannels != null ? String(t.audioChannels) : ''
+    },
+    {
+      name: 'logoPath',
+      label: 'Logo image (path on the broadcaster, blank = none)',
+      value: t.logo?.path || '',
+      placeholder: '/srv/branding/logo.png',
+      title: 'Burned into the picture, so viewers cannot turn it off. A PNG with transparency blends correctly. The file must exist on the BROADCASTER host, not on your machine.'
+    },
+    { name: 'logoCorner', label: 'Logo position', type: 'select', options: [{ value: 'tr', label: 'top right' }, { value: 'tl', label: 'top left' }, { value: 'br', label: 'bottom right' }, { value: 'bl', label: 'bottom left' }], value: t.logo?.corner || 'tr' },
+    { name: 'logoMarginPx', label: 'Logo margin px', type: 'number', value: t.logo?.marginPx ?? 20 },
+    { name: 'logoHeightPx', label: 'Logo height px (blank = native size)', type: 'number', value: t.logo?.heightPx ?? '' },
+    {
+      name: 'subtitlesPath',
+      label: 'Burn in subtitles (.srt/.ass path, blank = none)',
+      value: t.subtitles?.path || '',
+      placeholder: '/srv/subs/channel.srt',
+      title: 'Rendered into the picture itself. On the GPU path the frames make a round trip through system memory to do it, which costs roughly twice the GPU baseline — still well under decoding on the CPU.'
+    },
     { name: 'preset', label: 'Encoder preset', type: 'select', options: ['fast', 'balanced', 'quality'], value: t.preset || 'balanced' },
+    {
+      name: 'hwDecode',
+      label: 'GPU decode (NVDEC)',
+      type: 'select',
+      options: hwDecodeOptions(),
+      value: t.hwDecode === true ? 'on' : t.hwDecode === false ? 'off' : 'auto',
+      title: 'Decode and scale on the card instead of the CPU. Measured at ~8x less CPU per channel on the same output. The GPU encode session limit, not CPU, is what caps channels per box.'
+    },
+    {
+      name: 'gpu',
+      label: 'GPU device',
+      type: 'select',
+      options: gpuOptions(t.gpu ?? null),
+      value: t.gpu != null ? String(t.gpu) : '',
+      title: 'Pins BOTH the decoder and the encoder to one card. Use it to keep this channel off a GPU another service is already using.'
+    },
     { name: 'probesizeKB', label: 'Probe size KB (blank = ffmpeg default ~5000)', type: 'number', value: c.ingestTuning?.probesizeKB ?? '', title: 'Raise for cheap HDMI/RTMP encoders with a sparse or late PMT — the cause of could-not-find-codec-parameters and of audio going missing. 10000-50000 is normal for a difficult box.' },
     { name: 'analyzeDurationMs', label: 'Analyze duration ms (blank = default ~5000)', type: 'number', value: c.ingestTuning?.analyzeDurationMs ?? '', title: 'How long ffmpeg may study the stream before deciding what is in it. Raise alongside probe size for irregular encoders.' },
     { name: 'threadQueueSize', label: 'Input queue packets (blank = ffmpeg default)', type: 'number', value: c.ingestTuning?.threadQueueSize ?? '', title: 'REAL input buffering: queue depth between demuxer and encoder. Raise to 512-4096 if the log says Thread message queue blocking — a bursty push source is overflowing it and dropping packets.' },
     { name: 'discardCorrupt', label: 'Tolerate corrupt packets', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.discardCorrupt ? 'yes' : 'no', title: 'Keep going through corrupt TS packets instead of aborting — marginal RF/HDMI capture chains produce them constantly.' },
+    { name: 'genPts', label: 'Generate missing timestamps (genpts)', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.genPts ? 'yes' : 'no', title: 'Synthesise PTS for a source whose timestamps are missing or jump backwards. Without it the segmenter writes wrong EXTINF durations, or ffmpeg refuses packets with "non monotonically increasing dts". The segmenter needs a sane timeline more than the original one.' },
+    { name: 'ignoreDts', label: 'Ignore DTS (igndts)', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.ignoreDts ? 'yes' : 'no', title: 'Let PTS drive and disregard DTS entirely. Use when DTS is the broken half; pairs with genpts on badly damaged sources.' },
+    { name: 'ignoreDecodeErrors', label: 'Ignore decode errors', type: 'select', options: ['no', 'yes'], value: c.ingestTuning?.ignoreDecodeErrors ? 'yes' : 'no', title: 'Carry on through bitstream errors instead of treating them as fatal. Different from "tolerate corrupt packets": that drops bad packets at the container, this tells the DECODER to keep going with what it got.' },
+    { name: 'userAgent', label: 'HTTP User-Agent (blank = ffmpeg default)', value: c.ingestTuning?.userAgent || '', placeholder: 'Mozilla/5.0 …', title: 'Many providers gate or vary on User-Agent, and ffmpeg’s default is a giveaway. HTTP sources only.' },
+    { name: 'headers', label: 'Extra HTTP headers (one per line)', type: 'textarea', value: (c.ingestTuning?.headers || '').replace(/\r\n/g, '\n').trim(), placeholder: 'X-Auth-Token: …\nReferer: https://…', title: 'Auth tokens, Referer, cookies. Written one "Name: value" per line — CRLF termination is added for you. HTTP sources only.' },
+    { name: 'rwTimeoutMs', label: 'HTTP read timeout ms (blank = none)', type: 'number', value: c.ingestTuning?.rwTimeoutMs ?? '', title: 'Fail a hung socket fast. Without it a frozen source waits on the watchdog stall detector, which only fires after the live edge has not moved for ~20 s. HTTP sources only.' },
+    { name: 'fpsMode', label: 'Frame rate mode', type: 'select', options: [{ value: 'source', label: 'follow source' }, { value: 'cfr', label: 'constant (CFR)' }], value: c.transcode?.fpsMode || 'source', title: 'A variable-frame-rate source segments unevenly — EXTINF durations wander and players stutter at the joins. HLS wants CFR. Not the default because forcing it on an already-constant source only adds duplicated or dropped frames.' },
+    { name: 'maxMuxQueue', label: 'Max muxing queue packets (blank = ffmpeg default)', type: 'number', value: c.transcode?.maxMuxQueue ?? '', title: '"Too many packets buffered for output stream" is a hard abort, not a warning. Raising this turns a dead channel into a brief memory bump. 2048 is a sane starting point.' },
+    { name: 'audioSync', label: 'Correct audio drift', type: 'select', options: ['no', 'yes'], value: c.transcode?.audioSync ? 'yes' : 'no', title: 'On a 24/7 channel a source whose audio clock runs slightly off video walks visibly out of sync over hours, and nothing notices because every segment is individually fine. Re-encodes audio, so it cannot be combined with audio codec "copy".' },
+    { name: 'tsMode', label: 'Timestamp handling', type: 'select', options: [{ value: 'default', label: 'leave alone' }, { value: 'avoidNegative', label: 'rebase to zero' }, { value: 'copyTs', label: 'preserve source timeline' }], value: c.transcode?.copyTs ? 'copyTs' : (c.transcode?.avoidNegativeTs ? 'avoidNegative' : 'default'), title: 'Rebase fixes a stream that starts at a negative timestamp (common after generating PTS). Preserve keeps the upstream timeline instead. They are opposite strategies, so this is one control rather than two checkboxes.' },
     { name: 'hlsTime', label: 'HLS segment seconds (1-30)', type: 'number', value: c.hls?.time },
     { name: 'hlsListSize', label: 'HLS window segments (2-60)', type: 'number', value: c.hls?.listSize }
   ], {
@@ -750,13 +914,21 @@ async function editChannel (id) {
       const showFor = {
         source: ['pull', 'file'],
         fallbacks: ['pull'], // backup urls only make sense for a pull source
+        cencKey: ['pull'], // only a pulled manifest can be encrypted
         port: PUSH_KINDS,
         streamKey: ['rtmp'],
         passphrase: ['srt'],
         latencyMs: ['srt'],
         timeoutMs: ['udp']
       }
-      const encDetail = ['resolution', 'fps', 'videoBitrateKbps', 'audioBitrateKbps', 'preset']
+      // `copy` never decodes the picture, so everything that reshapes or draws on it is
+      // meaningless there — and the validator rejects the logo/subtitle ones outright.
+      // Audio settings deliberately stay visible: a video-copy channel still re-encodes
+      // its audio, so codec/tracks/rate remain live controls.
+      const encDetail = ['resolution', 'resolutionCustom', 'fps', 'videoBitrateKbps', 'preset',
+        'logoPath', 'logoCorner', 'logoMarginPx', 'logoHeightPx', 'subtitlesPath']
+      const nvencOnly = ['hwDecode', 'gpu'] // the validator rejects these on other encoders
+      const logoDetail = ['logoCorner', 'logoMarginPx', 'logoHeightPx']
       const sync = () => {
         const kind = inputs.kind.value
         for (const [name, kinds] of Object.entries(showFor)) {
@@ -765,9 +937,17 @@ async function editChannel (id) {
         inputs.source.previousSibling.textContent = kind === 'file' ? 'File path' : 'Source URL'
         const copy = inputs.encoder.value === 'copy'
         for (const name of encDetail) inputs[name].closest('label').hidden = copy
+        const nvenc = NVENC_UI.includes(inputs.encoder.value)
+        for (const name of nvencOnly) inputs[name].closest('label').hidden = copy || !nvenc
+        inputs.resolutionCustom.closest('label').hidden = copy || inputs.resolution.value !== 'custom'
+        // Position/size only mean something once there is an image to place.
+        const hasLogo = inputs.logoPath.value.trim() !== ''
+        for (const name of logoDetail) inputs[name].closest('label').hidden = copy || !hasLogo
       }
       inputs.kind.addEventListener('change', sync)
       inputs.encoder.addEventListener('change', sync)
+      inputs.resolution.addEventListener('change', sync)
+      inputs.logoPath.addEventListener('input', sync)
       sync()
     }
   })
@@ -783,8 +963,15 @@ async function editChannel (id) {
     if (!src) return toast(kind + ' input needs a ' + (kind === 'file' ? 'path' : 'URL'), true)
     // Always send fallbacks for a pull (even empty) so clearing the box actually clears
     // them — normalizeInput treats OMITTED as "keep stored" and [] as "clear".
+    // cencKey is sent for every pull (even empty) for the same reason as fallbacks:
+    // omitted means "keep the stored key", so clearing the box has to be explicit.
     body.input = kind === 'pull'
-      ? { kind, url: src, fallbacks: v.fallbacks.split('\n').map((x) => x.trim()).filter(Boolean) }
+      ? {
+          kind,
+          url: src,
+          fallbacks: v.fallbacks.split('\n').map((x) => x.trim()).filter(Boolean),
+          cencKey: v.cencKey.trim()
+        }
       : { kind, path: src }
   } else if (PUSH_KINDS.includes(kind)) {
     const inp = { kind }
@@ -800,15 +987,59 @@ async function editChannel (id) {
     body.input = { kind: 'test' }
   }
 
+  // Audio settings apply to `copy` too — only the video half is passed through.
+  const audio = {
+    audioTracks: v.audioTracks,
+    audioCodec: v.audioCodec,
+    audioSampleRate: Number(v.audioSampleRate),
+    audioChannels: v.audioChannels === '' ? null : Number(v.audioChannels),
+    audioSync: v.audioSync === 'yes',
+    ...(v.audioBitrateKbps !== '' ? { audioBitrateKbps: Number(v.audioBitrateKbps) } : {})
+  }
+  // One control, two mutually exclusive flags — the validator rejects both together.
+  const ts = {
+    avoidNegativeTs: v.tsMode === 'avoidNegative',
+    copyTs: v.tsMode === 'copyTs'
+  }
+  const stability = { maxMuxQueue: v.maxMuxQueue === '' ? null : Number(v.maxMuxQueue), ...ts }
+  const logoPath = v.logoPath.trim()
+  const subsPath = v.subtitlesPath.trim()
+  const resolution = v.resolution === 'custom' ? v.resolutionCustom.trim() : v.resolution
+  if (v.encoder !== 'copy' && v.resolution === 'custom' && !CUSTOM_RES_UI.test(resolution)) {
+    return toast('custom resolution must look like 1280x720', true)
+  }
   body.transcode = v.encoder === 'copy'
-    ? { encoder: 'copy' }
+    ? { encoder: 'copy', ...audio, ...stability } // fpsMode is refused on copy
     : {
         encoder: v.encoder,
-        resolution: v.resolution,
+        resolution,
         fps: v.fps === 'source' ? 'source' : Number(v.fps),
+        fpsMode: v.fpsMode,
         preset: v.preset,
+        ...audio,
+        ...stability,
+        // Always sent, so clearing the box actually removes the logo/subtitles rather than
+        // leaving the stored value in place (normalizeTranscode treats null as "clear").
+        logo: logoPath
+          ? {
+              path: logoPath,
+              corner: v.logoCorner,
+              marginPx: v.logoMarginPx === '' ? 20 : Number(v.logoMarginPx),
+              heightPx: v.logoHeightPx === '' ? null : Number(v.logoHeightPx)
+            }
+          : null,
+        subtitles: subsPath ? { path: subsPath } : null,
         ...(v.videoBitrateKbps !== '' ? { videoBitrateKbps: Number(v.videoBitrateKbps) } : {}),
-        ...(v.audioBitrateKbps !== '' ? { audioBitrateKbps: Number(v.audioBitrateKbps) } : {})
+        ...(v.audioBitrateKbps !== '' ? { audioBitrateKbps: Number(v.audioBitrateKbps) } : {}),
+        // Sent only for NVENC: normalizeTranscode REJECTS an explicit hwDecode/gpu on any
+        // other encoder, so posting them for libx264 would turn a harmless hidden control
+        // into a save that fails. gpu is always sent for nvenc (null clears a previous pin).
+        ...(NVENC_UI.includes(v.encoder)
+          ? {
+              hwDecode: v.hwDecode === 'auto' ? 'auto' : v.hwDecode === 'on',
+              gpu: v.gpu === '' ? null : Number(v.gpu)
+            }
+          : {})
       }
 
   // Demuxer tuning: blank means "use ffmpeg's default", so send null rather than 0.
@@ -817,7 +1048,13 @@ async function editChannel (id) {
     probesizeKB: num(v.probesizeKB),
     analyzeDurationMs: num(v.analyzeDurationMs),
     threadQueueSize: num(v.threadQueueSize),
-    discardCorrupt: v.discardCorrupt === 'yes'
+    discardCorrupt: v.discardCorrupt === 'yes',
+    genPts: v.genPts === 'yes',
+    ignoreDts: v.ignoreDts === 'yes',
+    ignoreDecodeErrors: v.ignoreDecodeErrors === 'yes',
+    userAgent: v.userAgent.trim(),
+    headers: v.headers.trim(),
+    rwTimeoutMs: num(v.rwTimeoutMs)
   }
   if (v.hlsTime !== '') body.hlsTime = v.hlsTime
   if (v.hlsListSize !== '') body.hlsListSize = v.hlsListSize

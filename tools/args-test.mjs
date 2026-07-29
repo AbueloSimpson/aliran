@@ -6,11 +6,13 @@ import path from 'path'
 import {
   ffmpegArgs, inputArgs, encodeArgs, hwDeviceArgs, hlsMuxArgs,
   upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs,
-  pickSlateFile, parseVideoProfile
+  pickSlateFile, parseVideoProfile, hwDecodeArgs, HW_DECODE_FAIL_RE,
+  videoChain, logoInputArgs, parseResolution, mainInputCount
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
-  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool
+  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool,
+  resolveHwDecode
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -78,12 +80,20 @@ assert.deepStrictEqual(encodeArgs(null, HLS), [
 assert.ok(encodeArgs(null, { time: 4, listSize: 6 }).includes('expr:gte(t,n_forced*4)'), 'keyframes follow hls.time')
 assert.deepStrictEqual(encodeArgs({ encoder: 'copy' }, HLS),
   ['-c:v', 'copy', '-c:a', 'aac', '-ar', '48000', '-b:a', '128k'], 'copy: no keyframe forcing, audio still aac')
+// -pix_fmt yuv420p on the CPU-decode nvenc path is LOAD-BEARING, not cosmetic: H.264
+// NVENC is 8-bit only, and without it a High 10 source reaches the encoder as yuv420p10le
+// and is refused with "No capable devices found" — which reads like a missing GPU. Verified
+// against ffmpeg 6.1.1 on an RTX 4090: fails without it, encodes with it, 8-bit unaffected.
 assert.deepStrictEqual(encodeArgs({ encoder: 'h264_nvenc', preset: 'balanced', videoBitrateKbps: 2500, fps: 30, resolution: '720p' }, HLS), [
-  '-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'll',
+  '-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'll', '-forced-idr', '1', '-pix_fmt', 'yuv420p',
   '-force_key_frames', 'expr:gte(t,n_forced*2)',
   '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k',
   '-r', '30', '-vf', 'scale=-2:720',
   '-c:a', 'aac', '-ar', '48000', '-b:a', '128k'])
+// Both nvenc flags below are load-bearing and were verified against real ffmpeg, so they
+// get their own named assertions — a future "tidy up the arg list" must fail loudly here.
+assert.ok(encodeArgs({ encoder: 'h264_nvenc' }, HLS).includes('-forced-idr'),
+  'nvenc ignores -force_key_frames without -forced-idr: segments never cut and the live window never rolls')
 assert.deepStrictEqual(encodeArgs({ encoder: 'h264_qsv', preset: 'quality' }, HLS), [
   '-c:v', 'h264_qsv', '-preset', 'slow',
   '-force_key_frames', 'expr:gte(t,n_forced*2)',
@@ -469,4 +479,369 @@ log('P: adaptive boot-resume pacing (idle→1 sample, busy→bounded, recovers�
 }
 log('Q: bounded-concurrency resume pool (bound respected, overlaps, failure-isolated, seq fallback) ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing)')
+// ===== R: GPU decode path (CUVID → scale_cuda → nvenc) + device pinning =====
+// Every expectation here was checked against real ffmpeg 6.1.1 on a 2x RTX 4090 host
+// before it was written down — the arg vectors this builder produces were run against
+// that box and the resulting HLS output inspected, not merely eyeballed as strings.
+// Measured there, 1080p30 → 720p/3000k over 30 s of content:
+//   full CUDA (cuvid → scale_cuda → nvenc)  1.6 CPU-s   = 0.053 cores per realtime stream
+//   nvenc with CPU decode + CPU scale      12.9 CPU-s   = 0.43  cores
+//   libx264 veryfast                       25.0 CPU-s   = 0.83  cores
+// So the CUDA path is ~8x cheaper than the nvenc path it replaces. CPU is not the real
+// ceiling either way: NVENC on GeForce caps at 8 concurrent encode sessions per GPU.
+
+// 'auto' is NOT self-resolving in the pure builder — it has no way to see the host, so it
+// means "off" here and channel.js turns it into a real boolean against the probe.
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: 'auto' }, { kind: 'pull', url: 'http://o/s' }), [],
+  'unresolved auto = off in the pure builder')
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: false }, { kind: 'pull', url: 'http://o/s' }), [])
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, { kind: 'pull', url: 'http://o/s' }),
+  ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'])
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true, gpu: 1 }, { kind: 'pull', url: 'http://o/s' }),
+  ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-hwaccel_device', '1'], 'gpu pins the DECODER too')
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true, gpu: 0 }, { kind: 'pull', url: 'http://o/s' }).slice(-2),
+  ['-hwaccel_device', '0'], 'gpu 0 is a real selection, not a falsy skip')
+// A CPU encoder or `copy` never takes the CUDA path, and lavfi has no bitstream to decode.
+for (const enc of ['libx264', 'copy', 'h264_qsv', 'h264_vaapi']) {
+  assert.deepStrictEqual(hwDecodeArgs({ encoder: enc, hwDecode: true }, { kind: 'pull', url: 'http://o/s' }), [], `${enc}: no cuda decode`)
+}
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, { kind: 'test' }), [],
+  'test input synthesises raw frames — nothing to hw-decode')
+assert.ok(hwDecodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, { kind: 'file', path: '/m/a.mp4' }).length > 0, 'file input decodes')
+
+// On the GPU the scaler must be scale_cuda (plain scale would need a download first), and
+// -pix_fmt must be ABSENT — it would force the frame back to system memory.
+const gpuArgs = encodeArgs({ encoder: 'h264_nvenc', hwDecode: true, resolution: '720p', videoBitrateKbps: 3000 }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.ok(gpuArgs.includes('scale_cuda=-2:720'), 'gpu path scales on the card')
+assert.ok(!gpuArgs.includes('scale=-2:720'), 'no cpu scaler on the gpu path')
+assert.ok(!gpuArgs.includes('-pix_fmt'), 'no -pix_fmt on the gpu path (would download the frame)')
+const cpuArgs = encodeArgs({ encoder: 'h264_nvenc', hwDecode: false, resolution: '720p' }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.ok(cpuArgs.includes('scale=-2:720') && !cpuArgs.join(' ').includes('scale_cuda'), 'cpu path scales on the cpu')
+assert.deepStrictEqual(cpuArgs.slice(0, 10),
+  ['-c:v', 'h264_nvenc', '-preset', 'p2', '-tune', 'll', '-forced-idr', '1', '-pix_fmt', 'yuv420p'], 'cpu path forces 8-bit')
+assert.ok(gpuArgs.includes('-forced-idr'), 'the GPU path needs forced IDR just as much as the CPU one')
+// resolution 'source' on the GPU: frames stay CUDA with no filter at all, which nvenc takes directly.
+const gpuNoScale = encodeArgs({ encoder: 'h264_nvenc', hwDecode: true }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.ok(!gpuNoScale.includes('-vf'), 'no filter needed when not rescaling')
+assert.deepStrictEqual(encodeArgs({ encoder: 'h264_nvenc', hwDecode: true, gpu: 1 }, HLS, { kind: 'pull', url: 'http://o/s' }).slice(0, 10),
+  ['-c:v', 'h264_nvenc', '-preset', 'p2', '-tune', 'll', '-forced-idr', '1', '-gpu', '1'], 'gpu pins the ENCODER too')
+
+// Full assembly: -hwaccel is a per-input option, so it must land before the -i it applies
+// to. Getting this order wrong makes ffmpeg ignore it and silently decode on the CPU —
+// which is exactly the failure this whole path exists to avoid, and it is invisible in
+// the output, so the ordering is asserted rather than assumed.
+const gpuFull = ffmpegArgs({
+  input: { kind: 'pull', url: 'http://origin:81/CH/mpegts' },
+  transcode: { encoder: 'h264_nvenc', hwDecode: true, gpu: 1, resolution: '720p' },
+  hls: HLS
+}, outDir)
+assert.ok(gpuFull.indexOf('-hwaccel') < gpuFull.indexOf('-i'), '-hwaccel precedes its -i')
+assert.ok(gpuFull.indexOf('-hwaccel_device') < gpuFull.indexOf('-i'), '-hwaccel_device precedes its -i')
+assert.ok(gpuFull.indexOf('-gpu') > gpuFull.indexOf('-i'), '-gpu is an OUTPUT option')
+assert.ok(gpuFull.includes('scale_cuda=-2:720'))
+// The slate forces `copy`, so a slated channel must never carry GPU decode flags.
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'copy', hwDecode: true }, { kind: 'file', path: 'slate-720p-h264-aac.ts' }), [],
+  'slated channels (forced copy) stay off the GPU')
+
+// Validation: auto is harmless everywhere, explicit requests are NVENC-only.
+assert.strictEqual(normalizeTranscode({}).hwDecode, 'auto', 'auto is the default')
+assert.strictEqual(normalizeTranscode({}).gpu, null)
+assert.strictEqual(normalizeTranscode({ encoder: 'h264_nvenc', hwDecode: true }).hwDecode, true)
+assert.strictEqual(normalizeTranscode({ encoder: 'h264_nvenc', gpu: '1' }).gpu, 1, 'numeric-string gpu coerced')
+throws(() => normalizeTranscode({ hwDecode: 'yes' }), /hwDecode/)
+throws(() => normalizeTranscode({ encoder: 'libx264', hwDecode: true }), /NVENC only/)
+throws(() => normalizeTranscode({ encoder: 'copy', hwDecode: true }), /NVENC only/)
+throws(() => normalizeTranscode({ encoder: 'libx264', gpu: 0 }), /NVENC only/)
+throws(() => normalizeTranscode({ encoder: 'h264_nvenc', gpu: 16 }), /transcode.gpu/)
+throws(() => normalizeTranscode({ encoder: 'h264_nvenc', gpu: -1 }), /transcode.gpu/)
+// 'auto' must survive on a CPU encoder rather than being rejected — it is the default that
+// every existing channel already carries.
+assert.strictEqual(normalizeTranscode({ encoder: 'libx264' }).hwDecode, 'auto')
+
+// Resolving 'auto' against the host probe. Pure, so a stubbed probe behaves exactly like a
+// real one — the reason this is a function taking caps rather than a peek at cached state.
+const CUDA_OK = { hwDecode: { cuda: { verified: true } } }
+const CUDA_NO = { hwDecode: { cuda: { verified: false, error: 'no CUVID' } } }
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc' }, CUDA_OK), true, 'auto + capable host = on')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc' }, CUDA_NO), false, 'auto + incapable host = off')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc' }, null), false, 'auto + unprobed host = off (safe default)')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc', hwDecode: true }, CUDA_NO), true,
+  'an EXPLICIT true is honoured here — start() is what refuses an incapable host, not this')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc', hwDecode: false }, CUDA_OK), false, 'explicit off stays off')
+assert.strictEqual(resolveHwDecode({ encoder: 'libx264' }, CUDA_OK), false, 'auto on a CPU encoder is always off')
+assert.strictEqual(resolveHwDecode({ encoder: 'copy' }, CUDA_OK), false, 'copy decodes nothing')
+assert.strictEqual(resolveHwDecode(null, CUDA_OK), false, 'no transcode = libx264 default = off')
+
+// The fallback trigger: these are the REAL stderr lines an RTX 4090 emitted when CUVID
+// declined a High 10 source. ffmpeg substitutes the software decoder without a word, so
+// the failure surfaces at the filter graph — matching only decoder-shaped errors would
+// miss it entirely and leave the channel respawning into the same wall forever.
+for (const line of [
+  "Impossible to convert between the formats supported by the filter 'graph 0 input from stream 0:0' and the filter 'auto_scale_0'",
+  'Failed to inject frame into filter network: Function not implemented',
+  'Error while filtering: Function not implemented',
+  '[h264 @ 0x55] Failed setup for format cuda: hwaccel initialisation returned error'
+]) assert.ok(HW_DECODE_FAIL_RE.test(line), 'must trigger CPU fallback: ' + line)
+// Ordinary flaky-source noise must NOT demote a channel off the GPU.
+for (const line of [
+  'Error while decoding stream #0:0: Invalid data found when processing input',
+  "[hls @ 0x55] Skip ('#EXT-X-VERSION:3')",
+  'Connection to tcp://origin:81 failed: Connection refused',
+  'No capable devices found' // the 8-bit/pixel-format error — a CPU-path problem
+]) assert.ok(!HW_DECODE_FAIL_RE.test(line), 'must NOT trigger fallback: ' + line)
+log('R: GPU decode path (scale_cuda, pinning, arg ordering, validation, fallback signatures) ✓')
+
+// ===== V: 24/7 stability, timestamp base, and HTTP source access =====
+// CFR: a variable-frame-rate source segments unevenly and players stutter at the joins.
+assert.ok(encodeArgs({ encoder: 'libx264', fpsMode: 'cfr' }, HLS).includes('-fps_mode'), 'cfr forces constant frame rate')
+assert.ok(!encodeArgs({ encoder: 'libx264' }, HLS).includes('-fps_mode'), 'source frame rate is the default')
+throws(() => normalizeTranscode({ encoder: 'copy', fpsMode: 'cfr' }), /copy/)
+throws(() => normalizeTranscode({ fpsMode: 'vfr' }), /fpsMode/)
+// "Too many packets buffered for output stream" is an ABORT, not a warning.
+assert.deepStrictEqual(encodeArgs({ maxMuxQueue: 2048 }, HLS).slice(-2).length, 2)
+assert.ok(encodeArgs({ maxMuxQueue: 2048 }, HLS).includes('-max_muxing_queue_size'))
+assert.strictEqual(normalizeTranscode({ maxMuxQueue: 2048 }).maxMuxQueue, 2048)
+throws(() => normalizeTranscode({ maxMuxQueue: 10 }), /maxMuxQueue/)
+// Audio drift: the failure nobody sees until hours in, because every segment is fine.
+assert.ok(encodeArgs({ audioSync: true }, HLS).join(' ').includes('aresample=async=1'), 'drift correction applied')
+assert.ok(!encodeArgs({}, HLS).includes('-af'), 'no audio filter by default')
+throws(() => normalizeTranscode({ audioCodec: 'copy', audioSync: true }), /audioSync/)
+// Timestamp base — copyts PRESERVES the source timeline, avoid_negative_ts REWRITES it.
+// Both at once is contradictory and ffmpeg picks silently, so validation refuses it.
+assert.deepStrictEqual(encodeArgs({ avoidNegativeTs: true }, HLS).filter((a) => a === 'make_zero'), ['make_zero'])
+assert.ok(encodeArgs({ copyTs: true }, HLS).includes('-copyts'))
+assert.ok(encodeArgs({ copyTs: true }, HLS).includes('-start_at_zero'), 'copyts pairs with start_at_zero')
+throws(() => normalizeTranscode({ copyTs: true, avoidNegativeTs: true }), /opposites/)
+// HTTP source access. ⚠ These are AVOptions of the http protocol — emitting them for a
+// udp/srt/rtmp input makes ffmpeg fail on an unrecognised option, so they must appear on
+// the http branch ONLY. That scoping is the whole point of these assertions.
+const httpTune = { userAgent: 'Aliran/1.0', headers: 'X-Token: abc\r\n', rwTimeoutMs: 8000 }
+const httpArgs = inputArgs({ kind: 'pull', url: 'http://o:81/CH/mpegts' }, httpTune)
+assert.ok(httpArgs.includes('-user_agent') && httpArgs.includes('Aliran/1.0'))
+assert.ok(httpArgs.includes('-headers') && httpArgs.includes('X-Token: abc\r\n'))
+assert.deepStrictEqual(httpArgs.slice(httpArgs.indexOf('-rw_timeout'), httpArgs.indexOf('-rw_timeout') + 2),
+  ['-rw_timeout', '8000000'], 'rw_timeout converted to microseconds')
+assert.ok(httpArgs.indexOf('-user_agent') < httpArgs.indexOf('-i'), 'source options precede -i')
+for (const url of ['udp://239.0.0.1:1234', 'srt://o:9000', 'rtmp://o/app/key']) {
+  const a = inputArgs({ kind: 'pull', url }, httpTune)
+  assert.ok(!a.includes('-user_agent') && !a.includes('-headers') && !a.includes('-rw_timeout'),
+    'http-only options must NOT reach ' + url)
+}
+assert.ok(!inputArgs({ kind: 'udp', port: 5003, timeoutMs: 10000 }, httpTune).includes('-user_agent'),
+  'nor a push listener')
+assert.ok(inputArgs({ kind: 'pull', url: 'https://cdn/live/master.m3u8' }, httpTune).includes('-user_agent'),
+  'but they DO apply to an HLS pull')
+// Operators type headers one per line; ffmpeg needs CRLF-terminated lines.
+assert.strictEqual(normalizeIngestTuning({ headers: 'X-A: 1\nX-B: 2' }).headers, 'X-A: 1\r\nX-B: 2\r\n')
+throws(() => normalizeIngestTuning({ headers: 'not a header' }), /header/)
+throws(() => normalizeIngestTuning({ userAgent: 'a\nb' }), /userAgent/)
+throws(() => normalizeIngestTuning({ rwTimeoutMs: 10 }), /rwTimeoutMs/)
+log('V: cfr, mux queue, audio drift, timestamp base, HTTP source access (http-scoped) ✓')
+
+// ===== U: HEVC output (hevc_nvenc + libx265) =====
+// hevc_nvenc is in the NVENC family, so it must inherit EVERY nvenc rule — the forced-IDR
+// that makes HLS segment at all, device pinning, the 8-bit pin, and the CUDA decode path.
+// Missing any one of them reproduces a bug already fixed for h264_nvenc.
+const hevcGpu = encodeArgs({ encoder: 'hevc_nvenc', hwDecode: true, gpu: 1, resolution: '720p' }, HLS, { kind: 'pull', url: 'http://o/s' })
+assert.deepStrictEqual(hevcGpu.slice(0, 10),
+  ['-c:v', 'hevc_nvenc', '-preset', 'p2', '-tune', 'll', '-forced-idr', '1', '-gpu', '1'],
+  'hevc_nvenc gets forced-idr and device pinning exactly like h264_nvenc')
+assert.ok(hevcGpu.includes('scale_cuda=-2:720'), 'and the GPU scaler')
+// ⚠ ffmpeg's own HLS muxer asks for this: "Stream HEVC is not hvc1, you should use tag:v
+// hvc1 to set it". Without the tag a range of players simply refuse HEVC in HLS — a silent
+// no-play on a viewer's device, which is the most expensive kind of bug to chase.
+assert.deepStrictEqual(hevcGpu.slice(hevcGpu.indexOf('-tag:v'), hevcGpu.indexOf('-tag:v') + 2), ['-tag:v', 'hvc1'],
+  'hevc_nvenc output is tagged hvc1')
+assert.ok(encodeArgs({ encoder: 'libx265' }, HLS).includes('hvc1'), 'libx265 output is tagged hvc1 too')
+assert.ok(!encodeArgs({ encoder: 'h264_nvenc' }, HLS).includes('-tag:v'), 'h264 needs no tag')
+assert.ok(!encodeArgs({ encoder: 'copy' }, HLS).includes('-tag:v'), 'copy must not be re-tagged')
+assert.ok(!hevcGpu.includes('-pix_fmt'), 'no -pix_fmt on the GPU path')
+assert.ok(encodeArgs({ encoder: 'hevc_nvenc', hwDecode: false }, HLS).includes('-pix_fmt'),
+  'CPU path pins 8-bit — hevc_nvenc COULD emit Main10, and a live channel deliberately does not')
+assert.deepStrictEqual(hwDecodeArgs({ encoder: 'hevc_nvenc', hwDecode: true }, { kind: 'pull', url: 'http://o/s' }),
+  ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'], 'hevc_nvenc takes the CUDA decode path too')
+assert.strictEqual(resolveHwDecode({ encoder: 'hevc_nvenc' }, CUDA_OK), true, 'auto resolves for hevc_nvenc')
+// libx265 is a software encoder: same zerolatency + 8-bit treatment as libx264, no -gpu.
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx265', preset: 'quality' }, HLS).slice(0, 8),
+  ['-c:v', 'libx265', '-preset', 'slow', '-tune', 'zerolatency', '-pix_fmt', 'yuv420p'])
+assert.ok(!encodeArgs({ encoder: 'libx265' }, HLS).includes('-forced-idr'), 'forced-idr is an nvenc option only')
+throws(() => normalizeTranscode({ encoder: 'libx265', gpu: 0 }), /NVENC only/)
+assert.strictEqual(normalizeTranscode({ encoder: 'hevc_nvenc', gpu: 1 }).gpu, 1, 'hevc_nvenc accepts a device pin')
+assert.strictEqual(normalizeTranscode({ encoder: 'libx265' }).encoder, 'libx265')
+// The offline slate already knew about HEVC before the encoder existed — a channel whose
+// OUTPUT is hevc must get an hevc slate, or the codec change breaks playback mid-playlist.
+assert.strictEqual(pickSlateFile({ codec: 'hevc', height: 1080 }), 'slate-1080p-hevc-aac.ts')
+assert.strictEqual(pickSlateFile({ codec: 'hevc', height: 720 }), 'slate-720p-hevc-aac.ts')
+log('U: HEVC output — nvenc family rules inherited, libx265 software path, hevc slate ✓')
+
+// ===== T: the rest of the demuxer tolerance switches =====
+// ⚠ -fflags is ONE option — a second -fflags OVERRIDES the first rather than adding to it,
+// so every flag has to end up in a single combined value. Emitting two would silently drop
+// whichever came first, and the channel would look configured while behaving as if it were
+// not. That is the whole reason these are asserted together.
+assert.deepStrictEqual(ingestTuningArgs({ discardCorrupt: true, genPts: true, ignoreDts: true }),
+  ['-fflags', '+discardcorrupt+genpts+igndts'], 'all container flags combine into ONE -fflags')
+assert.strictEqual(ingestTuningArgs({ discardCorrupt: true, genPts: true }).filter((a) => a === '-fflags').length, 1,
+  'never more than one -fflags')
+assert.deepStrictEqual(ingestTuningArgs({ genPts: true }), ['-fflags', '+genpts'])
+assert.deepStrictEqual(ingestTuningArgs({ ignoreDecodeErrors: true }), ['-err_detect', 'ignore_err'],
+  'decoder tolerance is its own option, not an fflag')
+assert.deepStrictEqual(ingestTuningArgs({ discardCorrupt: true, ignoreDecodeErrors: true }),
+  ['-fflags', '+discardcorrupt', '-err_detect', 'ignore_err'], 'container and decoder switches are independent')
+assert.deepStrictEqual(ingestTuningArgs({}), [], 'nothing set = ffmpeg defaults, byte-identical to before')
+// They are INPUT options, so they must precede -i or ffmpeg applies them to the output.
+const tunedFull = ffmpegArgs({
+  input: { kind: 'pull', url: 'http://origin:81/CH/mpegts' },
+  ingestTuning: { probesizeKB: 20000, analyzeDurationMs: 15000, threadQueueSize: 1024, discardCorrupt: true, genPts: true, ignoreDecodeErrors: true },
+  hls: HLS
+}, outDir)
+for (const flag of ['-probesize', '-analyzeduration', '-thread_queue_size', '-fflags', '-err_detect']) {
+  assert.ok(tunedFull.indexOf(flag) >= 0 && tunedFull.indexOf(flag) < tunedFull.indexOf('-i'), flag + ' precedes -i')
+}
+assert.strictEqual(normalizeIngestTuning({ genPts: 'yes', ignoreDts: 1, ignoreDecodeErrors: true }).genPts, true,
+  'string/number truthiness accepted from a form post')
+assert.strictEqual(normalizeIngestTuning({ genPts: 'no' }).genPts, false)
+log('T: genpts / igndts / ignore_err — combined fflags, input-side placement ✓')
+
+// ===== S: multi-audio, custom raster, audio format, logo, burn-in subs, CENC =====
+// Every filter graph asserted here was run through real ffmpeg 6.1.1 on an RTX 4090
+// before being written down — including the two that FAIL there, which is how the
+// nv12/alpha rule below was found rather than guessed.
+
+// --- stream mapping. The default stays SILENT so existing channels are byte-identical.
+assert.ok(!encodeArgs({ encoder: 'libx264' }, HLS).includes('-map'), 'single-audio default adds no -map at all')
+const allAud = encodeArgs({ encoder: 'libx264', audioTracks: 'all' }, HLS)
+assert.deepStrictEqual(allAud.slice(0, 4), ['-map', '0:v:0', '-map', '0:a?'],
+  'audioTracks:all maps video + EVERY audio track')
+// The '?' matters: a video-only source is legitimate and must not be a hard ffmpeg failure.
+assert.ok(allAud.includes('0:a?'), 'audio map is optional so a video-only source still runs')
+
+// --- custom raster alongside the presets
+assert.deepStrictEqual(parseResolution('720p'), { h: 720 })
+assert.deepStrictEqual(parseResolution('1280x720'), { w: 1280, h: 720 })
+assert.strictEqual(parseResolution('source'), null)
+assert.strictEqual(parseResolution('nonsense'), null)
+assert.ok(encodeArgs({ encoder: 'libx264', resolution: '720p' }, HLS).includes('scale=-2:720'),
+  'a preset scales by height and keeps the aspect (-2)')
+assert.ok(encodeArgs({ encoder: 'libx264', resolution: '1280x720' }, HLS).includes('scale=1280:720'),
+  'an explicit WxH is taken literally')
+assert.ok(encodeArgs({ encoder: 'h264_nvenc', hwDecode: true, resolution: '1280x720' }, HLS, { kind: 'pull', url: 'http://o/s' })
+  .includes('scale_cuda=1280:720'), 'custom raster works on the GPU scaler too')
+throws(() => normalizeTranscode({ resolution: '1281x720' }), /even/) // H.264 chroma subsampling
+throws(() => normalizeTranscode({ resolution: '1280x721' }), /even/)
+throws(() => normalizeTranscode({ resolution: '10x10' }), /160-7680|90-4320/)
+throws(() => normalizeTranscode({ resolution: '99999x720' }), /resolution/)
+assert.strictEqual(normalizeTranscode({ resolution: '1280x720' }).resolution, '1280x720')
+
+// --- audio format
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx264' }, HLS).slice(-6),
+  ['-c:a', 'aac', '-ar', '48000', '-b:a', '128k'], 'audio defaults unchanged')
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx264', audioCodec: 'opus', audioSampleRate: 44100, audioChannels: 2 }, HLS).slice(-8),
+  ['-c:a', 'opus', '-ar', '44100', '-b:a', '128k', '-ac', '2'])
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx264', audioCodec: 'copy' }, HLS).slice(-2), ['-c:a', 'copy'],
+  'audio copy takes no bitrate/rate/channel options')
+throws(() => normalizeTranscode({ audioCodec: 'flac' }), /audioCodec/)
+throws(() => normalizeTranscode({ audioSampleRate: 32000 }), /audioSampleRate/)
+throws(() => normalizeTranscode({ audioChannels: 3 }), /audioChannels/)
+throws(() => normalizeTranscode({ audioTracks: 'both' }), /audioTracks/)
+
+// --- burn-in subtitles. On the GPU the frames must come back to system memory for libass
+// and go back up afterwards; skipping that is the "Impossible to convert" failure again.
+const subCpu = videoChain({ encoder: 'libx264', resolution: '720p', subtitles: { path: '/s/a.srt' } }, false)
+assert.strictEqual(subCpu.complex, null, 'no logo = simple -vf chain')
+assert.strictEqual(subCpu.vf, "scale=-2:720,subtitles=filename='/s/a.srt'")
+const subGpu = videoChain({ encoder: 'h264_nvenc', resolution: '720p', subtitles: { path: '/s/a.srt' } }, true)
+assert.strictEqual(subGpu.vf,
+  "scale_cuda=-2:720,hwdownload,format=nv12,subtitles=filename='/s/a.srt',format=yuv420p,hwupload_cuda",
+  'GPU + subtitles round-trips through system memory')
+// A Windows path hits filter-graph escaping from three directions at once.
+assert.ok(videoChain({ subtitles: { path: 'C:\\subs\\a b.srt' } }, false).vf
+  .includes("subtitles=filename='C\\:\\\\subs\\\\a b.srt'"), 'drive letter, backslashes and spaces all escaped')
+
+// --- logo. A second input means filter_complex + explicit maps.
+// ⚠ overlay_cuda must NEVER appear in a graph. It SEGFAULTS ffmpeg 6.1.1 on driver
+// 580.159.03 in every configuration tested (opaque/transparent logo, looped/single-shot
+// input, literal/expression anchors), and a crashing filter on a live channel is a respawn
+// loop rather than a slow channel. It also cannot blend alpha at all — it only accepts
+// nv12. This assertion is the guard against someone "optimising" the CPU composite away.
+const logoGpu = videoChain({ encoder: 'h264_nvenc', resolution: '720p', logo: { path: '/l.png', corner: 'tr', marginPx: 20 } }, true)
+assert.ok(!logoGpu.complex.includes('overlay_cuda'), 'overlay_cuda segfaults this ffmpeg — never emit it')
+assert.ok(logoGpu.complex.includes('hwdownload'), 'GPU frames come back to system memory to composite')
+assert.ok(logoGpu.complex.includes('format=rgba'), 'rgba so a transparent logo actually blends')
+assert.ok(logoGpu.complex.includes('hwupload_cuda'), 'and return to the card for nvenc')
+assert.ok(logoGpu.complex.indexOf('hwdownload') < logoGpu.complex.indexOf('hwupload_cuda'), 'download before upload')
+const logoCpu = videoChain({ encoder: 'libx264', resolution: '720p', logo: { path: '/l.png', corner: 'tr', marginPx: 20 } }, false)
+assert.ok(!logoCpu.complex.includes('hwdownload') && !logoCpu.complex.includes('hwupload'),
+  'the CPU path needs no hardware round trip at all')
+// Corner anchors are EXPRESSIONS so they survive a source raster change.
+for (const [corner, xy] of [['tl', 'x=20:y=20'], ['tr', 'x=W-w-20:y=20'], ['bl', 'x=20:y=H-h-20'], ['br', 'x=W-w-20:y=H-h-20']]) {
+  assert.ok(videoChain({ logo: { path: '/l.png', corner, marginPx: 20 } }, false).complex.includes('overlay=' + xy), corner)
+}
+assert.ok(videoChain({ logo: { path: '/l.png', heightPx: 64 } }, false).complex.includes('scale=-1:64'), 'logo can be resized')
+// vaapi cannot take system-memory frames either, so the composite has to be uploaded for it
+// too — the same rule as nvenc, just a different upload filter.
+assert.ok(videoChain({ encoder: 'h264_vaapi', logo: { path: '/l.png' } }, false).complex.endsWith('format=nv12,hwupload[vout]'),
+  'a composited vaapi frame is uploaded before the encoder sees it')
+// The logo becomes input 1, and the graph output has to be mapped by name.
+const logoArgs = encodeArgs({ encoder: 'libx264', logo: { path: '/l.png' }, audioTracks: 'all' }, HLS)
+assert.strictEqual(logoArgs[0], '-filter_complex')
+assert.deepStrictEqual(logoArgs.slice(2, 6), ['-map', '[vout]', '-map', '0:a?'], 'filter output + all audio mapped')
+assert.ok(!logoArgs.includes('-vf'), 'filter_complex replaces -vf, never both')
+assert.deepStrictEqual(logoInputArgs({ logo: { path: '/l.png' } }), ['-i', '/l.png'])
+assert.deepStrictEqual(logoInputArgs({}), [])
+const fullLogo = ffmpegArgs({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'libx264', logo: { path: '/l.png' } }, hls: HLS }, outDir)
+assert.ok(fullLogo.indexOf('/l.png') > fullLogo.indexOf('http://o/s'), 'the logo is input 1, after the source')
+assert.ok(fullLogo.indexOf('-filter_complex') > fullLogo.indexOf('/l.png'), 'the graph follows the input it references')
+
+// ⚠ REGRESSION: the `test` input is TWO ffmpeg inputs (lavfi video + lavfi tone), so a
+// logo added after it is input 2 and the tone is input 1. Hardcoding [1:v] made ffmpeg
+// reject the whole graph — "Stream specifier ':v' ... matches no streams" — and the channel
+// never started. Every unit test here used a single-input source, so only running the real
+// broadcaster caught it. These assertions are the guard.
+assert.strictEqual(mainInputCount({ kind: 'test' }), 2, 'test = lavfi video + lavfi tone')
+assert.strictEqual(mainInputCount({ kind: 'pull', url: 'http://o/s' }), 1)
+assert.strictEqual(mainInputCount({ kind: 'file', path: '/m/a.mp4' }), 1)
+assert.strictEqual(mainInputCount('test'), 2, 'legacy string input counted too')
+const logoOnTest = videoChain({ logo: { path: '/l.png' } }, false, { kind: 'test' })
+assert.ok(logoOnTest.complex.startsWith('[2:v]'), 'logo is input 2 after a test source')
+assert.ok(logoOnTest.complex.includes('[0:v]'), 'and the picture is still input 0')
+const logoOnPull = videoChain({ logo: { path: '/l.png' } }, false, { kind: 'pull', url: 'http://o/s' })
+assert.ok(logoOnPull.complex.startsWith('[1:v]'), 'logo is input 1 after a single-input source')
+// The audio map has to follow the same arithmetic or a test channel loses its tone.
+assert.deepStrictEqual(encodeArgs({ logo: { path: '/l.png' } }, HLS, { kind: 'test' }).slice(2, 6),
+  ['-map', '[vout]', '-map', '1:a:0?'], 'test audio comes from input 1')
+assert.deepStrictEqual(encodeArgs({ logo: { path: '/l.png' } }, HLS, { kind: 'pull', url: 'http://o/s' }).slice(2, 6),
+  ['-map', '[vout]', '-map', '0:a:0?'], 'pull audio shares input 0')
+assert.deepStrictEqual(encodeArgs({ audioTracks: 'all' }, HLS, { kind: 'test' }).slice(0, 4),
+  ['-map', '0:v:0', '-map', '1:a?'], 'multi-audio on a test source maps the tone input')
+// End to end: the logo -i must sit between the source inputs and the graph referencing it.
+const testFull = ffmpegArgs({ input: { kind: 'test' }, transcode: { logo: { path: '/l.png' } }, hls: HLS }, outDir)
+assert.strictEqual(testFull.filter((a) => a === '-i').length, 3, 'test + logo = three -i')
+assert.ok(testFull.lastIndexOf('-i') < testFull.indexOf('-filter_complex'), 'all inputs precede the graph')
+
+// --- validation: drawing on a picture that is never decoded is refused, not ignored
+throws(() => normalizeTranscode({ encoder: 'copy', logo: { path: '/l.png' } }), /copy/)
+throws(() => normalizeTranscode({ encoder: 'copy', subtitles: { path: '/a.srt' } }), /copy/)
+throws(() => normalizeTranscode({ logo: { path: '' } }), /logo.path/)
+throws(() => normalizeTranscode({ logo: { path: '/l.png', corner: 'middle' } }), /corner/)
+throws(() => normalizeTranscode({ subtitles: { path: 'x\ny' } }), /subtitles.path/)
+assert.strictEqual(normalizeTranscode({ logo: null }).logo, null, 'null clears the logo')
+assert.strictEqual(normalizeTranscode({ logo: { path: '/l.png' } }).logo.corner, 'tr')
+assert.strictEqual(normalizeTranscode({ logo: { path: '/l.png' } }).logo.marginPx, 20)
+
+// --- CENC key for encrypted DASH
+const enc = normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: '00112233445566778899AABBCCDDEEFF' }, { config: cfg })
+assert.strictEqual(enc.cencKey, '00112233445566778899aabbccddeeff', 'hex key normalised to lower case')
+assert.deepStrictEqual(inputArgs(enc), [...RC, '-cenc_decryption_key', '00112233445566778899aabbccddeeff', '-i', 'https://o/m.mpd'])
+assert.ok(inputArgs(enc).indexOf('-cenc_decryption_key') < inputArgs(enc).indexOf('-i'), 'a demuxer option must precede -i')
+throws(() => normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: 'nothex' }, { config: cfg }), /cencKey/)
+throws(() => normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: 'aabb' }, { config: cfg }), /cencKey/)
+assert.strictEqual(normalizeInput({ kind: 'pull', url: 'https://o/m.mpd' }, { config: cfg, existing: enc }).cencKey,
+  enc.cencKey, 'omitted on a PATCH = keep the stored key')
+assert.strictEqual(normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: '' }, { config: cfg, existing: enc }).cencKey,
+  undefined, 'empty string clears it')
+// A .mpd pull is LIVE by default, exactly like .m3u8 — no -re.
+assert.ok(!inputArgs({ kind: 'pull', url: 'https://o/m.mpd' }).includes('-re'), 'dash manifest is not paced with -re')
+log('S: multi-audio, custom raster, audio format, logo overlay, burn-in subs, CENC key ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing + gpu decode path + overlays/audio/CENC)')

@@ -22,17 +22,77 @@ export const TRANSCODE_DEFAULTS = {
   fps: 'source',
   videoBitrateKbps: null, // null = encoder default rate control (x264 CRF)
   audioBitrateKbps: 128,
-  preset: 'fast'
+  preset: 'fast',
+  // 'auto' = let the host decide (channel.js resolves it against the capability
+  // probe before the args are built); true/false force it. See hwDecodeArgs.
+  hwDecode: 'auto',
+  gpu: null, // null = ffmpeg's default device; N pins decode+encode to that GPU
+  audioCodec: 'aac',
+  audioSampleRate: 48000,
+  audioChannels: null, // null = keep the source's layout
+  // 'first' reproduces ffmpeg's default stream selection — ONE audio track, whichever it
+  // judges best. 'all' keeps every audio track as its own PID in the same MPEG-TS
+  // segments, which is what a multi-language IPTV source needs.
+  audioTracks: 'first',
+  logo: null, // { path, corner, marginPx, heightPx } — see logoFilters
+  subtitles: null, // { path } — burn an external .srt/.ass into the picture
+  // --- 24/7 stability. Each answers a failure that only appears on a long-running live
+  // channel, which is exactly why none of them are ffmpeg defaults.
+  fpsMode: 'source', // 'cfr' forces a constant frame rate
+  maxMuxQueue: null, // packets — guards the "Too many packets buffered" abort
+  audioSync: false, // aresample=async — corrects audio drifting away from video
+  // --- timestamp base, alongside ingestTuning's genpts/igndts.
+  avoidNegativeTs: false,
+  copyTs: false
 }
 
+// Named presets, plus free-form '<W>x<H>' handled by parseResolution.
 const RES_HEIGHT = { '1080p': 1080, '720p': 720, '480p': 480, '360p': 360 }
+export const CUSTOM_RES_RE = /^(\d{2,5})x(\d{2,5})$/
+export const LOGO_CORNERS = new Set(['tl', 'tr', 'bl', 'br'])
+export const AUDIO_CODECS = new Set(['aac', 'mp2', 'opus', 'copy'])
+export const AUDIO_SAMPLE_RATES = new Set([44100, 48000])
+export const AUDIO_CHANNELS = new Set([1, 2, 6])
+
+// → { w, h } | { h } | null. A named preset scales by HEIGHT with the aspect preserved
+// (-2 = nearest even width, which every H.264 encoder requires); an explicit WxH is taken
+// literally, because an operator who typed both numbers means both numbers.
+export function parseResolution (resolution) {
+  if (!resolution || resolution === 'source') return null
+  const preset = RES_HEIGHT[resolution]
+  if (preset) return { h: preset }
+  const m = CUSTOM_RES_RE.exec(String(resolution))
+  return m ? { w: parseInt(m[1], 10), h: parseInt(m[2], 10) } : null
+}
+
+// Encoders that take the NVIDIA path (-gpu, CUVID decode, scale_cuda, -forced-idr).
+// hevc_nvenc behaves identically to h264_nvenc for all of it — same preset scale, same
+// forced-IDR requirement, same CUDA surface handling — so it belongs to the same family.
+export const NVENC_ENCODERS = new Set(['h264_nvenc', 'hevc_nvenc'])
+
+// Software encoders: compiled in means usable, and both want the same low-latency tuning
+// and an explicit 8-bit pixel format (x265 otherwise happily emits 10-bit from a 10-bit
+// source, which is correct but not what a compatibility-first live channel wants).
+export const SOFTWARE_ENCODERS = new Set(['libx264', 'libx265'])
+
+// HEVC output, whoever produced it. These need -tag:v hvc1: ffmpeg's HLS muxer says so
+// itself ("Stream HEVC is not hvc1, you should use tag:v hvc1 to set it"), and without the
+// tag a range of players refuse HEVC in HLS outright. Harmless on MPEG-TS, required the
+// moment anything downstream repackages to fMP4 — and a silent no-play on a viewer's device
+// is the most expensive kind of bug to chase.
+export const HEVC_ENCODERS = new Set(['hevc_nvenc', 'libx265'])
 
 // fast/balanced/quality → per-encoder speed/quality flag. vaapi has no preset
 // concept (rate control only); amf uses -quality and is the least battle-tested
 // of the four hw paths (surface as EXPERIMENTAL in the UI).
 const PRESET_FLAGS = {
   libx264: { flag: '-preset', fast: 'veryfast', balanced: 'medium', quality: 'slow' },
+  // x265 is far slower than x264 at the same named preset, so 'quality' stops at 'slow'
+  // rather than reaching for anything beyond it — a live encoder that cannot keep up with
+  // realtime is not higher quality, it is a stalled channel.
+  libx265: { flag: '-preset', fast: 'veryfast', balanced: 'medium', quality: 'slow' },
   h264_nvenc: { flag: '-preset', fast: 'p2', balanced: 'p4', quality: 'p6' },
+  hevc_nvenc: { flag: '-preset', fast: 'p2', balanced: 'p4', quality: 'p6' },
   h264_qsv: { flag: '-preset', fast: 'veryfast', balanced: 'medium', quality: 'slow' },
   h264_amf: { flag: '-quality', fast: 'speed', balanced: 'balanced', quality: 'quality' }
 }
@@ -76,7 +136,23 @@ export function urlScheme (url) {
 // sources to realtime; live sources (push listeners, rtsp/rtmp/srt/udp pulls and
 // live HLS playlists) pace themselves — -re on those starves the reader and adds
 // drift, so it is applied ONLY to test/file and plain-http VOD pulls.
-export function inputArgs (input) {
+// HTTP(S)-ONLY source options. These are AVOptions of the http protocol, so emitting them
+// for a udp/srt/rtmp input makes ffmpeg fail on an unrecognised option — which is why they
+// live inside the http branch rather than alongside the scheme-agnostic ingest tuning.
+//   user_agent  — many providers vary or gate on it; the ffmpeg default is a giveaway.
+//   headers     — auth tokens, Referer, cookies. MUST end CRLF or ffmpeg mis-parses it.
+//   rw_timeout  — fail a hung socket fast instead of waiting on the watchdog's stall
+//                 detector, which only fires after the live edge has been frozen ~20 s.
+function httpSourceArgs (tuning) {
+  if (!tuning) return []
+  const out = []
+  if (tuning.userAgent) out.push('-user_agent', tuning.userAgent)
+  if (tuning.headers) out.push('-headers', tuning.headers)
+  if (tuning.rwTimeoutMs != null) out.push('-rw_timeout', String(tuning.rwTimeoutMs * 1000)) // µs
+  return out
+}
+
+export function inputArgs (input, ingestTuning = null) {
   const t = upgradeInputString(input)
   switch (t.kind) {
     case 'test':
@@ -88,12 +164,21 @@ export function inputArgs (input) {
     case 'pull': {
       const scheme = urlScheme(t.url)
       if (scheme === 'rtsp') return ['-rtsp_transport', 'tcp', '-i', t.url]
+      // Encrypted DASH the operator already holds the key for (CENC / ClearKey). This is
+      // an option of the DASH demuxer, so it has to precede -i like any other input option.
+      // ⚠ It decrypts with a key you SUPPLY. It is not a DRM client: Widevine and
+      // PlayReady need a licence-server handshake and a CDM, neither of which ffmpeg has.
+      const cenc = t.cencKey ? ['-cenc_decryption_key', t.cencKey] : []
       if (scheme === 'http' || scheme === 'https') {
+        const HTTP = [...httpSourceArgs(ingestTuning), ...HTTP_RECONNECT]
         // -allowed_extensions ALL lets the HLS demuxer accept SSAI / ad-beacon segment URLs
         // that don't end in .ts (Amagi/DistroTV and many FAST channels) — without it ffmpeg
         // rejects the playlist ("not in allowed_segment_extensions"). It only RELAXES a filter,
         // so it's harmless for plain .ts feeds, and the operator already trusts the pull URL.
-        if (/\.m3u8($|\?)/i.test(t.url)) return [...HTTP_RECONNECT, '-allowed_extensions', 'ALL', '-i', t.url]
+        if (/\.m3u8($|\?)/i.test(t.url)) return [...HTTP, ...cenc, '-allowed_extensions', 'ALL', '-i', t.url]
+        // A DASH manifest is live-by-default like the HLS one above: no -re, and it is the
+        // only place a CENC key is any use.
+        if (/\.mpd($|\?)/i.test(t.url)) return [...HTTP, ...cenc, '-i', t.url]
         // ⚠ LIVE IS THE DEFAULT for an unknown http(s) pull, and -re is now opt-IN by file
         // extension. The old rule was ".m3u8 = live, everything else = a VOD file needing
         // realtime pacing" — false for raw mpegts over http, which is what most IPTV
@@ -105,8 +190,8 @@ export function inputArgs (input) {
         // share of the restarts. Guessing "live" for an unknown URL is also the safer
         // error: a live source read without -re is correct, whereas a live source read
         // WITH -re degrades continuously.
-        if (VOD_FILE_RE.test(t.url)) return [...HTTP_RECONNECT, '-re', '-i', t.url]
-        return [...HTTP_RECONNECT, '-reconnect_at_eof', '1', '-i', t.url]
+        if (VOD_FILE_RE.test(t.url)) return [...HTTP, ...cenc, '-re', '-i', t.url]
+        return [...HTTP, ...cenc, '-reconnect_at_eof', '1', '-i', t.url]
       }
       return ['-i', t.url] // rtmp(s)/srt/udp pulls
     }
@@ -140,12 +225,204 @@ export function hwDeviceArgs (encoder, vaapiDevice) {
   return []
 }
 
+// CUVID decode straight into GPU memory, so the whole chain (decode → scale → encode)
+// stays on the card and the CPU only demuxes and muxes. Measured on a 2x RTX 4090 box,
+// 1080p30 → 720p/3000k: 1.6 CPU-seconds per 30 s of content vs 12.9 for CPU-decode+nvenc
+// and 25.0 for libx264 veryfast — ~8x less CPU than the path this replaces.
+//
+// INPUT options, so they must precede the -i they apply to.
+//
+// Deliberately NOT applied when:
+//   - the encoder is not nvenc — a CPU encoder would need an explicit hwdownload, and
+//     `copy` decodes nothing at all.
+//   - the input is `test` — lavfi synthesises raw frames, there is no bitstream to decode.
+//   - hwDecode is 'auto'/false — 'auto' is resolved to a real boolean by channel.js
+//     against the capability probe; an unresolved 'auto' reaching here means "off", so
+//     the pure builder never depends on host state it cannot see.
+//
+// ⚠ `-hwaccel cuda` does NOT fail loudly on a codec CUVID cannot handle (10-bit H.264,
+// say): ffmpeg silently falls back to the SOFTWARE decoder and then the scale_cuda filter
+// below dies on CPU frames with "Impossible to convert between the formats" / "Function
+// not implemented", exit 218. That is a per-SOURCE failure the capability probe cannot
+// predict, so channel.js watches for that signature and respawns without hw decode.
+export function hwDecodeArgs (transcode, input) {
+  const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  if (t.hwDecode !== true) return []
+  if (!NVENC_ENCODERS.has(t.encoder)) return []
+  const kind = (input && input.kind) || (typeof input === 'string' ? upgradeInputString(input).kind : null)
+  if (kind === 'test') return []
+  const out = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda']
+  if (t.gpu != null) out.push('-hwaccel_device', String(t.gpu))
+  return out
+}
+
+// Is this transcode spec actually going to decode on the GPU? encodeArgs needs to know,
+// because the filter and pixel-format rules differ between GPU and CPU frames.
+function cudaFrames (t, input) {
+  return hwDecodeArgs(t, input).length > 0
+}
+
+// ffmpeg stderr that means "this SOURCE cannot ride the CUDA path" — as opposed to "this
+// HOST has no CUDA", which the capability probe already caught at start(). Every line here
+// was observed on a real 2x RTX 4090 box feeding a High 10 source through -hwaccel cuda:
+// CUVID declines the profile, ffmpeg silently swaps in the software decoder, and the
+// mismatch surfaces at the filter graph rather than at the decoder. The channel watchdog
+// matches these to respawn once on the CPU path instead of retrying a doomed config
+// forever (see channel.js _spawnFfmpeg).
+export const HW_DECODE_FAIL_RE = new RegExp([
+  'impossible to convert between the formats', // scale_cuda handed CPU frames
+  'failed to inject frame into filter network',
+  'function not implemented', // the errno the above collapses into
+  'failed setup for format cuda',
+  'no decoder surfaces left', // CUVID surface pool exhausted
+  'hwaccel initialisation returned error',
+  'cannot load libcuda'
+].join('|'), 'i')
+
+// How many `-i` the MAIN source contributes. Everything that references a stream by index
+// depends on this, and it is not always 1: the `test` input is TWO inputs (an lavfi video
+// pattern plus an lavfi tone), so a logo added after it is input 2 and the tone is input 1.
+// Getting this wrong is not a subtle failure — ffmpeg refuses the whole graph with
+// "Stream specifier ':v' in filtergraph description ... matches no streams" and the channel
+// never starts. (Found exactly that way: unit tests all used single-input sources.)
+export function mainInputCount (input) {
+  const t = upgradeInputString(input)
+  return t && t.kind === 'test' ? 2 : 1
+}
+
+// Which input carries the source audio. For `test` the tone is its own input; for every
+// other kind the audio shares input 0 with the video.
+function audioInputIndex (input) {
+  return mainInputCount(input) === 2 ? 1 : 0
+}
+
+// ffmpeg filter-graph escaping. A path reaches the graph through two parsers, so the
+// characters that terminate a filter ARGUMENT (:) and the graph itself (' and \) all have
+// to survive both. Windows paths hit every one of them at once ("C:\subs\a.srt").
+function escFilterPath (p) {
+  return String(p).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
+}
+
+// Corner + margin → overlay x/y. W,H are the MAIN frame and w,h the overlay, so the
+// right/bottom anchors keep working whatever raster the source turns out to be — the
+// alternative (fixed pixel offsets) silently misplaces the logo when a source changes size.
+function overlayXY (corner, marginPx) {
+  const m = Number.isFinite(marginPx) ? marginPx : 20
+  if (corner === 'tl') return `x=${m}:y=${m}`
+  if (corner === 'bl') return `x=${m}:y=H-h-${m}`
+  if (corner === 'br') return `x=W-w-${m}:y=H-h-${m}`
+  return `x=W-w-${m}:y=${m}` // 'tr' — the conventional bug/DOG position
+}
+
+// The video filter chain. Returns EITHER a simple `-vf` string or a `-filter_complex`
+// graph ending in [vout]; a logo forces the latter because it is a second input.
+//
+// The rule that drives everything here: subtitles (libass) and alpha blending are
+// CPU-ONLY filters. On the GPU path they need an explicit hwdownload → filter →
+// hwupload_cuda round trip, and getting that wrong does not fail loudly — it fails with
+// "Impossible to convert between the formats", the same opaque error the hw-decode
+// fallback exists for. Measured cost of the round trip on a 4090 (1080p→720p, 6 s):
+// 1.34 CPU-s against a 0.69 baseline, still well under the 2.92 of decoding on the CPU.
+//
+// ⚠ KNOWN LIMIT — a LOOPING file source plus this round trip dies at the loop point.
+// `file` inputs carry -stream_loop -1, and when the file wraps ffmpeg reinitialises the
+// filter graph; the CUDA upload does not survive that and the process exits with
+// "Impossible to convert between the formats supported by the filter
+// 'Parsed_hwupload_cuda_N'". Measured: three concurrent channels each held exact 2.000 s
+// segments for 28 s and then all failed together at the 30 s loop boundary.
+// It self-heals rather than crash-looping, because that string is one of the signatures in
+// HW_DECODE_FAIL_RE: the watchdog marks the run, respawns without GPU decode, and the CPU
+// chain (no hwupload) loops indefinitely. Cost is one respawn blip on the first wrap.
+// Live sources — pull and the push listeners — never wrap, so they never hit this at all.
+//
+// ⚠ overlay_cuda is NOT used, deliberately. It looks like the obvious way to composite a
+// logo without leaving the card, and it is documented as such — but on ffmpeg 6.1.1 with
+// driver 580.159.03 it SEGFAULTS ffmpeg in every configuration tried: opaque and
+// transparent logo, looped and single-shot input, literal and expression anchors. A
+// crashing filter in a live channel is a respawn loop, not a slow channel. It also only
+// accepts nv12, which has no alpha, so even working it would render a transparent PNG as
+// a solid box. The CPU composite below is one code path, blends correctly, and was
+// measured at 1.34 CPU-s against a 0.69 baseline — still far under the 2.92 of decoding
+// on the CPU. If a future ffmpeg fixes the crash this is where the fast path would go.
+export function videoChain (transcode, onGpu, input = null) {
+  const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  const logoIdx = mainInputCount(input) // the logo is appended AFTER the source's inputs
+  const res = parseResolution(t.resolution)
+  const scale = res
+    ? (onGpu ? `scale_cuda=${res.w ?? -2}:${res.h}` : `scale=${res.w ?? -2}:${res.h}`)
+    : null
+  const subs = t.subtitles && t.subtitles.path
+    ? `subtitles=filename='${escFilterPath(t.subtitles.path)}'`
+    : null
+  const logo = t.logo && t.logo.path ? t.logo : null
+
+  if (!logo) {
+    const parts = []
+    if (scale) parts.push(scale)
+    if (subs) {
+      // The exact round trip verified against ffmpeg 6.1.1 on an RTX 4090.
+      if (onGpu) parts.push('hwdownload', 'format=nv12', subs, 'format=yuv420p', 'hwupload_cuda')
+      else parts.push(subs)
+    }
+    if (t.encoder === 'h264_vaapi') parts.push('format=nv12', 'hwupload') // vaapi encodes GPU surfaces only
+    return { vf: parts.length ? parts.join(',') : null, complex: null }
+  }
+
+  const prep = []
+  if (logo.heightPx) prep.push(`scale=-1:${logo.heightPx}`)
+  const pos = overlayXY(logo.corner, logo.marginPx)
+
+  // rgba unconditionally: it carries alpha when the image has it and costs nothing when it
+  // does not, so there is no format decision for an operator to get wrong.
+  const base = []
+  if (scale) base.push(scale)
+  if (onGpu) base.push('hwdownload', 'format=nv12')
+  if (subs) base.push(subs)
+  // Whatever the encoder needs to receive, applied AFTER the composite: cuda surfaces for
+  // nvenc, a vaapi surface for h264_vaapi (which, like nvenc, cannot take system memory).
+  const tail = onGpu
+    ? ',format=yuv420p,hwupload_cuda'
+    : (t.encoder === 'h264_vaapi' ? ',format=nv12,hwupload' : '')
+  return {
+    vf: null,
+    complex: `[${logoIdx}:v]${[...prep, 'format=rgba'].join(',')}[lg];` +
+      `[0:v]${base.length ? base.join(',') : 'null'}[bg];[bg][lg]overlay=${pos}${tail}[vout]`
+  }
+}
+
+// The logo is an EXTRA ffmpeg input appended after the source's own. Its stream index is
+// therefore mainInputCount(input), not a constant 1 — see videoChain.
+export function logoInputArgs (transcode) {
+  const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  return t.logo && t.logo.path ? ['-i', t.logo.path] : []
+}
+
 // Output-side codec options. `transcode` may be null/partial; defaults preserve
 // pre-S15a behavior except -g 60 → -force_key_frames, which aligns keyframes to
 // segment boundaries for every encoder regardless of source fps.
-export function encodeArgs (transcode, hls) {
+// `input` is only consulted to tell GPU frames from CPU frames (see hwDecodeArgs);
+// omitting it assumes a real bitstream, which is what every non-test channel is.
+export function encodeArgs (transcode, hls, input = null) {
   const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  const onGpu = cudaFrames(t, input)
+  const chain = videoChain(t, onGpu, input)
   const out = []
+  // `test` splits video and audio across two inputs, so the audio does not live on input 0.
+  const aIdx = audioInputIndex(input)
+
+  // Stream selection. ffmpeg's DEFAULT is one video + one audio, which is what a channel
+  // with neither a logo nor extra audio tracks wants — so we stay silent in that case and
+  // the argument list is unchanged from before this feature existed. Anything else has to
+  // be mapped explicitly: a filter_complex output is not auto-selected, and extra audio
+  // tracks are not either. Every audio map is optional ('?') because a video-only source
+  // is legitimate and must not turn into a hard ffmpeg failure.
+  const allAudio = t.audioTracks === 'all'
+  if (chain.complex) {
+    out.push('-filter_complex', chain.complex, '-map', '[vout]')
+    out.push('-map', allAudio ? `${aIdx}:a?` : `${aIdx}:a:0?`)
+  } else if (allAudio) {
+    out.push('-map', '0:v:0', '-map', `${aIdx}:a?`)
+  }
 
   if (t.encoder === 'copy') {
     // Passthrough: segment cuts land on the SOURCE's keyframes — the publisher
@@ -155,21 +432,73 @@ export function encodeArgs (transcode, hls) {
     out.push('-c:v', t.encoder)
     const preset = PRESET_FLAGS[t.encoder]
     if (preset) out.push(preset.flag, preset[t.preset])
-    if (t.encoder === 'libx264') out.push('-tune', 'zerolatency', '-pix_fmt', 'yuv420p')
-    if (t.encoder === 'h264_nvenc') out.push('-tune', 'll')
+    if (SOFTWARE_ENCODERS.has(t.encoder)) out.push('-tune', 'zerolatency', '-pix_fmt', 'yuv420p')
+    if (NVENC_ENCODERS.has(t.encoder)) {
+      out.push('-tune', 'll')
+      // ⚠ LOAD-BEARING: nvenc silently IGNORES -force_key_frames without this, so the HLS
+      // muxer finds no keyframe to cut on. Measured on ffmpeg 6.1.1 / RTX 4090 with the
+      // args main ships today: 13 s of input came out as ONE 12.9 s segment instead of
+      // seven 2 s ones. `-tune ll` is what makes it fatal rather than merely wrong — low
+      // latency means no periodic IDR, so the only keyframe is the first and the segment
+      // grows without bound: the live window never rolls, delete_segments never trims, and
+      // a late joiner has nothing playable to start from. (Dropping the tune is not a fix
+      // — you just get nvenc's own 250-frame GOP, i.e. 8 s segments at 30 fps.)
+      // -forced-idr is preferred over -g N because it keeps the keyframe cadence tied to
+      // hls.time without having to know the source fps, which is the whole reason this
+      // builder uses -force_key_frames instead of -g in the first place.
+      out.push('-forced-idr', '1')
+      if (t.gpu != null) out.push('-gpu', String(t.gpu))
+      // H.264 NVENC is 8-bit ONLY: without this a High 10 source arrives as yuv420p10le
+      // and nvenc refuses it with the thoroughly misleading "No capable devices found",
+      // which reads like a missing GPU rather than a pixel format (measured: the shipped
+      // args fail on any 10-bit source today). hevc_nvenc COULD emit Main10, but a live
+      // channel is pinned to 8-bit deliberately — 10-bit narrows the set of viewer devices
+      // that can decode it, and the point of transcoding here is reach, not mastering.
+      // Only on the CPU-decode path — with CUDA frames the conversion is scale_cuda's job
+      // and -pix_fmt would force a pointless GPU→CPU download.
+      if (!onGpu) out.push('-pix_fmt', 'yuv420p')
+    }
+    if (HEVC_ENCODERS.has(t.encoder)) out.push('-tag:v', 'hvc1')
     out.push('-force_key_frames', `expr:gte(t,n_forced*${hls.time})`)
     if (t.videoBitrateKbps != null) {
       out.push('-b:v', `${t.videoBitrateKbps}k`, '-maxrate', `${t.videoBitrateKbps}k`, '-bufsize', `${t.videoBitrateKbps * 2}k`)
     }
     if (t.fps !== 'source') out.push('-r', String(t.fps))
-    const filters = []
-    const height = RES_HEIGHT[t.resolution]
-    if (height) filters.push(`scale=-2:${height}`)
-    if (t.encoder === 'h264_vaapi') filters.push('format=nv12', 'hwupload') // vaapi encodes GPU surfaces only
-    if (filters.length) out.push('-vf', filters.join(','))
+    // A VARIABLE-frame-rate source segments badly: the muxer cuts on wall-clock but the
+    // frames arrive unevenly, so EXTINF durations wander and players stutter at the joins.
+    // HLS wants CFR. Not the default because forcing it on an already-constant source only
+    // adds frame duplication/drops for nothing. (-fps_mode replaced -vsync in ffmpeg 5.0;
+    // the production container runs 5.1.9, so it is safe here.)
+    if (t.fpsMode === 'cfr') out.push('-fps_mode', 'cfr')
+    // "Too many packets buffered for output stream" is a hard ABORT, not a warning, and it
+    // is reached whenever one stream runs ahead of another — a long GOP, a sparse audio
+    // track, an upstream hiccup. The default queue is small; raising it turns a dead
+    // channel into a brief memory bump.
+    if (t.maxMuxQueue != null) out.push('-max_muxing_queue_size', String(t.maxMuxQueue))
+    // Timestamp base. avoid_negative_ts make_zero rebases a stream that starts negative
+    // (common after genpts); copyts preserves the SOURCE timeline instead, and pairs with
+    // start_at_zero so the first segment still begins at 0 rather than at an arbitrary
+    // upstream offset. They are opposite strategies — validation refuses both at once.
+    if (t.avoidNegativeTs) out.push('-avoid_negative_ts', 'make_zero')
+    if (t.copyTs) out.push('-copyts', '-start_at_zero')
+    // Scaling, subtitle burn-in and the hardware round trips all live in videoChain; a
+    // logo turns the chain into a -filter_complex that was already emitted above.
+    if (chain.vf) out.push('-vf', chain.vf)
   }
 
-  out.push('-c:a', 'aac', '-ar', '48000', '-b:a', `${t.audioBitrateKbps}k`)
+  if (t.audioCodec === 'copy') {
+    // Passthrough audio: no re-encode, so bitrate/rate/channels are all meaningless here.
+    out.push('-c:a', 'copy')
+  } else {
+    out.push('-c:a', t.audioCodec, '-ar', String(t.audioSampleRate), '-b:a', `${t.audioBitrateKbps}k`)
+    if (t.audioChannels != null) out.push('-ac', String(t.audioChannels))
+    // Audio DRIFT is the classic 24/7 live failure: a source whose audio clock runs a
+    // fraction off video walks visibly out of sync over hours, and nothing in the pipeline
+    // notices because every segment is individually fine. aresample=async stretches or
+    // pads audio to keep it pinned to the video timeline. It re-encodes audio by
+    // definition, so `copy` cannot use it — validation refuses that combination.
+    if (t.audioSync) out.push('-af', 'aresample=async=1:first_pts=0')
+  }
   return out
 }
 
@@ -267,7 +596,25 @@ export function ingestTuningArgs (t) {
   if (t.probesizeKB != null) out.push('-probesize', String(t.probesizeKB * 1024))
   if (t.analyzeDurationMs != null) out.push('-analyzeduration', String(t.analyzeDurationMs * 1000)) // ffmpeg wants µs
   if (t.threadQueueSize != null) out.push('-thread_queue_size', String(t.threadQueueSize))
-  if (t.discardCorrupt) out.push('-fflags', '+discardcorrupt')
+  // ⚠ -fflags is ONE option: repeating it OVERRIDES rather than accumulates, so a second
+  // -fflags would silently discard the first. Every flag has to be combined into one value.
+  //   discardcorrupt — drop corrupt packets instead of aborting (marginal RF/HDMI chains
+  //     produce them constantly).
+  //   genpts — SYNTHESISE missing presentation timestamps. A stream whose PTS are absent or
+  //     non-monotonic makes the HLS muxer emit wrong EXTINF durations or refuse the packet
+  //     outright ("Application provided invalid, non monotonically increasing dts"); the
+  //     segmenter needs a sane timeline more than it needs the original one.
+  //   igndts — ignore DTS entirely and let PTS drive. Pairs with genpts on sources whose
+  //     DTS is the broken half; on its own it is the lighter fix.
+  const fflags = []
+  if (t.discardCorrupt) fflags.push('+discardcorrupt')
+  if (t.genPts) fflags.push('+genpts')
+  if (t.ignoreDts) fflags.push('+igndts')
+  if (fflags.length) out.push('-fflags', fflags.join(''))
+  // Keep decoding through bitstream errors rather than treating them as fatal. Separate
+  // from discardcorrupt: that one is about the CONTAINER dropping bad packets, this is the
+  // DECODER being told to carry on with what it got.
+  if (t.ignoreDecodeErrors) out.push('-err_detect', 'ignore_err')
   return out
 }
 
@@ -276,8 +623,15 @@ export function ffmpegArgs (spec, outDir) {
   return [
     ...hwDeviceArgs(encoder, spec.vaapiDevice),
     ...ingestTuningArgs(spec.ingestTuning),
-    ...inputArgs(spec.input),
-    ...encodeArgs(spec.transcode, spec.hls),
+    // -hwaccel is a PER-INPUT option: it applies to the -i that follows it, so it has to
+    // sit immediately before inputArgs and after any global device bootstrap.
+    ...hwDecodeArgs(spec.transcode, spec.input),
+    // ingestTuning also carries HTTP-only source options, which inputArgs applies only on
+    // the http(s) branch (they would make ffmpeg fail on a udp/srt input).
+    ...inputArgs(spec.input, spec.ingestTuning),
+    // The logo is input 1 — it must follow the main -i and precede the graph that uses it.
+    ...logoInputArgs(spec.transcode),
+    ...encodeArgs(spec.transcode, spec.hls, spec.input),
     ...hlsMuxArgs(spec.hls, outDir)
   ]
 }
