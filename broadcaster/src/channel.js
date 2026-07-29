@@ -63,11 +63,15 @@ const PUSH_KINDS = new Set(['rtmp', 'srt', 'udp'])
 const KEY_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 
 // HEVC output (hevc_nvenc / libx265) roughly halves bitrate at the same quality, which on a
-// P2P feed is bandwidth every viewer stops having to re-seed. The trade is decoder reach:
-// Android/ExoPlayer is generally fine, but the desktop shell depends on Chromium's platform
-// HEVC support, which is not universal — so it is an operator choice per channel, never a
-// default. A codec change is also the one thing a player cannot absorb mid-playlist (see
-// SLATE_VARIANTS), so switching an existing channel to HEVC is a restart, not a live swap.
+// P2P feed is bandwidth every viewer stops having to re-seed. Both apps already decode HEVC
+// in production — a fleet has run 19 HEVC channels as `copy`, passing an upstream HEVC
+// bitstream straight through to viewers — so emitting it ourselves is not a new client risk;
+// NVENC produces standard HEVC Main 8-bit like any other encoder. Still an explicit choice
+// per channel rather than a default, because the set of devices that can decode HEVC is
+// narrower than for H.264. A codec change is the one thing a player cannot absorb
+// mid-playlist (see SLATE_VARIANTS), so switching an existing channel is a restart, not a
+// live swap. ⚠ On the desktop it works because hls.js transmuxes TS→fMP4: MSE rejects
+// `video/mp2t; codecs="hvc1…"` outright, so a native-<video> path would fail on HEVC only.
 const ENCODERS = new Set(['libx264', 'libx265', 'copy', 'h264_nvenc', 'hevc_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf'])
 const RESOLUTIONS = new Set(['source', '1080p', '720p', '480p', '360p'])
 const FPS_VALUES = new Set([24, 25, 30, 50, 60])
