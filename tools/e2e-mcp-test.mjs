@@ -6,7 +6,8 @@
 // pointed at that panel (the e2e-reseller-test harness pattern), and a library
 // control server (fake TitleManager — the call shapes, not a real transcode), writes
 // an MCP config pointing at all four over loopback, then launches mcp/src/index.js
-// over a stdio pipe and drives it AS AN MCP CLIENT:
+// over a stdio pipe and drives it AS AN MCP CLIENT (the handshake itself pins the
+// version the server reports — on the wire and via `--version` — to mcp/package.json):
 //   A  list_tools / list_resources shape (+ the tool groups are present)
 //   B  a read tool (panel_status / panel_list_users)
 //   C  a write chain: add streams -> create user -> package -> assign -> assert in the
@@ -508,6 +509,19 @@ try {
   cleanups.push(() => client.close())
   await client.connect(transport)
   log('MCP client connected to the server over stdio')
+
+  // The two version surfaces an operator ever sees — the handshake a client shows and
+  // the `--version` flag — must both report what npm published this package as. They
+  // drifted once (a hardcoded 0.0.1 against a shipped 0.1.0), which quietly misled
+  // every "what version are you running?" support question.
+  const mcpPkgVersion = JSON.parse(fs.readFileSync(path.join(REPO, 'mcp', 'package.json'), 'utf8')).version
+  const serverInfo = client.getServerVersion() || {}
+  assert.strictEqual(serverInfo.name, 'aliran-mcp', 'handshake reports the server name')
+  assert.strictEqual(serverInfo.version, mcpPkgVersion, `handshake version ${serverInfo.version} != mcp/package.json ${mcpPkgVersion}`)
+  const verCli = await runCli([MCP_ENTRY, '--version'])
+  assert.strictEqual(verCli.status, 0, '--version exits 0')
+  assert.strictEqual(verCli.stderr.trim(), mcpPkgVersion, `--version printed ${verCli.stderr.trim()}, expected ${mcpPkgVersion}`)
+  log(`handshake + --version both report mcp/package.json's ${mcpPkgVersion} ✓`)
 
   // ===== A: list_tools / list_resources shape + the tool groups are present =====
   const toolsList = await client.listTools()

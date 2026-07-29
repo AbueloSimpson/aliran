@@ -12,6 +12,7 @@
 // Transport is local stdio: stdout is the MCP wire, so ALL diagnostics go to stderr.
 // Secrets live only in the config file and are never placed in a tool result.
 
+import fs from 'fs'
 import net from 'net'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -29,7 +30,10 @@ import { registerServerTools, upsertEnv } from './tools/server.js'
 import { registerDiagnoseTools } from './tools/diagnose.js'
 import { registerPrompts } from './prompts.js'
 
-const VERSION = '0.0.1'
+// The version an operator is told — by --version and by the MCP handshake below — is
+// the version npm published this package as, so read it from package.json rather than
+// keeping a second copy here that drifts. package.json always ships in the tarball.
+const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 const logerr = (m) => process.stderr.write(`[aliran-mcp] ${m}\n`)
 
 function freePort () {
