@@ -13,7 +13,8 @@
 //   GET    /api/status
 //   GET    /api/analytics?days=N         aggregate-only per-channel rollups (S48) — counts, no identities
 //   GET    /api/incidents                correlated incident ring (fleet respawn bursts etc.), newest first
-//   GET    /api/capabilities             ffmpeg probe: protocols + deep-verified encoders
+//   GET    /api/capabilities             ffmpeg probe: protocols, deep-verified encoders,
+//                                          GPU decode (hwDecode.cuda) + NVIDIA device list
 //   GET    /api/channels                 list + live status (state/ffmpeg/peers/registered/ingest)
 //   POST   /api/channels                 {id,title?,description?,category?,input?,transcode?,buffer?,hlsTime?,hlsListSize?}
 //   GET    /api/channels/:id

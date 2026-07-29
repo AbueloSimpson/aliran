@@ -33,7 +33,11 @@ import net from 'net'
 import dgram from 'dgram'
 import path from 'path'
 import os from 'os'
-import { startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS, pickSlateFile, parseVideoProfile, NVENC_ENCODERS, HW_DECODE_FAIL_RE } from './hls.js'
+import {
+  startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS,
+  pickSlateFile, parseVideoProfile, NVENC_ENCODERS, HW_DECODE_FAIL_RE, hwDecodeArgs,
+  CUSTOM_RES_RE, LOGO_CORNERS, AUDIO_CODECS, AUDIO_SAMPLE_RATES, AUDIO_CHANNELS
+} from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
 import { makeEgressMeter } from './analytics.js'
@@ -177,7 +181,22 @@ export function normalizeInput (value, { config, usedPorts = new Set(), existing
       if (!PULL_SCHEME_RE.test(u)) bad('unsupported fallback url scheme (allowed: http(s), rtsp, rtmp(s), srt, udp)')
       if (u !== url && !fallbacks.includes(u)) fallbacks.push(u) // drop dupes / echoes of the primary
     }
-    return fallbacks.length ? { kind: 'pull', url, fallbacks } : { kind: 'pull', url }
+    // CENC/ClearKey decryption key for an encrypted DASH manifest. Omitted = keep stored
+    // (same `inherit` rule as a stream key, so a PATCH that only changes the URL does not
+    // silently drop it); '' or null clears it. A 128-bit AES key is exactly 32 hex chars,
+    // and validating that here turns a typo into a clear API error instead of an ffmpeg
+    // start failure. This is a SECRET: it rides in channels.json, which is already 0600.
+    const rawKey = value.cencKey !== undefined ? value.cencKey : inherit?.cencKey
+    let cencKey = null
+    if (rawKey != null && String(rawKey) !== '') {
+      const k = String(rawKey).trim().toLowerCase()
+      if (!/^[0-9a-f]{32}$/.test(k)) bad('input.cencKey must be a 32-character hex key (128-bit AES)')
+      cencKey = k
+    }
+    const pull = { kind: 'pull', url }
+    if (fallbacks.length) pull.fallbacks = fallbacks
+    if (cencKey) pull.cencKey = cencKey
+    return pull
   }
   if (!PUSH_KINDS.has(kind)) bad('input.kind must be one of: test, file, pull, rtmp, srt, udp')
 
@@ -206,6 +225,60 @@ export function normalizeInput (value, { config, usedPorts = new Set(), existing
   return { kind: 'udp', port, timeoutMs }
 }
 
+// A host path the BROADCASTER will read (logo image, subtitle file). Same shape rules as
+// a `file` input, and the same trust model: anyone who can call this API can already point
+// a channel at an arbitrary local file, so the check is about catching typos and argument
+// injection, not about confining an operator who is already trusted.
+function assetPath (v, label) {
+  const s = v == null ? '' : String(v)
+  if (!s || s.length > 512 || /[\r\n]/.test(s)) bad(`${label} must be a path of 1-512 chars`)
+  return s
+}
+
+// { path, corner, marginPx, heightPx } — null clears the logo.
+export function normalizeLogo (value) {
+  if (value == null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) bad('transcode.logo must be an object or null')
+  // No alpha/opaque switch: the compositor is always the CPU `overlay` filter on rgba,
+  // which blends transparency correctly and costs nothing extra on an opaque image. The
+  // GPU alternative (overlay_cuda) segfaults on this ffmpeg — see videoChain.
+  const logo = {
+    path: assetPath(value.path, 'transcode.logo.path'),
+    corner: 'tr',
+    marginPx: 20,
+    heightPx: null
+  }
+  if (value.corner !== undefined) {
+    if (!LOGO_CORNERS.has(value.corner)) bad('transcode.logo.corner must be one of: ' + [...LOGO_CORNERS].join(', '))
+    logo.corner = value.corner
+  }
+  if (value.marginPx !== undefined) logo.marginPx = intInRange(value.marginPx, 0, 1000, 'transcode.logo.marginPx')
+  if (value.heightPx !== undefined && value.heightPx !== null) {
+    logo.heightPx = intInRange(value.heightPx, 8, 2000, 'transcode.logo.heightPx')
+  }
+  return logo
+}
+
+// { path } — an external .srt/.ass burned into the picture. null clears it.
+export function normalizeSubtitles (value) {
+  if (value == null) return null
+  if (typeof value !== 'object' || Array.isArray(value)) bad('transcode.subtitles must be an object or null')
+  return { path: assetPath(value.path, 'transcode.subtitles.path') }
+}
+
+// Resolve transcode.hwDecode ('auto' | true | false) against a capability probe, once per
+// start(). Pure so the decision is unit-testable and so a stubbed probe behaves exactly
+// like a real one — the run captures the answer, which is why a respawn never has to await
+// anything and a mid-run PATCH takes effect on the next start (the documented contract for
+// every other transcode field too).
+export function resolveHwDecode (transcode, caps) {
+  const encoder = transcode?.encoder ?? TRANSCODE_DEFAULTS.encoder
+  if (!NVENC_ENCODERS.has(encoder)) return false // 'auto' can only ever mean off here
+  const want = transcode?.hwDecode ?? TRANSCODE_DEFAULTS.hwDecode
+  if (want !== 'auto') return want === true
+  return Boolean(caps?.hwDecode?.cuda?.verified)
+}
+
 // Validate/normalize per-channel transcode settings. Every field is optional and
 // the defaults reproduce pre-S15a behavior. This validates VALUES only — encoder
 // availability on the host is checked at start() against the capability probe.
@@ -218,8 +291,22 @@ export function normalizeTranscode (value) {
     t.encoder = value.encoder
   }
   if (value.resolution !== undefined) {
-    if (!RESOLUTIONS.has(value.resolution)) bad('transcode.resolution must be one of: ' + [...RESOLUTIONS].join(', '))
-    t.resolution = value.resolution
+    // A named preset, or a free-form '<W>x<H>'. Both dimensions must be EVEN: H.264 in
+    // yuv420p subsamples chroma 2x2, so an odd raster is rejected by the encoder (or
+    // silently rounded) — better to say so here than to hand the operator an ffmpeg error.
+    const custom = typeof value.resolution === 'string' ? CUSTOM_RES_RE.exec(value.resolution) : null
+    if (custom) {
+      const w = parseInt(custom[1], 10)
+      const h = parseInt(custom[2], 10)
+      if (w < 160 || w > 7680 || h < 90 || h > 4320) bad('transcode.resolution: width 160-7680, height 90-4320')
+      if (w % 2 || h % 2) bad('transcode.resolution: width and height must both be even (H.264 chroma subsampling)')
+      t.resolution = `${w}x${h}`
+    } else {
+      if (!RESOLUTIONS.has(value.resolution)) {
+        bad('transcode.resolution must be one of: ' + [...RESOLUTIONS].join(', ') + ', or WxH like 1280x720')
+      }
+      t.resolution = value.resolution
+    }
   }
   if (value.fps !== undefined) {
     if (value.fps === 'source') t.fps = 'source'
@@ -251,9 +338,33 @@ export function normalizeTranscode (value) {
   if (value.gpu !== undefined && value.gpu !== null) {
     t.gpu = intInRange(value.gpu, 0, 15, 'transcode.gpu')
   }
+  if (value.audioCodec !== undefined) {
+    if (!AUDIO_CODECS.has(value.audioCodec)) bad('transcode.audioCodec must be one of: ' + [...AUDIO_CODECS].join(', '))
+    t.audioCodec = value.audioCodec
+  }
+  if (value.audioSampleRate !== undefined) {
+    const n = Number(value.audioSampleRate)
+    if (!AUDIO_SAMPLE_RATES.has(n)) bad('transcode.audioSampleRate must be 44100 or 48000')
+    t.audioSampleRate = n
+  }
+  if (value.audioChannels !== undefined && value.audioChannels !== null) {
+    const n = Number(value.audioChannels)
+    if (!AUDIO_CHANNELS.has(n)) bad('transcode.audioChannels must be 1, 2 or 6 (or null to keep the source)')
+    t.audioChannels = n
+  }
+  if (value.audioTracks !== undefined) {
+    if (value.audioTracks !== 'first' && value.audioTracks !== 'all') bad('transcode.audioTracks must be "first" or "all"')
+    t.audioTracks = value.audioTracks
+  }
+  if (value.logo !== undefined) t.logo = normalizeLogo(value.logo)
+  if (value.subtitles !== undefined) t.subtitles = normalizeSubtitles(value.subtitles)
   if (t.encoder === 'copy') {
     if (t.resolution !== 'source' || t.fps !== 'source') bad('encoder "copy" cannot change resolution/fps (leave them "source")')
     if (t.videoBitrateKbps != null) bad('encoder "copy" cannot set videoBitrateKbps')
+    // Both draw onto the picture, and there is no picture to draw on when the video is
+    // passed through untouched — the frames are never decoded.
+    if (t.logo) bad('encoder "copy" cannot burn in a logo (the video is never decoded)')
+    if (t.subtitles) bad('encoder "copy" cannot burn in subtitles (the video is never decoded)')
   }
   // Both settings are NVIDIA-only. Accepting them silently on another encoder would be a
   // lie the operator only discovers by reading ffmpeg args: `copy` decodes nothing, and a
@@ -582,6 +693,10 @@ class Channel {
     // Refuse cleanly BEFORE any resources spin up: unavailable encoder/protocol
     // (capability probe) and unbindable push ports are operator errors, not crashes.
     await this.manager.assertStartable(this.meta)
+    // Resolve hwDecode 'auto' ONCE per start, against the same probe assertStartable just
+    // consulted (the promise is cached, so this costs nothing). Doing it here rather than
+    // per-respawn means the watchdog never awaits a probe on the restart path.
+    const hwDecodeWanted = resolveHwDecode(this.meta.transcode, await this.manager.capabilities())
     this.logRing.length = 0 // fresh diagnostics for this operator-initiated run
     const encryptionKey = loadOrCreateEncryptionKey(this.storeDir) // persisted — grants seal it
     const buffer = this.meta.buffer || config.feedBuffer || 'disk'
@@ -665,6 +780,12 @@ class Channel {
       drainMirrors: [], // [{ stopMirror }] — retired generations mid-grace
       ff: null,
       ffmpegExit: null,
+      // GPU decode for this run: `wanted` is the resolved config, `failed` is set by the
+      // stderr matcher when a source proves undecodable on the GPU, and `active` records
+      // what the last spawn actually got (see _spawnFfmpeg).
+      hwDecodeWanted,
+      hwDecodeFailed: false,
+      hwDecodeActive: false,
       // Backup-source rotation for pull inputs with `fallbacks` (see _pickSource).
       // srcIndex 0 is always the primary `input.url`.
       srcIndex: 0,
@@ -834,9 +955,14 @@ class Channel {
       // deliberately sticky for the life of the run and NOT persisted — a PATCH or an
       // operator restart re-tries the GPU, so a transient failure cannot demote a channel
       // permanently, while a genuinely undecodable source is only retried once per start.
-      const hwDecode = !run.hwDecodeFailed && this.manager.hwDecodeResolved(this.meta.transcode)
+      const hwDecode = !run.hwDecodeFailed && !!run.hwDecodeWanted
       transcode = { ...(this.meta.transcode || {}), hwDecode }
     }
+    // Record what this spawn ACTUALLY got, by asking the same builder ffmpeg's argv came
+    // from rather than recomputing the decision. status() reports this, so the panel can
+    // never claim GPU decode for a process that is not using it — the slate (forced copy)
+    // and a `test` input both land here as false without needing their own special case.
+    run.hwDecodeActive = hwDecodeArgs(transcode, input).length > 0
     const proc = startFfmpeg({
       input,
       transcode,
@@ -1199,6 +1325,18 @@ class Channel {
         ? { slated: true, file: path.basename(run.slateFile || ''), since: run.slateSince, failures: run.failures }
         : { slated: false },
       detectedProfile: this.detectedProfile || null,
+      // Where this channel's DECODE is happening right now. Neither meta nor the host probe
+      // answers this on its own: 'auto' resolves against the host at spawn time, and the
+      // runtime fallback can demote a run to the CPU after a source turns out to be
+      // undecodable by CUVID. `fellBack` true with configured 'auto'/true is the operator's
+      // signal that this SOURCE — not the host — refused the GPU. Reported for every
+      // encoder (not just nvenc) so "is this on the GPU" always has an honest answer.
+      hwDecode: run ? {
+        active: !!run.hwDecodeActive,
+        configured: this.meta.transcode?.hwDecode ?? TRANSCODE_DEFAULTS.hwDecode,
+        fellBack: !!run.hwDecodeFailed,
+        gpu: this.meta.transcode?.gpu ?? null
+      } : null,
       // S15b watchdog surface: is ffmpeg being kept alive, and how hard.
       watchdog: run ? {
         state: run.watchdog.state,
@@ -1389,12 +1527,9 @@ export class ChannelManager {
   logs (id, lines) { return this._get(id).logs(lines) }
 
   // One ffmpeg capability probe per process, shared by every start().
-  // `_capsValue` is the same result kept synchronously reachable, because the respawn path
-  // needs to know whether GPU decode works without being able to await anything.
   capabilities () {
     if (!this._caps) {
       this._caps = probeCapabilities({ vaapiDevice: this.config.vaapiDevice })
-        .then((v) => { this._capsValue = v; return v })
         .catch((err) => { this._caps = null; throw err })
     }
     return this._caps
@@ -1434,17 +1569,6 @@ export class ChannelManager {
     if (isPushInput(input)) await assertPortFree(input)
   }
 
-  // Resolve hwDecode 'auto' against the probe. Cached caps only — never awaited on the
-  // spawn path, where a slow probe would stall a respawn; an unprobed host just means
-  // "not yet known to work", i.e. the CPU path, which is always correct if slower.
-  hwDecodeResolved (transcode) {
-    const encoder = transcode?.encoder ?? TRANSCODE_DEFAULTS.encoder
-    if (!NVENC_ENCODERS.has(encoder)) return false // 'auto' can only ever mean off here
-    const want = transcode?.hwDecode ?? TRANSCODE_DEFAULTS.hwDecode
-    if (want !== 'auto') return want === true
-    const caps = this._capsValue
-    return Boolean(caps?.hwDecode?.cuda?.verified)
-  }
 
   // Ports already claimed by push channels (uniqueness domain for allocPort).
   usedPushPorts (excludeId = null) {

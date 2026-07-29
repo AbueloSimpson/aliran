@@ -471,6 +471,18 @@ try {
   assert.strictEqual((await api('POST', '/api/channels', { id: 'bad1', input: { kind: 'pull', url: 'file:///etc/passwd' } }, token)).status, 400, 'file: pull scheme rejected')
   assert.strictEqual((await api('POST', '/api/channels', { id: 'bad2', transcode: { encoder: 'h264_bogus' } }, token)).status, 400, 'unknown encoder rejected')
   assert.strictEqual((await api('POST', '/api/channels', { id: 'bad3', transcode: { encoder: 'copy', resolution: '720p' } }, token)).status, 400, 'copy+scale rejected')
+  // GPU decode and device pinning are NVENC-only. Accepting them on another encoder would
+  // store a setting that silently does nothing, so the validator refuses instead.
+  assert.strictEqual((await api('POST', '/api/channels', { id: 'bad4', transcode: { encoder: 'libx264', hwDecode: true } }, token)).status, 400, 'hwDecode on a CPU encoder rejected')
+  assert.strictEqual((await api('POST', '/api/channels', { id: 'bad5', transcode: { encoder: 'copy', hwDecode: true } }, token)).status, 400, 'hwDecode on copy rejected')
+  assert.strictEqual((await api('POST', '/api/channels', { id: 'bad6', transcode: { encoder: 'libx264', gpu: 0 } }, token)).status, 400, 'gpu on a CPU encoder rejected')
+  assert.strictEqual((await api('POST', '/api/channels', { id: 'bad7', transcode: { encoder: 'h264_nvenc', gpu: 16 } }, token)).status, 400, 'gpu index out of range rejected')
+  assert.strictEqual((await api('POST', '/api/channels', { id: 'bad8', transcode: { encoder: 'h264_nvenc', hwDecode: 'sometimes' } }, token)).status, 400, 'bad hwDecode value rejected')
+  // ...but the 'auto' DEFAULT has to stay harmless on a CPU encoder — every existing
+  // channel carries it, so rejecting it would break every one of them.
+  r = await api('POST', '/api/channels', { id: 'auto-ok', input: 'test', transcode: { encoder: 'libx264', hwDecode: 'auto' } }, token)
+  assert.strictEqual(r.status, 201, 'auto hwDecode accepted on a CPU encoder: ' + JSON.stringify(r.body))
+  assert.strictEqual((await api('DELETE', '/api/channels/auto-ok', undefined, token)).status, 200)
 
   r = await api('POST', '/api/channels', { id: 'push-chan', title: 'Push Channel', input: { kind: 'rtmp' }, buffer: 'ram' }, token)
   assert.strictEqual(r.status, 201, 'rtmp push channel added: ' + JSON.stringify(r.body))
@@ -553,6 +565,36 @@ try {
   assert.strictEqual(r.status, 400, 'unverified encoder start → 400')
   assert.match(r.body.error, /h264_nvenc/)
   assert.match(r.body.error, /stubbed/, 'probe error surfaced to the operator')
+
+  // GPU decode settings round-trip and survive a PATCH, and a stopped channel reports no
+  // hwDecode block at all (there is no run to describe).
+  r = await api('PATCH', '/api/channels/gpu-chan', { transcode: { encoder: 'h264_nvenc', hwDecode: true, gpu: 1 } }, token)
+  assert.strictEqual(r.status, 200, 'hwDecode+gpu accepted: ' + JSON.stringify(r.body))
+  let g = (await api('GET', '/api/channels/gpu-chan', undefined, token)).body
+  assert.strictEqual(g.transcode.hwDecode, true, 'hwDecode stored')
+  assert.strictEqual(g.transcode.gpu, 1, 'gpu device stored')
+  assert.strictEqual(g.hwDecode, null, 'a stopped channel has no decode state to report')
+  // An EXPLICIT hwDecode:true is a promise the host must keep — with nvenc itself stubbed
+  // unverified the encoder gate fires first, so verify the decode gate on its own by
+  // letting the encoder pass and failing only cuda.
+  manager._caps = Promise.resolve({
+    ...realCaps,
+    protocols: { ...realCaps.protocols, srt: false }, // the srt gate below still depends on this
+    encoders: { ...realCaps.encoders, h264_nvenc: { listed: true, verified: true } },
+    hwDecode: { cuda: { verified: false, error: 'no CUVID here (stubbed)' } }
+  })
+  r = await api('POST', '/api/channels/gpu-chan/start', undefined, token)
+  assert.strictEqual(r.status, 400, 'explicit hwDecode:true on a host without GPU decode → 400')
+  assert.match(r.body.error, /hwDecode/i)
+  assert.match(r.body.error, /stubbed/, 'the cuda probe error is surfaced, not swallowed')
+  // 'auto' must NEVER block a start for the same host — that is the entire point of auto.
+  r = await api('PATCH', '/api/channels/gpu-chan', { transcode: { encoder: 'h264_nvenc', hwDecode: 'auto' } }, token)
+  assert.strictEqual(r.status, 200)
+  g = (await api('GET', '/api/channels/gpu-chan', undefined, token)).body
+  assert.strictEqual(g.transcode.hwDecode, 'auto', 'hwDecode reset to auto')
+  assert.strictEqual(g.transcode.gpu, null, 'omitting gpu on a PATCH clears the pin')
+  assert.strictEqual((await api('POST', '/api/channels/gpu-chan/start', undefined, token)).status, 200, 'auto starts fine on a host with no GPU decode')
+  assert.strictEqual((await api('POST', '/api/channels/gpu-chan/stop', undefined, token)).status, 200)
 
   r = await api('POST', '/api/channels', { id: 'srt-chan', input: { kind: 'srt', port: await freeUdpPort(rtmpPort, udpPort), passphrase: 'super.secret_1' } }, token)
   assert.strictEqual(r.status, 201)

@@ -19,11 +19,11 @@ import path from 'path'
 
 export const HW_H264_ENCODERS = ['h264_nvenc', 'h264_qsv', 'h264_vaapi', 'h264_amf']
 
-function runFfmpeg (args, timeoutMs) {
+function runCmd (cmd, args, timeoutMs) {
   return new Promise((resolve) => {
     let out = ''
     let err = ''
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     const timer = setTimeout(() => { try { proc.kill('SIGKILL') } catch {} }, timeoutMs)
     proc.stdout.on('data', (d) => { if (out.length < 65536) out += d })
     proc.stderr.on('data', (d) => { if (err.length < 65536) err += d })
@@ -31,6 +31,8 @@ function runFfmpeg (args, timeoutMs) {
     proc.on('exit', (code) => { clearTimeout(timer); resolve({ ok: code === 0, out, err }) })
   })
 }
+
+const runFfmpeg = (args, timeoutMs) => runCmd('ffmpeg', args, timeoutMs)
 
 // The most diagnostic stderr line: the first that looks like an error (e.g.
 // "Cannot load nvcuda.dll"), not the generic "[out#0] Nothing was written" tail.
@@ -97,8 +99,32 @@ export async function probeCapabilities ({ vaapiDevice = '/dev/dri/renderD128', 
   }))
 
   const hwDecode = { cuda: await probeCudaDecode(encoders, listed, timeoutMs) }
+  const gpus = listed.has('h264_nvenc') ? await probeGpus(timeoutMs) : []
 
-  return { ffmpeg: true, version, protocols, encoders, hwDecode }
+  return { ffmpeg: true, version, protocols, encoders, hwDecode, gpus }
+}
+
+// Enumerate NVIDIA devices so the operator picks a GPU by NAME instead of guessing an
+// index. Purely informational: nvidia-smi missing, failing, or printing something
+// unexpected all degrade to [] — a host can transcode perfectly well without it, and the
+// device index is validated independently of this list.
+//
+// Worth having because the realistic deployment is a SHARED box: when another service is
+// already encoding on GPU0, "which card am I about to land on" is the operator's most
+// important question and the index alone does not answer it.
+async function probeGpus (timeoutMs) {
+  const r = await runCmd('nvidia-smi', ['--query-gpu=index,name,memory.total', '--format=csv,noheader,nounits'], timeoutMs)
+  if (!r.ok) return []
+  const gpus = []
+  for (const line of r.out.split(/\r?\n/)) {
+    const parts = line.split(',').map((s) => s.trim())
+    if (parts.length < 2) continue
+    const index = parseInt(parts[0], 10)
+    if (!Number.isInteger(index)) continue
+    const memoryMb = parseInt(parts[2], 10)
+    gpus.push({ index, name: parts[1].slice(0, 64), memoryMb: Number.isInteger(memoryMb) ? memoryMb : null })
+  }
+  return gpus
 }
 
 // Deep-verify decode→scale→encode entirely on the GPU, exactly as hls.js builds it.

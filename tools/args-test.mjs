@@ -6,11 +6,13 @@ import path from 'path'
 import {
   ffmpegArgs, inputArgs, encodeArgs, hwDeviceArgs, hlsMuxArgs,
   upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs,
-  pickSlateFile, parseVideoProfile, hwDecodeArgs, HW_DECODE_FAIL_RE
+  pickSlateFile, parseVideoProfile, hwDecodeArgs, HW_DECODE_FAIL_RE,
+  videoChain, logoInputArgs, parseResolution, mainInputCount
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
-  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool
+  isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool,
+  resolveHwDecode
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -556,6 +558,20 @@ throws(() => normalizeTranscode({ encoder: 'h264_nvenc', gpu: -1 }), /transcode.
 // every existing channel already carries.
 assert.strictEqual(normalizeTranscode({ encoder: 'libx264' }).hwDecode, 'auto')
 
+// Resolving 'auto' against the host probe. Pure, so a stubbed probe behaves exactly like a
+// real one — the reason this is a function taking caps rather than a peek at cached state.
+const CUDA_OK = { hwDecode: { cuda: { verified: true } } }
+const CUDA_NO = { hwDecode: { cuda: { verified: false, error: 'no CUVID' } } }
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc' }, CUDA_OK), true, 'auto + capable host = on')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc' }, CUDA_NO), false, 'auto + incapable host = off')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc' }, null), false, 'auto + unprobed host = off (safe default)')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc', hwDecode: true }, CUDA_NO), true,
+  'an EXPLICIT true is honoured here — start() is what refuses an incapable host, not this')
+assert.strictEqual(resolveHwDecode({ encoder: 'h264_nvenc', hwDecode: false }, CUDA_OK), false, 'explicit off stays off')
+assert.strictEqual(resolveHwDecode({ encoder: 'libx264' }, CUDA_OK), false, 'auto on a CPU encoder is always off')
+assert.strictEqual(resolveHwDecode({ encoder: 'copy' }, CUDA_OK), false, 'copy decodes nothing')
+assert.strictEqual(resolveHwDecode(null, CUDA_OK), false, 'no transcode = libx264 default = off')
+
 // The fallback trigger: these are the REAL stderr lines an RTX 4090 emitted when CUVID
 // declined a High 10 source. ffmpeg substitutes the software decoder without a word, so
 // the failure surfaces at the filter graph — matching only decoder-shaped errors would
@@ -575,4 +591,145 @@ for (const line of [
 ]) assert.ok(!HW_DECODE_FAIL_RE.test(line), 'must NOT trigger fallback: ' + line)
 log('R: GPU decode path (scale_cuda, pinning, arg ordering, validation, fallback signatures) ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing + gpu decode path)')
+// ===== S: multi-audio, custom raster, audio format, logo, burn-in subs, CENC =====
+// Every filter graph asserted here was run through real ffmpeg 6.1.1 on an RTX 4090
+// before being written down — including the two that FAIL there, which is how the
+// nv12/alpha rule below was found rather than guessed.
+
+// --- stream mapping. The default stays SILENT so existing channels are byte-identical.
+assert.ok(!encodeArgs({ encoder: 'libx264' }, HLS).includes('-map'), 'single-audio default adds no -map at all')
+const allAud = encodeArgs({ encoder: 'libx264', audioTracks: 'all' }, HLS)
+assert.deepStrictEqual(allAud.slice(0, 4), ['-map', '0:v:0', '-map', '0:a?'],
+  'audioTracks:all maps video + EVERY audio track')
+// The '?' matters: a video-only source is legitimate and must not be a hard ffmpeg failure.
+assert.ok(allAud.includes('0:a?'), 'audio map is optional so a video-only source still runs')
+
+// --- custom raster alongside the presets
+assert.deepStrictEqual(parseResolution('720p'), { h: 720 })
+assert.deepStrictEqual(parseResolution('1280x720'), { w: 1280, h: 720 })
+assert.strictEqual(parseResolution('source'), null)
+assert.strictEqual(parseResolution('nonsense'), null)
+assert.ok(encodeArgs({ encoder: 'libx264', resolution: '720p' }, HLS).includes('scale=-2:720'),
+  'a preset scales by height and keeps the aspect (-2)')
+assert.ok(encodeArgs({ encoder: 'libx264', resolution: '1280x720' }, HLS).includes('scale=1280:720'),
+  'an explicit WxH is taken literally')
+assert.ok(encodeArgs({ encoder: 'h264_nvenc', hwDecode: true, resolution: '1280x720' }, HLS, { kind: 'pull', url: 'http://o/s' })
+  .includes('scale_cuda=1280:720'), 'custom raster works on the GPU scaler too')
+throws(() => normalizeTranscode({ resolution: '1281x720' }), /even/) // H.264 chroma subsampling
+throws(() => normalizeTranscode({ resolution: '1280x721' }), /even/)
+throws(() => normalizeTranscode({ resolution: '10x10' }), /160-7680|90-4320/)
+throws(() => normalizeTranscode({ resolution: '99999x720' }), /resolution/)
+assert.strictEqual(normalizeTranscode({ resolution: '1280x720' }).resolution, '1280x720')
+
+// --- audio format
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx264' }, HLS).slice(-6),
+  ['-c:a', 'aac', '-ar', '48000', '-b:a', '128k'], 'audio defaults unchanged')
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx264', audioCodec: 'opus', audioSampleRate: 44100, audioChannels: 2 }, HLS).slice(-8),
+  ['-c:a', 'opus', '-ar', '44100', '-b:a', '128k', '-ac', '2'])
+assert.deepStrictEqual(encodeArgs({ encoder: 'libx264', audioCodec: 'copy' }, HLS).slice(-2), ['-c:a', 'copy'],
+  'audio copy takes no bitrate/rate/channel options')
+throws(() => normalizeTranscode({ audioCodec: 'flac' }), /audioCodec/)
+throws(() => normalizeTranscode({ audioSampleRate: 32000 }), /audioSampleRate/)
+throws(() => normalizeTranscode({ audioChannels: 3 }), /audioChannels/)
+throws(() => normalizeTranscode({ audioTracks: 'both' }), /audioTracks/)
+
+// --- burn-in subtitles. On the GPU the frames must come back to system memory for libass
+// and go back up afterwards; skipping that is the "Impossible to convert" failure again.
+const subCpu = videoChain({ encoder: 'libx264', resolution: '720p', subtitles: { path: '/s/a.srt' } }, false)
+assert.strictEqual(subCpu.complex, null, 'no logo = simple -vf chain')
+assert.strictEqual(subCpu.vf, "scale=-2:720,subtitles=filename='/s/a.srt'")
+const subGpu = videoChain({ encoder: 'h264_nvenc', resolution: '720p', subtitles: { path: '/s/a.srt' } }, true)
+assert.strictEqual(subGpu.vf,
+  "scale_cuda=-2:720,hwdownload,format=nv12,subtitles=filename='/s/a.srt',format=yuv420p,hwupload_cuda",
+  'GPU + subtitles round-trips through system memory')
+// A Windows path hits filter-graph escaping from three directions at once.
+assert.ok(videoChain({ subtitles: { path: 'C:\\subs\\a b.srt' } }, false).vf
+  .includes("subtitles=filename='C\\:\\\\subs\\\\a b.srt'"), 'drive letter, backslashes and spaces all escaped')
+
+// --- logo. A second input means filter_complex + explicit maps.
+// ⚠ overlay_cuda must NEVER appear in a graph. It SEGFAULTS ffmpeg 6.1.1 on driver
+// 580.159.03 in every configuration tested (opaque/transparent logo, looped/single-shot
+// input, literal/expression anchors), and a crashing filter on a live channel is a respawn
+// loop rather than a slow channel. It also cannot blend alpha at all — it only accepts
+// nv12. This assertion is the guard against someone "optimising" the CPU composite away.
+const logoGpu = videoChain({ encoder: 'h264_nvenc', resolution: '720p', logo: { path: '/l.png', corner: 'tr', marginPx: 20 } }, true)
+assert.ok(!logoGpu.complex.includes('overlay_cuda'), 'overlay_cuda segfaults this ffmpeg — never emit it')
+assert.ok(logoGpu.complex.includes('hwdownload'), 'GPU frames come back to system memory to composite')
+assert.ok(logoGpu.complex.includes('format=rgba'), 'rgba so a transparent logo actually blends')
+assert.ok(logoGpu.complex.includes('hwupload_cuda'), 'and return to the card for nvenc')
+assert.ok(logoGpu.complex.indexOf('hwdownload') < logoGpu.complex.indexOf('hwupload_cuda'), 'download before upload')
+const logoCpu = videoChain({ encoder: 'libx264', resolution: '720p', logo: { path: '/l.png', corner: 'tr', marginPx: 20 } }, false)
+assert.ok(!logoCpu.complex.includes('hwdownload') && !logoCpu.complex.includes('hwupload'),
+  'the CPU path needs no hardware round trip at all')
+// Corner anchors are EXPRESSIONS so they survive a source raster change.
+for (const [corner, xy] of [['tl', 'x=20:y=20'], ['tr', 'x=W-w-20:y=20'], ['bl', 'x=20:y=H-h-20'], ['br', 'x=W-w-20:y=H-h-20']]) {
+  assert.ok(videoChain({ logo: { path: '/l.png', corner, marginPx: 20 } }, false).complex.includes('overlay=' + xy), corner)
+}
+assert.ok(videoChain({ logo: { path: '/l.png', heightPx: 64 } }, false).complex.includes('scale=-1:64'), 'logo can be resized')
+// vaapi cannot take system-memory frames either, so the composite has to be uploaded for it
+// too — the same rule as nvenc, just a different upload filter.
+assert.ok(videoChain({ encoder: 'h264_vaapi', logo: { path: '/l.png' } }, false).complex.endsWith('format=nv12,hwupload[vout]'),
+  'a composited vaapi frame is uploaded before the encoder sees it')
+// The logo becomes input 1, and the graph output has to be mapped by name.
+const logoArgs = encodeArgs({ encoder: 'libx264', logo: { path: '/l.png' }, audioTracks: 'all' }, HLS)
+assert.strictEqual(logoArgs[0], '-filter_complex')
+assert.deepStrictEqual(logoArgs.slice(2, 6), ['-map', '[vout]', '-map', '0:a?'], 'filter output + all audio mapped')
+assert.ok(!logoArgs.includes('-vf'), 'filter_complex replaces -vf, never both')
+assert.deepStrictEqual(logoInputArgs({ logo: { path: '/l.png' } }), ['-i', '/l.png'])
+assert.deepStrictEqual(logoInputArgs({}), [])
+const fullLogo = ffmpegArgs({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'libx264', logo: { path: '/l.png' } }, hls: HLS }, outDir)
+assert.ok(fullLogo.indexOf('/l.png') > fullLogo.indexOf('http://o/s'), 'the logo is input 1, after the source')
+assert.ok(fullLogo.indexOf('-filter_complex') > fullLogo.indexOf('/l.png'), 'the graph follows the input it references')
+
+// ⚠ REGRESSION: the `test` input is TWO ffmpeg inputs (lavfi video + lavfi tone), so a
+// logo added after it is input 2 and the tone is input 1. Hardcoding [1:v] made ffmpeg
+// reject the whole graph — "Stream specifier ':v' ... matches no streams" — and the channel
+// never started. Every unit test here used a single-input source, so only running the real
+// broadcaster caught it. These assertions are the guard.
+assert.strictEqual(mainInputCount({ kind: 'test' }), 2, 'test = lavfi video + lavfi tone')
+assert.strictEqual(mainInputCount({ kind: 'pull', url: 'http://o/s' }), 1)
+assert.strictEqual(mainInputCount({ kind: 'file', path: '/m/a.mp4' }), 1)
+assert.strictEqual(mainInputCount('test'), 2, 'legacy string input counted too')
+const logoOnTest = videoChain({ logo: { path: '/l.png' } }, false, { kind: 'test' })
+assert.ok(logoOnTest.complex.startsWith('[2:v]'), 'logo is input 2 after a test source')
+assert.ok(logoOnTest.complex.includes('[0:v]'), 'and the picture is still input 0')
+const logoOnPull = videoChain({ logo: { path: '/l.png' } }, false, { kind: 'pull', url: 'http://o/s' })
+assert.ok(logoOnPull.complex.startsWith('[1:v]'), 'logo is input 1 after a single-input source')
+// The audio map has to follow the same arithmetic or a test channel loses its tone.
+assert.deepStrictEqual(encodeArgs({ logo: { path: '/l.png' } }, HLS, { kind: 'test' }).slice(2, 6),
+  ['-map', '[vout]', '-map', '1:a:0?'], 'test audio comes from input 1')
+assert.deepStrictEqual(encodeArgs({ logo: { path: '/l.png' } }, HLS, { kind: 'pull', url: 'http://o/s' }).slice(2, 6),
+  ['-map', '[vout]', '-map', '0:a:0?'], 'pull audio shares input 0')
+assert.deepStrictEqual(encodeArgs({ audioTracks: 'all' }, HLS, { kind: 'test' }).slice(0, 4),
+  ['-map', '0:v:0', '-map', '1:a?'], 'multi-audio on a test source maps the tone input')
+// End to end: the logo -i must sit between the source inputs and the graph referencing it.
+const testFull = ffmpegArgs({ input: { kind: 'test' }, transcode: { logo: { path: '/l.png' } }, hls: HLS }, outDir)
+assert.strictEqual(testFull.filter((a) => a === '-i').length, 3, 'test + logo = three -i')
+assert.ok(testFull.lastIndexOf('-i') < testFull.indexOf('-filter_complex'), 'all inputs precede the graph')
+
+// --- validation: drawing on a picture that is never decoded is refused, not ignored
+throws(() => normalizeTranscode({ encoder: 'copy', logo: { path: '/l.png' } }), /copy/)
+throws(() => normalizeTranscode({ encoder: 'copy', subtitles: { path: '/a.srt' } }), /copy/)
+throws(() => normalizeTranscode({ logo: { path: '' } }), /logo.path/)
+throws(() => normalizeTranscode({ logo: { path: '/l.png', corner: 'middle' } }), /corner/)
+throws(() => normalizeTranscode({ subtitles: { path: 'x\ny' } }), /subtitles.path/)
+assert.strictEqual(normalizeTranscode({ logo: null }).logo, null, 'null clears the logo')
+assert.strictEqual(normalizeTranscode({ logo: { path: '/l.png' } }).logo.corner, 'tr')
+assert.strictEqual(normalizeTranscode({ logo: { path: '/l.png' } }).logo.marginPx, 20)
+
+// --- CENC key for encrypted DASH
+const enc = normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: '00112233445566778899AABBCCDDEEFF' }, { config: cfg })
+assert.strictEqual(enc.cencKey, '00112233445566778899aabbccddeeff', 'hex key normalised to lower case')
+assert.deepStrictEqual(inputArgs(enc), [...RC, '-cenc_decryption_key', '00112233445566778899aabbccddeeff', '-i', 'https://o/m.mpd'])
+assert.ok(inputArgs(enc).indexOf('-cenc_decryption_key') < inputArgs(enc).indexOf('-i'), 'a demuxer option must precede -i')
+throws(() => normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: 'nothex' }, { config: cfg }), /cencKey/)
+throws(() => normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: 'aabb' }, { config: cfg }), /cencKey/)
+assert.strictEqual(normalizeInput({ kind: 'pull', url: 'https://o/m.mpd' }, { config: cfg, existing: enc }).cencKey,
+  enc.cencKey, 'omitted on a PATCH = keep the stored key')
+assert.strictEqual(normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKey: '' }, { config: cfg, existing: enc }).cencKey,
+  undefined, 'empty string clears it')
+// A .mpd pull is LIVE by default, exactly like .m3u8 — no -re.
+assert.ok(!inputArgs({ kind: 'pull', url: 'https://o/m.mpd' }).includes('-re'), 'dash manifest is not paced with -re')
+log('S: multi-audio, custom raster, audio format, logo overlay, burn-in subs, CENC key ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing + gpu decode path + overlays/audio/CENC)')

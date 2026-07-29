@@ -26,10 +26,36 @@ export const TRANSCODE_DEFAULTS = {
   // 'auto' = let the host decide (channel.js resolves it against the capability
   // probe before the args are built); true/false force it. See hwDecodeArgs.
   hwDecode: 'auto',
-  gpu: null // null = ffmpeg's default device; N pins decode+encode to that GPU
+  gpu: null, // null = ffmpeg's default device; N pins decode+encode to that GPU
+  audioCodec: 'aac',
+  audioSampleRate: 48000,
+  audioChannels: null, // null = keep the source's layout
+  // 'first' reproduces ffmpeg's default stream selection — ONE audio track, whichever it
+  // judges best. 'all' keeps every audio track as its own PID in the same MPEG-TS
+  // segments, which is what a multi-language IPTV source needs.
+  audioTracks: 'first',
+  logo: null, // { path, corner, marginPx, heightPx, alpha } — see logoFilters
+  subtitles: null // { path } — burn an external .srt/.ass into the picture
 }
 
+// Named presets, plus free-form '<W>x<H>' handled by parseResolution.
 const RES_HEIGHT = { '1080p': 1080, '720p': 720, '480p': 480, '360p': 360 }
+export const CUSTOM_RES_RE = /^(\d{2,5})x(\d{2,5})$/
+export const LOGO_CORNERS = new Set(['tl', 'tr', 'bl', 'br'])
+export const AUDIO_CODECS = new Set(['aac', 'mp2', 'opus', 'copy'])
+export const AUDIO_SAMPLE_RATES = new Set([44100, 48000])
+export const AUDIO_CHANNELS = new Set([1, 2, 6])
+
+// → { w, h } | { h } | null. A named preset scales by HEIGHT with the aspect preserved
+// (-2 = nearest even width, which every H.264 encoder requires); an explicit WxH is taken
+// literally, because an operator who typed both numbers means both numbers.
+export function parseResolution (resolution) {
+  if (!resolution || resolution === 'source') return null
+  const preset = RES_HEIGHT[resolution]
+  if (preset) return { h: preset }
+  const m = CUSTOM_RES_RE.exec(String(resolution))
+  return m ? { w: parseInt(m[1], 10), h: parseInt(m[2], 10) } : null
+}
 
 // Encoders that take the NVIDIA path (-gpu, CUVID decode, scale_cuda).
 export const NVENC_ENCODERS = new Set(['h264_nvenc'])
@@ -95,12 +121,20 @@ export function inputArgs (input) {
     case 'pull': {
       const scheme = urlScheme(t.url)
       if (scheme === 'rtsp') return ['-rtsp_transport', 'tcp', '-i', t.url]
+      // Encrypted DASH the operator already holds the key for (CENC / ClearKey). This is
+      // an option of the DASH demuxer, so it has to precede -i like any other input option.
+      // ⚠ It decrypts with a key you SUPPLY. It is not a DRM client: Widevine and
+      // PlayReady need a licence-server handshake and a CDM, neither of which ffmpeg has.
+      const cenc = t.cencKey ? ['-cenc_decryption_key', t.cencKey] : []
       if (scheme === 'http' || scheme === 'https') {
         // -allowed_extensions ALL lets the HLS demuxer accept SSAI / ad-beacon segment URLs
         // that don't end in .ts (Amagi/DistroTV and many FAST channels) — without it ffmpeg
         // rejects the playlist ("not in allowed_segment_extensions"). It only RELAXES a filter,
         // so it's harmless for plain .ts feeds, and the operator already trusts the pull URL.
-        if (/\.m3u8($|\?)/i.test(t.url)) return [...HTTP_RECONNECT, '-allowed_extensions', 'ALL', '-i', t.url]
+        if (/\.m3u8($|\?)/i.test(t.url)) return [...HTTP_RECONNECT, ...cenc, '-allowed_extensions', 'ALL', '-i', t.url]
+        // A DASH manifest is live-by-default like the HLS one above: no -re, and it is the
+        // only place a CENC key is any use.
+        if (/\.mpd($|\?)/i.test(t.url)) return [...HTTP_RECONNECT, ...cenc, '-i', t.url]
         // ⚠ LIVE IS THE DEFAULT for an unknown http(s) pull, and -re is now opt-IN by file
         // extension. The old rule was ".m3u8 = live, everything else = a VOD file needing
         // realtime pacing" — false for raw mpegts over http, which is what most IPTV
@@ -112,8 +146,8 @@ export function inputArgs (input) {
         // share of the restarts. Guessing "live" for an unknown URL is also the safer
         // error: a live source read without -re is correct, whereas a live source read
         // WITH -re degrades continuously.
-        if (VOD_FILE_RE.test(t.url)) return [...HTTP_RECONNECT, '-re', '-i', t.url]
-        return [...HTTP_RECONNECT, '-reconnect_at_eof', '1', '-i', t.url]
+        if (VOD_FILE_RE.test(t.url)) return [...HTTP_RECONNECT, ...cenc, '-re', '-i', t.url]
+        return [...HTTP_RECONNECT, ...cenc, '-reconnect_at_eof', '1', '-i', t.url]
       }
       return ['-i', t.url] // rtmp(s)/srt/udp pulls
     }
@@ -201,6 +235,124 @@ export const HW_DECODE_FAIL_RE = new RegExp([
   'cannot load libcuda'
 ].join('|'), 'i')
 
+// How many `-i` the MAIN source contributes. Everything that references a stream by index
+// depends on this, and it is not always 1: the `test` input is TWO inputs (an lavfi video
+// pattern plus an lavfi tone), so a logo added after it is input 2 and the tone is input 1.
+// Getting this wrong is not a subtle failure — ffmpeg refuses the whole graph with
+// "Stream specifier ':v' in filtergraph description ... matches no streams" and the channel
+// never starts. (Found exactly that way: unit tests all used single-input sources.)
+export function mainInputCount (input) {
+  const t = upgradeInputString(input)
+  return t && t.kind === 'test' ? 2 : 1
+}
+
+// Which input carries the source audio. For `test` the tone is its own input; for every
+// other kind the audio shares input 0 with the video.
+function audioInputIndex (input) {
+  return mainInputCount(input) === 2 ? 1 : 0
+}
+
+// ffmpeg filter-graph escaping. A path reaches the graph through two parsers, so the
+// characters that terminate a filter ARGUMENT (:) and the graph itself (' and \) all have
+// to survive both. Windows paths hit every one of them at once ("C:\subs\a.srt").
+function escFilterPath (p) {
+  return String(p).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/:/g, '\\:')
+}
+
+// Corner + margin → overlay x/y. W,H are the MAIN frame and w,h the overlay, so the
+// right/bottom anchors keep working whatever raster the source turns out to be — the
+// alternative (fixed pixel offsets) silently misplaces the logo when a source changes size.
+function overlayXY (corner, marginPx) {
+  const m = Number.isFinite(marginPx) ? marginPx : 20
+  if (corner === 'tl') return `x=${m}:y=${m}`
+  if (corner === 'bl') return `x=${m}:y=H-h-${m}`
+  if (corner === 'br') return `x=W-w-${m}:y=H-h-${m}`
+  return `x=W-w-${m}:y=${m}` // 'tr' — the conventional bug/DOG position
+}
+
+// The video filter chain. Returns EITHER a simple `-vf` string or a `-filter_complex`
+// graph ending in [vout]; a logo forces the latter because it is a second input.
+//
+// The rule that drives everything here: subtitles (libass) and alpha blending are
+// CPU-ONLY filters. On the GPU path they need an explicit hwdownload → filter →
+// hwupload_cuda round trip, and getting that wrong does not fail loudly — it fails with
+// "Impossible to convert between the formats", the same opaque error the hw-decode
+// fallback exists for. Measured cost of the round trip on a 4090 (1080p→720p, 6 s):
+// 1.34 CPU-s against a 0.69 baseline, still well under the 2.92 of decoding on the CPU.
+//
+// ⚠ KNOWN LIMIT — a LOOPING file source plus this round trip dies at the loop point.
+// `file` inputs carry -stream_loop -1, and when the file wraps ffmpeg reinitialises the
+// filter graph; the CUDA upload does not survive that and the process exits with
+// "Impossible to convert between the formats supported by the filter
+// 'Parsed_hwupload_cuda_N'". Measured: three concurrent channels each held exact 2.000 s
+// segments for 28 s and then all failed together at the 30 s loop boundary.
+// It self-heals rather than crash-looping, because that string is one of the signatures in
+// HW_DECODE_FAIL_RE: the watchdog marks the run, respawns without GPU decode, and the CPU
+// chain (no hwupload) loops indefinitely. Cost is one respawn blip on the first wrap.
+// Live sources — pull and the push listeners — never wrap, so they never hit this at all.
+//
+// ⚠ overlay_cuda is NOT used, deliberately. It looks like the obvious way to composite a
+// logo without leaving the card, and it is documented as such — but on ffmpeg 6.1.1 with
+// driver 580.159.03 it SEGFAULTS ffmpeg in every configuration tried: opaque and
+// transparent logo, looped and single-shot input, literal and expression anchors. A
+// crashing filter in a live channel is a respawn loop, not a slow channel. It also only
+// accepts nv12, which has no alpha, so even working it would render a transparent PNG as
+// a solid box. The CPU composite below is one code path, blends correctly, and was
+// measured at 1.34 CPU-s against a 0.69 baseline — still far under the 2.92 of decoding
+// on the CPU. If a future ffmpeg fixes the crash this is where the fast path would go.
+export function videoChain (transcode, onGpu, input = null) {
+  const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  const logoIdx = mainInputCount(input) // the logo is appended AFTER the source's inputs
+  const res = parseResolution(t.resolution)
+  const scale = res
+    ? (onGpu ? `scale_cuda=${res.w ?? -2}:${res.h}` : `scale=${res.w ?? -2}:${res.h}`)
+    : null
+  const subs = t.subtitles && t.subtitles.path
+    ? `subtitles=filename='${escFilterPath(t.subtitles.path)}'`
+    : null
+  const logo = t.logo && t.logo.path ? t.logo : null
+
+  if (!logo) {
+    const parts = []
+    if (scale) parts.push(scale)
+    if (subs) {
+      // The exact round trip verified against ffmpeg 6.1.1 on an RTX 4090.
+      if (onGpu) parts.push('hwdownload', 'format=nv12', subs, 'format=yuv420p', 'hwupload_cuda')
+      else parts.push(subs)
+    }
+    if (t.encoder === 'h264_vaapi') parts.push('format=nv12', 'hwupload') // vaapi encodes GPU surfaces only
+    return { vf: parts.length ? parts.join(',') : null, complex: null }
+  }
+
+  const prep = []
+  if (logo.heightPx) prep.push(`scale=-1:${logo.heightPx}`)
+  const pos = overlayXY(logo.corner, logo.marginPx)
+
+  // rgba unconditionally: it carries alpha when the image has it and costs nothing when it
+  // does not, so there is no format decision for an operator to get wrong.
+  const base = []
+  if (scale) base.push(scale)
+  if (onGpu) base.push('hwdownload', 'format=nv12')
+  if (subs) base.push(subs)
+  // Whatever the encoder needs to receive, applied AFTER the composite: cuda surfaces for
+  // nvenc, a vaapi surface for h264_vaapi (which, like nvenc, cannot take system memory).
+  const tail = onGpu
+    ? ',format=yuv420p,hwupload_cuda'
+    : (t.encoder === 'h264_vaapi' ? ',format=nv12,hwupload' : '')
+  return {
+    vf: null,
+    complex: `[${logoIdx}:v]${[...prep, 'format=rgba'].join(',')}[lg];` +
+      `[0:v]${base.length ? base.join(',') : 'null'}[bg];[bg][lg]overlay=${pos}${tail}[vout]`
+  }
+}
+
+// The logo is an EXTRA ffmpeg input appended after the source's own. Its stream index is
+// therefore mainInputCount(input), not a constant 1 — see videoChain.
+export function logoInputArgs (transcode) {
+  const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
+  return t.logo && t.logo.path ? ['-i', t.logo.path] : []
+}
+
 // Output-side codec options. `transcode` may be null/partial; defaults preserve
 // pre-S15a behavior except -g 60 → -force_key_frames, which aligns keyframes to
 // segment boundaries for every encoder regardless of source fps.
@@ -209,7 +361,24 @@ export const HW_DECODE_FAIL_RE = new RegExp([
 export function encodeArgs (transcode, hls, input = null) {
   const t = { ...TRANSCODE_DEFAULTS, ...(transcode || {}) }
   const onGpu = cudaFrames(t, input)
+  const chain = videoChain(t, onGpu, input)
   const out = []
+  // `test` splits video and audio across two inputs, so the audio does not live on input 0.
+  const aIdx = audioInputIndex(input)
+
+  // Stream selection. ffmpeg's DEFAULT is one video + one audio, which is what a channel
+  // with neither a logo nor extra audio tracks wants — so we stay silent in that case and
+  // the argument list is unchanged from before this feature existed. Anything else has to
+  // be mapped explicitly: a filter_complex output is not auto-selected, and extra audio
+  // tracks are not either. Every audio map is optional ('?') because a video-only source
+  // is legitimate and must not turn into a hard ffmpeg failure.
+  const allAudio = t.audioTracks === 'all'
+  if (chain.complex) {
+    out.push('-filter_complex', chain.complex, '-map', '[vout]')
+    out.push('-map', allAudio ? `${aIdx}:a?` : `${aIdx}:a:0?`)
+  } else if (allAudio) {
+    out.push('-map', '0:v:0', '-map', `${aIdx}:a?`)
+  }
 
   if (t.encoder === 'copy') {
     // Passthrough: segment cuts land on the SOURCE's keyframes — the publisher
@@ -248,15 +417,18 @@ export function encodeArgs (transcode, hls, input = null) {
       out.push('-b:v', `${t.videoBitrateKbps}k`, '-maxrate', `${t.videoBitrateKbps}k`, '-bufsize', `${t.videoBitrateKbps * 2}k`)
     }
     if (t.fps !== 'source') out.push('-r', String(t.fps))
-    const filters = []
-    const height = RES_HEIGHT[t.resolution]
-    // scale_cuda keeps the frame on the card; plain scale would need it downloaded first.
-    if (height) filters.push(onGpu ? `scale_cuda=-2:${height}` : `scale=-2:${height}`)
-    if (t.encoder === 'h264_vaapi') filters.push('format=nv12', 'hwupload') // vaapi encodes GPU surfaces only
-    if (filters.length) out.push('-vf', filters.join(','))
+    // Scaling, subtitle burn-in and the hardware round trips all live in videoChain; a
+    // logo turns the chain into a -filter_complex that was already emitted above.
+    if (chain.vf) out.push('-vf', chain.vf)
   }
 
-  out.push('-c:a', 'aac', '-ar', '48000', '-b:a', `${t.audioBitrateKbps}k`)
+  if (t.audioCodec === 'copy') {
+    // Passthrough audio: no re-encode, so bitrate/rate/channels are all meaningless here.
+    out.push('-c:a', 'copy')
+  } else {
+    out.push('-c:a', t.audioCodec, '-ar', String(t.audioSampleRate), '-b:a', `${t.audioBitrateKbps}k`)
+    if (t.audioChannels != null) out.push('-ac', String(t.audioChannels))
+  }
   return out
 }
 
@@ -367,6 +539,8 @@ export function ffmpegArgs (spec, outDir) {
     // sit immediately before inputArgs and after any global device bootstrap.
     ...hwDecodeArgs(spec.transcode, spec.input),
     ...inputArgs(spec.input),
+    // The logo is input 1 — it must follow the main -i and precede the graph that uses it.
+    ...logoInputArgs(spec.transcode),
     ...encodeArgs(spec.transcode, spec.hls, spec.input),
     ...hlsMuxArgs(spec.hls, outDir)
   ]
