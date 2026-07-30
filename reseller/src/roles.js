@@ -39,7 +39,11 @@ export const CAPS = {
   'panel:status': { roles: ['admin', 'co-admin'] },
   'system:view': { roles: ['admin', 'co-admin'] },
   'ops:reconcile': { roles: ['admin', 'co-admin'] },
-  'ops:sweep': { roles: ['admin', 'co-admin'] }
+  'ops:sweep': { roles: ['admin', 'co-admin'] },
+  // Config snapshots and the config template expose the WHOLE principal hierarchy —
+  // every name, role and parent link, including branches a super or reseller can
+  // otherwise never see. Admin tier only, like system:view.
+  'config:snapshot': { roles: ['admin', 'co-admin'] }
 }
 
 export function can (record, cap) {

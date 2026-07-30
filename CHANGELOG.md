@@ -98,6 +98,63 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Backup and restore in the dashboards — three artifacts, not one** — backup
+  and restore existed only as shell scripts (`deploy/backup.sh`,
+  `deploy/restore.sh`) and MCP tools. An operator working in a web dashboard
+  could do neither. All four dashboards (panel, broadcaster, library, reseller)
+  now have a **Backup** page.
+
+  It is three artifacts because "the box is gone", "I broke my lineup" and "seed
+  a second site" want *opposite* things from the same data, and one file cannot
+  serve all three without being wrong for two of them:
+
+  1. **Recovery archive** — the whole `DATA_DIR`, identity and all. Unchanged;
+     still `deploy/backup.sh`. The dashboards **list** them with age and a
+     newest-first marker, and show the exact commands. They cannot run one, and
+     the page says why: a cold backup stops the service, and a service cannot
+     stop itself and still answer the request that asked it to. The alternatives
+     were weighed and declined — mounting the Docker socket into a service turns
+     any RCE into host root, and a host-side agent is a whole new component to
+     install and keep alive for a convenience feature. Listing needs only a
+     read-only bind mount, which the compose file now makes.
+  2. **Config snapshot** — this box's config *with* its secrets, stored at 0600
+     inside the volume and **never served over HTTP**. Taken automatically before
+     a channel delete and before any restore/import, capped at 20. Restoring one
+     is additive by default: entries the snapshot does not mention are left alone
+     and reported, so recovering one channel never removes the ten added since.
+  3. **Config template** — the same structure with every secret stripped, and the
+     only one that downloads. The page is honest about the consequence: it
+     recreates channels, categories, packages and sources but **not
+     entitlements**, because grants seal the per-stream keys it deliberately
+     omits.
+
+  Keeping the secrets in (2) is the point, not an oversight. `channels.json`
+  holds each push channel's stream key and SRT passphrase, so a stripped restore
+  would recreate the channel with a *new* key and every encoder in the field
+  would stop. `secrets/streams.json` holds the keys user grants seal against.
+  Both are verified: a purged channel restores with its **original** key.
+
+  Three sections are captured but never written back, because each carries a
+  revocation lever and a restore moves levers backwards: admin files (rewinding
+  `tokenVersion` revives sessions a password rotation killed), panel publishers
+  (rewinding `status: revoked` re-enables a leaked broadcaster key), and an
+  existing per-stream key (never overwritten — grants are sealed to the live
+  one; the refusal is reported rather than silent). The reseller is
+  **export-only** for the same class of reason, plus one of its own: account
+  balances come from the credit ledger, which no config artifact carries.
+
+  Two credential-bearing URL fields turned up that the code comments understated:
+  `sources[].url` (the registry is described as holding nothing secret, but the
+  validator accepts `user:pass@` and `?token=`) and broadcaster pull `input.url`.
+  Templates keep their origin and path and drop the rest.
+
+  The load-bearing test is a scan, not a rule list: real secrets are seeded
+  through the real APIs, a template is exported, and CI fails if any of those
+  bytes survives anywhere in it — so a new secret field nobody adds to a
+  redaction rule fails the build instead of shipping. New suites
+  `test:config-snapshot` and `test:config-api` (network-free), plus coverage in
+  the existing panel and broadcaster e2e suites.
+
 - **Service pairing code: 12 characters instead of 64** — a viewer connecting a
   public (keyless) build no longer types a 64-hex panel key on a phone keyboard
   or a TV remote. The Connect screen now opens on a **pairing code** —

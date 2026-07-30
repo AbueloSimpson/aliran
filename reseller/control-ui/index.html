@@ -291,6 +291,51 @@
           </div>
           <p class="hint muted">The expiry sweep disables lapsed accounts on the panel. Reconcile diffs the panel against local records (repairs apply only when <span class="mono">RECONCILE_REPAIR=1</span>).</p>
         </div>
+
+        <!-- Backup. Admin tier only: these artifacts show the WHOLE principal hierarchy,
+             including branches a super or a reseller can never otherwise see. The reseller
+             is export-only by design — see reseller/src/config-snapshot.js. -->
+        <div class="card pad settings-card" id="bk-card" hidden>
+          <h3>Backup &amp; restore</h3>
+          <p class="warn-line"><b>You put a reseller back with a volume restore, not a config restore.</b>
+            The credit ledger is the record of record, and no config file holds it. This card gives you a snapshot for
+            reference and a template for a second site. It cannot write either one back.</p>
+          <p class="hint muted">Two reasons, and they are different. A principal record carries the session counter that a
+            password change increases. To write an old copy back would give revoked sessions their access again. And an
+            account balance comes from the ledger, so an account map that moves back in time disagrees with the ledger
+            that funds it.</p>
+
+          <h4 class="bk-h">Config snapshots <span class="muted">(principals and accounts, on the box)</span></h4>
+          <div class="chips">
+            <button class="btn small" id="bk-snap-take">Take a snapshot now</button>
+            <button class="btn small" id="bk-tpl-download">Download the template</button>
+          </div>
+          <p class="hint muted" id="bk-snap-dir"></p>
+          <div class="table-wrap">
+            <table id="bk-snap-table">
+              <thead><tr><th>Taken</th><th>Note</th><th>Contents</th><th>Size</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="hint muted">The template holds the shape of the hierarchy: each name, role and parent. It holds no
+            password material, and no customer accounts. Use it to build the same structure on a second site with
+            <span class="mono">reseller-cli</span>.</p>
+
+          <h4 class="bk-h">Recovery archives <span class="muted">(the whole data volume)</span></h4>
+          <p class="hint muted" id="bk-arch-note"></p>
+          <div class="table-wrap">
+            <table id="bk-arch-table">
+              <thead><tr><th>Archive</th><th>Age</th><th>Size</th><th>State</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="warn-line" id="bk-arch-why"></p>
+          <div id="bk-arch-cmds"></div>
+          <p class="hint muted"><b>Always restore the newest archive you have.</b> The restore command refuses to write
+            over a volume that holds data. It also refuses an archive whose name does not match the service. Do not add
+            <span class="mono">--force</span> to get past these two refusals unless you know what the volume holds.
+            No archive holds a <span class="mono">.env</span> file — those live on the host, outside the volumes.</p>
+        </div>
       </section>
     </main>
   </div>

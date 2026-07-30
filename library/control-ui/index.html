@@ -35,6 +35,14 @@
   .row > div { flex: 1; min-width: 160px; }
   pre { background: #10131a; border: 1px solid #232a38; border-radius: 6px; padding: 10px; font-size: 11px; overflow: auto; max-height: 260px; white-space: pre-wrap; }
   #app { display: none; }
+  /* Backup card. The warnings are load-bearing: a stale archive restore forks a store,
+     and no config artifact can bring a title's media back. */
+  .warn-line { margin: 8px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.5;
+    background: rgba(217, 182, 74, .08); border-left: 3px solid #d9b64a; border-radius: 0 6px 6px 0; }
+  pre.cmd { background: #10131a; border: 1px solid #2c3547; border-radius: 6px; padding: 8px 10px;
+    font-size: 12px; overflow-x: auto; white-space: pre; margin: 3px 0 0; }
+  pre.cmd.force { border-color: #7a2733; }
+  #bkArchCmds label { text-transform: uppercase; letter-spacing: .04em; font-size: 11px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -85,6 +93,41 @@
     <div class="card" id="logCard" style="display:none">
       <h2>Logs — <span id="logId"></span></h2>
       <pre id="logBody"></pre>
+    </div>
+
+    <!-- Backup: three artifacts, three handling rules. See docs/kb/backup-and-rotation.md. -->
+    <div class="card">
+      <h2>Backup &amp; restore</h2>
+      <p class="warn-line"><b>A config artifact cannot bring a title back.</b> The media of a title lives in the data
+        volume. No config file holds it. To rebuild this library, restore the recovery archive of the whole volume, or
+        ingest the titles again from the original files.</p>
+
+      <h2 style="margin-top:16px">Config snapshots <span class="muted">(the title registry and its keys)</span></h2>
+      <p><button id="bkSnapTake">Take a snapshot now</button> <span class="muted" id="bkSnapDir"></span></p>
+      <p class="muted">A snapshot holds the ingest settings of each title and the per-title keys. The library keeps it on
+        the box. You cannot download it. A restore puts back the ingest settings of a title that is still here.</p>
+      <table>
+        <thead><tr><th>Taken</th><th>Note</th><th>Titles</th><th>Size</th><th></th></tr></thead>
+        <tbody id="bkSnapRows"></tbody>
+      </table>
+
+      <h2 style="margin-top:16px">Config template <span class="muted">(no secrets — safe to download)</span></h2>
+      <p><button class="subtle" id="bkTplDownload">Download the template</button></p>
+      <p class="muted">A template lists the titles this library holds. It does not hold the per-title keys, the admin
+        accounts, or the source path of each title. Use it as a list of the titles to ingest on a second site.</p>
+
+      <h2 style="margin-top:16px">Recovery archives <span class="muted">(the whole data volume)</span></h2>
+      <p class="muted" id="bkArchNote"></p>
+      <table>
+        <thead><tr><th>Archive</th><th>Age</th><th>Size</th><th>State</th></tr></thead>
+        <tbody id="bkArchRows"></tbody>
+      </table>
+      <p class="warn-line" id="bkArchWhy"></p>
+      <div id="bkArchCmds"></div>
+      <p class="muted"><b>Always restore the newest archive you have.</b> The restore command refuses to write over a
+        volume that holds data. It also refuses an archive whose name does not match the service. Do not add
+        <code>--force</code> to get past these two refusals unless you know what the volume holds. No archive holds a
+        <code>.env</code> file — those live on the host, outside the volumes.</p>
     </div>
   </div>
 </main>
@@ -180,8 +223,135 @@ async function loadLogs (id) {
   catch (e) { $('logBody').textContent = e.message }
 }
 
+
+// ---- backup & restore (see docs/kb/backup-and-rotation.md) ----
+//
+// A library is the one service where a config artifact is NOT the thing worth restoring:
+// the ingested titles ARE the served artifact, and their media lives in the corestore
+// inside the volume. So a snapshot restores ingest settings, and the card says plainly
+// that rebuilding the library is a volume restore.
+//
+// This card loads once, then only when the operator acts. The 3 s title poll must not drag
+// three more requests behind it.
+
+const escH = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+
+function bkBytes (n) {
+  if (n == null) return '—'
+  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let i = 0
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++ }
+  return n.toFixed(n >= 10 || i === 0 ? 0 : 1) + ' ' + u[i]
+}
+
+function bkAge (h) {
+  if (h == null) return '—'
+  if (h < 1) return Math.round(h * 60) + ' min'
+  if (h < 48) return h.toFixed(1) + ' h'
+  return Math.round(h / 24) + ' days'
+}
+
+function bkCmd (label, cmd, danger) {
+  if (!cmd) return ''
+  return '<label>' + escH(label) + '</label><pre class="cmd' + (danger ? ' force' : '') + '">' + escH(cmd) + '</pre>'
+}
+
+async function loadBackup () {
+  const [caps, snaps, arch] = await Promise.all([
+    api('GET', '/config'), api('GET', '/config/snapshots'), api('GET', '/backups')
+  ])
+  $('bkSnapDir').textContent = 'stored in ' + caps.snapshotDir
+
+  $('bkSnapRows').innerHTML = snaps.snapshots.length
+    ? snaps.snapshots.map((s) => {
+      // A damaged snapshot is shown, never hidden: an operator must not believe they hold
+      // a rollback point that cannot be read.
+      if (s.unreadable) {
+        return '<tr><td>' + escH(s.id) + '</td><td colspan="3"><span class="state error">damaged</span> ' +
+          escH(s.unreadable) + '</td><td><button class="danger" data-bkdel="' + escH(s.id) + '">Delete</button></td></tr>'
+      }
+      return '<tr><td>' + escH(new Date(s.createdAt).toLocaleString()) + '<div class="muted">' + escH(s.id) + '</div></td>' +
+        '<td>' + escH(s.note || '—') + '</td>' +
+        '<td>' + ((s.meta && s.meta.titles) || 0) + '</td>' +
+        '<td>' + bkBytes(s.bytes) + '</td>' +
+        '<td><button class="subtle" data-bkrestore="' + escH(s.id) + '">Restore…</button> ' +
+        '<button class="danger" data-bkdel="' + escH(s.id) + '">Delete</button></td></tr>'
+    }).join('')
+    : '<tr><td colspan="5" class="muted">No snapshot yet.</td></tr>'
+
+  $('bkArchNote').textContent = arch.available
+    ? 'Found in ' + arch.dir + ' on the box.'
+    : 'The library cannot see the archive directory: ' + arch.reason + '. Your archives can still exist. This dashboard cannot read them.'
+  $('bkArchWhy').textContent = arch.why || ''
+  $('bkArchRows').innerHTML = (arch.available && arch.archives.length)
+    ? arch.archives.map((a) =>
+        '<tr><td>' + escH(a.name) + (a.legacyName ? ' <span class="muted">(old name format)</span>' : '') + '</td>' +
+        '<td>' + bkAge(a.ageHours) + '</td><td>' + bkBytes(a.bytes) + '</td>' +
+        '<td>' + (a.newest ? '<span class="state ready">newest — restore this one</span> ' : '') +
+        '<span class="state ' + (a.freshness === 'fresh' ? 'ready' : a.freshness === 'aging' ? 'queued' : 'error') + '">' +
+        a.freshness + '</span></td></tr>').join('')
+    : '<tr><td colspan="4" class="muted">' + (arch.available ? 'No archive found. Run the backup command below.' : 'Nothing to show.') + '</td></tr>'
+
+  const c = arch.commands || {}
+  $('bkArchCmds').innerHTML =
+    (c.assumes ? '<p class="muted">' + escH(c.assumes) + '</p>' : '') +
+    bkCmd('Make an archive now (on the box)', c.backup) +
+    bkCmd('Make one every hour (crontab -e)', c.cron) +
+    bkCmd('Restore the newest archive', c.restore) +
+    bkCmd('Only if the volume already holds data — this DELETES the contents first', c.restoreForce, true)
+
+  for (const b of document.querySelectorAll('[data-bkrestore]')) b.onclick = () => bkRestore(b.dataset.bkrestore)
+  for (const b of document.querySelectorAll('[data-bkdel]')) b.onclick = () => bkDelete(b.dataset.bkdel)
+}
+
+async function bkRestore (id) {
+  try {
+    const p = await api('POST', '/config/snapshots/' + encodeURIComponent(id) + '/plan', {})
+    const lines = [
+      'This is what a restore changes. Nothing has changed yet.',
+      '',
+      'Titles changed: ' + (p.update.length ? p.update.map((u) => u.id).join(', ') : 'none'),
+      'Titles not on this box: ' + (p.missing.length ? p.missing.map((m) => m.id).join(', ') : 'none'),
+      'Titles left alone: ' + (p.extra.length ? p.extra.map((x) => x.id).join(', ') : 'none')
+    ].concat(p.warnings.length ? [''].concat(p.warnings) : [])
+    if (!confirm(lines.join('\n'))) return
+    const r = await api('POST', '/config/snapshots/' + encodeURIComponent(id) + '/restore', { confirm: true })
+    alert(r.summary || 'restored')
+    refresh(); loadBackup()
+  } catch (e) { alert(e.message) }
+}
+
+async function bkDelete (id) {
+  if (!confirm('Delete ' + id + '?\n\nYou cannot undo this. It is the only copy of the config at that moment.')) return
+  try { await api('DELETE', '/config/snapshots/' + encodeURIComponent(id)); loadBackup() } catch (e) { alert(e.message) }
+}
+
+$('bkSnapTake').onclick = async () => {
+  const note = prompt('Note for this snapshot (optional)') // null = cancelled
+  if (note === null) return
+  try {
+    const r = await api('POST', '/config/snapshots', { note })
+    alert('snapshot ' + r.id + ' taken (' + bkBytes(r.bytes) + ')')
+    loadBackup()
+  } catch (e) { alert(e.message) }
+}
+
+$('bkTplDownload').onclick = async () => {
+  try {
+    const tpl = await api('GET', '/config/template')
+    // Belt and braces on the client too: never write a file that says it holds secrets.
+    if (tpl.contains !== 'no-secrets') { alert('refused: this file is not a secret-free template'); return }
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(tpl, null, 2)], { type: 'application/json' }))
+    a.download = 'library-template-' + stamp + '.json'
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+  } catch (e) { alert(e.message) }
+}
+
 show()
-if (token) { $('who').textContent = ''; refresh() }
+if (token) { $('who').textContent = ''; refresh(); loadBackup().catch(() => {}) }
 setInterval(refresh, 3000)
 </script>
 </body>

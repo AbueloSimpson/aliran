@@ -76,6 +76,22 @@
 //   PATCH  /api/vod-config                   {enabled?,apiBase?,service?,sources?,params?} partial
 //                                            merge; enabling needs a valid apiBase + service
 //
+//   GET    /api/config                       what this service snapshots + the section map
+//   GET    /api/config/snapshots             on-box config snapshots, newest first
+//   POST   /api/config/snapshots             {note?} take one now
+//   GET    /api/config/snapshots/:id         METADATA only — a snapshot holds the per-stream
+//                                            keys and is never served over HTTP
+//   POST   /api/config/snapshots/:id/plan    dry run: exactly what a restore would change
+//   POST   /api/config/snapshots/:id/restore {confirm:true,removeExtra?,sections?} apply it
+//   DELETE /api/config/snapshots/:id
+//   GET    /api/config/template              the secret-free, downloadable config template
+//   POST   /api/config/template/plan         {template} dry run an import
+//   POST   /api/config/template/import       {template,confirm:true} apply it
+//   GET    /api/backups                      the disaster-recovery archives on the box +
+//                                            the commands to make and apply one (this
+//                                            service cannot: a cold backup stops it)
+//   (all of the above are core/config-routes.js — identical in all four dashboards)
+//
 // Everything outside /api serves the static dashboard from panel/admin-ui/ (flat
 // directory, GET only — see serveStatic for the traversal guard).
 
@@ -84,10 +100,13 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
+import { makeSnapshotStore } from '@aliran/core/config-snapshot.js'
+import { makeConfigRoutes } from '@aliran/core/config-routes.js'
 import { makeThrottle } from './rpc.js'
 import * as ops from './ops.js'
 import * as sources from './sources.js'
 import * as packages from './packages.js'
+import * as configSnapshot from './config-snapshot.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'admin-ui')
 
@@ -120,6 +139,15 @@ export function startAdminServer (ctx, opts = {}) {
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
   const loginVerifier = ops.makeAdminVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
   const startedAt = Date.now()
+  // Config snapshots / templates / the DR archive listing. Identical wiring in all four
+  // dashboards — the shared module owns the rules so they cannot drift.
+  const configRoutes = makeConfigRoutes({
+    service: 'panel',
+    ctx,
+    mod: configSnapshot,
+    store: makeSnapshotStore(path.join(ctx.dataDir, 'config-snapshots'), { service: 'panel', keep: (ctx.config && ctx.config.snapshotKeep) || 20 }),
+    backupsDir: (ctx.config && ctx.config.backupDir) || null
+  })
 
   // Liveness + Prometheus metrics, both from cheap SYNCHRONOUS sources only (same
   // contract as the broadcaster's /healthz: answers as long as the loop turns).
@@ -574,10 +602,14 @@ export function startAdminServer (ctx, opts = {}) {
           return sendJson(res, 200, out)
         }
         if (req.method === 'DELETE') {
+          // Rollback point BEFORE the purge. deleteStream removes the catalog record, the
+          // art, every user's sealed grant AND the per-stream key — and re-adding the id
+          // later mints a FRESH key, so without this the old key is simply gone.
+          const rollback = await configRoutes.autoSnapshot(`the deletion of channel "${r2}"`)
           const out = await ops.deleteStream(ctx, r2)
           await packages.reconcilePackages(ctx) // converge selector state after the purge (S44)
           act('stream-delete', { streamId: r2, grantsRevoked: out.grantsRevoked })
-          return sendJson(res, 200, out)
+          return sendJson(res, 200, { ...out, rollbackSnapshot: rollback })
         }
       }
       if (seg.length === 5 && r3 === 'art' && req.method === 'POST') {
@@ -586,6 +618,22 @@ export function startAdminServer (ctx, opts = {}) {
         const out = await ops.uploadArt(ctx, r2, r4, data, ext)
         act('stream-art', { streamId: r2, kind: r4 })
         return sendJson(res, 200, out)
+      }
+    }
+
+    // Config snapshots, templates and the disaster-recovery archive listing. The handler is
+    // transport-agnostic (core/config-routes.js) and returns null for a path it does not
+    // own, so it can sit in front of the 404 without swallowing anything.
+    if (r1 === 'config' || r1 === 'backups') {
+      const out = await configRoutes.handle({
+        segs: seg.slice(1),
+        method: req.method,
+        body: req.method === 'POST' ? await readJson(req) : {},
+        query: Object.fromEntries(url.searchParams)
+      })
+      if (out) {
+        if (req.method !== 'GET') act('config-' + (seg[2] || 'op'), { path: url.pathname, status: out.status })
+        return sendJson(res, out.status, out.body)
       }
     }
 

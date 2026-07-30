@@ -28,6 +28,20 @@ const mib = (v, d) => { const n = int(v, d); return Number.isFinite(n) && n > 0 
 
 export const config = {
   dataDir: process.env.DATA_DIR || './data',
+  // Config snapshots + the disaster-recovery archive listing (see
+  // docs/kb/backup-and-rotation.md).
+  //
+  //   backupDir  where deploy/backup.sh writes its archives, AS SEEN FROM THIS SERVICE.
+  //              docker-compose bind-mounts the host's ./backups here READ-ONLY, so the
+  //              dashboard can LIST them. It is read-only on purpose: making an archive
+  //              means stopping this service, which a service cannot do to itself and
+  //              still answer the request. A missing directory is reported honestly
+  //              rather than shown as "no backups".
+  //   snapshotKeep  how many on-box config snapshots to keep. They are taken
+  //              automatically before bulk operations, so the directory needs a cap that
+  //              somebody chose.
+  backupDir: process.env.BACKUP_DIR || './backups',
+  snapshotKeep: int(process.env.CONFIG_SNAPSHOT_KEEP, 20),
   relayOnly: bool(process.env.RELAY_ONLY, false),
   // The operator's service name. The panel shows it to a client that pairs with the
   // service pairing code, BEFORE any login — the viewer sees which service the 12

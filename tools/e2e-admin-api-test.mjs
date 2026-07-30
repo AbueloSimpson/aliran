@@ -799,7 +799,113 @@ try {
   await api('DELETE', '/api/users/vodview', undefined, { token })
   log('S: VOD provider — null before setup, 8 validation refusals with nothing stored (incl. an unknown source kind), CRUD + partial merge, BOTH movies and series sources stored, identical PATCH appends nothing, and a REAL login sees the config — series source verbatim — only while it is enabled ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
+  // ===== Test T: config snapshots, templates and the backup listing =====
+  //
+  // The load-bearing assertion is the template scan: a real per-stream key, a real admin
+  // verifier, a real publisher secret and two credential-bearing source URLs are seeded,
+  // and NONE of those byte sequences may appear anywhere in the downloadable artifact.
+  // The spec in panel/src/config-snapshot.js is a list somebody wrote down; this is what
+  // catches the field nobody added to it.
+  const SECRET_SOURCE_TOKEN = 'srctok-e2e-8891xyz'
+  const SECRET_SOURCE_PASS = 'feedpassword42e2e'
+  await api('POST', '/api/sources', { name: 'e2efeed', url: `https://prov.example/feed.json?token=${SECRET_SOURCE_TOKEN}`, category: 'E2E' }, { token })
+  await api('POST', '/api/sources', { name: 'e2efeed2', url: `https://op:${SECRET_SOURCE_PASS}@prov2.example/list.json`, category: 'E2E2' }, { token })
+  r = await api('POST', '/api/streams', { id: 'snapch', title: 'Snapshot Channel', category: 'E2E' }, { token })
+  assert.strictEqual(r.status, 201)
+  const snapStreamKey = r.body.encryptionKey
+  assert.ok(/^[0-9a-f]{64}$/.test(snapStreamKey), 'the new stream has a real 32-byte key')
+  r = await api('POST', '/api/publishers', { name: 'e2epub', scopes: ['snap-*'] }, { token })
+  const pubSecret = r.body.secretKey
+  assert.ok(pubSecret && pubSecret.length >= 64, 'publisher secret minted')
+  const adminVerifier = JSON.parse(fs.readFileSync(path.join(dirs.panel, 'secrets', 'admins.json'), 'utf8')).root.verifier
+
+  // -- capability probe --
+  r = await api('GET', '/api/config', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.sections.admins.restorable, false, 'admins are captured but never restored')
+  assert.strictEqual(r.body.sections.publishers.restorable, false, 'publishers are captured but never restored')
+  assert.strictEqual(r.body.sections.streamSecrets.addOnly, true)
+
+  // -- the template must leak nothing --
+  r = await api('GET', '/api/config/template', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  const template = r.body
+  assert.strictEqual(template.contains, 'no-secrets')
+  assert.strictEqual(template.kind, 'template')
+  const templateText = JSON.stringify(template)
+  for (const [label, secret] of [['stream key', snapStreamKey], ['admin verifier', adminVerifier], ['publisher secret', pubSecret], ['source token', SECRET_SOURCE_TOKEN], ['source password', SECRET_SOURCE_PASS]]) {
+    assert.ok(!templateText.includes(secret), `the config TEMPLATE leaked the ${label}`)
+  }
+  assert.ok(!template.sections.streamSecrets && !template.sections.admins && !template.sections.publishers, 'secret sections are dropped whole')
+  assert.strictEqual(template.sections.sources.e2efeed.url, 'https://prov.example/feed.json', 'source url keeps origin+path, loses the token')
+  assert.strictEqual(template.sections.sources.e2efeed2.url, 'https://prov2.example/list.json', 'source url loses user:pass')
+  assert.ok(template.sections.streams.snapch, 'structure survives')
+  assert.strictEqual(template.sections.streams.snapch.title, 'Snapshot Channel')
+  assert.ok(template.omitted.length > 0 && template.omitted.every((o) => o.reason), 'the artifact carries its own omission reasons')
+
+  // -- a config snapshot keeps its secrets, and is NEVER served --
+  r = await api('POST', '/api/config/snapshots', { note: 'e2e' }, { token })
+  assert.strictEqual(r.status, 201)
+  const snapId = r.body.id
+  assert.ok(snapId.startsWith('panel-config-'), 'snapshot naming cannot be confused with a .tar.gz archive')
+  const onDisk = JSON.parse(fs.readFileSync(path.join(dirs.panel, 'config-snapshots', snapId), 'utf8'))
+  assert.strictEqual(onDisk.sections.streamSecrets.snapch, snapStreamKey, 'the on-box snapshot DOES hold the per-stream key')
+  assert.strictEqual(onDisk.contains, 'secrets')
+  r = await api('GET', `/api/config/snapshots/${snapId}`, undefined, { token })
+  assert.strictEqual(r.status, 200)
+  const metaText = JSON.stringify(r.body)
+  assert.ok(!metaText.includes(snapStreamKey), 'GET /snapshots/:id must NEVER return the contents')
+  assert.ok(!metaText.includes(adminVerifier))
+  assert.ok(r.body.contentsWithheld, 'and it says why')
+  assert.strictEqual(r.body.sections.streams.entries, template.meta.streams, 'it reports section sizes instead')
+
+  // -- restore puts a deleted channel back, WITH its original key --
+  r = await api('DELETE', '/api/streams/snapch', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.rollbackSnapshot && r.body.rollbackSnapshot.id, 'a delete takes an automatic rollback snapshot')
+  assert.ok(!loadSecrets(dirs.panel).snapch, 'the purge really removed the key')
+
+  r = await api('POST', `/api/config/snapshots/${snapId}/plan`, {}, { token })
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.streams.add.some((a) => a.id === 'snapch'), 'the plan sees the missing channel')
+  assert.ok(r.body.secrets.install.includes('snapch'), 'and that its key would be reinstalled')
+
+  r = await api('POST', `/api/config/snapshots/${snapId}/restore`, {}, { token })
+  assert.strictEqual(r.status, 400, 'a restore without confirm:true must be refused')
+  r = await api('POST', `/api/config/snapshots/${snapId}/restore`, { confirm: true }, { token })
+  assert.strictEqual(r.status, 200)
+  assert.ok(r.body.result.streams.added.includes('snapch'), 'the channel is back')
+  assert.strictEqual(loadSecrets(dirs.panel).snapch, snapStreamKey, 'and with the SAME key, so existing grants still unseal')
+  assert.ok(r.body.rollbackSnapshot && r.body.rollbackSnapshot.id, 'the restore itself took a rollback point')
+
+  // -- an existing, DIFFERENT key is never overwritten (grants are sealed to the live one) --
+  await api('DELETE', '/api/streams/snapch', undefined, { token })
+  r = await api('POST', '/api/streams', { id: 'snapch', title: 'Recreated' }, { token })
+  const freshKey = r.body.encryptionKey
+  assert.notStrictEqual(freshKey, snapStreamKey, 're-adding an id mints a fresh key')
+  r = await api('POST', `/api/config/snapshots/${snapId}/restore`, { confirm: true }, { token })
+  assert.strictEqual(loadSecrets(dirs.panel).snapch, freshKey, 'the LIVE key survives a restore — never clobbered')
+  assert.ok(r.body.result.secretsDeclined.includes('snapch'), 'and the refusal is reported, not silent')
+
+  // -- cross-service artifacts are refused --
+  r = await api('POST', '/api/config/template/plan', { template: { ...template, service: 'broadcaster' } }, { token })
+  assert.strictEqual(r.status, 409, 'a broadcaster artifact cannot be applied to the panel')
+
+  // -- the backup listing is read-only and honest about it --
+  r = await api('GET', '/api/backups', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.canRunHere, false, 'the dashboard cannot make a cold archive')
+  assert.ok(r.body.commands.backup.includes('deploy/backup.sh'))
+  assert.ok(!r.body.commands.restore || !r.body.commands.restore.includes('--force'), 'the restore command must never pre-arm --force')
+  assert.ok(r.body.note.includes('.env'), 'and it says .env is in no archive')
+
+  await api('DELETE', '/api/streams/snapch', undefined, { token })
+  await api('DELETE', '/api/sources/e2efeed', undefined, { token })
+  await api('DELETE', '/api/sources/e2efeed2', undefined, { token })
+  await api('DELETE', `/api/config/snapshots/${snapId}`, undefined, { token })
+  log('T: config snapshots + templates — template leaked NONE of 5 seeded secrets (2 credential URLs stripped to origin+path), snapshot keeps them on-box and is never served, restore brings a purged channel back WITH its original key, a live differing key is never clobbered, cross-service refused, backup listing read-only ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record, config snapshots + secret-free templates — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

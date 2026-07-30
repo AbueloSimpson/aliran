@@ -42,6 +42,8 @@
       <button class="tab" data-tab="reports"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 00-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0"/></svg>Reports <span id="rp-badge" class="badge alert" title="open correlation alerts — acknowledging one clears it from here" hidden></span></button>
       <button class="tab" data-tab="analytics"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>Analytics</button>
       <button class="tab" data-tab="overview"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Overview</button>
+      <div class="nav-label">Maintenance</div>
+      <button class="tab" data-tab="backup"><svg viewBox="0 0 24 24"><path d="M21 8v11a2 2 0 01-2 2H5a2 2 0 01-2-2V8M2 3h20v5H2zM10 12h4"/></svg>Backup</button>
     </nav>
     <div class="side-foot">
       <span id="who" class="muted"></span>
@@ -374,6 +376,79 @@
         <ul id="activity-feed" class="activity"></ul>
       </div>
     </section>
+
+    <section id="backup-section" hidden>
+      <div class="card">
+        <h3 class="card-title">Three different files, three different jobs</h3>
+        <p class="muted">A backup that is correct for one job is wrong for the other two. Read this before you use the buttons below.</p>
+        <table class="artifact-key">
+          <thead><tr><th>File</th><th>Holds secrets</th><th>Where it stays</th><th>Use it to</th></tr></thead>
+          <tbody>
+            <tr><td><b>Recovery archive</b></td><td class="yes">Yes — also the panel keys</td><td>On the box</td><td>Rebuild this panel after you lose the box</td></tr>
+            <tr><td><b>Config snapshot</b></td><td class="yes">Yes</td><td>On the box</td><td>Undo a bad change to the lineup</td></tr>
+            <tr><td><b>Config template</b></td><td class="no">No</td><td>You download it</td><td>Start a second site, or compare two lineups</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">Config snapshots <span class="muted">(this panel's exact config, secrets included)</span></h3>
+        <div class="row-actions">
+          <button class="btn primary small" id="bk-snap-take">Take a snapshot now</button>
+          <span class="muted" id="bk-snap-dir"></span>
+        </div>
+        <p class="muted">The panel takes a snapshot automatically before you delete a channel, and before any restore or import.
+          A snapshot holds the per-stream keys, so the panel keeps it on the box. You cannot download it.</p>
+        <p class="warn-line">Snapshots live in the same volume as your data. They protect you from a mistake. They do not protect you from the loss of the volume. Use a recovery archive for that.</p>
+        <div class="table-card">
+          <table id="bk-snap-table">
+            <thead><tr><th>Taken</th><th>Note</th><th>Contents</th><th>Size</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">Config template <span class="muted">(no secrets — safe to download)</span></h3>
+        <div class="row-actions">
+          <button class="btn small" id="bk-tpl-download">Download the template</button>
+          <button class="btn small" id="bk-tpl-import">Import a template…</button>
+        </div>
+        <p class="muted">A template holds the structure: channels, categories, packages and sources. It does not hold the
+          per-stream keys, the admin accounts or the publisher keys.</p>
+        <p class="warn-line">A template gives you a lineup that nobody can watch yet. Grants seal the per-stream keys, and a
+          template leaves those keys out. After you import one, give the channels to your users again.</p>
+        <p class="muted">Each source URL loses its user name, password and query parameters. Type them in again before you turn the source on.</p>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">Recovery archives <span class="muted">(the whole data volume)</span></h3>
+        <p class="muted" id="bk-arch-note"></p>
+        <div class="table-card">
+          <table id="bk-arch-table">
+            <thead><tr><th>Archive</th><th>Age</th><th>Size</th><th>State</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="warn-line" id="bk-arch-why"></p>
+        <div id="bk-arch-cmds"></div>
+        <details class="footnote"><summary>Before you restore an archive — read this</summary>
+        <div class="footnote">
+          <p class="warn-line"><b>Always restore the newest archive you have.</b> The panel store is an append-only, signed log.
+            A restore moves it back in time. The panel then writes new records over sequence numbers that some apps already hold
+            with different content. An app that replicated past that point refuses the forked history. Its channel list stops
+            updating, and the viewer must clear the app storage. An old archive strands more viewers than a new one.</p>
+          <p class="muted">The restore command refuses to write over a volume that holds data. It also refuses an archive whose
+            name does not match the service. <b>Do not add <span class="mono">--force</span> to get past these two refusals unless
+            you know what the volume holds.</b> With <span class="mono">--force</span>, the restore deletes the volume contents first.</p>
+          <p class="muted">No archive holds a <span class="mono">.env</span> file. The <span class="mono">.env</span> files live on
+            the host, outside the volumes. Keep a copy of them somewhere else.</p>
+          <p class="muted">After a restore, restart each broadcaster. Every channel then registers again.</p>
+          <p class="muted">Two panels must never run with the same keys at the same time. Both sign records under one identity,
+            and that forks the store permanently. Stop the first panel before you start the second.</p>
+        </div></details>
+      </div>
+    </section>
   </main>
   </div>
 </div>
@@ -392,6 +467,7 @@
 
 <div id="toast" hidden></div>
 <input type="file" id="art-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+<input type="file" id="bk-tpl-file" accept="application/json,.json" hidden>
 
 <script src="app.js"></script>
 </body>

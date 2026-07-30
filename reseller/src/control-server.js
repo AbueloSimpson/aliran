@@ -22,8 +22,11 @@ import path from 'path'
 import { createHmac, timingSafeEqual } from 'crypto'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
+import { makeSnapshotStore } from '@aliran/core/config-snapshot.js'
+import { makeConfigRoutes } from '@aliran/core/config-routes.js'
 import { ControlError } from './errors.js'
 import { readJsonFile, writeJsonFile } from './store.js'
+import * as configSnapshot from './config-snapshot.js'
 import {
   makeThrottle, controlKeys, makePrincipalVerifier, principalTokenLive, loadPrincipals,
   addPrincipal, removePrincipal, listPrincipals, getPrincipal, principalSummary,
@@ -52,6 +55,16 @@ export function startControlServer (ctx, opts = {}) {
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
   const loginVerifier = makePrincipalVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
   const keys = controlKeys(ctx.dataDir)
+  // Config snapshots + the DR archive listing. The reseller is EXPORT-ONLY: its two
+  // sections are a credential file and an account map whose balances live in the ledger,
+  // and neither is safe to write back — see reseller/src/config-snapshot.js.
+  const configRoutes = makeConfigRoutes({
+    service: 'reseller',
+    ctx,
+    mod: configSnapshot,
+    store: makeSnapshotStore(path.join(ctx.dataDir, 'config-snapshots'), { service: 'reseller', keep: ctx.config.snapshotKeep || 20 }),
+    backupsDir: ctx.config.backupDir || null
+  })
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
@@ -352,6 +365,20 @@ export function startControlServer (ctx, opts = {}) {
         before: Number.isInteger(before) ? before : undefined,
         limit: Number.isInteger(limit) ? limit : undefined
       }, scope))
+    }
+
+    // Config snapshots + the disaster-recovery archive listing (core/config-routes.js).
+    // Admin tier only: these expose the whole principal hierarchy, including branches a
+    // super or a reseller can never otherwise see.
+    if (r1 === 'config' || r1 === 'backups') {
+      requireCap(me, 'config:snapshot')
+      const out = await configRoutes.handle({
+        segs: seg.slice(1),
+        method: req.method,
+        body: req.method === 'POST' ? await readJson(req) : {},
+        query: Object.fromEntries(url.searchParams)
+      })
+      if (out) return sendJson(res, out.status, out.body)
     }
 
     sendJson(res, 404, { error: 'not found' })

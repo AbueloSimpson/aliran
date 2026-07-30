@@ -34,7 +34,10 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
+import { makeSnapshotStore } from '@aliran/core/config-snapshot.js'
+import { makeConfigRoutes } from '@aliran/core/config-routes.js'
 import { ControlError } from './titles.js'
+import * as configSnapshot from './config-snapshot.js'
 import { makeThrottle, controlKeys, makeAdminVerifier, adminTokenLive, addAdmin, removeAdmin, listAdmins, setAdminPassword } from './control-auth.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
@@ -50,6 +53,15 @@ export function startControlServer (ctx, opts = {}) {
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
   const loginVerifier = makeAdminVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
   const keys = controlKeys(ctx.dataDir)
+  // Config snapshots / templates / the DR archive listing. Identical wiring in all four
+  // dashboards — the shared module owns the rules so they cannot drift.
+  const configRoutes = makeConfigRoutes({
+    service: 'library',
+    ctx,
+    mod: configSnapshot,
+    store: makeSnapshotStore(path.join(ctx.dataDir, 'config-snapshots'), { service: 'library', keep: ctx.config.snapshotKeep || 20 }),
+    backupsDir: ctx.config.backupDir || null
+  })
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
@@ -145,6 +157,19 @@ export function startControlServer (ctx, opts = {}) {
         const st = ctx.manager.get(r2)
         return sendJson(res, 200, { lines, state: st.state, ingest: st.ingest })
       }
+    }
+
+    // Config snapshots, templates and the disaster-recovery archive listing. The handler is
+    // transport-agnostic (core/config-routes.js) and returns null for a path it does not
+    // own, so it can sit in front of the 404 without swallowing anything.
+    if (r1 === 'config' || r1 === 'backups') {
+      const out = await configRoutes.handle({
+        segs: seg.slice(1),
+        method: req.method,
+        body: req.method === 'POST' ? await readJson(req) : {},
+        query: Object.fromEntries(url.searchParams)
+      })
+      if (out) return sendJson(res, out.status, out.body)
     }
 
     sendJson(res, 404, { error: 'not found' })

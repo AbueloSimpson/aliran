@@ -86,7 +86,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'reports', 'analytics', 'overview']
+const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'reports', 'analytics', 'overview', 'backup']
 // One-line topbar description per tab, shown under the page title.
 const TAB_SUBTITLES = {
   streams: 'the live channel catalog your viewers see',
@@ -98,7 +98,8 @@ const TAB_SUBTITLES = {
   categories: 'the rail vocabulary — labels, order, visibility',
   reports: 'viewer problem reports and correlation alerts',
   analytics: 'aggregate usage counts — no per-user tracking exists',
-  overview: 'panel health and recent activity'
+  overview: 'panel health and recent activity',
+  backup: 'config snapshots, config templates and recovery archives'
 }
 for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
@@ -113,6 +114,8 @@ for (const tab of document.querySelectorAll('.tab')) {
     else stopAnalyticsPoll()
     if (tab.dataset.tab === 'reports') startReportsPoll()
     else stopReportsPoll()
+    // Loaded on demand: three API calls nobody needs until they open the tab.
+    if (tab.dataset.tab === 'backup') loadBackup().catch((err) => toast(err.message, true))
   })
 }
 
@@ -2166,3 +2169,208 @@ function stopReportsPoll () {
   if (!token) return show('login')
   try { await enterApp() } catch { logout() }
 })()
+
+// ---------------------------------------------------------------- backup tab
+//
+// Three artifacts, three handling rules (see docs/kb/backup-and-rotation.md):
+//   recovery archive  — the whole volume, and it holds the panel keys. Made and applied on
+//                       the box. This tab LISTS them and shows the commands; it cannot run
+//                       one, because a cold backup stops the panel that would answer.
+//   config snapshot   — this panel's config WITH its secrets. Stays on the box; the API
+//                       never serves the contents, so there is nothing here to download.
+//   config template   — the same structure with every secret removed. Downloadable.
+//
+// The warnings rendered here are the feature, not decoration. A stale restore forks the
+// store permanently, and a template import produces a lineup with no entitlements. Both
+// look exactly like success unless something says otherwise.
+
+let backupState = { caps: null, snapshots: [], archives: null }
+
+async function loadBackup () {
+  const [caps, snaps, arch] = await Promise.all([
+    api('GET', '/api/config'),
+    api('GET', '/api/config/snapshots'),
+    api('GET', '/api/backups')
+  ])
+  backupState = { caps, snapshots: snaps.snapshots, archives: arch }
+  renderBackup()
+}
+
+// fmtBytes is the one defined for the Overview tab above — same job, so it is reused.
+
+function fmtAge (hours) {
+  if (hours == null) return '—'
+  if (hours < 1) return Math.round(hours * 60) + ' min'
+  if (hours < 48) return hours.toFixed(1) + ' h'
+  return Math.round(hours / 24) + ' days'
+}
+
+function renderBackup () {
+  const { caps, snapshots, archives } = backupState
+  if (caps) $('#bk-snap-dir').textContent = 'stored in ' + caps.snapshotDir
+
+  // ---- config snapshots ----
+  const tb = $('#bk-snap-table tbody')
+  if (!snapshots.length) {
+    tb.innerHTML = '<tr><td colspan="5" class="muted">No snapshot yet. The panel takes one automatically before you delete a channel.</td></tr>'
+  } else {
+    tb.innerHTML = snapshots.map((s) => {
+      // A damaged snapshot is shown, never hidden: an operator must not believe they hold
+      // a rollback point that cannot be read.
+      if (s.unreadable) {
+        return '<tr><td class="mono">' + esc(s.id) + '</td>' +
+          '<td colspan="3"><span class="freshness stale">damaged</span> <span class="muted">' + esc(s.unreadable) + '</span></td>' +
+          '<td><div class="row-actions"><button class="btn small danger" data-snap-del="' + esc(s.id) + '">Delete</button></div></td></tr>'
+      }
+      const m = s.meta || {}
+      return '<tr>' +
+        '<td>' + esc(new Date(s.createdAt).toLocaleString()) + '<div class="muted mono">' + esc(s.id) + '</div></td>' +
+        '<td>' + esc(s.note || '—') + '</td>' +
+        '<td class="muted">' + (m.streams || 0) + ' channels · ' + (m.packages || 0) + ' packages · ' + (m.sources || 0) + ' sources</td>' +
+        '<td class="muted">' + fmtBytes(s.bytes) + '</td>' +
+        '<td><div class="row-actions">' +
+          '<button class="btn small" data-snap-restore="' + esc(s.id) + '">Restore…</button>' +
+          '<button class="btn small danger" data-snap-del="' + esc(s.id) + '">Delete</button>' +
+        '</div></td></tr>'
+    }).join('')
+  }
+
+  // ---- recovery archives ----
+  const ab = $('#bk-arch-table tbody')
+  $('#bk-arch-note').textContent = archives.available
+    ? 'Found in ' + archives.dir + ' on the box.'
+    : 'The panel cannot see the archive directory: ' + archives.reason + '. Your archives can still exist. This panel cannot read them.'
+  $('#bk-arch-why').textContent = archives.why || ''
+  if (!archives.available || !archives.archives.length) {
+    ab.innerHTML = '<tr><td colspan="4" class="muted">' +
+      (archives.available ? 'No archive found. Run the backup command below.' : 'Nothing to show.') + '</td></tr>'
+  } else {
+    ab.innerHTML = archives.archives.map((a) =>
+      '<tr><td class="mono">' + esc(a.name) + (a.legacyName ? ' <span class="muted">(old name format)</span>' : '') + '</td>' +
+      '<td>' + fmtAge(a.ageHours) + '</td>' +
+      '<td class="muted">' + fmtBytes(a.bytes) + '</td>' +
+      '<td>' + (a.newest ? '<span class="freshness newest">newest — restore this one</span> ' : '') +
+        '<span class="freshness ' + a.freshness + '">' + a.freshness + '</span></td></tr>'
+    ).join('')
+  }
+
+  // The commands. The plain restore is offered on its own; the forcing variant is a
+  // separate, labelled block, so --force is always a second deliberate copy.
+  const c = archives.commands || {}
+  $('#bk-arch-cmds').innerHTML = [
+    c.assumes ? '<p class="muted" style="margin:10px 0 0">' + esc(c.assumes) + '</p>' : '',
+    cmdBlock('Make an archive now (on the box)', c.backup),
+    cmdBlock('Make one every hour (crontab -e)', c.cron),
+    cmdBlock('Restore the newest archive', c.restore),
+    cmdBlock('Only if the volume already holds data — this DELETES the contents first', c.restoreForce, true)
+  ].join('')
+
+  for (const btn of document.querySelectorAll('[data-copy]')) {
+    btn.onclick = async () => {
+      try { await navigator.clipboard.writeText(btn.dataset.copy); toast('command copied') } catch { toast('copy failed — select the text instead', true) }
+    }
+  }
+  for (const btn of document.querySelectorAll('[data-snap-restore]')) btn.onclick = () => restoreSnapshot(btn.dataset.snapRestore)
+  for (const btn of document.querySelectorAll('[data-snap-del]')) btn.onclick = () => deleteSnapshot(btn.dataset.snapDel)
+}
+
+function cmdBlock (label, cmd, danger) {
+  if (!cmd) return ''
+  return '<div class="cmd-block"><label>' + esc(label) + '</label>' +
+    '<div class="cmd-row' + (danger ? ' force' : '') + '"><code>' + esc(cmd) + '</code>' +
+    '<button class="btn small" data-copy="' + esc(cmd) + '">Copy</button></div></div>'
+}
+
+// Turn a plan into the confirmation body. Every list is shown, including the empty ones,
+// so "this changes nothing" is visible rather than left to be inferred from a short list.
+function planBody (plan, title) {
+  const line = (label, items, fmt) => {
+    const text = items.length ? esc(items.map(fmt || ((x) => x)).join(', ')) : '<span class="plan-empty">none</span>'
+    return '<p class="muted" style="margin:6px 0 0"><b>' + esc(label) + ':</b> ' + text + '</p>'
+  }
+  const parts = ['<p class="muted">' + esc(title) + '</p>']
+  if (plan.streams) {
+    parts.push(line('Channels added', plan.streams.add, (x) => x.id))
+    parts.push(line('Channels changed', plan.streams.update, (x) => x.id))
+    parts.push(line('Channels removed', plan.streams.extra.filter((x) => x.willRemove), (x) => x.id))
+    parts.push(line('Channels left alone', plan.streams.extra.filter((x) => !x.willRemove), (x) => x.id))
+    parts.push(line('Channels skipped', plan.streams.skipped, (x) => x.id))
+  }
+  if (plan.categories) parts.push(line('Categories', plan.categories.add.concat(plan.categories.update)))
+  if (plan.packages) parts.push(line('Packages', plan.packages.add.concat(plan.packages.update)))
+  if (plan.sources) parts.push(line('Sources', plan.sources.add.concat(plan.sources.update)))
+  if (plan.secrets && plan.secrets.install.length) parts.push(line('Per-stream keys put back', plan.secrets.install))
+  for (const w of plan.warnings || []) parts.push('<p class="warn-line">' + esc(w) + '</p>')
+  return parts.join('')
+}
+
+async function restoreSnapshot (id) {
+  try {
+    const plan = await api('POST', '/api/config/snapshots/' + encodeURIComponent(id) + '/plan', {})
+    const body = planBody(plan, 'This is what a restore changes. Nothing has changed yet.') +
+      '<p class="warn-line">The panel takes a snapshot of the config as it is now, first. You can go back to it.</p>'
+    if (!await dialog('Restore this snapshot?', [], { body, okLabel: 'Restore', danger: true })) return
+    const r = await api('POST', '/api/config/snapshots/' + encodeURIComponent(id) + '/restore', { confirm: true })
+    toast(r.summary || 'restored')
+    if (r.result && r.result.failed && r.result.failed.length) {
+      toast(r.result.failed.length + ' item(s) failed: ' + r.result.failed.map((f) => f.id || f.section).join(', '), true)
+    }
+    await refresh()
+    await loadBackup()
+  } catch (err) { toast(err.message, true) }
+}
+
+async function deleteSnapshot (id) {
+  const body = '<p class="mono">' + esc(id) + '</p>' +
+    '<p class="warn-line">You cannot undo this. This snapshot is the only copy of the config at that moment.</p>'
+  if (!await dialog('Delete this snapshot?', [], { body, okLabel: 'Delete', danger: true })) return
+  try {
+    await api('DELETE', '/api/config/snapshots/' + encodeURIComponent(id))
+    toast('snapshot deleted')
+    await loadBackup()
+  } catch (err) { toast(err.message, true) }
+}
+
+$('#bk-snap-take').addEventListener('click', async () => {
+  const v = await dialog('Take a snapshot', [{ name: 'note', label: 'Note (optional)', placeholder: 'why you took this one' }], { okLabel: 'Take snapshot' })
+  if (!v) return
+  try {
+    const r = await api('POST', '/api/config/snapshots', { note: v.note || '' })
+    toast('snapshot ' + r.id + ' taken (' + fmtBytes(r.bytes) + ')')
+    await loadBackup()
+  } catch (err) { toast(err.message, true) }
+})
+
+$('#bk-tpl-download').addEventListener('click', async () => {
+  try {
+    const tpl = await api('GET', '/api/config/template')
+    // Belt and braces on the client too: never write a file that says it holds secrets.
+    if (tpl.contains !== 'no-secrets') { toast('refused: this file is not a secret-free template', true); return }
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')
+    const blob = new Blob([JSON.stringify(tpl, null, 2)], { type: 'application/json' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = 'panel-template-' + stamp + '.json'
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+    toast('template downloaded — ' + tpl.omitted.length + ' field group(s) removed')
+  } catch (err) { toast(err.message, true) }
+})
+
+$('#bk-tpl-import').addEventListener('click', () => $('#bk-tpl-file').click())
+
+$('#bk-tpl-file').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0]
+  e.target.value = '' // let the operator pick the same file twice
+  if (!file) return
+  try {
+    const template = JSON.parse(await file.text())
+    const plan = await api('POST', '/api/config/template/plan', { template })
+    const body = planBody(plan, 'This is what importing ' + file.name + ' changes. Nothing has changed yet.')
+    if (!await dialog('Import this template?', [], { body, okLabel: 'Import', danger: true })) return
+    const r = await api('POST', '/api/config/template/import', { template, confirm: true })
+    toast(r.summary || 'imported')
+    await refresh()
+    await loadBackup()
+  } catch (err) { toast(err.message, true) }
+})

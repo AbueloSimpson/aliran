@@ -32,6 +32,19 @@ x-logging: &bounded-logs
     max-size: "20m"
     max-file: "5"
 
+# Every service below bind-mounts `./backups` at /backups READ-ONLY, and sets BACKUP_DIR
+# to match. That is what lets each dashboard LIST the disaster-recovery archives that
+# deploy/backup.sh writes, and show how old they are.
+#
+# Read-only is the whole security story. Making an archive means stopping the service while
+# its volume is copied — a service cannot do that to itself and still answer the request
+# that asked for it. So the dashboards list and explain, and the operator runs
+# ./deploy/backup.sh. Nothing in a container needs to write there, and the alternative that
+# would let one (mounting the Docker socket) turns any service RCE into host root.
+#
+# The directory is created by the first backup run. Until then the dashboard says the
+# directory is not visible, rather than showing an empty list that reads as "no backups".
+
 services:
   panel:
     build:
@@ -45,8 +58,11 @@ services:
       # The .env examples say ./data (bare-metal); in a container the data MUST live
       # on the volume. `environment` wins over env_file, so this can't be broken.
       DATA_DIR: /data
+      # Where the read-only archive mount below lands, for the dashboard's archive list.
+      BACKUP_DIR: /backups
     volumes:
       - panel-data:/data
+      - ./backups:/backups:ro
 
   broadcaster:
     build:
@@ -64,6 +80,7 @@ services:
     env_file: ./broadcaster/.env
     environment:
       DATA_DIR: /data
+      BACKUP_DIR: /backups
       # --- Scale profile (high channel density) — see docs/kb/scaling.md ---
       # Keep the constant per-segment write churn off the disk. Uncomment BOTH lines
       # here and the `tmpfs:` mount below. HLS_WORK_DIR moves ffmpeg's scratch to RAM;
@@ -73,6 +90,7 @@ services:
       # FEED_BUFFER: ram
     volumes:
       - broadcaster-data:/data
+      - ./backups:/backups:ro
     # tmpfs for the ffmpeg HLS scratch (scale profile). Size it for your channel count:
     # ~ (HLS_LIST_SIZE + 2) x segment_size x channels — 512m fits dozens of SD copy channels.
     # tmpfs:
@@ -96,8 +114,10 @@ services:
     env_file: ./library/.env
     environment:
       DATA_DIR: /data
+      BACKUP_DIR: /backups
     volumes:
       - library-data:/data
+      - ./backups:/backups:ro
 
   # Reseller panel — role hierarchy + credit ledger fronting the panel admin API.
   # Behind the `reseller` profile so a plain `up -d` never starts it. Seed the root
@@ -116,8 +136,10 @@ services:
     env_file: ./reseller/.env
     environment:
       DATA_DIR: /data
+      BACKUP_DIR: /backups
     volumes:
       - reseller-data:/data
+      - ./backups:/backups:ro
 
 volumes:
   panel-data:

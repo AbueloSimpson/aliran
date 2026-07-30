@@ -239,3 +239,34 @@ dialog h2 { margin: 0 0 14px; font-size: 16px; }
   #side-toggle { display: inline-block; }
   .cell-input { max-width: 150px; }
 }
+
+/* ---- Backup card: recovery archives, config snapshots, config templates ---- */
+/* The warnings are load-bearing: a template import re-keys every push channel, and a
+   stale archive restore forks a store. Both read as success without a visual cue. */
+.warn-line {
+  margin: 8px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.5;
+  color: var(--text); background: rgba(251, 191, 36, .07);
+  border-left: 3px solid var(--warn); border-radius: 0 6px 6px 0;
+}
+.row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+h4.bk-h { margin: 18px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+table.artifact-key { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+table.artifact-key th, table.artifact-key td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.artifact-key th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
+table.artifact-key td.yes { color: var(--warn); }
+table.artifact-key td.no { color: var(--ok); }
+.freshness { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; border: 1px solid var(--border); }
+.freshness.fresh { color: var(--ok); border-color: rgba(52, 211, 153, .4); }
+.freshness.aging { color: var(--warn); border-color: rgba(251, 191, 36, .4); }
+.freshness.stale { color: var(--danger); border-color: rgba(248, 113, 113, .4); }
+.freshness.newest { color: var(--accent); }
+.cmd-block { margin-top: 8px; }
+.cmd-block label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; text-transform: uppercase; letter-spacing: .04em; }
+.cmd-row { display: flex; gap: 6px; align-items: stretch; }
+.cmd-row code {
+  flex: 1; padding: 7px 9px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+  overflow-x: auto; white-space: pre; color: var(--text);
+}
+.cmd-row.force code { border-color: rgba(248, 113, 113, .45); }
+.plan-empty { color: var(--muted); }

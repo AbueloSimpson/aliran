@@ -30,6 +30,22 @@
 //   DELETE /api/admins/:name
 //   POST   /api/admins/:name/password    {password} (bumps tokenVersion → re-login)
 //
+//   GET    /api/config                   what this service snapshots + the section map
+//   GET    /api/config/snapshots         on-box config snapshots (channels.json + admins)
+//   POST   /api/config/snapshots         {note?} take one now
+//   GET    /api/config/snapshots/:id     METADATA only — a snapshot holds stream keys and
+//                                          is never served over HTTP
+//   POST   /api/config/snapshots/:id/plan     dry run: exactly what a restore would change
+//   POST   /api/config/snapshots/:id/restore  {confirm:true,removeExtra?} apply it
+//   DELETE /api/config/snapshots/:id
+//   GET    /api/config/template          the secret-free, downloadable config template
+//   POST   /api/config/template/plan     {template} dry run an import
+//   POST   /api/config/template/import   {template,confirm:true} apply it
+//   GET    /api/backups                  the disaster-recovery archives on the box +
+//                                          the commands to make and apply one (this
+//                                          service cannot: a cold backup stops it)
+//   (all of the above are core/config-routes.js — identical in all four dashboards)
+//
 // Non-/api GETs serve the control UI from broadcaster/control-ui/ (S12b).
 
 import http from 'http'
@@ -37,7 +53,10 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { signToken, tokenValid } from '@aliran/core'
+import { makeSnapshotStore } from '@aliran/core/config-snapshot.js'
+import { makeConfigRoutes } from '@aliran/core/config-routes.js'
 import { ControlError } from './channel.js'
+import * as configSnapshot from './config-snapshot.js'
 import { makeThrottle, controlKeys, makeAdminVerifier, adminTokenLive, addAdmin, removeAdmin, listAdmins, setAdminPassword } from './control-auth.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'control-ui')
@@ -54,6 +73,15 @@ export function startControlServer (ctx, opts = {}) {
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
   const loginVerifier = makeAdminVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
   const keys = controlKeys(ctx.dataDir)
+  // Config snapshots / templates / the DR archive listing. Identical wiring in all four
+  // dashboards — the shared module owns the rules so they cannot drift.
+  const configRoutes = makeConfigRoutes({
+    service: 'broadcaster',
+    ctx,
+    mod: configSnapshot,
+    store: makeSnapshotStore(path.join(ctx.dataDir, 'config-snapshots'), { service: 'broadcaster', keep: ctx.config.snapshotKeep || 20 }),
+    backupsDir: ctx.config.backupDir || null
+  })
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
@@ -162,7 +190,13 @@ export function startControlServer (ctx, opts = {}) {
       if (seg.length === 3) {
         if (req.method === 'GET') return sendJson(res, 200, await ctx.manager.get(r2))
         if (req.method === 'PATCH') return sendJson(res, 200, await ctx.manager.update(r2, await readJson(req)))
-        if (req.method === 'DELETE') return sendJson(res, 200, await ctx.manager.remove(r2))
+        if (req.method === 'DELETE') {
+          // Take a rollback point BEFORE the registry loses the channel. Deleting one is
+          // the single likeliest thing an operator wants undone, and channels.json is the
+          // only copy of that channel's stream key / SRT passphrase / CENC key.
+          const rollback = await configRoutes.autoSnapshot(`the removal of channel "${r2}"`)
+          return sendJson(res, 200, { ...(await ctx.manager.remove(r2)), rollbackSnapshot: rollback })
+        }
       }
       if (seg.length === 4 && req.method === 'POST') {
         if (r3 === 'start') return sendJson(res, 200, await ctx.manager.start(r2))
@@ -177,6 +211,19 @@ export function startControlServer (ctx, opts = {}) {
         const st = await ctx.manager.get(r2)
         return sendJson(res, 200, { lines, running: st.running, restarts: st.watchdog ? st.watchdog.restarts : 0, state: st.state })
       }
+    }
+
+    // Config snapshots, templates and the disaster-recovery archive listing. The handler is
+    // transport-agnostic (core/config-routes.js) and returns null for a path it does not
+    // own, so it can sit in front of the 404 without swallowing anything.
+    if (r1 === 'config' || r1 === 'backups') {
+      const out = await configRoutes.handle({
+        segs: seg.slice(1),
+        method: req.method,
+        body: req.method === 'POST' ? await readJson(req) : {},
+        query: Object.fromEntries(url.searchParams)
+      })
+      if (out) return sendJson(res, out.status, out.body)
     }
 
     sendJson(res, 404, { error: 'not found' })

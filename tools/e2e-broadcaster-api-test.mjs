@@ -876,7 +876,50 @@ try {
   await mgrR.stop('mem-chan')
   log('R: FFMPEG_MAX_RSS_MB → over-cap ffmpeg recycled (marker + backoff path, feed identity kept), under-cap untouched ✓')
 
-  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced, PanelLink self-heals a panel restart, S20a: blobsKey enrichment + per-channel SWARM_MAX_PEERS, FFMPEG_MAX_RSS_MB memory recycle)')
+  // ===== Test S: config snapshot / template against a RUNNING fleet =====
+  //
+  // The full config-API surface is covered network-free in tools/e2e-config-api-test.mjs.
+  // What only this file can exercise is the interaction with LIVE channels: that a template
+  // never carries a running channel's keys, and that restoring over a running channel
+  // reports a restart is needed instead of silently diverging from what ffmpeg is doing.
+  {
+    const live = (await api('GET', '/api/channels', undefined, token)).body
+    const running = live.find((c) => c.running)
+    assert.ok(running, 'this test needs at least one running channel by now')
+
+    const reg = JSON.parse(fs.readFileSync(path.join(dirs.bc, 'channels.json'), 'utf8'))
+    const pushSecrets = Object.values(reg)
+      .map((m) => m.input && (m.input.streamKey || m.input.passphrase || m.input.cencKey))
+      .filter((v) => typeof v === 'string' && v.length >= 8)
+
+    const tpl = (await api('GET', '/api/config/template', undefined, token)).body
+    assert.strictEqual(tpl.contains, 'no-secrets')
+    const tplText = JSON.stringify(tpl)
+    for (const s of pushSecrets) assert.ok(!tplText.includes(s), 'the template leaked a live channel credential')
+    assert.ok(!tpl.sections.admins, 'admins dropped from the template')
+    assert.ok(Object.keys(tpl.sections.channels).length > 0, 'the template still describes the fleet')
+
+    const snap = (await api('POST', '/api/config/snapshots', { note: 'running fleet' }, token)).body
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dirs.bc, 'config-snapshots', snap.id), 'utf8'))
+    for (const s of pushSecrets) assert.ok(JSON.stringify(onDisk).includes(s), 'the on-box snapshot KEEPS the credentials')
+
+    // Change a running channel, then plan a restore back to the snapshot.
+    await api('PATCH', `/api/channels/${running.id}`, { title: 'Retitled while running' }, token)
+    const plan = (await api('POST', `/api/config/snapshots/${snap.id}/plan`, {}, token)).body
+    const entry = plan.update.find((u) => u.id === running.id)
+    assert.ok(entry, 'the plan sees the edit to the running channel')
+    assert.strictEqual(entry.running, true)
+    assert.strictEqual(entry.restartRequired, true, 'and warns the channel must be restarted for it to take effect')
+
+    const done = (await api('POST', `/api/config/snapshots/${snap.id}/restore`, { confirm: true }, token)).body
+    assert.ok(done.result.updated.some((u) => u.id === running.id && u.restartRequired), 'the restore reports the pending restart')
+    assert.strictEqual((await api('GET', `/api/channels/${running.id}`, undefined, token)).body.title, running.title, 'the title is back')
+    assert.strictEqual((await api('GET', `/api/channels/${running.id}`, undefined, token)).body.running, true, 'and the channel was NOT stopped by the restore')
+    await api('DELETE', `/api/config/snapshots/${snap.id}`, undefined, token)
+    log('S: config snapshot/template vs a RUNNING fleet — template carries no live credential, snapshot keeps them, restore reports restartRequired and never stops a channel ✓')
+  }
+
+  log('\nRESULT: PASS ✅  (control API + typed ingest: RTMP/UDP push round-trips over P2P, capability + port gates, clean stop/restart, S15b reliability: log ring + auto-resume + isLive:false, S15c: capabilities/logs/state/pushUrl surfaced, PanelLink self-heals a panel restart, S20a: blobsKey enrichment + per-channel SWARM_MAX_PEERS, FFMPEG_MAX_RSS_MB memory recycle, config snapshots + secret-free templates against a running fleet)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

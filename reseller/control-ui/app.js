@@ -208,7 +208,7 @@ function showView (name) {
   $$('.view').forEach((v) => { v.hidden = v.dataset.view !== name })
   $('#view-title').textContent = { overview: 'Overview', accounts: 'Accounts', resellers: 'Resellers', ledger: 'Ledger', settings: 'Settings' }[name]
   $('#app-view').classList.remove('side-open')
-  const loaders = { overview: loadOverview, accounts: loadAccounts, resellers: loadPrincipals, ledger: () => loadLedger(true) }
+  const loaders = { overview: loadOverview, accounts: loadAccounts, resellers: loadPrincipals, ledger: () => loadLedger(true), settings: () => { if (me && IS_ADMIN(me.role)) loadBackup().catch((e) => toast(e.message, true)) } }
   if (loaders[name]) loaders[name]()
 }
 $$('.nav-item').forEach((n) => { n.onclick = () => showView(n.dataset.view) })
@@ -227,6 +227,7 @@ async function boot () {
   $('#sys-block').hidden = !IS_ADMIN(me.role)
   $('#mint-panel').hidden = !IS_ADMIN(me.role)
   $('#ops-card').hidden = !IS_ADMIN(me.role)
+  $('#bk-card').hidden = !IS_ADMIN(me.role)
   // Device policy: admin-set + inherited. Admins get the field (prefilled with
   // the policy); everyone else sees the read-only value their accounts receive.
   $('#acct-devices-label').hidden = !IS_ADMIN(me.role)
@@ -1037,3 +1038,118 @@ async function refreshBalance () {
 // ---- start ----
 if (token) boot().catch(() => showLogin())
 else showLogin()
+
+// ---- backup & restore (admin tier only) ----
+//
+// The reseller is EXPORT-ONLY, and that is a decision rather than a gap. Its two sections
+// are a credential file whose tokenVersion must never move backwards, and an account map
+// whose balances live in the credit ledger that no config artifact carries. See
+// reseller/src/config-snapshot.js. So this card offers a snapshot, a template and the
+// archive listing — and says plainly that a rebuild is a volume restore.
+//
+// The routes are gated server-side on the config:snapshot capability (admin + co-admin);
+// hiding the card is presentation, not the control.
+
+const bkEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+
+// fmtBytes is the one this dashboard already defines — same job, so it is reused.
+
+function bkAge (h) {
+  if (h == null) return '—'
+  if (h < 1) return Math.round(h * 60) + ' min'
+  if (h < 48) return h.toFixed(1) + ' h'
+  return Math.round(h / 24) + ' days'
+}
+
+function bkCmd (label, cmd, danger) {
+  if (!cmd) return ''
+  return '<div class="cmd-block"><label>' + bkEsc(label) + '</label><div class="cmd-row' +
+    (danger ? ' force' : '') + '"><code>' + bkEsc(cmd) + '</code>' +
+    '<button class="btn small" data-copy="' + bkEsc(cmd) + '">Copy</button></div></div>'
+}
+
+async function loadBackup () {
+  const [caps, snaps, arch] = await Promise.all([
+    api('GET', '/config'), api('GET', '/config/snapshots'), api('GET', '/backups')
+  ])
+  $('#bk-snap-dir').textContent = 'Snapshots are stored in ' + caps.snapshotDir + ' on the box.'
+
+  const tb = $('#bk-snap-table tbody')
+  tb.innerHTML = snaps.snapshots.length
+    ? snaps.snapshots.map((s) => {
+      // A damaged snapshot is shown, never hidden: an operator must not believe they hold
+      // a reference copy that cannot be read.
+      if (s.unreadable) {
+        return '<tr><td class="mono">' + bkEsc(s.id) + '</td><td colspan="3">damaged — ' + bkEsc(s.unreadable) + '</td>' +
+          '<td><button class="btn small danger" data-bkdel="' + bkEsc(s.id) + '">Delete</button></td></tr>'
+      }
+      const m = s.meta || {}
+      return '<tr><td>' + bkEsc(new Date(s.createdAt).toLocaleString()) + '<div class="muted mono">' + bkEsc(s.id) + '</div></td>' +
+        '<td>' + bkEsc(s.note || '—') + '</td>' +
+        '<td class="muted">' + (m.principals || 0) + ' principals · ' + (m.accounts || 0) + ' accounts</td>' +
+        '<td class="muted">' + fmtBytes(s.bytes) + '</td>' +
+        '<td><button class="btn small danger" data-bkdel="' + bkEsc(s.id) + '">Delete</button></td></tr>'
+    }).join('')
+    : '<tr><td colspan="5" class="muted">No snapshot yet.</td></tr>'
+
+  const ab = $('#bk-arch-table tbody')
+  $('#bk-arch-note').textContent = arch.available
+    ? 'Found in ' + arch.dir + ' on the box.'
+    : 'The reseller cannot see the archive directory: ' + arch.reason + '. Your archives can still exist. This dashboard cannot read them.'
+  $('#bk-arch-why').textContent = arch.why || ''
+  ab.innerHTML = (arch.available && arch.archives.length)
+    ? arch.archives.map((a) =>
+      '<tr><td class="mono">' + bkEsc(a.name) + (a.legacyName ? ' <span class="muted">(old name format)</span>' : '') + '</td>' +
+      '<td>' + bkAge(a.ageHours) + '</td><td class="muted">' + fmtBytes(a.bytes) + '</td>' +
+      '<td>' + (a.newest ? '<span class="freshness newest">newest — restore this one</span> ' : '') +
+      '<span class="freshness ' + a.freshness + '">' + a.freshness + '</span></td></tr>').join('')
+    : '<tr><td colspan="4" class="muted">' + (arch.available ? 'No archive found. Run the backup command below.' : 'Nothing to show.') + '</td></tr>'
+
+  const c = arch.commands || {}
+  $('#bk-arch-cmds').innerHTML =
+    (c.assumes ? '<p class="hint muted">' + bkEsc(c.assumes) + '</p>' : '') +
+    bkCmd('Make an archive now (on the box)', c.backup) +
+    bkCmd('Make one every hour (crontab -e)', c.cron) +
+    bkCmd('Restore the newest archive', c.restore) +
+    bkCmd('Only if the volume already holds data — this DELETES the contents first', c.restoreForce, true)
+
+  $$('[data-copy]').forEach((b) => {
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy); toast('command copied') } catch { toast('copy failed — select the text instead', true) }
+    }
+  })
+  $$('[data-bkdel]').forEach((b) => { b.onclick = () => bkDelete(b.dataset.bkdel) })
+}
+
+function bkDelete (id) {
+  dialog('Delete this snapshot?', [
+    el('p', { className: 'mono', textContent: id }),
+    el('p', { className: 'hint muted', textContent: 'You cannot undo this. It is the only copy of the config at that moment.' })
+  ], async () => {
+    await api('DELETE', '/config/snapshots/' + encodeURIComponent(id))
+    toast('snapshot deleted')
+    await loadBackup()
+  }, { okLabel: 'Delete', danger: true })
+}
+
+$('#bk-snap-take').onclick = () => {
+  const note = inputEl({ placeholder: 'why you took this one', maxLength: 200 })
+  dialog('Take a snapshot', [field('Note (optional)', note)], async () => {
+    const r = await api('POST', '/config/snapshots', { note: note.value })
+    toast('snapshot ' + r.id + ' taken (' + fmtBytes(r.bytes) + ')')
+    await loadBackup()
+  }, { okLabel: 'Take snapshot' })
+}
+
+$('#bk-tpl-download').onclick = guard(async () => {
+  const tpl = await api('GET', '/config/template')
+  // Belt and braces on the client too: never write a file that says it holds secrets.
+  if (tpl.contains !== 'no-secrets') { toast('refused: this file is not a secret-free template', true); return }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(tpl, null, 2)], { type: 'application/json' }))
+  a.download = 'reseller-template-' + stamp + '.json'
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000)
+  toast('template downloaded — it holds no password material')
+})

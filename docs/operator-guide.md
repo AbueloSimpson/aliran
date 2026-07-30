@@ -468,6 +468,19 @@ in-memory. What CAN grow forever is whatever captures that stdout:
   back up (`deploy/backup.sh` does the cold stop→tar→start), the restore procedure
   and its freshness caveat, and the rotation matrix for every credential. The
   panel signing/OPRF keys are *identity*, not rotatable — protect and back them up.
+- **Backup page (every dashboard):** each dashboard has a **Backup** page that
+  covers three different files. A **config snapshot** is this service's config
+  with its secrets; it stays on the box, and the service takes one automatically
+  before it deletes a channel and before any restore. A **config template** is the
+  same structure with every secret removed; you download it to start a second site
+  or to compare two lineups. A **recovery archive** is the whole data volume, and
+  the dashboard only **lists** it: a cold backup stops the service, so the service
+  cannot make one for itself and still answer you. The page shows the exact
+  `deploy/backup.sh` and `deploy/restore.sh` commands to run on the box.
+  A template gives you a lineup with **no entitlements** — grants seal the
+  per-stream keys a template leaves out, so grant the channels again after an
+  import. Mount `./backups` read-only into each service (the shipped compose file
+  does) or the archive list stays empty.
 - **Monitoring:** watch panel login RPC, peer counts, lockouts; the dashboards show
   live channel health (ffmpeg, peers, registration). See [Monitoring](#monitoring)
   for `/healthz` + `/metrics`.

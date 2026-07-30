@@ -373,3 +373,37 @@ ul.report-list li { margin-bottom: 3px; }
 #vod-card .row-form { margin-bottom: 8px; }
 #vod-card input:not([type=checkbox]) { min-width: 140px; }
 #vod-card #vod-api-base { min-width: 280px; }
+
+/* ---- Backup tab: recovery archives, config snapshots, config templates ---- */
+/* Warnings here are load-bearing, not decoration: restoring a stale archive forks the
+   store permanently, and a template produces a lineup with no entitlements. Both read as
+   ordinary success unless the UI says otherwise, so they get a colour and a left rule. */
+.warn-line {
+  margin: 8px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.5;
+  color: var(--text); background: rgba(251, 191, 36, .07);
+  border-left: 3px solid var(--warn); border-radius: 0 6px 6px 0;
+}
+.warn-line.bad { background: rgba(248, 113, 113, .08); border-left-color: var(--danger); }
+.row-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+table.artifact-key { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+table.artifact-key th, table.artifact-key td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.artifact-key th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
+table.artifact-key td.yes { color: var(--warn); }
+table.artifact-key td.no { color: var(--ok); }
+.freshness { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; border: 1px solid var(--border); }
+.freshness.fresh { color: var(--ok); border-color: rgba(52, 211, 153, .4); }
+.freshness.aging { color: var(--warn); border-color: rgba(251, 191, 36, .4); }
+.freshness.stale { color: var(--danger); border-color: rgba(248, 113, 113, .4); }
+.freshness.newest { color: var(--accent); border-color: var(--accent-dim); }
+.cmd-block { margin-top: 10px; }
+.cmd-block label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; text-transform: uppercase; letter-spacing: .04em; }
+.cmd-row { display: flex; gap: 6px; align-items: stretch; }
+.cmd-row code {
+  flex: 1; padding: 7px 9px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+  overflow-x: auto; white-space: pre; color: var(--text);
+}
+.cmd-row.force code { border-color: rgba(248, 113, 113, .45); }
+.plan-list { margin: 8px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.6; }
+.plan-list li { margin: 2px 0; }
+.plan-empty { color: var(--muted); font-size: 12px; }

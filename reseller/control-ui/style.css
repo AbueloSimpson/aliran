@@ -445,3 +445,28 @@ dialog h2 { margin: 0 0 14px; font-size: 15px; }
   #acct-table .row-actions { justify-content: flex-start; }
   #acct-table td[data-l]::before { content: attr(data-l) ': '; color: var(--muted); font-size: 12px; }
 }
+
+/* ---- Backup card (Settings, admin tier): archives, snapshots, templates ---- */
+/* The warnings are load-bearing: a stale archive restore forks a store, and a reseller
+   cannot be put back from a config artifact at all. Both need to look different from
+   ordinary help text. */
+.warn-line {
+  margin: 8px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.5;
+  color: var(--text); background: rgba(251, 191, 36, .07);
+  border-left: 3px solid var(--warn); border-radius: 0 6px 6px 0;
+}
+h4.bk-h { margin: 18px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.freshness { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 11px; border: 1px solid var(--border); }
+.freshness.fresh { color: var(--ok); border-color: rgba(52, 211, 153, .4); }
+.freshness.aging { color: var(--warn); border-color: rgba(251, 191, 36, .4); }
+.freshness.stale { color: var(--danger); border-color: rgba(248, 113, 113, .4); }
+.freshness.newest { color: var(--accent); }
+.cmd-block { margin-top: 8px; }
+.cmd-block label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; text-transform: uppercase; letter-spacing: .04em; }
+.cmd-row { display: flex; gap: 6px; align-items: stretch; }
+.cmd-row code {
+  flex: 1; padding: 7px 9px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+  overflow-x: auto; white-space: pre; color: var(--text);
+}
+.cmd-row.force code { border-color: rgba(248, 113, 113, .45); }

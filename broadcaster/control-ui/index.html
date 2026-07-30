@@ -32,6 +32,7 @@
     <nav class="side-nav">
       <a class="nav-item active" href="#channels">Channels</a>
       <a class="nav-item" href="#add" id="nav-add">Add channel</a>
+      <a class="nav-item" href="#backup-card" id="nav-backup">Backup</a>
     </nav>
     <div class="side-foot">
       <div id="panel-state" class="chip"></div>
@@ -107,6 +108,62 @@
         </div>
         <p id="empty-msg" class="muted pad" hidden></p>
       </section>
+
+      <!-- Backup: three artifacts with three different handling rules. See
+           docs/kb/backup-and-rotation.md and core/config-snapshot.js. -->
+      <section id="backup-card" class="card">
+        <div class="incidents-head">Backup &amp; restore</div>
+        <table class="artifact-key">
+          <thead><tr><th>File</th><th>Holds secrets</th><th>Where it stays</th><th>Use it to</th></tr></thead>
+          <tbody>
+            <tr><td><b>Recovery archive</b></td><td class="yes">Yes</td><td>On the box</td><td>Rebuild this broadcaster after you lose the box</td></tr>
+            <tr><td><b>Config snapshot</b></td><td class="yes">Yes — stream keys too</td><td>On the box</td><td>Undo a bad change to a channel</td></tr>
+            <tr><td><b>Config template</b></td><td class="no">No</td><td>You download it</td><td>Start a second site, or compare two lineups</td></tr>
+          </tbody>
+        </table>
+
+        <h4 class="bk-h">Config snapshots</h4>
+        <div class="row-actions">
+          <button class="btn primary small" id="bk-snap-take">Take a snapshot now</button>
+          <span class="muted" id="bk-snap-dir"></span>
+        </div>
+        <p class="muted">A snapshot holds <span class="mono">channels.json</span> exactly as it is, with each push stream key,
+          each SRT passphrase and each CENC key. The broadcaster keeps it on the box. You cannot download it.
+          The broadcaster also takes one automatically before you delete a channel.</p>
+        <p class="warn-line">Snapshots live in the same volume as your data. They protect you from a mistake. They do not
+          protect you from the loss of the volume. Use a recovery archive for that.</p>
+        <div class="table-wrap">
+          <table id="bk-snap-table">
+            <thead><tr><th>Taken</th><th>Note</th><th>Contents</th><th>Size</th><th class="actions-col"></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <h4 class="bk-h">Config template</h4>
+        <div class="row-actions">
+          <button class="btn small" id="bk-tpl-download">Download the template</button>
+          <button class="btn small" id="bk-tpl-import">Import a template…</button>
+        </div>
+        <p class="warn-line">A template holds no keys. Each push channel it creates gets a NEW stream key. Every encoder in
+          the field still sends to the old key, and it stops. Give the new key to each encoder after you import.</p>
+        <p class="muted">A pull source URL keeps its host and path. It loses the user name, the password and the query
+          parameters. Type them in again before you start the channel. Imported channels arrive stopped.</p>
+
+        <h4 class="bk-h">Recovery archives</h4>
+        <p class="muted" id="bk-arch-note"></p>
+        <div class="table-wrap">
+          <table id="bk-arch-table">
+            <thead><tr><th>Archive</th><th>Age</th><th>Size</th><th>State</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="warn-line" id="bk-arch-why"></p>
+        <div id="bk-arch-cmds"></div>
+        <p class="muted"><b>Always restore the newest archive you have.</b> The restore command refuses to write over a
+          volume that holds data. It also refuses an archive whose name does not match the service. Do not add
+          <span class="mono">--force</span> to get past these two refusals unless you know what the volume holds.
+          No archive holds a <span class="mono">.env</span> file — those live on the host, outside the volumes.</p>
+      </section>
     </main>
   </div>
 </div>
@@ -124,6 +181,7 @@
 </dialog>
 
 <div id="toast" hidden></div>
+<input type="file" id="bk-tpl-file" accept="application/json,.json" hidden>
 
 <script src="app.js"></script>
 </body>

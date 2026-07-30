@@ -5,8 +5,89 @@ bother with), how to restore it, how to keep a warm standby, and how to
 rotate every credential in the system — including the honest list of what
 *cannot* be rotated.
 
-One mental model up front. Every byte an Aliran deployment holds is one of
-three things:
+## Three files, three jobs
+
+"Back up my deployment" means three different things, and one file cannot do
+all three. A file that is correct for one job is wrong for the other two.
+
+| | **Recovery archive** | **Config snapshot** | **Config template** |
+|---|---|---|---|
+| What it holds | The whole `DATA_DIR`, keys included | This service's config, secrets included | The same structure, secrets removed |
+| Holds secrets | Yes | Yes | **No** |
+| Where it stays | On the box, encrypted | On the box (in the data volume) | You download it |
+| You make it with | `deploy/backup.sh` | The dashboard, or automatically | The dashboard |
+| Use it to | Rebuild a service after you lose the box | Undo a bad change | Start a second site, or compare two lineups |
+
+Each dashboard has a **Backup** page that shows all three. Two of them are
+new work the service does for itself. The third is not:
+
+- A **config snapshot** and a **config template** are reads of files the
+  service already owns. The dashboard makes them.
+- A **recovery archive** needs the service stopped while its volume is
+  copied. A service cannot stop itself and still answer the request that
+  asked it to. So the dashboard **lists** the archives and shows the exact
+  commands, and you run them on the box.
+
+### Why the snapshot keeps its secrets
+
+It is tempting to remove the secrets from every backup. That builds a
+restore that reports success and gives you a broken service:
+
+- `channels.json` holds each push channel's stream key and SRT passphrase.
+  Restore a copy without them and the channel comes back with a **new**
+  stream key. Every encoder in the field still sends to the old one, and
+  stops.
+- `secrets/streams.json` holds the per-stream keys that user grants seal
+  against. Remove them and every grant is worthless.
+
+So a config snapshot keeps them, and the handling follows: it stays on the
+box at `0600`, and no dashboard ever offers it as a download. A config
+template is safe to download because it carries none of this.
+
+### What a template costs you
+
+A template recreates **structure** — channels, categories, packages,
+sources. It does not recreate **entitlements**, because grants seal the
+per-stream keys it leaves out. Import one and you get a working lineup that
+nobody is entitled to yet. Grant the channels again afterwards.
+
+A template also removes the user name, the password and the query
+parameters from every source URL and every pull input. Type them in again
+before you start the channel or turn the source on.
+
+### What a snapshot does NOT put back
+
+Some sections are captured so the snapshot is complete, but a restore never
+writes them back. Each has a revocation lever, and a restore moves levers
+backwards:
+
+| Section | Why a restore skips it |
+|---|---|
+| `secrets/admins.json` (all services) | An admin record holds `tokenVersion`. You increase it to kill every session issued under a leaked password. To write an old copy back gives those sessions their access again. |
+| `secrets/publishers.json` (panel) | `status: revoked` is the response to a leaked broadcaster box. To write an old copy back re-enables the key. |
+| `secrets/streams.json` (panel) | Installed only for a channel that has **no** key now. An existing key is never replaced: every grant is sealed against the key that is there. |
+
+To recover an admin account, add it again with the CLI. To read a value out
+of a snapshot, open the file on the box.
+
+### Where snapshots live, and what that means
+
+Snapshots live in `DATA_DIR/config-snapshots/`, inside the data volume. They
+protect you from a **mistake**. They do not protect you from the loss of the
+**volume** — a recovery archive does that, and it must be copied off the box.
+
+A service takes a snapshot automatically before it deletes a channel, and
+before any restore or import. It keeps the newest 20
+(`CONFIG_SNAPSHOT_KEEP`).
+
+The reseller is **export-only**. Its two sections are a credential file, and
+an account map whose balances come from the credit ledger that no config
+file carries. You put a reseller back with a volume restore.
+
+## The data model
+
+One mental model for the rest of this page. Every byte an Aliran deployment
+holds is one of three things:
 
 - **Identity** — the panel's signing keypair and OPRF key
   (`DATA_DIR/keys/`). Losing them ends the deployment, because every client
@@ -32,9 +113,9 @@ three things:
 
 ## Cold backup (the only safe kind)
 
-Corestores must not be copied while their service is writing — a mid-write
-copy can capture a torn tree. Stop, copy, start. The windows are short and
-cheap:
+This is the **recovery archive**. Corestores must not be copied while their
+service is writing — a mid-write copy can capture a torn tree. Stop, copy,
+start. The windows are short and cheap:
 
 - **Panel stopped** = new logins pause. Existing viewers keep playing
   (catalog replicas + P2P serving don't involve the panel), and
@@ -70,6 +151,30 @@ signing secret, so treat the archive with the same care as
 `npm run test:backup` proves mechanically that a cold copy of the panel
 `DATA_DIR` is *complete* — a panel reopened from the copy serves the same
 catalog, verifies the same admins, and signs with the same identity.
+
+### Seeing the archives from a dashboard
+
+Each dashboard lists the archives it can see, with their age, and marks the
+newest one. That listing is **read-only**, and it needs the archive
+directory mounted into the service. The shipped `docker-compose.yml` does
+it:
+
+```yaml
+    environment:
+      BACKUP_DIR: /backups
+    volumes:
+      - ./backups:/backups:ro
+```
+
+Read-only is deliberate. Nothing in a container needs to write there, and
+the change that would let a service make its own archive — mounting the
+Docker socket — turns any service RCE into host root. If the directory is
+not mounted, the dashboard says so instead of showing an empty list.
+
+The commands a dashboard shows run **on the host**, from the repository
+root, and use the scripts' own `./backups` default. A container cannot learn
+the host side of its own bind mount, so the page states that assumption
+rather than guessing at it.
 
 ## Restore
 
@@ -111,11 +216,19 @@ So:
 
 - **Restore the newest backup you have**, always — freshness directly
   limits how many clients can be stranded. Hourly backups make this a
-  non-event.
+  non-event. The dashboard marks the newest archive and shows the age of
+  every other one, so this is hard to get wrong by accident.
 - Treat restore as the *last* resort; the standby flow below avoids most
   restores entirely.
 - After any restore, restart the broadcasters (`docker compose restart
   broadcaster` per site) so every channel re-registers.
+
+A **config snapshot** does not have this problem. It writes catalog records
+through the panel's own API, so the log moves forward and no replica sees a
+fork. A snapshot restore is also additive by default: entries the snapshot
+does not mention are left alone and reported, so recovering one channel
+never removes the ten you added afterwards. Removing them is a separate
+choice you make on the confirmation screen.
 
 ## Warm standby & failover
 
@@ -169,6 +282,13 @@ A backup you have never restored is a hope, not a plan.
 
 - `npm run test:backup` runs the automated completeness drill on every CI
   push.
+- `npm run test:config-snapshot` and `npm run test:config-api` cover the
+  snapshot and template layer. The load-bearing check seeds real secrets —
+  a per-stream key, a push stream key, an SRT passphrase, a CENC key, an
+  admin verifier, a publisher key and two credential-bearing URLs — exports
+  a template, and fails if any of those bytes survives anywhere in it. A
+  new secret field that nobody adds to a redaction rule fails CI instead of
+  shipping.
 - Quarterly, do the real thing: restore the latest panel archive onto a
   scratch box (or the standby) and log in to the dashboard. **Point the
   drill panel at a black-hole bootstrap** (`BOOTSTRAP=127.0.0.1:9` in its

@@ -19,6 +19,20 @@ const int = (v, d) => (v === undefined || v === '' ? d : parseInt(v, 10))
 
 export const config = {
   dataDir: process.env.DATA_DIR || './data',
+  // Config snapshots + the disaster-recovery archive listing (see
+  // docs/kb/backup-and-rotation.md).
+  //
+  //   backupDir  where deploy/backup.sh writes its archives, AS SEEN FROM THIS SERVICE.
+  //              docker-compose bind-mounts the host's ./backups here READ-ONLY, so the
+  //              dashboard can LIST them. It is read-only on purpose: making an archive
+  //              means stopping this service, which a service cannot do to itself and
+  //              still answer the request. A missing directory is reported honestly
+  //              rather than shown as "no backups".
+  //   snapshotKeep  how many on-box config snapshots to keep. They are taken
+  //              automatically before bulk operations, so the directory needs a cap that
+  //              somebody chose.
+  backupDir: process.env.BACKUP_DIR || './backups',
+  snapshotKeep: int(process.env.CONFIG_SNAPSHOT_KEEP, 20),
   // The panel admin API this service fronts. Loopback for the single-box case; an
   // https URL for a reseller box on different hardware (expose the panel's /api/*
   // ONLY IP-allowlisted to that box — see docs/reseller-panel.md). The service
