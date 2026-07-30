@@ -27,10 +27,10 @@ phone + Android TV, and the Windows desktop player).
   its push stream keys, SRT passphrases and CENC keys — and the panel's
   `secrets/streams.json`, the per-stream keys that user grants are sealed against:
   losing it makes every existing grant worthless. The broadcaster made this quieter
-  than it looks, because it treats an unreadable registry as an empty one and boots
-  with no channels at all. Protection existed already, but only on the analytics
-  rollups and the viewer problem reports — the most disposable data in the system.
-  Every registry now writes through one shared helper
+  than it looked, because it treated an unreadable registry as an empty one and
+  booted with no channels at all. Protection existed already, but only on the
+  analytics rollups and the viewer problem reports — the most disposable data in
+  the system. Every file of this kind now writes through one shared helper
   (`@aliran/core/atomic-write.js`) that writes a sibling temp file, flushes it to
   disk, and renames it over the target. A reader sees either the whole old file or
   the whole new one, never a mix, and a write that fails leaves the previous file
@@ -38,6 +38,24 @@ phone + Android TV, and the Windows desktop player).
   rather than after the rename, so the keys are never briefly readable by other
   local users — the trap in the old code, where the `mode` option was silently
   ignored on a file that already existed.
+
+  The same treatment now covers the write-once files, where a torn write is worse
+  than it sounds because a half-written key still *looks* valid: the panel signing,
+  OPRF and publisher keys, the broadcaster and library control keypairs, a
+  channel's `feed.key` (its feed identity — every grant is sealed to it), and the
+  reporter pseudonym salt. It also covers the two escrow paths, so an interrupted
+  export can no longer leave a backup that will not restore, and the reseller
+  ledger's torn-tail repair, which rewrites the entire transaction history to drop
+  one damaged line and could previously turn a one-line crash into a total one.
+
+- **A damaged `channels.json` silently emptied the fleet** — the broadcaster read
+  its channel registry inside a `try`/`catch` that swallowed everything, so a
+  corrupt file was indistinguishable from a first boot: the service started with
+  zero channels, and the next save overwrote the damaged file with an empty
+  registry, destroying the evidence and any chance of repairing it by hand. A
+  missing registry is still a normal first boot; an unreadable one now stops the
+  service with a message naming the file, which is the same thing the library
+  already did for its own registry.
 
 - **Desktop packaging: the build swept in the SDK's native-app source trees** —
   found while auditing an artifact. The desktop shell depends on

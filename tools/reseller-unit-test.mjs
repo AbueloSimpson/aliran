@@ -105,6 +105,9 @@ console.log('B. ledger')
   ok(l3.healthInfo().seq === 3 && l3.balance('sup1') === 4, 'torn tail truncated, state intact')
   const l3b = openLedger(dir)
   ok(l3b.healthInfo().entries === 3, 'file actually rewritten without the torn line')
+  // That repair rewrites the WHOLE ledger to drop one line, so it goes through the atomic
+  // helper: interrupting it must not be able to destroy every transaction ever recorded.
+  ok(!fs.existsSync(file + '.tmp'), 'the torn-tail repair leaves no .tmp behind')
 
   // Corruption ANYWHERE else aborts.
   const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)

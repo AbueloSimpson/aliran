@@ -44,7 +44,7 @@ import { makeEgressMeter } from './analytics.js'
 import { makeIncidents } from './incidents.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 import { purgeStaleCores } from '@aliran/core/store-gc.js'
-import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
+import { writeFileAtomic, writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 export class ControlError extends Error {
   constructor (code, message) { super(message); this.code = code }
@@ -455,9 +455,11 @@ function assertPortFree (input) {
 function loadOrCreateEncryptionKey (storeDir) {
   const p = path.join(storeDir, 'feed.key')
   if (fs.existsSync(p)) return b4a.from(fs.readFileSync(p, 'utf8').trim(), 'hex')
-  fs.mkdirSync(storeDir, { recursive: true })
+  // Atomic: this key IS the channel's feed identity, and every grant is sealed against it.
+  // A truncated file still parses as hex, so it would come back as a DIFFERENT key and
+  // silently invalidate every viewer's grant for this channel. Whole or absent.
   const key = crypto.randomBytes(32)
-  fs.writeFileSync(p, b4a.toString(key, 'hex'), { mode: 0o600 })
+  writeFileAtomic(p, b4a.toString(key, 'hex'), { mode: 0o600 })
   return key
 }
 
@@ -1488,8 +1490,21 @@ export class ChannelManager {
   // callers want (init then assert channels are up). Production (index.js) passes false and
   // calls resumeAll() AFTER the control server is listening — see the note below.
   async init ({ resume = true } = {}) {
+    // A MISSING registry is a first boot — start empty, which is correct. An unreadable one
+    // is corruption, and starting empty there is the worst possible response: the fleet
+    // silently becomes zero channels, and the very next _save() overwrites the damaged file
+    // with {}, destroying the evidence and any chance of hand-repair. Refuse to start
+    // instead, the same posture library/src/titles.js takes for titles.json. Writes are
+    // atomic now, so reaching this branch means damage from outside this process.
     let reg = {}
-    try { reg = JSON.parse(fs.readFileSync(this.registryPath(), 'utf8')) } catch {}
+    try {
+      reg = JSON.parse(fs.readFileSync(this.registryPath(), 'utf8'))
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        throw new Error(`channels.json is unreadable (${err.message}) — refusing to start with an empty channel list. ` +
+          `Fix or remove it (a backup restore is the usual answer): ${this.registryPath()}`)
+      }
+    }
     for (const meta of Object.values(reg)) this.channels.set(meta.id, new Channel(this, meta))
     // Upgrade pre-S15a string inputs to typed objects and persist, so generated
     // stream keys stay stable across boots.

@@ -43,7 +43,7 @@
 import fs from 'fs'
 import path from 'path'
 import { createHmac, randomBytes } from 'crypto'
-import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
+import { writeFileAtomic, writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 // The closed category enum. Duplicated in sdk/report.js (S50c) under the
 // no-shared-runtime-module convention; the e2e drift guard asserts deep equality.
@@ -136,9 +136,11 @@ export function loadReportsSalt (dataDir) {
     const hex = fs.readFileSync(p, 'utf8').trim()
     if (/^[0-9a-f]{64}$/i.test(hex)) return Buffer.from(hex, 'hex')
   } catch {}
+  // Atomic: a truncated salt fails the 64-hex test above, so the next boot would mint a
+  // FRESH one and silently re-pseudonymize every reporter — breaking the correlation that
+  // makes repeat reports visible. Written once; whole or absent.
   const salt = randomBytes(32)
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(p, salt.toString('hex') + '\n', { mode: 0o600 })
+  writeFileAtomic(p, salt.toString('hex') + '\n', { mode: 0o600, dirMode: 0o700 })
   return salt
 }
 

@@ -12,6 +12,7 @@ import crypto from 'hypercore-crypto'
 import sodium from 'sodium-native'
 import b4a from 'b4a'
 import { authKeyPair } from '@aliran/core'
+import { writeFileAtomic, writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 function keysDir (dataDir) {
   return path.join(dataDir, 'keys')
@@ -28,24 +29,29 @@ export function initKeys (dataDir) {
     throw new Error('Panel keys already exist in ' + dir + ' — refusing to overwrite.')
   }
 
+  // Each file is written atomically (tmp + fsync + rename). These are written ONCE and
+  // initKeys refuses to overwrite them, so a truncated one is unrecoverable: a half-written
+  // oprf.key still parses as hex and silently becomes a DIFFERENT key, locking out every
+  // user. Whole-or-absent is the only safe outcome. (Atomicity is per file — a crash
+  // between them can still leave a partial SET, which initKeys reports rather than fixes.)
   const signing = crypto.keyPair()
-  fs.writeFileSync(signingPath, JSON.stringify({
+  writeJsonAtomic(signingPath, {
     publicKey: b4a.toString(signing.publicKey, 'hex'),
     secretKey: b4a.toString(signing.secretKey, 'hex')
-  }, null, 2), { mode: 0o600 })
+  }, { mode: 0o600 })
 
   // OPRF secret scalar (32 bytes). Used to obliviously evaluate blinded passwords.
   const oprf = b4a.alloc(32)
   sodium.randombytes_buf(oprf)
-  fs.writeFileSync(oprfPath, b4a.toString(oprf, 'hex'), { mode: 0o600 })
+  writeFileAtomic(oprfPath, b4a.toString(oprf, 'hex'), { mode: 0o600 })
 
   // Publisher keypair (Ed25519): broadcasters sign stream registrations with the secret;
   // the panel verifies with the public key. The secret goes in the broadcaster config.
   const publisher = authKeyPair()
-  fs.writeFileSync(path.join(dir, 'publisher.json'), JSON.stringify({
+  writeJsonAtomic(path.join(dir, 'publisher.json'), {
     publicKey: b4a.toString(publisher.publicKey, 'hex'),
     secretKey: b4a.toString(publisher.secretKey, 'hex')
-  }, null, 2), { mode: 0o600 })
+  }, { mode: 0o600 })
 
   return {
     publicKeyHex: b4a.toString(signing.publicKey, 'hex'),

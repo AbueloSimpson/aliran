@@ -63,12 +63,14 @@ export function controlKeys (dataDir) {
     const k = JSON.parse(fs.readFileSync(p, 'utf8'))
     return { publicKey: b4a.from(k.publicKey, 'hex'), secretKey: b4a.from(k.secretKey, 'hex') }
   }
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only keys/secrets dir
+  // Atomic: a truncated control.json fails to parse on the next boot and throws before the
+  // control server starts, so an operator is locked out of a running broadcaster. Written
+  // once; whole or absent (absent simply mints a fresh pair and invalidates live tokens).
   const kp = crypto.keyPair()
-  fs.writeFileSync(p, JSON.stringify({
+  writeJsonAtomic(p, {
     publicKey: b4a.toString(kp.publicKey, 'hex'),
     secretKey: b4a.toString(kp.secretKey, 'hex')
-  }, null, 2), { mode: 0o600 })
+  }, { mode: 0o600, dirMode: 0o700 })
   return kp
 }
 

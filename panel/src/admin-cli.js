@@ -12,6 +12,7 @@ import { Writable } from 'stream'
 import fs from 'fs'
 import path from 'path'
 import { pairingCode } from '@aliran/core'
+import { writeFileAtomic } from '@aliran/core/atomic-write.js'
 import { config } from './config.js'
 import { initKeys, openKeys } from './keys.js'
 import { sealEscrow, openEscrow, verifyBundle, checkEnvelope, serializeEscrow, MIN_PASSPHRASE } from './escrow.js'
@@ -137,7 +138,10 @@ async function main () {
       }
       fs.mkdirSync(to, { recursive: true, mode: 0o700 })
       for (const [name, content] of Object.entries(opened.files)) {
-        fs.writeFileSync(path.join(to, name), content, { mode: 0o600 })
+        // Atomic per file: a crash here must never leave a TRUNCATED key on disk. A
+        // half-written signing key or OPRF key reads as a valid file and locks every
+        // viewer out; an absent one is obvious and the restore can simply be re-run.
+        writeFileAtomic(path.join(to, name), content, { mode: 0o600 })
       }
       console.log('\nWrote ' + Object.keys(opened.files).length + ' key files to ' + path.resolve(to))
       console.log('STOP before you use them. Only ONE panel may ever run with this identity.')
@@ -204,7 +208,10 @@ async function main () {
       console.error(`\nRefusing to overwrite ${out}. Pass --out <file> with a new name.`)
       process.exit(1)
     }
-    fs.writeFileSync(out, serializeEscrow(envelope), { mode: 0o600 })
+    // Atomic: a partially written escrow file is a backup that cannot be restored from,
+    // and the "refusing to overwrite" guard above would then block a retry at the same
+    // path. Either the whole envelope lands or nothing does, so re-running always works.
+    writeFileAtomic(out, serializeEscrow(envelope), { mode: 0o600 })
     console.log('\nWrote ' + path.resolve(out))
     console.log('  Panel public key: ' + fingerprint.panelPublicKey)
     console.log('  Pairing code:     ' + fingerprint.pairingCode)

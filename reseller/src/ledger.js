@@ -23,6 +23,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { writeFileAtomic } from '@aliran/core/atomic-write.js'
 import { ControlError } from './errors.js'
 
 const TYPES = new Set(['MINT', 'TRANSFER', 'RECLAIM', 'ACTIVATE', 'RENEW', 'REFUND', 'TRIAL', 'ADJUST'])
@@ -42,7 +43,10 @@ export function openLedger (dataDir) {
       } catch {
         if (i === parts.length - 1) {
           console.warn(`[ledger] truncating torn final line (seq would be ${lines.length ? lines[lines.length - 1].seq + 1 : 1}) — crash mid-append`)
-          fs.writeFileSync(file, parts.slice(0, -1).map((l) => l + '\n').join(''))
+          // Atomic: this REWRITES the whole ledger to drop one torn line. A plain write
+          // that is itself interrupted would destroy every transaction ever recorded —
+          // repairing a one-line crash by causing a total one.
+          writeFileAtomic(file, parts.slice(0, -1).map((l) => l + '\n').join(''))
           break
         }
         throw new Error(`ledger corrupt at line ${i + 1} of ${parts.length} (${file}) — refusing to start; inspect the file`)

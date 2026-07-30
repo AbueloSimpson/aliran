@@ -734,7 +734,31 @@ try {
   const mgrE = new ChannelManager(bc2Config); await mgrE.init({ resume: false })
   assert.deepStrictEqual([...mgrE.channels.keys()].sort(), ['heal-me', 'resume-me'], 'a fresh boot reads the intact registry')
   await mgrE.close()
-  log('N2: a truncated channels.json.tmp cannot corrupt or empty the live registry; add/patch/remove persist atomically and 0600 survives every rename ✓')
+
+  // If the registry IS damaged from outside this process, init() must refuse to start
+  // rather than boot an empty fleet — because the next _save() would then overwrite the
+  // damaged file with {} and destroy the evidence. A MISSING registry stays a normal
+  // first boot.
+  const goodBytes = fs.readFileSync(regPath, 'utf8')
+  fs.writeFileSync(regPath, goodBytes.slice(0, 40)) // truncated, as a pre-atomic crash left it
+  await assert.rejects(
+    async () => { const m = new ChannelManager(bc2Config); await m.init({ resume: false }) },
+    /channels\.json is unreadable/,
+    'a corrupt registry must refuse to start, not silently boot zero channels'
+  )
+  assert.strictEqual(fs.readFileSync(regPath, 'utf8'), goodBytes.slice(0, 40), 'the damaged file is left untouched for the operator')
+  fs.writeFileSync(regPath, goodBytes) // restore for anything downstream
+  const mgrF = new ChannelManager(bc2Config); await mgrF.init({ resume: false })
+  assert.deepStrictEqual([...mgrF.channels.keys()].sort(), ['heal-me', 'resume-me'], 'the repaired registry boots normally again')
+  await mgrF.close()
+
+  // …and a dataDir with no registry at all is still a clean first boot.
+  const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2eb-fresh-'))
+  const mgrG = new ChannelManager({ ...bcConfig, dataDir: freshDir }); await mgrG.init({ resume: false })
+  assert.strictEqual(mgrG.channels.size, 0, 'a missing channels.json is a first boot, not an error')
+  await mgrG.close()
+  fs.rmSync(freshDir, { recursive: true, force: true })
+  log('N2: a truncated channels.json.tmp cannot corrupt or empty the live registry; add/update/remove persist atomically; 0600 survives every rename; a CORRUPT registry refuses to boot (missing one still boots clean) ✓')
 
   // ===== Test O: S15c control surface — capabilities, logs API, state + ingest.pushUrl =====
   r = await api('GET', '/api/capabilities', undefined, token)
