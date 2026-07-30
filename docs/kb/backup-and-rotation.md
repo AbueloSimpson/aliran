@@ -18,10 +18,10 @@ all four. A file that is correct for one job is wrong for the others.
 | You make it with | `admin-cli export-escrow` | `deploy/backup.sh` | The dashboard, or automatically | The dashboard |
 | Use it to | Keep the identity after the box burns | Rebuild a service after you lose the box | Undo a bad change | Start a second site, or compare two lineups |
 
-The numbered step-by-step procedures — undo a change, rebuild a lost box,
-roll back to an archive, seed a second site — live in
-[Recovery walkthroughs](recovery-walkthroughs.md). This page is the why behind
-their steps.
+The numbered procedures for both directions — make the backups, and recover
+from them — are in
+[Backup & recovery walkthroughs](recovery-walkthroughs.md). This page explains
+the rules behind their steps.
 
 Two of these are the panel's identity story and are covered under *Get the
 identity off the box* below. The other two are per-service config, and every
