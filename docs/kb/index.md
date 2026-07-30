@@ -13,6 +13,7 @@ Each page is easy to search — look for the error text you see.
 | [GPU transcoding (NVENC/NVDEC)](gpu-transcoding.md) | Measured cost per channel, the memory cap that recycles every transcoding channel, HEVC output and why playback needs hls.js, silent `-hwaccel cuda` failure, `overlay_cuda` crashes, session limits |
 | [Operating the panel & broadcaster](operator.md) | Env vars, grants breaking, `ELOCKED`, wedged processes, login-flood freeze, latency expectations |
 | [Backup, restore & key rotation](backup-and-rotation.md) | What to back up (and what's disposable), cold-backup + restore runbooks, the restore-freshness fork hazard, warm standby & never-two-writers failover, the full credential rotation matrix |
+| [Recovery walkthroughs](recovery-walkthroughs.md) | Numbered step-by-step procedures: undo a bad change with a config snapshot, rebuild a lost panel box (archive or escrow-only), roll back to a recovery archive, seed a second site from a template |
 | [Offline slate media](offline-slate.md) | The looped "source offline" files: fleet codec/resolution spread, `-stream_loop` timestamp behaviour, why `+genpts` isn't needed, tone choice |
 | [Publishing the dashboards](public-dashboards.md) | DNS + Caddy + TLS, the basic-auth/Bearer `Authorization` collision (login popup that never goes away), firewall rules that silently break P2P |
 | [Android & React Native builds](android-build.md) | Toolchain traps, emulator crashes/rot, dependency pinning, stale JS bundles |

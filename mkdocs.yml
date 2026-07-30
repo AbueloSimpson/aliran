@@ -86,6 +86,7 @@ nav:
           - Source compatibility (pull ingest): kb/source-compatibility.md
           - Operating panel & broadcaster: kb/operator.md
           - Backup, restore & key rotation: kb/backup-and-rotation.md
+          - Recovery walkthroughs: kb/recovery-walkthroughs.md
           - Offline slate media: kb/offline-slate.md
           - Publishing the dashboards: kb/public-dashboards.md
           - Android & RN builds: kb/android-build.md
