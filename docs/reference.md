@@ -139,6 +139,29 @@ the replicated database. Login attempts are rate-limited
 | `GET /api/packages/:name` · `PATCH /api/packages/:name` | Gets one package with the ids it resolves to right now, or edits its label, members, or default flag. Member edits materialize immediately for every holder. |
 | `DELETE /api/packages/:name` | Removes a package and strips it from users. Only the grants it covered are removed — manual grants and auto-grant source channels survive. |
 
+### Config snapshots, templates and the backup listing (all four dashboards)
+
+The panel, the broadcaster (`:3310`), the library (`:3320`) and the reseller
+(`:3330`) serve these routes from one shared module, so the rules cannot drift
+between services. Two differences: the **reseller** requires an admin-tier
+principal and is **export-only** (`restoreSupported:false` — its account map and
+principal file are unsafe to write back), and a **library** restore puts back
+ingest settings only (a title's media is not configuration). The
+[runbook](kb/backup-and-rotation.md#four-files-four-jobs) explains the artifacts
+these routes serve.
+
+| Route | What it does |
+|---|---|
+| `GET /api/config` | The section map: what a snapshot holds, which sections a restore refuses, and why → `{service, sections, restoreSupported, snapshotDir, notes}`. |
+| `GET /api/config/snapshots` · `POST` `{note?}` | List / take an on-box **config snapshot**. A snapshot holds this service's secrets. It is stored `0600` under `DATA_DIR/config-snapshots/` and **is never served over HTTP**. The newest `CONFIG_SNAPSHOT_KEEP` (default 20) are kept; the service also takes one by itself before a destructive change and before every restore. |
+| `GET /api/config/snapshots/:id` | Metadata and section sizes only — never the contents. |
+| `POST /api/config/snapshots/:id/plan` | Dry run → exactly what a restore changes (added / changed / left alone / skipped, plus warnings). Nothing is applied. |
+| `POST /api/config/snapshots/:id/restore` `{confirm:true, removeExtra?}` | Applies the snapshot. Additive by default: entries the snapshot does not name are left alone and reported. It never overwrites a live per-stream key, never writes admin or publisher files back, and takes a fresh snapshot first so the restore itself can be undone. Refused without `confirm:true` (400). |
+| `DELETE /api/config/snapshots/:id` | Removes one snapshot. |
+| `GET /api/config/template` | The **config template** — the same structure with every secret removed, and the only artifact here that downloads. The envelope carries `contains:"no-secrets"` and an `omitted` list that names each removal and its reason. |
+| `POST /api/config/template/plan` `{template}` · `…/import` `{template, confirm:true}` | Dry-run / apply a template. An import recreates structure, **not entitlements** — grants seal the per-stream keys a template leaves out — and each push channel gets a **new** stream key. A template from another service is refused (409). |
+| `GET /api/backups` | The **recovery archives** this service can see through its read-only `BACKUP_DIR` mount → `{available, archives:[{name, ageHours, freshness, newest, …}], commands, note}`. `canRunHere` is always `false`: a cold backup stops the service that would answer, so the response carries the exact commands to run on the box instead. |
+
 ## Broadcaster control API + UI (`CONTROL_ENABLED=1`)
 
 The broadcaster process serves this API (default `127.0.0.1:3310`). Put TLS in
@@ -196,6 +219,8 @@ channel scopes. The env-configured channel (`STREAM_ID`) keeps the legacy
 | `GET/POST /api/admins` · `DELETE /api/admins/:name` | Manage control admin accounts |
 | `POST /api/admins/:name/password` | Rotates an admin password. This revokes their sessions. |
 
+It also serves the [shared config-snapshot and backup routes](#config-snapshots-templates-and-the-backup-listing-all-four-dashboards).
+
 ## Library control API + UI (`CONTROL_ENABLED=1`)
 
 The **library** process — the standalone VOD service — serves this API (default
@@ -237,6 +262,8 @@ ids), `HLS_TIME` (VOD segment length, default 4 s), `INGEST_CONCURRENCY`
 `SWARM_RCVBUF_MB`/`SWARM_SNDBUF_MB` (default 4/4 — a seeder is send-dominant),
 `CONTROL_ENABLED`/`CONTROL_HOST`/`CONTROL_PORT`/`CONTROL_SESSION_TTL_HOURS`,
 `LOCKOUT_*`, `ARGON2_*`, `BOOTSTRAP`.
+
+It also serves the [shared config-snapshot and backup routes](#config-snapshots-templates-and-the-backup-listing-all-four-dashboards).
 
 ## Reseller panel API
 
@@ -292,6 +319,8 @@ the proxy's own socket), `BRAND_NAME`/`BRAND_LOGO_FILE`/`BRAND_FAVICON_FILE`/
 `BRAND_LOGIN_BG_FILE`/`BRAND_LOGIN_STYLE`/`BRAND_THEME_FILE` (white-label — see
 [the manual](white-label.md#reseller-panel-dashboard)),
 `WEBHOOK_SECRET` (enables the top-up webhook), `ARGON2_*`.
+
+It also serves the [shared config-snapshot and backup routes](#config-snapshots-templates-and-the-backup-listing-all-four-dashboards).
 
 ## MCP server tool catalog
 

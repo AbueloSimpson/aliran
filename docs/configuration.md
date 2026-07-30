@@ -59,6 +59,8 @@ Every service shares two behaviors:
 | `SOURCES_MAX_CHANNELS` | `500` | Maximum entries the panel imports from one source. The panel truncates the feed beyond this. |
 | `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `2` / `2` | Swarm UDP socket buffers, in MB (`0` uses the OS default). Every client replicates the catalog over this one swarm. **This only takes effect if the host allows it** — the OS clamps it to `net.core.{r,w}mem_max`. The optional `deploy/sysctl/install.sh` script raises that ceiling. See the [KB](kb/network-tuning.md). |
 | `BOOTSTRAP` | *(empty)* | Custom DHT bootstrap nodes. Optional. |
+| `BACKUP_DIR` | `./backups` | Where the dashboard's Backup page looks for [recovery archives](kb/backup-and-rotation.md#four-files-four-jobs). The shipped compose file mounts the host `./backups` here **read-only** and sets this to `/backups` — leave it unset there. The page can only list: a cold backup stops the service, so archives are made on the box with `deploy/backup.sh`. |
+| `CONFIG_SNAPSHOT_KEEP` | `20` | How many on-box [config snapshots](kb/backup-and-rotation.md#four-files-four-jobs) the service keeps under `DATA_DIR/config-snapshots/`. It takes one by itself before a destructive change and before every restore or import; the oldest past the cap are removed. |
 
 ## Broadcaster (`broadcaster/.env`)
 
@@ -95,6 +97,8 @@ Every service shares two behaviors:
 | `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | `10` / `900` | Control login lockout threshold and duration. |
 | `ANALYTICS_RETENTION_DAYS` | `90` | How many days of [aggregate-only analytics](analytics.md) rollups — per-channel peers, egress, and respawns — the broadcaster keeps, under `DATA_DIR/analytics/`. **Set this to `0` to disable collection entirely.** |
 | `ARGON2_MEM_KIB` / `ARGON2_TIME` | `65536` / `2` | Argon2id cost for control-admin passwords. |
+| `BACKUP_DIR` | `./backups` | Where the dashboard's Backup page looks for [recovery archives](kb/backup-and-rotation.md#four-files-four-jobs). The shipped compose file mounts the host `./backups` here **read-only** and sets this to `/backups` — leave it unset there. The page can only list: a cold backup stops the service, so archives are made on the box with `deploy/backup.sh`. |
+| `CONFIG_SNAPSHOT_KEEP` | `20` | How many on-box [config snapshots](kb/backup-and-rotation.md#four-files-four-jobs) the service keeps under `DATA_DIR/config-snapshots/`. It takes one by itself before a destructive change and before every restore or import; the oldest past the cap are removed. |
 
 ## Repeater (`repeater/.env`)
 
@@ -134,6 +138,8 @@ The library is the standalone VOD service — see the
 | `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | `10` / `900` | Control login rate limit. |
 | `ARGON2_MEM_KIB` / `ARGON2_TIME` | `65536` / `2` | Control-admin password hashing cost. |
 | `BOOTSTRAP` | public DHT | Custom DHT bootstrap nodes. |
+| `BACKUP_DIR` | `./backups` | Where the dashboard's Backup page looks for [recovery archives](kb/backup-and-rotation.md#four-files-four-jobs). The shipped compose file mounts the host `./backups` here **read-only** and sets this to `/backups` — leave it unset there. The page can only list: a cold backup stops the service, so archives are made on the box with `deploy/backup.sh`. |
+| `CONFIG_SNAPSHOT_KEEP` | `20` | How many on-box [config snapshots](kb/backup-and-rotation.md#four-files-four-jobs) the service keeps under `DATA_DIR/config-snapshots/`. It takes one by itself before a destructive change and before every restore or import; the oldest past the cap are removed. |
 
 ## Client
 
