@@ -17,6 +17,7 @@
     "./net-tune.js": "./net-tune.js",
     "./net-tune-core.js": "./net-tune-core.js",
     "./store-gc.js": "./store-gc.js",
+    "./atomic-write.js": "./atomic-write.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -31,6 +32,7 @@
     "net-tune.js",
     "net-tune-core.js",
     "store-gc.js",
+    "atomic-write.js",
     "README.md"
   ],
   "repository": {
