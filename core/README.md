@@ -11,8 +11,10 @@ documents how they fit together.
 
 ## Modules
 
-`index.js` re-exports the five crypto modules. You import the two infra helpers
-by path — they are Node/Bare plumbing, not crypto.
+`index.js` re-exports the five crypto modules. You import the three infra helpers
+by path — they are Node/Bare plumbing, not crypto. Each one reads or writes the
+disk, so `index.js` keeps them out: the client bundles `index.js` into the Bare
+worklet, which has no `fs`.
 
 | Module | Exports | Purpose |
 |---|---|---|
@@ -23,6 +25,7 @@ by path — they are Node/Bare plumbing, not crypto.
 | `pow.js` | `powSolve` `powVerify` | Proof-of-work gate for unauthenticated RPCs. |
 | `net-tune.js` (by path) | `tuneSwarm` `tuneSocket` `readKernelCeilings` `evaluateBuffer` `logSwarmTuning` … | Hyperswarm UDP socket-buffer sizing + honest clamp detection ([why](https://abuelosimpson.github.io/aliran/kb/network-tuning/)). |
 | `store-gc.js` (by path) | `purgeStaleCores` `DISCOVERY_HEX_RE` | Reclaims stray Corestore core directories not on a keep-list. |
+| `atomic-write.js` (by path) | `writeFileAtomic` `writeJsonAtomic` `atomicTmpPath` `isAtomicTmp` | Replaces a file safely. It writes a temp file beside the target, flushes it to disk, then renames it over the target. A crash during the write cannot truncate the file. Secrets get their `0600` mode before the rename, so no other user can read them. |
 
 ```js
 import { blind, finalize, deriveVerifier, sealOpen, tokenValid } from '@aliran/core'

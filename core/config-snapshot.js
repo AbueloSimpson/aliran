@@ -56,6 +56,9 @@
 
 import fs from 'fs'
 import path from 'path'
+// A snapshot is written 0600 in a 0700 directory, and a reader must never see a
+// half-written one — the same tmp + fsync + rename recipe every registry in the tree uses.
+import { writeJsonAtomic } from './atomic-write.js'
 
 export const SNAPSHOT_FORMAT = 1
 
@@ -286,30 +289,6 @@ export function snapshotStamp (d = new Date()) {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
 }
 
-// Write JSON so a reader never sees a half-written file: temp sibling, then rename over.
-//
-// NOTE: this duplicates the recipe in @aliran/core/atomic-write.js, which lands with the
-// companion crash-safe-registry-writes change. Collapse this into `writeJsonAtomic` when
-// that is in — the signature is deliberately compatible. It is kept local for now only so
-// this feature does not take a build dependency on an unlanded module.
-function writeJsonAtomic (file, value, { mode } = {}) {
-  const tmp = file + '.tmp'
-  let fd = null
-  try {
-    fd = fs.openSync(tmp, 'w', mode != null ? mode : 0o666)
-    if (mode != null) { try { fs.fchmodSync(fd, mode) } catch {} }
-    fs.writeFileSync(fd, JSON.stringify(value, null, 2))
-    fs.fsyncSync(fd)
-    fs.closeSync(fd); fd = null
-    fs.renameSync(tmp, file)
-  } catch (err) {
-    if (fd !== null) { try { fs.closeSync(fd) } catch {} }
-    try { fs.unlinkSync(tmp) } catch {}
-    throw err
-  }
-  return file
-}
-
 // `keep` caps the directory. Snapshots are cheap (a lineup of ~84 channels is tens of KB)
 // but they are taken automatically before bulk operations, so an uncapped directory would
 // grow without anybody deciding to let it.
@@ -367,6 +346,8 @@ export function makeSnapshotStore (dir, { service, keep = 20 } = {}) {
 
     write (envelope, { note = '' } = {}) {
       if (envelope.kind !== KIND_CONFIG) bad('only a config snapshot is stored on the box; a template is a download')
+      // Created here as well as by writeJsonAtomic below, because the readdirSync that
+      // picks the sequence number runs first and would throw on a missing directory.
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
       const base = snapshotStamp()
       // Two snapshots inside one second (an auto-snapshot immediately followed by a manual
@@ -383,7 +364,7 @@ export function makeSnapshotStore (dir, { service, keep = 20 } = {}) {
       }
       const id = maxSeq === 0 ? `${service}-config-${base}.json` : `${service}-config-${base}-${maxSeq + 1}.json`
       const env = note ? { ...envelope, note: String(note).slice(0, 500) } : envelope
-      const file = writeJsonAtomic(path.join(dir, id), env, { mode: 0o600 })
+      const file = writeJsonAtomic(path.join(dir, id), env, { mode: 0o600, dirMode: 0o700 })
       // Measure BEFORE pruning. prune() can legitimately delete this very file when `keep`
       // is small and several snapshots share a second, and statting a pruned file throws.
       const bytes = fs.statSync(file).size

@@ -37,6 +37,7 @@ import path from 'path'
 import b4a from 'b4a'
 import crypto from 'hypercore-crypto'
 import { sealTo } from '@aliran/core'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { loadSecrets, saveSecrets } from './store.js'
 import { OpsError, checkName, deleteStream, normArt, normRedirectUrl } from './ops.js'
 import { reconcilePackages } from './packages.js'
@@ -61,9 +62,9 @@ export function loadSources (dataDir) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
 }
 
+// Atomic (tmp + fsync + rename): a truncated file loses every configured feed.
 function saveSources (dataDir, sources) {
-  fs.mkdirSync(dataDir, { recursive: true })
-  fs.writeFileSync(sourcesPath(dataDir), JSON.stringify(sources, null, 2))
+  writeJsonAtomic(sourcesPath(dataDir), sources)
 }
 
 // Effective limits: ctx.config.sources with per-field defaults, so minimal test

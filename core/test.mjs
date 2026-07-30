@@ -1,6 +1,10 @@
 // Unit tests for @aliran/core. Run: node core/test.mjs   (exit 0 = all pass)
 import assert from 'assert'
 import b4a from 'b4a'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { writeFileAtomic, writeJsonAtomic, atomicTmpPath, isAtomicTmp } from './atomic-write.js'
 import {
   oprfKeyGen, blind, evaluate, finalize, evaluateFull,
   randomSalt, deriveVerifier, verify, wrapKeyFrom, wrap, unwrap,
@@ -200,6 +204,160 @@ test('pairing code verifies against its own key only', () => {
   assert.strictEqual(pairingCodeMatches(kp.publicKey, 'A3K7-9QF2-M4XR'), false) // wrong code
   assert.strictEqual(pairingCodeMatches(kp.publicKey, 'garbage'), false)
   assert.strictEqual(pairingCodeMatches('not-a-key', code), false) // never throws on bad input
+})
+
+// ---------------------------------------------------------------- atomic-write.js
+// Durability of the JSON registries (channels.json, secrets/streams.json, admins.json,
+// publishers.json, packages.json, sources.json, titles.json). The property under test is
+// NOT "the bytes are right" — the service suites already cover contents — it is that no
+// failure mid-write can leave the LIVE path truncated, and that a secret's 0600 mode
+// survives the rename in every case, including over a pre-existing file and over a stale
+// .tmp left by an earlier crash.
+//
+// POSIX modes do not exist on Windows (statSync reports 0666 for everything), so the mode
+// assertions are gated and announced as skipped rather than passing vacuously — prod is
+// Linux and that is where they must hold.
+const POSIX = process.platform !== 'win32'
+const modeOf = (f) => fs.statSync(f).mode & 0o777
+const tmpdir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-atomic-'))
+
+test('atomic write replaces content and leaves no .tmp behind', () => {
+  const d = tmpdir()
+  try {
+    const f = path.join(d, 'channels.json')
+    writeJsonAtomic(f, { 'chan-1': { title: 'One' } })
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')), { 'chan-1': { title: 'One' } })
+    writeJsonAtomic(f, { 'chan-2': { title: 'Two' } })
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')), { 'chan-2': { title: 'Two' } })
+    assert.ok(!fs.existsSync(atomicTmpPath(f)), 'no .tmp survives a successful write')
+    assert.deepStrictEqual(fs.readdirSync(d), ['channels.json'], 'no other litter in the dir')
+  } finally { fs.rmSync(d, { recursive: true, force: true }) }
+})
+
+// The temp file MUST be a sibling of the target: rename() is only atomic within one
+// filesystem, and os.tmpdir() is frequently a different one (tmpfs, or another volume in
+// a container), where it silently degrades to copy-then-delete.
+test('atomic write keeps its temp file in the target directory', () => {
+  const d = tmpdir()
+  try {
+    const f = path.join(d, 'sub', 'deep', 'sources.json')
+    assert.strictEqual(path.dirname(atomicTmpPath(f)), path.dirname(f))
+    writeJsonAtomic(f, { s: 1 }) // also proves mkdir -p of the intermediate dirs
+    assert.ok(fs.existsSync(f))
+    assert.ok(isAtomicTmp(atomicTmpPath(f)) && !isAtomicTmp(f))
+  } finally { fs.rmSync(d, { recursive: true, force: true }) }
+})
+
+// A stale .tmp cannot be mistaken for real data: no loader in the tree opens one (they
+// read exact paths; the analytics prune regexes are anchored to \.json$), and the next
+// write truncates it rather than appending to it.
+test('a stale .tmp from an earlier crash contributes no bytes to the next write', () => {
+  const d = tmpdir()
+  try {
+    const f = path.join(d, 'packages.json')
+    fs.writeFileSync(f, JSON.stringify({ good: true }))
+    fs.writeFileSync(atomicTmpPath(f), 'x'.repeat(9999)) // half-written leftover, larger than the new payload
+    writeJsonAtomic(f, { fresh: 1 })
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')), { fresh: 1 }, 'live file is exactly the new value')
+    assert.ok(!fs.existsSync(atomicTmpPath(f)), 'the leftover is consumed, not left to grow')
+  } finally { fs.rmSync(d, { recursive: true, force: true }) }
+})
+
+// The failure this whole module exists to prevent: a write that dies partway must leave the
+// PREVIOUS registry readable. Two distinct failure points — before the temp file exists
+// (EISDIR on open) and after it exists but before the rename (invalid data at write time,
+// which is also the path that must clean the temp file up).
+test('a failed atomic write leaves the live registry intact', () => {
+  const d = tmpdir()
+  try {
+    const f = path.join(d, 'channels.json')
+    const good = { 'chan-1': { title: 'One', streamKey: 'secret' } }
+    writeJsonAtomic(f, good)
+
+    // (a) fails before the temp file is created
+    fs.mkdirSync(atomicTmpPath(f))
+    assert.throws(() => writeJsonAtomic(f, { clobbered: true }), /EISDIR|EPERM|EACCES/)
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')), good, 'live file untouched after an open failure')
+    fs.rmdirSync(atomicTmpPath(f))
+
+    // (b) fails after the temp file is created, before the rename
+    assert.throws(() => writeFileAtomic(f, { not: 'a string' }), /ERR_INVALID_ARG_TYPE/)
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')), good, 'live file untouched after a write failure')
+    assert.ok(!fs.existsSync(atomicTmpPath(f)), 'the temp file is cleaned up when the write throws')
+  } finally { fs.rmSync(d, { recursive: true, force: true }) }
+})
+
+// The regression that would be easy to introduce here: creating the temp file at the
+// default 0644/0666 and only chmod-ing the live path afterwards, which leaves the secret
+// world-readable for the width of the write. rename() carries the temp file's mode, so
+// 0600 must hold in all three cases — new file, pre-existing looser file, stale looser .tmp.
+test('atomic write applies 0600 before the rename, in every case', () => {
+  if (!POSIX) { console.log('       (mode assertions skipped on win32 — no POSIX modes)'); return }
+  const d = tmpdir()
+  try {
+    const f = path.join(d, 'streams.json')
+
+    writeJsonAtomic(f, { a: 'key' }, { mode: 0o600 })
+    assert.strictEqual(modeOf(f), 0o600, 'new secrets file is 0600')
+
+    // The window that must not exist: sample the temp file's mode at rename time. Creating it
+    // at the default 0644/0666 and chmod-ing the live path afterwards would leave the stream
+    // keys readable by any local user for the width of the write.
+    let atRename = null
+    const realRename = fs.renameSync
+    fs.renameSync = (from, to) => { atRename = modeOf(from); return realRename(from, to) }
+    try { writeJsonAtomic(f, { a: 'key2' }, { mode: 0o600 }) } finally { fs.renameSync = realRename }
+    assert.strictEqual(atRename, 0o600, 'the temp file is already 0600 when it is renamed into place')
+
+    // A file that already exists at a looser mode: open()'s mode argument does NOT apply to
+    // it, which is exactly why the temp file is created fresh and fchmod-ed.
+    fs.chmodSync(f, 0o644)
+    writeJsonAtomic(f, { b: 'key' }, { mode: 0o600 })
+    assert.strictEqual(modeOf(f), 0o600, 'pre-existing 0644 file comes back 0600')
+
+    // A stale .tmp at a loose mode must not hand that mode to the live path.
+    fs.writeFileSync(atomicTmpPath(f), 'junk', { mode: 0o666 })
+    fs.chmodSync(atomicTmpPath(f), 0o666)
+    writeJsonAtomic(f, { c: 'key' }, { mode: 0o600 })
+    assert.strictEqual(modeOf(f), 0o600, 'a stale world-readable .tmp cannot loosen the live file')
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(f, 'utf8')), { c: 'key' })
+
+    // dirMode applies to directories mkdir CREATES (the 0700 secrets dir)…
+    const nested = path.join(d, 'secrets', 'admins.json')
+    writeJsonAtomic(nested, { root: {} }, { mode: 0o600, dirMode: 0o700 })
+    assert.strictEqual(modeOf(path.dirname(nested)), 0o700, 'secrets dir created owner-only')
+    assert.strictEqual(modeOf(nested), 0o600)
+
+    // …and never touches one that already exists, matching mkdirSync's own semantics.
+    const plainDir = path.join(d, 'plain')
+    fs.mkdirSync(plainDir, { mode: 0o755 })
+    fs.chmodSync(plainDir, 0o755) // mkdir's mode is umask-filtered; assert against a known value
+    writeJsonAtomic(path.join(plainDir, 'x.json'), { x: 1 }, { dirMode: 0o700 })
+    assert.strictEqual(modeOf(plainDir), 0o755, 'an existing directory is left alone')
+
+    // The mirror of the 0600 requirement: a NON-secret registry must not be silently
+    // tightened either, or a backup/restore run as another user stops being readable.
+    const plain = path.join(d, 'packages.json')
+    writeJsonAtomic(plain, { basic: {} })
+    assert.strictEqual(modeOf(plain), 0o666 & ~(process.umask() & 0o777), 'non-secret registries keep the default mode')
+  } finally { fs.rmSync(d, { recursive: true, force: true }) }
+})
+
+// indent 2 is what every registry writes (readable in a backup / by an operator);
+// indent 0 is the compact form the analytics + reports rollups write. Both must round-trip.
+test('atomic write preserves each caller\'s on-disk JSON shape', () => {
+  const d = tmpdir()
+  try {
+    const value = { hours: { 13: { logins: { ok: 2 } } } }
+    const pretty = path.join(d, 'pretty.json')
+    const compact = path.join(d, 'compact.json')
+    writeJsonAtomic(pretty, value)
+    writeJsonAtomic(compact, value, { indent: 0, fsync: false })
+    assert.strictEqual(fs.readFileSync(pretty, 'utf8'), JSON.stringify(value, null, 2))
+    assert.strictEqual(fs.readFileSync(compact, 'utf8'), JSON.stringify(value))
+    assert.ok(fs.readFileSync(pretty, 'utf8').includes('\n') && !fs.readFileSync(compact, 'utf8').includes('\n'))
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(compact, 'utf8')), value)
+  } finally { fs.rmSync(d, { recursive: true, force: true }) }
 })
 
 console.log(`\nRESULT: PASS ✅  (${passed} tests)`)

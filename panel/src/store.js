@@ -12,6 +12,7 @@ import path from 'path'
 import sodium from 'sodium-native'
 import b4a from 'b4a'
 import { purgeStaleCores } from '@aliran/core/store-gc.js'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 export async function openStore (dataDir, keys) {
   const store = new Corestore(dataDir)
@@ -92,8 +93,8 @@ export function loadSecrets (dataDir) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
 }
 
+// Atomic (tmp + fsync + rename): these are the per-stream keys every user grant seals
+// against — a truncated write would make every existing grant worthless.
 export function saveSecrets (dataDir, secrets) {
-  const p = secretsPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only secrets dir
-  fs.writeFileSync(p, JSON.stringify(secrets, null, 2), { mode: 0o600 })
+  writeJsonAtomic(secretsPath(dataDir), secrets, { mode: 0o600, dirMode: 0o700 })
 }

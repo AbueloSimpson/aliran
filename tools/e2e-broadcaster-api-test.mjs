@@ -686,6 +686,56 @@ try {
   await mgrB.close()
   log('N: desiredRunning persists → auto-resume on restart; boot catch-up heals stale-live; operator stop → idle ✓')
 
+  // ===== Test N2: channels.json survives a crash mid-write (atomic tmp+fsync+rename) =====
+  // channels.json is the highest-stakes file in the broadcaster: every channel's config plus
+  // push stream keys, SRT passphrases and CENC keys, with no second copy on disk. init()
+  // swallows a parse error and boots with ZERO channels, so a truncated write does not fail
+  // loudly — it silently empties the fleet. _save() is atomic precisely so that cannot happen.
+  // Only ONE manager may hold this dataDir at a time (two Corestores over one directory
+  // clobber each other), so this runs strictly sequentially, like Test N above.
+  const regPath = path.join(dirs.bc2, 'channels.json')
+  const regTmp = regPath + '.tmp'
+  assert.deepStrictEqual(Object.keys(readReg(dirs.bc2)).sort(), ['heal-me', 'resume-me'], 'registry intact going in')
+
+  // A crash between "temp file written" and "rename" leaves a partial .tmp on disk. It must
+  // be inert on the next boot: init() opens the exact registry path, never a sibling.
+  fs.writeFileSync(regTmp, fs.readFileSync(regPath, 'utf8').slice(0, 40)) // truncated mid-JSON, as an OOM kill leaves it
+  assert.throws(() => JSON.parse(fs.readFileSync(regTmp, 'utf8')), 'the planted .tmp really is unparseable')
+  const mgrC = new ChannelManager(bc2Config); await mgrC.init({ resume: false })
+  assert.deepStrictEqual([...mgrC.channels.keys()].sort(), ['heal-me', 'resume-me'], 'a stale .tmp cannot be mistaken for the registry')
+
+  // …and the next real write consumes it rather than appending to or inheriting from it.
+  await mgrC.add('durable-1', { title: 'Durable', input: 'test', buffer: 'disk' })
+  assert.ok(!fs.existsSync(regTmp), 'the stale .tmp is gone after the next save')
+  const afterAdd = readReg(dirs.bc2)
+  assert.deepStrictEqual(Object.keys(afterAdd).sort(), ['durable-1', 'heal-me', 'resume-me'], 'the add landed on a complete registry')
+  assert.ok(afterAdd['resume-me'] && afterAdd['heal-me'], 'pre-existing channels were not lost')
+
+  // The registry holds secrets, so 0600 must survive every rename — including over the
+  // pre-existing file, which is where writeFileSync's `mode` option silently does nothing.
+  if (process.platform !== 'win32') {
+    assert.strictEqual(fs.statSync(regPath).mode & 0o777, 0o600, 'channels.json is 0600 after a rename over an existing file')
+    fs.chmodSync(regPath, 0o644) // an operator (or an older build) left it loose
+    await mgrC.update('durable-1', { title: 'Durable Renamed' })
+    assert.strictEqual(fs.statSync(regPath).mode & 0o777, 0o600, 'a save re-tightens a loosened registry to 0600')
+  } else {
+    log('       (0600 assertions skipped on win32 — no POSIX modes)')
+  }
+
+  // Every mutating path persists through the same atomic _save(), so the registry a restart
+  // reads is always a complete one.
+  await mgrC.update('durable-1', { title: 'Durable Two' })
+  await mgrC.remove('durable-1')
+  assert.deepStrictEqual(Object.keys(readReg(dirs.bc2)).sort(), ['heal-me', 'resume-me'], 'remove persisted atomically too')
+  assert.ok(!fs.existsSync(regTmp), 'no .tmp litter left by any of the writes')
+  await mgrC.close()
+
+  // A real restart over that dataDir still sees both channels — the registry never lost a byte.
+  const mgrE = new ChannelManager(bc2Config); await mgrE.init({ resume: false })
+  assert.deepStrictEqual([...mgrE.channels.keys()].sort(), ['heal-me', 'resume-me'], 'a fresh boot reads the intact registry')
+  await mgrE.close()
+  log('N2: a truncated channels.json.tmp cannot corrupt or empty the live registry; add/patch/remove persist atomically and 0600 survives every rename ✓')
+
   // ===== Test O: S15c control surface — capabilities, logs API, state + ingest.pushUrl =====
   r = await api('GET', '/api/capabilities', undefined, token)
   assert.strictEqual(r.status, 200, 'capabilities 200')

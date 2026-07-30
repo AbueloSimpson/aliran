@@ -78,6 +78,22 @@ export const config = {
     port: int(process.env.ADMIN_PORT, 3210),
     sessionTtlHours: int(process.env.ADMIN_SESSION_TTL_HOURS, 12)
   },
+  // Encrypted key escrow — getting DATA_DIR/keys/ off the box (src/escrow.js).
+  // ONE flag, and it is OFF. Export over the admin API lowers identity exfiltration
+  // from "shell access on the box" to "an authenticated admin session", so a
+  // deployment that does not want that endpoint does not have it: the route 404s
+  // like any unknown path until ESCROW_EXPORT=1. The CLI export needs shell access
+  // already, so it stays available either way and changes no attacker's economics.
+  // The Argon2id cost below protects the exported file, which lives outside every
+  // control this box has — raise it freely, it is paid once per export. The
+  // parameters travel INSIDE each file, so an old file always opens with its own.
+  escrow: {
+    exportEnabled: bool(process.env.ESCROW_EXPORT, false),
+    argon2: {
+      memMiB: int(process.env.ESCROW_ARGON2_MEM_MIB, 256), // libsodium MODERATE
+      ops: int(process.env.ESCROW_ARGON2_OPS, 3)
+    }
+  },
   // Privacy-preserving analytics (S48): aggregate-only rollups under
   // DATA_DIR/analytics/, pruned to this many days. 0 disables collection
   // entirely (no files written, endpoints answer empty) — the one knob.
@@ -143,7 +159,7 @@ const chkBootstrap = (name, list) => {
   }
 }
 
-chkBool('RELAY_ONLY'); chkBool('ADMIN_ENABLED'); chkBool('LEGACY_PUBLISHER')
+chkBool('RELAY_ONLY'); chkBool('ADMIN_ENABLED'); chkBool('LEGACY_PUBLISHER'); chkBool('ESCROW_EXPORT')
 chkInt('ARGON2_MEM_KIB', config.argon2.memKiB, 8)
 chkInt('ARGON2_TIME', config.argon2.time, 1)
 chkInt('MAX_DEVICES_DEFAULT', config.maxDevicesDefault, 1)
@@ -152,6 +168,14 @@ chkInt('POW_DIFFICULTY', config.pow.difficulty, 0, 32)
 chkInt('LOCKOUT_THRESHOLD', config.lockout.threshold, 1)
 chkInt('LOCKOUT_SECONDS', config.lockout.seconds, 1)
 chkInt('ADMIN_PORT', config.admin.port, 0, 65535)
+// The floor is 8 MiB so a test lane can run the KDF fast. That is FAR below the
+// 256 MiB default — anything under it weakens every file the panel exports, so the
+// export response and the CLI both print the cost they used.
+// The ceiling is libsodium's own (crypto_pwhash_MEMLIMIT_MAX, just under 4 GiB). Past
+// it the derivation throws deep inside sodium at export time; a typo belongs here, at
+// boot, naming the variable.
+chkInt('ESCROW_ARGON2_MEM_MIB', config.escrow.argon2.memMiB, 8, 4095)
+chkInt('ESCROW_ARGON2_OPS', config.escrow.argon2.ops, 1, 64)
 chkInt('ANALYTICS_RETENTION_DAYS', config.analytics.retentionDays, 0)
 chkInt('REPORTS_RETENTION_DAYS', config.reports.retentionDays, 0)
 chkInt('REPORTS_MAX_PER_WINDOW', config.reports.maxPerWindow, 1)

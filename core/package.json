@@ -17,6 +17,7 @@
     "./net-tune.js": "./net-tune.js",
     "./net-tune-core.js": "./net-tune-core.js",
     "./store-gc.js": "./store-gc.js",
+    "./atomic-write.js": "./atomic-write.js",
     "./config-snapshot.js": "./config-snapshot.js",
     "./config-routes.js": "./config-routes.js",
     "./backup-index.js": "./backup-index.js",
@@ -34,6 +35,7 @@
     "net-tune.js",
     "net-tune-core.js",
     "store-gc.js",
+    "atomic-write.js",
     "config-snapshot.js",
     "config-routes.js",
     "backup-index.js",
@@ -69,5 +71,5 @@
     "b4a": "^1.6.6",
     "sodium-native": "^4.3.0"
   },
-  "comment": "OPRF group math uses the audited @noble/curves ristretto255 (sodium-native in this build lacks ristretto ops). Argon2id + secretbox use sodium-native. Have the crypto independently reviewed before production. net-tune.js, store-gc.js, config-snapshot.js and backup-index.js are deliberately NOT re-exported by index.js — server components import them by path (they are Node/Bare infra helpers, not crypto)."
+  "comment": "OPRF group math uses the audited @noble/curves ristretto255 (sodium-native in this build lacks ristretto ops). Argon2id + secretbox use sodium-native. Have the crypto independently reviewed before production. net-tune.js, net-tune-core.js, store-gc.js, atomic-write.js, config-snapshot.js, config-routes.js and backup-index.js are deliberately NOT re-exported by index.js — server components import them by path (they are Node/Bare infra helpers, not crypto)."
 }

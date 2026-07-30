@@ -14,6 +14,7 @@ import path from 'path'
 import { pairingCode } from '@aliran/core'
 import { config } from './config.js'
 import { initKeys, openKeys } from './keys.js'
+import { sealEscrow, openEscrow, verifyBundle, checkEnvelope, serializeEscrow, MIN_PASSPHRASE } from './escrow.js'
 import { openStore } from './store.js'
 import * as ops from './ops.js'
 import * as sources from './sources.js'
@@ -82,7 +83,137 @@ async function main () {
     return
   }
 
+  // verify-escrow runs BEFORE requireKeys on purpose: its whole point is to work on a
+  // machine that is not the panel — an operator's laptop, a recovery box, anywhere
+  // Node runs. No DATA_DIR, no store, no swarm. It therefore cannot become a second
+  // writer for the same identity, which the never-two-writers rule makes strictly
+  // worse than downtime (docs/kb/backup-and-rotation.md).
+  if (cmd === 'verify-escrow') {
+    const file = pos[0]
+    if (!file) return usage()
+    let env
+    try {
+      env = checkEnvelope(fs.readFileSync(file, 'utf8'))
+    } catch (err) {
+      console.error('Cannot read this escrow file: ' + (err.message || err))
+      process.exit(1)
+    }
+    // The fingerprint is cleartext, so print it BEFORE asking for anything. An
+    // operator holding several files finds the right one without typing a passphrase.
+    console.log('Escrow file:      ' + path.resolve(file))
+    console.log('Created:          ' + env.createdAt)
+    console.log('Service:          ' + (env.fingerprint.serviceName || '(not set)'))
+    console.log('Panel public key: ' + env.fingerprint.panelPublicKey)
+    console.log('Pairing code:     ' + env.fingerprint.pairingCode)
+    console.log('Sealed files:     ' + env.fingerprint.files.map((f) => `${f.name} (${f.bytes} B)`).join(', '))
+    console.log('KDF:              argon2id, ' + Math.round(env.kdf.memlimit / 1048576) + ' MiB, ' + env.kdf.opslimit + ' ops')
+    console.log('')
+
+    const passphrase = str(opts.passphrase) ?? await promptHidden('Escrow passphrase: ')
+    let opened
+    try {
+      opened = await openEscrow({ envelope: env, passphrase })
+    } catch (err) {
+      console.error('FAILED: ' + (err.message || err))
+      process.exit(1)
+    }
+    const result = verifyBundle(opened.files, env.fingerprint)
+    for (const c of result.checks) console.log(` ${c.ok ? '✓' : '✗'} ${c.name}${c.detail ? '  — ' + c.detail : ''}`)
+    console.log('')
+    if (!result.ok) {
+      console.error('VERIFY FAILED — do not rely on this copy. Export a new one.')
+      process.exit(1)
+    }
+    console.log('VERIFIED — this file decrypts and holds the identity its fingerprint names.')
+
+    // Extraction is a separate, explicit flag into an EMPTY directory. Escrow with no
+    // way out is not a backup, but writing straight into a live DATA_DIR is how a
+    // deployment ends up with two panels signing under one identity.
+    const to = str(opts['restore-to'])
+    if (to) {
+      if (fs.existsSync(to) && fs.readdirSync(to).length) {
+        console.error(`\nRefusing to write into ${to}: the directory is not empty.`)
+        process.exit(1)
+      }
+      fs.mkdirSync(to, { recursive: true, mode: 0o700 })
+      for (const [name, content] of Object.entries(opened.files)) {
+        fs.writeFileSync(path.join(to, name), content, { mode: 0o600 })
+      }
+      console.log('\nWrote ' + Object.keys(opened.files).length + ' key files to ' + path.resolve(to))
+      console.log('STOP before you use them. Only ONE panel may ever run with this identity.')
+      console.log('Confirm the old panel is stopped and cannot restart, then move these files')
+      console.log('into that deployment\'s DATA_DIR/keys/.')
+    }
+    return
+  }
+
   const keys = requireKeys()
+
+  // Encrypted identity escrow (src/escrow.js). This path needs shell access on the
+  // box, so it changes no attacker's economics and is always available — unlike the
+  // admin-API export, which is off unless ESCROW_EXPORT=1.
+  if (cmd === 'export-escrow') {
+    const kdf = { opslimit: config.escrow.argon2.ops, memlimit: config.escrow.argon2.memMiB * 1048576 }
+    // Check the destination FIRST. Everything below is a passphrase prompt and a
+    // deliberately slow KDF, and none of it should be spent to then hit ENOENT.
+    const outPath = str(opts.out)
+    if (outPath) {
+      if (fs.existsSync(outPath)) {
+        console.error(`Refusing to overwrite ${outPath}. Pass --out <file> with a new name.`)
+        process.exit(1)
+      }
+      const outDir = path.dirname(path.resolve(outPath))
+      if (!fs.existsSync(outDir)) {
+        console.error(`No such directory: ${outDir}. Create it first.`)
+        process.exit(1)
+      }
+    }
+    let passphrase = str(opts.passphrase)
+    if (passphrase) {
+      console.log('Note: --passphrase puts the passphrase in your shell history. Prefer the prompt.')
+    } else {
+      console.log(`Choose an escrow passphrase (minimum ${MIN_PASSPHRASE} characters).`)
+      console.log('This passphrase is the ONLY protection on the exported file. Five or six')
+      console.log('random words beat one clever word. Store it apart from the file itself.')
+      passphrase = await promptHidden('Escrow passphrase: ')
+      if (passphrase !== await promptHidden('Repeat passphrase:  ')) {
+        console.error('The two passphrases are different. Nothing was written.')
+        process.exit(1)
+      }
+    }
+
+    console.log(`\nDeriving the file key (argon2id, ${config.escrow.argon2.memMiB} MiB, ${config.escrow.argon2.ops} ops) — this takes a moment…`)
+    const { envelope, fingerprint, filename } = await sealEscrow({
+      dataDir: config.dataDir,
+      passphrase,
+      serviceName: config.serviceName,
+      kdf
+    })
+    // Prove the file before it exists on disk: open it again with the same passphrase
+    // and check the identity inside. An untested escrow copy is a hope, not a backup.
+    const opened = await openEscrow({ envelope, passphrase })
+    const result = verifyBundle(opened.files, fingerprint)
+    for (const c of result.checks) console.log(` ${c.ok ? '✓' : '✗'} ${c.name}${c.detail ? '  — ' + c.detail : ''}`)
+    if (!result.ok) {
+      console.error('\nThe file failed its own verification. Nothing was written. This is a bug — report it.')
+      process.exit(1)
+    }
+
+    const out = outPath || filename
+    if (fs.existsSync(out)) {
+      console.error(`\nRefusing to overwrite ${out}. Pass --out <file> with a new name.`)
+      process.exit(1)
+    }
+    fs.writeFileSync(out, serializeEscrow(envelope), { mode: 0o600 })
+    console.log('\nWrote ' + path.resolve(out))
+    console.log('  Panel public key: ' + fingerprint.panelPublicKey)
+    console.log('  Pairing code:     ' + fingerprint.pairingCode)
+    console.log('  Sealed files:     ' + fingerprint.files.map((f) => f.name).join(', '))
+    console.log('\nNow move it OFF this box. A copy that stays here protects you from nothing.')
+    console.log('Then prove the copy at its destination:')
+    console.log('  node src/admin-cli.js verify-escrow <the-copy>')
+    return
+  }
 
   // Admin-account commands touch only the private admins file — no store needed
   // (and no ELOCKED when the panel is running).
@@ -607,6 +738,16 @@ function usage () {
   console.log(`Aliran panel admin CLI
 
   init                                  Generate panel signing + OPRF keys
+  export-escrow [--out <file>]          Export DATA_DIR/keys/ ENCRYPTED under a passphrase you
+                                        type here. This is the only supported way to get the
+                                        identity off the box. The file verifies itself before
+                                        it is written. Move it off this box afterwards.
+  verify-escrow <file> [--restore-to <empty-dir>]
+                                        Prove an escrow file decrypts and holds the identity its
+                                        fingerprint names. Needs NO panel and no DATA_DIR — run
+                                        it wherever the copy lives. --restore-to extracts the key
+                                        files into an EMPTY directory; only one panel may ever
+                                        run with an identity, so move them by hand from there.
   create-user <u> [--password <pw>]     Create a user (OPRF-enrolled)
   set-password <u> [--password <pw>]    Rotate password (re-seals grants, revokes sessions)
   set-status <u> <active|disabled>      Disable/re-enable an account (disable revokes sessions)

@@ -304,6 +304,17 @@ details.footnote p { margin: 6px 0 0; }
    viewer copies it onto a TV remote. Selectable as one unit for a manual copy. */
 .pairing { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .pairing-code { font-size: 26px; font-weight: 600; letter-spacing: .12em; color: var(--accent); user-select: all; }
+.ident-field { min-width: 0; }
+.ident-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 2px; }
+/* The 64-hex key: prominent enough to read off the screen, and wrapping rather than
+   overflowing on a narrow window. Selectable as one unit, like the code above it. */
+.ident-key { font-size: 13px; user-select: all; word-break: break-all; line-height: 1.5; }
+
+/* ---- key escrow (Overview) ---- */
+.escrow-checks { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
+.escrow-checks li { padding: 3px 0; }
+.escrow-checks .ok { color: #34d399; }
+.escrow-checks .no { color: #f87171; }
 
 /* ---- overview / observability (S16b) ---- */
 .card-title { margin: 0 0 10px; font-size: 14px; }
@@ -316,6 +327,9 @@ ul.activity li:last-child { border-bottom: none; }
 .act-session { background: #064e3b; color: #a7f3d0; }
 .act-register { background: #1e3a8a; color: #bfdbfe; }
 .act-admin { background: #78350f; color: #fde68a; }
+/* Security events (identity escrow export, allowed or refused) read RED on purpose:
+   they must be impossible to skim past in a feed of routine admin mutations. */
+.act-security { background: #7f1d1d; color: #fecaca; }
 
 /* ---- sources tab: sync report + error + channels dialog (S27 UI pass) ---- */
 .rep-link {

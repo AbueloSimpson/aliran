@@ -5,24 +5,29 @@ bother with), how to restore it, how to keep a warm standby, and how to
 rotate every credential in the system — including the honest list of what
 *cannot* be rotated.
 
-## Three files, three jobs
+## Four files, four jobs
 
-"Back up my deployment" means three different things, and one file cannot do
-all three. A file that is correct for one job is wrong for the other two.
+"Back up my deployment" means four different things, and one file cannot do
+all four. A file that is correct for one job is wrong for the others.
 
-| | **Recovery archive** | **Config snapshot** | **Config template** |
-|---|---|---|---|
-| What it holds | The whole `DATA_DIR`, keys included | This service's config, secrets included | The same structure, secrets removed |
-| Holds secrets | Yes | Yes | **No** |
-| Where it stays | On the box, encrypted | On the box (in the data volume) | You download it |
-| You make it with | `deploy/backup.sh` | The dashboard, or automatically | The dashboard |
-| Use it to | Rebuild a service after you lose the box | Undo a bad change | Start a second site, or compare two lineups |
+| | **Escrow file** | **Recovery archive** | **Config snapshot** | **Config template** |
+|---|---|---|---|---|
+| What it holds | `DATA_DIR/keys/` alone | The whole `DATA_DIR`, keys included | This service's config, secrets included | The same structure, secrets removed |
+| Holds secrets | Yes — sealed with your passphrase | Yes | Yes | **No** |
+| Where it stays | **Off the box** | On the box, encrypted | On the box (in the data volume) | You download it |
+| You make it with | `admin-cli export-escrow` | `deploy/backup.sh` | The dashboard, or automatically | The dashboard |
+| Use it to | Keep the identity after the box burns | Rebuild a service after you lose the box | Undo a bad change | Start a second site, or compare two lineups |
 
-Each dashboard has a **Backup** page that shows all three. Two of them are
-new work the service does for itself. The third is not:
+Two of these are the panel's identity story and are covered under *Get the
+identity off the box* below. The other two are per-service config, and every
+dashboard has a **Backup** page for them.
+
+Only some of this work can happen inside a running service:
 
 - A **config snapshot** and a **config template** are reads of files the
   service already owns. The dashboard makes them.
+- An **escrow file** is sealed before it is written or answered, so the panel
+  can make one — but the route stays off unless you set `ESCROW_EXPORT=1`.
 - A **recovery archive** needs the service stopped while its volume is
   copied. A service cannot stop itself and still answer the request that
   asked it to. So the dashboard **lists** the archives and shows the exact
@@ -105,11 +110,161 @@ holds is one of three things:
 | Service | Back up | Why / notes |
 |---|---|---|
 | **Panel** | The whole `DATA_DIR` (volume `panel-data`) | `keys/` (signing, OPRF, shared publisher — the crown jewels), `secrets/admins.json`, the signed account/catalog corestore, assets drive, sources/publishers registries. Small (MBs–tens of MBs) — back it up often |
+| **Panel identity** | `keys/` **alone**, encrypted, stored somewhere else | A separate one-time job — see *Get the identity off the box* below. The archive above holds these keys too, but it sits on the box you are insuring against |
 | **Reseller** | The whole `DATA_DIR` (volume `reseller-data`) | Business records: `ledger/ledger.jsonl` (append-only credit ledger), principals, managed-account map |
 | **Library** | The whole `DATA_DIR` (volume `library-data`) | The ingested VOD titles ARE the served artifact (re-ingest needs the original files); plus `secrets/admins.json` |
 | **Broadcaster** | Only `.env` + `DATA_DIR/channels.json` | The channel registry + config are seconds to restore; the feed stores are **cache** — a restored broadcaster with empty stores re-mints feeds and every viewer follows via the catalog (cost: one cold DHT topic per channel, like any rotation) |
 | **Repeater** | Nothing | The store is a disposable ciphertext cache by design |
 | **All** | The `.env` files (and any branding/theme files they reference) | They live in the repo checkout on the host, *outside* the volumes — a volume backup does not include them |
+
+## Get the identity off the box (key escrow)
+
+Do this once, before you do anything else here.
+
+`deploy/backup.sh` puts `keys/` into an archive. That archive stays on the box
+you are insuring against. So a box that burns takes the archive with it. Key
+escrow is the supported way to move the identity somewhere else.
+
+**Why the identity is a separate job.** Everything else in a deployment
+survives a total loss. Broadcasters repopulate channels and per-stream secrets
+when they re-register. Users, grants and packages come back from a panel
+archive. The keys do not come back from anything, because every installed app
+pins the panel public key and the pairing code comes from that same key. Lose
+them and you cannot recover the service under its own identity at all.
+
+An escrow file holds `DATA_DIR/keys/` and nothing else. It is not a panel
+backup. Take both.
+
+### Export
+
+Two routes produce the same file. Use the one that fits your access.
+
+**From the box** (always available — it needs shell access, so it gives an
+attacker nothing new):
+
+```sh
+docker compose exec panel node src/admin-cli.js export-escrow
+```
+
+**From the dashboard** (Overview → Key escrow). This route is **off** until you
+set `ESCROW_EXPORT=1` in `panel/.env`. Read *The trade you are making* below
+before you turn it on.
+
+Both routes ask for a passphrase of 16 characters or more. Five or six random
+words beat one clever word. The passphrase is the only protection on the file.
+The panel does not store it. Nobody can open the file without it, and that
+includes you.
+
+The panel encrypts the file **before** it writes it or answers with it:
+Argon2id derives the file key from your passphrase, and XChaCha20-Poly1305
+seals the key material. No key material crosses the network in the clear, even
+behind TLS or an SSH tunnel. The panel then decrypts its own output and checks
+it, so a file that cannot be opened never reaches you.
+
+Now move the file off the box. A copy that stays there protects you from
+nothing. Put the passphrase somewhere else again — a file and its passphrase in
+one place is one theft, not two.
+
+### Identify a file years later
+
+The file starts with a **cleartext fingerprint**. You read it with a text
+editor and no passphrase:
+
+```json
+"fingerprint": {
+  "panelPublicKey": "a3f1…",
+  "pairingCode": "VNEY-GN8R-3S9W",
+  "serviceName": "Example TV",
+  "files": [{ "name": "oprf.key", "bytes": 64 }, …]
+}
+```
+
+Nothing in that block is secret. The panel public key and the pairing code go
+to every viewer already. The block is there so you can tell which deployment a
+file belongs to, and which of several files is the current one.
+
+The fingerprint is also the seal's *additional data*. If somebody edits the
+recorded public key, the file stops decrypting. Nobody can re-label one
+deployment's file as another's.
+
+The dashboard shows the same two values on **Overview → Service identity**.
+Write them down and keep them off the box. They are public, and a record of
+them is itself recovery information.
+
+### Verify the copy
+
+An escrow copy nobody has tested is not a backup. Verify the copy where it
+lives, not the original on the box:
+
+```sh
+node panel/src/admin-cli.js verify-escrow aliran-escrow-VNEY-GN8R-3S9W-20260729-1412.json
+```
+
+The command prints the fingerprint, asks for the passphrase, and then checks
+that the sealed keys are well-formed and are the identity the header names: the
+signing keypair signs and verifies, the OPRF key is 32 bytes, and the pairing
+code re-derives from the sealed key. It exits non-zero if any check fails.
+
+This command needs no panel, no `DATA_DIR`, and no swarm. Run it on a laptop.
+That is deliberate: a verify that started a panel could become a **second
+writer** for one identity, which the rule below makes strictly worse than
+downtime.
+
+Verify each copy when you make it. Verify again at each quarterly drill.
+
+### Recover from a copy
+
+You need the keys as files again:
+
+```sh
+node panel/src/admin-cli.js verify-escrow <file> --restore-to ./recovered-keys
+```
+
+The command refuses a directory that is not empty. It writes the key files with
+mode `0600`.
+
+**Stop there and confirm one thing: the old panel is down and cannot restart.**
+Only then move the files into that deployment's `DATA_DIR/keys/`. Two panels
+that share an identity both sign appends under it, and that fork is permanent.
+See *Warm standby & failover* below.
+
+### The trade you are making
+
+`ESCROW_EXPORT=1` lowers the bar for stealing the identity. Today it is "shell
+access on the box". With the dashboard route on it becomes "an admin session
+plus that admin's password". That is a real change, so the panel answers it
+with four barriers:
+
+| Barrier | What it does |
+|---|---|
+| The flag | The route does not exist while `ESCROW_EXPORT` is off. It answers 404, like any unknown path |
+| Re-authentication | The caller re-types their own password. A stolen dashboard token is not sufficient |
+| Rate limit | 3 attempts per hour per admin. A real operator does this about once |
+| Activity ring | Every attempt lands in **Overview → Recent activity** as a red `security` event. Refusals too — a blocked attempt matters more than a successful one |
+
+The CLI route stays available whether the flag is on or off. So you can leave
+the flag off and lose nothing except dashboard convenience.
+
+There is no MCP tool for this, on purpose. MCP results travel into an
+assistant's transcript, and the passphrase would travel as a tool parameter.
+
+`npm run test:escrow` proves the mechanics on every CI push: the exported bytes
+hold no key material, the fingerprint matches the live panel key, and a wrong
+passphrase, a corrupted file and an edited fingerprint are all refused.
+
+### The broadcaster does not need this
+
+A broadcaster holds no identity you cannot replace, so there is no broadcaster
+escrow and none is planned:
+
+- Its per-channel `feed.key` files are **cache** (see the table above). A lost
+  feed re-mints, and viewers follow it through the catalog.
+- Its `PUBLISHER_KEY` lives in `.env`, which the table above already tells you
+  to back up. It is also **rotatable**: enroll a new publisher on the panel, put
+  the new key in that site's `.env`, restart it, and revoke the old one. Viewers
+  see nothing. The rotation matrix below has the steps.
+
+Back up the broadcaster `.env` and `channels.json`. That is the whole job.
 
 ## Cold backup (the only safe kind)
 
@@ -274,14 +429,14 @@ wire-compatible — no player or SDK updates are ever involved.
 | SRT passphrase / push-ingest credentials | Edit the channel's input config in the control UI; restart the channel | One channel blips (watchdog-grade) |
 | `feedKey` (a channel's swarm identity) | Happens by itself on source change / `FEED_ROTATE_HOURS` / any `ram`-mode restart; force one with a channel restart | None — viewers follow the catalog live |
 | Admin/control session tokens | Rotating the owning password bumps `tokenVersion` = logout-all for that principal | That principal |
-| **Panel signing key + OPRF key** | **Not rotatable.** They *are* the deployment's identity: every shipped config pins the public key, and OPRF evaluations feed every stored verifier | Compromise = migration: init a fresh panel, re-create accounts (users re-enroll — verifiers can't be transformed), repoint broadcasters/resellers, ship the new key to clients (Connect screen / new config). This is why `keys/` is 0600, why backups must be encrypted, and why the box running the panel should be the most locked-down thing you operate |
+| **Panel signing key + OPRF key** | **Not rotatable.** They *are* the deployment's identity: every shipped config pins the public key, and OPRF evaluations feed every stored verifier | Compromise = migration: init a fresh panel, re-create accounts (users re-enroll — verifiers can't be transformed), repoint broadcasters/resellers, ship the new key to clients (Connect screen / new config). This is why `keys/` is 0600, why backups must be encrypted, and why the box running the panel should be the most locked-down thing you operate. **Loss** is the other half of the same coin, and it is the one you can prepare for — see *Get the identity off the box* |
 
 ## Drill it
 
 A backup you have never restored is a hope, not a plan.
 
 - `npm run test:backup` runs the automated completeness drill on every CI
-  push.
+  push. `npm run test:escrow` does the same for key escrow.
 - `npm run test:config-snapshot` and `npm run test:config-api` cover the
   snapshot and template layer. The load-bearing check seeds real secrets —
   a per-stream key, a push stream key, an SRT passphrase, a CENC key, an
@@ -289,6 +444,9 @@ A backup you have never restored is a hope, not a plan.
   a template, and fails if any of those bytes survives anywhere in it. A
   new secret field that nobody adds to a redaction rule fails CI instead of
   shipping.
+- Quarterly, verify your escrow copy where it is stored:
+  `node panel/src/admin-cli.js verify-escrow <file>`. It takes seconds, it needs
+  no panel, and it is the only way to learn that you still have the passphrase.
 - Quarterly, do the real thing: restore the latest panel archive onto a
   scratch box (or the standby) and log in to the dashboard. **Point the
   drill panel at a black-hole bootstrap** (`BOOTSTRAP=127.0.0.1:9` in its

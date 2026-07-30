@@ -18,6 +18,27 @@ phone + Android TV, and the Windows desktop player).
 
 ### Fixed
 
+- **A crash mid-write could truncate a JSON registry, including the ones holding
+  keys** — every registry write was a plain `writeFileSync` straight onto the live
+  path, which truncates the file to zero before refilling it. An OOM kill, a
+  segfault, a power cut, or a `docker stop` that outran the stop grace could leave
+  the file half-written, and there was no recovery except restoring a backup. The
+  worst cases were the broadcaster's `channels.json` — every channel's config plus
+  its push stream keys, SRT passphrases and CENC keys — and the panel's
+  `secrets/streams.json`, the per-stream keys that user grants are sealed against:
+  losing it makes every existing grant worthless. The broadcaster made this quieter
+  than it looks, because it treats an unreadable registry as an empty one and boots
+  with no channels at all. Protection existed already, but only on the analytics
+  rollups and the viewer problem reports — the most disposable data in the system.
+  Every registry now writes through one shared helper
+  (`@aliran/core/atomic-write.js`) that writes a sibling temp file, flushes it to
+  disk, and renames it over the target. A reader sees either the whole old file or
+  the whole new one, never a mix, and a write that fails leaves the previous file
+  in place. Secrets files get their `0600` mode when the temp file is created
+  rather than after the rename, so the keys are never briefly readable by other
+  local users — the trap in the old code, where the `mode` option was silently
+  ignored on a file that already existed.
+
 - **Desktop packaging: the build swept in the SDK's native-app source trees** —
   found while auditing an artifact. The desktop shell depends on
   `@aliran/player-sdk`, which in this repo is a workspace package: the dependency
@@ -98,6 +119,54 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Encrypted key escrow: a supported way to get the panel identity off the
+  box** — `DATA_DIR/keys/` is the only thing in a deployment with no replacement
+  cost, because it has no replacement: every installed app pins the panel public
+  key, and the service pairing code is derived from it. Everything else survives
+  a total loss — broadcasters repopulate channels and per-stream secrets when
+  they re-register. Until now the only backup route put those keys in an archive
+  that stayed on the box you were insuring against.
+
+  `admin-cli export-escrow` (and, when enabled, **Overview → Key escrow** in the
+  dashboard) writes the key directory as one small file, encrypted **before** it
+  is written or answered: Argon2id derives the file key from an operator
+  passphrase, XChaCha20-Poly1305 seals the payload. No key material crosses the
+  network in the clear, even behind TLS or a tunnel. The export decrypts and
+  checks its own output before releasing it, so no untested copy ever leaves.
+
+  The file carries a **cleartext fingerprint** — panel public key, pairing code,
+  service name, date — so an operator opening it in two years can tell which
+  deployment it belongs to without the passphrase. That header is also the
+  AEAD's additional data, so nobody can re-label one deployment's file as
+  another's: editing the recorded key breaks decryption outright.
+
+  `admin-cli verify-escrow <file>` proves a copy decrypts and holds the identity
+  its fingerprint names — the signing keypair signs and verifies, the OPRF key
+  is 32 bytes, the pairing code re-derives. It needs **no panel, no `DATA_DIR`
+  and no swarm**, so it runs on a laptop and can never turn into a second writer
+  for one identity. `--restore-to` extracts the keys into an empty directory
+  only, with the never-two-writers rule printed next to them.
+
+  **The trade is answered deliberately.** A dashboard export lowers identity
+  theft from "shell access on the box" to "an authenticated admin session", so:
+  the route does not exist unless `ESCROW_EXPORT=1`; it re-checks the caller's
+  password (a stolen dashboard token is not enough); it allows 3 attempts per
+  hour; and every attempt — including refusals — lands in the activity ring as a
+  red `security` event. The CLI route needs shell access anyway and is always
+  available, so leaving the flag off costs nothing but convenience. There is no
+  MCP tool for this on purpose. The broadcaster needs no equivalent: its feed
+  stores are cache, and its publisher key is both backed up with its `.env` and
+  rotatable with zero viewer impact. Runbook in
+  [the KB](docs/kb/backup-and-rotation.md); `npm run test:escrow` asserts the
+  exported bytes hold no key material, that the fingerprint matches the live
+  panel key, and that a wrong passphrase, a corrupted file and an edited
+  fingerprint are all refused.
+
+- **The dashboard shows the panel public key and pairing code in the open** —
+  both are public by design, and a record of them kept off the box is itself
+  recovery information. Overview → Service identity presents each with its own
+  copy button, instead of leaving the key inside a disclosure triangle.
+
 - **Backup and restore in the dashboards — three artifacts, not one** — backup
   and restore existed only as shell scripts (`deploy/backup.sh`,
   `deploy/restore.sh`) and MCP tools. An operator working in a web dashboard
@@ -154,6 +223,11 @@ phone + Android TV, and the Windows desktop player).
   redaction rule fails the build instead of shipping. New suites
   `test:config-snapshot` and `test:config-api` (network-free), plus coverage in
   the existing panel and broadcaster e2e suites.
+
+  This pairs with the key escrow above, and the KB now presents the four
+  artifacts as one table: escrow moves the identity OFF the box, a recovery
+  archive rebuilds a service ON it, a config snapshot undoes a change, and a
+  config template seeds a second site.
 
 - **Service pairing code: 12 characters instead of 64** — a viewer connecting a
   public (keyless) build no longer types a 64-hex panel key on a phone keyboard

@@ -799,7 +799,69 @@ try {
   await api('DELETE', '/api/users/vodview', undefined, { token })
   log('S: VOD provider — null before setup, 8 validation refusals with nothing stored (incl. an unknown source kind), CRUD + partial merge, BOTH movies and series sources stored, identical PATCH appends nothing, and a REAL login sees the config — series source verbatim — only while it is enabled ✓')
 
-  // ===== Test T: config snapshots, templates and the backup listing =====
+  // ===== Test T: the panel's JSON registries survive a crash mid-write =====
+  // Every write below goes through @aliran/core/atomic-write.js (tmp + fsync + rename). The
+  // property under test is that a partial .tmp — what an OOM kill, a power cut or a docker
+  // stop that outruns the stop grace leaves behind — can neither become the live file nor
+  // loosen its mode. secrets/streams.json is the worst case: it holds the per-stream keys
+  // that user grants seal, so losing it makes every existing grant worthless.
+  // Each entry: the registry file, whether it is a secret (0600 in a 0700 dir), and a
+  // create/delete pair over the REAL admin API. `add` runs last in every iteration, so the
+  // entity still exists for later iterations (packages references the durable-1 stream).
+  const registries = [
+    ['secrets/streams.json', true, () => api('POST', '/api/streams', { id: 'durable-1', title: 'Durable' }, { token }), () => api('DELETE', '/api/streams/durable-1', undefined, { token })],
+    ['secrets/admins.json', true, () => api('POST', '/api/admins', { username: 'durable-admin', password: 'durable-pass-1' }, { token }), () => api('DELETE', '/api/admins/durable-admin', undefined, { token })],
+    ['secrets/publishers.json', true, () => api('POST', '/api/publishers', { name: 'durable-pub', scopes: ['durable-*'] }, { token }), () => api('DELETE', '/api/publishers/durable-pub', undefined, { token })],
+    ['packages.json', false, () => api('POST', '/api/packages', { name: 'durable-pack', label: 'Durable', members: 'durable-1' }, { token }), () => api('DELETE', '/api/packages/durable-pack', undefined, { token })],
+    ['sources.json', false, () => api('POST', '/api/sources', { name: 'durable-src', url: 'http://127.0.0.1:9/feed.json', category: 'Durable' }, { token }), () => api('DELETE', '/api/sources/durable-src', undefined, { token })]
+  ]
+  for (const [rel, secret, add, del] of registries) {
+    const live = path.join(dirs.panel, rel)
+    const tmp = live + '.tmp'
+    const read = () => JSON.parse(fs.readFileSync(live, 'utf8'))
+    const okStatus = (res, what) => assert.ok(res.status < 400, `${rel}: ${what} (got ${res.status} ${JSON.stringify(res.body)})`)
+
+    // One real API write seeds the registry.
+    okStatus(await add(), 'seed write succeeded')
+    assert.ok(fs.existsSync(live), `${rel}: exists after a real API write`)
+    const before = read()
+    assert.ok(Object.keys(before).length > 0, `${rel}: seeded with content`)
+
+    // Plant the debris a crash mid-write leaves behind: a truncated .tmp, world-readable.
+    const partial = JSON.stringify(before).slice(0, 12)
+    fs.writeFileSync(tmp, partial)
+    try { fs.chmodSync(tmp, 0o666) } catch {}
+    assert.throws(() => JSON.parse(partial), `${rel}: the planted .tmp really is unparseable`)
+    // Every loader in the tree opens the exact path, so the debris is inert.
+    assert.deepStrictEqual(read(), before, `${rel}: a stale .tmp does not affect the live file`)
+
+    // The next real write consumes it rather than appending to or inheriting from it, and
+    // lands a COMPLETE registry — asserted by the entity actually being gone, not merely
+    // by the file being non-empty.
+    okStatus(await del(), 'delete over a planted .tmp succeeded')
+    assert.ok(!fs.existsSync(tmp), `${rel}: the stale .tmp is consumed, not left behind`)
+    assert.doesNotThrow(read, `${rel}: still parseable after the write that consumed the .tmp`)
+
+    if (secret && process.platform !== 'win32') {
+      assert.strictEqual(fs.statSync(live).mode & 0o777, 0o600, `${rel}: 0600 survives the rename`)
+      assert.strictEqual(fs.statSync(path.dirname(live)).mode & 0o777, 0o700, `${rel}: secrets dir stays owner-only`)
+      // Loosened by an older build or an operator: the next save must re-tighten it. This is
+      // the case writeFileSync's `mode` option silently fails to handle, because the option
+      // only applies to a file open() had to CREATE.
+      fs.chmodSync(live, 0o644)
+      okStatus(await add(), 're-add over a loosened file succeeded')
+      assert.strictEqual(fs.statSync(live).mode & 0o777, 0o600, `${rel}: the next save re-tightens it to 0600`)
+    } else {
+      okStatus(await add(), 'restore for the following iterations')
+    }
+  }
+  // The stream secret really is readable end-to-end after all that churn (not just parseable).
+  const durableSecrets = loadSecrets(dirs.panel)
+  assert.strictEqual(typeof durableSecrets['movie-night'], 'string', 'the original stream key survived every atomic rewrite')
+  if (process.platform === 'win32') log('       (0600 assertions skipped on win32 — no POSIX modes)')
+  log('T: streams/admins/publishers/packages/sources registries — a truncated .tmp can neither become the live file nor loosen it; every save lands complete, secrets stay 0600 in a 0700 dir ✓')
+
+  // ===== Test U: config snapshots, templates and the backup listing =====
   //
   // The load-bearing assertion is the template scan: a real per-stream key, a real admin
   // verifier, a real publisher secret and two credential-bearing source URLs are seeded,
@@ -903,9 +965,9 @@ try {
   await api('DELETE', '/api/sources/e2efeed', undefined, { token })
   await api('DELETE', '/api/sources/e2efeed2', undefined, { token })
   await api('DELETE', `/api/config/snapshots/${snapId}`, undefined, { token })
-  log('T: config snapshots + templates — template leaked NONE of 5 seeded secrets (2 credential URLs stripped to origin+path), snapshot keeps them on-box and is never served, restore brings a purged channel back WITH its original key, a live differing key is never clobbered, cross-service refused, backup listing read-only ✓')
+  log('U: config snapshots + templates — template leaked NONE of 5 seeded secrets (2 credential URLs stripped to origin+path), snapshot keeps them on-box and is never served, restore brings a purged channel back WITH its original key, a live differing key is never clobbered, cross-service refused, backup listing read-only ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record, config snapshots + secret-free templates — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record, identity key escrow, crash-safe registry writes, config snapshots + secret-free templates — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
