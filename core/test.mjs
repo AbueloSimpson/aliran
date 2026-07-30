@@ -4,7 +4,7 @@ import b4a from 'b4a'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { writeFileAtomic, writeJsonAtomic, atomicTmpPath, isAtomicTmp } from './atomic-write.js'
+import { writeFileAtomic, writeJsonAtomic, atomicTmpPath, isAtomicTmp, ensureDirMode } from './atomic-write.js'
 import {
   oprfKeyGen, blind, evaluate, finalize, evaluateFull,
   randomSalt, deriveVerifier, verify, wrapKeyFrom, wrap, unwrap,
@@ -329,11 +329,29 @@ test('atomic write applies 0600 before the rename, in every case', () => {
     assert.strictEqual(modeOf(nested), 0o600)
 
     // …and never touches one that already exists, matching mkdirSync's own semantics.
+    // …and it also TIGHTENS a directory that already exists. mkdirSync's mode applies only
+    // to a directory it creates, so without this every install made before the mode-aware
+    // code kept a world-listable secrets dir forever, no matter how often 0700 was asked for.
+    const oldDir = path.join(d, 'preexisting')
+    fs.mkdirSync(oldDir, { mode: 0o755 })
+    fs.chmodSync(oldDir, 0o755) // mkdir's mode is umask-filtered; assert against a known value
+    writeJsonAtomic(path.join(oldDir, 'admins.json'), { root: {} }, { mode: 0o600, dirMode: 0o700 })
+    assert.strictEqual(modeOf(oldDir), 0o700, 'a pre-existing loose directory is tightened')
+    assert.strictEqual(modeOf(path.join(oldDir, 'admins.json')), 0o600)
+
+    // Tighten-ONLY: bits are removed, never added, so a stricter directory an operator chose
+    // deliberately survives, and dirMode can never widen access.
+    const strictDir = path.join(d, 'stricter')
+    fs.mkdirSync(strictDir); fs.chmodSync(strictDir, 0o500)
+    ensureDirMode(strictDir, 0o700)
+    assert.strictEqual(modeOf(strictDir), 0o500, 'a stricter directory is never loosened')
+    ensureDirMode(path.join(d, 'does-not-exist'), 0o700) // absent dir: no-op, never throws
+
+    // With no dirMode asked for, the directory is not touched at all.
     const plainDir = path.join(d, 'plain')
-    fs.mkdirSync(plainDir, { mode: 0o755 })
-    fs.chmodSync(plainDir, 0o755) // mkdir's mode is umask-filtered; assert against a known value
-    writeJsonAtomic(path.join(plainDir, 'x.json'), { x: 1 }, { dirMode: 0o700 })
-    assert.strictEqual(modeOf(plainDir), 0o755, 'an existing directory is left alone')
+    fs.mkdirSync(plainDir); fs.chmodSync(plainDir, 0o755)
+    writeJsonAtomic(path.join(plainDir, 'x.json'), { x: 1 })
+    assert.strictEqual(modeOf(plainDir), 0o755, 'no dirMode means the directory is left alone')
 
     // The mirror of the 0600 requirement: a NON-secret registry must not be silently
     // tightened either, or a backup/restore run as another user stops being readable.

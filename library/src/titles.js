@@ -144,7 +144,9 @@ export class TitleManager {
   // Atomic (tmp + fsync + rename): these keys are minted once per title and REUSED across
   // re-ingests so sealed grants survive — losing them invalidates every grant on every title.
   _saveSecrets (secrets) {
-    writeJsonAtomic(this.secretsPath, secrets, { mode: 0o600 })
+    // dirMode 0700 to match the panel and broadcaster: this was the one secrets dir in the
+    // tree still created world-listable, even on a fresh install.
+    writeJsonAtomic(this.secretsPath, secrets, { mode: 0o600, dirMode: 0o700 })
   }
 
   // Minted once per title and REUSED across re-ingests, so grants sealed to it survive

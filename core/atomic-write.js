@@ -79,6 +79,22 @@ export function atomicTmpPath (file) { return file + TMP_SUFFIX }
 
 export function isAtomicTmp (name) { return typeof name === 'string' && name.endsWith(TMP_SUFFIX) }
 
+// Tighten an EXISTING directory to `mode`. mkdirSync's mode applies only to a directory it
+// CREATES, so any install whose secrets/ or keys/ dir predates the mode-aware code keeps
+// whatever it was made with — silently, forever, no matter how many times the code asks for
+// 0700. (Every Aliran deployment made before this landed has 0755 dirs holding 0600 files.)
+//
+// Bits are only ever REMOVED (cur & mode), never added, so an operator who deliberately chose
+// something stricter keeps it and this can never loosen a directory. No-op when the directory
+// does not exist, and on Windows, which has no POSIX modes.
+export function ensureDirMode (dir, mode) {
+  try {
+    const cur = fs.statSync(dir).mode & 0o777
+    if ((cur & ~mode) !== 0) fs.chmodSync(dir, cur & mode)
+  } catch {}
+  return dir
+}
+
 // Best-effort fsync of a directory, to persist the rename entry itself. Swallows errors:
 // not portable (EISDIR/EPERM on Windows), and the fallback is the intact previous file.
 function syncDir (dir) {
@@ -95,12 +111,14 @@ function syncDir (dir) {
 //   mode    — file mode for the RESULT (0o600 for anything holding a secret). Applied to the
 //             temp file before the rename carries it over, so the window where a secret could
 //             be read by another user never exists.
-//   dirMode — mode for directories mkdir has to CREATE (0o700 for a secrets dir). Never
-//             touches an existing directory, matching mkdirSync's own recursive semantics.
+//   dirMode — mode for the containing directory (0o700 for a secrets dir). Applied whether
+//             mkdir creates it or it already exists (see ensureDirMode), because mkdirSync's
+//             own mode silently does nothing to a pre-existing directory. Tighten-only.
 //   fsync   — flush before renaming. Default true; see the header.
 export function writeFileAtomic (file, data, { mode, dirMode, fsync = true } = {}) {
   const dir = path.dirname(file)
   fs.mkdirSync(dir, { recursive: true, ...(dirMode != null ? { mode: dirMode } : {}) })
+  if (dirMode != null) ensureDirMode(dir, dirMode)
 
   const tmp = atomicTmpPath(file)
   let fd = null

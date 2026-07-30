@@ -17,7 +17,7 @@ import crypto from 'hypercore-crypto'
 import sodium from 'sodium-native'
 import b4a from 'b4a'
 import { randomSalt, deriveVerifier } from '@aliran/core'
-import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
+import { writeJsonAtomic, ensureDirMode } from '@aliran/core/atomic-write.js'
 import { ControlError } from './channel.js'
 
 const bad = (m) => { throw new ControlError('bad-request', m) }
@@ -59,6 +59,11 @@ export function makeThrottle (threshold, windowSec, { maxKeys = 20000 } = {}) {
 // Load-or-create the Ed25519 keypair that signs control session tokens.
 export function controlKeys (dataDir) {
   const p = path.join(dataDir, 'keys', 'control.json')
+  // Boot-time repair of the directory modes: mkdirSync's 0700 never applied to a keys/ or
+  // secrets/ dir that already existed, and these files are not rewritten often enough to
+  // fix it on the write path. Tighten-only; see ensureDirMode.
+  ensureDirMode(path.dirname(p), 0o700)
+  ensureDirMode(path.join(dataDir, 'secrets'), 0o700)
   if (fs.existsSync(p)) {
     const k = JSON.parse(fs.readFileSync(p, 'utf8'))
     return { publicKey: b4a.from(k.publicKey, 'hex'), secretKey: b4a.from(k.secretKey, 'hex') }

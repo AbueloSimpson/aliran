@@ -48,6 +48,21 @@ phone + Android TV, and the Windows desktop player).
   ledger's torn-tail repair, which rewrites the entire transaction history to drop
   one damaged line and could previously turn a one-line crash into a total one.
 
+- **Owner-only data directories were never actually made owner-only** — the panel,
+  broadcaster and library all ask for mode `0700` on the `keys/` and `secrets/`
+  directories that hold their private key material. That mode only applies to a
+  directory the code has to *create*, so on every deployment made before those
+  lines landed the directories kept whatever they were installed with — typically
+  `0755` — and no amount of asking again would change it. The files inside were
+  always `0600`, so this exposed file *names* rather than contents, and not at all
+  where the services run as a single user; it was a gap between what the code said
+  and what was on disk. The mode is now applied to an existing directory as well
+  as a new one, and repaired at start-up for the `keys/` directories, whose files
+  are written once and would otherwise never be revisited. Permissions are only
+  ever narrowed, never widened, so a stricter choice an operator made by hand
+  survives. The library's own secrets directory, the one place still creating a
+  world-listable directory on a *fresh* install, now matches the others.
+
 - **A damaged `channels.json` silently emptied the fleet** — the broadcaster read
   its channel registry inside a `try`/`catch` that swallowed everything, so a
   corrupt file was indistinguishable from a first boot: the service started with

@@ -12,7 +12,7 @@ import crypto from 'hypercore-crypto'
 import sodium from 'sodium-native'
 import b4a from 'b4a'
 import { authKeyPair } from '@aliran/core'
-import { writeFileAtomic, writeJsonAtomic } from '@aliran/core/atomic-write.js'
+import { writeFileAtomic, writeJsonAtomic, ensureDirMode } from '@aliran/core/atomic-write.js'
 
 function keysDir (dataDir) {
   return path.join(dataDir, 'keys')
@@ -62,6 +62,12 @@ export function initKeys (dataDir) {
 // Load keys, or return null if not initialized.
 export function openKeys (dataDir) {
   const dir = keysDir(dataDir)
+  // Boot-time repair of the directory mode. initKeys asks for 0700, but it runs ONCE and
+  // mkdirSync's mode does nothing to a directory that already exists — so every deployment
+  // created before that code landed still has a world-listable keys/ dir, and nothing else
+  // would ever fix it (these files are never rewritten). Tighten-only; see ensureDirMode.
+  ensureDirMode(dir, 0o700)
+  ensureDirMode(path.join(dataDir, 'secrets'), 0o700) // same story, same fix
   const signingPath = path.join(dir, 'signing.json')
   const oprfPath = path.join(dir, 'oprf.key')
   if (!fs.existsSync(signingPath) || !fs.existsSync(oprfPath)) return null
