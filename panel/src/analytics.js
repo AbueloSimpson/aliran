@@ -30,6 +30,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 const HOUR_MS = 3600000
 
@@ -95,12 +96,10 @@ export function makeAnalytics ({ dataDir, retentionDays = 90, clock = Date.now }
     try { return JSON.parse(fs.readFileSync(filePath(date), 'utf8')) } catch { return null }
   }
 
-  // Atomic write: tmp + rename, so a crash mid-write can never truncate a rollup.
+  // Atomic write, so a crash mid-write can never truncate a rollup. indent 0 keeps the
+  // compact on-disk form; fsync off — a rollup is disposable and this runs on every tick.
   const writeToday = () => {
-    fs.mkdirSync(dir, { recursive: true })
-    const tmp = filePath(today.date) + '.tmp'
-    fs.writeFileSync(tmp, JSON.stringify(today))
-    fs.renameSync(tmp, filePath(today.date))
+    writeJsonAtomic(filePath(today.date), today, { indent: 0, fsync: false })
   }
 
   const prune = () => {

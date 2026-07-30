@@ -44,6 +44,7 @@ import { makeEgressMeter } from './analytics.js'
 import { makeIncidents } from './incidents.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 import { purgeStaleCores } from '@aliran/core/store-gc.js'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 export class ControlError extends Error {
   constructor (code, message) { super(message); this.code = code }
@@ -1659,10 +1660,10 @@ export class ChannelManager {
   _save () {
     const reg = {}
     for (const [id, ch] of this.channels) reg[id] = ch.meta
-    fs.mkdirSync(this.config.dataDir, { recursive: true })
-    // 0600: channels.json now holds push stream keys / SRT passphrases.
-    fs.writeFileSync(this.registryPath(), JSON.stringify(reg, null, 2), { mode: 0o600 })
-    try { fs.chmodSync(this.registryPath(), 0o600) } catch {} // pre-existing file; no-op on Windows
+    // 0600: channels.json holds push stream keys / SRT passphrases / CENC keys. Atomic
+    // (tmp + fsync + rename) — a crash mid-write must never truncate the whole registry.
+    // The rename carries the temp file's mode, so no post-hoc chmod is needed.
+    writeJsonAtomic(this.registryPath(), reg, { mode: 0o600 })
   }
 
   _get (id) {

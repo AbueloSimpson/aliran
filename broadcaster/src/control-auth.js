@@ -17,6 +17,7 @@ import crypto from 'hypercore-crypto'
 import sodium from 'sodium-native'
 import b4a from 'b4a'
 import { randomSalt, deriveVerifier } from '@aliran/core'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { ControlError } from './channel.js'
 
 const bad = (m) => { throw new ControlError('bad-request', m) }
@@ -79,10 +80,9 @@ export function loadAdmins (dataDir) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
 }
 
+// Atomic (tmp + fsync + rename): a truncated admins.json locks every operator out.
 function saveAdmins (dataDir, admins) {
-  const p = adminsPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only keys/secrets dir
-  fs.writeFileSync(p, JSON.stringify(admins, null, 2), { mode: 0o600 })
+  writeJsonAtomic(adminsPath(dataDir), admins, { mode: 0o600, dirMode: 0o700 })
 }
 
 export function addAdmin (ctx, name, password) {

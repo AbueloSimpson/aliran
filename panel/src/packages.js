@@ -61,6 +61,7 @@ import fs from 'fs'
 import path from 'path'
 import b4a from 'b4a'
 import { sealTo } from '@aliran/core'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { loadSecrets } from './store.js'
 import { OpsError, checkName, normSlug, scopeMatch, userSummary } from './ops.js'
 import { loadSources } from './sources.js'
@@ -84,9 +85,9 @@ export function loadPackages (dataDir) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
 }
 
+// Atomic (tmp + fsync + rename): a truncated file loses every bouquet definition.
 function savePackages (dataDir, packages) {
-  fs.mkdirSync(dataDir, { recursive: true })
-  fs.writeFileSync(packagesPath(dataDir), JSON.stringify(packages, null, 2))
+  writeJsonAtomic(packagesPath(dataDir), packages)
 }
 
 function normLabel (v, name) {

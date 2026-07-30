@@ -36,6 +36,7 @@ import hcrypto from 'hypercore-crypto'
 import { PanelLink } from './panel-link.js'
 import { probeInput, copyCompatible, convertToVod, importIntoDrive } from './ingest.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const LOG_RING_MAX = 200
@@ -129,9 +130,10 @@ export class TitleManager {
     }
   }
 
+  // Atomic (tmp + fsync + rename). _load() refuses to boot on a corrupt registry (by
+  // design), so a truncated write here bricks the service until an operator intervenes.
   _save () {
-    fs.mkdirSync(this.config.dataDir, { recursive: true })
-    fs.writeFileSync(this.registryPath, JSON.stringify([...this.titles.values()], null, 2))
+    writeJsonAtomic(this.registryPath, [...this.titles.values()])
   }
 
   _loadSecrets () {
@@ -139,9 +141,10 @@ export class TitleManager {
     try { return JSON.parse(fs.readFileSync(this.secretsPath, 'utf8')) } catch { return {} }
   }
 
+  // Atomic (tmp + fsync + rename): these keys are minted once per title and REUSED across
+  // re-ingests so sealed grants survive — losing them invalidates every grant on every title.
   _saveSecrets (secrets) {
-    fs.mkdirSync(path.dirname(this.secretsPath), { recursive: true })
-    fs.writeFileSync(this.secretsPath, JSON.stringify(secrets, null, 2), { mode: 0o600 })
+    writeJsonAtomic(this.secretsPath, secrets, { mode: 0o600 })
   }
 
   // Minted once per title and REUSED across re-ingests, so grants sealed to it survive

@@ -17,6 +17,7 @@ import {
   evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
   userKeyPair, sealTo, authKeyPair
 } from '@aliran/core'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { argonOpts, loadSecrets, saveSecrets } from './store.js'
 
 export class OpsError extends Error {
@@ -769,10 +770,9 @@ export function loadAdmins (dataDir) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
 }
 
+// Atomic (tmp + fsync + rename): a truncated admins.json locks every operator out.
 function saveAdmins (dataDir, admins) {
-  const p = adminsPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only secrets dir
-  fs.writeFileSync(p, JSON.stringify(admins, null, 2), { mode: 0o600 })
+  writeJsonAtomic(adminsPath(dataDir), admins, { mode: 0o600, dirMode: 0o700 })
 }
 
 export function addAdmin (ctx, name, password) {
@@ -851,10 +851,9 @@ export function loadPublishers (dataDir) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return {} }
 }
 
+// Atomic (tmp + fsync + rename): losing this registry unenrolls every broadcaster site.
 function savePublishers (dataDir, publishers) {
-  const p = publishersPath(dataDir)
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }) // owner-only secrets dir
-  fs.writeFileSync(p, JSON.stringify(publishers, null, 2), { mode: 0o600 })
+  writeJsonAtomic(publishersPath(dataDir), publishers, { mode: 0o600, dirMode: 0o700 })
 }
 
 // Advisory boot signal: true when the legacy shared-publisher path is STILL enabled

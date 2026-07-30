@@ -43,6 +43,7 @@
 import fs from 'fs'
 import path from 'path'
 import { createHmac, randomBytes } from 'crypto'
+import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 
 // The closed category enum. Duplicated in sdk/report.js (S50c) under the
 // no-shared-runtime-module convention; the e2e drift guard asserts deep equality.
@@ -186,12 +187,11 @@ export function makeReports ({
   const readJson = (p, fallback) => {
     try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return fallback }
   }
-  // tmp + rename: a crash mid-write can never truncate the store.
+  // Atomic: a crash mid-write can never truncate the store. indent 0 keeps the compact
+  // on-disk form; fsync off — reports are ingest-rate data, and losing the last few on a
+  // power cut is acceptable where losing a registry is not.
   const writeJson = (p, value) => {
-    fs.mkdirSync(dir, { recursive: true })
-    const tmp = p + '.tmp'
-    fs.writeFileSync(tmp, JSON.stringify(value))
-    fs.renameSync(tmp, p)
+    writeJsonAtomic(p, value, { indent: 0, fsync: false })
   }
 
   const loadRecords = () => {

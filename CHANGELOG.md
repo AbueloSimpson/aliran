@@ -18,6 +18,27 @@ phone + Android TV, and the Windows desktop player).
 
 ### Fixed
 
+- **A crash mid-write could truncate a JSON registry, including the ones holding
+  keys** — every registry write was a plain `writeFileSync` straight onto the live
+  path, which truncates the file to zero before refilling it. An OOM kill, a
+  segfault, a power cut, or a `docker stop` that outran the stop grace could leave
+  the file half-written, and there was no recovery except restoring a backup. The
+  worst cases were the broadcaster's `channels.json` — every channel's config plus
+  its push stream keys, SRT passphrases and CENC keys — and the panel's
+  `secrets/streams.json`, the per-stream keys that user grants are sealed against:
+  losing it makes every existing grant worthless. The broadcaster made this quieter
+  than it looks, because it treats an unreadable registry as an empty one and boots
+  with no channels at all. Protection existed already, but only on the analytics
+  rollups and the viewer problem reports — the most disposable data in the system.
+  Every registry now writes through one shared helper
+  (`@aliran/core/atomic-write.js`) that writes a sibling temp file, flushes it to
+  disk, and renames it over the target. A reader sees either the whole old file or
+  the whole new one, never a mix, and a write that fails leaves the previous file
+  in place. Secrets files get their `0600` mode when the temp file is created
+  rather than after the rename, so the keys are never briefly readable by other
+  local users — the trap in the old code, where the `mode` option was silently
+  ignored on a file that already existed.
+
 - **Desktop packaging: the build swept in the SDK's native-app source trees** —
   found while auditing an artifact. The desktop shell depends on
   `@aliran/player-sdk`, which in this repo is a workspace package: the dependency
