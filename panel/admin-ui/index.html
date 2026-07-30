@@ -350,20 +350,58 @@
     </section>
 
     <section id="overview-section" hidden>
-      <div class="card">
-        <h3 class="card-title">Service pairing code</h3>
-        <div class="pairing">
-          <div class="pairing-code mono" id="pairing-code">—</div>
+      <div class="card" id="identity-card">
+        <h3 class="card-title">Service identity <span class="muted">(both values are public — hand them out freely)</span></h3>
+        <div class="pairing" id="pairing-row">
+          <div class="ident-field">
+            <div class="ident-label">Service pairing code</div>
+            <div class="pairing-code mono" id="pairing-code">—</div>
+          </div>
           <button class="btn small" id="pairing-copy" type="button">Copy</button>
         </div>
-        <p class="muted">Give this code to a viewer. The viewer types it on the app Connect screen instead of the
+        <div class="pairing">
+          <div class="ident-field">
+            <div class="ident-label">Panel public key</div>
+            <div class="ident-key mono" id="pairing-key">—</div>
+          </div>
+          <button class="btn small" id="panelkey-copy" type="button">Copy</button>
+        </div>
+        <p class="muted">Give the pairing code to a viewer. The viewer types it on the app Connect screen instead of the
           64-character panel key. The code contains no password — the viewer signs in with their own account.</p>
+        <p class="muted"><b>Write both values down and keep them off this box.</b> They are not secret. They identify
+          this deployment, so a record of them is itself recovery information.</p>
         <details class="footnote"><summary>More about the pairing code</summary>
-          <p class="muted footnote">The panel calculates the code from its public key
-            (<span class="mono" id="pairing-key"></span>). Thus there is nothing to create and nothing to expire — every
-            panel start gives the same code. You can print the code on a card or an invoice. If you rotate the panel
-            key, the code changes with it, so print it only on material that you can print again. The app calculates the
-            code back from the key it receives and refuses a service that does not match.</p></details>
+          <p class="muted footnote">The panel calculates the code from its public key. Thus there is nothing to create
+            and nothing to expire — every panel start gives the same code. You can print the code on a card or an
+            invoice. If you rotate the panel key, the code changes with it, so print it only on material that you can
+            print again. The app calculates the code back from the key it receives and refuses a service that does not
+            match.</p></details>
+      </div>
+
+      <div class="card" id="escrow-card">
+        <h3 class="card-title">Key escrow <span class="muted">(the identity above, encrypted, for storage off this box)</span></h3>
+        <p class="muted">The panel keys are the only thing here that you cannot replace. Every installed app pins the
+          panel public key, and the pairing code comes from that same key. If you lose the keys, you cannot recover this
+          service under its own identity. You must move every viewer to a new one.</p>
+        <div class="row-form">
+          <button class="btn primary" id="escrow-export-btn" type="button">Export identity…</button>
+          <span id="escrow-state" class="muted"></span>
+        </div>
+        <div id="escrow-result" hidden></div>
+        <details class="footnote"><summary>What the export contains, and what it costs you</summary>
+          <p class="muted footnote">The file holds <span class="mono">DATA_DIR/keys/</span> and nothing else — the
+            signing keypair, the OPRF key, and the shared publisher key. It is <b>not</b> a panel backup: it carries no
+            accounts, no channels, and no grants. Use <span class="mono">deploy/backup.sh</span> for those.
+            The panel encrypts the file <b>before</b> it answers, with Argon2id and XChaCha20-Poly1305. No key material
+            crosses the network in the clear. The panel then decrypts its own output and checks it, so no untested copy
+            reaches you. The passphrase is the only protection on the file — the panel never stores it, and nobody can
+            recover the file without it. The header stays readable without the passphrase: it names the panel public
+            key, the pairing code, and the date, so you can identify the file years later.
+            <b>The cost:</b> this export lowers the bar for stealing the identity from "shell access on the box" to "an
+            admin session plus a password". Therefore the panel refuses the export unless you set
+            <span class="mono">ESCROW_EXPORT=1</span>, it asks for your password again, it permits 3 attempts per hour,
+            and it records every attempt in the activity feed below. You can leave the switch off and export from the
+            box instead with <span class="mono">admin-cli export-escrow</span>.</p></details>
       </div>
       <div class="card">
         <h3 class="card-title">Panel health</h3>

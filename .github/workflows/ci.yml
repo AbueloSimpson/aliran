@@ -53,6 +53,11 @@ jobs:
       # same deployment (identity, admins, accounts, catalog). Loopback HTTP only.
       - name: Backup/restore drill (test:backup)
         run: npm run test:backup
+      # Key escrow: what leaves the box is ciphertext, the fingerprint names the live
+      # panel key, and a wrong passphrase / corrupted file / edited fingerprint are all
+      # refused. Also covers the off-by-default gate, re-auth and the rate limit.
+      - name: Key escrow drill (test:escrow)
+        run: npm run test:escrow
       # Loopback UDP + a 1-node local testnet — deterministic, never touches the public
       # DHT. Runners ship the stock net.core.wmem_max, so this also exercises the
       # clamp-detection path against a real undersized kernel ceiling.
