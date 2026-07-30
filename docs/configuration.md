@@ -41,6 +41,8 @@ Every service shares two behaviors:
 | `ADMIN_HOST` | `127.0.0.1` | Admin API bind address. Put TLS in front if this isn't loopback. |
 | `ADMIN_PORT` | `3210` | Admin API port. |
 | `ADMIN_SESSION_TTL_HOURS` | `12` | Admin session token lifetime, in hours. |
+| `ESCROW_EXPORT` | `0` | Serve `POST /api/identity/escrow`, which exports the panel keys encrypted. **Off by default**: it lowers identity theft from "shell access on the box" to "an admin session plus a password". The route answers 404 while this is off. The CLI export (`admin-cli export-escrow`) needs shell access, so it always works. See [key escrow](kb/backup-and-rotation.md#get-the-identity-off-the-box-key-escrow). |
+| `ESCROW_ARGON2_MEM_MIB` / `ESCROW_ARGON2_OPS` | `256` / `3` | Argon2id cost for an **exported escrow file**. That file lives outside every control this box has, and the passphrase is its only protection — raise this if the box can take it. You pay the cost once per export, in a worker thread. The values travel inside each file, so an older file always opens with its own. |
 | `ANALYTICS_RETENTION_DAYS` | `90` | How many days of [aggregate-only analytics](analytics.md) rollups the panel keeps, under `DATA_DIR/analytics/`. **Set this to `0` to disable collection entirely** — the panel writes no files, and its endpoints answer empty. |
 | `REPORTS_RETENTION_DAYS` | `30` | How many days of [viewer problem reports](reports.md) the panel keeps, under `DATA_DIR/reports/`. **Set this to `0` to disable the feature entirely** — the panel writes no files, and it stops serving the `report` RPC method. |
 | `REPORTS_MAX_PER_WINDOW` / `REPORTS_WINDOW_SECONDS` | `5` / `600` | How many reports one reporter can send in the given window, in seconds. |

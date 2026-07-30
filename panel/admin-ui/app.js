@@ -1753,18 +1753,107 @@ function fmtUptime (sec) {
 // it never changes while the panel runs, so it rides the /api/status refresh rather
 // than the 10 s observability poll. A panel started without one (an embedder, a test)
 // simply shows nothing.
+// Both identity values sit in the open on Overview, not behind a disclosure triangle.
+// Neither is secret — the panel key is pinned by every installed app and the pairing
+// code is printed on invoices — and an operator who has them written down somewhere
+// off this box already holds half of what a recovery needs.
 function renderPairing (status) {
-  const card = $('#pairing-code').closest('.card')
-  card.hidden = !status.pairingCode
-  if (!status.pairingCode) return
-  $('#pairing-code').textContent = status.pairingCode
+  // A panel started without a derived code answers null; the public key always exists.
+  $('#pairing-row').hidden = !status.pairingCode
+  if (status.pairingCode) $('#pairing-code').textContent = status.pairingCode
   $('#pairing-key').textContent = status.panelKey
+  renderEscrowCard(status)
 }
 
-$('#pairing-copy').addEventListener('click', async () => {
-  const code = $('#pairing-code').textContent
-  try { await navigator.clipboard.writeText(code); toast('Pairing code copied') } catch { toast('Could not copy — select the code by hand', true) }
-})
+async function copyText (text, okMsg) {
+  try { await navigator.clipboard.writeText(text.trim()); toast(okMsg) } catch { toast('Could not copy — select the value by hand', true) }
+}
+
+$('#pairing-copy').addEventListener('click', () => copyText($('#pairing-code').textContent, 'Pairing code copied'))
+$('#panelkey-copy').addEventListener('click', () => copyText($('#pairing-key').textContent, 'Panel public key copied'))
+
+// ---------------------------------------------------------------- key escrow
+// Encrypted export of DATA_DIR/keys/ (panel/src/escrow.js). The panel seals the file
+// before it answers, so nothing here ever handles key material — this code only posts
+// two secrets the operator typed and saves the ciphertext it gets back.
+
+const MIN_ESCROW_PASSPHRASE = 16 // mirrors MIN_PASSPHRASE in panel/src/escrow.js
+
+function renderEscrowCard (status) {
+  const on = !!status.escrowExport
+  $('#escrow-export-btn').disabled = !on
+  $('#escrow-state').textContent = on
+    ? ''
+    : 'Export from this dashboard is off. Set ESCROW_EXPORT=1 in panel/.env, or run admin-cli export-escrow on the box.'
+}
+
+$('#escrow-export-btn').addEventListener('click', exportIdentityDlg)
+
+async function exportIdentityDlg () {
+  const v = await dialog('Export the panel identity', [
+    { name: 'password', label: `Your password (${who})`, type: 'password' },
+    { name: 'passphrase', label: 'New escrow passphrase', type: 'password' },
+    { name: 'repeat', label: 'Repeat the escrow passphrase', type: 'password' }
+  ], {
+    okLabel: 'Encrypt and download',
+    body: '<p class="muted">Your password proves it is you. A stolen dashboard session is not sufficient.</p>' +
+      `<p class="muted">The escrow passphrase encrypts the file. Use ${MIN_ESCROW_PASSPHRASE} characters or more — ` +
+      'five or six random words are better than one clever word. The panel does not store this passphrase. ' +
+      'Nobody can open the file without it, including you.</p>'
+  })
+  if (!v) return
+  if (v.passphrase.length < MIN_ESCROW_PASSPHRASE) return toast(`The escrow passphrase needs at least ${MIN_ESCROW_PASSPHRASE} characters`, true)
+  if (v.passphrase !== v.repeat) return toast('The two escrow passphrases are different', true)
+
+  const btn = $('#escrow-export-btn')
+  btn.disabled = true
+  $('#escrow-state').textContent = 'Encrypting, then verifying the result… this takes a few seconds.'
+  try {
+    const out = await api('POST', '/api/identity/escrow', { password: v.password, passphrase: v.passphrase })
+    downloadJson(out.filename, out.escrow)
+    showEscrowResult(out)
+    toast('Identity exported — now move the file off this box')
+  } catch (err) {
+    toast(err.message, true)
+  } finally {
+    btn.disabled = false
+    $('#escrow-state').textContent = ''
+    // Pull the feed straight away: the export (or the refusal) is a security event,
+    // and the operator should see it land without waiting for the 10 s poll.
+    loadObservability().catch(() => {})
+  }
+}
+
+// The one file this dashboard downloads. It is small, it holds the identity only, and
+// the panel encrypted it before it reached the response — panel ARCHIVES stay on the
+// box, and this is deliberately not one.
+function downloadJson (filename, obj) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2) + '\n'], { type: 'application/json' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10000)
+}
+
+function showEscrowResult (out) {
+  const el = $('#escrow-result')
+  el.hidden = false
+  el.innerHTML =
+    `<h4 class="card-title">Exported <span class="mono">${esc(out.filename)}</span></h4>` +
+    '<ul class="escrow-checks">' +
+    out.verified.checks.map((c) => `<li><span class="${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '✗'}</span> ${esc(c.name)}` +
+      (c.detail ? ` <span class="muted mono">${esc(c.detail)}</span>` : '') + '</li>').join('') +
+    '</ul>' +
+    `<p class="muted">Sealed under argon2id, ${out.kdf.memMiB} MiB, ${out.kdf.opslimit} ops. ` +
+    `Pairing code <span class="mono">${esc(out.fingerprint.pairingCode)}</span>.</p>` +
+    '<p class="muted"><b>Two steps remain.</b> Move the file off this box, to storage that does not depend on it. ' +
+    'Then prove the copy at its destination:<br>' +
+    `<span class="mono">node src/admin-cli.js verify-escrow ${esc(out.filename)}</span></p>` +
+    '<p class="muted">Store the passphrase apart from the file. A copy of both in one place protects you from nothing.</p>'
+}
 
 async function loadObservability () {
   const o = await api('GET', '/api/observability')

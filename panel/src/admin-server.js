@@ -18,6 +18,8 @@
 //   POST   /api/login                        {username,password} → {token,expiresAt}
 //   GET    /api/status
 //   GET    /api/observability                uptime/mem/swarm/data + activity ring
+//   POST   /api/identity/escrow              {password,passphrase} → the ENCRYPTED identity
+//                                            bundle. Exists only when ESCROW_EXPORT=1
 //   GET    /api/analytics?days=N             aggregate-only rollups (S48) — counts, no identities
 //   GET    /api/reports?status&channel&category&since&limit   pseudonymous viewer problem reports (S50)
 //   GET    /api/reports/summary              badge counts + per-channel/per-category/per-hour series
@@ -82,12 +84,15 @@
 import http from 'http'
 import fs from 'fs'
 import path from 'path'
+import { Worker } from 'worker_threads'
 import { fileURLToPath } from 'url'
+import b4a from 'b4a'
 import { signToken, tokenValid } from '@aliran/core'
 import { makeThrottle } from './rpc.js'
 import * as ops from './ops.js'
 import * as sources from './sources.js'
 import * as packages from './packages.js'
+import { sealEscrow, openEscrow, verifyBundle, EscrowError, ESCROW_KDF_DEFAULT } from './escrow.js'
 
 const UI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'admin-ui')
 
@@ -120,6 +125,24 @@ export function startAdminServer (ctx, opts = {}) {
   const throttle = makeThrottle(lockout.threshold, lockout.seconds)
   const loginVerifier = ops.makeAdminVerifier(ctx, { timeoutMs: opts.loginVerifyTimeoutMs })
   const startedAt = Date.now()
+
+  // --- key escrow gating (see src/escrow.js) ---
+  // The export route EXISTS only when the operator turned it on. Off is the default
+  // because the endpoint moves identity exfiltration from "shell access on the box"
+  // down to "an authenticated admin session"; a deployment that does not want that
+  // trade should not carry the route at all. The CLI export needs shell access
+  // anyway, so escrow is never blocked by leaving this off.
+  const escrowEnabled = !!(ctx.config && ctx.config.escrow && ctx.config.escrow.exportEnabled)
+  // Its own limiter, far tighter than the login lockout: a legitimate operator
+  // escrows the identity about once in the life of a deployment.
+  const escrowThrottle = makeThrottle(3, 3600)
+  const escrowKdf = () => {
+    const a = (ctx.config && ctx.config.escrow && ctx.config.escrow.argon2) || {}
+    return {
+      opslimit: a.ops || ESCROW_KDF_DEFAULT.opslimit,
+      memlimit: a.memMiB ? a.memMiB * 1048576 : ESCROW_KDF_DEFAULT.memlimit
+    }
+  }
 
   // Liveness + Prometheus metrics, both from cheap SYNCHRONOUS sources only (same
   // contract as the broadcaster's /healthz: answers as long as the loop turns).
@@ -181,6 +204,10 @@ export function startAdminServer (ctx, opts = {}) {
         const status = err.code === 'not-found' ? 404 : err.code === 'exists' ? 409 : 400
         return sendJson(res, status, { error: err.message })
       }
+      // Escrow failures are operator input problems (weak passphrase, wrong
+      // passphrase, damaged file) — 400 with the honest reason, and the code so a
+      // client can tell "you typed it wrong" from "this file is not ours".
+      if (err instanceof EscrowError) return sendJson(res, 400, { error: err.message, code: err.code })
       if (err && err.httpStatus) return sendJson(res, err.httpStatus, { error: err.message })
       console.error('admin-api error:', err)
       sendJson(res, 500, { error: 'internal error' })
@@ -231,9 +258,65 @@ export function startAdminServer (ctx, opts = {}) {
     // Feed the observability activity ring on every successful admin mutation
     // (called only after the op resolved — a thrown OpsError records nothing).
     const act = (op, fields = {}) => { if (ctx.activity) ctx.activity.record('admin', { op, admin: payload.adminId, ...fields }) }
+    // First-class SECURITY events, kept apart from the admin-mutation stream so they
+    // read loudly in the feed (the dashboard styles `security` in red). Unlike act(),
+    // this also records REFUSALS: a blocked attempt to export the identity is more
+    // interesting than a successful one.
+    const sec = (op, fields = {}) => { if (ctx.activity) ctx.activity.record('security', { op, admin: payload.adminId, ...fields }) }
 
     if (r1 === 'status' && req.method === 'GET' && seg.length === 2) {
-      return sendJson(res, 200, await ops.statusSummary(ctx))
+      // escrowExport tells the dashboard whether to offer the export at all — the
+      // route below 404s when the flag is off, and a button that always 404s is worse
+      // than no button.
+      return sendJson(res, 200, { ...(await ops.statusSummary(ctx)), escrowExport: escrowEnabled })
+    }
+
+    // --- identity key escrow (src/escrow.js) ---
+    // Exports DATA_DIR/keys/ ENCRYPTED under an operator passphrase. This is the one
+    // deliberate exception to "no panel archive leaves through the browser": the file
+    // is small, identity-only, already sealed before it reaches the response, and its
+    // entire purpose is to end up somewhere this box is not.
+    //
+    // Four barriers, because the endpoint lowers key exfiltration from "shell access
+    // on the box" to "an authenticated admin session":
+    //   1. it does not exist unless ESCROW_EXPORT=1
+    //   2. re-auth — the caller re-types their own password; a stolen dashboard token
+    //      is not enough on its own
+    //   3. a hard rate limit of its own (3/hour), not the login lockout
+    //   4. every attempt, allowed or refused, lands in the activity ring
+    if (r1 === 'identity' && r2 === 'escrow' && seg.length === 3 && req.method === 'POST') {
+      if (!escrowEnabled) {
+        return sendJson(res, 404, { error: 'identity escrow export is off on this panel — set ESCROW_EXPORT=1 in panel/.env, or export from the box with `admin-cli export-escrow`' })
+      }
+      const ip = req.socket.remoteAddress || 'unknown'
+      const t = escrowThrottle(payload.adminId + '|' + ip)
+      if (t.locked) {
+        sec('escrow-export-throttled', { retryAfter: t.retryAfter })
+        return sendJson(res, 429, { error: 'too many identity export attempts', retryAfter: t.retryAfter })
+      }
+      const b = await readJson(req)
+      // Re-auth runs through the SAME single-flight Argon2id worker as login, so it
+      // inherits the flood protection and cannot stall the event loop.
+      const admin = await loginVerifier.verify(payload.adminId, typeof b.password === 'string' ? b.password : '')
+      if (!admin) {
+        sec('escrow-export-denied', { reason: 'password re-entry failed' })
+        return sendJson(res, 401, { error: 'password re-entry failed' })
+      }
+      let out
+      try {
+        out = await exportEscrow(ctx, b.passphrase, escrowKdf())
+      } catch (err) {
+        sec('escrow-export-failed', { reason: err.message })
+        throw err
+      }
+      sec('escrow-export', {
+        panelKey: out.fingerprint.panelPublicKey.slice(0, 12) + '…',
+        pairingCode: out.fingerprint.pairingCode,
+        files: out.fingerprint.files.map((f) => f.name).join(','),
+        kdf: `argon2id ${out.kdf.memMiB}MiB/${out.kdf.opslimit}`,
+        selfVerified: 'ok'
+      })
+      return sendJson(res, 200, out)
     }
 
     if (r1 === 'observability' && req.method === 'GET' && seg.length === 2) {
@@ -604,6 +687,61 @@ export function startAdminServer (ctx, opts = {}) {
         close: () => { loginVerifier.close(); return new Promise((r) => server.close(r)) }
       })
     })
+  })
+}
+
+// ---------------------------------------------------------------- key escrow
+
+// Seal the identity, then IMMEDIATELY open it again with the same passphrase and
+// check it, before the bytes reach the response. An escrow copy nobody has tested is
+// not a backup, and the cheapest moment to find a broken one is now — not during the
+// outage it was made for. The cost is a second Argon2id derivation, once, off-thread.
+async function exportEscrow (ctx, passphrase, kdf) {
+  const derive = (pass, salt, k) => deriveInWorker(pass, salt, k)
+  const { envelope, fingerprint, filename } = await sealEscrow({
+    dataDir: ctx.dataDir,
+    passphrase,
+    serviceName: (ctx.config && ctx.config.serviceName) || null,
+    code: ctx.pairingCode || null,
+    kdf,
+    derive
+  })
+  const opened = await openEscrow({ envelope, passphrase, derive })
+  const verified = verifyBundle(opened.files, envelope.fingerprint)
+  if (!verified.ok) {
+    const failed = verified.checks.filter((c) => !c.ok).map((c) => c.name + (c.detail ? ' (' + c.detail + ')' : '')).join('; ')
+    throw httpError(500, 'refusing to release an escrow file that failed its own verification: ' + failed)
+  }
+  return {
+    filename,
+    fingerprint,
+    // Echoed so a weakened ESCROW_ARGON2_* setting is visible at the moment of export
+    // rather than discovered years later by whoever is attacking the file.
+    kdf: { algorithm: 'argon2id', memMiB: Math.round(envelope.kdf.memlimit / 1048576), opslimit: envelope.kdf.opslimit },
+    verified,
+    escrow: envelope
+  }
+}
+
+// One worker per derivation. Escrow is rare and rate-limited, so there is nothing
+// worth pooling, and a terminated worker cannot keep a derived key alive.
+function deriveInWorker (passphrase, salt, kdf, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./escrow-worker.js', import.meta.url))
+    let settled = false
+    const done = (err, val) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { w.terminate() } catch {}
+      err ? reject(err) : resolve(val)
+    }
+    const timer = setTimeout(() => done(httpError(503, `escrow key derivation timed out after ${timeoutMs}ms`)), timeoutMs)
+    if (timer.unref) timer.unref()
+    w.on('message', (m) => (m.error ? done(httpError(500, m.error)) : done(null, b4a.from(m.keyHex, 'hex'))))
+    w.on('error', (err) => done(httpError(500, 'escrow key derivation failed: ' + (err.message || err))))
+    w.on('exit', () => done(httpError(500, 'the escrow key derivation worker exited')))
+    w.postMessage({ id: 1, passphrase, saltHex: b4a.toString(salt, 'hex'), kdf })
   })
 }
 

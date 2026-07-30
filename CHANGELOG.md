@@ -98,6 +98,54 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Encrypted key escrow: a supported way to get the panel identity off the
+  box** — `DATA_DIR/keys/` is the only thing in a deployment with no replacement
+  cost, because it has no replacement: every installed app pins the panel public
+  key, and the service pairing code is derived from it. Everything else survives
+  a total loss — broadcasters repopulate channels and per-stream secrets when
+  they re-register. Until now the only backup route put those keys in an archive
+  that stayed on the box you were insuring against.
+
+  `admin-cli export-escrow` (and, when enabled, **Overview → Key escrow** in the
+  dashboard) writes the key directory as one small file, encrypted **before** it
+  is written or answered: Argon2id derives the file key from an operator
+  passphrase, XChaCha20-Poly1305 seals the payload. No key material crosses the
+  network in the clear, even behind TLS or a tunnel. The export decrypts and
+  checks its own output before releasing it, so no untested copy ever leaves.
+
+  The file carries a **cleartext fingerprint** — panel public key, pairing code,
+  service name, date — so an operator opening it in two years can tell which
+  deployment it belongs to without the passphrase. That header is also the
+  AEAD's additional data, so nobody can re-label one deployment's file as
+  another's: editing the recorded key breaks decryption outright.
+
+  `admin-cli verify-escrow <file>` proves a copy decrypts and holds the identity
+  its fingerprint names — the signing keypair signs and verifies, the OPRF key
+  is 32 bytes, the pairing code re-derives. It needs **no panel, no `DATA_DIR`
+  and no swarm**, so it runs on a laptop and can never turn into a second writer
+  for one identity. `--restore-to` extracts the keys into an empty directory
+  only, with the never-two-writers rule printed next to them.
+
+  **The trade is answered deliberately.** A dashboard export lowers identity
+  theft from "shell access on the box" to "an authenticated admin session", so:
+  the route does not exist unless `ESCROW_EXPORT=1`; it re-checks the caller's
+  password (a stolen dashboard token is not enough); it allows 3 attempts per
+  hour; and every attempt — including refusals — lands in the activity ring as a
+  red `security` event. The CLI route needs shell access anyway and is always
+  available, so leaving the flag off costs nothing but convenience. There is no
+  MCP tool for this on purpose. The broadcaster needs no equivalent: its feed
+  stores are cache, and its publisher key is both backed up with its `.env` and
+  rotatable with zero viewer impact. Runbook in
+  [the KB](docs/kb/backup-and-rotation.md); `npm run test:escrow` asserts the
+  exported bytes hold no key material, that the fingerprint matches the live
+  panel key, and that a wrong passphrase, a corrupted file and an edited
+  fingerprint are all refused.
+
+- **The dashboard shows the panel public key and pairing code in the open** —
+  both are public by design, and a record of them kept off the box is itself
+  recovery information. Overview → Service identity presents each with its own
+  copy button, instead of leaving the key inside a disclosure triangle.
+
 - **Service pairing code: 12 characters instead of 64** — a viewer connecting a
   public (keyless) build no longer types a 64-hex panel key on a phone keyboard
   or a TV remote. The Connect screen now opens on a **pairing code** —
