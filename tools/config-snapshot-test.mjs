@@ -18,7 +18,7 @@ import {
   applyTemplateSpec, makeEnvelope, parseEnvelope, findSecrets, redactUrlCredentials,
   makeSnapshotStore, isDownloadable, KIND_CONFIG, KIND_TEMPLATE
 } from '@aliran/core/config-snapshot.js'
-import { indexBackups, parseArchiveName, renderCommands } from '@aliran/core/backup-index.js'
+import { indexBackups, noBackupDir, parseArchiveName, renderCommands } from '@aliran/core/backup-index.js'
 import { TEMPLATE_SPEC as BC_SPEC } from '../broadcaster/src/config-snapshot.js'
 import { TEMPLATE_SPEC as PANEL_SPEC } from '../panel/src/config-snapshot.js'
 import { TEMPLATE_SPEC as LIB_SPEC } from '../library/src/config-snapshot.js'
@@ -190,6 +190,19 @@ try {
   const missing = indexBackups(path.join(dir, 'nope'), { service: 'panel' })
   assert.strictEqual(missing.available, false, 'an unmounted dir is a normal answer, not an error')
   assert.ok(missing.reason.includes('not visible'))
+  // EVERY answer carries the same keys. These shapes diverged once: the .env warning was
+  // attached only to the success path, so it vanished in exactly the case where the
+  // operator can see no archives and has the least else to go on.
+  assert.deepStrictEqual(
+    Object.keys(missing).sort(),
+    Object.keys(noBackupDir('x')).sort(),
+    'the unreadable-dir answer must match the no-dir answer key for key'
+  )
+  for (const shape of [idx, missing, noBackupDir('nothing mounted')]) {
+    assert.ok(shape.note && shape.note.includes('.env'), 'every /api/backups answer states that .env is in no archive')
+    assert.ok(Array.isArray(shape.archives), 'archives is always an array')
+    assert.ok('newest' in shape && 'available' in shape, 'available/newest are always present')
+  }
   const cmds = renderCommands({ service: 'panel', archive: 'backups/panel-20260729-070000.tar.gz' })
   assert.ok(!cmds.restore.includes('--force'), 'the default restore command must NEVER pre-arm --force')
   assert.ok(cmds.restoreForce.includes('--force'), 'the forcing variant exists, separately and labelled')

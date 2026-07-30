@@ -933,9 +933,21 @@ try {
   // never carries a running channel's keys, and that restoring over a running channel
   // reports a restart is needed instead of silently diverging from what ffmpeg is doing.
   {
-    const live = (await api('GET', '/api/channels', undefined, token)).body
-    const running = live.find((c) => c.running)
-    assert.ok(running, 'this test needs at least one running channel by now')
+    // Bring up a channel of our own rather than depending on one an earlier test left
+    // running. Every prior block stops what it starts, so "something is still live by now"
+    // is an ordering assumption, and it was wrong: this ran last and found the fleet idle.
+    const CH = 'cfg-live'
+    let started = false
+    let running = (await api('GET', '/api/channels', undefined, token)).body.find((c) => c.running)
+    if (!running) {
+      await api('POST', '/api/channels', { id: CH, title: 'Config Live', input: 'test' }, token)
+      await api('POST', `/api/channels/${CH}/start`, undefined, token)
+      running = await waitFor(async () => {
+        const st = (await api('GET', `/api/channels/${CH}`, undefined, token)).body
+        return st.running ? st : null
+      }, 60000, 'cfg-live channel running')
+      started = true
+    }
 
     const reg = JSON.parse(fs.readFileSync(path.join(dirs.bc, 'channels.json'), 'utf8'))
     const pushSecrets = Object.values(reg)
@@ -966,6 +978,13 @@ try {
     assert.strictEqual((await api('GET', `/api/channels/${running.id}`, undefined, token)).body.title, running.title, 'the title is back')
     assert.strictEqual((await api('GET', `/api/channels/${running.id}`, undefined, token)).body.running, true, 'and the channel was NOT stopped by the restore')
     await api('DELETE', `/api/config/snapshots/${snap.id}`, undefined, token)
+    if (started) {
+      // A delete auto-snapshots, so clear that one too and leave the fleet as we found it.
+      await api('POST', `/api/channels/${CH}/stop`, undefined, token)
+      const del = (await api('DELETE', `/api/channels/${CH}`, undefined, token)).body
+      assert.ok(del.rollbackSnapshot && del.rollbackSnapshot.id, 'deleting a channel takes an automatic rollback snapshot')
+      await api('DELETE', `/api/config/snapshots/${del.rollbackSnapshot.id}`, undefined, token)
+    }
     log('S: config snapshot/template vs a RUNNING fleet — template carries no live credential, snapshot keeps them, restore reports restartRequired and never stops a channel ✓')
   }
 

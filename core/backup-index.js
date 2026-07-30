@@ -54,6 +54,18 @@ const LEGACY_RE = /^([a-z]+)-pre-([0-9a-f]{7,40})-(\d{8})-(\d{4,6})\.(tar\.gz|tg
 // operator chose a slower cadence. Callers can override; the defaults are what the UI ships.
 export const DEFAULT_FRESHNESS = { freshHours: 6, agingHours: 48 }
 
+// Returned by EVERY answer this module produces, including the ones that list nothing.
+// Exported so the "no directory mounted" branch in config-routes.js uses the same string:
+// when the shapes diverged, /api/backups carried the .env warning only while a directory
+// was visible — the case where the operator has the least to go on and needs it most.
+export const ENV_NOTE = 'These archives hold the data volume only. The .env files live outside the volumes and are in no archive here — keep a copy of them separately.'
+
+// The answer when there is no directory to read. A normal reply, not an error: an operator
+// may legitimately keep archives somewhere this service cannot see.
+export function noBackupDir (reason, dir = null) {
+  return { available: false, dir, reason, archives: [], newest: null, note: ENV_NOTE }
+}
+
 function parseStamp (date, time) {
   const y = +date.slice(0, 4)
   const mo = +date.slice(4, 6)
@@ -132,15 +144,9 @@ export function indexBackups (dir, { service, now = Date.now(), freshness = DEFA
   try {
     names = fs.readdirSync(dir)
   } catch (err) {
-    return {
-      available: false,
-      dir,
-      reason: err.code === 'ENOENT'
-        ? 'the backup directory is not visible to this service'
-        : `the backup directory could not be read (${err.code || err.message})`,
-      archives: [],
-      newest: null
-    }
+    return noBackupDir(err.code === 'ENOENT'
+      ? 'the backup directory is not visible to this service'
+      : `the backup directory could not be read (${err.code || err.message})`, dir)
   }
 
   const archives = []
@@ -179,6 +185,6 @@ export function indexBackups (dir, { service, now = Date.now(), freshness = DEFA
     // volumes, so no archive in this list contains one — an operator rebuilding a box from
     // these alone gets a service that will not boot, and finding that out during an outage
     // is exactly the wrong time.
-    note: 'These archives hold the data volume only. The .env files live outside the volumes and are in no archive here — keep a copy of them separately.'
+    note: ENV_NOTE
   }
 }

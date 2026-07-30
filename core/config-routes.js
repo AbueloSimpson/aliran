@@ -39,7 +39,7 @@
 //      the apply is meaningful. The UI shows the plan; this makes the sequence mandatory
 //      rather than conventional.
 
-import { indexBackups, renderCommands } from './backup-index.js'
+import { indexBackups, noBackupDir, renderCommands } from './backup-index.js'
 import { isDownloadable, parseEnvelope, SnapshotError } from './config-snapshot.js'
 
 const ok = (body) => ({ status: 200, body })
@@ -86,7 +86,7 @@ export function makeConfigRoutes ({ service, ctx, mod, store, backupsDir = null 
       if (method !== 'GET') return { status: 405, body: { error: 'GET only' } }
       const idx = backupsDir
         ? indexBackups(backupsDir, { service })
-        : { available: false, dir: null, reason: 'no backup directory is mounted into this service', archives: [], newest: null }
+        : noBackupDir('no backup directory is mounted into this service')
       return ok({
         ...idx,
         service,

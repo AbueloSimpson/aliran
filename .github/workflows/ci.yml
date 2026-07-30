@@ -58,6 +58,16 @@ jobs:
       # refused. Also covers the off-by-default gate, re-auth and the rate limit.
       - name: Key escrow drill (test:escrow)
         run: npm run test:escrow
+      # Config snapshots + secret-free templates: the redaction engine, the snapshot
+      # store, and the /api/config + /api/backups routes on all four services. The
+      # load-bearing check seeds REAL secrets (stream keys, SRT passphrase, CENC key,
+      # verifiers, credential URLs) and FAILS if any byte of one survives into a
+      # downloadable template — this step is what makes a forgotten redaction rule a
+      # build failure instead of a leak. bootstrap: [] — never the public DHT.
+      - name: Config snapshot redaction scan (test:config-snapshot)
+        run: npm run test:config-snapshot
+      - name: Config snapshot API, all four services (test:config-api)
+        run: npm run test:config-api
       # Loopback UDP + a 1-node local testnet — deterministic, never touches the public
       # DHT. Runners ship the stock net.core.wmem_max, so this also exercises the
       # clamp-detection path against a real undersized kernel ceiling.
