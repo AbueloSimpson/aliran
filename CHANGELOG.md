@@ -179,6 +179,18 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **The viewer's disk use is now bounded** — before, a viewer accumulated every
+  segment it ever downloaded (~0.9 GB per watched hour at 2 Mbps) and a feed's
+  local data survived forever, even after the channel rotated to a new feed key.
+  Three mechanisms, mirroring what the repeater already did for its own storage:
+  segment blocks are cleared automatically once they leave the live window (the
+  broadcaster reclaimed them at the source already — no peer could fetch them);
+  a feed evicted from the warm-feed cache is purged from disk, not just closed;
+  and at login the engine sweeps away replicas of feed keys that are no longer
+  in the catalog. Steady state is now about one live window per cached feed
+  plus metadata. VOD titles are never cleared. Covered by the new
+  `test:reclaim` lane.
+
 - **Encrypted key escrow: a supported way to get the panel identity off the
   box** — `DATA_DIR/keys/` is the only thing in a deployment with no replacement
   cost, because it has no replacement: every installed app pins the panel public
