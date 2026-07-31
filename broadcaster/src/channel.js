@@ -993,8 +993,10 @@ class Channel {
       }
       // Leaving the slate to probe: put the backoff back to the base. Respawn delay is what
       // bounds the viewer's DEAD AIR here — the slate stops producing segments the moment it
-      // is killed, and the player only has the live window (listSize x hls.time, ~16 s) to
-      // coast on. With a grown backoff the probe, and then the re-slate if it fails, would
+      // is killed, and the player only has the live window (listSize x hls.time; ~24 s at the
+      // recommended 12x2 s) to coast on — and since the players sit ~10 s behind the edge
+      // (churn live offset), only that last ~10 s of it is media still ahead of the playhead.
+      // With a grown backoff the probe, and then the re-slate if it fails, would
       // each be delayed up to backoffMaxMs, so a still-dead source could show ~30 s of nothing
       // every retry cycle. This reset is LOAD-BEARING at the 30 s default: SLATE_RETRY_MS
       // (30 s) is now SHORTER than backoffResetMs (60 s), so the backoff would NOT have decayed

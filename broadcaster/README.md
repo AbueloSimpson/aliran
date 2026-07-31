@@ -70,10 +70,11 @@ interval to `HLS_TIME` seconds so segments cut cleanly.
 Live segments are **not archived**. The playlist (`index.m3u8`) is the source of
 truth, and the broadcaster deletes anything that rotates out of the window from
 the drive and reclaims its blob storage — a channel that streams for weeks
-occupies O(window) space, not O(history). The window defaults to **8 segments of
-~2 s** (≈16 s, `HLS_TIME` / `HLS_LIST_SIZE`). Short segments cut time-to-first-frame,
-and 8 is still a real shareable window for peers to re-seed each other. Deepen
-`HLS_LIST_SIZE` (12–16) for large swarms.
+occupies O(window) space, not O(history). Set the window with `HLS_TIME` /
+`HLS_LIST_SIZE`. We recommend **12 segments of ~2 s** (≈24 s). The code default
+is 8 (≈16 s) — treat it as the floor. Short segments cut time-to-first-frame.
+A deeper window gives peers more media to re-seed, and it keeps the window
+wider than the ~10 s the viewer players sit behind the live edge.
 
 There are two buffer modes (`FEED_BUFFER` env or per-channel `buffer` field):
 

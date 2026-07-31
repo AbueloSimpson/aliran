@@ -225,7 +225,23 @@ class AliranPlayerView @JvmOverloads constructor(
                 }
             }
         })
-        p.setMediaItem(MediaItem.fromUri(u))
+        // Live offset (RN parity — AliranVideo.tsx BUFFER_CONFIG.live): sit ~10 s
+        // behind the edge for churn headroom — the engine replicates the whole live
+        // window on-device, so everything between playhead and edge survives an
+        // upstream peer loss. Playback still starts thin (the 1 s start buffer
+        // above), so zaps stay fast; minOffsetMs lets ExoPlayer trade a little
+        // headroom before it stalls. Live-only — a vod MediaItem ignores it.
+        p.setMediaItem(
+            MediaItem.Builder()
+                .setUri(u)
+                .setLiveConfiguration(
+                    MediaItem.LiveConfiguration.Builder()
+                        .setTargetOffsetMs(10_000)
+                        .setMinOffsetMs(4_000)
+                        .build()
+                )
+                .build()
+        )
         p.playWhenReady = true
         p.prepare()
         player = p

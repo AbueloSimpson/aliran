@@ -16,7 +16,8 @@
 // Completion is mount-scoped (epoch guard): events still held by an outgoing hls
 // instance can neither finish a tune nor feed the stall watchdog.
 //
-// SELF-HEAL LADDER: a live HLS window can be tiny (16 s on the reference deploy), so
+// SELF-HEAL LADDER: a live HLS window can be tiny (16-24 s on the reference deploy;
+// 24 s recommended), so
 // a network blip longer than the window slides it past the playhead — no error fires,
 // the picture just freezes. Once a mount has played, a playhead still for
 // stallTimeoutMs (while not paused) forces a remount at the live edge; if the resync

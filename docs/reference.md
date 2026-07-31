@@ -387,7 +387,7 @@ catalog), and every user-shaped result summarizes grant lists longer than 12
 ids to `{count, sample}`, with `full:true` restoring every id
 (`panel_revoke_grant` additionally reports `stillGranted` when a package
 re-sealed the stream). **Schema gaps closed** — `broadcaster_add_channel`/
-`_update_channel` take `hlsTime` (1-30) / `hlsListSize` (2-60); `panel_add_stream`
+`_update_channel` take `hlsTime` (1-30) / `hlsListSize` (2-64); `panel_add_stream`
 takes `feedKey` + `key` for pre-seeded feeds (a **supplied** `key` is stored
 panel-side and redacted from the result; an omitted one is generated and
 returned once), and `panel_set_stream_meta` takes `feedKey`.
