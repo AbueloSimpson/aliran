@@ -118,6 +118,12 @@ jobs:
       # is the only automated guard on the desktop half (the renderer has no jest).
       - name: Desktop external VOD provider (test:desktop-vod)
         run: npm run test:desktop-vod
+      # Desktop parental controls: the restricted-channel visibility rule and the PIN
+      # gate. Same reasoning as the lane above — the phone half has a jest suite, the
+      # desktop half had nothing, and this is the only thing standing between a
+      # `restricted` channel and a viewer who was never meant to see it.
+      - name: Desktop parental controls (test:desktop-parental)
+        run: npm run test:desktop-parental
       # Reseller panel: pure logic (roles, credit ledger, store) …
       - name: Reseller panel units (test:reseller-unit)
         run: npm run test:reseller-unit

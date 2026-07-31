@@ -16,6 +16,22 @@ implemented, covered by an e2e or unit suite, and — where it touches the runti
 verified on real infrastructure (a VPS over the public DHT, a physical Android
 phone + Android TV, and the Windows desktop player).
 
+### Added
+
+- **The desktop parental controls now have automated tests.** A channel the
+  operator marks as restricted is hidden from viewers by two small functions, and
+  on the desktop side nothing was checking them — the phone app has had a test
+  suite for this since the feature shipped, but the desktop copy had none, so a
+  change there could have quietly un-hidden a channel. The new checks cover what
+  a viewer actually experiences: a restricted channel does not appear at all
+  until a PIN is set, it is listed but asks for the PIN once one exists, the hide
+  toggle folds it away again, a single unlock covers the session, and the right
+  PIN opens it while a wrong one does not. Two more are there for safety: the
+  stored record never contains the PIN itself, and a damaged or unreadable
+  settings record keeps restricted channels hidden rather than exposing them.
+  The rule the phone and the desktop share is compared between the two copies, so
+  the apps cannot drift apart on what a viewer is allowed to see.
+
 ### Fixed
 
 - **A crash mid-write could truncate a JSON registry, including the ones holding
