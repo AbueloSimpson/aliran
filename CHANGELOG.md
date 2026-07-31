@@ -163,14 +163,19 @@ phone + Android TV, and the Windows desktop player).
     3-segment read-ahead.
   - The desktop player now sits 5 segments (~10 s) behind the live edge
     (before: 3).
-  - The Android player now pins its live offset to the same ~10 s through
-    ExoPlayer's live configuration (before: library default). Zap speed does not
-    change — playback still starts with ~1 s in hand and fills toward the edge.
+  - Both Android players pin their live offset to the same ~10 s through
+    ExoPlayer's live configuration (before: library default) — the React Native
+    app via `bufferConfig.live`, and the native `aliran-kit` view directly. Zap
+    speed does not change — playback still starts with ~1 s in hand and fills
+    toward the edge.
   The trade is deliberate: every viewer watches ~10 s behind true live in
   exchange for riding out seconds-scale peer churn without a frozen picture. A
   window of 12 segments (`HLS_LIST_SIZE=12`, 24 s) is now the recommended
-  broadcaster setting to give the offset comfortable margin; the per-channel
-  `hlsListSize` bound was aligned to the env bound (2–64, was 2–60).
+  broadcaster setting (and the `.env.example` default for new installs) to give
+  the offset comfortable margin; the live read-ahead is capped at 32 concurrent
+  segment downloads, and the per-channel `hlsListSize` bound was aligned to the
+  env bound (2–64, was 2–60) across the broadcaster, the MCP tools, and the
+  control UI.
 
 ### Added
 
