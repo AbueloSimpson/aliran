@@ -87,6 +87,7 @@ function httpGet (port, p, headers = {}) {
   return new Promise((resolve, reject) => {
     http.get({ host: '127.0.0.1', port, path: p, headers, agent: false }, (res) => {
       const chunks = []
+      res.on('error', reject) // a server-side abort must FAIL the test, not crash the process
       res.on('data', (c) => chunks.push(c))
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }))
     }).on('error', reject)
@@ -121,7 +122,12 @@ await writer.put('/seg0.ts', SEG)
 
 // Short waitMs so the negative 404 case doesn't stall the suite; the reader drive
 // doubles as an '/assets' mount to exercise the no-wait (media: false) path.
-const server = http.createServer(driveHandler(reader, { waitMs: 1500, pollMs: 60, mounts: { '/assets': reader } }))
+// readIdleMs is raised WAY above the suite's gated-replication pauses: section A
+// intentionally holds a response byteless behind the gate, and on a slow run the
+// default 6 s stalled-read abort could fire mid-test and reset the client socket
+// (a 1-in-3 harness crash in CI). The abort itself is covered by section E with
+// its own 1500 ms handler.
+const server = http.createServer(driveHandler(reader, { waitMs: 1500, pollMs: 60, readIdleMs: 60000, mounts: { '/assets': reader } }))
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const port = server.address().port
 
@@ -137,6 +143,7 @@ log('A: progressive body (first bytes while the blob tail is gated)')
   const done = new Promise((resolve, reject) => {
     http.get({ host: '127.0.0.1', port, path: '/seg0.ts', agent: false }, (res) => {
       const chunks = []
+      res.on('error', reject) // reset mid-body = test failure, never a process crash
       res.on('data', (c) => {
         if (received === 0) firstByteAt = Date.now()
         received += c.length
