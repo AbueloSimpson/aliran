@@ -189,6 +189,44 @@ const ids = (list) => list.map((s) => s.id)
   ok(!p2.hasPin(), 'toggling hide without a PIN does not create one')
 }
 
+// ---------------------------------------------------------------- lane G: no unfiltered surface
+// The lanes above prove the RULE works. They cannot prove every screen CALLS it — and that is
+// the mistake that would actually happen: someone adds a fifth browse surface, writes
+// `useState(backend.streams)` instead of `useState(visibleStreams(backend.streams))`, and it
+// compiles, type-checks and ships with a restricted channel on show. Both apps are twins, so
+// each new surface is authored twice.
+//
+// Reads that legitimately do NOT filter, and why:
+//   .length  — a COUNT. Settings shows "Entitled channels", which is what the account is
+//              entitled to, hidden or not; filtering that would make it wrong.
+//   .find(   — resolving one id. Playback of the result is gated by needsPin instead.
+//   =        — assignment (sign-out clears the display list).
+// Anything else that touches the live stream list must go through visibleStreams.
+{
+  const SCREEN_DIRS = ['desktop/renderer/src/screens', 'client/src/screens']
+  const READ = /\b(?:backend|m)\.streams\b/
+  const COUNT_OR_LOOKUP = /\b(?:backend|m)\.streams\s*(?:\.(?:length|find)\b|=[^=])/
+  let scanned = 0
+  const violations = []
+  for (const dir of SCREEN_DIRS) {
+    const abs = path.join(repoRoot, dir)
+    if (!fs.existsSync(abs)) { violations.push(`${dir}: missing — did the screens move?`); continue }
+    for (const name of fs.readdirSync(abs).filter((f) => /\.tsx?$/.test(f))) {
+      const lines = fs.readFileSync(path.join(abs, name), 'utf8').replace(/\r\n/g, '\n').split('\n')
+      lines.forEach((line, i) => {
+        const code = line.replace(/\/\/.*$/, '')
+        if (!READ.test(code)) return
+        scanned++
+        if (COUNT_OR_LOOKUP.test(code) || code.includes('visibleStreams(')) return
+        violations.push(`${dir}/${name}:${i + 1}  ${line.trim().slice(0, 90)}`)
+      })
+    }
+  }
+  ok(scanned >= 8, `scanned the live-list reads across both apps (${scanned} found)`)
+  ok(violations.length === 0, 'every screen that reads the live stream list filters it' +
+    (violations.length ? `\n        ${violations.join('\n        ')}` : ''))
+}
+
 fs.rmSync(outDir, { recursive: true, force: true })
 if (failures) { console.error(`\nRESULT: FAIL ❌ (${failures} failed)`); process.exit(1) }
 console.log('\nRESULT: PASS ✅  (desktop parental controls: rule twins identical, visibility + gate + session unlock, digest round-trip, fail-closed on corrupt storage)')
