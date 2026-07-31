@@ -79,10 +79,12 @@ export function contentType (p) {
 }
 
 // Defaults: waitMs under ExoPlayer's 8 s read timeout; pollMs ≈ one segment write;
-// readAhead covers the 2–3 segments a player fetches before first frame. readIdleMs
-// (stalled-read abort) sits under ExoPlayer's 8 s read timeout too so OUR clean abort
-// drives the retry — a read that yields zero bytes for this long is stuck on a blob
-// the broadcaster reclaimed, not merely slow.
+// readAhead covers the 2–3 segments a player fetches before first frame — hosts widen
+// LIVE playlists to the whole window via liveReadAhead (the player passes Infinity,
+// narrowed back to 3 on metered networks; see the LIVE-EDGE READ-AHEAD note above).
+// readIdleMs (stalled-read abort) sits under ExoPlayer's 8 s read timeout too so OUR
+// clean abort drives the retry — a read that yields zero bytes for this long is stuck
+// on a blob the broadcaster reclaimed, not merely slow.
 const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3, readIdleMs: 6000 }
 
 // Parse segment/media URIs out of an HLS playlist body (everything that isn't a
@@ -120,8 +122,9 @@ class ReadAhead {
   update (drive, text) {
     const uris = playlistUris(text)
     const live = !/#EXT-X-ENDLIST/m.test(String(text))
-    const liveLimit = typeof this._liveLimit === 'function' ? this._liveLimit() : this._liveLimit
-    // slice(-Infinity) is the whole array, so liveLimit Infinity = the full window.
+    // Clamped to 32: a 64-segment window must not fire 64 concurrent download chains in the Bare worklet.
+    const liveLimit = Math.min(typeof this._liveLimit === 'function' ? this._liveLimit() : this._liveLimit, 32)
+    // slice(-N) takes the newest N (Infinity clamps to the 32 newest).
     const newest = live ? uris.slice(-liveLimit) : uris.slice(0, this._limit)
     let ranges = this._drives.get(drive)
     if (!ranges) { ranges = new Map(); this._drives.set(drive, ranges) }

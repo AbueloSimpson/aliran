@@ -143,7 +143,7 @@ function makeFakeManager () {
       const listSize = parseInt(fields.hlsListSize ?? 8, 10)
       const bad = (msg) => { const e = new Error(msg); e.httpStatus = 400; throw e }
       if (!Number.isInteger(time) || time < 1 || time > 30) bad('hlsTime must be 1-30')
-      if (!Number.isInteger(listSize) || listSize < 2 || listSize > 60) bad('hlsListSize must be 2-60')
+      if (!Number.isInteger(listSize) || listSize < 2 || listSize > 64) bad('hlsListSize must be 2-64')
       out.hls = { time, listSize }
     }
     return out
@@ -1254,12 +1254,12 @@ try {
   // bounds are text-matched against the real source so they cannot drift silently.
   const channelJs = fs.readFileSync(path.join(REPO, 'broadcaster', 'src', 'channel.js'), 'utf8')
   assert.ok(channelJs.includes("bad('hlsTime must be 1-30')"), 'channel.js still enforces hlsTime 1-30 (update the MCP schema if this moved)')
-  assert.ok(channelJs.includes("bad('hlsListSize must be 2-60')"), 'channel.js still enforces hlsListSize 2-60 (update the MCP schema if this moved)')
+  assert.ok(channelJs.includes("bad('hlsListSize must be 2-64')"), 'channel.js still enforces hlsListSize 2-64 (update the MCP schema if this moved)')
   const hlsAdd = await callJson(client, 'broadcaster_add_channel', { id: 'mcp-hls', input: 'test', hlsTime: 4, hlsListSize: 12 })
   assert.deepStrictEqual(hlsAdd.hls, { time: 4, listSize: 12 }, 'hlsTime/hlsListSize round-trip on add')
   const hlsPatch = await callJson(client, 'broadcaster_update_channel', { id: 'mcp-hls', hlsListSize: 20 })
   assert.deepStrictEqual(hlsPatch.hls, { time: 2, listSize: 20 }, 'patching one hls field re-derives the pair from the env default (the real normalizeMeta semantics)')
-  for (const bad of [{ hlsTime: 31 }, { hlsTime: 0 }, { hlsListSize: 1 }, { hlsListSize: 61 }]) {
+  for (const bad of [{ hlsTime: 31 }, { hlsTime: 0 }, { hlsListSize: 1 }, { hlsListSize: 65 }]) {
     let rejected = false
     try { const r = await callRaw(client, 'broadcaster_update_channel', { id: 'mcp-hls', ...bad }); rejected = !!r.isError } catch { rejected = true }
     assert.ok(rejected, `out-of-bounds ${JSON.stringify(bad)} must be rejected`)

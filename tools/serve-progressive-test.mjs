@@ -17,6 +17,11 @@
 //      with ranged requests; regressions here surface as silent playback failures).
 //   D  LIVE-EDGE READ-AHEAD — serving a playlist triggers a background download of
 //      its newest segments, so their blocks are local before the player asks.
+//   D2 liveReadAhead — a LIVE playlist served with liveReadAhead: Infinity eagerly
+//      replicates ALL its segments (churn headroom: the whole window on-device); a
+//      function limit narrows it per serve (metered network); a VOD playlist
+//      (#EXT-X-ENDLIST) is unaffected and still warms only the FIRST readAhead
+//      segments.
 //
 // Exits 0 on PASS.
 
@@ -209,6 +214,66 @@ log('D: playlist read-ahead (newest segments downloaded without being requested)
   assert(await covered('/ra2.ts'), 'second-newest segment replicated by read-ahead')
 }
 
+log('D2: liveReadAhead (full LIVE window replicated; function narrows; VOD unaffected)')
+{
+  const blobs = await reader.getBlobs()
+  const covered = async (name) => {
+    const entry = await reader.entry(name)
+    const b = entry && entry.value.blob
+    if (!b) return false
+    for (let i = b.blockOffset; i < b.blockOffset + b.blockLength; i++) {
+      if (!(await blobs.core.has(i))) return false
+    }
+    return true
+  }
+
+  // (a) LIVE playlist (no #EXT-X-ENDLIST) + liveReadAhead: Infinity — every segment
+  // must land in the replica without any of them being requested over HTTP.
+  const serverInf = http.createServer(driveHandler(reader, { waitMs: 1500, pollMs: 60, liveReadAhead: Infinity }))
+  await new Promise((resolve) => serverInf.listen(0, '127.0.0.1', resolve))
+  const portInf = serverInf.address().port
+  const laNames = ['/la1.ts', '/la2.ts', '/la3.ts', '/la4.ts', '/la5.ts', '/la6.ts']
+  for (const n of laNames) await writer.put(n, SMALL)
+  const livePl = '#EXTM3U\n#EXT-X-TARGETDURATION:2\n' + laNames.map((n) => `#EXTINF:2,\n${n.slice(1)}`).join('\n') + '\n'
+  await writer.put('/livewin.m3u8', Buffer.from(livePl))
+  const resInf = await httpGet(portInf, '/livewin.m3u8')
+  assert(resInf.status === 200 && resInf.body.toString() === livePl, 'live playlist serves intact (liveReadAhead: Infinity)')
+  for (const n of laNames) await waitFor(() => covered(n), 10000, 'full-window read-ahead of ' + n)
+  assert((await Promise.all(laNames.map(covered))).every(Boolean), 'ALL live-window segments replicated by liveReadAhead: Infinity (never requested over HTTP)')
+  serverInf.close()
+
+  // (b) liveReadAhead as a function (the metered narrowing) — only the newest 3 warm.
+  const serverFn = http.createServer(driveHandler(reader, { waitMs: 1500, pollMs: 60, liveReadAhead: () => 3 }))
+  await new Promise((resolve) => serverFn.listen(0, '127.0.0.1', resolve))
+  const portFn = serverFn.address().port
+  const lbNames = ['/lb1.ts', '/lb2.ts', '/lb3.ts', '/lb4.ts', '/lb5.ts']
+  for (const n of lbNames) await writer.put(n, SMALL)
+  const narrowPl = '#EXTM3U\n#EXT-X-TARGETDURATION:2\n' + lbNames.map((n) => `#EXTINF:2,\n${n.slice(1)}`).join('\n') + '\n'
+  await writer.put('/narrow.m3u8', Buffer.from(narrowPl))
+  const resFn = await httpGet(portFn, '/narrow.m3u8')
+  assert(resFn.status === 200, 'live playlist serves intact (liveReadAhead: () => 3)')
+  for (const n of ['/lb3.ts', '/lb4.ts', '/lb5.ts']) await waitFor(() => covered(n), 10000, 'narrowed read-ahead of ' + n)
+  await sleep(500) // let any (wrong) extra downloads land before asserting absence
+  assert(!(await covered('/lb1.ts')) && !(await covered('/lb2.ts')), 'segments older than the narrowed limit are NOT warmed (only the newest 3)')
+  serverFn.close()
+
+  // (c) VOD playlist (#EXT-X-ENDLIST) is unaffected by liveReadAhead — still warms
+  // the FIRST readAhead (default 3) segments, played top-down from the start.
+  const serverVod = http.createServer(driveHandler(reader, { waitMs: 1500, pollMs: 60, liveReadAhead: Infinity }))
+  await new Promise((resolve) => serverVod.listen(0, '127.0.0.1', resolve))
+  const portVod = serverVod.address().port
+  const vbNames = ['/vb1.ts', '/vb2.ts', '/vb3.ts', '/vb4.ts', '/vb5.ts']
+  for (const n of vbNames) await writer.put(n, SMALL)
+  const vodPl = '#EXTM3U\n#EXT-X-TARGETDURATION:2\n' + vbNames.map((n) => `#EXTINF:2,\n${n.slice(1)}`).join('\n') + '\n#EXT-X-ENDLIST\n'
+  await writer.put('/vod.m3u8', Buffer.from(vodPl))
+  const resVod = await httpGet(portVod, '/vod.m3u8')
+  assert(resVod.status === 200, 'vod playlist serves intact (liveReadAhead: Infinity)')
+  for (const n of ['/vb1.ts', '/vb2.ts', '/vb3.ts']) await waitFor(() => covered(n), 10000, 'vod read-ahead of ' + n)
+  await sleep(500)
+  assert(!(await covered('/vb4.ts')) && !(await covered('/vb5.ts')), 'vod still warms only the FIRST readAhead segments — liveReadAhead does not apply')
+  serverVod.close()
+}
+
 log('E: stalled read on a reclaimed blob aborts within the idle bound (never hangs)')
 {
   // The wedge (proven on the live VPS, 2026-07-17): a replica lagging the live edge
@@ -250,7 +315,7 @@ log('E: stalled read on a reclaimed blob aborts within the idle bound (never han
   server2.close()
 }
 
-log('\nRESULT: PASS ✅  progressive serving, availability wait, ranges, read-ahead, stalled-read abort')
+log('\nRESULT: PASS ✅  progressive serving, availability wait, ranges, read-ahead (incl. liveReadAhead), stalled-read abort')
 server.close()
 await writer.close(); await reader.close()
 await storeW.close(); await storeR.close()

@@ -38,12 +38,12 @@ import Video, {
 } from 'react-native-video'
 import { AliranBackend, type BackendMessage } from './backend'
 
-// Track selection re-exported here so the host app imports these from
-// @aliran/react-native (the single binding surface) instead of reaching into
-// react-native-video directly. SelectedTrackType is a runtime enum (value), the rest
-// are types. index.ts re-exports them again for the package entry point.
+// Track selection (and the nested bufferConfig shape) re-exported here so the host
+// app imports these from @aliran/react-native (the single binding surface) instead of
+// reaching into react-native-video directly. SelectedTrackType is a runtime enum
+// (value), the rest are types. index.ts re-exports them again for the package entry point.
 export { SelectedTrackType }
-export type { SelectedTrack, AudioTrack, TextTrack }
+export type { SelectedTrack, AudioTrack, TextTrack, BufferConfig }
 
 const RETRY_MS = 2500
 // Start-buffer tuning (zap latency): ExoPlayer's DefaultLoadControl waits for
@@ -143,8 +143,10 @@ export interface AliranVideoProps {
   /** The available subtitle/CC text tracks the player found. */
   onTextTracks?: (tracks: TextTrack[]) => void
   /** How long the playhead may sit still (while playing) before a resync; 0 disables.
-   *  Default 12000 — under the smallest deployed live window (8×2 s). Auto-disabled
-   *  while the engine reports the served record is a vod title (recordType 'vod'). */
+   *  Default 12000 — the ladder fires once the ~10 s of local headroom the live
+   *  offset keeps in hand is exhausted (at the recommended 12-segment window the
+   *  total time-to-heal is ~22 s — intended). Auto-disabled while the engine
+   *  reports the served record is a vod title (recordType 'vod'). */
   stallTimeoutMs?: number
   /** ExoPlayer load-control overrides, merged over the zap-tuned defaults
    *  (bufferForPlaybackMs 1000 / bufferForPlaybackAfterRebufferMs 1500). */

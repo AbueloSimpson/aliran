@@ -1,7 +1,7 @@
 export { AliranBackend } from './backend'
 export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, PairingResult, PairingErrorCode, VodConfig, VodListEntry, VodHistoryEntry } from './backend'
 export { AliranVideo, SelectedTrackType } from './AliranVideo'
-export type { AliranVideoProps, AliranVideoHandle, TuneEvent, TunePhase, SelectedTrack, AudioTrack, TextTrack } from './AliranVideo'
+export type { AliranVideoProps, AliranVideoHandle, TuneEvent, TunePhase, SelectedTrack, AudioTrack, TextTrack, BufferConfig } from './AliranVideo'
 // Ready-made "engine can't run here" screen for single-APK builds: render in the
 // !AliranBackend.isSupported() branch; the optional action button is the host's
 // seam for offering its own alternative method. See docs/sdk-guide.md.
