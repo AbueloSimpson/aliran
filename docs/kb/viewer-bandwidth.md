@@ -63,6 +63,28 @@ Costs, so you can budget them:
 - **Delay: ~10 s behind true live.** This is the deliberate trade. Zap
   speed does not change — playback starts thin and fills toward the edge.
 
+## Disk
+
+The viewer's store is a cache of replicas. It stays small by itself:
+
+- **While you watch:** the store holds about **one live window** of media
+  per cached feed, plus a small amount of metadata. When a segment leaves
+  the live window, the engine clears its blocks from disk automatically.
+  This is safe: the broadcaster already cleared those blocks at the
+  source, so no peer can fetch them again.
+- **When a feed leaves the cache:** the engine keeps the last 12 watched
+  feeds warm for fast zaps. When it evicts a feed from that cache, it
+  deletes the feed's data from disk.
+- **After login:** the engine deletes the replicas of feeds that are no
+  longer in the catalog (for example, a deleted or re-keyed channel).
+- **VOD titles are the exception.** A viewer can seek a VOD title at any
+  point, so the engine keeps its replica as a cache and does not clear it.
+
+If the store still grows too large, or becomes corrupt, delete it by
+hand. That is always safe — the store holds only replicas. See "The
+on-device store is a disposable cache" in the client build guide
+(`docs/client-build.md`).
+
 ## Upload
 
 A default viewer **re-seeds**: feed topics are joined announced, so blocks
