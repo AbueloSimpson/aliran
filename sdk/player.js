@@ -593,8 +593,11 @@ export class AliranPlayer extends Emitter {
 
   // Host-supplied network profile (RN NetInfo etc.). On a metered/expensive network
   // the gate suspends prefetch immediately; prewarm connections stay (those are
-  // ~free) — only the standing segment replication stops. Lifts as soon as the host
-  // reports the network cheap again (no clean-run wait: it is not a health signal).
+  // ~free) — only the standing segment replication stops. The ACTIVE stream's
+  // full-window read-ahead also narrows to the serve-core default (the
+  // liveReadAhead closure in _requestHandler reads this flag per playlist serve).
+  // Lifts as soon as the host reports the network cheap again (no clean-run
+  // wait: it is not a health signal).
   setNetworkProfile ({ expensive } = {}) {
     this._netExpensive = !!expensive
     if (this._netExpensive && this._zapTimer) this._suspendZap('metered')
@@ -1816,6 +1819,13 @@ export class AliranPlayer extends Emitter {
       }
       return this._feedDrive ? { drive: this._feedDrive, path: p, media: true } : null
     }, {
+      // Churn headroom: replicate the ACTIVE stream's whole live window on-device
+      // (not just the newest 3 segments), so an upstream peer's death cannot take
+      // away media between the playhead and the live edge — the player's live
+      // offset becomes the survival budget. Re-evaluated per playlist serve: on a
+      // metered network the burst cost of a zap (one window × bitrate) is real
+      // money, so fall back to the serve-core default there.
+      liveReadAhead: () => (this._netExpensive ? 3 : Infinity),
       // Corruption can also surface at read time (the blobs core opens lazily): heal
       // in the background; the host player's retry re-opens the feed on the fresh store.
       onError: (err) => { if (isCorruptionError(err)) this._purge().catch(() => {}) }

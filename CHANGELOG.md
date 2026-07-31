@@ -150,6 +150,28 @@ phone + Android TV, and the Windows desktop player).
   new lane in `test:reports` (impostor never captures/starves the slot; a
   report lands after re-arm).
 
+### Changed
+
+- **Viewers now hold ~10 s of churn headroom** — a live viewer keeps enough
+  media on the device to play through the loss of the peer it pulls from. Three
+  parts, all defaults an operator or host can override:
+  - The engine replicates the **whole live window** of the active stream to the
+    device as the segments appear (before: only the newest 3 segments). What sits
+    between the playhead and the live edge can no longer disappear when an
+    upstream peer leaves. Steady-state bandwidth is unchanged; the cost is one
+    window of data per zap, so on a metered network the engine keeps the old
+    3-segment read-ahead.
+  - The desktop player now sits 5 segments (~10 s) behind the live edge
+    (before: 3).
+  - The Android player now pins its live offset to the same ~10 s through
+    ExoPlayer's live configuration (before: library default). Zap speed does not
+    change — playback still starts with ~1 s in hand and fills toward the edge.
+  The trade is deliberate: every viewer watches ~10 s behind true live in
+  exchange for riding out seconds-scale peer churn without a frozen picture. A
+  window of 12 segments (`HLS_LIST_SIZE=12`, 24 s) is now the recommended
+  broadcaster setting to give the offset comfortable margin; the per-channel
+  `hlsListSize` bound was aligned to the env bound (2–64, was 2–60).
+
 ### Added
 
 - **Encrypted key escrow: a supported way to get the panel identity off the

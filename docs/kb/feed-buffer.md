@@ -266,9 +266,15 @@ first-frame buffering, compression, and per-block P2P overhead — they do
 - **`HLS_LIST_SIZE`** is the **P2P-shareability / rebuffer-cushion** lever
   (window depth = `HLS_LIST_SIZE × HLS_TIME`). It barely moves startup —
   the player starts ~3 segments back from the live edge regardless.
-  - **Small swarm (a few viewers):** `8` (≈16 s) is plenty.
+  - **Small swarm (a few viewers):** `8` (≈16 s) works.
   - **Large swarm (many concurrent viewers):** `12`–`16` — a deeper overlap
     means a joiner can pull from more peers and ride out a peer dropping.
+  - **Live-offset margin (why `12` is now the standard):** the viewer apps
+    sit ~10 s behind the live edge and replicate the whole window on-device
+    (churn headroom — see
+    [viewer bandwidth](viewer-bandwidth.md#churn-headroom-why-playback-survives-a-peer-that-leaves)).
+    A 24 s window (`12 × 2 s`) gives that offset comfortable margin; the
+    16 s default leaves only ~6 s of slack past the offset.
   - **Client blip-recovery margin (same lever):** the window is also how
     long a viewer's network may hiccup before the live edge slides past
     their player and the picture freezes. The app self-heals that (the
@@ -279,10 +285,9 @@ first-frame buffering, compression, and per-block P2P overhead — they do
     (24–32 s) rides most of them out. The cost is a proportionally larger
     per-channel window store — small since the reclaim fix.
 
-**Recommended starting point:** `HLS_TIME=2`, `HLS_LIST_SIZE=8`,
-`FEED_BUFFER=disk`. Bump `HLS_LIST_SIZE` to `12`+ as the audience grows
-**or if viewers are on flaky networks (mobile/Wi-Fi)** — the 2026-07-16 S22
-freeze happened at `8×2 s`.
+**Recommended starting point:** `HLS_TIME=2`, `HLS_LIST_SIZE=12`,
+`FEED_BUFFER=disk`. Go to `16` for large swarms or very flaky viewer
+networks (mobile/Wi-Fi) — the 2026-07-16 S22 freeze happened at `8×2 s`.
 
 > **Note — keyframe alignment with `copy`:** the encoder must emit a
 > keyframe every `HLS_TIME` seconds (OBS "keyframe interval", for example)

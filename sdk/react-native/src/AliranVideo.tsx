@@ -51,11 +51,23 @@ const RETRY_MS = 2500
 // most of the perceived zap time once bytes flow. 1 s is enough to start (every
 // segment begins on a keyframe), and the slightly higher rebuffer risk is covered
 // by the self-heal ladder below (stall resync → transport teardown). After a
-// rebuffer, ask for a bit more headroom before resuming. Hosts override via the
-// bufferConfig prop (merged over these defaults).
-const BUFFER_CONFIG = { bufferForPlaybackMs: 1000, bufferForPlaybackAfterRebufferMs: 1500 }
-// Live-edge freeze self-heal: a live HLS window can be tiny (16 s on the reference
-// deploy), so a network blip longer than the window slides it past the playhead —
+// rebuffer, ask for a bit more headroom before resuming.
+// `live` pins the ExoPlayer live offset (churn headroom): sit ~10 s behind the
+// edge so playback rides out a P2P source dying and being replaced — measured
+// re-source is seconds-scale, and the engine replicates the whole live window
+// on-device, so everything between playhead and edge survives an upstream loss.
+// Starts thin (1 s in hand at the target offset) and fills toward the edge, so
+// zaps stay fast; minOffsetMs lets ExoPlayer trade a little headroom before it
+// stalls. Needs a live window comfortably wider than the offset (fine at the
+// 16 s default window; the reference deploy guidance is 24 s). Hosts override
+// via the bufferConfig prop (merged over these defaults).
+const BUFFER_CONFIG = {
+  bufferForPlaybackMs: 1000,
+  bufferForPlaybackAfterRebufferMs: 1500,
+  live: { targetOffsetMs: 10000, minOffsetMs: 4000 }
+}
+// Live-edge freeze self-heal: a live HLS window can be tiny (16-24 s on the
+// reference deploy), so a network blip longer than the window slides it past the playhead —
 // react-native-video fires NO error, the picture just freezes while everything else
 // stays healthy (S22 2026-07-16). Once a mount has actually played, a playhead that
 // stops advancing for this long (while not paused) forces a remount: a fresh playlist

@@ -1711,7 +1711,7 @@ export class ChannelManager {
       const time = parseInt(fields.hlsTime ?? this.config.hls?.time ?? 2, 10)
       const listSize = parseInt(fields.hlsListSize ?? this.config.hls?.listSize ?? 8, 10)
       if (!Number.isInteger(time) || time < 1 || time > 30) bad('hlsTime must be 1-30')
-      if (!Number.isInteger(listSize) || listSize < 2 || listSize > 60) bad('hlsListSize must be 2-60')
+      if (!Number.isInteger(listSize) || listSize < 2 || listSize > 64) bad('hlsListSize must be 2-64') // same bound as the HLS_LIST_SIZE env check (config.js)
       out.hls = { time, listSize }
     }
     return out

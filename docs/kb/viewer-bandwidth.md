@@ -40,6 +40,28 @@ downloads while keeping a cheap tick alive to observe recovery — whenever:
 Suspensions are observable (`'zap-prefetch'` events with `reason: 'metered'
 | 'stall' | 'thin'`), so apps can badge the state if they want.
 
+## Churn headroom (why playback survives a peer that leaves)
+
+A live viewer keeps the **whole live window** of the active stream on the
+device: the engine replicates each segment as the broadcaster publishes it,
+not when the player asks for it. The player also sits ~10 s behind the live
+edge (desktop and Android both pin this offset). Together they form the
+survival budget: if the peer you pull from leaves, everything between your
+playhead and the live edge is already local, and the engine has seconds to
+find another source before the picture can freeze.
+
+Costs, so you can budget them:
+
+- **Steady state: none.** The stream still downloads at 1× bitrate — the
+  engine only fetches it earlier.
+- **Per zap: one window of data.** At a 24 s window and 2 Mbps that is
+  ~6 MB per channel change. On a **metered** network the engine therefore
+  keeps the small 3-segment read-ahead instead (same `setNetworkProfile`
+  signal that gates smooth zapping) — a metered viewer trades churn
+  headroom for data cost.
+- **Delay: ~10 s behind true live.** This is the deliberate trade. Zap
+  speed does not change — playback starts thin and fills toward the edge.
+
 ## Upload
 
 A default viewer **re-seeds**: feed topics are joined announced, so blocks

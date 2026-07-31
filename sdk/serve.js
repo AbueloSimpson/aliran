@@ -26,11 +26,20 @@
 //   fallback, not the fast path). Kept UNDER ExoPlayer's 8 s default read timeout.
 //
 //   LIVE-EDGE READ-AHEAD — serving a playlist fire-and-forgets a parallel blob
-//   download of its newest few segments, so replication overlaps the player's
+//   download of its newest segments, so replication overlaps the player's
 //   strictly sequential fetch pattern instead of being demand-paged per segment
 //   (a cold zap otherwise pays per-block round trips segment by segment).
 //   Superseded downloads (segments that rotated out of the newest set) are
-//   destroyed so a cleared blob can't strand a range forever.
+//   destroyed so a cleared blob can't strand a range forever. For LIVE playlists
+//   the host can widen the newest-N to the WHOLE window (liveReadAhead, a number
+//   or a per-update function): every segment between the playhead and the live
+//   edge is then on-device the moment it exists, so losing the upstream peer
+//   cannot take away media the viewer is about to play — churn headroom equals
+//   the player's live offset instead of its transient buffer. Steady-state
+//   bandwidth is unchanged (same 1× bitrate, fetched earlier); the burst cost is
+//   one window per zap, which is why the SDK narrows it back to the default on
+//   expensive (metered) networks. VOD keeps the small fixed read-ahead — a
+//   viewer seeks VOD arbitrarily, so eager whole-file replication is waste.
 //
 //   STALLED-READ ABORT — the feed is an EPHEMERAL rolling buffer: the broadcaster
 //   frees the previous /index.m3u8 blob the instant it writes the next one
@@ -94,19 +103,26 @@ export function playlistUris (text) {
 // eviction destroys superseded ranges so a segment that rotated out (its blocks
 // cleared at the broadcaster) can never strand a download waiting forever.
 class ReadAhead {
-  constructor (limit) {
+  constructor (limit, liveLimit) {
     this._limit = limit
+    // Live playlists may use a wider (or dynamic) limit than VOD — a number or a
+    // function re-evaluated on every playlist serve, so the host can narrow it at
+    // runtime (e.g. when the network turns metered) without rebuilding the handler.
+    this._liveLimit = liveLimit == null ? limit : liveLimit
     this._drives = new WeakMap() // drive -> Map(path -> range)
   }
 
-  // Fire-and-forget: prefetch the `limit` segments the player will read NEXT off this
+  // Fire-and-forget: prefetch the segments the player will read NEXT off this
   // playlist body — the newest (tail) for a live playlist, which is consumed at its
   // moving edge; the FIRST ones for a finished VOD playlist (#EXT-X-ENDLIST, S8a),
   // which is played top-down from the start (prefetching its tail would warm the end
   // credits). Never throws, never blocks the event loop — all awaits are backgrounded.
   update (drive, text) {
     const uris = playlistUris(text)
-    const newest = /#EXT-X-ENDLIST/m.test(String(text)) ? uris.slice(0, this._limit) : uris.slice(-this._limit)
+    const live = !/#EXT-X-ENDLIST/m.test(String(text))
+    const liveLimit = typeof this._liveLimit === 'function' ? this._liveLimit() : this._liveLimit
+    // slice(-Infinity) is the whole array, so liveLimit Infinity = the full window.
+    const newest = live ? uris.slice(-liveLimit) : uris.slice(0, this._limit)
     let ranges = this._drives.get(drive)
     if (!ranges) { ranges = new Map(); this._drives.set(drive, ranges) }
     for (const [path, range] of ranges) {
@@ -209,11 +225,15 @@ function pump (rs, res, wanted, idleMs = 0) {
 //     media: true  = feed content — availability wait + read-ahead apply
 //            false = ancillary (posters/art) — miss 404s immediately
 //
-// opts: { waitMs, pollMs, readAhead } — see DEFAULTS; onError(err) is called for
+// opts: { waitMs, pollMs, readAhead, liveReadAhead } — see DEFAULTS; liveReadAhead
+// (number or function -> number, default = readAhead) widens the live-playlist
+// read-ahead — Infinity replicates the whole live window on-device (churn
+// headroom); a function is re-evaluated per playlist serve so the host can
+// narrow it at runtime (metered network). onError(err) is called for
 // unexpected failures (the SDK routes corruption errors into store recovery).
 export function createDriveHandler (resolveTarget, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts }
-  const readAhead = cfg.readAhead > 0 ? new ReadAhead(cfg.readAhead) : null
+  const readAhead = cfg.readAhead > 0 ? new ReadAhead(cfg.readAhead, cfg.liveReadAhead) : null
   return async function handler (req, res) {
     try {
       let urlPath = decodeURIComponent((req.url || '/').split('?')[0])
