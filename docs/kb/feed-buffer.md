@@ -274,7 +274,9 @@ first-frame buffering, compression, and per-block P2P overhead — they do
     (churn headroom — see
     [viewer bandwidth](viewer-bandwidth.md#churn-headroom-why-playback-survives-a-peer-that-leaves)).
     A 24 s window (`12 × 2 s`) gives that offset comfortable margin; the
-    16 s default leaves only ~6 s of slack past the offset.
+    16 s default leaves only ~6 s of slack past the offset. Treat `8` as
+    the hard floor: the env check permits values as low as `2`, but a
+    window shorter than the ~10 s offset breaks playback.
   - **Client blip-recovery margin (same lever):** the window is also how
     long a viewer's network may hiccup before the live edge slides past
     their player and the picture freezes. The app self-heals that (the
@@ -382,10 +384,12 @@ latency:
 - **Availability wait:** a playlist or segment that hasn't replicated yet is
   *held* (bounded at 6 s) and served the moment it lands, instead of
   404ing the player into its 2.5 s retry remount.
-- **Live-edge read-ahead:** each playlist request kicks off a *parallel*
-  background download of the newest 3 segments, so replication overlaps
-  the player's strictly sequential fetch pattern instead of being
-  demand-paged segment by segment.
+- **Live-edge read-ahead:** for the active live stream, each playlist
+  request kicks off a *parallel* background replication of the **whole
+  live window**, so replication overlaps the player's strictly sequential
+  fetch pattern instead of being demand-paged segment by segment. On a
+  metered network the engine narrows this to the newest 3 segments, to
+  cap the per-zap data cost.
 
 ### Zap prefetch: keep the neighbors' live edge warm (optional)
 

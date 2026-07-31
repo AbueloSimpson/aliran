@@ -92,7 +92,9 @@ services:
       - broadcaster-data:/data
       - ./backups:/backups:ro
     # tmpfs for the ffmpeg HLS scratch (scale profile). Size it for your channel count:
-    # ~ (HLS_LIST_SIZE + 2) x segment_size x channels — 512m fits dozens of SD copy channels.
+    # ~ (HLS_LIST_SIZE + 2) x segment_size x channels — the standard HLS_LIST_SIZE=12
+    # keeps 14 segments per channel (~14 MB at ~1 MB per 2 s SD segment), so 512m fits
+    # ~35 SD copy channels at the 12-segment window.
     # tmpfs:
     #   - /hlstmp:size=512m
 

@@ -60,6 +60,9 @@ Together these give you **zero segment IOPS on disk.** In
       FEED_BUFFER: ram
     tmpfs:
       - /hlstmp:size=512m      # ~ (HLS_LIST_SIZE + 2) x segment_size x channels
+                               # (14 segments/channel at the 12-segment window,
+                               #  ~14 MB at ~1 MB per 2 s SD segment → 512m ≈ ~35
+                               #  SD copy channels)
 ```
 
 Bare-metal: `HLS_WORK_DIR=/dev/shm/aliran` (Linux `/dev/shm` is already
@@ -83,10 +86,10 @@ source, re-mux, no encode).
 
 | Resource | Per channel (copy) | Notes |
 |---|---|---|
-| **RAM** | **~40 MB** | ~3 MB feed engine (Corestore+Hyperdrive+Hyperswarm) + ~38 MB marginal ffmpeg (VmRSS ~70 MB but libs are shared). Base runtime ~70–90 MB. |
+| **RAM** | **~40 MB** | ~3 MB feed engine (Corestore+Hyperdrive+Hyperswarm) + ~38 MB marginal ffmpeg (VmRSS ~70 MB but libs are shared). Base runtime ~70–90 MB. Measured at the 8 × 2 s window; the recommended 12-segment window adds ~50 % of the window bytes (~+3 MB at SD bitrates). |
 | **CPU** | **~0.04 core (~1% of a 4-vCPU box)** | Mux + mirror, plus watchdog/demuxer churn from real (flaky) sources — measured at 69-channel scale on a 4 vCPU box (see the real-world callout below). A quiet/synthetic source undercounts this. |
 | **Disk IOPS** | ~2.5–5 sync ops/s | 1 segment / 2 s × several fsync'd writes (core append, oplog, metadata B-tree). **This is the wall** — put it on tmpfs. |
-| **Disk space** | ~6 MB window + `FEED_ROTATE_TREE_MB` cap | `disk` mode only. Segment window bounded by reclaim; the append-only merkle tree is now **bounded by feed rotation** (`FEED_ROTATE_TREE_MB` — [feed-buffer.md](feed-buffer.md)), so store ≈ `cap × channels`, no unbounded creep. `ram` mode = 0 disk. |
+| **Disk space** | ~9 MB window (12 × 2 s at ~3 Mbps) + `FEED_ROTATE_TREE_MB` cap | `disk` mode only. Segment window bounded by reclaim; the append-only merkle tree is now **bounded by feed rotation** (`FEED_ROTATE_TREE_MB` — [feed-buffer.md](feed-buffer.md)), so store ≈ `cap × channels`, no unbounded creep. `ram` mode = 0 disk. |
 | **DHT** | 1 swarm + topic | Socket fan-out grows with peers × channels; the practical network wall on very large deployments. |
 
 **Transcoding changes the CPU line entirely:** x264 SD is about 0.5–1
@@ -117,6 +120,12 @@ CPU is sized to the ≤80 % policy (`cores × 0.8 / 0.04`), so it stops being
 "free" once a box has more RAM than roughly `20 × cores` MB. Most
 small/RAM-tight boxes are still RAM-bound, but a RAM-rich, core-light box
 (a Pi 5 with 8 GB, for instance) flips to CPU-bound.
+
+The rows assume the 8-segment window. The recommended 12-segment window
+holds ~7 MB more RAM per channel under the scale profile (a larger tmpfs
+scratch, ~+4 MB, plus a larger `ram` feed window, ~+3 MB at SD bitrates) —
+trim the RAM-bound rows by a few channels (the 2 GB Pi drops from ~30 to
+~27).
 
 | Box | RAM | Cores | ~Max copy channels | First wall |
 |---|---|---|---|---|
@@ -255,7 +264,10 @@ channels.
 
 > **Counter-intuitive but important:** on a **RAM-constrained** box,
 > `FEED_BUFFER=ram` is the *wrong* lever — it moves the whole feed store
-> *into* RAM, so you hit the RAM wall **sooner**. The scale profile (ram +
+> *into* RAM, so you hit the RAM wall **sooner**. In `ram` mode the whole
+> segment window is resident in RAM per channel, so the move from 8 to 12
+> segments adds ~50 % of the window bytes to each channel's RAM cost. The
+> scale profile (ram +
 > tmpfs) is for boxes that are **IOPS-bound with RAM to spare** (spinning
 > disk / SD card, many channels). On a small RAM-bound VPS, keep
 > `FEED_BUFFER=disk`.
@@ -440,6 +452,7 @@ profile isn't optional here — it's what saves the SD card:
   ffmpeg (arm64) has the demuxers/protocols for HTTP/RTSP/SRT pulls out of
   the box.
 
-Sizing follows the table above (Pi 4 2 GB ≈ 30 copy channels), with tmpfs
-sized into the RAM budget. Treat it as experimental until you load-test it
-with `scale-bench.mjs` on the specific board.
+Sizing follows the table above (Pi 4 2 GB ≈ 27 copy channels at the
+recommended 12-segment window), with tmpfs sized into the RAM budget.
+Treat it as experimental until you load-test it with `scale-bench.mjs` on
+the specific board.

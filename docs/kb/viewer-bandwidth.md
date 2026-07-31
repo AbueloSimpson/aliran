@@ -54,8 +54,9 @@ Costs, so you can budget them:
 
 - **Steady state: none.** The stream still downloads at 1× bitrate — the
   engine only fetches it earlier.
-- **Per zap: one window of data.** At a 24 s window and 2 Mbps that is
-  ~6 MB per channel change. On a **metered** network the engine therefore
+- **Per zap: one window of data.** At 2 Mbps that is ~4 MB per channel
+  change at the 16 s default window, and ~6 MB at the recommended 24 s
+  window. On a **metered** network the engine therefore
   keeps the small 3-segment read-ahead instead (same `setNetworkProfile`
   signal that gates smooth zapping) — a metered viewer trades churn
   headroom for data cost.
