@@ -41,6 +41,12 @@
 //   expensive (metered) networks. VOD keeps the small fixed read-ahead — a
 //   viewer seeks VOD arbitrarily, so eager whole-file replication is waste.
 //
+//   EXPIRED-BLOCK RECLAIM (opt-in `reclaim`) — a live replica frees the blob
+//   blocks below the served playlist's window, so a viewer's disk holds ~one
+//   live window per feed instead of the whole watch history. The cleared blocks
+//   are already unfetchable swarm-wide (the broadcaster cleared them at
+//   rotation). VOD is never reclaimed. See the Reclaim class.
+//
 //   STALLED-READ ABORT — the feed is an EPHEMERAL rolling buffer: the broadcaster
 //   frees the previous /index.m3u8 blob the instant it writes the next one
 //   (broadcaster/src/hls.js mirrorDirToDrive), so each playlist version's blob is
@@ -84,8 +90,10 @@ export function contentType (p) {
 // narrowed back to 3 on metered networks; see the LIVE-EDGE READ-AHEAD note above).
 // readIdleMs (stalled-read abort) sits under ExoPlayer's 8 s read timeout too so OUR
 // clean abort drives the retry — a read that yields zero bytes for this long is stuck
-// on a blob the broadcaster reclaimed, not merely slow.
-const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3, readIdleMs: 6000 }
+// on a blob the broadcaster reclaimed, not merely slow. reclaimIntervalMs throttles
+// the per-drive expired-block reclaim (the `reclaim` opt — see Reclaim below); the
+// live window rotates every few seconds, so once per 30 s is plenty.
+const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3, readIdleMs: 6000, reclaimIntervalMs: 30000 }
 
 // Parse segment/media URIs out of an HLS playlist body (everything that isn't a
 // tag or blank), normalized to absolute drive paths. Tiny by design — enough for
@@ -155,6 +163,53 @@ class ReadAhead {
     // Parallel range download (not linear) — the point is to overlap block
     // round-trips instead of paying them one by one on the read path.
     return blobs.core.download({ start: blob.blockOffset, end: blob.blockOffset + blob.blockLength })
+  }
+}
+
+// EXPIRED-BLOCK RECLAIM for a LIVE feed replica (the `reclaim` opt). The broadcaster
+// clears a segment's blob blocks the moment it rotates out of the playlist
+// (broadcaster/src/hls.js clearBlob/reclaimExpiredBlobs), so every block below the
+// current window is already unfetchable swarm-wide — but the VIEWER's replica keeps
+// its local copies forever: watching accumulates ~1× bitrate of dead blocks
+// (≈0.9 GB/hour at 2 Mbps) with nothing ever freeing them. Bound it: when a live
+// playlist serves, take the MINIMUM blob blockOffset still referenced by the
+// window and `blobs.core.clear(0, min)` — a local hole-punch, exactly the
+// broadcaster's own reclaim shape. The merkle tree stays valid and replication of
+// the still-live window is untouched; disk settles at ~one live window per feed.
+// VOD (#EXT-X-ENDLIST) is NEVER reclaimed — a viewer seeks VOD arbitrarily, so its
+// replica is a cache, not a rolling buffer. Throttled per drive (WeakMap, like
+// ReadAhead's _drives) and fire-and-forget: reclaim can never throw into a serve.
+class Reclaim {
+  constructor (enabled, intervalMs) {
+    this._enabled = enabled // true, or a function re-evaluated per serve
+    this._intervalMs = intervalMs
+    this._last = new WeakMap() // drive -> epoch ms of the last reclaim
+  }
+
+  // Called with a LIVE playlist body just served for a media target. Never throws.
+  update (drive, text) {
+    const on = typeof this._enabled === 'function' ? this._enabled() : this._enabled
+    if (!on) return
+    const now = Date.now()
+    if (now - (this._last.get(drive) || 0) < this._intervalMs) return
+    this._last.set(drive, now)
+    this._run(drive, playlistUris(text)).catch(() => {})
+  }
+
+  async _run (drive, uris) {
+    // Reclaim floor = the lowest blob offset a playlist entry still references.
+    // An entry not replicated yet is skipped: its blocks are not stored locally
+    // either, so a clear that overshoots it frees nothing it shouldn't.
+    let min = Infinity
+    for (const path of uris) {
+      const entry = await drive.entry(path)
+      const blob = entry && entry.value && entry.value.blob
+      if (!blob) continue
+      if (blob.blockOffset < min) min = blob.blockOffset
+    }
+    if (min === Infinity || !(min > 0)) return // nothing resolvable, or nothing below the window
+    const blobs = await drive.getBlobs()
+    await blobs.core.clear(0, min)
   }
 }
 
@@ -228,15 +283,19 @@ function pump (rs, res, wanted, idleMs = 0) {
 //     media: true  = feed content — availability wait + read-ahead apply
 //            false = ancillary (posters/art) — miss 404s immediately
 //
-// opts: { waitMs, pollMs, readAhead, liveReadAhead } — see DEFAULTS; liveReadAhead
-// (number or function -> number, default = readAhead) widens the live-playlist
-// read-ahead — Infinity replicates the whole live window on-device (churn
-// headroom); a function is re-evaluated per playlist serve so the host can
-// narrow it at runtime (metered network). onError(err) is called for
+// opts: { waitMs, pollMs, readAhead, liveReadAhead, reclaim, reclaimIntervalMs } —
+// see DEFAULTS; liveReadAhead (number or function -> number, default = readAhead)
+// widens the live-playlist read-ahead — Infinity replicates the whole live window
+// on-device (churn headroom); a function is re-evaluated per playlist serve so the
+// host can narrow it at runtime (metered network). reclaim (true, or a function ->
+// boolean re-evaluated per serve; default off) clears blob blocks below the live
+// window after a LIVE playlist serves for a media target — see Reclaim above; VOD
+// and non-media targets are never reclaimed. onError(err) is called for
 // unexpected failures (the SDK routes corruption errors into store recovery).
 export function createDriveHandler (resolveTarget, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts }
   const readAhead = cfg.readAhead > 0 ? new ReadAhead(cfg.readAhead, cfg.liveReadAhead) : null
+  const reclaim = cfg.reclaim ? new Reclaim(cfg.reclaim, cfg.reclaimIntervalMs) : null
   return async function handler (req, res) {
     try {
       let urlPath = decodeURIComponent((req.url || '/').split('?')[0])
@@ -257,10 +316,15 @@ export function createDriveHandler (resolveTarget, opts = {}) {
         'Cache-Control': 'no-cache'
       }
 
-      // Read-ahead rides the playlist request: by the time the player asks for the
-      // newest segments their blocks are (being) pulled already. Fire-and-forget.
-      const prefetchAfter = readAhead && media && p.endsWith('.m3u8')
-        ? (text) => { try { readAhead.update(drive, text) } catch {} }
+      // Read-ahead (and reclaim) ride the playlist request: by the time the player
+      // asks for the newest segments their blocks are (being) pulled already, and
+      // blocks that rotated OUT of a live window get freed. Fire-and-forget.
+      const prefetchAfter = (readAhead || reclaim) && media && p.endsWith('.m3u8')
+        ? (text) => {
+            if (readAhead) { try { readAhead.update(drive, text) } catch {} }
+            // LIVE playlists only — the ENDLIST (VOD) branch must never reclaim.
+            if (reclaim && !/#EXT-X-ENDLIST/m.test(String(text))) { try { reclaim.update(drive, text) } catch {} }
+          }
         : null
 
       if (range) {
