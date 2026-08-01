@@ -173,11 +173,20 @@ function normalizeHybrid (h) {
 // friendly 'error' surfaces to the host (≤3× timeoutMs total). relookup(Min|Max)Ms
 // pace forced discovery.refresh() calls while a tune is incomplete — the same
 // self-heal as the broadcaster's PanelLink (broadcaster/src/panel-link.js).
+// rescanMs (the re-source defect, 2026-07-31): AFTER a successful tune, nothing
+// watched the peer set — a viewer that tuned off relay/repeater peers while its dials
+// to the origin failed is left with hyperswarm knowing NOTHING about the origin
+// (failed peers are parked after 3 retries and then garbage-collected), so when the
+// relays later die the viewer sits source-less until hyperswarm's own ~10-12 min
+// topic re-lookup. rescanMs is how long the ACTIVE live p2p feed may hold ZERO peers
+// before the engine forces a fresh DHT lookup and re-arms the tune watchdog. 0
+// disables (the pre-fix behavior).
 function normalizeTune (t) {
-  const cfg = { timeoutMs: 30000, relookupMinMs: 5000, relookupMaxMs: 60000, ...t }
+  const cfg = { timeoutMs: 30000, relookupMinMs: 5000, relookupMaxMs: 60000, rescanMs: 10000, ...t }
   for (const k of ['timeoutMs', 'relookupMinMs', 'relookupMaxMs']) {
     if (!(Number(cfg[k]) > 0)) throw new Error('tune.' + k + ' must be a positive number of milliseconds')
   }
+  if (!(Number(cfg.rescanMs) >= 0)) throw new Error('tune.rescanMs must be a non-negative number of milliseconds (0 disables the zero-peer rescan)')
   return cfg
 }
 
@@ -333,6 +342,8 @@ export class AliranPlayer extends Emitter {
     this._feedDiscovery = null
     this._feeds = new Map() // feedKey:encKey -> Promise<{ drive, discovery }> — opened feeds (single-flight), reused across resolve()s
     this._statusTimer = null
+    this._peersLostAt = null // when the ACTIVE live p2p feed's peer count hit zero (see _checkFeedPeers)
+    this._rescanDead = null // active play whose tune ladder already surfaced the friendly error — the rescan leaves it alone
     this._assetsOpen = null
     this._purging = null
     this._replicaSweep = null // single-flight stale-namespace sweep, once per engine (see _sweepStaleReplicas)
@@ -958,7 +969,10 @@ export class AliranPlayer extends Emitter {
     // Feed-health ticker for player overlays: how many peers serve the CURRENT feed.
     if (!this._statusTimer) {
       this._statusTimer = setInterval(() => {
-        if (this._feedDrive) this.emit('peers', this._feedDrive.core.peers.length)
+        if (!this._feedDrive) return
+        const n = this._feedDrive.core.peers.length
+        this.emit('peers', n)
+        this._checkFeedPeers(n)
       }, 3000)
     }
     return port
@@ -1333,6 +1347,10 @@ export class AliranPlayer extends Emitter {
         this._stopTuneTimer(timer)
         const keys = this._entitled.get(a.streamId)
         if (keys && keys.encryptionKey) this._evictFeed(a.feedKey + ':' + keys.encryptionKey)
+        // The ladder ran out for THIS play: the zero-peer rescan must not re-arm it
+        // in a loop (an unreachable channel would surface the friendly error every
+        // ~2× timeoutMs forever). A new resolve() or a host redial retries cleanly.
+        this._rescanDead = a
         this.emit('error', new Error(`tune timeout: no video from '${a.streamId}' after ${Math.round((now - t0) / 1000)}s — the channel may be unreachable right now, switch to it again to retry`))
       } finally {
         busy = false
@@ -1371,11 +1389,49 @@ export class AliranPlayer extends Emitter {
   // tracked to either "playlist advances" or the friendly 'error'. Safe no-op without
   // an active P2P play.
   reconnectActiveFeed () {
+    this._rescanDead = null // a host-driven redial is a fresh chance — let the rescan watch this play again
     const n = this._teardownFeedPeers()
     try { const r = this._feedDiscovery && this._feedDiscovery.refresh(); if (r && r.catch) r.catch(() => {}) } catch {}
     if (n > 0) this.emit('status', { state: 'feed:reconnect' })
     if (!this._tuneTimer) this._startTuneWatchdog()
     return n
+  }
+
+  // Active-feed peer RESCAN (the re-source defect, field 2026-07-31): a viewer can
+  // tune successfully off relay/repeater peers while every dial to the origin
+  // broadcaster FAILS (full accept gate, NAT/holepunch failure, transient network).
+  // hyperswarm then parks the origin's PeerInfo after 3 failed retries
+  // (hyperswarm/lib/retry-timer.js _selectRetryTimer: attempts > 3 selects NO timer
+  // for a non-explicit peer) and garbage-collects it on the final close
+  // (hyperswarm/index.js _maybeDeletePeer) — so when the relays later die there is
+  // no backoff to expire and nothing left to redial: the swarm simply no longer
+  // knows the origin announces the topic, and its own periodic re-lookup is ~10-12
+  // minutes away (hyperswarm/lib/peer-discovery.js REFRESH_INTERVAL + jitter). The
+  // tune watchdog stood down long ago (the relays tuned fine), so post-tune the
+  // engine was blind to the peer set collapsing: the viewer plays out its local
+  // window, then freezes source-less with no relookup, no retune and no error.
+  // Watch the peer set from the 3-second peers ticker instead: when an active LIVE
+  // p2p play has had ZERO peers for tune.rescanMs, force a fresh DHT lookup NOW —
+  // a lookup re-discovers a parked or forgotten announcer and re-enqueues the dial
+  // (hyperswarm/index.js _handlePeer resets a de-prioritized peer) — and re-arm the
+  // tune watchdog so recovery is tracked to either "playlist advances + servable"
+  // or the friendly 'error', exactly like the tune-time ladder. While a watchdog is
+  // already running it owns recovery (its relookup backoff covers refreshes), so
+  // this stays quiet. tune.rescanMs = 0 disables (the pre-fix behavior).
+  _checkFeedPeers (n) {
+    const a = this._active
+    if (!this._tune.rescanMs || !a || a.vod || a.source !== 'p2p' || this._hybrid.mode !== 'p2p-only' || this._tuneTimer || this._rescanDead === a) {
+      this._peersLostAt = null
+      return
+    }
+    if (n > 0) { this._peersLostAt = null; return }
+    const now = Date.now()
+    if (this._peersLostAt === null) { this._peersLostAt = now; return }
+    if (now - this._peersLostAt < this._tune.rescanMs) return
+    this._peersLostAt = null
+    this.emit('status', { state: 'feed:rescan' })
+    try { const r = this._feedDiscovery && this._feedDiscovery.refresh(); if (r && r.catch) r.catch(() => {}) } catch {}
+    this._startTuneWatchdog()
   }
 
   // Stop THIS watchdog without killing a newer one that may have replaced it while an

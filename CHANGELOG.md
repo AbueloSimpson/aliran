@@ -18,6 +18,20 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **A playing channel now finds a new source by itself when all of its peers
+  disappear.** A viewer can tune a channel entirely off relay peers while its
+  connections to the origin broadcaster fail — the networking layer then stops
+  retrying the origin and forgets it, so when the relays later went away the
+  viewer froze with no source, no error, and no new lookup for up to ten
+  minutes (seen in the field on a phone). The player engine now watches the
+  active channel's peer count after a successful tune: if it stays at zero for
+  ten seconds, the engine emits a `feed:rescan` status, runs a fresh peer
+  lookup, and re-arms the normal tune recovery ladder. In the reproduction
+  harness a stock viewer never re-connected inside 75 seconds; the fixed
+  viewer re-sources in about 12 seconds with no help from the app. New SDK
+  option `tune.rescanMs` (default 10000; 0 turns it off) and a testnet-local
+  regression lane, `npm run test:resource`.
+
 - **The desktop parental controls now have automated tests.** A channel the
   operator marks as restricted is hidden from viewers by two small functions, and
   on the desktop side nothing was checking them — the phone app has had a test

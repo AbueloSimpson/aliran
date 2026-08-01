@@ -54,6 +54,12 @@ export interface TuneConfig {
   timeoutMs?: number
   relookupMinMs?: number
   relookupMaxMs?: number
+  /**
+   * Post-tune zero-peer rescan: how long the ACTIVE live p2p feed may hold zero
+   * peers before the engine forces a fresh DHT lookup and re-arms the tune
+   * watchdog (status 'feed:rescan'). Default 10000; 0 disables.
+   */
+  rescanMs?: number
 }
 
 /** Adjacent-channel warm prefetch ("Smooth zapping"). Costs standing bandwidth — off by default. */

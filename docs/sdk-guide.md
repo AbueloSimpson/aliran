@@ -313,7 +313,7 @@ integer warms that many, lowest curated `order` first. This is
 bandwidth-cheap, since it warms *connections*, not downloads. Also
 callable later as `player.prewarm()`.
 
-### `tune: { timeoutMs?, relookupMinMs?, relookupMaxMs? }` — defaults 30 000 / 5 000 / (backoff)
+### `tune: { timeoutMs?, relookupMinMs?, relookupMaxMs?, rescanMs? }` — defaults 30 000 / 5 000 / (backoff) / 10 000
 The tune self-heal ladder's knobs. One tune attempt is bounded by
 `timeoutMs`. The first expiry evicts the cached feed open and retries
 once. The second tears down wedged peer connections (transport-alive but
@@ -322,6 +322,13 @@ surface (≤ ~90 s with defaults). While a tune is incomplete, forced DHT
 re-lookups are paced between `relookupMinMs` and `relookupMaxMs`. Raise
 `timeoutMs` only for genuinely slow networks — the ladder usually beats
 waiting.
+
+`rescanMs` guards the play **after** a successful tune. A viewer can tune
+off relay peers while its dials to the origin fail — the swarm then
+forgets the origin, and if the relays later disappear, nothing would look
+for a source again for ~10 minutes. When the active live feed holds zero
+peers for `rescanMs`, the engine emits `status` `feed:rescan`, forces a
+fresh DHT lookup and re-arms the tune ladder. Set `0` to disable.
 
 ### `zapPrefetch: boolean | object` — default off ("Smooth zapping")
 While a stream plays, keep the **newest segment** of the adjacent
