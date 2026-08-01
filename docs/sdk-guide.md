@@ -1,12 +1,15 @@
 # SDK installation & configuration
 
 The complete setup and configuration reference for building a viewer on the Aliran
-SDK. The [Player SDK overview](sdk.md) explains what the packages are. This page
-is the working manual: every install path, every option, every event, and the
-runtime controls. For how *operator* actions flow into what your app sees, read
+SDK. The [Player SDK overview](sdk.md) explains what the packages are. New to the
+SDK? Start with [Build a player](build-a-player.md) — a complete walkthrough from
+panel key to playing video, with runnable examples. This page is the working
+manual: every install path, every option, every event, and the runtime controls.
+For how *operator* actions flow into what your app sees, read
 [Operator APIs & the SDK](ops-sdk-integration.md).
 
-All packages are live on npm under the `@aliran` scope (0.1.0, MIT).
+All packages are live on npm under the `@aliran` scope (MIT): `@aliran/core`,
+`@aliran/player-sdk`, `@aliran/react-native`.
 
 ---
 

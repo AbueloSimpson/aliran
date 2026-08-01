@@ -17,7 +17,9 @@ registry under the `@aliran` scope. TypeScript definitions are included:
 `player-sdk` ships `index.d.ts`, and the RN binding ships TypeScript
 source.
 
-**Building on it?** The [installation & configuration guide](sdk-guide.md)
+**Building on it?** Start with [Build a player](build-a-player.md) — the
+complete walkthrough (panel key → login → channel list → playing video, with
+runnable code). The [installation & configuration guide](sdk-guide.md)
 is the complete manual — every install path, option, event, and
 troubleshooting. [Operator APIs & the SDK](ops-sdk-integration.md) maps
 the operator control plane to what your app observes.
