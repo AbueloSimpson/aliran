@@ -208,6 +208,11 @@ indicator, read `client/src/screens/LiveScreen.tsx` in the repository.
 Build the AAR first: see the
 [install guide](sdk-guide.md) (section "Native Android (Kotlin)").
 
+The engine runs on Android 10 and newer. For Android 5–9, your app supplies
+its own delivery path. If you migrate from a legacy P2P SDK such as
+SwarmCloud, the complete two-engine pattern is in
+[Old Android fallback](legacy-p2p-fallback.md).
+
 The pieces mirror the RN surface. `AliranBackend` runs the engine.
 `AliranPlayerView` renders the video with Media3/ExoPlayer, and contains
 the same live-offset and self-heal behavior.
@@ -229,6 +234,7 @@ if (AliranBackend.isSupported()) {                       // false below Android 
   playerView.attach(backend, streamId)
 } else {
   // Android 5-9: provide your own delivery. Plain HLS plays on ExoPlayer from 5.0.
+  // Migrating from a legacy P2P SDK? See the full pattern: legacy-p2p-fallback.md
 }
 ```
 
