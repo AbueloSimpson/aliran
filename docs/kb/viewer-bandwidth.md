@@ -40,6 +40,51 @@ downloads while keeping a cheap tick alive to observe recovery — whenever:
 Suspensions are observable (`'zap-prefetch'` events with `reason: 'metered'
 | 'stall' | 'thin'`), so apps can badge the state if they want.
 
+## Churn headroom (why playback survives a peer that leaves)
+
+A live viewer keeps the **whole live window** of the active stream on the
+device: the engine replicates each segment as the broadcaster publishes it,
+not when the player asks for it. The player also sits ~10 s behind the live
+edge (desktop and Android both pin this offset). Together they form the
+survival budget: if the peer you pull from leaves, everything between your
+playhead and the live edge is already local, and the engine has seconds to
+find another source before the picture can freeze.
+
+Costs, so you can budget them:
+
+- **Steady state: none.** The stream still downloads at 1× bitrate — the
+  engine only fetches it earlier.
+- **Per zap: one window of data.** At 2 Mbps that is ~4 MB per channel
+  change at the 16 s default window, and ~6 MB at the recommended 24 s
+  window. On a **metered** network the engine therefore
+  keeps the small 3-segment read-ahead instead (same `setNetworkProfile`
+  signal that gates smooth zapping) — a metered viewer trades churn
+  headroom for data cost.
+- **Delay: ~10 s behind true live.** This is the deliberate trade. Zap
+  speed does not change — playback starts thin and fills toward the edge.
+
+## Disk
+
+The viewer's store is a cache of replicas. It stays small by itself:
+
+- **While you watch:** the store holds about **one live window** of media
+  per cached feed, plus a small amount of metadata. When a segment leaves
+  the live window, the engine clears its blocks from disk automatically.
+  This is safe: the broadcaster already cleared those blocks at the
+  source, so no peer can fetch them again.
+- **When a feed leaves the cache:** the engine keeps the last 12 watched
+  feeds warm for fast zaps. When it evicts a feed from that cache, it
+  deletes the feed's data from disk.
+- **After login:** the engine deletes the replicas of feeds that are no
+  longer in the catalog (for example, a deleted or re-keyed channel).
+- **VOD titles are the exception.** A viewer can seek a VOD title at any
+  point, so the engine keeps its replica as a cache and does not clear it.
+
+If the store still grows too large, or becomes corrupt, delete it by
+hand. That is always safe — the store holds only replicas. See "The
+on-device store is a disposable cache" in the client build guide
+(`docs/client-build.md`).
+
 ## Upload
 
 A default viewer **re-seeds**: feed topics are joined announced, so blocks

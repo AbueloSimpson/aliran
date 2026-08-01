@@ -16,7 +16,8 @@
 // Completion is mount-scoped (epoch guard): events still held by an outgoing hls
 // instance can neither finish a tune nor feed the stall watchdog.
 //
-// SELF-HEAL LADDER: a live HLS window can be tiny (16 s on the reference deploy), so
+// SELF-HEAL LADDER: a live HLS window can be tiny (16-24 s on the reference deploy;
+// 24 s recommended), so
 // a network blip longer than the window slides it past the playhead — no error fires,
 // the picture just freezes. Once a mount has played, a playhead still for
 // stallTimeoutMs (while not paused) forces a remount at the live edge; if the resync
@@ -248,9 +249,14 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
     if (isHlsUrl(url) && Hls.isSupported()) {
       hls = new Hls({
         enableWorker: true,
-        // Live tuning: start near the edge, keep a bounded buffer. The SDK reads the
-        // live edge ahead server-side, so a small client buffer keeps zaps fast.
-        liveSyncDurationCount: 3,
+        // Live tuning: 5 segments (~10 s) behind the edge = churn headroom. The SDK
+        // replicates the whole live window on-device, so everything between the
+        // playhead and the edge survives a P2P source dying; measured re-source is
+        // seconds-scale, well inside this offset. Playback starts as soon as the
+        // first segments land, so zaps stay fast — the offset costs live delay,
+        // not zap time. liveMaxLatency stays unset: a fixed bound would force
+        // seeks on deployments running a narrower playlist window.
+        liveSyncDurationCount: 5,
         maxBufferLength: 30,
         backBufferLength: 30,
         fragLoadingMaxRetry: 6,

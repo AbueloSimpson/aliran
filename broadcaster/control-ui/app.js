@@ -905,7 +905,7 @@ async function editChannel (id) {
     { name: 'audioSync', label: 'Correct audio drift', type: 'select', options: ['no', 'yes'], value: c.transcode?.audioSync ? 'yes' : 'no', title: 'On a 24/7 channel a source whose audio clock runs slightly off video walks visibly out of sync over hours, and nothing notices because every segment is individually fine. Re-encodes audio, so it cannot be combined with audio codec "copy".' },
     { name: 'tsMode', label: 'Timestamp handling', type: 'select', options: [{ value: 'default', label: 'leave alone' }, { value: 'avoidNegative', label: 'rebase to zero' }, { value: 'copyTs', label: 'preserve source timeline' }], value: c.transcode?.copyTs ? 'copyTs' : (c.transcode?.avoidNegativeTs ? 'avoidNegative' : 'default'), title: 'Rebase fixes a stream that starts at a negative timestamp (common after generating PTS). Preserve keeps the upstream timeline instead. They are opposite strategies, so this is one control rather than two checkboxes.' },
     { name: 'hlsTime', label: 'HLS segment seconds (1-30)', type: 'number', value: c.hls?.time },
-    { name: 'hlsListSize', label: 'HLS window segments (2-60)', type: 'number', value: c.hls?.listSize }
+    { name: 'hlsListSize', label: 'HLS window segments (2-64)', type: 'number', value: c.hls?.listSize }
   ], {
     body: `<p class="muted"><b>${esc(c.title)}</b>${(c.category || []).length ? ' · ' + esc((c.category || []).join(', ')) : ''}<br>
            Title, description and category are <b>panel-authoritative</b> — edit them in the panel

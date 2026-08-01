@@ -166,7 +166,46 @@ phone + Android TV, and the Windows desktop player).
   new lane in `test:reports` (impostor never captures/starves the slot; a
   report lands after re-arm).
 
+### Changed
+
+- **Viewers now hold ~10 s of churn headroom** — a live viewer keeps enough
+  media on the device to play through the loss of the peer it pulls from. Three
+  parts, all defaults an operator or host can override:
+  - The engine replicates the **whole live window** of the active stream to the
+    device as the segments appear (before: only the newest 3 segments). What sits
+    between the playhead and the live edge can no longer disappear when an
+    upstream peer leaves. Steady-state bandwidth is unchanged; the cost is one
+    window of data per zap, so on a metered network the engine keeps the old
+    3-segment read-ahead.
+  - The desktop player now sits 5 segments (~10 s) behind the live edge
+    (before: 3).
+  - Both Android players pin their live offset to the same ~10 s through
+    ExoPlayer's live configuration (before: library default) — the React Native
+    app via `bufferConfig.live`, and the native `aliran-kit` view directly. Zap
+    speed does not change — playback still starts with ~1 s in hand and fills
+    toward the edge.
+  The trade is deliberate: every viewer watches ~10 s behind true live in
+  exchange for riding out seconds-scale peer churn without a frozen picture. A
+  window of 12 segments (`HLS_LIST_SIZE=12`, 24 s) is now the recommended
+  broadcaster setting (and the `.env.example` default for new installs) to give
+  the offset comfortable margin; the live read-ahead is capped at 32 concurrent
+  segment downloads, and the per-channel `hlsListSize` bound was aligned to the
+  env bound (2–64, was 2–60) across the broadcaster, the MCP tools, and the
+  control UI.
+
 ### Added
+
+- **The viewer's disk use is now bounded** — before, a viewer accumulated every
+  segment it ever downloaded (~0.9 GB per watched hour at 2 Mbps) and a feed's
+  local data survived forever, even after the channel rotated to a new feed key.
+  Three mechanisms, mirroring what the repeater already did for its own storage:
+  segment blocks are cleared automatically once they leave the live window (the
+  broadcaster reclaimed them at the source already — no peer could fetch them);
+  a feed evicted from the warm-feed cache is purged from disk, not just closed;
+  and at login the engine sweeps away replicas of feed keys that are no longer
+  in the catalog. Steady state is now about one live window per cached feed
+  plus metadata. VOD titles are never cleared. Covered by the new
+  `test:reclaim` lane.
 
 - **Encrypted key escrow: a supported way to get the panel identity off the
   box** — `DATA_DIR/keys/` is the only thing in a deployment with no replacement

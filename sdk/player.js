@@ -335,6 +335,7 @@ export class AliranPlayer extends Emitter {
     this._statusTimer = null
     this._assetsOpen = null
     this._purging = null
+    this._replicaSweep = null // single-flight stale-namespace sweep, once per engine (see _sweepStaleReplicas)
     this._streams = []
     // External VOD provider (S53): the panel-delivered config from the last login, or
     // null. The engine only CARRIES it — it never calls the provider (the host app does,
@@ -424,6 +425,7 @@ export class AliranPlayer extends Emitter {
     // Additive — every existing listener takes one argument and is untouched.
     this.emit('streams', streams, this._vod || undefined)
     if (this._prewarmN) this.prewarm().catch(() => {}) // background warm the lineup — never blocks login
+    this._sweepStaleReplicas() // background disk sweep of catalog-orphaned replicas — never blocks or fails login
     return streams
   }
 
@@ -593,8 +595,11 @@ export class AliranPlayer extends Emitter {
 
   // Host-supplied network profile (RN NetInfo etc.). On a metered/expensive network
   // the gate suspends prefetch immediately; prewarm connections stay (those are
-  // ~free) — only the standing segment replication stops. Lifts as soon as the host
-  // reports the network cheap again (no clean-run wait: it is not a health signal).
+  // ~free) — only the standing segment replication stops. The ACTIVE stream's
+  // full-window read-ahead also narrows to the serve-core default (the
+  // liveReadAhead closure in _requestHandler reads this flag per playlist serve).
+  // Lifts as soon as the host reports the network cheap again (no clean-run
+  // wait: it is not a health signal).
   setNetworkProfile ({ expensive } = {}) {
     this._netExpensive = !!expensive
     if (this._netExpensive && this._zapTimer) this._suspendZap('metered')
@@ -976,6 +981,7 @@ export class AliranPlayer extends Emitter {
           await d.ready()
           return d
         })
+        this._trackReplica(feedKeyHex) // hint file for the stale-namespace sweep (see _sweepStaleReplicas)
         // pull always; announce (re-seed to other viewers) only under 'reseed' policy
         const discovery = this._swarm.join(drive.discoveryKey, { server: this._uploadPolicy !== 'client-only', client: true })
         return { drive, discovery }
@@ -1029,8 +1035,102 @@ export class AliranPlayer extends Emitter {
     Promise.resolve(feed).then((f) => {
       if (!f || !f.drive) return
       if (this._feedDrive === f.drive) { this._feedDrive = null; this._feedDiscovery = null }
-      f.drive.close().catch(() => {})
+      // Eviction (cache overflow / rotation-away / wedged open) purges the replica's
+      // STORAGE, not just the handles: drive.purge() (hyperdrive 11) closes the
+      // drive and deletes both cores (db + blobs) from disk, so an evicted feed
+      // costs zero bytes instead of a stranded namespace forever. stop() and
+      // _closeFeeds deliberately do NOT purge — a normal app restart must keep its
+      // warm caches; only eviction pays the cold-restart cost. Never throws: a
+      // refused purge falls back to the old plain close.
+      f.drive.purge().catch(() => { try { f.drive.close().catch(() => {}) } catch {} })
     }).catch(() => {})
+  }
+
+  // --- viewer disk bound: replica namespace tracking + stale-namespace sweep ---
+
+  // Corestore cannot enumerate namespaces, so remember every feed namespace this
+  // store ever created in a hint file beside it. Best-effort ON PURPOSE: it is a
+  // HINT — the sweep only ever purges keys listed here AND gone from the catalog,
+  // so a lost/corrupt file means less cleanup, never wrong cleanup. Plain
+  // read-modify-write (no atomicity needed for a hint), and every fs call is
+  // wrapped: the worklet fs is Bare's and must never throw into an open.
+  _replicasPath () { return String(this._storeDir).replace(/[\\/]+$/, '') + '/replicas.json' }
+
+  _readReplicas () {
+    try {
+      const list = JSON.parse(String(this._fs.readFileSync(this._replicasPath())))
+      return Array.isArray(list) ? list.filter((k) => typeof k === 'string' && k) : []
+    } catch { return [] }
+  }
+
+  _writeReplicas (list) {
+    try { this._fs.writeFileSync(this._replicasPath(), JSON.stringify(list)) } catch {}
+  }
+
+  _trackReplica (feedKeyHex) {
+    try {
+      const list = this._readReplicas()
+      if (list.includes(feedKeyHex)) return
+      list.push(feedKeyHex)
+      this._writeReplicas(list)
+    } catch {}
+  }
+
+  // Purge replica namespaces whose feed is GONE from the catalog. The eviction purge
+  // (_evictFeed) bounds the CURRENT session's disk, but a channel deleted or re-keyed
+  // while the app was closed leaves its namespace stranded forever — nothing would
+  // ever open it again, and corestore cannot enumerate namespaces to find it. The
+  // replicas.json hint (see _trackReplica) is the ledger of what exists. Runs once
+  // per engine instance, fire-and-forget after a successful login (entitlements and
+  // the replicated catalog are known then). CONSERVATIVE by construction — a key is
+  // purged only when ALL of these hold:
+  //   - it is tracked in the hint file,
+  //   - it is not the ACTIVE feed and not in the open-feed cache,
+  //   - it is absent from the login entitlements (both snapshot and live catalog
+  //     read) AND from every replicated catalog record (any entitlement).
+  // Any failure keeps the key tracked for the next sweep; a failure building the
+  // keep-set aborts the whole sweep (an incomplete keep-set must never purge).
+  // LIMIT (documented in docs/kb/viewer-bandwidth.md): a namespace created before
+  // this hint file existed is never swept — the manual store delete in
+  // docs/client-build.md stays the recovery path.
+  _sweepStaleReplicas () {
+    if (!this._replicaSweep) this._replicaSweep = this._doSweepStaleReplicas().catch(() => {})
+    return this._replicaSweep
+  }
+
+  async _doSweepStaleReplicas () {
+    const tracked = this._readReplicas()
+    if (!tracked.length || !this._store) return
+    const keep = new Set()
+    try {
+      // Every feedKey any replicated catalog record names (entitled or not).
+      for await (const node of this._panelBee.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+        if (node && node.value && node.value.feedKey) keep.add(node.value.feedKey)
+      }
+      // Login-snapshot keys plus the live catalog view of each entitled stream.
+      for (const [id, k] of this._entitled) {
+        if (k && k.feedKey) keep.add(k.feedKey)
+        const cur = await this._currentFeedKey(id, k && k.feedKey)
+        if (cur) keep.add(cur)
+      }
+    } catch { return } // incomplete keep-set — purge nothing
+    for (const cacheKey of this._feeds.keys()) keep.add(cacheKey.slice(0, cacheKey.indexOf(':')))
+    if (this._active && this._active.feedKey) keep.add(this._active.feedKey)
+    const survivors = []
+    for (const keyHex of tracked) {
+      if (keep.has(keyHex)) { survivors.push(keyHex); continue }
+      try {
+        if (!this._store) { survivors.push(keyHex); continue } // purge/stop raced the sweep
+        // Minimal open over the namespace, then drive.purge() (ready → close →
+        // delete both cores' storage). No encryption key needed — purge is a
+        // storage operation. Opening a SECOND drive over an already-open namespace
+        // would deadlock, but the keep-set above excludes every open feed.
+        const d = new Hyperdrive(this._store.namespace('replica:' + keyHex), b4a.from(keyHex, 'hex'))
+        await d.ready()
+        await d.purge()
+      } catch { survivors.push(keyHex) } // keep it tracked; the next sweep retries
+    }
+    this._writeReplicas(survivors)
   }
 
   // Current catalog view of a stream, bounded and fallback-safe. feedKey: follow the
@@ -1816,6 +1916,21 @@ export class AliranPlayer extends Emitter {
       }
       return this._feedDrive ? { drive: this._feedDrive, path: p, media: true } : null
     }, {
+      // Churn headroom: replicate the ACTIVE stream's whole live window on-device
+      // (not just the newest 3 segments), so an upstream peer's death cannot take
+      // away media between the playhead and the live edge — the player's live
+      // offset becomes the survival budget. Re-evaluated per playlist serve: on a
+      // metered network the burst cost of a zap (one window × bitrate) is real
+      // money, so fall back to the serve-core default there.
+      liveReadAhead: () => (this._netExpensive ? 3 : Infinity),
+      // Disk bound (the flip side of the full-window read-ahead above): clear the
+      // blob blocks below the live window as playlists serve, so the viewer's disk
+      // holds ~one live window per feed instead of growing ~1× bitrate forever
+      // (≈0.9 GB/hour at 2 Mbps). Safe by construction: the cleared blocks are
+      // already unfetchable swarm-wide — the broadcaster cleared them at rotation.
+      // Feed target only (media: true) and live playlists only; VOD is never
+      // reclaimed (see the Reclaim class in serve.js).
+      reclaim: true,
       // Corruption can also surface at read time (the blobs core opens lazily): heal
       // in the background; the host player's retry re-opens the feed on the fresh store.
       onError: (err) => { if (isCorruptionError(err)) this._purge().catch(() => {}) }

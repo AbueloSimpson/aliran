@@ -100,8 +100,9 @@ Check these causes in order of likelihood:
 - **Symptom:** the picture stops dead mid-watch. Peer count and worklet
   heartbeats stay healthy, the UI stays alive, and no error fires. Zapping
   away and back fixes it.
-- **Cause:** the HLS live window is short (8×2 s = 16 s on the reference
-  deploy). A network blip longer than the window slides it past
+- **Cause:** the HLS live window is short (the code default is 8×2 s =
+  16 s; reference deploys now run 12×2 s = 24 s). A network blip longer
+  than the window slides it past
   ExoPlayer's position, and react-native-video raises **no error event**
   for that — the surface just freezes.
 - **Fix (shipped):** `<AliranVideo>` watches the playhead. Once a mount has
@@ -117,10 +118,15 @@ Check these causes in order of likelihood:
   the feed and dials fresh. The engine's re-armed tune watchdog then drives
   the outcome — playback resumes, or a friendly error replaces the silently
   frozen frame.
-- **Widen the margin (operators):** deepening the live window
-  (`HLS_LIST_SIZE` 12–16) gives clients more room to recover from blips —
-  the same lever as the rebuffer cushion in
+- **Widen the margin (operators):** the standard `HLS_LIST_SIZE=12` (24 s)
+  gives clients room to recover from blips; go to `16` for very flaky
+  viewer networks — the same lever as the rebuffer cushion in
   [sizing the segment window](feed-buffer.md#sizing-the-segment-window-hls_time-hls_list_size).
+
+!!! note "The guide can change before the picture does"
+    The viewer apps play ~10 s behind the live edge. The programme guide's
+    "now playing" label follows the schedule clock, so it can change up to
+    ~10 s before the picture does. This is normal, not a fault.
 
 ## Channel zapping is slow, or flipping back to a channel hangs
 
@@ -142,8 +148,9 @@ Check these causes in order of likelihood:
   2. Requests for a not-yet-replicated playlist or segment are **held and
      served on arrival** (bounded), which kills the old 404-to-2.5 s-retry
      quantization.
-  3. Serving a playlist **reads ahead its newest 3 segments in parallel**,
-     so replication overlaps the player's sequential fetches.
+  3. Serving a live playlist now **replicates the whole live window in
+     parallel** for the active stream (metered networks keep the newest-3
+     read-ahead), so replication overlaps the player's sequential fetches.
   4. ExoPlayer starts at **~1 s buffered** instead of ~2.5 s (the
      `<AliranVideo>` `bufferConfig` default). The stall-resync/self-heal
      ladder covers the slightly higher rebuffer risk this creates.

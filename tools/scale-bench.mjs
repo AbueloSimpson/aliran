@@ -130,7 +130,7 @@ async function main () {
 
   // Let the rolling window FILL and the initial tree settle before measuring, so store growth
   // reflects the steady-state metadata creep — not the one-time window fill (listSize x time).
-  const fillMs = (8 * 2 + 6) * 1000
+  const fillMs = (config.hls.listSize * config.hls.time + 6) * 1000
   log(`settling ${fillMs / 1000}s (window fill) before the ${SECONDS}s steady-state sample...\n`)
   await sleep(fillMs)
 

@@ -38,12 +38,12 @@ import Video, {
 } from 'react-native-video'
 import { AliranBackend, type BackendMessage } from './backend'
 
-// Track selection re-exported here so the host app imports these from
-// @aliran/react-native (the single binding surface) instead of reaching into
-// react-native-video directly. SelectedTrackType is a runtime enum (value), the rest
-// are types. index.ts re-exports them again for the package entry point.
+// Track selection (and the nested bufferConfig shape) re-exported here so the host
+// app imports these from @aliran/react-native (the single binding surface) instead of
+// reaching into react-native-video directly. SelectedTrackType is a runtime enum
+// (value), the rest are types. index.ts re-exports them again for the package entry point.
 export { SelectedTrackType }
-export type { SelectedTrack, AudioTrack, TextTrack }
+export type { SelectedTrack, AudioTrack, TextTrack, BufferConfig }
 
 const RETRY_MS = 2500
 // Start-buffer tuning (zap latency): ExoPlayer's DefaultLoadControl waits for
@@ -51,11 +51,23 @@ const RETRY_MS = 2500
 // most of the perceived zap time once bytes flow. 1 s is enough to start (every
 // segment begins on a keyframe), and the slightly higher rebuffer risk is covered
 // by the self-heal ladder below (stall resync → transport teardown). After a
-// rebuffer, ask for a bit more headroom before resuming. Hosts override via the
-// bufferConfig prop (merged over these defaults).
-const BUFFER_CONFIG = { bufferForPlaybackMs: 1000, bufferForPlaybackAfterRebufferMs: 1500 }
-// Live-edge freeze self-heal: a live HLS window can be tiny (16 s on the reference
-// deploy), so a network blip longer than the window slides it past the playhead —
+// rebuffer, ask for a bit more headroom before resuming.
+// `live` pins the ExoPlayer live offset (churn headroom): sit ~10 s behind the
+// edge so playback rides out a P2P source dying and being replaced — measured
+// re-source is seconds-scale, and the engine replicates the whole live window
+// on-device, so everything between playhead and edge survives an upstream loss.
+// Starts thin (1 s in hand at the target offset) and fills toward the edge, so
+// zaps stay fast; minOffsetMs lets ExoPlayer trade a little headroom before it
+// stalls. Needs a live window comfortably wider than the offset (fine at the
+// 16 s default window; the reference deploy guidance is 24 s). Hosts override
+// via the bufferConfig prop (merged over these defaults).
+const BUFFER_CONFIG = {
+  bufferForPlaybackMs: 1000,
+  bufferForPlaybackAfterRebufferMs: 1500,
+  live: { targetOffsetMs: 10000, minOffsetMs: 4000 }
+}
+// Live-edge freeze self-heal: a live HLS window can be tiny (16-24 s on the
+// reference deploy), so a network blip longer than the window slides it past the playhead —
 // react-native-video fires NO error, the picture just freezes while everything else
 // stays healthy (S22 2026-07-16). Once a mount has actually played, a playhead that
 // stops advancing for this long (while not paused) forces a remount: a fresh playlist
@@ -131,8 +143,10 @@ export interface AliranVideoProps {
   /** The available subtitle/CC text tracks the player found. */
   onTextTracks?: (tracks: TextTrack[]) => void
   /** How long the playhead may sit still (while playing) before a resync; 0 disables.
-   *  Default 12000 — under the smallest deployed live window (8×2 s). Auto-disabled
-   *  while the engine reports the served record is a vod title (recordType 'vod'). */
+   *  Default 12000 — the ladder fires once the ~10 s of local headroom the live
+   *  offset keeps in hand is exhausted (at the recommended 12-segment window the
+   *  total time-to-heal is ~22 s — intended). Auto-disabled while the engine
+   *  reports the served record is a vod title (recordType 'vod'). */
   stallTimeoutMs?: number
   /** ExoPlayer load-control overrides, merged over the zap-tuned defaults
    *  (bufferForPlaybackMs 1000 / bufferForPlaybackAfterRebufferMs 1500). */

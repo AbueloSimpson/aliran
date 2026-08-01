@@ -65,7 +65,9 @@ export const config = {
   // (the player prebuffers ~3 × HLS_TIME before playback); 8 still gives peers a real
   // shareable window for P2P re-seeding. The playlist is the source of truth and
   // everything that rotates out is reclaimed (see hls.js reclaimExpiredBlobs). Deepen
-  // HLS_LIST_SIZE (12–16) for large swarms — see docs/kb/feed-buffer.md.
+  // HLS_LIST_SIZE (12–16) for large swarms AND for viewer live-offset margin — the
+  // players sit ~10 s behind the edge for churn headroom, which needs a window
+  // comfortably wider than that offset — see docs/kb/feed-buffer.md.
   hls: { time: int(process.env.HLS_TIME, 2), listSize: int(process.env.HLS_LIST_SIZE, 8) },
   // Feed buffer mode. 'disk' (default) = persistent feed identity: the feedKey and its
   // DHT topic stay STABLE across restarts, so returning viewers rejoin a warm topic and
