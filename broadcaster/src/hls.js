@@ -516,7 +516,13 @@ export function hlsMuxArgs (hls, outDir) {
     '-f', 'hls',
     '-hls_time', String(hls.time),
     '-hls_list_size', String(hls.listSize),
-    '-hls_flags', 'delete_segments+append_list+omit_endlist+discont_start',
+    // program_date_time: EXT-X-PROGRAM-DATE-TIME per segment. ExoPlayer (media3)
+    // computes its LIVE OFFSET against these wall-clock tags — without them the
+    // Android apps' targetOffsetMs silently no-ops and the player sits at the
+    // live edge with ~no churn headroom (measured on the S22: froze ~5 s after
+    // a source kill instead of riding the ~10 s offset; hls.js is unaffected —
+    // it counts segments). Costs ~40 bytes per playlist line.
+    '-hls_flags', 'delete_segments+append_list+omit_endlist+discont_start+program_date_time',
     '-hls_segment_filename', path.join(outDir, 'seg%d.ts'),
     path.join(outDir, 'index.m3u8')
   ]
