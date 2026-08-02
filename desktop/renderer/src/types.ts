@@ -23,6 +23,9 @@ export interface Stream {
   epgUrl?: string
   /** This channel's id INSIDE the epgUrl feed (matches feed `channels[].id`). */
   epgId?: string
+  /** P2P guide base (loopback /epg/v1/<id> from the replicated guide drive) — tried
+   *  before epgUrl; a 404 falls back to https. */
+  guideBase?: string
   /** Record class (S8a): 'vod' = an on-demand library title (seek/pause UI, no
    *  live-edge machinery); 'live' (or absent on old records). */
   type?: 'live' | 'vod'

@@ -107,6 +107,7 @@ export class Repeater {
     this._bee = null
     this._watcher = null
     this._mirrors = new Map() // streamId -> mirror (see _startMirror)
+    this._epgMirror = null // { key, blobsKey, cores: [], discoveries: [] } — full guide mirror (see _reconcileEpg)
     this._timers = []
     this._sleepers = new Set()
     this._reconciling = null
@@ -146,7 +147,12 @@ export class Repeater {
     const panelKey = b4a.from(this.config.panelPubKey, 'hex')
     this._bee = new Hyperbee(this._store.get({ key: panelKey }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
     await this._bee.ready()
-    this._swarm.join(hcrypto.hash(panelKey), { client: true, server: false })
+    // announce (opt-in): ALSO advertise this box on the catalog topic, so a cold
+    // viewer can bootstrap the catalog (and any mirrored guide) from here while the
+    // panel is down — the relay role. The bee is signed by the panel key viewers
+    // pin, so serving it grants availability, never authority. Default stays
+    // client-only: announcing exposes this box's IP on the catalog topic.
+    this._swarm.join(hcrypto.hash(panelKey), { client: true, server: this.config.announce === true })
     this._log('joined panel topic; waiting for the public catalog to replicate…')
     await this._awaitLength(this._bee.core, () => this._closed, 'panel catalog')
     if (this._closed) return
@@ -232,6 +238,8 @@ export class Repeater {
       if (!w) await this._dropMirror(id, 'removed from catalog / deselected', { purge: true })
       else if (w.feedKey !== m.feedKey) await this._dropMirror(id, 'feedKey rotated', { purge: true })
     }
+    if (this.config.epg) await this._reconcileEpg()
+
     for (const [id, w] of wanted) {
       const m = this._mirrors.get(id)
       if (!m) {
@@ -245,6 +253,59 @@ export class Repeater {
         await this._startMirror(id, w)
       }
     }
+  }
+
+  // --- guide mirror (opt-in: config.epg) ---
+
+  // Mirror the panel's program-guide drive IN FULL and announce its topics. Unlike
+  // channel mirrors (rolling live tails), the guide is small (~tens of MiB) and a
+  // cold viewer needs ALL of it — so both cores download from block 0 with no
+  // retention sweep. Still a blind block mirror: the drive is never opened; the
+  // blobs-core key comes from the meta/epgKey record itself (published for exactly
+  // this purpose). The EPG service rotates the drive on an epoch — a changed key
+  // purges the old mirror and starts the new one, picked up by the safety-net
+  // reconcile within reconcileIntervalMs (rotation is ~monthly; promptness is not
+  // worth a second watcher).
+  async _reconcileEpg () {
+    let rec = null
+    try {
+      const node = await Promise.race([
+        this._bee.get('meta/epgKey'),
+        new Promise((resolve) => setTimeout(() => resolve(null), 15000)) // sparse get can park on a dead panel link
+      ])
+      rec = node?.value || null
+    } catch { return }
+    const key = rec && HEX64.test(rec.key || '') ? rec.key.toLowerCase() : null
+    const blobsKey = rec && HEX64.test(rec.blobsKey || '') ? rec.blobsKey.toLowerCase() : null
+    const cur = this._epgMirror
+    if (cur && cur.key === key && cur.blobsKey === blobsKey) return
+    if (cur) await this._dropEpgMirror(key ? 'guide epoch rotated' : 'guide pointer removed')
+    if (!key) return
+    const mirror = { key, blobsKey, cores: [], discoveries: [], ranges: [], served: 0 }
+    this._epgMirror = mirror
+    for (const k of [key, blobsKey].filter(Boolean)) {
+      const core = this._store.get({ key: b4a.from(k, 'hex') })
+      await core.ready()
+      if (this._closed || this._epgMirror !== mirror) { try { await core.close() } catch {}; return }
+      core.on('upload', (_i, byteLength) => { mirror.served += byteLength || 0 })
+      mirror.cores.push(core)
+      mirror.discoveries.push(this._swarm.join(core.discoveryKey, { server: true, client: true }))
+      mirror.ranges.push(core.download({ start: 0, end: -1 })) // full mirror, follows appends
+    }
+    this._log(`[epg] guide mirror started (drive ${key.slice(0, 8)}…${blobsKey ? '' : '; no blobsKey in the pointer — metadata only'})`)
+  }
+
+  async _dropEpgMirror (reason) {
+    const m = this._epgMirror
+    if (!m) return
+    this._epgMirror = null
+    for (const r of m.ranges) { try { r.destroy() } catch {} }
+    for (const d of m.discoveries) { try { await d.destroy() } catch {} }
+    for (const c of m.cores) {
+      // A rotated-out guide will never be served again — free its blocks.
+      try { await c.purge() } catch { try { await c.close() } catch {} }
+    }
+    this._log(`[epg] guide mirror dropped (${reason})`)
   }
 
   // --- mirrors ---
@@ -414,6 +475,15 @@ export class Repeater {
     return {
       panelPubKey: this.config.panelPubKey,
       selection: this.selection,
+      announce: this.config.announce === true,
+      epg: this._epgMirror
+        ? {
+            key: this._epgMirror.key,
+            blobsKey: this._epgMirror.blobsKey,
+            lengths: this._epgMirror.cores.map((c) => c.length),
+            servedBytes: this._epgMirror.served
+          }
+        : null,
       retentionSeconds: this.config.retentionSeconds,
       swarm: {
         publicKey: this._swarm ? b4a.toString(this._swarm.keyPair.publicKey, 'hex') : null,
@@ -481,10 +551,16 @@ export class Repeater {
         try { tail.headRange?.destroy() } catch {}
       }
     }
+    // The guide mirror is kept on disk too (a restart re-downloads only what changed);
+    // just tear down its live ranges before the swarm goes.
+    const epgMirror = this._epgMirror
+    this._epgMirror = null
+    if (epgMirror) for (const r of epgMirror.ranges) { try { r.destroy() } catch {} }
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
     for (const m of this._mirrors.values()) {
       for (const tail of m.tails.values()) { try { await tail.core.close() } catch {} }
     }
+    if (epgMirror) for (const c of epgMirror.cores) { try { await c.close() } catch {} }
     this._mirrors.clear()
     const bee = this._bee
     this._bee = null

@@ -82,13 +82,13 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 // Renders "Now" (with an elapsed bar) + a short "Up next" list when the channel has
 // a guide that resolved; otherwise the placeholder. Never blocks on the fetch.
 function EpgGuide ({ stream }: { stream: Stream }) {
-  const { data, loaded } = useEpg(stream.epgUrl, stream.epgId)
+  const { data, loaded } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const has = !!(data && (data.now || data.next.length))
   return (
     <div className="epg-slot">
       <div className="epg-heading">PROGRAM GUIDE</div>
       {!has
-        ? <div className="epg-empty">{stream.epgUrl && !loaded ? 'Loading guide…' : 'No program information'}</div>
+        ? <div className="epg-empty">{(stream.epgUrl || stream.guideBase) && !loaded ? 'Loading guide…' : 'No program information'}</div>
         : (
           <>
             {data!.now && <NowRow program={data!.now} />}

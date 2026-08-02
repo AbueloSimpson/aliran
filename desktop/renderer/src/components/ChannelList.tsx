@@ -108,7 +108,7 @@ const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRo
   const duration = vod ? formatDuration(stream.durationSec) : ''
   // Now-playing line: the airing EPG program when the channel has a guide, else the
   // catalog synopsis. Guide-less channels never fetch.
-  const { data } = useEpg(stream.epgUrl, stream.epgId)
+  const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const nowText = data?.now?.title || stream.description
   return (
     <div

@@ -5,17 +5,18 @@
 import { useState, useEffect } from 'react'
 import { epg, type NowNext } from './epg'
 
-export function useEpg (epgUrl?: string, epgId?: string): { data: NowNext | null; loaded: boolean } {
+export function useEpg (epgUrl?: string, epgId?: string, guideBase?: string): { data: NowNext | null; loaded: boolean } {
   const [data, setData] = useState<NowNext | null>(null)
   const [loaded, setLoaded] = useState(false)
   useEffect(() => {
     let alive = true
     setData(null); setLoaded(false)
-    if (!epgUrl || !epgId) { setLoaded(true); return }
-    const run = () => epg.getNowNext(epgUrl, epgId).then((d) => { if (alive) { setData(d); setLoaded(true) } })
+    // The P2P guide (guideBase) needs no epgUrl/epgId — either source alone works.
+    if (!guideBase && (!epgUrl || !epgId)) { setLoaded(true); return }
+    const run = () => epg.getNowNext(epgUrl, epgId, guideBase).then((d) => { if (alive) { setData(d); setLoaded(true) } })
     run()
     const timer = setInterval(run, 30000)
     return () => { alive = false; clearInterval(timer) }
-  }, [epgUrl, epgId])
+  }, [epgUrl, epgId, guideBase])
   return { data, loaded }
 }

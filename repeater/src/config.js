@@ -16,6 +16,7 @@ function loadDotEnv () {
 loadDotEnv()
 
 const int = (v, d) => (v === undefined || v === '' ? d : parseInt(v, 10))
+const bool = (v, d) => (v === undefined ? d : /^(1|true|yes)$/i.test(v))
 // An "MB" env knob in bytes. Garbage or a negative value disables that direction rather
 // than throwing — socket tuning must never be the reason the repeater fails to boot.
 const mib = (v, d) => { const n = int(v, d); return Number.isFinite(n) && n > 0 ? n * 1048576 : 0 }
@@ -43,6 +44,17 @@ export const config = {
   // clamped without error; a warning at startup names the exact sysctl. See net-tune.js.
   swarmRcvBuf: mib(process.env.SWARM_RCVBUF_MB, 4),
   swarmSndBuf: mib(process.env.SWARM_SNDBUF_MB, 4),
+  // Announce this box on the PANEL CATALOG topic ({server:true}), so cold viewers
+  // can bootstrap the catalog (and any mirrored guide) from here while the panel is
+  // down — the "relay" role. Default OFF: announcing makes this box's IP
+  // discoverable on the catalog topic (the same exposure the panel already has);
+  // an operator turns that on deliberately. Everything served is panel-signed
+  // public data — announcing adds availability, never authority.
+  announce: bool(process.env.ANNOUNCE, false),
+  // Mirror the panel's program-guide drive (meta/epgKey) IN FULL and serve it on
+  // its own topics. Raw blind blocks like every other mirror — the guide drive is
+  // public, but this box still never opens it. Default OFF.
+  epg: bool(process.env.EPG, false),
   // Periodic one-line status log per channel. 0 disables it.
   statusIntervalSeconds: int(process.env.STATUS_INTERVAL_SECONDS, 60),
   // Opt-in health/metrics HTTP server. Default OFF (0) — a stock repeater opens NO

@@ -59,7 +59,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
   // What's on NOW from the program guide (S27) — the airing program is more useful on
   // the bar than the channel synopsis. Falls back to the description ("via demotv")
   // for channels without an EPG. The channel synopsis still lives in the Info panel.
-  const { data } = useEpg(stream.epgUrl, stream.epgId)
+  const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const subtitle = data?.now?.title || stream.description
   return (
     <View style={styles.wrap} pointerEvents="box-none">

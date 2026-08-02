@@ -314,6 +314,62 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
     return json({ ok: true })
   })
 
+  // EPG service publishes its guide-drive pointer → meta/epgKey (the epg/ deployable's
+  // ONE panel write; see epg/src/register.js). Same challenge-sign convention as
+  // `register`, but named-publisher ONLY (no legacy shared-key path — this RPC is
+  // newer than enrollment, so nothing legacy can call it) and the entry's scopes must
+  // match the pseudo-id `epg`: a guide key must never be able to touch a stream
+  // registration, and vice versa. The pointer follows meta/assetsKey (src/store.js) —
+  // the `meta/` prefix sorts outside every catalog/ scan range (see the key-ordering
+  // notes in src/ops.js). Byte-compared before the put (S29 frugality): the EPG
+  // service re-asserts on every boot, and payload fields are stable per epoch, so a
+  // re-assert appends nothing — the bee costs ~one block per rotation.
+  rpc.respond('setEpgKey', async (reqBuf) => {
+    if (!db || !dataDir) return json({ error: 'unavailable' })
+    let req
+    try { req = JSON.parse(b4a.toString(reqBuf)) } catch { return json({ error: 'bad request' }) }
+    const { payload, sig } = req || {}
+    const chal = challenge
+    challenge = hcrypto.randomBytes(16) // one-shot, same rotation as register
+    const sigBuf = hexField(sig, 64)
+    if (!payload || !sigBuf) return json({ error: 'bad request' })
+    const keyBuf = hexField(payload.key, 32) // the guide drive key — 32 bytes
+    if (!keyBuf || !Number.isInteger(payload.epoch) || payload.epoch < 1) return json({ error: 'bad request' })
+    // Optional blobs-core key: lets RAW mirrors (the repeater) serve the guide
+    // without opening a hyperdrive. Absent/malformed → stored as null, never refused.
+    const blobsBuf = hexField(payload.blobsKey, 32)
+
+    const name = payload.publisher
+    const publishers = loadPublishers(dataDir)
+    const entry = typeof name === 'string' && Object.prototype.hasOwnProperty.call(publishers, name) ? publishers[name] : null
+    if (!entry || !entry.publicKey) return json({ error: 'unknown-publisher' })
+    if ((entry.status || 'active') !== 'active') return json({ error: 'revoked' })
+    const verifyKey = hexField(entry.publicKey, 32)
+    if (!verifyKey) return json({ error: 'unknown-publisher' })
+    const msg = hcrypto.hash(b4a.concat([chal, b4a.from(JSON.stringify(payload))]))
+    if (!authVerify(verifyKey, msg, sigBuf)) return json({ error: 'unauthorized' })
+    if (!scopeMatch(entry.scopes || [], 'epg')) return json({ error: 'out-of-scope' })
+
+    // An older epoch never overwrites a newer pointer — two mis-configured EPG
+    // services fighting must fail loudly on one side, not flap the fleet's guide.
+    const node = await db.get('meta/epgKey')
+    const existing = node?.value || null
+    if (existing && Number.isInteger(existing.epoch) && payload.epoch < existing.epoch) {
+      return json({ error: 'stale-epoch' })
+    }
+    const record = {
+      key: payload.key.toLowerCase(),
+      blobsKey: blobsBuf ? payload.blobsKey.toLowerCase() : null,
+      epoch: payload.epoch,
+      rotatedAt: Number.isFinite(payload.rotatedAt) ? payload.rotatedAt : Date.now(),
+      origin: name
+    }
+    const changed = !existing || JSON.stringify(record) !== JSON.stringify(existing)
+    if (changed) await db.put('meta/epgKey', record)
+    if (activity && changed) activity.record('epg-key', { epoch: record.epoch, origin: name })
+    return json({ ok: true })
+  })
+
   // Viewer problem report (S50a). Attached ONLY when a reports store is enabled —
   // otherwise the method does not exist and a new client gets protomux-rpc's
   // unknown-method error, which it maps to a friendly "unsupported" toast (exactly

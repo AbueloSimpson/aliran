@@ -300,12 +300,24 @@ What writes:
 | Viewer `session` | 1 block per session | Rewrites the whole user record, including its `wrapped` grant map — so this scales with **grants per user**, not with channel count alone. |
 | Admin edits / grants | 1 block each | `grant` re-puts the full user record per channel, so granting *n* channels one at a time is O(n²) in bytes. Bulk/auto-grant paths matter at 300 channels. |
 | Source sync | 0 for unchanged entries | [`sources.js`](https://github.com/AbueloSimpson/aliran/blob/main/panel/src/sources.js) compares before it puts; a 304 or an unchanged feed appends nothing. |
+| EPG service `setEpgKey` | ~1 block per **epoch rotation** (≈ monthly) | The guide itself NEVER touches the bee. The EPG service writes schedules into its own epoch-rotated Hyperdrive and only the drive pointer (`meta/epgKey`) lands here — compared first, so a boot re-assert appends nothing. |
 
 Measured on the register path, before the idempotent-register fix: **43
 channels × 288 heartbeats/day = 12,384 redundant appends/day ≈ 5.8
 MiB/day**, forever, growing linearly with the lineup. That is small per
 day — but it is monotonic, with no compaction to ever give it back, which
 is what makes it a planning item rather than a rounding error.
+
+**The EPG service's growth law is different — and bounded.** A program
+guide legitimately changes every day, which is exactly the write pattern
+the bee must never carry. So the guide lives in the EPG service's own
+Hyperdrive, and that drive is **epoch-rotated**: every `EPOCH_DAYS`
+(default 30) a fresh drive is minted, the current window copied in, the
+panel pointer flipped (the one bee block above), and the old drive purged
+after `GRACE_HOURS`. Steady state for a ~90-channel, 7-day guide is a few
+MiB of records and up to ~100 MiB of write history at the end of an
+epoch — then it resets. Day files are byte-compared before every put, so
+an ingest pass that finds nothing new appends nothing.
 
 > **Sizing the panel volume is not the same question as sizing the
 > broadcaster's.** The panel's `DATA_DIR` also holds the **assets
