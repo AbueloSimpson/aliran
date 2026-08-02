@@ -36,7 +36,8 @@ import os from 'os'
 import {
   startFfmpeg, mirrorDirToDrive, feedTreeBytes, isStoreCorruption, urlScheme, TRANSCODE_DEFAULTS,
   pickSlateFile, parseVideoProfile, NVENC_ENCODERS, HW_DECODE_FAIL_RE, hwDecodeArgs,
-  CUSTOM_RES_RE, LOGO_CORNERS, AUDIO_CODECS, AUDIO_SAMPLE_RATES, AUDIO_CHANNELS
+  CUSTOM_RES_RE, LOGO_CORNERS, AUDIO_CODECS, AUDIO_SAMPLE_RATES, AUDIO_CHANNELS,
+  THUMB_DEFAULTS, THUMB_FILENAME, THUMB_FAIL_RE
 } from './hls.js'
 import { probeCapabilities } from './capabilities.js'
 import { PanelLink } from './panel-link.js'
@@ -307,6 +308,75 @@ export function resolveHwDecode (transcode, caps) {
   const want = transcode?.hwDecode ?? TRANSCODE_DEFAULTS.hwDecode
   if (want !== 'auto') return want === true
   return Boolean(caps?.hwDecode?.cuda?.verified)
+}
+
+// Does this channel POSITIVELY carry video? Not "probably" — positively, because the
+// thumbnail output's `-map 0:v:0` is fatal to a source that has none (see hls.js thumbArgs
+// for the measured failure and why the optional `?` form does not help).
+//
+//   'test'            lavfi bars. Video by construction, before anything has ever run.
+//   detectedProfile   what ffmpeg's own stream banner said this channel's output was, with
+//                     a real raster. It is scraped per spawn (see _spawnFfmpeg onLine) and
+//                     PERSISTED into channels.json, which is the part that makes this
+//                     usable: without persistence every broadcaster restart would forget
+//                     it and no channel would ever carry a thumbnail again.
+//
+// Anything else — a brand-new channel that has never run, a push listener still waiting for
+// its first publisher, a source whose banner has not printed yet — reads as UNKNOWN and
+// runs WITHOUT the thumbnail output. It joins on the next spawn, once the profile is known.
+// That is a deliberate one-time gap per channel, and it is the right trade: the cost of
+// guessing wrong is not a missing picture, it is a channel that crash-loops into the slate
+// and stays there.
+export function hasKnownVideo (meta) {
+  if (meta?.input?.kind === 'test' || meta?.input === 'test') return true
+  const p = meta && meta.detectedProfile
+  return !!(p && p.width > 0 && p.height > 0)
+}
+
+// Resolve the rolling-thumbnail spec for one channel against the fleet config, or null for
+// "no thumbnail output at all". Pure so the precedence is unit-testable without spawning
+// ffmpeg, and the precedence has four steps plus a gate:
+//   1. THUMBS=0           absolute. A CPU-bound box gets ONE lever that no channel can
+//                         override, because the point of a kill switch is that it does not
+//                         depend on 89 channels each being individually correct.
+//   2. thumb === false    this channel opts out.
+//   3. thumb === true     this channel opts IN, whatever its encoder and whatever the
+//                         fleet default. The interval then falls back to the built-in 30 s,
+//                         because THUMB_INTERVAL_SECONDS=0 means "off by default", not
+//                         "refresh never".
+//   4. thumb == null      follow the fleet — but ONLY for a channel that already decodes.
+//
+// ⚠ Step 4 is where the measurement overruled the design. A transcoding channel has the
+// decoded frames in hand, so the thumbnail is +0.23 CPU-s per 30 s — 1.3 % on top of a
+// channel already costing 60 % of a core, genuinely free. A `copy` channel does not decode
+// at all, and even with -skip_frame nokey (see hls.js thumbDecodeArgs) the thumbnail costs
+// +0.27 CPU-s per 30 s — which is +30 % ON a copy channel's own 2.97 %, and across an
+// 89-channel 4-vCPU box is ~20 % of the WHOLE BOX. That box already runs at ~82 %. So a
+// `copy` channel is opt-in per channel rather than fleet-default: an operator who wants
+// grid previews on a passthrough channel can have them and pay for them knowingly, and
+// nobody wakes up to a fleet 20 points hotter because a default flipped.
+//
+// 5. the VIDEO GATE (hasKnownVideo), last and unconditional. opts.videoKnown overrides it
+//    for a spawn that knows better than the stored profile — the SLATE, which loops media
+//    this broadcaster rendered itself and therefore always has video whatever the dead
+//    source used to be.
+export function resolveThumb (meta, config, opts = {}) {
+  const cfg = (config && config.thumbs) || {}
+  if (cfg.enabled === false) return null
+  const pinned = meta && meta.thumb != null ? meta.thumb === true : null
+  if (pinned === false) return null
+  const encoder = meta?.transcode?.encoder ?? TRANSCODE_DEFAULTS.encoder
+  const on = pinned === true || (cfg.intervalSeconds > 0 && encoder !== 'copy')
+  if (!on) return null
+  // ⚠ AFTER the knobs, deliberately: `thumb: true` is an operator opting in, not an
+  // operator asserting the source has a video stream. Nothing an operator can type may
+  // reach the argv that kills a video-less channel.
+  if (!(opts.videoKnown != null ? opts.videoKnown : hasKnownVideo(meta))) return null
+  return {
+    intervalSeconds: cfg.intervalSeconds > 0 ? cfg.intervalSeconds : THUMB_DEFAULTS.intervalSeconds,
+    width: cfg.width || THUMB_DEFAULTS.width,
+    quality: cfg.quality || THUMB_DEFAULTS.quality
+  }
 }
 
 // Validate/normalize per-channel transcode settings. Every field is optional and
@@ -688,7 +758,25 @@ class Channel {
     // Last video profile seen on this channel's OUTPUT ({codec,width,height}), scraped from
     // ffmpeg's stream banner. Lives on the Channel, not the run, so a respawn — or a source
     // that dies before its banner prints — still has the profile the slate must match.
-    this.detectedProfile = null
+    // Seeded from (and written back to) meta, i.e. channels.json: the rolling thumbnail
+    // will not attach until a channel's video is positively known (see hasKnownVideo), and
+    // an in-memory-only profile would mean every broadcaster restart re-forgets it and no
+    // healthy channel ever gets a thumbnail again. The slate matching gets the same benefit
+    // for free — after a restart it can pick the right variant on the FIRST slate instead
+    // of falling back to 720p h264.
+    this.detectedProfile = meta.detectedProfile || null
+  }
+
+  // Record a freshly scraped output profile, persisting it only when it actually CHANGED.
+  // A banner prints once per spawn, so this is at most one registry write per respawn and
+  // in practice one per channel ever — an unconditional save here would be a full
+  // channels.json rewrite per ffmpeg restart across the whole fleet.
+  _learnProfile (p) {
+    const prev = this.detectedProfile
+    if (prev && prev.codec === p.codec && prev.width === p.width && prev.height === p.height) return
+    this.detectedProfile = p
+    this.meta.detectedProfile = p
+    try { this.manager._save() } catch { /* a registry write must never kill a live channel */ }
   }
 
   // Append an ffmpeg stderr line (or an internal restart marker) to the ring.
@@ -866,6 +954,11 @@ class Channel {
       hwDecodeWanted,
       hwDecodeFailed: false,
       hwDecodeActive: false,
+      // Rolling thumbnail for this run: `thumb` is the spec the last spawn actually got
+      // (status() reports it), `thumbFailed` is the sticky per-source drop set by the
+      // stderr matcher when the second output refuses to build (see _spawnFfmpeg).
+      thumb: null,
+      thumbFailed: false,
       // Backup-source rotation for pull inputs with `fallbacks` (see _pickSource).
       // srcIndex 0 is always the primary `input.url`.
       srcIndex: 0,
@@ -1045,11 +1138,27 @@ class Channel {
     // never claim GPU decode for a process that is not using it — the slate (forced copy)
     // and a `test` input both land here as false without needing their own special case.
     run.hwDecodeActive = hwDecodeArgs(transcode, input).length > 0
+    // Re-resolved per SPAWN, not per start: a PATCHed `thumb` then takes effect on the next
+    // respawn like every other transcode field; the video gate (hasKnownVideo) can only be
+    // satisfied by a PREVIOUS spawn's banner, so a channel joins the feature on its second
+    // spawn; and — more importantly — the slate keeps producing thumbnails. That last part
+    // is deliberate. A grid whose cell froze on the last live frame is a lie about a channel
+    // that is currently showing bars; the bars are the honest picture, the slate path forces
+    // `copy` so they cost a keyframe-only decode, and the slate media is ours and always has
+    // video, which is why it may override the gate.
+    //
+    // run.thumbFailed is the belt to that gate's braces: this SOURCE has already proved its
+    // thumbnail output cannot be built (see THUMB_FAIL_RE and the onLine matcher below), so
+    // every later respawn of this run drops it. Sticky for the life of the run and NOT
+    // persisted — same contract as hwDecodeFailed, so a restart or a PATCH re-tries.
+    const thumb = run.thumbFailed ? null : resolveThumb(this.meta, config, run.slated ? { videoKnown: true } : {})
+    run.thumb = thumb
     const proc = startFfmpeg({
       input,
       transcode,
       ingestTuning,
       hls: this.meta.hls,
+      thumb,
       vaapiDevice: config.vaapiDevice
     }, run.outDir, {
       onLine: (line) => {
@@ -1059,7 +1168,17 @@ class Channel {
         // learning from that would pin the channel to the fallback profile forever.
         if (!run.slated) {
           const p = parseVideoProfile(line)
-          if (p) this.detectedProfile = p
+          if (p) this._learnProfile(p)
+        }
+        // The thumbnail output refused to build for this source (a video-less feed reaching
+        // us behind a stale profile — a radio backup url, a provider swapping a channel).
+        // ffmpeg is already exiting; all we do is make sure the NEXT spawn drops the second
+        // output, so the channel comes back WITHOUT a picture instead of crash-looping into
+        // a slate it can never leave. Logged as an explicit marker, like the GPU fallback.
+        if (thumb && !run.thumbFailed && THUMB_FAIL_RE.test(line)) {
+          run.thumbFailed = true
+          this._log('[aliran] thumbnail output failed for this source (no video stream) — respawning without it')
+          try { this.manager.incidents.record('thumb-disabled', { channel: this.meta.id }) } catch {}
         }
         // GPU decode just refused this source. ffmpeg is already dying (exit 218) and the
         // watchdog will respawn on its own — all we do is make sure the NEXT spawn drops
@@ -1435,13 +1554,25 @@ class Channel {
         memRecycles: run.watchdog.memRecycles
       } : null,
       playlist: false,
+      // Rolling thumbnail. `interval` null means this channel produces none (opted out,
+      // THUMBS=0, or its video is not positively known yet — see hasKnownVideo), so a grid
+      // host can skip the fetch instead of learning it from a 404; `present` is the
+      // thumbnail's equivalent of `playlist` — the end-to-end signal that ffmpeg wrote it
+      // AND the mirror got it into the drive.
+      thumbs: { interval: null, present: false },
       driveVersion: null
     }
+    // While RUNNING, report what the live spawn ACTUALLY got (run.thumb) rather than
+    // re-deciding here: the slate overrides the video gate and a source failure can have
+    // dropped the output mid-run, so a fresh resolve would misreport both.
+    const thumb = run ? run.thumb : resolveThumb(this.meta, this.manager.config)
+    if (thumb) out.thumbs.interval = thumb.intervalSeconds
     if (run) {
       try {
         out.playlist = !!(await run.drive.entry('/index.m3u8'))
         out.driveVersion = run.drive.version
       } catch {}
+      if (thumb) { try { out.thumbs.present = !!(await run.drive.entry('/' + THUMB_FILENAME)) } catch {} }
     }
     return out
   }
@@ -1709,6 +1840,16 @@ export class ChannelManager {
       if (fields.buffer !== 'ram' && fields.buffer !== 'disk') bad("buffer must be 'ram' (ephemeral session feed) or 'disk' (persistent feed identity)")
       out.buffer = fields.buffer
     }
+    // Rolling thumbnail, TRI-STATE (see resolveThumb): true/false pin this channel, null
+    // hands it back to the fleet default. `undefined` (field omitted) keeps what is stored,
+    // which is the same partial-update rule transcode/ingestTuning follow — a PATCH that
+    // only changes the title must not silently switch a channel's thumbnails back on.
+    if (fields.thumb !== undefined) {
+      if (fields.thumb !== null && typeof fields.thumb !== 'boolean') {
+        bad('thumb must be true, false, or null (follow the THUMB_INTERVAL_SECONDS default)')
+      }
+      out.thumb = fields.thumb
+    }
     if (fields.hlsTime != null || fields.hlsListSize != null) {
       const time = parseInt(fields.hlsTime ?? this.config.hls?.time ?? 2, 10)
       const listSize = parseInt(fields.hlsListSize ?? this.config.hls?.listSize ?? 8, 10)
@@ -1732,6 +1873,8 @@ export class ChannelManager {
       transcode: norm.transcode ?? null,
       ingestTuning: norm.ingestTuning ?? null,
       buffer: norm.buffer ?? null, // null = config.feedBuffer default at start
+      thumb: norm.thumb ?? null, // null = follow the fleet thumbnail default (resolveThumb)
+      detectedProfile: null, // learned from ffmpeg's banner on the first spawn (_learnProfile)
       hls: norm.hls || { time: this.config.hls.time, listSize: this.config.hls.listSize },
       protection: 'self',
       feedKey: null,
@@ -1794,6 +1937,13 @@ export class ChannelManager {
     if (inputsEqual(ch.meta.input, newInput)) return
     ch.meta.feedGen = (ch.meta.feedGen || 0) + 1
     ch.meta.feedKey = null
+    // The detected profile described the OLD source. Keeping it would be worse than having
+    // none: the thumbnail gate (hasKnownVideo) would read a stale 1280x720 as proof that a
+    // source nobody has run yet carries video, and if the new one is audio-only that is the
+    // crash-loop-into-the-slate failure the gate exists to prevent. Slate matching prefers
+    // a forgotten profile over a wrong one for the same reason.
+    ch.meta.detectedProfile = null
+    ch.detectedProfile = null
   }
 
   async update (id, fields) {

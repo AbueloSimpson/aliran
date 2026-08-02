@@ -7,12 +7,13 @@ import {
   ffmpegArgs, inputArgs, encodeArgs, hwDeviceArgs, hlsMuxArgs,
   upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs,
   pickSlateFile, parseVideoProfile, hwDecodeArgs, HW_DECODE_FAIL_RE,
-  videoChain, logoInputArgs, parseResolution, mainInputCount
+  videoChain, logoInputArgs, parseResolution, mainInputCount,
+  thumbArgs, thumbDecodeArgs, isCompleteJpeg, THUMB_FAIL_RE
 } from '../broadcaster/src/hls.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
   isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool,
-  resolveHwDecode, rssCapMb
+  resolveHwDecode, rssCapMb, resolveThumb, hasKnownVideo
 } from '../broadcaster/src/channel.js'
 import { makeIncidents } from '../broadcaster/src/incidents.js'
 
@@ -392,6 +393,16 @@ assert.deepStrictEqual(
   parseVideoProfile('  Stream #0:0[0x100]: Video: hevc (Main) ([36][0][0][0] / 0x0024), yuvj420p(pc), 1920x1080, 30 fps, 30 tbr, 90k tbn'),
   { codec: 'hevc', width: 1920, height: 1080 })
 assert.strictEqual(parseVideoProfile('  Stream #0:1[0x101]: Audio: aac (LC), 48000 Hz, stereo, fltp, 130 kb/s'), null, 'audio line is not a profile')
+// ⚠ Index 0 ONLY. The rolling thumbnail is Output #1 and its mjpeg banner is the LAST video
+// line ffmpeg prints, so before this bound it won and the channel learned itself as
+// "mjpeg 320x180" — breaking slate matching and letting the thumbnail's own output stand in
+// as proof the SOURCE has video. A logo image (Input #1) is the same trap.
+assert.strictEqual(parseVideoProfile('  Stream #1:0: Video: mjpeg, yuv420p(pc, progressive), 320x180 [SAR 1:1 DAR 16:9], q=2-31, 0.50 fps'), null,
+  "the thumbnail output's own banner is never learned as the channel profile")
+assert.strictEqual(parseVideoProfile('  Stream #1:0: Video: png, rgba(pc), 200x80 [SAR 1:1 DAR 5:2], 25 tbr'), null,
+  'nor is a logo input')
+assert.deepStrictEqual(parseVideoProfile('  Stream #0:0: Video: h264, yuv420p(tv, progressive), 1280x720 [SAR 1:1 DAR 16:9], q=2-31, 30 fps, 90k tbn'),
+  { codec: 'h264', width: 1280, height: 720 }, "but Output #0's banner still is")
 assert.strictEqual(parseVideoProfile('frame= 123 fps=30 q=-1.0 size=N/A time=00:00:04.10'), null, 'progress line is not a profile')
 assert.strictEqual(parseVideoProfile(null), null)
 
@@ -864,4 +875,79 @@ assert.strictEqual(normalizeInput({ kind: 'pull', url: 'https://o/m.mpd', cencKe
 assert.ok(!inputArgs({ kind: 'pull', url: 'https://o/m.mpd' }).includes('-re'), 'dash manifest is not paced with -re')
 log('S: multi-audio, custom raster, audio format, logo overlay, burn-in subs, CENC key ✓')
 
-log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing + gpu decode path + overlays/audio/CENC)')
+// ===== X: rolling live thumbnail — the two ways its second output kills a channel =====
+// Both were REPRODUCED, and both fail the same way from an operator's seat: ffmpeg exits
+// before writing a segment, the watchdog respawns into the identical failure, and after
+// SLATE_AFTER tries the channel pins to bars. The argv is where they are prevented.
+
+// --- X1: GPU decode. CUDA frames cannot enter the software `scale` filter — they die with
+// "Impossible to convert between the formats", which is a HW_DECODE_FAIL_RE signature, so
+// the channel does not just lose its thumbnail, it drops to CPU decode for the rest of the
+// run and gives up the ~8x saving. hwdownload must come BEFORE scale, exactly as videoChain
+// spells the subtitle/logo round trip.
+const THUMB = { intervalSeconds: 30, width: 320, quality: 7 }
+const gpuThumb = thumbArgs(THUMB, outDir, true)
+const cpuThumb = thumbArgs(THUMB, outDir, false)
+const gpuVf = gpuThumb[gpuThumb.indexOf('-vf') + 1]
+const cpuVf = cpuThumb[cpuThumb.indexOf('-vf') + 1]
+assert.strictEqual(gpuVf, 'fps=1/30,hwdownload,format=nv12,scale=320:-2', 'hw thumbnail downloads before scaling')
+assert.ok(gpuVf.indexOf('hwdownload') < gpuVf.indexOf('scale='), 'hwdownload precedes scale')
+assert.ok(gpuVf.indexOf('fps=') < gpuVf.indexOf('hwdownload'), 'frames are dropped on the card, not after the copy')
+assert.strictEqual(cpuVf, 'fps=1/30,scale=320:-2', 'the CPU chain has no download step to make')
+assert.ok(!cpuVf.includes('hwdownload'), 'copy/CPU decode must never emit hwdownload')
+assert.deepStrictEqual(gpuThumb.filter((a) => a !== gpuVf), cpuThumb.filter((a) => a !== cpuVf),
+  'the hw and CPU thumbnail outputs differ ONLY in the filter chain')
+// End to end through ffmpegArgs: the flag must be DERIVED, not passed by the caller, or the
+// two outputs can disagree about where the frames live.
+const nvencGpu = { encoder: 'h264_nvenc', hwDecode: true }
+const thumbGpuArgv = ffmpegArgs({ input: { kind: 'pull', url: 'http://o/s' }, transcode: nvencGpu, hls: HLS, thumb: THUMB }, outDir)
+assert.ok(thumbGpuArgv.includes('-hwaccel'), 'the fixture really is on the GPU decode path')
+assert.ok(thumbGpuArgv.join(' ').includes('fps=1/30,hwdownload,format=nv12,scale=320:-2'), 'ffmpegArgs derives onGpu for the thumbnail')
+// The post-fallback respawn (hwDecode false — what channel.js builds after HW_DECODE_FAIL_RE)
+// is plain again, because the frames really are in system memory then.
+const thumbCpuArgv = ffmpegArgs({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'h264_nvenc', hwDecode: false }, hls: HLS, thumb: THUMB }, outDir)
+assert.ok(!thumbCpuArgv.includes('-hwaccel'), 'the fallback respawn decodes on the CPU')
+assert.ok(!thumbCpuArgv.join(' ').includes('hwdownload'), 'and its thumbnail chain drops the download step')
+// A `copy` channel never decodes on the card whatever hwDecode says, so it stays plain too.
+const thumbCopyArgv = ffmpegArgs({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'copy', hwDecode: true }, hls: HLS, thumb: THUMB }, outDir)
+assert.ok(!thumbCopyArgv.join(' ').includes('hwdownload'), 'copy + hwDecode:true is still a CPU chain')
+assert.deepStrictEqual(thumbDecodeArgs({ encoder: 'copy' }, THUMB, { kind: 'pull', url: 'http://o/s' }), ['-skip_frame', 'nokey'])
+log('X: thumbnail argv — hwdownload before scale on the GPU path, absent on every CPU path ✓')
+
+// --- X2: a video-less source. `-map 0:v:0` matches no streams and `-map 0:v:0?` maps
+// nothing (ffmpeg then refuses: "Output file does not contain any stream"), so the ONLY
+// safe answer is to omit the output. Video presence must be POSITIVELY known.
+const cfgOn = { thumbs: { enabled: true, intervalSeconds: 30, width: 320, quality: 7 } }
+const known = { codec: 'h264', width: 1280, height: 720 }
+assert.ok(hasKnownVideo({ input: { kind: 'test' } }), 'lavfi bars have video by construction')
+assert.ok(hasKnownVideo({ input: { kind: 'pull', url: 'http://o/s' }, detectedProfile: known }), 'a detected raster is proof')
+assert.ok(!hasKnownVideo({ input: { kind: 'pull', url: 'http://o/s' } }), 'a channel that has never run is UNKNOWN, not assumed')
+assert.ok(!hasKnownVideo({ input: { kind: 'rtmp', port: 5001 }, detectedProfile: null }), 'a listener with no publisher yet is UNKNOWN')
+assert.ok(!hasKnownVideo({ input: { kind: 'pull', url: 'http://o/s' }, detectedProfile: { codec: 'h264', width: null, height: null } }),
+  'a codec with no raster is not enough — audio-only sources still print codec lines')
+assert.strictEqual(resolveThumb({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'libx264' } }, cfgOn), null,
+  'no thumbnail output until this channel has proved it carries video')
+assert.strictEqual(resolveThumb({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'copy' }, thumb: true }, cfgOn), null,
+  '⚠ an explicit per-channel opt-in does NOT override the video gate — an operator can opt in, not assert a video stream')
+assert.ok(resolveThumb({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'libx264' }, detectedProfile: known }, cfgOn),
+  'once the profile is known the channel joins on its next spawn')
+assert.ok(resolveThumb({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'libx264' } }, cfgOn, { videoKnown: true }),
+  'the slate overrides the gate — its media is ours and always has video')
+assert.strictEqual(resolveThumb({ input: { kind: 'test' }, transcode: { encoder: 'libx264' }, thumb: false }, cfgOn, { videoKnown: true }), null,
+  'the override is a gate override, not a knob override')
+// The stderr signatures channel.js sticks a run to "no thumbnail" on.
+assert.ok(THUMB_FAIL_RE.test("[out#1/image2] Stream map '0:v:0' matches no streams."), 'no-such-stream signature')
+assert.ok(THUMB_FAIL_RE.test('Output file #1 does not contain any stream'), 'empty-output signature')
+assert.ok(!THUMB_FAIL_RE.test('Stream #0:0: Video: h264, yuv420p, 1280x720'), 'a normal banner line is not a failure')
+log('X: video gate — thumbnails attach only on POSITIVELY known video, opt-in cannot override ✓')
+
+// --- X3: the torn-JPEG guard (image2 -update 1 rewrites in place; the 500 ms mirror tick
+// can read it half-written, and publishing that frees the last good picture).
+assert.ok(isCompleteJpeg(Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0xFF, 0xD9])), 'SOI + EOI = complete')
+assert.ok(!isCompleteJpeg(Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00])), 'no EOI = still being written')
+assert.ok(!isCompleteJpeg(Buffer.from([0x00, 0x00, 0xFF, 0xD9])), 'no SOI = not a JPEG at all')
+assert.ok(!isCompleteJpeg(Buffer.alloc(0)), 'a zero-byte file is the classic mid-write read')
+assert.ok(!isCompleteJpeg(null), 'and an unreadable one never throws')
+log('X: torn-JPEG guard — only a complete SOI..EOI image is ever published ✓')
+
+log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing + gpu decode path + overlays/audio/CENC + live thumbnail argv/video gate)')

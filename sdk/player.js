@@ -105,7 +105,7 @@ import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { panelClient, login as oprfLogin } from './login.js'
 import { isCorruptionError, withRecovery } from './recover.js'
-import { createDriveHandler, playlistUris } from './serve.js'
+import { createDriveHandler, playlistUris, THUMB_PATH } from './serve.js'
 import { REPORT_CATEGORIES, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DETAIL_MAX, REPORT_COOLDOWN_MS } from './report.js'
 // The runtime-agnostic half of core/net-tune.js — no fs import (a node:fs edge in this
 // graph would become a `builtin:` ref the Bare worklet cannot load); the /proc ceiling
@@ -132,6 +132,15 @@ class Emitter {
 // https:// — Android blocks cleartext off-loopback — but the guard covers http too so
 // a hand-edited record degrades to a fetch error, not a mangled localhost URL.)
 const ABSOLUTE_URL_RE = /^https?:\/\//i
+
+// Live channel thumbnail (THUMB_PATH, imported from serve.js): the rolling JPEG the
+// broadcaster refreshes into the CHANNEL'S OWN feed drive every ~30 s
+// (broadcaster/src/channel.js). It rides the feed — not the assets drive (append-only: a
+// 30 s refresh would archive ~2.5 GB/day fleet-wide) and not the guide drive (epoch
+// rotation absorbs daily churn, not per-minute churn) — because the feed is the one store
+// whose growth law is already "constantly replaced, bounded window". One fixed path per
+// feed; see _thumbTarget. The literal itself lives in serve.js because the reclaim sweep
+// there has to protect the very entry this route serves.
 
 // Hybrid defaults: p2p-only keeps the pre-hybrid behavior exactly (the app worklet
 // runs with this). cdnUrl may be a function (streamId => url) or a template string
@@ -345,6 +354,16 @@ export class AliranPlayer extends Emitter {
     this._feedLimit = 12
     this._feedDiscovery = null
     this._feeds = new Map() // feedKey:encKey -> Promise<{ drive, discovery }> — opened feeds (single-flight), reused across resolve()s
+    // streamId -> newest feedKey seen in the replicated catalog (fed by _currentChannel).
+    // The feed cache is keyed by the CURRENT feedKey, while _entitled holds the LOGIN
+    // SNAPSHOT — which a broadcaster restart rotates out from under us. Callers that can
+    // await simply re-read the catalog; the /feedthumb route cannot (it resolves
+    // synchronously — see _thumbTarget), so it reads this instead.
+    // LIFETIME: exactly _entitled's. Cleared on login (before the snapshot is rebuilt)
+    // and on stop(); a corruption _purge deliberately keeps BOTH, because the store dying
+    // does not invalidate which feedKey a channel is on. Anything that outlives _entitled
+    // here is a poisoned cache key, not a stale nicety.
+    this._feedKeyLive = new Map()
     this._statusTimer = null
     this._peersLostAt = null // when the ACTIVE live p2p feed's peer count hit zero (see _checkFeedPeers)
     this._rescanDead = null // active play whose tune ladder already surfaced the friendly error — the rescan leaves it alone
@@ -1006,6 +1025,12 @@ export class AliranPlayer extends Emitter {
         return { drive, discovery }
       })()
       this._feeds.set(cacheKey, feed)
+      // The settled value, hung on the promise itself: /feedthumb resolves SYNCHRONOUSLY
+      // (createDriveHandler never awaits resolveTarget), so it needs to tell an open drive
+      // from an open still in flight without awaiting. Kept here rather than in a parallel
+      // map because it then dies with the cache entry — one fewer thing every eviction
+      // path must remember to clear.
+      feed.then((f) => { feed.settled = f }, () => {})
       feed.catch(() => { if (this._feeds.get(cacheKey) === feed) this._feeds.delete(cacheKey) }) // drop a failed open so a retry re-opens
     }
     return feed
@@ -1169,8 +1194,10 @@ export class AliranPlayer extends Emitter {
       ])
       if (node && node.value) {
         const v = node.value
+        const feedKey = v.feedKey || fallback.feedKey || null
+        if (feedKey) this._feedKeyLive.set(streamId, feedKey) // the synchronous /feedthumb route's only view of a rotation
         return {
-          feedKey: v.feedKey || fallback.feedKey || null,
+          feedKey,
           redirect: !!(v.redirect && v.url),
           url: v.url || null,
           type: v.type ?? fallback.type ?? null, // S8a: 'vod' | 'live'
@@ -1230,6 +1257,7 @@ export class AliranPlayer extends Emitter {
     // this is also what stops a token following a viewer to another operator's panel.
     this._session = null
     this._eventRing = []
+    this._feedKeyLive.clear() // the catalog view dies with the session (see _doLogin)
     this._reportCooldown.clear()
     this._lastPeers = null
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
@@ -1894,6 +1922,11 @@ export class AliranPlayer extends Emitter {
     this._openEpg().catch(() => {}) // the guide is never allowed to delay (or fail) a login
     const port = await this._ensureServer() // posters must be loadable before anything plays
     this._entitled.clear()
+    // _feedKeyLive AUGMENTS _entitled (same streamId keys, fresher feedKey), so it must
+    // die with it. A re-login or a user switch can hand the SAME streamId a different
+    // channel — a stale entry here would then out-vote the new snapshot's feedKey and
+    // point /feedthumb at the previous session's feed for the rest of the session.
+    this._feedKeyLive.clear()
     return streams.map((s) => {
       this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null, type: s.type ?? null, durationSec: s.durationSec ?? null })
       return this._display(port, s.id, s)
@@ -1927,6 +1960,11 @@ export class AliranPlayer extends Emitter {
       // out unconditionally like the art URLs: when no guide drive exists the fetch
       // 404s instantly (media:false) and the EpgService falls back to epgUrl/epgId.
       guideBase: `http://127.0.0.1:${port}/epg/v1/${id}`,
+      // Live thumbnail base (the rolling /thumb.jpg inside this channel's own feed drive,
+      // served through the feed cache — see _thumbTarget). Unconditional like guideBase:
+      // a 404 IS the "no thumbnail right now" signal (channel off, THUMB=0, cold feed,
+      // metered network), and hosts fall back to poster/logo art on it.
+      thumbBase: `http://127.0.0.1:${port}/feedthumb/${id}`,
       // Record class (S8a): 'vod' = a library title (host shows seek UI, no live-edge
       // machinery) | 'live'. durationSec rides only on vod records. status is exposed
       // so a host can gray out an 'unavailable' title (its library deleted it).
@@ -2028,15 +2066,67 @@ export class AliranPlayer extends Emitter {
     })()
   }
 
-  // One persistent localhost server for the whole session: /assets/* is served from
-  // the panel's assets drive (posters/art), everything else from the currently playing
-  // feed. The port never changes, so asset URLs handed out at login stay valid.
+  // One persistent localhost server for the whole session: /assets/* from the panel's
+  // assets drive (posters/art), /epg/* from the guide epoch drive, /feedthumb/<id> from
+  // ANY entitled channel's cached feed, everything else from the currently playing feed.
+  // The port never changes, so asset URLs handed out at login stay valid.
   async _ensureServer () {
     if (!this._server) {
       this._server = this._http.createServer(this._requestHandler())
       await new Promise((resolve) => this._server.listen(0, '127.0.0.1', resolve))
     }
     return this._server.address().port
+  }
+
+  // Resolve /feedthumb/<streamId> against the feed cache. SYNCHRONOUS by contract —
+  // createDriveHandler calls resolveTarget without awaiting it — which is what makes
+  // every rule below a "serve it now or 404" decision instead of a wait:
+  //
+  //   ENTITLEMENT — the id must be in _entitled. Thumbnails live INSIDE the encrypted
+  //     feed, so an unentitled channel has nothing to serve and no key to try with; a
+  //     redirect channel (no feed of its own) falls out here too.
+  //   WARM ONLY — the drive must already be open AND settled (or be the active feed).
+  //     _feeds holds open PROMISES, so an open still in flight reads as cold: a
+  //     thumbnail must never park a request behind a DHT lookup and a peer handshake.
+  //   METERED — never open a new drive on an expensive network (setNetworkProfile), the
+  //     same rule that suspends zap-prefetch. Already-warm feeds still serve.
+  //   SPARE SLOT — otherwise kick the SAME single-flight BOUNDED open every other
+  //     on-demand path uses (_openFeedWithin, not _openFeed: an unbounded open that
+  //     wedges stays in the cache forever, occupying an LRU slot and making every later
+  //     refresh tick for that channel resolve a promise that will never settle — the
+  //     timeout is what evicts it). Only while the LRU has a free slot, and _trimFeeds
+  //     after. A 300-channel grid must not open 300 drives, and it must not thrash the
+  //     cap either: eviction PURGES the replica's storage, so letting thumbnails push
+  //     warm feeds out would trade a picture for exactly the zap latency that cache
+  //     exists to remove. This request still 404s (nothing is replicated yet); the row's
+  //     next refresh tick finds the drive warm.
+  //
+  // Every 404 is a normal outcome, not an error: a channel with THUMB=0, a cold feed on
+  // a metered network, a channel the broadcaster has not written a thumbnail for yet.
+  //
+  // idle:true on every target — see the resolveTarget contract in serve.js. /thumb.jpg is
+  // a ROLLING blob: the broadcaster clearBlob's the previous one on every refresh, so a
+  // request that resolved the superseded entry would otherwise hang forever with headers
+  // already sent. It is the one thing an ancillary target here shares with media.
+  _thumbTarget (streamId) {
+    if (!streamId) return null
+    const keys = this._entitled.get(streamId)
+    if (!keys || !keys.encryptionKey) return null
+    // The playing channel is already served drive-first — no cache lookup, and it works
+    // even while a rotation has the cache keyed by a feedKey we have not re-read yet.
+    const a = this._active
+    if (a && a.streamId === streamId && this._feedDrive) return { drive: this._feedDrive, path: THUMB_PATH, media: false, idle: true }
+    const feedKey = this._feedKeyLive.get(streamId) || keys.feedKey
+    if (!feedKey) return null // a catalog entry with no broadcaster behind it
+    const cacheKey = feedKey + ':' + keys.encryptionKey
+    const feed = this._feeds.get(cacheKey)
+    if (feed) return feed.settled ? { drive: feed.settled.drive, path: THUMB_PATH, media: false, idle: true } : null
+    // Cold. Warming is optional and never on this request's critical path.
+    if (this._netExpensive || this._hybrid.mode === 'cdn-only') return null
+    if (keys.type === 'vod') return null // a finished title has no rolling thumbnail to wait for
+    if (this._feeds.size >= this._feedLimit) return null
+    this._openFeedWithin(feedKey, keys.encryptionKey, this._tune.timeoutMs).then(() => this._trimFeeds(), () => {})
+    return null
   }
 
   // Request handler for HLS players (and poster art): the shared progressive
@@ -2058,6 +2148,11 @@ export class AliranPlayer extends Emitter {
       if (p.startsWith('/epg/') && this._epgDrive) {
         return { drive: this._epgDrive, path: p.slice('/epg'.length), media: false, etag: 'epg-' + this._epgKeyHex.slice(0, 8) + '-' + this._epgDrive.version }
       }
+      // /feedthumb/<streamId> is the live thumbnail of ANY entitled channel, not only
+      // the one playing (the grid/zapping-list case) — resolved through the feed cache
+      // without making the channel active. Ancillary like art and the guide: a miss
+      // 404s instantly (media:false) and the row falls back to poster/logo.
+      if (p.startsWith('/feedthumb/')) return this._thumbTarget(p.slice('/feedthumb/'.length))
       return this._feedDrive ? { drive: this._feedDrive, path: p, media: true } : null
     }, {
       // Churn headroom: replicate the ACTIVE stream's whole live window on-device

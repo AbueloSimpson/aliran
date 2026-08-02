@@ -528,6 +528,134 @@ export function hlsMuxArgs (hls, outDir) {
   ]
 }
 
+// --- rolling live thumbnail ------------------------------------------------------------
+// One JPEG of "what is on screen right now", refreshed every `intervalSeconds`, written
+// into the SAME ffmpeg scratch dir as the segments. That placement is the whole design:
+// mirrorDirToDrive already treats a CHANGED file as "put the new bytes, then clearBlob the
+// superseded ones" (it is what keeps index.m3u8 from accumulating a version per segment),
+// so a thumbnail that overwrites itself in place inherits bounded storage for free — no
+// new drive, no new reclaim path, no append-only archive growing 2.5 GB/day fleet-wide.
+//
+// ⚠ It DOES cost the safety-net sweep some slack. reclaimExpiredBlobs() bulk-frees
+// everything below the lowest blockOffset still referenced by a live entry, and between
+// refreshes thumb.jpg IS that lowest entry — so the watermark now lags by up to one
+// refresh interval's worth of segment blocks. Not a leak: the per-entry clears in
+// mirrorDirToDrive free each rotated segment precisely as it leaves the window, and the
+// sweep is only the backstop. Worth knowing when reading a mid-interval block count.
+export const THUMB_DEFAULTS = {
+  intervalSeconds: 30,
+  width: 320, // -2 height keeps the aspect and lands on an even raster
+  quality: 7 // mjpeg qscale 2-31, lower = better; 7 is ~15-25 KB at 320px
+}
+export const THUMB_FILENAME = 'thumb.jpg'
+
+// The thumbnail's own OUTPUT, appended after the HLS output. Everything here is per-output
+// (ffmpeg scopes options to the file that follows them), so the segment output above is
+// byte-identical to what it was before this feature existed — which matters, because this
+// rides in the SAME process as 89 live channels and a mistake here is 89 dead channels.
+//   -map 0:v:0  the source's video only. Explicit because the HLS output may be using
+//               default stream selection, and default selection does not apply twice.
+//   fps=1/N     one frame per interval. The FIRST lands at t=0, so a channel has a
+//               thumbnail within a second of coming up rather than one interval later.
+//   -update 1   image2 rewrites the SAME path instead of numbering files. A numbered
+//               sequence would be a new drive entry per refresh — exactly the append-only
+//               growth this design exists to avoid.
+//
+// ⚠⚠ -map 0:v:0 KILLS A VIDEO-LESS SOURCE, and there is no lenient spelling that saves it.
+// Measured (audio-only mpegts): `-map 0:v:0` fails "Stream map '0:v:0' matches no streams",
+// and the optional form `-map 0:v:0?` fails too — it maps nothing, and ffmpeg then refuses
+// the whole run with "Output file does not contain any stream". Either way ffmpeg exits
+// before writing a segment, the watchdog respawns into the identical failure, and after
+// SLATE_AFTER failures the slate engages — the slate HAS video, so the thumbnail output
+// suddenly succeeds and the channel is PINNED TO BARS with a healthy-looking process.
+// The only safe answer is not to emit this output at all unless the channel's video is
+// positively known; that gate is channel.js hasKnownVideo/resolveThumb, and THUMB_FAIL_RE
+// below is the belt to its braces.
+//
+// `onGpu` = this spawn decodes on the card (the same flag encodeArgs computes from
+// hwDecodeArgs). CUDA frames cannot enter the software `scale` filter — they die with
+// "Impossible to convert between the formats", which is one of HW_DECODE_FAIL_RE's
+// signatures, so the channel would not merely lose its thumbnail: it would take the sticky
+// CPU-decode fallback and give up the ~8x GPU saving for the rest of the run. Download
+// them first, exactly the way videoChain spells it for the subtitle/logo round trip.
+export function thumbArgs (thumb, outDir, onGpu = false) {
+  if (!thumb || !(thumb.intervalSeconds > 0)) return []
+  const t = { ...THUMB_DEFAULTS, ...thumb }
+  // fps BEFORE the download: dropping 29 of 30 frames on the card is the point — only the
+  // frame that survives is ever copied over the PCIe bus.
+  const chain = onGpu
+    ? [`fps=1/${t.intervalSeconds}`, 'hwdownload', 'format=nv12', `scale=${t.width}:-2`]
+    : [`fps=1/${t.intervalSeconds}`, `scale=${t.width}:-2`]
+  return [
+    '-map', '0:v:0', '-an',
+    '-vf', chain.join(','),
+    '-c:v', 'mjpeg', '-q:v', String(t.quality),
+    '-f', 'image2', '-update', '1',
+    path.join(outDir, THUMB_FILENAME)
+  ]
+}
+
+// ffmpeg stderr that means "the THUMBNAIL output cannot be built for this source" — the
+// video-less-source failure above, seen from the log ring. The gate in channel.js should
+// already have prevented it (a channel with no known video never gets the output), but a
+// source can change under a stale profile — a backup url that turns out to be radio, a
+// provider swapping a feed — and the cost of being wrong is a crash loop that ends pinned
+// to the slate. So channel.js also matches these and drops the thumbnail output on the
+// next respawn, sticky for the life of the run: same shape as HW_DECODE_FAIL_RE, same
+// reasoning (one wasted respawn beats a channel that never recovers).
+// ⚠ ffmpeg REWORDED this between versions and the production container (5.1.9) is not the
+// version this was reproduced on (8.1.2), so both spellings are here. Measured on 8.1.2,
+// audio-only mpegts, exit 127: "Stream map '' matches no streams." followed by "Failed to
+// set value '0:v:0' for option 'map'". Older builds say "Stream map '0:v:0' matches no
+// streams." The `copy` path fails EARLIER and differently — thumbDecodeArgs' -skip_frame is
+// refused outright ("Codec AVOption skip_frame ... is not a decoding option") because there
+// is no video decoder to skip into — so that is a signature too.
+export const THUMB_FAIL_RE = new RegExp([
+  "stream map '0:v:0' matches no streams",
+  "failed to set value '0:v:0' for option 'map'",
+  'does not contain any stream', // the `-map 0:v:0?` shape: nothing mapped, so ffmpeg refuses the output
+  'avoption skip_frame',
+  'for output file [^\\n]*' + THUMB_FILENAME.replace(/\./g, '\\.')
+].join('|'), 'i')
+
+// A COMPLETE JPEG: SOI (FF D8) at the head, EOI (FF D9) at the tail. See mirrorDirToDrive
+// for why a torn one must never be published.
+export function isCompleteJpeg (buf) {
+  if (!buf || buf.length < 4) return false
+  return buf[0] === 0xFF && buf[1] === 0xD8 && buf[buf.length - 2] === 0xFF && buf[buf.length - 1] === 0xD9
+}
+
+// The decoder hint that makes thumbnails survivable on a `copy` channel.
+//
+// The tempting mental model — "one extra decoded frame every 30 s" — is WRONG, and it is
+// the single most expensive misconception in this feature: the fps filter drops frames
+// AFTER the decoder has produced them, so a naive thumbnail output turns a remux-only
+// channel into a FULL-RATE decode. `-skip_frame nokey` makes the decoder discard
+// non-keyframes before decoding them.
+//
+// Measured (1280x720p30 h264, 2 s GOP, encoder `copy`, 30 s window, 30 s thumb interval):
+//   copy baseline                  0.89 CPU-s / 30 s   2.97 % of one core
+//   + thumbnail, naive             3.13 CPU-s / 30 s  10.42 %   (+7.5 points)
+//   + thumbnail, -skip_frame nokey 1.16 CPU-s / 30 s   3.85 %   (+0.9 points, 88 % saved)
+//
+// ⚠ Note what does NOT appear in that table: the refresh INTERVAL. With skip_frame the
+// decoder still runs at the source's KEYFRAME rate whatever the fps filter asks for, so
+// raising THUMB_INTERVAL_SECONDS buys almost nothing. ~0.9 % of a core is the floor for a
+// copy channel, which is why they are default-OFF (see resolveThumb in channel.js).
+//
+// INPUT option, and only ever on `copy`: it is a property of the shared decoder, so on a
+// transcoding channel it would silently reduce the CHANNEL to keyframes only. A `copy`
+// channel has no other consumer of decoded frames, which is precisely why it is safe there
+// and nowhere else. `test` (lavfi) has no bitstream to skip into.
+export function thumbDecodeArgs (transcode, thumb, input) {
+  if (!thumb || !(thumb.intervalSeconds > 0)) return []
+  const encoder = (transcode && transcode.encoder) || TRANSCODE_DEFAULTS.encoder
+  if (encoder !== 'copy') return []
+  const kind = upgradeInputString(input)?.kind
+  if (kind === 'test') return []
+  return ['-skip_frame', 'nokey']
+}
+
 // --- offline slate -------------------------------------------------------------------
 // Pre-rendered "SOURCE OFFLINE" media looped with -c copy when a source is dead, so the
 // channel stays live at ~0 CPU instead of going blank in watchdog backoff. Rendered by
@@ -564,7 +692,20 @@ export function pickSlateFile (profile) {
 // Returns null for anything that isn't a video stream line, so it can be fed every log
 // line cheaply. The raster is matched with a leading comma+space to avoid colliding with
 // the `[SAR a:b DAR c:d]` group or a bitrate that happens to contain an 'x'.
-const VIDEO_LINE_RE = /Stream #\d+:\d+.*?: Video: ([a-zA-Z0-9_]+)/
+//
+// ⚠ ONLY index 0 — `Stream #0:N`, never `#1:N`. That first number is the input OR output
+// index, and every non-zero one is something that is not this channel's picture:
+//   Input #1  the LOGO image (`Stream #1:0: Video: png`) — or the lavfi tone on a `test`
+//             source, which is audio and harmless, but the logo is not.
+//   Output #1 the rolling THUMBNAIL (`Stream #1:0: Video: mjpeg, ... 320x180`). Measured:
+//             without this bound the channel learned `mjpeg 320x180` as its own profile —
+//             it is the LAST video banner ffmpeg prints, so it won every time. That is
+//             wrong twice over: the slate then matches nothing and falls back to 720p
+//             h264, and the thumbnail video gate (channel.js hasKnownVideo) reads its own
+//             output as proof the SOURCE has video. Persisting it made it permanent.
+// Input #0 and Output #0 are the source and the channel's real output; the output banner
+// prints later, so it still wins, which is the OUTPUT-not-source rule pickSlateFile wants.
+const VIDEO_LINE_RE = /Stream #0:\d+.*?: Video: ([a-zA-Z0-9_]+)/
 const RASTER_RE = /,\s(\d{2,5})x(\d{2,5})(?:[\s,[]|$)/
 export function parseVideoProfile (line) {
   if (typeof line !== 'string') return null
@@ -579,7 +720,7 @@ export function parseVideoProfile (line) {
 }
 
 // Build the full ffmpeg argument list.
-// spec = { input, transcode?, hls, vaapiDevice? } — input may be a typed object
+// spec = { input, transcode?, hls, thumb?, vaapiDevice? } — input may be a typed object
 // (see channel.js normalizeInput) or a legacy string.
 // Demuxer tuning that belongs to the SOURCE, not the encode. These exist because cheap
 // hardware encoders (the HDMI->RTMP/SRT boxes most small operations actually use) are
@@ -632,13 +773,22 @@ export function ffmpegArgs (spec, outDir) {
     // -hwaccel is a PER-INPUT option: it applies to the -i that follows it, so it has to
     // sit immediately before inputArgs and after any global device bootstrap.
     ...hwDecodeArgs(spec.transcode, spec.input),
+    // Also an input option (a decoder property) — see thumbDecodeArgs for why it exists
+    // and why it is confined to `copy`.
+    ...thumbDecodeArgs(spec.transcode, spec.thumb, spec.input),
     // ingestTuning also carries HTTP-only source options, which inputArgs applies only on
     // the http(s) branch (they would make ffmpeg fail on a udp/srt input).
     ...inputArgs(spec.input, spec.ingestTuning),
     // The logo is input 1 — it must follow the main -i and precede the graph that uses it.
     ...logoInputArgs(spec.transcode),
     ...encodeArgs(spec.transcode, spec.hls, spec.input),
-    ...hlsMuxArgs(spec.hls, outDir)
+    ...hlsMuxArgs(spec.hls, outDir),
+    // A SECOND output, strictly after the segment output's filename so none of its options
+    // can leak onto the media path. Absent entirely when thumbnails are off, so a channel
+    // that opts out spawns the exact argv it always did. It is handed the SAME onGpu flag
+    // encodeArgs derives — the thumbnail's scale filter lives on the same decoded frames
+    // the encoder does, so it needs the same hwdownload discipline.
+    ...thumbArgs(spec.thumb, outDir, cudaFrames({ ...TRANSCODE_DEFAULTS, ...(spec.transcode || {}) }, spec.input))
   ]
 }
 
@@ -800,6 +950,17 @@ export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
           const p = '/' + name
           const prev = known.has(name) ? await drive.entry(p) : null
           const buf = fs.readFileSync(path.join(dir, name))
+          // ⚠ THE THUMBNAIL IS THE ONE FILE WRITTEN NON-ATOMICALLY. ffmpeg's image2 muxer
+          // with -update 1 rewrites thumb.jpg IN PLACE (no temp file, no rename), so this
+          // 500 ms tick can read it mid-write. Every other file here is safe by luck of how
+          // ffmpeg writes it: a segment is written once and then never touched, and
+          // index.m3u8 is rewritten but is small enough to land in one write. A torn read
+          // here is not a cosmetic glitch — the put SUPERSEDES the previous blob and the
+          // clearBlob below then frees the last GOOD picture, so the whole fleet's grid
+          // shows a half-decoded cell until the next refresh. Skipping the put (and NOT
+          // recording the signature) costs one tick: the next one re-reads the finished
+          // file. Cheap because the check is two bytes at each end of ~15 KB.
+          if (name === THUMB_FILENAME && !isCompleteJpeg(buf)) continue
           await drive.put(p, buf)
           known.set(name, sig)
           if (prev) await clearBlob(blobs, prev.value && prev.value.blob)

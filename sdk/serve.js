@@ -61,6 +61,9 @@
 //   aborted, so the client re-requests and re-resolves to the current live version
 //   whose blob still exists. Only a fully stalled read trips it — progressive reads
 //   reset the idle clock on every block, so a slow-but-advancing fetch is untouched.
+//   The feed is not the only rolling blob in the drive: /thumb.jpg is superseded and
+//   cleared on every refresh too, so an ancillary target can opt in with `idle: true`
+//   without taking on media's availability wait or read-ahead (see resolveTarget).
 //
 // Every wait is bounded and every stream tolerates client aborts — the player
 // aborts in-flight requests routinely, and an unhandled stream error SIGABRTs
@@ -84,6 +87,17 @@ export function contentType (p) {
   const i = p.lastIndexOf('.')
   return (i >= 0 && TYPES[p.slice(i).toLowerCase()]) || 'application/octet-stream'
 }
+
+// The rolling live thumbnail, at ONE fixed path inside every channel's own feed drive
+// (the broadcaster writes it there — see broadcaster/src/hls.js THUMB_FILENAME, which
+// tools/e2e-thumbs-test.mjs asserts agrees with this literal, so a rename fails a lane
+// instead of silently 404ing every grid cell in production).
+//
+// It lives HERE, in the shared serving core, rather than in the SDK engine, because both
+// halves of this file need it and they need the SAME one: the /feedthumb route serves it,
+// and the Reclaim sweep below has to know NOT to free it. Two literals that drifted apart
+// would read as "thumbnails are just slow" and be near-impossible to attribute.
+export const THUMB_PATH = '/thumb.jpg'
 
 // Defaults: waitMs under ExoPlayer's 8 s read timeout; pollMs ≈ one segment write;
 // readAhead covers the 2–3 segments a player fetches before first frame — hosts widen
@@ -210,7 +224,35 @@ class Reclaim {
     }
     if (min === Infinity || !(min > 0)) return // nothing resolvable, or nothing below the window
     const blobs = await drive.getBlobs()
-    await blobs.core.clear(0, min)
+    // ⚠ THE PLAYLIST IS NOT THE WHOLE FEED. /thumb.jpg is a live entry that no playlist
+    // ever references, and the broadcaster only refreshes it every ~30 s — so it sits
+    // BELOW the window's floor for almost its entire life and a plain clear(0, min) wipes
+    // the ACTIVE channel's thumbnail on every single pass. That is not merely a wasted
+    // refetch: the /feedthumb route is a warm-cache-only reader, so the next request
+    // resolves an entry whose blocks are gone locally and whose superseded blob may
+    // already be gone at the broadcaster too — the exact stalled-read shape the idle
+    // abort exists for. Punch AROUND it instead: the thumbnail's own blocks are the one
+    // thing below the floor that is still wanted.
+    const keep = await this._thumbRange(drive, min)
+    if (!keep) { await blobs.core.clear(0, min); return }
+    if (keep.start > 0) await blobs.core.clear(0, keep.start)
+    if (keep.end < min) await blobs.core.clear(keep.end, min)
+  }
+
+  // The live thumbnail's blob block range, clamped to below the reclaim floor, or null
+  // when there is nothing to protect (no entry, not replicated, already above the floor).
+  // One extra metadata read per THROTTLED pass — the same cost as one more playlist URI,
+  // paid at most once per reclaimIntervalMs. Never throws: a reclaim must never break a
+  // serve, so an unreadable entry simply falls back to the plain clear.
+  async _thumbRange (drive, min) {
+    try {
+      const entry = await drive.entry(THUMB_PATH)
+      const blob = entry && entry.value && entry.value.blob
+      if (!blob || !(blob.blockLength > 0)) return null
+      const start = blob.blockOffset
+      if (!(start < min)) return null // already above the floor — the plain clear misses it anyway
+      return { start, end: Math.min(start + blob.blockLength, min) }
+    } catch { return null }
   }
 }
 
@@ -280,9 +322,18 @@ function pump (rs, res, wanted, idleMs = 0) {
 
 // Build an async (req, res) handler.
 //
-//   resolveTarget(pathname) -> { drive, path, media, etag? } | null
+//   resolveTarget(pathname) -> { drive, path, media, idle?, etag? } | null
 //     media: true  = feed content — availability wait + read-ahead apply
 //            false = ancillary (posters/art, guide files) — miss 404s immediately
+//     idle:  opt IN to the STALLED-READ ABORT on a non-media target. media:true carries
+//            it implicitly; this exists for the ancillary targets that are ALSO rolling
+//            blobs — /thumb.jpg, which the broadcaster supersedes and clearBlob's every
+//            refresh. Resolving the superseded entry then commits the read to blocks no
+//            peer holds: headers flush, the body never ends, the request hangs FOREVER
+//            (reproduced 2026-08-02 — 200 + headers sent, zero body bytes, no timeout).
+//            The abort is the whole fix and it is deliberately separate from `media`:
+//            these targets must NOT get the availability wait or the read-ahead (a grid
+//            cell must 404 instantly on a cold feed, not park a request for waitMs).
 //     etag:  optional cache validator (any stable string — the SDK passes the EPG
 //            drive's version). Sent as a strong ETag; a matching If-None-Match
 //            answers 304 with no body, so a poll of an unchanged guide costs
@@ -308,7 +359,9 @@ export function createDriveHandler (resolveTarget, opts = {}) {
 
       const target = resolveTarget(urlPath)
       if (!target || !target.drive) { res.writeHead(404); return res.end('not found') }
-      const { drive, path: p, media, etag } = target
+      const { drive, path: p, media, idle, etag } = target
+      // Stalled-read abort: implicit for media, opt-in for a rolling ancillary blob.
+      const idleMs = (media || idle) ? cfg.readIdleMs : 0
 
       // Validator short-circuit BEFORE the drive read: an unchanged guide poll
       // must not touch blocks at all.
@@ -350,7 +403,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
         const wanted = end - start + 1
         res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
         if (req.method === 'HEAD') return res.end()
-        pump(drive.createReadStream(p, { start }), res, wanted, media ? cfg.readIdleMs : 0)
+        pump(drive.createReadStream(p, { start }), res, wanted, idleMs)
       } else {
         res.writeHead(200, { ...headers, 'Content-Length': String(size) })
         if (req.method === 'HEAD') return res.end()
@@ -368,7 +421,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
           rs.on('end', fire)
           rs.on('close', fire)
         }
-        pump(rs, res, size, media ? cfg.readIdleMs : 0)
+        pump(rs, res, size, idleMs)
       }
     } catch (err) {
       if (opts.onError) { try { opts.onError(err) } catch {} }

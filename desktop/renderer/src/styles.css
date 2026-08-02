@@ -345,6 +345,9 @@ img { -webkit-user-drag: none; }
   border-radius: 4px;
   flex: none;
 }
+/* A live thumbnail is a 16:9 video frame, not a logo on transparency: fill the box
+   (the row geometry is fixed) instead of letterboxing it inside the logo's contain. */
+.row-logo.row-thumb { object-fit: cover; }
 .row-logo-fallback {
   background: var(--c-surface);
   color: var(--c-text-dim);

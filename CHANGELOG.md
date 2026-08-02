@@ -18,6 +18,21 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **Live channel thumbnails — a rolling preview frame in every channel's feed
+  drive.** The broadcaster's ffmpeg writes a ~320px JPEG (`/thumb.jpg`) beside the
+  segments every `THUMB_INTERVAL_SECONDS` (default 30); each refresh replaces the
+  drive entry and frees the superseded blob, so disk stays flat (proven by the new
+  `test:thumbs` lane). Viewers get `thumbBase` per stream and a `/feedthumb/<id>`
+  loopback route that serves from already-warm feeds (never evicts, never opens
+  drives on metered networks, never parks a request); channel lists in both apps
+  show the live frame and fall back to poster/logo art on 404. Cost-aware
+  defaults: `copy` channels are **opt-in per channel** (a thumbnail forces the
+  decoder on, ~0.9 % of a core each even with `-skip_frame nokey`), transcoding
+  channels get it ~free and follow the fleet default; `THUMBS=0` is the kill
+  switch. GPU-decode channels download frames off the card before the software
+  scaler; video-less (audio-only) sources are detected and never get the
+  thumbnail output; the viewer-side disk reclaim knows to spare the thumbnail.
+
 - **EPG over P2P — a standalone `epg/` service + epoch-rotated guide drive.** The
   program guide now replicates peer-to-peer: the new service ingests schedules
   (pluggable providers: the provider-JSON feed shape or a local file; XMLTV-ready

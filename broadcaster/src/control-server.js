@@ -16,7 +16,7 @@
 //   GET    /api/capabilities             ffmpeg probe: protocols, deep-verified encoders,
 //                                          GPU decode (hwDecode.cuda) + NVIDIA device list
 //   GET    /api/channels                 list + live status (state/ffmpeg/peers/registered/ingest)
-//   POST   /api/channels                 {id,title?,description?,category?,input?,transcode?,buffer?,hlsTime?,hlsListSize?}
+//   POST   /api/channels                 {id,title?,description?,category?,input?,transcode?,buffer?,thumb?,hlsTime?,hlsListSize?}
 //   GET    /api/channels/:id
 //   PATCH  /api/channels/:id             meta/input/transcode changes (applied on next start)
 //   DELETE /api/channels/:id             remove from registry (must be stopped; data kept)

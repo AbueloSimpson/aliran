@@ -26,6 +26,10 @@ export interface Stream {
   /** P2P guide base (loopback /epg/v1/<id> from the replicated guide drive) — tried
    *  before epgUrl; a 404 falls back to https. */
   guideBase?: string
+  /** Live thumbnail URL (loopback /feedthumb/<id>): the rolling frame the broadcaster
+   *  refreshes into this channel's feed every ~30 s. Tried before poster/logo art; a
+   *  404 (no thumbnail, cold feed, metered) falls back to it. Cache-bust per refresh. */
+  thumbBase?: string
   /** Record class (S8a): 'vod' = an on-demand library title (seek/pause UI, no
    *  live-edge machinery); 'live' (or absent on old records). */
   type?: 'live' | 'vod'

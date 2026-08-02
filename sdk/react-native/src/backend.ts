@@ -77,6 +77,12 @@ export interface Stream {
    *  schedule files served from the panel's replicated guide drive. Tried BEFORE
    *  epgUrl; a 404 (no guide drive / channel not covered) falls back to https. */
   guideBase?: string
+  /** Live thumbnail URL (loopback): `http://127.0.0.1:<port>/feedthumb/<id>` — the
+   *  rolling frame the broadcaster refreshes into this channel's feed every ~30 s.
+   *  Handed out unconditionally: a 404 IS the "no thumbnail right now" signal (channel
+   *  off, thumbnails disabled, feed not warm, metered network), so a list shows this
+   *  first and falls back to poster/logo art on error. Cache-bust per refresh. */
+  thumbBase?: string
   /** Record class (S8a): 'vod' = an on-demand library title (seek/pause UI, no
    *  live-edge machinery — isLive does not apply); 'live' (or absent, old records). */
   type?: 'live' | 'vod'

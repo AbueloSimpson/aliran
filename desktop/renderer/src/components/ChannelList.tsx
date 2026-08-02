@@ -5,12 +5,37 @@
 // right-click for channel detail. Rows show the airing EPG program as their
 // now-playing line when the channel carries a guide (one cached fetch covers every
 // row sharing the feed URL), else the catalog synopsis; vod titles (S8a) swap the
-// LIVE badge for their runtime and never take a channel number.
+// LIVE badge for their runtime and never take a channel number. The right-edge picture
+// is the channel's LIVE thumbnail (the rolling frame off its own feed) when there is
+// one, the station logo otherwise.
 
 import React, { useEffect, useRef, useState } from 'react'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
+
+// Live thumbnail refresh cadence — the broadcaster rolls /thumb.jpg at the same period,
+// so a faster tick would re-fetch the frame the row already shows.
+const THUMB_REFRESH_MS = 30000
+
+// Thumb-first channel art (the desktop half of the client's useChannelThumb). The engine
+// hands out thumbBase for EVERY channel, so a 404 is the normal "nothing to show" answer
+// (thumbnails off, feed not warm, metered network) and the row falls back to the logo —
+// never a broken-image state. The ?t= stamp is load-bearing: the thumbnail rolls IN
+// PLACE, so an unchanged URL would leave the browser cache pinned to the first frame.
+// Each tick also re-probes a missing thumb — the SDK warms a cold feed on that first
+// miss, so the picture appears one tick later instead of never.
+function useChannelThumb (thumbBase?: string): [string | null, () => void] {
+  const [stamp, setStamp] = useState(0)
+  const [broken, setBroken] = useState(false)
+  useEffect(() => {
+    if (!thumbBase) return
+    setBroken(false)
+    const timer = setInterval(() => { setStamp(Date.now()); setBroken(false) }, THUMB_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [thumbBase])
+  return [thumbBase && !broken ? `${thumbBase}?t=${stamp}` : null, () => setBroken(true)]
+}
 
 export interface ChannelListProps {
   streams: Stream[]
@@ -110,6 +135,9 @@ const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRo
   // catalog synopsis. Guide-less channels never fetch.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const nowText = data?.now?.title || stream.description
+  // Right-edge picture: what is on screen right now, else the station logo.
+  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
+  const art = thumbUri || stream.logo
   return (
     <div
       ref={ref}
@@ -128,8 +156,8 @@ const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRo
         </span>
         {nowText && <span className="row-now">{nowText}</span>}
       </span>
-      {stream.logo
-        ? <img className="row-logo" src={stream.logo} alt="" loading="lazy" />
+      {art
+        ? <img className={'row-logo' + (thumbUri ? ' row-thumb' : '')} src={art} alt="" loading="lazy" onError={thumbUri ? onThumbError : undefined} />
         : <span className="row-logo row-logo-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</span>}
     </div>
   )

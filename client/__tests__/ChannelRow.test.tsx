@@ -1,10 +1,12 @@
 // ChannelRow (S27): the now-playing line shows the current EPG program for channels
-// with a guide, and falls back to the channel description otherwise.
+// with a guide, and falls back to the channel description otherwise. Live thumbnails:
+// the right-edge picture is the channel's rolling feed thumb when one loads, and the
+// station logo when it 404s (which is the ordinary answer — see thumbBase in the SDK).
 
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text } from 'react-native'
+import { Text, Image } from 'react-native'
 import { ChannelRow } from '../src/components/ChannelRow'
 import { epg } from '@aliran/react-native'
 import type { Stream } from '../src/worklet'
@@ -55,6 +57,47 @@ test('vod row: runtime badge instead of LIVE, no channel number', async () => {
   // Not dimmed: 'available' renders at full opacity (no isLive on vod records).
   const title = tree.root.findAllByType(Text).find(x => [x.props.children].flat().join('') === 'Heat')!
   expect(JSON.stringify(title.props.style)).not.toContain('0.5')
+})
+
+// --- live thumbnails ---
+// The engine hands out thumbBase for EVERY channel, so the row must treat a failed load
+// as normal (no thumbnail right now) and keep showing art, never a broken image.
+
+const LOGO = 'http://127.0.0.1:1234/assets/news/logo.png'
+const THUMB = 'http://127.0.0.1:1234/feedthumb/news'
+
+test('live thumbnail: the row shows the feed thumb ahead of the station logo', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, logo: LOGO, thumbBase: THUMB }
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  const img = tree.root.findByType(Image)
+  // Cache-busted: the thumbnail rolls in place, so the URL must change per refresh.
+  expect(img.props.source.uri).toMatch(new RegExp('^' + THUMB + '\\?t='))
+  expect(img.props.resizeMode).toBe('cover')
+})
+
+test('live thumbnail: a 404 falls back to the station logo', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, logo: LOGO, thumbBase: THUMB }
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  await ReactTestRenderer.act(async () => { tree.root.findByType(Image).props.onError() })
+  const img = tree.root.findByType(Image)
+  expect(img.props.source.uri).toBe(LOGO)
+  expect(img.props.resizeMode).toBe('contain') // a logo is letterboxed, not cropped
+})
+
+test('live thumbnail: a 404 with no logo leaves the initial box', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, thumbBase: THUMB }
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  await ReactTestRenderer.act(async () => { tree.root.findByType(Image).props.onError() })
+  expect(tree.root.findAllByType(Image)).toHaveLength(0)
+  expect(texts(tree)).toContain('N')
+})
+
+test('live thumbnail: a channel without one keeps its logo and never fetches', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, logo: LOGO }
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  const img = tree.root.findByType(Image)
+  expect(img.props.source.uri).toBe(LOGO)
+  expect(img.props.onError).toBeUndefined()
 })
 
 test('vod row: status unavailable grays the title out', async () => {
