@@ -49,7 +49,7 @@ test('renders now + up-next when the channel has an EPG', async () => {
   expect(t).toContain('Moon Cat B')
   expect(t).toContain('Moon Cat C')
   expect(t).not.toContain('No program information')
-  expect(epg.getNowNext).toHaveBeenCalledWith('https://epg.example/anime.json', 'moon-cat')
+  expect(epg.getNowNext).toHaveBeenCalledWith('https://epg.example/anime.json', 'moon-cat', undefined)
 })
 
 test('keeps the honest placeholder for a channel with no EPG (and never fetches)', async () => {

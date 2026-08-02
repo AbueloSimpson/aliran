@@ -1,0 +1,14 @@
+[
+  {
+    "id": "main-provider",
+    "type": "provider-json",
+    "url": "https://example.com/epg.json",
+    "refreshHours": 6,
+    "overrides": { "SOME-PROVIDER-ID": "my-stream-id" }
+  },
+  {
+    "id": "hand-edited",
+    "type": "manual",
+    "file": "./guide.json"
+  }
+]

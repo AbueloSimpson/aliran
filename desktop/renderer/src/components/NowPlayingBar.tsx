@@ -42,7 +42,7 @@ export interface NowPlayingBarProps {
 export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
   // What's on NOW from the program guide — more useful on the bar than the channel
   // synopsis; the synopsis still lives in the Info panel.
-  const { data } = useEpg(stream.epgUrl, stream.epgId)
+  const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const subtitle = data?.now?.title || stream.description
   return (
     <div className="nowplaying">

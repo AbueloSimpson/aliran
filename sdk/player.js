@@ -333,6 +333,10 @@ export class AliranPlayer extends Emitter {
     this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
     this._server = null
     this._assetsDrive = null
+    this._epgDrive = null // sparse replica of the CURRENT guide epoch drive (meta/epgKey)
+    this._epgDiscovery = null
+    this._epgKeyHex = null // the drive key _epgDrive was opened by — the swap detector
+    this._epgWatcher = null
     this._feedDrive = null // the CURRENTLY served feed (one of _feeds' drives)
     this._activeFeedKey = null // its _feeds key — _trimFeeds must never evict this one
     // Cache bound. Big enough that surfing a category and coming back is still instant
@@ -345,6 +349,7 @@ export class AliranPlayer extends Emitter {
     this._peersLostAt = null // when the ACTIVE live p2p feed's peer count hit zero (see _checkFeedPeers)
     this._rescanDead = null // active play whose tune ladder already surfaced the friendly error — the rescan leaves it alone
     this._assetsOpen = null
+    this._epgOpen = null // single-flight open/swap of the guide replica
     this._purging = null
     this._replicaSweep = null // single-flight stale-namespace sweep, once per engine (see _sweepStaleReplicas)
     this._streams = []
@@ -1208,10 +1213,15 @@ export class AliranPlayer extends Emitter {
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} }
     this._closeFeeds() // fire-and-forget close of every opened feed (see _closeFeeds)
-    const closing = [this._assetsDrive, this._panelBee, this._store]
-    this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
+    const epgWatcher = this._epgWatcher; this._epgWatcher = null
+    if (epgWatcher) { try { await epgWatcher.close() } catch {} }
+    const closing = [this._assetsDrive, this._epgDrive, this._panelBee, this._store]
+    this._feedDrive = this._assetsDrive = this._epgDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
+    this._epgDiscovery = null
+    this._epgKeyHex = null
     this._assetsOpen = null
+    this._epgOpen = null
     this._call = null
     this._panelPeerKey = null
     this._panelDiscovery = null
@@ -1725,6 +1735,7 @@ export class AliranPlayer extends Emitter {
     await this._panelBee.ready()
     this._panelDiscovery = this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
     this._watchCatalog()
+    this._watchEpgKey()
   }
 
   // Live catalog push: watch the replicated bee's catalog/ range and re-emit 'streams'
@@ -1842,10 +1853,15 @@ export class AliranPlayer extends Emitter {
     if (watcher) { try { await watcher.close() } catch {} } // corrupt bees may refuse; bee close below retries
     this._zapRanges.clear() // warm ranges die with their (closing) cores; the prefetch loop re-warms on the fresh store
     this._closeFeeds() // drop every cached feed on the dead store (fire-and-forget; see _closeFeeds)
-    const closing = [this._assetsDrive, this._panelBee, this._store]
-    this._feedDrive = this._assetsDrive = this._panelBee = this._store = null
+    const epgWatcher = this._epgWatcher; this._epgWatcher = null
+    if (epgWatcher) { try { await epgWatcher.close() } catch {} }
+    const closing = [this._assetsDrive, this._epgDrive, this._panelBee, this._store]
+    this._feedDrive = this._assetsDrive = this._epgDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
+    this._epgDiscovery = null
+    this._epgKeyHex = null
     this._assetsOpen = null
+    this._epgOpen = null
     this._call = null
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
     for (const c of closing) { if (c) { try { await c.close() } catch {} } } // corrupt cores may refuse to close
@@ -1853,6 +1869,7 @@ export class AliranPlayer extends Emitter {
     if (this._panelKey) {
       await this._openPanel()
       this._openAssets().catch(() => {}) // posters re-replicate in the background once the panel reconnects
+      this._openEpg().catch(() => {}) // so does the guide
     }
   }
 
@@ -1874,6 +1891,7 @@ export class AliranPlayer extends Emitter {
     // silently disable reporting exactly when things are going wrong.
     this._session = res.token ? { username, token: res.token, expiresAt: res.expiresAt ?? null, deviceId: res.deviceId ?? null } : null
     await this._openAssets()
+    this._openEpg().catch(() => {}) // the guide is never allowed to delay (or fail) a login
     const port = await this._ensureServer() // posters must be loadable before anything plays
     this._entitled.clear()
     return streams.map((s) => {
@@ -1905,6 +1923,10 @@ export class AliranPlayer extends Emitter {
       // (unlike url/redirect, which stay engine-internal — see the display test).
       epgUrl: cat.epgUrl ?? undefined,
       epgId: cat.epgId ?? undefined,
+      // P2P guide base (the epoch drive served at /epg/* — see _doOpenEpg). Handed
+      // out unconditionally like the art URLs: when no guide drive exists the fetch
+      // 404s instantly (media:false) and the EpgService falls back to epgUrl/epgId.
+      guideBase: `http://127.0.0.1:${port}/epg/v1/${id}`,
       // Record class (S8a): 'vod' = a library title (host shows seek UI, no live-edge
       // machinery) | 'live'. durationSec rides only on vod records. status is exposed
       // so a host can gray out an 'unavailable' title (its library deleted it).
@@ -1947,6 +1969,65 @@ export class AliranPlayer extends Emitter {
     this._assetsDiscovery = this._swarm.join(this._assetsDrive.discoveryKey, { client: true, server: this._uploadPolicy !== 'client-only' })
   }
 
+  // Open (or SWAP to) the current guide epoch drive advertised under meta/epgKey.
+  // The guide is epoch-rotated by the EPG service (epg/src/guide.js): a fresh drive
+  // key appears in the pointer roughly monthly, so unlike the assets drive this open
+  // must handle replacement — the assets pattern plus the feed-rotation swap. The
+  // replica namespace carries the drive key, so each epoch's cores are their own
+  // namespace and the retired one can be purged wholesale (the same reasoning as
+  // _doSweepStaleReplicas for rotated feeds). No pointer / an old panel = no guide —
+  // callers never depend on this (the EpgService falls back to https).
+  _openEpg () {
+    if (!this._epgOpen) {
+      const p = this._doOpenEpg().then(
+        (r) => { if (this._epgOpen === p) this._epgOpen = null; return r },
+        (err) => { if (this._epgOpen === p) this._epgOpen = null; throw err }
+      )
+      this._epgOpen = p
+    }
+    return this._epgOpen
+  }
+
+  async _doOpenEpg () {
+    if (!this._panelBee) return
+    const meta = await this._panelBee.get('meta/epgKey')
+    const keyHex = meta?.value?.key
+    if (!keyHex || typeof keyHex !== 'string') return
+    if (this._epgKeyHex === keyHex && this._epgDrive) return // current epoch already open
+    const drive = new Hyperdrive(this._store.namespace('epg-replica-' + keyHex.slice(0, 16)), b4a.from(keyHex, 'hex'))
+    await drive.ready()
+    const discovery = this._swarm.join(drive.discoveryKey, { client: true, server: this._uploadPolicy !== 'client-only' })
+    const old = this._epgDrive
+    const oldDiscovery = this._epgDiscovery
+    this._epgDrive = drive
+    this._epgDiscovery = discovery
+    this._epgKeyHex = keyHex
+    // Retire the previous epoch's replica: leave its topic, close it, free its disk.
+    // Fire-and-forget — the swap itself must never wait on cleanup.
+    if (old) {
+      ;(async () => {
+        try { if (oldDiscovery) await oldDiscovery.destroy() } catch {}
+        try { await old.purge() } catch { try { await old.close() } catch {} }
+      })().catch(() => {})
+    }
+  }
+
+  // Follow meta/epgKey rotations live (the catalog watcher's exact re-arm pattern,
+  // bounded to the meta/ prefix — one tiny record, so ticks are rare and cheap).
+  _watchEpgKey () {
+    if (!this._panelBee) return
+    const watcher = this._panelBee.watch({ gt: 'meta/', lt: 'meta0' })
+    this._epgWatcher = watcher
+    ;(async () => {
+      try {
+        for await (const _ of watcher) { // eslint-disable-line no-unused-vars
+          if (this._epgWatcher !== watcher) return
+          this._openEpg().catch(() => {})
+        }
+      } catch { /* bee closing under us (shutdown/purge) */ }
+    })()
+  }
+
   // One persistent localhost server for the whole session: /assets/* is served from
   // the panel's assets drive (posters/art), everything else from the currently playing
   // feed. The port never changes, so asset URLs handed out at login stay valid.
@@ -1969,6 +2050,13 @@ export class AliranPlayer extends Emitter {
       // miss must 404 immediately (media: false), not hold the request open.
       if (p.startsWith('/assets/') && this._assetsDrive) {
         return { drive: this._assetsDrive, path: p.slice('/assets'.length), media: false }
+      }
+      // /epg/* is served from the current guide epoch drive (P2P program guide) —
+      // ancillary like art (a miss 404s so the EpgService can fall back to https).
+      // The drive version is the cache validator: a poll of an unchanged guide is
+      // answered 304 before any block is touched.
+      if (p.startsWith('/epg/') && this._epgDrive) {
+        return { drive: this._epgDrive, path: p.slice('/epg'.length), media: false, etag: 'epg-' + this._epgKeyHex.slice(0, 8) + '-' + this._epgDrive.version }
       }
       return this._feedDrive ? { drive: this._feedDrive, path: p, media: true } : null
     }, {

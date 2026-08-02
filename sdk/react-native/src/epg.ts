@@ -49,8 +49,23 @@ const DEFAULTS = {
   nextCount: 4
 }
 
+// One cached P2P guide: per-day programs fetched from the engine's loopback
+// /epg/v1/<id>/<day>.json (backed by the replicated guide drive). ETags come from
+// the drive version, so a poll of an unchanged guide costs a loopback 304 and zero
+// network. `absent` records a channel the drive does not cover (today's file
+// 404ed) — remembered until the next refetch window so every tick does not re-404.
+interface P2pCache {
+  fetchedAt: number
+  etags: Map<string, string> // day -> etag
+  byDay: Map<string, EpgProgram[]>
+  coversUntil: number
+  absent: boolean
+  inflight: Promise<void> | null
+}
+
 export class EpgService {
   private cache = new Map<string, FeedCache>()
+  private p2p = new Map<string, P2pCache>()
   private fetchImpl: typeof fetch
   private now: () => number
   private opts: typeof DEFAULTS
@@ -68,17 +83,98 @@ export class EpgService {
     }
   }
 
-  // now/next for one channel. Ensures the feed is fresh enough (fetches/revalidates
-  // if needed), then selects locally. Returns empty ({now:null,next:[]}) rather than
-  // throwing — a guide is never allowed to break the Info panel.
-  async getNowNext (epgUrl?: string, epgId?: string): Promise<NowNext> {
+  // now/next for one channel. The P2P guide (loopback, backed by the replicated
+  // drive) is tried FIRST when the engine handed out a guideBase; a channel the
+  // drive does not cover — or any loopback failure — falls back to the https
+  // provider feed exactly as before. Returns empty ({now:null,next:[]}) rather
+  // than throwing — a guide is never allowed to break the Info panel.
+  async getNowNext (epgUrl?: string, epgId?: string, guideBase?: string): Promise<NowNext> {
     const empty: NowNext = { now: null, next: [] }
+    if (guideBase) {
+      try {
+        const programs = await this.p2pPrograms(guideBase)
+        if (programs && programs.length) return this.select(programs)
+      } catch { /* engine down / malformed — fall through to https */ }
+    }
     if (!epgUrl || !epgId) return empty
     try { await this.ensureFresh(epgUrl) } catch { /* keep any stale cache; fall through */ }
     const entry = this.cache.get(epgUrl)
     const programs = entry?.byId.get(epgId)
     if (!programs || !programs.length) return empty
     return this.select(programs)
+  }
+
+  // Fresh-enough P2P programs for one channel (today + tomorrow files, merged and
+  // sorted), or null when the drive does not cover the channel. Same freshness
+  // economics as the https path: minRefetchMs floor, maxAgeMs ceiling, per-file
+  // ETag revalidation (the engine answers 304 from the drive version).
+  private async p2pPrograms (guideBase: string): Promise<EpgProgram[] | null> {
+    let entry = this.p2p.get(guideBase)
+    const t = this.now()
+    if (entry) {
+      if (entry.inflight) await entry.inflight
+      const age = t - entry.fetchedAt
+      const fresh = (entry.absent || t < entry.coversUntil) && age < this.opts.maxAgeMs
+      if (!fresh && age >= this.opts.minRefetchMs) {
+        const p = this.fetchP2pInto(guideBase, entry).finally(() => { const e = this.p2p.get(guideBase); if (e && e.inflight === p) e.inflight = null })
+        entry.inflight = p
+        await p
+      }
+    } else {
+      entry = { fetchedAt: 0, etags: new Map(), byDay: new Map(), coversUntil: 0, absent: false, inflight: null }
+      this.p2p.set(guideBase, entry)
+      const p = this.fetchP2pInto(guideBase, entry).finally(() => { if (entry!.inflight === p) entry!.inflight = null })
+      entry.inflight = p
+      await p
+    }
+    if (entry.absent) return null
+    const days = [...entry.byDay.keys()].sort()
+    const programs: EpgProgram[] = []
+    for (const d of days) programs.push(...entry.byDay.get(d)!)
+    return programs
+  }
+
+  private async fetchP2pInto (guideBase: string, entry: P2pCache): Promise<void> {
+    const today = new Date(this.now()).toISOString().slice(0, 10)
+    const tomorrow = new Date(this.now() + 86400000).toISOString().slice(0, 10)
+    const wanted = [today, tomorrow]
+    // The UTC day rolling over changes the file set — drop days that fell out.
+    for (const d of [...entry.byDay.keys()]) if (!wanted.includes(d)) { entry.byDay.delete(d); entry.etags.delete(d) }
+    let missedToday = false
+    for (const day of wanted) {
+      const ac = new AbortController()
+      const timer = setTimeout(() => ac.abort(), this.opts.fetchTimeoutMs)
+      try {
+        const headers: Record<string, string> = { accept: 'application/json' }
+        const etag = entry.etags.get(day)
+        if (etag) headers['if-none-match'] = etag
+        const res = await this.fetchImpl(`${guideBase}/${day}.json`, { headers, signal: ac.signal })
+        if (res.status === 304) continue // cached day still valid
+        if (res.status === 404) { if (day === today) missedToday = true; entry.byDay.delete(day); entry.etags.delete(day); continue }
+        if (!res.ok) throw new Error('epg p2p fetch failed: HTTP ' + res.status)
+        const text = await res.text()
+        if (text.length > this.opts.maxBytes) throw new Error('epg day file too large')
+        const rows = JSON.parse(text)
+        const programs: EpgProgram[] = []
+        if (Array.isArray(rows)) {
+          for (const p of rows) {
+            const start = Date.parse(p?.start)
+            const stop = Date.parse(p?.stop)
+            const title = typeof p?.title === 'string' ? p.title : ''
+            if (!title || Number.isNaN(start) || Number.isNaN(stop) || stop <= start) continue
+            programs.push({ title, start, stop })
+          }
+        }
+        programs.sort((a, b) => a.start - b.start)
+        if (programs.length) entry.byDay.set(day, programs); else entry.byDay.delete(day)
+        const e = res.headers.get('etag')
+        if (e) entry.etags.set(day, e); else entry.etags.delete(day)
+      } finally { clearTimeout(timer) }
+    }
+    entry.fetchedAt = this.now()
+    entry.absent = missedToday && entry.byDay.size === 0
+    entry.coversUntil = 0
+    for (const programs of entry.byDay.values()) { const last = programs[programs.length - 1]; if (last && last.stop > entry.coversUntil) entry.coversUntil = last.stop }
   }
 
   // Pick current + upcoming from a start-sorted list. A program is "now" when it

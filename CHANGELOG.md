@@ -18,6 +18,21 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **EPG over P2P — a standalone `epg/` service + epoch-rotated guide drive.** The
+  program guide now replicates peer-to-peer: the new service ingests schedules
+  (pluggable providers: the provider-JSON feed shape or a local file; XMLTV-ready
+  contract), writes per-channel-per-day files into a public Hyperdrive, and
+  publishes the drive key through the panel's new publisher-scoped `setEpgKey`
+  RPC as ONE `meta/epgKey` record. Viewers sparse-fetch only the days they show
+  (loopback `/epg/*` with drive-version ETags → 304 polls) and fall back to the
+  https `epgUrl` path unchanged; the drive is epoch-rotated (~monthly, one bee
+  block each) so guide churn never grows the catalog log. The repeater gains
+  `EPG=1` (full raw guide mirror) and `ANNOUNCE=1` (advertise on the catalog
+  topic), so cold viewers can bootstrap the channel list AND guide with the panel
+  offline — proven by the `test:epg-p2p` lane (ingest → pointer → sparse serve →
+  rotation → warm-offline → cold bootstrap via repeater). See
+  [docs/epg-service.md](docs/epg-service.md).
+
 - **A playing channel now finds a new source by itself when all of its peers
   disappear.** A viewer can tune a channel entirely off relay peers while its
   connections to the origin broadcaster fail — the networking layer then stops

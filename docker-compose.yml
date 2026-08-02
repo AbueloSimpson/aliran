@@ -121,6 +121,30 @@ services:
       - library-data:/data
       - ./backups:/backups:ro
 
+  # Program-guide (EPG) service — OPTIONAL, behind the `epg` profile so a plain
+  # `docker compose up -d` never starts it:
+  #   docker compose --profile epg up -d epg
+  # A separate service on purpose (guide churn belongs in its own epoch-rotated
+  # drive, never the panel's append-only bee; no admin services needed): it can run
+  # on a DIFFERENT box than the panel. Enroll it as its OWN publisher with scope
+  # `epg` (add-publisher epg1 --scopes 'epg') and create providers.json — see
+  # epg/.env.example and epg/providers.example.json.
+  epg:
+    build:
+      context: .
+      dockerfile: epg/Dockerfile
+    profiles: [epg]
+    network_mode: host
+    restart: unless-stopped
+    logging: *bounded-logs
+    env_file: ./epg/.env
+    environment:
+      DATA_DIR: /data
+      PROVIDERS_FILE: /app/epg/providers.json
+    volumes:
+      - epg-data:/data
+      - ./epg/providers.json:/app/epg/providers.json:ro
+
   # Reseller panel — role hierarchy + credit ledger fronting the panel admin API.
   # Behind the `reseller` profile so a plain `up -d` never starts it. Seed the root
   # admin once (first run):
@@ -148,3 +172,4 @@ volumes:
   broadcaster-data:
   library-data:
   reseller-data:
+  epg-data:

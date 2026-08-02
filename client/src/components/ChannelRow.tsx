@@ -43,7 +43,7 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
   // Now-playing line: the airing EPG program (S27) when the channel has a guide, else
   // the catalog synopsis. The feed is shared per category, so all its rows resolve from
   // one cached fetch (src/epg.ts); guide-less channels never fetch.
-  const { data } = useEpg(stream.epgUrl, stream.epgId)
+  const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const nowText = data?.now?.title || stream.description
   return (
     <Pressable

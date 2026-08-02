@@ -95,13 +95,13 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 // otherwise the honest placeholder. Never blocks on the fetch — it shows the
 // placeholder until data arrives, and keeps it if the feed is empty/unreachable.
 function EpgGuide ({ stream }: { stream: Stream }) {
-  const { data, loaded } = useEpg(stream.epgUrl, stream.epgId)
+  const { data, loaded } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const has = !!(data && (data.now || data.next.length))
   return (
     <View style={styles.epgSlot}>
       <Text style={styles.epgTitle}>PROGRAM GUIDE</Text>
       {!has
-        ? <Text style={styles.epgEmpty}>{stream.epgUrl && !loaded ? 'Loading guide…' : 'No program information'}</Text>
+        ? <Text style={styles.epgEmpty}>{(stream.epgUrl || stream.guideBase) && !loaded ? 'Loading guide…' : 'No program information'}</Text>
         : (
           <>
             {data!.now && <NowRow program={data!.now} />}

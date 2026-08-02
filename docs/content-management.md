@@ -195,6 +195,12 @@ This works for **any** channel, not just imported ones: set `epgUrl` + `epgId` o
 a P2P channel (via `set-meta`/`PATCH /api/streams`) pointing at a compatible JSON,
 and the same guide lights up. Leave them unset for the placeholder.
 
+**Guide over P2P (optional):** the standalone EPG service can publish the same
+schedules into a replicated guide drive, and apps then fetch the guide
+peer-to-peer FIRST and use the https path as the fallback. The `epgId` field
+above is also what maps a provider channel to its stream there. See
+[epg-service.md](epg-service.md).
+
 ## Channel ingest & transcode
 
 How a channel's media gets IN (test / file / pull URL / RTMP / SRT / UDP-TS push)

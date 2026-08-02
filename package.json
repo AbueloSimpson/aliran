@@ -11,6 +11,7 @@
     "repeater",
     "library",
     "reseller",
+    "epg",
     "sdk",
     "mcp",
     "tools",
@@ -67,7 +68,8 @@
     "test:login-flood": "node tools/e2e-login-flood-test.mjs",
     "test:panel-login-flood": "node tools/e2e-panel-login-flood-test.mjs",
     "test:panel-link": "node tools/panel-link-test.mjs",
-    "bench:scale": "node --expose-gc tools/scale-bench.mjs"
+    "bench:scale": "node --expose-gc tools/scale-bench.mjs",
+    "test:epg-p2p": "node tools/e2e-epg-p2p-test.mjs"
   },
   "keywords": [
     "p2p",
@@ -82,5 +84,5 @@
   "engines": {
     "node": ">=20"
   },
-  "comment": "client/ is a separate React Native (react-native-tvos) project and is intentionally NOT an npm workspace here — it has its own toolchain. See client/README.md."
+  "comment": "client/ is a separate React Native (react-native-tvos) project and is intentionally NOT an npm workspace here \u00e2\u20ac\u201d it has its own toolchain. See client/README.md."
 }

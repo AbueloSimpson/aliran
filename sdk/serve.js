@@ -76,7 +76,8 @@ const TYPES = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.png': 'image/png',
-  '.webp': 'image/webp'
+  '.webp': 'image/webp',
+  '.json': 'application/json'
 }
 
 export function contentType (p) {
@@ -279,9 +280,13 @@ function pump (rs, res, wanted, idleMs = 0) {
 
 // Build an async (req, res) handler.
 //
-//   resolveTarget(pathname) -> { drive, path, media } | null
+//   resolveTarget(pathname) -> { drive, path, media, etag? } | null
 //     media: true  = feed content — availability wait + read-ahead apply
-//            false = ancillary (posters/art) — miss 404s immediately
+//            false = ancillary (posters/art, guide files) — miss 404s immediately
+//     etag:  optional cache validator (any stable string — the SDK passes the EPG
+//            drive's version). Sent as a strong ETag; a matching If-None-Match
+//            answers 304 with no body, so a poll of an unchanged guide costs
+//            nothing — the same economy the https EPG path gets from its 304s.
 //
 // opts: { waitMs, pollMs, readAhead, liveReadAhead, reclaim, reclaimIntervalMs } —
 // see DEFAULTS; liveReadAhead (number or function -> number, default = readAhead)
@@ -303,7 +308,14 @@ export function createDriveHandler (resolveTarget, opts = {}) {
 
       const target = resolveTarget(urlPath)
       if (!target || !target.drive) { res.writeHead(404); return res.end('not found') }
-      const { drive, path: p, media } = target
+      const { drive, path: p, media, etag } = target
+
+      // Validator short-circuit BEFORE the drive read: an unchanged guide poll
+      // must not touch blocks at all.
+      const etagValue = etag ? `"${etag}"` : null
+      if (etagValue && req.headers['if-none-match'] === etagValue) {
+        res.writeHead(304, { ETag: etagValue }); return res.end()
+      }
 
       let entry = await waitEntry(drive, p, media ? cfg.waitMs : 0, cfg.pollMs)
       if (!entry) { res.writeHead(404); return res.end('not found') }
@@ -313,7 +325,8 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       const headers = {
         'Content-Type': contentType(p),
         'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-cache'
+        'Cache-Control': 'no-cache',
+        ...(etagValue ? { ETag: etagValue } : {})
       }
 
       // Read-ahead (and reclaim) ride the playlist request: by the time the player
