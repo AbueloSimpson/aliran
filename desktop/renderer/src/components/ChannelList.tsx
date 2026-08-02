@@ -9,10 +9,21 @@
 // is the channel's LIVE thumbnail (the rolling frame off its own feed) when there is
 // one, the station logo otherwise.
 
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
+
+// Fixed row geometry — the desktop mirror of the client's getItemLayout
+// (ChannelListPanel.tsx). Every row occupies ROW_H px, so the visible window is
+// pure index arithmetic and only rows in view (plus a small overscan) mount.
+// This is what keeps a 90-channel list honest: an unmounted row runs no
+// 30 s thumbnail interval and never cold-opens its feed, so off-screen rows
+// cannot churn the SDK's 12-slot feed LRU.
+const ROW_INNER_H = 54
+const ROW_GAP = 2
+const ROW_H = ROW_INNER_H + ROW_GAP
+const OVERSCAN = 4
 
 // Live thumbnail refresh cadence — the broadcaster rolls /thumb.jpg at the same period,
 // so a faster tick would re-fetch the frame the row already shows.
@@ -59,7 +70,21 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
     const i = streams.findIndex((s) => s.id === playingId)
     return i >= 0 ? i : 0
   })
-  const rowRefs = useRef<Array<HTMLDivElement | null>>([])
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewH, setViewH] = useState(0)
+
+  // Measure the scroll viewport (and follow window resizes) — the window math
+  // needs its height. useLayoutEffect so the first paint already shows a full
+  // viewport of rows, not just the overscan.
+  useLayoutEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    setViewH(el.clientHeight)
+    const ro = new ResizeObserver(() => setViewH(el.clientHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // Keep the focused index valid when the category scopes the list down.
   useEffect(() => {
@@ -67,8 +92,14 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
+  // scrollIntoView('nearest') by hand — the focused row may not be mounted, so
+  // scroll the viewport to its computed slot instead of asking a DOM node.
   useEffect(() => {
-    rowRefs.current[focus]?.scrollIntoView({ block: 'nearest' })
+    const el = viewportRef.current
+    if (!el) return
+    const top = focus * ROW_H
+    if (top < el.scrollTop) el.scrollTop = top
+    else if (top + ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = top + ROW_H - el.clientHeight
   }, [focus])
 
   useEffect(() => {
@@ -88,24 +119,36 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
     return () => window.removeEventListener('keydown', onKey)
   }, [streams, focus, onSelect, onInfo, onClose, onActivity, active])
 
+  const firstRow = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
+  const lastRow = Math.min(streams.length, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN)
+
   return (
-    <div className="channel-list" onScroll={onActivity}>
+    <div className="channel-list">
       <div className="panel-heading">{heading}</div>
-      <div className="channel-rows">
-        {streams.map((s, i) => (
-          <ChannelRow
-            key={s.id}
-            ref={(el) => { rowRefs.current[i] = el }}
-            stream={s}
-            number={numbers.get(s.id)}
-            playing={s.id === playingId}
-            focused={i === focus}
-            favorite={favorites.includes(s.id)}
-            onHover={() => { setFocus(i); onActivity?.() }}
-            onClick={() => onSelect(s)}
-            onContextMenu={onInfo ? () => onInfo(s) : undefined}
-          />
-        ))}
+      <div
+        className="channel-rows"
+        ref={viewportRef}
+        onScroll={(e) => { setScrollTop(e.currentTarget.scrollTop); onActivity?.() }}
+      >
+        <div style={{ position: 'relative', height: streams.length * ROW_H }}>
+          {streams.slice(firstRow, lastRow).map((s, off) => {
+            const i = firstRow + off
+            return (
+              <ChannelRow
+                key={s.id}
+                top={i * ROW_H}
+                stream={s}
+                number={numbers.get(s.id)}
+                playing={s.id === playingId}
+                focused={i === focus}
+                favorite={favorites.includes(s.id)}
+                onHover={() => { setFocus(i); onActivity?.() }}
+                onClick={() => onSelect(s)}
+                onContextMenu={onInfo ? () => onInfo(s) : undefined}
+              />
+            )
+          })}
+        </div>
       </div>
       <div className="panel-hint">↑↓ browse · Enter watch{onInfo ? ' · i / right-click info' : ''} · Esc close</div>
     </div>
@@ -114,6 +157,8 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
 
 interface RowProps {
   stream: Stream
+  /** Absolute y-offset of this row's slot inside the windowed list. */
+  top: number
   number?: number
   playing: boolean
   focused: boolean
@@ -123,9 +168,7 @@ interface RowProps {
   onContextMenu?: () => void
 }
 
-const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRow (
-  { stream, number, playing, focused, favorite, onHover, onClick, onContextMenu }, ref
-) {
+function ChannelRow ({ stream, top, number, playing, focused, favorite, onHover, onClick, onContextMenu }: RowProps) {
   // Off-air channel, or a vod title the library took down (vod records carry no
   // isLive — their availability signal is status 'available'/'unavailable').
   const vod = isVod(stream)
@@ -140,8 +183,8 @@ const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRo
   const art = thumbUri || stream.logo
   return (
     <div
-      ref={ref}
       className={'channel-row' + (focused ? ' focused' : '') + (playing ? ' playing' : '')}
+      style={{ position: 'absolute', top, left: 0, right: 0, height: ROW_INNER_H }}
       onMouseMove={onHover}
       onClick={onClick}
       onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu() } : undefined}
@@ -161,4 +204,4 @@ const ChannelRow = React.forwardRef<HTMLDivElement, RowProps>(function ChannelRo
         : <span className="row-logo row-logo-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</span>}
     </div>
   )
-})
+}

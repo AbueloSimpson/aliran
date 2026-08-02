@@ -296,6 +296,8 @@ img { -webkit-user-drag: none; }
 }
 .channel-rows { flex: 1; overflow-y: auto; min-height: 0; }
 
+/* Rows are windowed (ChannelList.tsx): absolutely positioned at a fixed height,
+ * so the inter-row gap lives in the ROW_H math there, not in a margin here. */
 .channel-row {
   display: flex;
   align-items: center;
@@ -303,7 +305,7 @@ img { -webkit-user-drag: none; }
   padding: 8px 10px;
   border-radius: 8px;
   border-left: 3px solid transparent;
-  margin-bottom: 2px;
+  overflow: hidden;
   cursor: pointer;
 }
 .channel-row.playing { border-left-color: var(--c-accent); }
