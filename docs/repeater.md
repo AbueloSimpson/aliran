@@ -146,6 +146,30 @@ full capture is the
   that a fleet of boxes watches, so admins re-target them from the dashboard)
   are a planned follow-up; today's selection is local config.
 
+## Relay mode: serve the catalog and the program guide
+
+Two optional settings turn a repeater into a full relay. Both are off by
+default.
+
+```
+ANNOUNCE=1
+EPG=1
+```
+
+- `ANNOUNCE=1` — the repeater announces itself on the panel's catalog topic.
+  A new viewer can then load the channel list from the repeater while the
+  panel is offline. Without this setting the repeater only answers viewers
+  that found it through a channel topic.
+- `EPG=1` — the repeater mirrors the panel's program-guide drive in full and
+  announces it. Viewers can then load the guide from the repeater. The mirror
+  follows guide rotations on its own. See
+  [the EPG service](epg-service.md) for the guide itself.
+
+The trust model does not change. All mirrored data is signed by the panel
+key that viewers already hold. A repeater can serve it but cannot change it.
+The one new cost of `ANNOUNCE=1`: the repeater's IP address becomes visible
+on the catalog topic, the same way the panel's is.
+
 ## Verification
 
 `npm run test:repeater` runs the end-to-end proof on a local DHT testnet —

@@ -3260,3 +3260,61 @@ was not touched.
   `videoProps` spread carries them), session-local beside the hardware
   keys. TV stays control-free by design: remotes own volume. Muting keeps the
   level so unmuting restores it; dragging the slider unmutes.
+
+### EPG over P2P: a standalone guide service on an epoch-rotated drive (verified)
+- New `epg/` deployable (library-service pattern: own corestore + publisher
+  identity, no admin credentials): pluggable ingest (provider-JSON https with
+  ETag / local file; XMLTV-ready contract) → per-channel-per-day JSON files in a
+  **public epoch Hyperdrive**, every put byte-compared first so a quiet refresh
+  appends nothing. Provider channel ids map to streams through the catalog's
+  existing `epgId` field; unmatched ids surface in `/status` as an operator
+  to-do.
+- Growth control is **rotation, not compaction**: a fresh drive every
+  `EPOCH_DAYS` (30), the current window copied in, the old drive grace-served
+  48 h then purged. The panel's only involvement is the new publisher-scoped
+  `setEpgKey` RPC (scope `epg`, named publishers only, stale-epoch guard)
+  writing ONE `meta/epgKey` record — so the append-only bee costs ~12 blocks a
+  year for a guide that changes daily.
+- Viewers sparse-fetch only the channel-days they display: the engine follows
+  `meta/epgKey` live (swap + purge of the retired replica, the feed-rotation
+  pattern), serves `/epg/*` on the loopback server with the drive version as a
+  strong ETag (an unchanged poll answers 304 before any block is touched), and
+  `EpgService` tries P2P first with the https `epgUrl` path as automatic
+  fallback. Repeaters grew `EPG=1` (full raw mirror — the pointer carries the
+  blobs key so the box stays hyperdrive-free) and `ANNOUNCE=1` (advertise on
+  the catalog topic).
+- Verified by the new `test:epg-p2p` lane on a local DHT testnet: ingest →
+  frugality (unchanged re-ingest = 0 appends) → authenticated pointer → sparse
+  viewer serve (held 1/4 blobs; 200/304/404) → rotation ≈ 1 bee record with the
+  guide intact → a WARM viewer answers with everything upstream dead → a COLD
+  viewer bootstraps catalog + guide from an announcing repeater alone.
+
+### Live channel thumbnails: a rolling preview frame in the feed drive (verified)
+- The broadcaster's ffmpeg gains a second tiny output: one ~320px JPEG every
+  `THUMB_INTERVAL_SECONDS` (30) written beside the segments; the mirror's
+  supersede-then-clearBlob path frees the previous frame's blocks, so the drive
+  grows append-only in history but **held blocks stay flat** (proven per-refresh
+  by `test:thumbs`). Torn mid-write JPEGs are detected (SOI/EOI) and skipped.
+- Measured, not assumed: the `fps` filter drops frames AFTER the decoder, so a
+  thumbnail forces a `copy` channel's decoder ON — ~0.9% of a core each even
+  with `-skip_frame nokey` (88% cheaper than naive). Hence the tri-state:
+  `copy` channels opt in per channel, transcoding channels follow the fleet
+  default (~free), `THUMBS=0` kills fleet-wide. Video-less sources never get
+  the output (`-map 0:v:0` is fatal even with `?`): the gate is the
+  now-persisted `detectedProfile`, whose scrape was also fixed to read input 0
+  only — the thumbnail's own mjpeg banner (or a logo input) used to win the
+  regex. GPU decode paths `hwdownload` before the software scaler so nvenc
+  channels keep their CUDA pipeline.
+- Viewer side: `/feedthumb/<id>` serves the frame from already-warm feeds —
+  synchronous resolve, never parks a request (rolling-blob targets get the
+  stalled-read abort via the serve core's new `idle` flag), never evicts a warm
+  feed, never opens drives on metered networks; the viewer-side reclaim sweep
+  spares the thumbnail's blocks. Apps show thumb-first with poster/logo
+  fallback on a 30 s tick that only runs while the row is visible (the desktop
+  list was windowed for this). An adversarial review round preceded the merge;
+  its three blocking findings (hang-on-cleared-blob, video-less `-map`, CUDA
+  scale) were fixed with regression cases before anything shipped.
+- Production rollout the same day: 60 of 89 channels enabled in monitored
+  batches (~78% → ~93% box CPU, matching the measured per-channel cost); the
+  remaining 29 set to an explicit `thumb: false` so a future respawn cannot
+  silently arm them past the CPU budget.
