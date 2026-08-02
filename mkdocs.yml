@@ -55,6 +55,7 @@ nav:
       - Viewer problem reports: reports.md
       - Optional — MCP server (AI-operable): mcp.md
       - Optional — Repeater appliance: repeater.md
+      - Optional — EPG service: epg-service.md
       - Optional — VOD library: vod-library.md
       - Optional — Reseller panel: reseller-panel.md
   - Build & brand the apps:

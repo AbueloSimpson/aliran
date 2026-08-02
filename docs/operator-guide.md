@@ -217,6 +217,32 @@ demuxer tolerance switches a difficult source needs.
 When a source misbehaves, the channel card's **Logs** dialog shows the live ffmpeg
 stderr ring. The last line is usually the diagnosis.
 
+### Live thumbnails
+
+A channel can publish a rolling preview frame. The apps show it in channel
+lists in place of the poster. The frame refreshes every 30 seconds and old
+frames are freed, so disk use stays flat.
+
+Know the cost before you turn it on. On a `copy` channel the thumbnail forces
+the video decoder on: about **0.9% of one CPU core per channel**. On a
+transcoding channel the decoder already runs, so the thumbnail is almost free.
+For this reason the defaults differ:
+
+| Channel | Default | To change |
+|---|---|---|
+| `copy` | off | set `thumb: true` on the channel |
+| transcoding | on | set `thumb: false` on the channel |
+
+Settings (broadcaster `.env`): `THUMBS=0` turns the feature off for the whole
+fleet. `THUMB_INTERVAL_SECONDS` (default 30) sets the refresh rate — note it
+does not reduce the copy-channel decode cost. `THUMB_WIDTH` (320) and
+`THUMB_QUALITY` (7) shape the image. A changed setting applies when the
+channel restarts. Channels with no video (radio) never get a thumbnail.
+
+Budget check before a fleet-wide rollout: multiply your `copy` channel count
+by ~0.9% of a core and compare it with your CPU headroom. Enable in batches
+and watch `top` between batches.
+
 ## F. Point the client at your panel
 
 You have two ways to do this. See [client-build.md](client-build.md).
@@ -296,6 +322,15 @@ I/O-bound and quick; a transcode runs about 0.5–1 core for roughly the title's
 runtime divided by the encode speed. Serving is the same seeder economics as the
 repeater (bandwidth, not CPU) — raise `SWARM_SNDBUF_MB` and the host's `wmem_max`
 under real fan-out ([network tuning](kb/network-tuning.md)).
+
+## H. The program guide service (optional)
+
+The EPG service publishes channel schedules over P2P, so viewers load the
+guide the same way they load posters — and a repeater can keep it available
+when the panel is down. It is a separate service behind the `epg` compose
+profile and needs a publisher with scope `epg` plus a `providers.json`.
+Setup, channel matching (`epgId`), and rotation details:
+[epg-service.md](epg-service.md).
 
 ## Firewall
 

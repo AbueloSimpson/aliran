@@ -161,6 +161,18 @@ following only the docs.
   pointers drive an on-demand https client fetch that renders a live Now/Up-next guide
   in the Info panel (one ETag-revalidated fetch per category, works on any channel;
   no per-client store growth, no fabricated data)
+- ✅ **EPG over P2P** (`epg/`, optional): a standalone guide service publishes
+  schedules into an epoch-rotated public Hyperdrive; viewers sparse-fetch only the
+  channel-days they show (loopback `/epg/*`, drive-version ETags) with the https
+  path as automatic fallback; repeaters can mirror + announce the guide and the
+  catalog (`EPG=1`/`ANNOUNCE=1`) so both survive a panel outage — the guide churn
+  costs the panel bee ~one record per monthly rotation (`test:epg-p2p`)
+- ✅ **Live channel thumbnails**: a rolling preview frame (`/thumb.jpg`) in each
+  channel's feed drive, refreshed every 30 s and freed on supersede (disk stays
+  flat — `test:thumbs`); apps show it in channel lists via loopback
+  `/feedthumb/<id>` with poster/logo fallback; per-channel `thumb` tri-state —
+  copy channels are opt-in (the thumbnail forces the decoder on, ~0.9% of a core
+  each), transcoding channels get it ~free, `THUMBS=0` is the fleet kill switch
 - ✅ **MCP server** (`mcp/`, `@aliran/mcp`): a Model Context Protocol *server* (local
   stdio) that lets an AI client (Claude Desktop, Claude Code) install, configure,
   maintain and support a deployment for a non-server-literate operator — `panel_*` /
