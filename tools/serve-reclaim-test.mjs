@@ -13,6 +13,10 @@
 //   B  VOD NEVER RECLAIMED — a playlist with #EXT-X-ENDLIST never clears anything,
 //      even with `reclaim: true` (a viewer seeks VOD arbitrarily).
 //   C  OPT-IN ONLY — with `reclaim` unset, nothing is ever cleared.
+//   D  THE THUMBNAIL SURVIVES — /thumb.jpg is a live entry no playlist ever references, so
+//      the naive floor (lowest playlist blob offset) sits ABOVE it and a plain clear(0,min)
+//      wipes the ACTIVE channel's thumbnail on every single pass. Reclaim must punch AROUND
+//      it: everything below the window goes except the thumbnail's own blocks.
 //
 // Exits 0 on PASS.
 
@@ -23,6 +27,7 @@ import os from 'os'
 import fs from 'fs'
 import path from 'path'
 import { driveHandler } from './lib/serve-drive.js'
+import { THUMB_PATH } from '../sdk/serve.js'
 
 const log = (...a) => console.log(...a)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -134,7 +139,47 @@ log('C: reclaim unset — a live playlist never clears anything')
   assert((await stored(blobRef[2])) && (await stored(blobRef[3])), 'nothing cleared without the reclaim opt')
 }
 
-log('\nRESULT: PASS ✅  live reclaim after rotation, VOD untouched, opt-in only')
+log('D: the live thumbnail survives a reclaim pass that frees lower segment blobs')
+{
+  // Layout matters here, so build it explicitly. The thumbnail is put BETWEEN two
+  // out-of-window segments, which is the production shape: it is refreshed every ~30 s
+  // while segments rotate every ~2 s, so its blob is almost always stranded below the
+  // window floor with dead segment blocks on BOTH sides of it. A fix that only clamped
+  // the floor down to the thumbnail (rather than punching around it) would leave
+  // everything above the thumbnail unreclaimed and would pass a weaker test than this.
+  await drive.put('/old1.ts', seg(11)) // dead: below the thumbnail
+  await drive.put(THUMB_PATH, Buffer.alloc(64 * 1024 * 2, 0x7a)) // 2 blocks, mid-stack
+  await drive.put('/old2.ts', seg(12)) // dead: above the thumbnail, still below the window
+  await drive.put('/new1.ts', seg(13)) // in the window
+  await drive.put('/new2.ts', seg(14)) // in the window
+  const old1 = (await drive.entry('/old1.ts')).value.blob
+  const old2 = (await drive.entry('/old2.ts')).value.blob
+  const thumb = (await drive.entry(THUMB_PATH)).value.blob
+  const new1 = (await drive.entry('/new1.ts')).value.blob
+  assert(thumb.blockOffset > old1.blockOffset && thumb.blockOffset < new1.blockOffset,
+    'fixture: the thumbnail blob really is stranded below the live window')
+
+  const server = http.createServer(driveHandler(drive, { reclaim: true, reclaimIntervalMs: 0 }))
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const v = playlist(['new1.ts', 'new2.ts'])
+  await drive.put('/win.m3u8', Buffer.from(v))
+  const res = await httpGet(server.address().port, '/win.m3u8')
+  assert(res.status === 200 && res.body.toString() === v, 'live playlist serves intact')
+  await waitFor(() => cleared(old1), 10000, 'reclaim of the segments below the window')
+  assert(await cleared(old1), 'dead segment BELOW the thumbnail is freed')
+  assert(await cleared(old2), 'dead segment ABOVE the thumbnail (but below the window) is freed too')
+  // ⚠ THE POINT OF THIS SECTION. Before the fix these blocks went on every pass, so the
+  // grid refetched the picture of the channel the viewer is actually watching every 30 s —
+  // and, worse, could resolve an entry the broadcaster had already superseded and hang.
+  assert(await stored(thumb), 'the live thumbnail is NOT cleared — reclaim punched around it')
+  assert(await stored(new1), 'and the live window is untouched as always')
+  // It must still be readable end-to-end, not merely "has blocks".
+  const got = await httpGet(server.address().port, THUMB_PATH)
+  assert(got.status === 200 && got.body.length === 64 * 1024 * 2, 'the thumbnail still serves in full after the pass')
+  server.close()
+}
+
+log('\nRESULT: PASS ✅  live reclaim after rotation, VOD untouched, opt-in only, live thumbnail survives')
 await drive.close()
 await store.close()
 try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}

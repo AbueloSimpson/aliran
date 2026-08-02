@@ -115,7 +115,7 @@ export function buildTemplate (ctx, { note = '' } = {}) {
 // they legitimately added after the snapshot was taken. Removal is opt-in (removeExtra) and
 // still obeys the manager's own rule that a running channel is stopped first.
 
-const RESTORE_FIELDS = ['title', 'description', 'category', 'input', 'transcode', 'ingestTuning', 'buffer', 'hls']
+const RESTORE_FIELDS = ['title', 'description', 'category', 'input', 'transcode', 'ingestTuning', 'buffer', 'hls', 'thumb']
 
 function differingFields (desired, current) {
   const out = {}

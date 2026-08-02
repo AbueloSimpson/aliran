@@ -137,6 +137,32 @@ export const config = {
     after: int(process.env.SLATE_AFTER, 3),
     retryMs: int(process.env.SLATE_RETRY_MS, 30000)
   },
+  // Rolling live thumbnail: one JPEG of the current picture written beside the segments, so
+  // it rides the mirror→drive→clearBlob machinery that already bounds the live window (see
+  // hls.js thumbArgs). Zapping grids and channel lists read it out of the feed itself.
+  //   THUMBS                  the fleet-wide KILL SWITCH. 0 means no channel gets one,
+  //                           whatever its own setting — the single lever to pull when a
+  //                           box is CPU-bound, no per-channel edit and no image rebuild.
+  //   THUMB_INTERVAL_SECONDS  refresh cadence, and the fleet DEFAULT for whether a channel
+  //                           has thumbnails at all: 0 = off unless a channel opts in with
+  //                           `thumb: true` (which then uses the built-in 30 s).
+  //   THUMB_WIDTH / _QUALITY  320px at mjpeg qscale 7 is ~5-25 KB — small enough that 89
+  //                           channels refreshing costs ~2 MB of bounded drive churn per
+  //                           cycle, large enough to read as a picture in a grid cell.
+  // ⚠ CPU, MEASURED, and it decides the default: a TRANSCODING channel already holds
+  // decoded frames, so a thumbnail is +0.23 CPU-s per 30 s (+1.3 % of what that channel
+  // already costs) — free, and on by default. A `copy` channel never decodes, and even with
+  // -skip_frame nokey the thumbnail costs +0.27 CPU-s per 30 s = ~0.9 % of a core EACH,
+  // ~20 % of an 89-channel 4-vCPU box that already sits at 82 % — so `copy` channels are
+  // opt-in per channel (`thumb: true`), never fleet-default. Raising the interval does NOT
+  // reduce that cost; the decoder runs at the source's keyframe rate either way. See
+  // hls.js thumbDecodeArgs and channel.js resolveThumb.
+  thumbs: {
+    enabled: bool(process.env.THUMBS, true),
+    intervalSeconds: int(process.env.THUMB_INTERVAL_SECONDS, 30),
+    width: int(process.env.THUMB_WIDTH, 320),
+    quality: int(process.env.THUMB_QUALITY, 7)
+  },
   // Boot-resume pacing. On restart the broadcaster auto-resumes every desired-running channel;
   // starting them back-to-back stacks each one's one-time open cost (corestore open + drive
   // reconcile + GC + swarm join + ffmpeg spawn) so densely that the single Node event loop
@@ -248,7 +274,7 @@ const chkBootstrap = (name, list) => {
 
 chkHex('PANEL_PUBKEY', config.panelPubKey, [64])
 chkHex('PUBLISHER_KEY', config.publisherKey, [64, 128])
-chkBool('CONTROL_ENABLED'); chkBool('SLATE_ENABLED'); chkBool('RESUME_PACE')
+chkBool('CONTROL_ENABLED'); chkBool('SLATE_ENABLED'); chkBool('RESUME_PACE'); chkBool('THUMBS')
 if (process.env.FEED_BUFFER && !['disk', 'ram'].includes(process.env.FEED_BUFFER)) {
   problems.push(`FEED_BUFFER must be "disk" or "ram" (got "${process.env.FEED_BUFFER}")`)
 }
@@ -268,6 +294,10 @@ chkInt('FEED_CACHE_MAX', config.feedCacheMax, 256)
 chkInt('FFMPEG_MAX_RSS_MB', config.ffmpegMaxRssMb, 0)
 chkInt('SLATE_AFTER', config.slate.after, 1)
 chkInt('SLATE_RETRY_MS', config.slate.retryMs, 1000)
+// 0 = off; the upper bound is an hour, past which "live" thumbnail stops meaning anything.
+chkInt('THUMB_INTERVAL_SECONDS', config.thumbs.intervalSeconds, 0, 3600)
+chkInt('THUMB_WIDTH', config.thumbs.width, 64, 1920)
+chkInt('THUMB_QUALITY', config.thumbs.quality, 2, 31) // mjpeg qscale range
 chkInt('RESUME_PACE_MIN', config.resumePacing.minChannels, 1)
 chkInt('RESUME_PACE_TARGET_MS', config.resumePacing.targetLagMs, 1)
 chkInt('RESUME_PACE_MAX_MS', config.resumePacing.maxWaitMs, 1)
