@@ -86,7 +86,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'categories', 'reports', 'analytics', 'overview', 'backup']
+const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'epg', 'categories', 'reports', 'analytics', 'overview', 'backup']
 // One-line topbar description per tab, shown under the page title.
 const TAB_SUBTITLES = {
   streams: 'the live channel catalog your viewers see',
@@ -95,6 +95,7 @@ const TAB_SUBTITLES = {
   admins: 'accounts for this dashboard',
   publishers: 'broadcaster site identities and their channel scopes',
   sources: 'remote channel feeds and the external VOD provider',
+  epg: 'the program guide service, its sources, and which stream claims which guide',
   categories: 'the rail vocabulary — labels, order, visibility',
   reports: 'viewer problem reports and correlation alerts',
   analytics: 'aggregate usage counts — no per-user tracking exists',
@@ -105,7 +106,7 @@ for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === tab))
     const name = tab.dataset.tab
-    $('#page-title').textContent = name[0].toUpperCase() + name.slice(1)
+    $('#page-title').textContent = name === 'epg' ? 'EPG' : name[0].toUpperCase() + name.slice(1)
     $('#page-sub').textContent = TAB_SUBTITLES[name] || ''
     for (const name of TAB_NAMES) $('#' + name + '-section').hidden = tab.dataset.tab !== name
     if (tab.dataset.tab === 'overview') startObsPoll()
@@ -116,6 +117,7 @@ for (const tab of document.querySelectorAll('.tab')) {
     else stopReportsPoll()
     // Loaded on demand: three API calls nobody needs until they open the tab.
     if (tab.dataset.tab === 'backup') loadBackup().catch((err) => toast(err.message, true))
+    if (tab.dataset.tab === 'epg') loadEpg().catch((err) => toast(err.message, true))
   })
 }
 
@@ -918,6 +920,119 @@ async function loadArt (el, ref) {
     el.innerHTML = `<img src="${url}" alt="">`
   } catch {}
 }
+
+// ---------------------------------------------------------------- epg
+
+let epgData = null // GET /api/epg — fetched when the tab opens or on refresh
+
+async function loadEpg () {
+  epgData = await api('GET', '/api/epg')
+  renderEpg()
+}
+
+function renderEpg () {
+  const chips = []
+  const note = $('#epg-note')
+  note.hidden = true
+  const d = epgData || {}
+  if (d.pointer) {
+    chips.push(`<span class="chip" title="the meta/epgKey record viewers read — written by the epg-scoped publisher">pointer <b>epoch ${esc(d.pointer.epoch)}</b></span>`)
+    chips.push(`<span class="chip mono" title="guide drive key (public)">${esc(String(d.pointer.key || '').slice(0, 12))}…</span>`)
+  } else {
+    chips.push('<span class="chip" title="no meta/epgKey record — the EPG service has not registered a guide drive yet">no guide pointer</span>')
+  }
+  if (!d.configured) {
+    note.textContent = 'EPG_STATUS_URL is not set on the panel, so the live service state cannot be shown here. Set it to the EPG service\'s status endpoint (STATUS_ENABLED=1, e.g. http://127.0.0.1:3340/status) and restart the panel.'
+    note.hidden = false
+  } else if (d.serviceError) {
+    chips.push(`<span class="chip bad" title="the panel could not reach EPG_STATUS_URL">service unreachable</span>`)
+    note.textContent = 'Status fetch failed: ' + d.serviceError
+    note.hidden = false
+  } else if (d.service?.guide) {
+    const g = d.service.guide
+    chips.push(`<span class="chip">service <b>epoch ${esc(g.epoch)}</b></span>`)
+    chips.push(`<span class="chip" title="streams whose epgId matched a provider channel">mapped <b>${esc(g.mappedChannels)}</b></span>`)
+    chips.push(`<span class="chip" title="guide files written vs skipped as unchanged since the service booted — a high skip share means the drive barely grows">writes <b>${esc(g.puts)}</b> / skips <b>${esc(g.skips)}</b></span>`)
+    chips.push(`<span class="chip" title="peers on the guide swarm right now">peers <b>${esc(g.swarmConnections)}</b></span>`)
+    if (!g.catalogReplicated) chips.push('<span class="chip bad" title="the service has not replicated this panel\'s catalog yet — mapping cannot work until it does">catalog not replicated</span>')
+  }
+  $('#epg-chips').innerHTML = chips.join('')
+
+  // Providers table (object keyed by provider id; absent until a first run finishes).
+  const provs = d.service?.providers || {}
+  const rows = Object.entries(provs).map(([id, r]) => `<tr>
+    <td class="mono">${esc(id)}</td>
+    <td class="muted">${r.at ? new Date(r.at).toLocaleString() : '—'}</td>
+    <td>${r.ok ? 'ok' : `<span class="error" title="${esc(r.error || '')}">failed</span>`}</td>
+    <td>${esc(r.puts ?? 0)}</td>
+    <td>${esc(r.skips ?? 0)}</td>
+    <td>${esc(r.unmatched ?? 0)}</td>
+  </tr>`)
+  $('#epg-providers-table tbody').innerHTML = rows.join('') ||
+    `<tr><td colspan="6" class="muted">${d.configured ? 'no provider has completed a run yet' : 'service status not configured'}</td></tr>`
+
+  // Unmatched ids — click copies, ready to paste into a stream's EPG id.
+  const unmatched = Object.entries(d.service?.guide?.unmatched || {})
+  $('#epg-unmatched-card').hidden = unmatched.length === 0
+  $('#epg-unmatched').innerHTML = unmatched
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, n]) => `<button class="chip mono epg-copy" type="button" data-id="${esc(id)}" title="click to copy — ${esc(n)} guide entries waiting">${esc(id)} <b>${esc(n)}</b></button>`)
+    .join('')
+
+  renderEpgStreams()
+}
+
+function renderEpgStreams () {
+  const q = $('#epg-search').value.trim().toLowerCase()
+  const mode = $('#epg-filter').value
+  const rows = streams
+    .filter((s) => mode !== 'with' ? true : !!s.epgId)
+    .filter((s) => mode !== 'without' ? true : !s.epgId)
+    .filter((s) => !q || s.id.toLowerCase().includes(q) || (s.title || '').toLowerCase().includes(q) || (s.epgId || '').toLowerCase().includes(q))
+    .sort((a, b) => a.id.localeCompare(b.id))
+  const withId = streams.filter((s) => s.epgId).length
+  $('#epg-count').textContent = `${withId} of ${streams.length} streams have an EPG id · showing ${rows.length}`
+  $('#epg-streams-table tbody').innerHTML = rows.map((s) => `<tr>
+    <td class="mono">${esc(s.id)}</td>
+    <td>${esc(s.title || '')}</td>
+    <td class="mono">${s.epgId ? esc(s.epgId) : '<span class="muted">—</span>'}</td>
+    <td class="actions-col"><button class="btn small epg-set" data-id="${esc(s.id)}" type="button">${s.epgId ? 'edit' : 'set id…'}</button></td>
+  </tr>`).join('') || '<tr><td colspan="4" class="muted">no streams match</td></tr>'
+}
+
+$('#epg-refresh').addEventListener('click', () => loadEpg().catch((err) => toast(err.message, true)))
+$('#epg-search').addEventListener('input', () => renderEpgStreams())
+$('#epg-filter').addEventListener('change', () => renderEpgStreams())
+
+$('#epg-unmatched').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.epg-copy')
+  if (!btn) return
+  try {
+    await navigator.clipboard.writeText(btn.dataset.id)
+    toast('copied — paste it into a stream\'s EPG id')
+  } catch {
+    toast('copy failed — select it by hand', true)
+  }
+})
+
+$('#epg-streams-table').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.epg-set')
+  if (!btn) return
+  const s = streams.find((x) => x.id === btn.dataset.id)
+  if (!s) return
+  const out = await dialog(`EPG id — ${s.id}`, [
+    { name: 'epgId', label: 'EPG id (empty clears)', value: s.epgId || '', placeholder: 'pa:Canal.… / sd1:37415 / io:C9N.py' }
+  ], { okLabel: 'Save', body: `<p class="muted">The id of this channel inside ONE guide source, with that source's prefix. The service applies it on its next refresh.</p>` })
+  if (!out) return
+  try {
+    await api('PATCH', '/api/streams/' + encodeURIComponent(s.id), { epgId: out.epgId.trim() })
+    s.epgId = out.epgId.trim() || null
+    toast('saved')
+    renderEpgStreams()
+  } catch (err) {
+    toast(err.message, true)
+  }
+})
 
 // ---------------------------------------------------------------- dialog helper
 

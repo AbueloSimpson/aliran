@@ -17,6 +17,8 @@
 //
 //   POST   /api/login                        {username,password} → {token,expiresAt}
 //   GET    /api/status
+//   GET    /api/epg                          guide pointer (meta/epgKey) + the EPG service's
+//                                            status proxied server-side from EPG_STATUS_URL
 //   GET    /api/observability                uptime/mem/swarm/data + activity ring
 //   POST   /api/identity/escrow              {password,passphrase} → the ENCRYPTED identity
 //                                            bundle. Exists only when ESCROW_EXPORT=1
@@ -297,6 +299,35 @@ export function startAdminServer (ctx, opts = {}) {
       // route below 404s when the flag is off, and a button that always 404s is worse
       // than no button.
       return sendJson(res, 200, { ...(await ops.statusSummary(ctx)), escrowExport: escrowEnabled })
+    }
+
+    // --- EPG: guide pointer + proxied service status ---
+    // The pointer is this panel's own meta/epgKey record (written by the epg-scoped
+    // publisher through setEpgKey — panel/src/rpc.js). The service block is a
+    // SERVER-side fetch of the EPG service's status endpoint (EPG_STATUS_URL), so
+    // the status port keeps its loopback binding and the URL stays operator config,
+    // never dashboard input. Unreachable service degrades to an error string — the
+    // pointer half still renders.
+    if (r1 === 'epg' && req.method === 'GET' && seg.length === 2) {
+      let pointer = null
+      try { pointer = (await ctx.db.get('meta/epgKey'))?.value ?? null } catch {}
+      const statusUrl = ctx.config?.admin?.epgStatusUrl || ''
+      let service = null
+      let serviceError = null
+      if (statusUrl) {
+        const ac = new AbortController()
+        const timer = setTimeout(() => ac.abort(), 3000)
+        try {
+          const r = await fetch(statusUrl, { signal: ac.signal })
+          if (!r.ok) throw new Error('HTTP ' + r.status)
+          service = await r.json()
+        } catch (err) {
+          serviceError = err?.name === 'AbortError' ? 'timeout after 3s' : (err?.cause?.message || err?.message || String(err))
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+      return sendJson(res, 200, { configured: !!statusUrl, pointer, service, serviceError })
     }
 
     // --- identity key escrow (src/escrow.js) ---
