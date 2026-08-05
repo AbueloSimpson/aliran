@@ -76,7 +76,14 @@ export const config = {
     // the API itself is plain HTTP.
     host: process.env.ADMIN_HOST || '127.0.0.1',
     port: int(process.env.ADMIN_PORT, 3210),
-    sessionTtlHours: int(process.env.ADMIN_SESSION_TTL_HOURS, 12)
+    sessionTtlHours: int(process.env.ADMIN_SESSION_TTL_HOURS, 12),
+    // The EPG service's status endpoint (epg/src/status-server.js, STATUS_ENABLED=1).
+    // Set it and the dashboard's EPG tab shows the live service state — the panel
+    // fetches it SERVER-side, so the URL stays operator config and the status port
+    // can keep its loopback binding (same box / host networking reaches it).
+    // Empty = the tab explains how to turn it on. The guide pointer half of that
+    // tab (meta/epgKey) needs no config — it is this panel's own record.
+    epgStatusUrl: process.env.EPG_STATUS_URL || ''
   },
   // Encrypted key escrow — getting DATA_DIR/keys/ off the box (src/escrow.js).
   // ONE flag, and it is OFF. Export over the admin API lowers identity exfiltration

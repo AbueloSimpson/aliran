@@ -1,5 +1,5 @@
-// Pluggable guide ingest. Providers turn a source (provider JSON today, XMLTV or a
-// manual push later) into the ONE normalized shape the distribution layer writes:
+// Pluggable guide ingest. Providers turn a source (provider JSON, XMLTV, or a
+// manual local file) into the ONE normalized shape the distribution layer writes:
 //
 //   NormalizedGuide = Map<providerChannelId, Map<'YYYY-MM-DD', Program[]>>
 //   Program         = { title, start, stop, desc? }   (start/stop ISO strings, UTC split)
@@ -14,6 +14,7 @@
 // fatal (same stance as the viewer's EpgService parser, sdk/react-native/src/epg.ts).
 
 import fs from 'fs'
+import zlib from 'zlib'
 import { utcDay } from './guide.js'
 
 const DAY_MS = 24 * 3600 * 1000
@@ -51,19 +52,87 @@ export function parseProviderJson (feed, opts) {
   return guide
 }
 
+// --- XMLTV ---
+
+// Decompressed-size ceiling for gzipped feeds. A country guide is a few MB; the
+// cap only exists so a hostile or misconfigured URL cannot balloon the heap.
+const XMLTV_MAX_BYTES = 64 * 1024 * 1024
+
+// XMLTV timestamps: "YYYYMMDDHHMMSS +HHMM" (offset and trailing fields optional;
+// no offset means UTC). Returns epoch ms, NaN when unparseable.
+export function parseXmltvDate (s) {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?\s*(?:([+-])(\d{2})(\d{2}))?$/.exec(String(s ?? '').trim())
+  if (!m) return NaN
+  let t = Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0))
+  if (m[7]) {
+    const off = (+m[8] * 60 + +m[9]) * 60000
+    t += m[7] === '-' ? off : -off
+  }
+  return t
+}
+
+const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
+
+function decodeXmlEntities (s) {
+  return s.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g, (whole, hex, dec, name) => {
+    if (hex) return String.fromCodePoint(parseInt(hex, 16))
+    if (dec) return String.fromCodePoint(+dec)
+    return XML_ENTITIES[name] ?? whole
+  })
+}
+
+function xmlAttr (attrs, name) {
+  const m = attrs.match(new RegExp('\\b' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\')'))
+  return m ? decodeXmlEntities(m[1] ?? m[2]) : ''
+}
+
+function xmlTag (body, name) {
+  const m = body.match(new RegExp('<' + name + '(?:\\s[^>]*)?>([\\s\\S]*?)</' + name + '>'))
+  return m ? decodeXmlEntities(m[1].trim()) : ''
+}
+
+// Parse an XMLTV document into the normalized guide. Regex-scan, not a DOM: the
+// files are machine-generated and regular, and this keeps the service dependency
+// free. Same tolerance stance as parseProviderJson — bad entries are skipped.
+export function parseXmltv (xml, opts) {
+  const text = String(xml)
+  const perChannel = new Map()
+  const progRe = /<programme\b([^>]*)>([\s\S]*?)<\/programme>/gi
+  let m
+  while ((m = progRe.exec(text))) {
+    const channel = xmlAttr(m[1], 'channel')
+    const start = parseXmltvDate(xmlAttr(m[1], 'start'))
+    const stop = parseXmltvDate(xmlAttr(m[1], 'stop'))
+    const title = xmlTag(m[2], 'title')
+    if (!channel || !title || Number.isNaN(start) || Number.isNaN(stop)) continue
+    const desc = xmlTag(m[2], 'desc')
+    if (!perChannel.has(channel)) perChannel.set(channel, [])
+    perChannel.get(channel).push({ title, start: new Date(start).toISOString(), stop: new Date(stop).toISOString(), ...(desc ? { desc } : {}) })
+  }
+  const guide = new Map()
+  for (const [id, programs] of perChannel) {
+    const days = bucketByDay(programs, opts)
+    if (days.size) guide.set(id, days)
+  }
+  return guide
+}
+
 // --- providers ---
 
 // provider-json: https fetch of the same feed shape epgUrl points at today, with
 // ETag revalidation so a quiet poll costs a 304 and produces an EMPTY guide (the
 // scheduler then touches nothing — zero drive appends).
+// spec.headers (optional, all fetching providers): extra request headers, e.g. the
+// auth secret of a private feed. Never logged; providers.json already holds urls.
 export function providerJson (spec) {
   let etag = null
   return {
     id: spec.id,
     refreshMs: (spec.refreshHours || 0) * 3600 * 1000 || null, // null = service default
     overrides: spec.overrides || {},
+    prefix: spec.prefix || '',
     async fetch ({ guideDays, fetchImpl = fetch }) {
-      const headers = { accept: 'application/json' }
+      const headers = { accept: 'application/json', ...(spec.headers || {}) }
       if (etag) headers['if-none-match'] = etag
       const res = await fetchImpl(spec.url, { headers })
       if (res.status === 304) return new Map() // unchanged upstream — nothing to write
@@ -82,6 +151,7 @@ export function providerManual (spec) {
     id: spec.id,
     refreshMs: (spec.refreshHours || 0) * 3600 * 1000 || null,
     overrides: spec.overrides || {},
+    prefix: spec.prefix || '',
     async fetch ({ guideDays }) {
       const st = fs.statSync(spec.file)
       if (st.mtimeMs === mtime) return new Map()
@@ -91,9 +161,40 @@ export function providerManual (spec) {
   }
 }
 
+// xmltv: https fetch of an XMLTV document, plain or gzipped (sniffed by magic
+// bytes, not extension — public mirrors are inconsistent about both). ETag and
+// Last-Modified revalidation, same frugality contract as provider-json.
+export function providerXmltv (spec) {
+  let etag = null
+  let lastModified = null
+  return {
+    id: spec.id,
+    refreshMs: (spec.refreshHours || 0) * 3600 * 1000 || null,
+    overrides: spec.overrides || {},
+    prefix: spec.prefix || '',
+    async fetch ({ guideDays, fetchImpl = fetch }) {
+      const headers = { accept: 'application/xml, text/xml, application/gzip;q=0.9, */*;q=0.8', ...(spec.headers || {}) }
+      if (etag) headers['if-none-match'] = etag
+      if (lastModified) headers['if-modified-since'] = lastModified
+      const res = await fetchImpl(spec.url, { headers })
+      if (res.status === 304) return new Map() // unchanged upstream — nothing to write
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      etag = res.headers.get('etag')
+      lastModified = res.headers.get('last-modified')
+      let buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length > XMLTV_MAX_BYTES) throw new Error('feed exceeds size cap')
+      if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+        buf = zlib.gunzipSync(buf, { maxOutputLength: XMLTV_MAX_BYTES })
+      }
+      return parseXmltv(buf.toString('utf8'), { guideDays })
+    }
+  }
+}
+
 export function buildProvider (spec) {
   if (spec.type === 'provider-json') return providerJson(spec)
   if (spec.type === 'manual') return providerManual(spec)
+  if (spec.type === 'xmltv') return providerXmltv(spec)
   throw new Error(`unknown provider type "${spec.type}" (id ${spec.id})`)
 }
 
@@ -137,10 +238,17 @@ export class IngestScheduler {
     try {
       const normalized = await p.fetch({ guideDays: this.guide.config.guideDays })
       for (const [providerId, days] of normalized) {
-        const streamId = this.guide.resolveStreamId(providerId, p.overrides)
+        // `overrides` keys are the RAW ids as they appear in the source; the
+        // catalog epgId match uses the prefixed id, so with distinct prefixes a
+        // channel is claimed by exactly one source (two providers writing the
+        // same stream would defeat the byte-compare and grow the drive forever).
+        const catalogId = (p.prefix || '') + providerId
+        const streamId = Object.prototype.hasOwnProperty.call(p.overrides || {}, providerId)
+          ? p.overrides[providerId]
+          : this.guide.resolveStreamId(catalogId)
         if (!streamId) {
           run.unmatched++
-          this.guide.noteUnmatched(providerId, [...days.values()].reduce((n, d) => n + d.length, 0))
+          this.guide.noteUnmatched(catalogId, [...days.values()].reduce((n, d) => n + d.length, 0))
           continue
         }
         for (const [day, programs] of days) {

@@ -34,6 +34,7 @@
       <button class="tab" data-tab="categories"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>Categories</button>
       <button class="tab" data-tab="packages"><svg viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8"/></svg>Packages</button>
       <button class="tab" data-tab="sources"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Sources</button>
+      <button class="tab" data-tab="epg"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 10h20M8 10v10M14 10v10"/></svg>EPG</button>
       <div class="nav-label">People</div>
       <button class="tab" data-tab="users"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>Users</button>
       <button class="tab" data-tab="publishers"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 010 8.4M7.8 16.2a6 6 0 010-8.4M19 5a10 10 0 010 14M5 19A10 10 0 015 5"/></svg>Publishers</button>
@@ -240,6 +241,57 @@
           source values are independent: leave <b>series source</b> empty and the apps show <b>Movies only</b> — the
           Series menu item does not appear at all.</p></details>
       </div>
+    </section>
+
+    <section id="epg-section" hidden>
+      <div class="card">
+        <h3 class="card-title">Guide service <span class="muted">(the standalone <span class="mono">epg/</span> deployable)</span> <button class="btn ghost small" id="epg-refresh" type="button">refresh</button></h3>
+        <div id="epg-chips" class="chips"></div>
+        <p id="epg-note" class="muted" hidden></p>
+      </div>
+
+      <div class="card table-card scroll">
+        <h3 class="card-title">Guide sources <span class="muted">(one row per <span class="mono">providers.json</span> entry — day-files count channel-days written on the last run)</span></h3>
+        <table id="epg-providers-table">
+          <thead><tr>
+            <th>Provider</th><th>Last run</th><th>Result</th><th>Day-files written</th><th>Unchanged</th><th>Unmatched</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="card" id="epg-unmatched-card" hidden>
+        <h3 class="card-title">Unmatched provider channels <span class="muted">(the sources carry a guide for these ids, but no stream claims them — click one to copy it, then set it on a stream below)</span></h3>
+        <div id="epg-unmatched" class="chips"></div>
+      </div>
+
+      <div class="card toolbar">
+        <input id="epg-search" type="search" placeholder="search stream id, title or EPG id…">
+        <select id="epg-filter">
+          <option value="">all streams</option>
+          <option value="with">with EPG id</option>
+          <option value="without">without EPG id</option>
+        </select>
+        <span class="spacer"></span>
+        <span id="epg-count" class="muted"></span>
+      </div>
+      <div class="card table-card scroll">
+        <table id="epg-streams-table">
+          <thead><tr>
+            <th>Stream</th><th>Name</th><th>EPG id</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <details class="footnote"><summary>How the guide reaches viewers</summary>
+      <p class="muted footnote">The EPG service reads schedules from its sources, writes one small JSON file per channel per
+        day into a public <b>guide drive</b>, and tells this panel the drive key (<span class="mono">meta/epgKey</span> — one
+        catalog record). Viewer apps fetch only the files they show, then serve them to other viewers. A stream joins the
+        guide when its <b>EPG id</b> names a channel in one of the sources — set it here, and the service picks it up on its
+        next refresh. Prefixes (<span class="mono">pa:</span>, <span class="mono">sd1:</span>, …) name the source, so one
+        channel can only get its guide from one source. This tab reads the service's status endpoint
+        (<span class="mono">EPG_STATUS_URL</span>); the pointer card works even without it.</p></details>
     </section>
 
     <section id="categories-section" hidden>
