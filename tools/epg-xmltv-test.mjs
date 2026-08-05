@@ -1,7 +1,8 @@
 // EPG xmltv-provider unit tests — pure logic, no network, no DHT: XMLTV date
 // parsing, entity decoding, the tolerant programme parser, gzip + revalidation
-// in providerXmltv (stubbed fetch), and the scheduler's prefix/override
-// resolution. The end-to-end drive flow lives in tools/e2e-epg-p2p-test.mjs.
+// in providerXmltv (stubbed fetch), the scheduler's prefix/override resolution,
+// and the fetch timeout (stubbed hanging fetch). The end-to-end drive flow
+// lives in tools/e2e-epg-p2p-test.mjs.
 import zlib from 'zlib'
 import { parseXmltvDate, parseXmltv, providerXmltv, buildProvider, IngestScheduler } from '../epg/src/ingest.js'
 
@@ -109,5 +110,31 @@ console.log('D. prefix/override resolution')
   sched.close()
 }
 
-console.log(failures ? `\nRESULT: FAIL ❌  (${failures} failing checks)` : '\nRESULT: PASS ✅  (xmltv dates → parser tolerance → gzip/304 → prefix resolution)')
+// ---- E. fetch timeout ----
+console.log('E. fetch timeout')
+{
+  // A stalled upstream: fetch never settles until the provider's abort fires.
+  const hang = (url, { signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new Error('This operation was aborted')))
+  })
+  const p = buildProvider({ id: 'slow', type: 'xmltv', url: 'x', timeoutSeconds: 0.05 })
+  const err = await p.fetch({ guideDays: 7, fetchImpl: hang }).then(() => null, (e) => e)
+  ok(err?.message === 'timeout', 'hanging xmltv fetch aborts and rejects with "timeout"')
+
+  // A fetchImpl that ignores the abort signal entirely still cannot park the run.
+  const pj = buildProvider({ id: 'slow-json', type: 'provider-json', url: 'x', timeoutSeconds: 0.05 })
+  const err2 = await pj.fetch({ guideDays: 7, fetchImpl: () => new Promise(() => {}) }).then(() => null, (e) => e)
+  ok(err2?.message === 'timeout', 'signal-ignoring provider-json fetch still times out')
+
+  // The scheduler surfaces it as the run error (runProvider passes no fetchImpl,
+  // so inject the hanging stub through a thin provider wrapper).
+  const slow = { ...p, fetch: (o) => p.fetch({ ...o, fetchImpl: hang }) }
+  const guideStub = { config: { guideDays: 7 }, resolveStreamId: () => null, noteUnmatched: () => {}, putDay: async () => 'put' }
+  const sched = new IngestScheduler(guideStub, [slow])
+  const run = await sched.runProvider(slow)
+  ok(!run.ok && run.error === 'timeout', 'run status reports error: "timeout"')
+  sched.close()
+}
+
+console.log(failures ? `\nRESULT: FAIL ❌  (${failures} failing checks)` : '\nRESULT: PASS ✅  (xmltv dates → parser tolerance → gzip/304 → prefix resolution → timeout)')
 process.exit(failures ? 1 : 0)
