@@ -312,8 +312,8 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_set_stream_meta', {
     title: 'Edit a stream',
-    description: 'Patch channel metadata (title/description/category/order/featured/isLive/status/url). `feedKey` (64 hex) re-points the P2P feed — the paired blobsKey resets and is re-filled from the next real registration. The encryption `key` is fixed at creation (add-only): re-keying a stream is delete + re-add, which mints a fresh key and invalidates old grants.',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), url: z.string().optional(), isLive: z.boolean().optional(), status: z.string().optional(), order: z.number().int().nullable().optional(), featured: z.boolean().optional(), feedKey: z.string().regex(HEX64, 'feedKey must be 64 hex chars (the hypercore feed public key)').optional() }
+    description: 'Patch channel metadata (title/description/category/order/featured/isLive/status/url). EPG pointers: `epgUrl` (public https guide feed the CLIENT fetches) + `epgId` (this channel\'s id inside that feed) — both needed for a guide to show; empty string clears either. `feedKey` (64 hex) re-points the P2P feed — the paired blobsKey resets and is re-filled from the next real registration. The encryption `key` is fixed at creation (add-only): re-keying a stream is delete + re-add, which mints a fresh key and invalidates old grants.',
+    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), url: z.string().optional(), isLive: z.boolean().optional(), status: z.string().optional(), order: z.number().int().nullable().optional(), featured: z.boolean().optional(), feedKey: z.string().regex(HEX64, 'feedKey must be 64 hex chars (the hypercore feed public key)').optional(), epgUrl: z.string().optional(), epgId: z.string().optional() }
   }, async ({ id, ...body }) => ok(await p.patch('/api/streams/' + q(id), body)))
 
   def('panel_add_package', {
