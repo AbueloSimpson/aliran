@@ -7,6 +7,14 @@
     "overrides": { "SOME-PROVIDER-ID": "my-stream-id" }
   },
   {
+    "id": "panama-guide",
+    "type": "xmltv",
+    "url": "https://example.com/guide_pa.xml.gz",
+    "refreshHours": 12,
+    "prefix": "pa:",
+    "overrides": { "Some.Channel.Id.pa": "my-stream-id" }
+  },
+  {
     "id": "hand-edited",
     "type": "manual",
     "file": "./guide.json"

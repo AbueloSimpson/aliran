@@ -40,10 +40,13 @@ grace time (default: 48 hours), then deleted.
    `PUBLISHER_KEY`, and `PUBLISHER_NAME`.
 
 3. Copy `epg/providers.example.json` to `epg/providers.json`. Add your
-   sources. Two types are available:
+   sources. Three types are available:
    - `provider-json`: an https URL with the provider feed shape
      (`{channels:[{id, epg:[{title,start,stop}]}]}`).
-   - `manual`: a local JSON file in the same shape.
+   - `xmltv`: an https URL with an XMLTV file. The file can be plain
+     (`.xml`) or compressed (`.xml.gz`). Many public guide sites use
+     this format.
+   - `manual`: a local JSON file in the provider feed shape.
 
 4. Start the service:
 
@@ -57,7 +60,19 @@ The service reads the panel catalog. A catalog record's `epgId` field
 names that channel's id in the provider feed. Set `epgId` on a stream in
 the panel to attach a guide to it. Provider channels with no match are
 listed in the service status. You can also map them in
-`providers.json` with `overrides`.
+`providers.json` with `overrides`. The keys in `overrides` are the ids
+as they appear in the source file.
+
+A provider with a private URL can set `"headers"`. The service sends
+these headers with each request. Use this for a feed that needs a
+secret header.
+
+A provider can set a `prefix` (for example `"pa:"`). The service adds
+the prefix to each channel id before the catalog match. The service
+status also shows unmatched ids with the prefix. Give each source its
+own prefix. Then one channel can only get its guide from one source.
+Two sources that write the same channel would overwrite each other on
+every refresh, and the drive would grow without limit.
 
 ## Serve the guide when the panel is down
 
