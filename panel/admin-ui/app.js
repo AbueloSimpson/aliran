@@ -972,12 +972,15 @@ function renderEpg () {
     `<tr><td colspan="6" class="muted">${d.configured ? 'no provider has completed a run yet' : 'service status not configured'}</td></tr>`
 
   // Unmatched ids — click copies, ready to paste into a stream's EPG id.
-  const unmatched = Object.entries(d.service?.guide?.unmatched || {})
+  // Broad public sources carry hundreds of channels nobody maps — show the
+  // busiest ids (those are the ones worth claiming) and fold the long tail.
+  const UNMATCHED_SHOWN = 80
+  const unmatched = Object.entries(d.service?.guide?.unmatched || {}).sort((a, b) => b[1] - a[1])
   $('#epg-unmatched-card').hidden = unmatched.length === 0
-  $('#epg-unmatched').innerHTML = unmatched
-    .sort((a, b) => b[1] - a[1])
+  $('#epg-unmatched').innerHTML = unmatched.slice(0, UNMATCHED_SHOWN)
     .map(([id, n]) => `<button class="chip mono epg-copy" type="button" data-id="${esc(id)}" title="click to copy — ${esc(n)} guide entries waiting">${esc(id)} <b>${esc(n)}</b></button>`)
-    .join('')
+    .join('') +
+    (unmatched.length > UNMATCHED_SHOWN ? `<span class="chip" title="the service /status endpoint lists every id">+${unmatched.length - UNMATCHED_SHOWN} more</span>` : '')
 
   renderEpgStreams()
 }
