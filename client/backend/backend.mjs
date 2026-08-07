@@ -136,6 +136,15 @@ if (typeof Bare !== 'undefined' && typeof Bare.on === 'function') {
   Bare.on('uncaughtException', (err) => {
     try { send({ type: 'error', message: 'worklet: ' + String((err && err.message) || err) }) } catch {}
   })
+  // A rejected promise nobody awaits is just as fatal as a throw — bare aborts the
+  // process unless a listener claims it. Same surface-over-IPC treatment; include the
+  // stack because the rejection site is otherwise invisible (no Java trace on Android).
+  Bare.on('unhandledRejection', (reason) => {
+    try {
+      const detail = (reason && reason.stack) || String((reason && reason.message) || reason)
+      send({ type: 'error', message: 'worklet: unhandled rejection: ' + detail })
+    } catch {}
+  })
 }
 
 // The worklet's cwd on Android is '/' (bare-kit sets no cwd/HOME), so a relative

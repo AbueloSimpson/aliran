@@ -34,7 +34,7 @@ export function CategoryRail ({ items, selected, parentHeader, onSelect, onActiv
       {parentHeader && (
         <BackHeader label={parentHeader.label} onBack={parentHeader.onBack} onActivity={onActivity} />
       )}
-      <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false} onScrollBeginDrag={onActivity}>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} onScrollBeginDrag={onActivity}>
         {items.map((it) => (
           <RailItem
             key={it.key}
@@ -90,6 +90,10 @@ function RailItem ({ label, hasChildren, active, onSelect, onActivity }: { label
 const styles = StyleSheet.create({
   rail: { flexGrow: 0 },
   scroll: { flexGrow: 0 },
+  // Curved-display phones (S22 Ultra) have a touch dead zone along the bottom edge:
+  // without this, the rail's last item scrolls flush to the glass curve and cannot be
+  // tapped. The pad lets the list scroll one item-height past the end, clear of it.
+  scrollContent: { paddingBottom: theme.spacing(6) },
   back: { paddingVertical: theme.isTV ? 10 : 8, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
   backText: { color: theme.colors.accent, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 1 },
   item: { paddingVertical: theme.isTV ? 10 : 8, paddingHorizontal: theme.spacing(1) },
