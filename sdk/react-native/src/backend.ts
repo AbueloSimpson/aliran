@@ -554,8 +554,10 @@ export class AliranBackend {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line) as BackendMessage
-        // Never log the raw 'prefs' line — it can carry the saved password.
-        if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
+        // Never log the raw 'prefs' line — it can carry the saved password. Long lines
+        // collapse to their type to keep the log readable — EXCEPT 'error', where the
+        // payload (often a worklet stack trace) is the only diagnostic there is.
+        if (this.debug) console.log('[backend]', msg.type === 'prefs' ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
         if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
