@@ -25,6 +25,11 @@
 //      pref against its own copy of the locale codes (the Bare worklet cannot import
 //      the TypeScript runtime). Same duplicate-and-assert treatment: the two lists must
 //      stay identical, or a language the picker offers is silently not persisted.
+//   4c MIRRORED MODULES. lang.ts and catalog.ts are hand-maintained copies across the
+//      two apps, and S56f gave both of them a locale argument — they now carry LOGIC,
+//      not just data. lang.ts is compared whole (normalizing the line where each copy
+//      names the other); catalog.ts is a port rather than a copy, so only the mirrored
+//      sortByCuration() is pinned.
 //   5  USAGE SCAN. Every key a t()/tn() call site names — literal, or a literal prefix
 //      with a runtime tail like t('report.category.' + c) — exists in en. Unused
 //      catalog keys are a warning, never a failure: en grows one screen at a time.
@@ -235,6 +240,33 @@ if (!workletCodes) {
   check(sorted(new Set(workletCodes)).join(',') === sorted(new Set(runtimeCodes)).join(','),
     `the worklet persists exactly the ${runtimeCodes.length} locales the picker offers`)
 }
+
+// ---- 4c. mirrored viewer modules ----------------------------------------------------
+
+// Two viewer modules are kept as hand-maintained copies, and S56f gave both of them
+// LOGIC (a locale argument) where they used to hold only data. A copy that drifts now
+// means the desktop app sorts or labels differently from the phone, which no other
+// check would catch. Both comparisons normalize the ONE difference each pair is
+// allowed to have, so a real edit to either side fails here.
+console.log('\n4c. mirrored viewer modules')
+const CLIENT_SRC = path.join(root, 'client', 'src')
+const DESKTOP_SRC = path.join(root, 'desktop', 'renderer', 'src')
+const read = (p) => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '')
+
+// lang.ts is a whole-file mirror; the copies differ only where each points at the other.
+const langNorm = (s) => s.replace(/(?:client\/src|desktop\/renderer\/src)\/lang\.ts/g, '<mirror>')
+check(langNorm(read(path.join(CLIENT_SRC, 'lang.ts'))) === langNorm(read(path.join(DESKTOP_SRC, 'lang.ts'))),
+  'client/src/lang.ts and desktop/renderer/src/lang.ts are identical apart from the cross-reference')
+
+// catalog.ts is a PORT, not a copy — different Stream import, and the client carries an
+// extra back-compat export. Only the function S56f touched is mirrored, so pin that.
+function sortByCuration (file) {
+  const m = read(file).match(/export function sortByCuration[\s\S]*?\n\}/)
+  if (!m) throw new Error(`${path.relative(root, file)}: sortByCuration not found in a shape the guard can read`)
+  return m[0]
+}
+check(sortByCuration(path.join(CLIENT_SRC, 'catalog.ts')) === sortByCuration(path.join(DESKTOP_SRC, 'catalog.ts')),
+  'sortByCuration() is identical in both catalog.ts copies (locale-aware collation)')
 
 // ---- 5. usage scan -------------------------------------------------------------------
 
