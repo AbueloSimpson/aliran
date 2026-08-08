@@ -144,6 +144,8 @@
   "pin.repeat": "Repeat new PIN",
   "pin.setupTitle": "SET PARENTAL PIN",
   "pin.changeTitle": "CHANGE PIN",
+  "pin.setupAria": "Set PIN",
+  "pin.changeAria": "Change PIN",
   "pin.setupHint": "A 4–8 digit PIN, saved only on this device. Access-controlled channels stay hidden until a PIN exists; with one set, they appear and ask for it before playing.",
   "pin.changeHint": "Pick a new 4–8 digit PIN for access-controlled channels.",
   "pin.error.wrong": "Wrong PIN — try again.",

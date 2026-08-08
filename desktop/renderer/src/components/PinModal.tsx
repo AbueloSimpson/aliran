@@ -5,9 +5,12 @@
 // Esc cancels either; Enter submits.
 
 import React, { useEffect, useRef, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { setPin, validPinFormat, verifyPin } from '../parental'
 
-const FORMAT_HINT = 'PIN must be 4 to 8 digits.'
+// A refused PIN is held as a CATALOG LEAF (pin.error.<code>), never as copy: the
+// sentence is looked up at render, so a language change repaints a message that is
+// already under the field.
 
 function PinField ({ label, value, onChange, autoFocus }: { label: string; value: string; onChange: (v: string) => void; autoFocus?: boolean }) {
   return (
@@ -41,6 +44,7 @@ export function PinEntryModal ({ title, hint, onOk, onClose }: {
   onOk: () => void
   onClose: () => void
 }) {
+  const { t } = useI18n()
   const [pin, setPinValue] = useState('')
   const [error, setError] = useState<string | null>(null)
   const busy = useRef(false)
@@ -53,7 +57,7 @@ export function PinEntryModal ({ title, hint, onOk, onClose }: {
     if (await verifyPin(pin)) { onOk(); return }
     busy.current = false
     setPinValue('')
-    setError('Wrong PIN — try again.')
+    setError('wrong')
   }
 
   return (
@@ -61,11 +65,11 @@ export function PinEntryModal ({ title, hint, onOk, onClose }: {
       <form className="report-card pin-card" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <div className="section-header">{title.toUpperCase()}</div>
         {hint && <p className="pin-hint">{hint}</p>}
-        <PinField label="PIN" value={pin} onChange={(v) => { setPinValue(v); setError(null) }} autoFocus />
-        {error && <p className="pin-error">{error}</p>}
+        <PinField label={t('pin.label')} value={pin} onChange={(v) => { setPinValue(v); setError(null) }} autoFocus />
+        {error && <p className="pin-error">{t('pin.error.' + error)}</p>}
         <div className="pin-buttons">
-          <button type="button" className="report-cancel" onClick={onClose}>Cancel</button>
-          <button type="submit" className="report-send" disabled={pin.length < 4}>OK</button>
+          <button type="button" className="report-cancel" onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" className="report-send" disabled={pin.length < 4}>{t('common.ok')}</button>
         </div>
       </form>
     </div>
@@ -78,6 +82,7 @@ export function PinSetupModal ({ change, onDone, onClose }: {
   onDone: () => void
   onClose: () => void
 }) {
+  const { t } = useI18n()
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -88,13 +93,13 @@ export function PinSetupModal ({ change, onDone, onClose }: {
   async function submit (e: React.FormEvent) {
     e.preventDefault()
     if (busy.current) return
-    if (!validPinFormat(next)) { setError(FORMAT_HINT); return }
-    if (next !== confirm) { setError('The PINs do not match.'); setConfirm(''); return }
+    if (!validPinFormat(next)) { setError('format'); return }
+    if (next !== confirm) { setError('mismatch'); setConfirm(''); return }
     busy.current = true
     if (change && !(await verifyPin(current))) {
       busy.current = false
       setCurrent('')
-      setError('Wrong current PIN.')
+      setError('wrongCurrent')
       return
     }
     await setPin(next)
@@ -103,20 +108,18 @@ export function PinSetupModal ({ change, onDone, onClose }: {
 
   return (
     <div className="report-backdrop" onClick={onClose}>
-      <form className="report-card pin-card" role="dialog" aria-label={change ? 'Change PIN' : 'Set PIN'} onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <div className="section-header">{change ? 'CHANGE PIN' : 'SET PARENTAL PIN'}</div>
+      <form className="report-card pin-card" role="dialog" aria-label={change ? t('pin.changeAria') : t('pin.setupAria')} onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <div className="section-header">{change ? t('pin.changeTitle') : t('pin.setupTitle')}</div>
         <p className="pin-hint">
-          {change
-            ? 'Pick a new 4–8 digit PIN for access-controlled channels.'
-            : 'A 4–8 digit PIN, saved only on this device. Access-controlled channels stay hidden until a PIN exists; with one set, they appear and ask for it before playing.'}
+          {change ? t('pin.changeHint') : t('pin.setupHint')}
         </p>
-        {change && <PinField label="Current PIN" value={current} onChange={(v) => { setCurrent(v); setError(null) }} autoFocus />}
-        <PinField label="New PIN" value={next} onChange={(v) => { setNext(v); setError(null) }} autoFocus={!change} />
-        <PinField label="Repeat new PIN" value={confirm} onChange={(v) => { setConfirm(v); setError(null) }} />
-        {error && <p className="pin-error">{error}</p>}
+        {change && <PinField label={t('pin.current')} value={current} onChange={(v) => { setCurrent(v); setError(null) }} autoFocus />}
+        <PinField label={t('pin.new')} value={next} onChange={(v) => { setNext(v); setError(null) }} autoFocus={!change} />
+        <PinField label={t('pin.repeat')} value={confirm} onChange={(v) => { setConfirm(v); setError(null) }} />
+        {error && <p className="pin-error">{t('pin.error.' + error)}</p>}
         <div className="pin-buttons">
-          <button type="button" className="report-cancel" onClick={onClose}>Cancel</button>
-          <button type="submit" className="report-send" disabled={next.length < 4 || confirm.length < 4 || (change && current.length < 4)}>Save</button>
+          <button type="button" className="report-cancel" onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" className="report-send" disabled={next.length < 4 || confirm.length < 4 || (change && current.length < 4)}>{t('common.save')}</button>
         </div>
       </form>
     </div>
