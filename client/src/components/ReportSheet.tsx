@@ -10,7 +10,8 @@
 
 import React, { useEffect, useState } from 'react'
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
-import { REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, REPORT_CONSENT, type ReportCategory } from '@aliran/react-native'
+import { REPORT_CATEGORIES, type ReportCategory } from '@aliran/react-native'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { theme } from '../theme'
 
@@ -19,25 +20,39 @@ const PLAYER_CATEGORIES = REPORT_CATEGORIES.filter((c) => c !== 'login')
 // Human text for every error code AliranPlayer.report() can answer with. A viewer
 // must never be shown a wire code, and must never be told to retry into a closed
 // door: 'unsupported' and the throttles all end with "nothing more to do".
-export function reportMessage (error: string | undefined, retryAfter?: number): string {
+//
+// The i18n pair is a parameter rather than a hook call so this stays the pure lookup
+// it was; the sheet calls it at RENDER time (it stores the engine's answer, not the
+// sentence), which is what keeps an outcome already on screen following a language
+// change.
+export function reportMessage (
+  { t, tn }: ReturnType<typeof useI18n>,
+  error: string | undefined,
+  retryAfter?: number
+): string {
   const mins = retryAfter ? Math.max(1, Math.round(retryAfter / 60)) : 10
   switch (error) {
-    case undefined: return 'Thanks — your report was sent.'
+    case undefined: return t('report.result.sent')
     case 'cooldown':
-    case 'locked': return `You already reported this. Try again in about ${mins} minute${mins === 1 ? '' : 's'}.`
-    case 'unsupported': return "This service doesn't accept problem reports."
+    case 'locked': return tn('report.result.cooldown', mins)
+    case 'unsupported': return t('report.result.unsupported')
     case 'not-logged-in':
     case 'unauthorized':
-    case 'expired': return 'Please sign in again, then report the problem.'
-    case 'offline': return 'Not connected to the service right now — try again in a moment.'
-    default: return "Couldn't send the report. Try again in a moment."
+    case 'expired': return t('report.result.signIn')
+    case 'offline': return t('report.result.offline')
+    default: return t('report.result.failed')
   }
 }
 
+/** What the engine answered, kept verbatim so the sentence is built at render. */
+interface ReportOutcome { error?: string; retryAfter?: number }
+
 export function ReportSheet ({ visible, channelTitle, onClose }: { visible: boolean; channelTitle?: string; onClose: () => void }) {
+  const i18n = useI18n()
+  const { t } = i18n
   const [category, setCategory] = useState<ReportCategory | null>(null)
   const [sending, setSending] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
+  const [result, setResult] = useState<ReportOutcome | null>(null)
 
   // Subscribe while open so a late 'report-result' (the engine may be dialing) still
   // lands, and so a closed sheet never holds a listener.
@@ -46,7 +61,7 @@ export function ReportSheet ({ visible, channelTitle, onClose }: { visible: bool
     return backend.onMessage((m) => {
       if (m.type !== 'report-result') return
       setSending(false)
-      setResult(reportMessage(m.ok ? undefined : (m.error ?? 'failed'), m.retryAfter))
+      setResult({ error: m.ok ? undefined : (m.error ?? 'failed'), retryAfter: m.retryAfter })
     })
   }, [visible])
 
@@ -66,38 +81,40 @@ export function ReportSheet ({ visible, channelTitle, onClose }: { visible: bool
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <ScrollView style={styles.card} contentContainerStyle={styles.content}>
-          <Text style={styles.title}>REPORT A PROBLEM</Text>
+          <Text style={styles.title}>{t('report.title')}</Text>
           {channelTitle ? <Text style={styles.channel}>{channelTitle}</Text> : null}
 
           {result
             ? (
               <>
-                <Text style={styles.result}>{result}</Text>
-                <FocusButton label="Close" onPress={onClose} primary autoFocus />
+                <Text style={styles.result}>{reportMessage(i18n, result.error, result.retryAfter)}</Text>
+                <FocusButton label={t('common.close')} onPress={onClose} primary autoFocus />
               </>
               )
             : (
               <>
-                <Text style={styles.hint}>What went wrong?</Text>
+                <Text style={styles.hint}>{t('report.hint')}</Text>
                 {PLAYER_CATEGORIES.map((c, i) => (
                   <CategoryRow
                     key={c}
-                    label={REPORT_CATEGORY_LABELS[c]}
+                    label={t('report.category.' + c)}
                     selected={category === c}
                     autoFocus={i === 0}
                     onPress={() => setCategory(c)}
                   />
                 ))}
 
-                <Text style={styles.consent}>{REPORT_CONSENT}</Text>
+                {/* The catalog's copy of REPORT_CONSENT — tools/i18n-test.mjs pins the
+                    English against sdk/react-native/src/report.ts byte for byte. */}
+                <Text style={styles.consent}>{t('report.consent')}</Text>
 
                 <FocusButton
-                  label={sending ? 'Sending…' : 'Send report'}
+                  label={sending ? t('report.sending') : t('report.send')}
                   onPress={submit}
                   primary
                   disabled={!category || sending}
                 />
-                <FocusButton label="Cancel" onPress={onClose} />
+                <FocusButton label={t('common.cancel')} onPress={onClose} />
               </>
               )}
         </ScrollView>

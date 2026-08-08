@@ -139,5 +139,25 @@
   "pin.error.wrong": "Wrong PIN — try again.",
   "pin.error.format": "PIN must be 4 to 8 digits.",
   "pin.error.mismatch": "The PINs do not match.",
-  "pin.error.wrongCurrent": "Wrong current PIN."
+  "pin.error.wrongCurrent": "Wrong current PIN.",
+
+  "report.title": "REPORT A PROBLEM",
+  "report.hint": "What went wrong?",
+  "report.send": "Send report",
+  "report.sending": "Sending…",
+  "report.consent": "Sent with your report: the problem you picked, the channel you were watching, your app version and device type, how many peers you were connected to, and the last few things the player did. Your account name and password are never sent.",
+  "report.category.no-audio": "No sound",
+  "report.category.black-screen": "Black screen / nothing plays",
+  "report.category.visual-artifacts": "Broken or glitchy picture",
+  "report.category.buffering": "Keeps buffering or freezing",
+  "report.category.wrong-content": "Wrong programme on this channel",
+  "report.category.login": "Trouble signing in",
+  "report.category.other": "Something else",
+  "report.result.sent": "Thanks — your report was sent.",
+  "report.result.cooldown.one": "You already reported this. Try again in about {n} minute.",
+  "report.result.cooldown.other": "You already reported this. Try again in about {n} minutes.",
+  "report.result.unsupported": "This service doesn't accept problem reports.",
+  "report.result.signIn": "Please sign in again, then report the problem.",
+  "report.result.offline": "Not connected to the service right now — try again in a moment.",
+  "report.result.failed": "Couldn't send the report. Try again in a moment."
 }
