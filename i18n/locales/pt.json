@@ -10,11 +10,11 @@
   "common.liveBadge": "● AO VIVO",
   "common.on": "SIM",
   "common.off": "NÃO",
-  "common.mute": "Sem som",
-  "common.unmute": "Com som",
+  "common.mute": "Silenciar",
+  "common.unmute": "Ativar som",
   "common.save": "Salvar",
   "common.volume": "Volume",
-  "common.selected": "ATIVO",
+  "common.selected": "SELECIONADO",
 
   "splash.connecting": "Conectando",
   "splash.authorizing": "Autorizando o aparelho",
@@ -210,7 +210,7 @@
   "vod.sort.yearAsc": "Mais antigos",
   "vod.sort.watched": "Assistidos há pouco",
   "vod.sortMenu.title": "ORDENAR POR",
-  "vod.sortMenu.selected": "ATIVO",
+  "vod.sortMenu.selected": "SELECIONADO",
   "vod.empty.noProviderTitle": "Indisponível",
   "vod.empty.noProviderHint": "Este serviço não tem um provedor de filmes configurado.",
   "vod.empty.noMoviesTitle": "Ainda não há filmes",
@@ -285,6 +285,6 @@
   "hints.keyFavorite": "{key} favorito",
   "hints.favoriteKeyHint": "Na TV ao vivo, pressione {key} (ou o botão {star}) em um canal.",
   "hints.retryEnter": "Escolha o canal de novo para tentar outra vez ({enter} abre a lista).",
-  "hints.muteKey": "Sem som ({key})",
-  "hints.unmuteKey": "Com som ({key})"
+  "hints.muteKey": "Silenciar ({key})",
+  "hints.unmuteKey": "Ativar som ({key})"
 }

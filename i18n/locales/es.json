@@ -14,7 +14,7 @@
   "common.unmute": "Activar sonido",
   "common.save": "Guardar",
   "common.volume": "Volumen",
-  "common.selected": "ACTIVO",
+  "common.selected": "SELECCIONADO",
 
   "splash.connecting": "Conectando",
   "splash.authorizing": "Autorizando el dispositivo",
@@ -210,7 +210,7 @@
   "vod.sort.yearAsc": "Más antiguos",
   "vod.sort.watched": "Visto recientemente",
   "vod.sortMenu.title": "ORDENAR POR",
-  "vod.sortMenu.selected": "ACTIVO",
+  "vod.sortMenu.selected": "SELECCIONADO",
   "vod.empty.noProviderTitle": "No disponible",
   "vod.empty.noProviderHint": "Este servicio no tiene un proveedor de películas configurado.",
   "vod.empty.noMoviesTitle": "Todavía no hay películas",

@@ -283,7 +283,7 @@
   "hints.escBack": "{esc} назад",
   "hints.escClose": "{esc} закрыть",
   "hints.enterWatch": "{enter} смотреть",
-  "hints.arrowsBrowse": "{arrows} перебор",
+  "hints.arrowsBrowse": "{arrows} листать",
   "hints.infoKeyClick": "{key} / правый клик — сведения",
   "hints.keyFavorite": "{key} избранное",
   "hints.favoriteKeyHint": "В прямом эфире нажмите {key} на канале (или кнопку {star}).",
