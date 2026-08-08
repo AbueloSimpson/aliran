@@ -9,7 +9,7 @@
 // is null otherwise), and a brand can still switch it off with sections.vod:false.
 
 import React, { useEffect, useMemo, useState } from 'react'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { pickHero } from '../catalog'
@@ -77,7 +77,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
             onClick={() => onGo(item.key)}
           >
             <span className="menu-glyph">{item.glyph}</span>
-            <span className="menu-label">{t('menu.' + item.key).toUpperCase()}</span>
+            <span className="menu-label">{t('menu.' + item.key).toLocaleUpperCase(getLocale())}</span>
           </div>
         ))}
       </div>

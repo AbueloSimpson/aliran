@@ -12,7 +12,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, Platform, BackHandler, ScrollView } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { loadServiceDescriptor } from '../config'
@@ -98,7 +98,7 @@ function MenuEntry ({ item, first }: { item: MenuItem; first: boolean }) {
       onPress={item.go}
     >
       <Text style={styles.glyph}>{item.glyph}</Text>
-      <Text style={[styles.label, focused && styles.labelFocused]}>{item.label.toUpperCase()}</Text>
+      <Text style={[styles.label, focused && styles.labelFocused]}>{item.label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }

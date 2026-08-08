@@ -5,6 +5,7 @@
 // The drill state lives in LiveScreen; this renders what it's given.
 
 import React from 'react'
+import { getLocale } from '@aliran/i18n'
 
 export interface CategoryRailItem {
   /** Full category key ('All' | 'Anime' | 'Anime/Español'). */
@@ -24,12 +25,16 @@ export interface CategoryRailProps {
   onActivity?: () => void
 }
 
+// The rail is MIXED copy: 'All' is ours and translated, every other label is the
+// operator's own category name in the operator's language. There is no casing rule that
+// is right for both, so the whole rail follows the VIEWER's locale (S56f decision) —
+// a Turkish viewer's "i" upper-cases to "İ" everywhere on the surface, consistently.
 export function CategoryRail ({ items, selected, focusIndex, parentHeader, onSelect, onActivity }: CategoryRailProps) {
   return (
     <div className="category-rail" onScroll={onActivity}>
       {parentHeader && (
         <div className="rail-back" onClick={() => { onActivity?.(); parentHeader.onBack() }}>
-          ‹ {parentHeader.label.toUpperCase()}
+          ‹ {parentHeader.label.toLocaleUpperCase(getLocale())}
         </div>
       )}
       <div className="rail-items">
@@ -41,7 +46,7 @@ export function CategoryRail ({ items, selected, focusIndex, parentHeader, onSel
             onMouseMove={onActivity}
             onClick={() => { onActivity?.(); onSelect(it.key) }}
           >
-            <span className="rail-label">{it.label.toUpperCase()}</span>
+            <span className="rail-label">{it.label.toLocaleUpperCase(getLocale())}</span>
             {it.hasChildren && <span className="rail-chevron">›</span>}
             <span className="rail-underline" />
           </div>

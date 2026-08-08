@@ -21,7 +21,7 @@
 // live-only ring: zapping from a title lands on channel 001.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { channelNumbers, categoryModel, isVod, pickHero, splitCategory, subLabel, zapOrder } from '../catalog'
@@ -196,7 +196,7 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
     ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
     : model.top.map((key) => ({ key, label: key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
   const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0]
-  const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toUpperCase()).join('  ›  ')
+  const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find((s) => s.id === playingId) ?? null
   const playingVod = !!playing && isVod(playing)
 

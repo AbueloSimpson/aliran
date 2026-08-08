@@ -8,7 +8,7 @@
 // panel's login alert rule is unaffected.)
 
 import React, { useEffect, useState } from 'react'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import { REPORT_CATEGORIES, type ReportCategory } from '../types'
 
@@ -78,7 +78,7 @@ export function ReportModal ({ channelTitle, onClose }: { channelTitle?: string;
             )
           : (
             <>
-              <div className="settings-group-title">{t('report.hint').toUpperCase()}</div>
+              <div className="settings-group-title">{t('report.hint').toLocaleUpperCase(getLocale())}</div>
               <div className="report-categories">
                 {PLAYER_CATEGORIES.map((c, i) => (
                   <button

@@ -11,7 +11,7 @@
 import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg, type EpgProgram } from '@aliran/react-native'
 import { theme } from '../theme'
@@ -56,9 +56,11 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
         {!!duration && <Text style={styles.durationBadge}>{duration}</Text>}
       </View>
 
+      {/* Operator category names, upper-cased in the VIEWER's locale — same rule as the
+          category rail, so the same word is cased the same way on both surfaces. */}
       {!!stream.category?.length && (
         <View style={styles.chips}>
-          {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toUpperCase()}</Text>)}
+          {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toLocaleUpperCase(getLocale())}</Text>)}
         </View>
       )}
 

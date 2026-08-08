@@ -38,7 +38,7 @@
 // viewer outside the grid. The sort menu and the track menu capture their own keys.
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { VodConfig, VodErrorCode, VodHistoryEntry, VodItem, VodListEntry } from '../types'
 import {
@@ -574,9 +574,9 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
         <div className="vod-left">
           <div className="section-header">{t('vod.header')}</div>
           <div className="vod-modes">
-            <button className={'vod-mode' + (!search && kind === 'movies' ? ' active' : '')} onClick={() => chooseKind('movies')}>{t('vod.menu.movies').toUpperCase()}</button>
-            <button className={'vod-mode' + (!search && kind === 'series' ? ' active' : '')} onClick={() => chooseKind('series')}>{t('vod.menu.series').toUpperCase()}</button>
-            <button className={'vod-mode' + (search ? ' active' : '')} onClick={() => { setSearch(true); setGenre(null) }}>{t('vod.menu.search').toUpperCase()}</button>
+            <button className={'vod-mode' + (!search && kind === 'movies' ? ' active' : '')} onClick={() => chooseKind('movies')}>{t('vod.menu.movies').toLocaleUpperCase(getLocale())}</button>
+            <button className={'vod-mode' + (!search && kind === 'series' ? ' active' : '')} onClick={() => chooseKind('series')}>{t('vod.menu.series').toLocaleUpperCase(getLocale())}</button>
+            <button className={'vod-mode' + (search ? ' active' : '')} onClick={() => { setSearch(true); setGenre(null) }}>{t('vod.menu.search').toLocaleUpperCase(getLocale())}</button>
           </div>
           {items !== null && !error && !noSource && (
             <div className="vod-count">
@@ -594,7 +594,7 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
                 key={key}
                 className={'vod-tab' + (!search && tab === key ? ' active' : '')}
                 onClick={() => chooseTab(key)}
-              >{t('vod.tab.' + key).toUpperCase()}</button>
+              >{t('vod.tab.' + key).toLocaleUpperCase(getLocale())}</button>
             ))}
           </div>
 

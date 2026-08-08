@@ -7,6 +7,7 @@
 // given (items + optional parent header).
 import React, { useState } from 'react'
 import { View, ScrollView, Text, Pressable, StyleSheet, Platform } from 'react-native'
+import { getLocale } from '@aliran/i18n'
 import { theme } from '../theme'
 
 export interface CategoryRailItem {
@@ -28,6 +29,10 @@ export interface CategoryRailProps {
   onActivity?: () => void
 }
 
+// The rail is MIXED copy: 'All' is ours and translated, every other label is the
+// operator's own category name in the operator's language. There is no casing rule that
+// is right for both, so the whole rail follows the VIEWER's locale (S56f decision) —
+// a Turkish viewer's "i" upper-cases to "İ" everywhere on the surface, consistently.
 export function CategoryRail ({ items, selected, parentHeader, onSelect, onActivity }: CategoryRailProps) {
   return (
     <View style={styles.rail}>
@@ -59,7 +64,7 @@ function BackHeader ({ label, onBack, onActivity }: { label: string; onBack: () 
       onBlur={() => setFocused(false)}
       onPress={() => { onActivity?.(); onBack() }}
     >
-      <Text style={[styles.backText, focused && styles.labelActive]} numberOfLines={1}>‹ {label.toUpperCase()}</Text>
+      <Text style={[styles.backText, focused && styles.labelActive]} numberOfLines={1}>‹ {label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
@@ -78,7 +83,7 @@ function RailItem ({ label, hasChildren, active, onSelect, onActivity }: { label
     >
       <View style={styles.itemRow}>
         <Text style={[styles.label, (active || focused) && styles.labelActive]} numberOfLines={1}>
-          {label.toUpperCase()}
+          {label.toLocaleUpperCase(getLocale())}
         </Text>
         {hasChildren && <Text style={[styles.chevron, (active || focused) && styles.labelActive]}>›</Text>}
       </View>

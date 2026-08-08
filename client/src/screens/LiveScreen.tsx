@@ -32,7 +32,7 @@ import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideV
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranVideo, SelectedTrackType, type AliranVideoHandle, type TuneEvent, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
@@ -212,7 +212,7 @@ export function LiveScreen ({ route }: Props) {
     ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
     : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
   const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0] // top view highlights the parent
-  const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toUpperCase()).join('  ›  ')
+  const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find(s => s.id === playingId) ?? null
   // The playing record is a vod library title (S8a): transport UI on the bar, pause is
   // app-owned, and the SDK's live self-heal is off (it keys on the port recordType).

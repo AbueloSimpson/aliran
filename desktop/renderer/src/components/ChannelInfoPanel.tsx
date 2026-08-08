@@ -9,7 +9,7 @@
 // and omit the guide slot — titles have no schedule.
 
 import React from 'react'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
@@ -51,15 +51,17 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
         {duration && <span className="info-duration">{duration}</span>}
       </div>
 
+      {/* Operator category names, upper-cased in the VIEWER's locale — same rule as the
+          category rail, so the same word is cased the same way on both surfaces. */}
       {!!stream.category?.length && (
         <div className="info-chips">
-          {stream.category.map((c) => <span key={c} className="info-chip">{c.toUpperCase()}</span>)}
+          {stream.category.map((c) => <span key={c} className="info-chip">{c.toLocaleUpperCase(getLocale())}</span>)}
         </div>
       )}
 
       {/* Upper-cased at render, the way the menu labels are: the catalog carries the
           sentence, the surface decides how it is set. */}
-      {vod && stream.status === 'unavailable' && <div className="info-unavailable">{t('live.unavailable').toUpperCase()}</div>}
+      {vod && stream.status === 'unavailable' && <div className="info-unavailable">{t('live.unavailable').toLocaleUpperCase(getLocale())}</div>}
 
       {stream.description && <div className="info-desc">{stream.description}</div>}
 

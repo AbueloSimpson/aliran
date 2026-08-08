@@ -5,7 +5,7 @@
 // Esc cancels either; Enter submits.
 
 import React, { useEffect, useRef, useState } from 'react'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { setPin, validPinFormat, verifyPin } from '../parental'
 
 // A refused PIN is held as a CATALOG LEAF (pin.error.<code>), never as copy: the
@@ -63,7 +63,7 @@ export function PinEntryModal ({ title, hint, onOk, onClose }: {
   return (
     <div className="report-backdrop" onClick={onClose}>
       <form className="report-card pin-card" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <div className="section-header">{title.toUpperCase()}</div>
+        <div className="section-header">{title.toLocaleUpperCase(getLocale())}</div>
         {hint && <p className="pin-hint">{hint}</p>}
         <PinField label={t('pin.label')} value={pin} onChange={(v) => { setPinValue(v); setError(null) }} autoFocus />
         {error && <p className="pin-error">{t('pin.error.' + error)}</p>}

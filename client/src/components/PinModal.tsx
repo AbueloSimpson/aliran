@@ -8,7 +8,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { validPinFormat } from '../parental'
 import { theme } from '../theme'
@@ -82,7 +82,7 @@ export function PinEntryModal ({ visible, title, hint, onOk, onClose }: {
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title}>{title.toUpperCase()}</Text>
+          <Text style={styles.title}>{title.toLocaleUpperCase(getLocale())}</Text>
           {hint ? <Text style={styles.hint}>{hint}</Text> : null}
           <PinField label={t('pin.label')} value={pin} onChange={(v) => { setPin(v); setError(null) }} autoFocus />
           {error ? <Text style={styles.error}>{t('pin.error.' + error)}</Text> : null}

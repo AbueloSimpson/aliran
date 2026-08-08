@@ -33,7 +33,7 @@ import { View, Text, Image, Pressable, TextInput, FlatList, ScrollView, Activity
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import type { VodConfig, VodHistoryEntry, VodListEntry } from '@aliran/react-native'
-import { useI18n } from '@aliran/i18n'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { listMovies, listSeries, listCategories, getMovieInfo, type VodItem, type VodErrorCode } from '../vod/zencontent'
 import { DEFAULT_SORT, fold, letterBuckets, letterOf, sortItems, titleWithYear, type VodSortKey } from '../vod/sort'
@@ -539,7 +539,7 @@ function MenuButton ({ label, active, onPress }: { label: string; active: boolea
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={[styles.menuText, active && styles.menuTextActive]}>{label.toUpperCase()}</Text>
+      <Text style={[styles.menuText, active && styles.menuTextActive]}>{label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
@@ -554,7 +554,7 @@ function TabButton ({ label, active, onPress }: { label: string; active: boolean
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={[styles.tabText, active && styles.tabTextActive]}>{label.toUpperCase()}</Text>
+      <Text style={[styles.tabText, active && styles.tabTextActive]}>{label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
