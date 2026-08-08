@@ -31,6 +31,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Hls from 'hls.js'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import { formatDuration } from '../catalog'
 import { TrackMenu } from '../components/TrackMenu'
@@ -65,6 +66,7 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
   resumeSec?: number
   onBack: () => void
 }) {
+  const { t } = useI18n()
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
   const [paused, setPaused] = useState(false)
@@ -192,11 +194,11 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
     progress.current = { position: 0, duration: durationSec ?? 0, written: 0 }
 
     const onTime = () => {
-      const t = video.currentTime
-      setPosition(Math.floor(t))
-      progress.current.position = t
-      if (Math.abs(t - progress.current.written) >= HISTORY_STEP_SEC) {
-        write.current(t, progress.current.duration)
+      const at = video.currentTime
+      setPosition(Math.floor(at))
+      progress.current.position = at
+      if (Math.abs(at - progress.current.written) >= HISTORY_STEP_SEC) {
+        write.current(at, progress.current.duration)
       }
     }
     const onMeta = () => {
@@ -315,14 +317,14 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
       {loading && !failed && (
         <div className="empty-center vod-player-center">
           <span className="spinner" />
-          <div className="empty-hint">Starting {title}…</div>
+          <div className="empty-hint">{t('vod.player.starting', { title })}</div>
         </div>
       )}
 
       {failed && (
         <div className="empty-center vod-player-center">
-          <div className="empty-title">This title won't play</div>
-          <div className="empty-hint">The movie catalog couldn't deliver it right now. Try another title, or come back later.</div>
+          <div className="empty-title">{t('vod.player.failedTitle')}</div>
+          <div className="empty-hint">{t('vod.player.failedHint')}</div>
         </div>
       )}
 
@@ -336,9 +338,9 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
               </span>
               <VolumeControl volume={volume} muted={muted} onChange={setVolume} />
               {hasTracks && (
-                <button className="np-btn" onClick={() => { setShowTracks(true); showBar() }}><span className="np-btn-glyph">⋮</span><span className="np-btn-label">Audio & subtitles</span></button>
+                <button className="np-btn" onClick={() => { setShowTracks(true); showBar() }}><span className="np-btn-glyph">⋮</span><span className="np-btn-label">{t('vod.player.tracksDesktop')}</span></button>
               )}
-              <button className="np-btn" onClick={onBack}><span className="np-btn-glyph">↩</span><span className="np-btn-label">Back</span></button>
+              <button className="np-btn" onClick={onBack}><span className="np-btn-glyph">↩</span><span className="np-btn-label">{t('common.back')}</span></button>
             </div>
             <div className="np-transport">
               <SeekBar position={position} duration={duration} onSeek={(s) => { seek(s); showBar() }} />
@@ -346,11 +348,11 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
             {/* The skip cluster, centered under the progress bar (QA round 2):
                 ⟲30 ⟲10 ▶ ⟳10 ⟳30. Arrow keys keep their ±30/−10 behavior. */}
             <div className="np-skip-row">
-              <button className="np-play np-skip" title={`Back ${SKIP_STEPS[1]} seconds`} onClick={() => { nudge(-SKIP_STEPS[1]); showBar() }}>{`↺${SKIP_STEPS[1]}`}</button>
-              <button className="np-play np-skip" title={`Back ${SKIP_STEPS[0]} seconds`} onClick={() => { nudge(-SKIP_STEPS[0]); showBar() }}>{`↺${SKIP_STEPS[0]}`}</button>
+              <button className="np-play np-skip" title={t('vod.player.back', { n: SKIP_STEPS[1] })} onClick={() => { nudge(-SKIP_STEPS[1]); showBar() }}>{`↺${SKIP_STEPS[1]}`}</button>
+              <button className="np-play np-skip" title={t('vod.player.back', { n: SKIP_STEPS[0] })} onClick={() => { nudge(-SKIP_STEPS[0]); showBar() }}>{`↺${SKIP_STEPS[0]}`}</button>
               <button className="np-play" onClick={() => { togglePause(); showBar() }}>{paused ? '▶' : '❚❚'}</button>
-              <button className="np-play np-skip" title={`Forward ${SKIP_STEPS[0]} seconds`} onClick={() => { nudge(SKIP_STEPS[0]); showBar() }}>{`↻${SKIP_STEPS[0]}`}</button>
-              <button className="np-play np-skip" title={`Forward ${SKIP_STEPS[1]} seconds`} onClick={() => { nudge(SKIP_STEPS[1]); showBar() }}>{`↻${SKIP_STEPS[1]}`}</button>
+              <button className="np-play np-skip" title={t('vod.player.forward', { n: SKIP_STEPS[0] })} onClick={() => { nudge(SKIP_STEPS[0]); showBar() }}>{`↻${SKIP_STEPS[0]}`}</button>
+              <button className="np-play np-skip" title={t('vod.player.forward', { n: SKIP_STEPS[1] })} onClick={() => { nudge(SKIP_STEPS[1]); showBar() }}>{`↻${SKIP_STEPS[1]}`}</button>
             </div>
           </div>
         </div>

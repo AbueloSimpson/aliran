@@ -248,6 +248,7 @@
   "vod.player.failedTitle": "This title won't play",
   "vod.player.failedHint": "The movie catalog couldn't deliver it right now. Try another title, or come back later.",
   "vod.player.tracks": "Audio and subtitles",
+  "vod.player.tracksDesktop": "Audio & subtitles",
   "vod.player.back": "Back {n} seconds",
   "vod.player.forward": "Forward {n} seconds",
 
