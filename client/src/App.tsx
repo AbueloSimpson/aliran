@@ -19,12 +19,15 @@
 // every color/string flows from the service descriptor via theme.ts).
 
 import React, { useEffect, useState } from 'react'
+import { AppState, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranBackend, EngineNotice } from '@aliran/react-native'
 import { backend } from './worklet'
 import { hasBakedKey, loadServiceDescriptor } from './config'
+import { checkForUpdate, onUpdateAvailable, type AvailableUpdate } from './update'
 import { theme } from './theme'
+import { UpdateBanner } from './components/UpdateBanner'
 import { SplashScreen } from './screens/SplashScreen'
 import { ConnectScreen } from './screens/ConnectScreen'
 import { LoginScreen } from './screens/LoginScreen'
@@ -105,12 +108,23 @@ function EngineUnavailable () {
 
 export default function App () {
   const [ready, setReady] = useState(false)
+  // The available OTA update, when a check found one (App renders the banner; the
+  // shared state lives in update.ts so Settings' manual check feeds it too).
+  // Dismissing hides it until a LATER check finds it again (never for mandatory).
+  const [update, setUpdate] = useState<AvailableUpdate | null>(null)
 
   useEffect(() => {
     if (!engineSupported) return // nothing to boot — the backend would no-op anyway
     const service = loadServiceDescriptor()
     const off = backend.onMessage((m) => {
-      if (m.type === 'ready') setReady(true)
+      // The update check rides backend readiness (not the meta watcher — the
+      // manifest changes without the pointer changing) and each return to the
+      // foreground, throttled to 6 h inside checkForUpdate().
+      if (m.type === 'ready') { setReady(true); checkForUpdate().catch(() => {}) }
+    })
+    const offUpdate = onUpdateAvailable(setUpdate)
+    const appState = AppState.addEventListener('change', (s) => {
+      if (s === 'active') checkForUpdate().catch(() => {})
     })
     // Baked (operator) flavor: connect to the shipped key right away — unchanged.
     // Public (keyless) flavor: boot the worklet idle; Splash reads the persisted
@@ -124,34 +138,43 @@ export default function App () {
       // the viewer battery and uplink.
       offNet = NetInfo?.addEventListener((s) => backend.setNetworkProfile(!!s?.details?.isConnectionExpensive, s?.type === 'cellular'))
     } catch { /* native module absent (stale APK / jest) — expensive-network gate just stays off */ }
-    return () => { off(); if (offNet) offNet() }
+    return () => { off(); offUpdate(); appState.remove(); if (offNet) offNet() }
   }, [])
 
   if (!engineSupported) return <EngineUnavailable />
 
   return (
     <NavigationContainer>
-      <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Splash">
-          {(props: NativeStackScreenProps<RootStackParamList, 'Splash'>) => (
-            <SplashScreen {...props} backendReady={ready} />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Connect" component={ConnectScreen} />
-        <Stack.Screen name="Login">
-          {(props: NativeStackScreenProps<RootStackParamList, 'Login'>) => (
-            <LoginScreen {...props} backendReady={ready} />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Menu" component={MenuScreen} />
-        <Stack.Screen name="Live" component={LiveScreen} />
-        <Stack.Screen name="Favorites" component={FavoritesScreen} />
-        <Stack.Screen name="Search" component={SearchScreen} />
-        <Stack.Screen name="Settings" component={SettingsScreen} />
-        <Stack.Screen name="Vod" component={VodScreen} />
-        <Stack.Screen name="VodSeries" component={VodSeriesScreen} />
-        <Stack.Screen name="VodPlayer" component={VodPlayerScreen} />
-      </Stack.Navigator>
+      <View style={{ flex: 1 }}>
+        <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Splash">
+            {(props: NativeStackScreenProps<RootStackParamList, 'Splash'>) => (
+              <SplashScreen {...props} backendReady={ready} />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Connect" component={ConnectScreen} />
+          <Stack.Screen name="Login">
+            {(props: NativeStackScreenProps<RootStackParamList, 'Login'>) => (
+              <LoginScreen {...props} backendReady={ready} />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Menu" component={MenuScreen} />
+          <Stack.Screen name="Live" component={LiveScreen} />
+          <Stack.Screen name="Favorites" component={FavoritesScreen} />
+          <Stack.Screen name="Search" component={SearchScreen} />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="Vod" component={VodScreen} />
+          <Stack.Screen name="VodSeries" component={VodSeriesScreen} />
+          <Stack.Screen name="VodPlayer" component={VodPlayerScreen} />
+        </Stack.Navigator>
+        {update && (
+          <UpdateBanner
+            entry={update.entry}
+            mandatory={update.mandatory}
+            onDismiss={() => setUpdate(null)}
+          />
+        )}
+      </View>
     </NavigationContainer>
   )
 }

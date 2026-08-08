@@ -13,6 +13,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
+import { appInfoCached, checkForUpdate } from '../update'
 import { theme } from '../theme'
 import { PinEntryModal, PinSetupModal } from '../components/PinModal'
 
@@ -38,6 +39,34 @@ export function SettingsScreen ({ navigation }: Props) {
   // only ever sees "a PIN exists" + the hide toggle).
   const [parental, setParental] = useState<{ hide: boolean } | null>(backend.parental)
   const [pinModal, setPinModal] = useState<PinModalState>(null)
+  // OTA updates: the installed build's native version (null while resolving / no
+  // installer module) + the manual check's one-line outcome.
+  const [appVersion, setAppVersion] = useState<string | null>(null)
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    appInfoCached().then((info) => {
+      if (alive && info) setAppVersion(`${info.versionName} (${info.versionCode})`)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  // Manual check (forced past the 6 h throttle). An 'available' verdict ALSO raises
+  // the App-level update banner via update.ts's shared listener — the status line
+  // here just says what happened in words.
+  async function checkUpdates () {
+    setUpdateStatus('Checking…')
+    try {
+      const res = await checkForUpdate({ force: true })
+      if (res == null) setUpdateStatus(hasBakedKey() || backend.service ? 'Updates are not available on this build.' : 'Connect to a service first.')
+      else if (res.status === 'available') setUpdateStatus(`A new version is available: ${res.entry?.versionName ?? ''}.`)
+      else if (res.status === 'current' || res.status === 'none') setUpdateStatus('You have the newest version.')
+      else setUpdateStatus('The check is not possible now. Try again later.')
+    } catch {
+      setUpdateStatus('The check is not possible now. Try again later.')
+    }
+  }
 
   useEffect(() => {
     backend.requestPrefs()
@@ -124,6 +153,13 @@ export function SettingsScreen ({ navigation }: Props) {
         <Row label="Service" value={(hasBakedKey() ? service.name : backend.service?.name) ?? service.name} />
         <Row label="Panel key" value={panelKeyLabel()} />
         <Row label="Playback" value={service.hybrid?.mode ?? 'p2p-only'} />
+      </View>
+
+      <Text style={styles.groupTitle}>UPDATES</Text>
+      <View style={styles.group}>
+        <Row label="App version" value={appVersion ?? '—'} />
+        <ActionRow label="Check for updates…" onPress={checkUpdates} />
+        {updateStatus != null && <Row label="Result" value={updateStatus} />}
       </View>
 
       <Text style={styles.groupTitle}>DIAGNOSTICS</Text>
