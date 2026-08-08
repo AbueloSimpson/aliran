@@ -10,6 +10,7 @@
 import React, { useEffect, useState } from 'react'
 import { View, Text, Pressable, StyleSheet } from 'react-native'
 import { canRequestInstall, installApk, onInstallResult, openInstallSettings, type UpdateEntry } from '@aliran/react-native'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { theme } from '../theme'
 
@@ -27,11 +28,17 @@ export interface UpdateBannerProps {
 
 type Phase = 'offer' | 'downloading' | 'ready' | 'installing' | 'error'
 
+// What went wrong: our own line (update.installFailed) or the message the worklet or
+// the OS installer handed us, which stays verbatim — engine and platform prose is not
+// translated (S56).
+type Failure = { installFailed: true } | { text: string }
+
 export function UpdateBanner ({ entry, mandatory, onDismiss }: UpdateBannerProps) {
+  const { t } = useI18n()
   const [phase, setPhase] = useState<Phase>('offer')
   const [progress, setProgress] = useState(0) // 0..1
   const [readyPath, setReadyPath] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Failure | null>(null)
   const [metered, setMetered] = useState(false)
   const [needsPermission, setNeedsPermission] = useState(false)
 
@@ -41,7 +48,7 @@ export function UpdateBanner ({ entry, mandatory, onDismiss }: UpdateBannerProps
       setProgress(m.total > 0 ? Math.min(1, m.received / m.total) : 0)
     }
     if (m.type === 'update-ready') { setReadyPath(m.path); setPhase('ready') }
-    if (m.type === 'update-error') { setError(m.message); setPhase('error') }
+    if (m.type === 'update-error') { setError({ text: m.message }); setPhase('error') }
   }), [])
 
   useEffect(() => {
@@ -75,7 +82,7 @@ export function UpdateBanner ({ entry, mandatory, onDismiss }: UpdateBannerProps
     try {
       await installApk(readyPath) // resolves at OS-installer handoff
     } catch (e) {
-      setError(String((e as Error)?.message || e))
+      setError({ text: String((e as Error)?.message || e) })
       setPhase('error')
     }
   }
@@ -87,7 +94,7 @@ export function UpdateBanner ({ entry, mandatory, onDismiss }: UpdateBannerProps
   useEffect(() => {
     const off = onInstallResult((r) => {
       if (!r.success) {
-        setError(r.message || 'The install did not complete.')
+        setError(r.message ? { text: r.message } : { installFailed: true })
         setPhase('error')
       }
     })
@@ -98,15 +105,17 @@ export function UpdateBanner ({ entry, mandatory, onDismiss }: UpdateBannerProps
 
   return (
     <View style={[styles.banner, mandatory && styles.bannerMandatory]}>
-      <Text style={styles.title}>{mandatory ? 'Update required' : 'Update available'}</Text>
+      <Text style={styles.title}>{mandatory ? t('update.requiredTitle') : t('update.availableTitle')}</Text>
       <Text style={styles.body}>
-        {`A new version is available: ${entry.versionName}${sizeMb ? ` (${sizeMb} MB)` : ''}.`}
+        {sizeMb
+          ? t('update.newVersionSized', { version: entry.versionName, size: sizeMb })
+          : t('update.newVersion', { version: entry.versionName })}
       </Text>
-      {mandatory && <Text style={styles.body}>You must install this update.</Text>}
+      {mandatory && <Text style={styles.body}>{t('update.mustInstall')}</Text>}
       {!!entry.notes && <Text style={styles.notes} numberOfLines={3}>{entry.notes}</Text>}
 
       {phase === 'offer' && metered && (
-        <Text style={styles.body}>You are on a metered network. The download can use much data.</Text>
+        <Text style={styles.body}>{t('update.metered')}</Text>
       )}
       {phase === 'downloading' && (
         <View style={styles.progressTrack}>
@@ -114,29 +123,29 @@ export function UpdateBanner ({ entry, mandatory, onDismiss }: UpdateBannerProps
         </View>
       )}
       {phase === 'downloading' && (
-        <Text style={styles.body}>{`Downloading the update… ${Math.round(progress * 100)}%`}</Text>
+        <Text style={styles.body}>{t('update.downloading', { percent: Math.round(progress * 100) })}</Text>
       )}
-      {phase === 'installing' && <Text style={styles.body}>Starting the installer…</Text>}
+      {phase === 'installing' && <Text style={styles.body}>{t('update.installing')}</Text>}
       {phase === 'ready' && needsPermission && (
-        <Text style={styles.body}>Permit this app to install updates. Then press "Install now" again.</Text>
+        <Text style={styles.body}>{t('update.permission')}</Text>
       )}
-      {phase === 'error' && !!error && <Text style={styles.error} numberOfLines={2}>{error}</Text>}
+      {phase === 'error' && !!error && <Text style={styles.error} numberOfLines={2}>{'text' in error ? error.text : t('update.installFailed')}</Text>}
 
       <View style={styles.buttons}>
         {phase === 'offer' && !metered && (
-          <BannerButton label="Download" primary onPress={startDownload} />
+          <BannerButton label={t('update.download')} primary onPress={startDownload} />
         )}
         {phase === 'offer' && metered && (
-          <BannerButton label="Download anyway" primary onPress={startDownload} />
+          <BannerButton label={t('update.downloadAnyway')} primary onPress={startDownload} />
         )}
         {(phase === 'ready' || phase === 'installing') && (
-          <BannerButton label="Install now" primary disabled={phase === 'installing'} onPress={install} />
+          <BannerButton label={t('update.installNow')} primary disabled={phase === 'installing'} onPress={install} />
         )}
         {phase === 'error' && (
-          <BannerButton label="Try again" primary onPress={readyPath ? install : startDownload} />
+          <BannerButton label={t('common.tryAgain')} primary onPress={readyPath ? install : startDownload} />
         )}
         {!mandatory && phase !== 'installing' && (
-          <BannerButton label="Later" onPress={onDismiss} />
+          <BannerButton label={t('update.later')} onPress={onDismiss} />
         )}
       </View>
     </View>

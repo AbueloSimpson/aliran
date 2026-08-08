@@ -233,5 +233,20 @@
   "vod.player.failedHint": "The movie catalog couldn't deliver it right now. Try another title, or come back later.",
   "vod.player.tracks": "Audio and subtitles",
   "vod.player.back": "Back {n} seconds",
-  "vod.player.forward": "Forward {n} seconds"
+  "vod.player.forward": "Forward {n} seconds",
+
+  "update.availableTitle": "Update available",
+  "update.requiredTitle": "Update required",
+  "update.newVersion": "A new version is available: {version}.",
+  "update.newVersionSized": "A new version is available: {version} ({size} MB).",
+  "update.mustInstall": "You must install this update.",
+  "update.metered": "You are on a metered network. The download can use much data.",
+  "update.downloading": "Downloading the update… {percent}%",
+  "update.installing": "Starting the installer…",
+  "update.permission": "Permit this app to install updates. Then press \"Install now\" again.",
+  "update.installFailed": "The install did not complete.",
+  "update.download": "Download",
+  "update.downloadAnyway": "Download anyway",
+  "update.installNow": "Install now",
+  "update.later": "Later"
 }
