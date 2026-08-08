@@ -246,7 +246,10 @@ export function SettingsScreen ({ navigation }: Props) {
 
       {/* An overlay, not a Modal: on TV a Modal is its own focus container and
           swallows the remote (the SortMenu/TrackMenu lesson). */}
-      {languageMenu && <LanguageMenu value={language} onClose={() => setLanguageMenu(false)} />}
+      {/* On close, take the choice from the backend's optimistic mirror rather than
+          waiting for the worklet's 'prefs' reply — the row must not lag a round trip
+          behind the language it is already rendering in. The reply confirms it. */}
+      {languageMenu && <LanguageMenu value={language} onClose={() => { setLanguage(backend.language); setLanguageMenu(false) }} />}
     </ScrollView>
   )
 }
