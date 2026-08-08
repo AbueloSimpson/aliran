@@ -12,6 +12,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, Platform, BackHandler, ScrollView } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { loadServiceDescriptor } from '../config'
@@ -30,6 +31,7 @@ interface MenuItem {
 }
 
 export function MenuScreen ({ navigation }: Props) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
   // mounted before login sees it the moment the catalog lands.
@@ -47,18 +49,21 @@ export function MenuScreen ({ navigation }: Props) {
   const hero = useMemo(() => pickHero(streams), [streams])
   const wallpaper = hero?.backdrop || hero?.poster || service.branding?.wallpaper
 
-  const items = useMemo<MenuItem[]>(() => {
+  // Built fresh every render rather than memoized: the labels are translated, and a
+  // memo keyed on the data alone would keep showing the previous language's bar after
+  // a switch. Six objects is not a cost worth a stale menu.
+  const items = ((): MenuItem[] => {
     const s = service.sections ?? {}
     const list: MenuItem[] = [
-      { key: 'live', label: 'Live TV', glyph: '📺', go: () => navigation.navigate('Live', {}) }
+      { key: 'live', label: t('menu.live'), glyph: '📺', go: () => navigation.navigate('Live', {}) }
     ]
-    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: 'Movies & Series', glyph: '🎬', go: () => navigation.navigate('Vod') })
-    if (s.favorites !== false) list.push({ key: 'favorites', label: 'Favorites', glyph: '⭐', go: () => navigation.navigate('Favorites') })
-    if (s.search !== false) list.push({ key: 'search', label: 'Search', glyph: '🔍', go: () => navigation.navigate('Search') })
-    if (s.settings !== false) list.push({ key: 'settings', label: 'Settings', glyph: '⚙️', go: () => navigation.navigate('Settings') })
-    if (s.exit ?? Platform.isTV) list.push({ key: 'exit', label: 'Exit', glyph: '🚪', go: () => BackHandler.exitApp() })
+    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: t('menu.vod'), glyph: '🎬', go: () => navigation.navigate('Vod') })
+    if (s.favorites !== false) list.push({ key: 'favorites', label: t('menu.favorites'), glyph: '⭐', go: () => navigation.navigate('Favorites') })
+    if (s.search !== false) list.push({ key: 'search', label: t('menu.search'), glyph: '🔍', go: () => navigation.navigate('Search') })
+    if (s.settings !== false) list.push({ key: 'settings', label: t('menu.settings'), glyph: '⚙️', go: () => navigation.navigate('Settings') })
+    if (s.exit ?? Platform.isTV) list.push({ key: 'exit', label: t('menu.exit'), glyph: '🚪', go: () => BackHandler.exitApp() })
     return list
-  }, [navigation, vodEnabled])
+  })()
 
   return (
     <View style={styles.container}>
@@ -73,7 +78,7 @@ export function MenuScreen ({ navigation }: Props) {
         <Text style={styles.wordmark}>{service.name}</Text>
         {hero && (
           <View style={styles.heroLine}>
-            {hero.isLive && <Text style={styles.live}>● LIVE</Text>}
+            {hero.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
             <Text style={styles.heroTitle} numberOfLines={1}>{hero.title}</Text>
           </View>
         )}

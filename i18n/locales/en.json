@@ -6,6 +6,8 @@
   "common.tryAgain": "Try again",
   "common.username": "Username",
   "common.password": "Password",
+  "common.live": "LIVE",
+  "common.liveBadge": "● LIVE",
 
   "splash.connecting": "Connecting",
   "splash.authorizing": "Authorizing device",
@@ -30,5 +32,12 @@
 
   "login.signIn": "Sign in",
   "login.connecting": "Connecting…",
-  "login.unreachable": "Cannot reach the service — check your connection."
+  "login.unreachable": "Cannot reach the service — check your connection.",
+
+  "menu.live": "Live TV",
+  "menu.vod": "Movies & Series",
+  "menu.favorites": "Favorites",
+  "menu.search": "Search",
+  "menu.settings": "Settings",
+  "menu.exit": "Exit"
 }
