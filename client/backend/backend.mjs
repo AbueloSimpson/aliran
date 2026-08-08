@@ -65,6 +65,14 @@
 //                                        boolean or config object, applied mid-play
 //        { type:'net-info', expensive }            -> host network profile (NetInfo):
 //                                        expensive=true suspends zap prefetch
+//        { type:'update-check', appId, platform, versionCode, tag? }
+//                                     -> OTA app-update check against the panel's
+//                                        updates drive (meta/updatesKey; lazy,
+//                                        client-only join). Answers 'update-status'.
+//        { type:'update-download' }   -> download + sha256-verify the update the last
+//                                        'available' check found; progress/outcome
+//                                        arrive as 'update-progress' / 'update-ready'
+//                                        / 'update-error'
 //        { type:'report', category, text? }        -> viewer problem report (S50c):
 //                                        one of the seven sdk/report.js categories +
 //                                        optional free text. The engine attaches the
@@ -105,6 +113,14 @@
 //          arrays, empty on a build that never wrote one)
 //        { type:'report-result', ok, error?, retryAfter?, id? }   (answer to 'report';
 //          error 'unsupported' = the panel predates reports / has them disabled)
+//        { type:'update-status', status, entry?, mandatory?, error?, tag? }   (answer
+//          to 'update-check'; status 'available' | 'current' | 'none' | 'unknown' —
+//          'unknown' = cannot say right now, try again later)
+//        { type:'update-progress', received, total }   (throttled download progress)
+//        { type:'update-ready', path, entry }   (artifact downloaded + sha256-verified;
+//          path is inside the app sandbox — hand it to the installer promptly, the
+//          store dir is a disposable cache)
+//        { type:'update-error', message }       (download/verify failure)
 //        { type:'pair-result', ok, panelPubKey?, name?, code?, error?, message?, tag? }
 //          (answer to 'pair-resolve'; error 'malformed' | 'timeout' | 'unverified' —
 //          'unverified' means a peer answered and could NOT prove it owns the code)
@@ -325,6 +341,11 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
   player.on('zap-prefetch', (e) => send({ type: 'zap-prefetch', ...e }))
+  // OTA app updates: download progress/outcome relay 1:1 (the check reply is sent by
+  // its own dispatch case — it needs the request's tag).
+  player.on('update-progress', (e) => send({ type: 'update-progress', ...e }))
+  player.on('update-ready', (e) => send({ type: 'update-ready', ...e }))
+  player.on('update-error', (e) => send({ type: 'update-error', ...e }))
   // Background engine failures with no caller to throw to — most importantly the tune
   // watchdog's timeout. Dropping these left the app spinning forever on a dead tune.
   player.on('error', (err) => send({ type: 'error', message: String((err && err.message) || err) }))
@@ -422,6 +443,23 @@ IPC.on('data', (data) => {
           }).catch(() => {})
         } catch (err) { fail(err) }
       }
+    } else if (msg.type === 'update-check') {
+      // OTA update check. A UI awaiting 'update-status' must never hang on a dead
+      // engine, and only bad arguments make checkUpdate() throw — map both to the
+      // honest "cannot say right now" verdict rather than an error dialog.
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      if (!player) {
+        send({ type: 'update-status', status: 'unknown', ...tag })
+      } else {
+        player.checkUpdate({ appId: msg.appId, platform: msg.platform, versionCode: msg.versionCode })
+          .then((res) => send({ type: 'update-status', ...res, ...tag }))
+          .catch((err) => send({ type: 'update-status', status: 'unknown', error: String((err && err.message) || err), ...tag }))
+      }
+    } else if (msg.type === 'update-download') {
+      // Progress/outcome ride the event relays; the rejection carries the same error
+      // 'update-error' already delivered, so it is swallowed here (never doubled).
+      if (!player) send({ type: 'update-error', message: 'engine not started' })
+      else { try { player.downloadUpdate().catch(() => {}) } catch (err) { fail(err) } }
     } else if (msg.type === 'report') {
       // Viewer problem report (S50c). player.report() never throws and never rejects,
       // so this branch always answers — a UI waiting on 'report-result' must not be
