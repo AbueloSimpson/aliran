@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
@@ -28,12 +29,17 @@ const TRANSIENT = /not connected|channel closed/i
 const RETRY_MS = 2500
 const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up
 
+// What the screen can show under the fields: our own "cannot reach it" line, or the
+// engine's message verbatim (SDK error prose stays English by design — S56).
+type Failure = { unreachable: true } | { text: string }
+
 export function LoginScreen ({ navigation, backendReady }: Props) {
+  const { t } = useI18n()
   // Prefill the last-known username (e.g. Splash fell through on a changed password).
   const [username, setUsername] = useState(backend.creds?.username ?? dev?.username ?? '')
   const [password, setPassword] = useState(dev?.password ?? '')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Failure | null>(null)
   const [focused, setFocused] = useState<'user' | 'pass' | 'submit' | null>(null)
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -54,7 +60,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
           timer.current = setTimeout(() => backend.login(creds.current.username, creds.current.password), RETRY_MS)
         } else {
           setBusy(false)
-          setError(TRANSIENT.test(m.message) ? 'Cannot reach the service — check your connection.' : m.message)
+          setError(TRANSIENT.test(m.message) ? { unreachable: true } : { text: m.message })
         }
       }
     })
@@ -73,7 +79,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
       <Text style={styles.title}>{service.name}</Text>
       <TextInput
         style={[styles.input, focused === 'user' && styles.focused]}
-        placeholder="Username"
+        placeholder={t('common.username')}
         placeholderTextColor={theme.colors.textDim}
         autoCapitalize="none"
         value={username}
@@ -83,7 +89,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
       />
       <TextInput
         style={[styles.input, focused === 'pass' && styles.focused]}
-        placeholder="Password"
+        placeholder={t('common.password')}
         placeholderTextColor={theme.colors.textDim}
         secureTextEntry
         value={password}
@@ -91,7 +97,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
         onFocus={() => setFocused('pass')}
         onBlur={() => setFocused(null)}
       />
-      {error && <Text style={styles.error}>{error}</Text>}
+      {error && <Text style={styles.error}>{'text' in error ? error.text : t('login.unreachable')}</Text>}
       <Pressable
         style={[styles.button, focused === 'submit' && styles.focused]}
         disabled={busy || !backendReady}
@@ -100,7 +106,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
         onBlur={() => setFocused(null)}
         onPress={onSubmit}
       >
-        {busy ? <ActivityIndicator color={theme.colors.onPrimary} /> : <Text style={styles.buttonText}>{backendReady ? 'Sign in' : 'Connecting…'}</Text>}
+        {busy ? <ActivityIndicator color={theme.colors.onPrimary} /> : <Text style={styles.buttonText}>{backendReady ? t('login.signIn') : t('login.connecting')}</Text>}
       </Pressable>
     </View>
   )

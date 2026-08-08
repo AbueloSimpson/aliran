@@ -26,5 +26,9 @@
   "connect.error.unreachable": "Cannot reach the service — check the details you entered and your connection.",
   "connect.error.malformed": "That code is not complete. It has 12 characters, like A3K7-9QF2-M4XR.",
   "connect.error.timeout": "No service answered that code. Check the code, and check your connection.",
-  "connect.error.unverified": "A service answered that code but could not prove it owns it. Ask your operator for the code again."
+  "connect.error.unverified": "A service answered that code but could not prove it owns it. Ask your operator for the code again.",
+
+  "login.signIn": "Sign in",
+  "login.connecting": "Connecting…",
+  "login.unreachable": "Cannot reach the service — check your connection."
 }
