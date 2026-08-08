@@ -1027,12 +1027,25 @@ try {
   assert.strictEqual(r.body.entries[APP].sha256, apkSha)
   assert.strictEqual(r.body.entries[APP].storedBytes, apkBody.length, 'per-file blob length reported')
 
-  // versionCode regression refused AFTER the stream (readable 400) — and the already
-  // written artifact is reclaimed, the manifest untouched.
+  // versionCode regression refused BEFORE the stream (precheck) — no artifact is
+  // ever written, the manifest untouched. (An early refusal may surface as a
+  // socket error instead of the status — tolerated; the drive state is the contract.)
   r = await postUpdate(APP, { platform: 'android', versionCode: 4, versionName: '0.4.9' }, apkBody)
-  assert.strictEqual(r.status, 400, 'versionCode regression must be 400: ' + JSON.stringify(r.body))
+  assert.ok(r.status === 400 || r.status === 0, 'versionCode regression refused (got ' + r.status + ')')
   assert.strictEqual(await updates.entry(`/pkg/${APP}-4.apk`), null, 'regressed upload leaves no artifact')
   assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].versionCode, 5, 'manifest untouched by the refusal')
+
+  // Bug guard: re-uploading the LIVE versionCode without force targets the very file
+  // the manifest references — it must refuse WITHOUT touching the published artifact
+  // (an earlier build streamed over it first, then "cleaned up" the live file,
+  // leaving the fleet a manifest entry it could never download).
+  const trojan = b4a.concat([ZIP_MAGIC, hcrypto.randomBytes(128 * 1024)])
+  r = await postUpdate(APP, { platform: 'android', versionCode: 5, versionName: '0.5.0' }, trojan)
+  assert.ok(r.status === 400 || r.status === 0, 'same-versionCode re-upload without force refused (got ' + r.status + ')')
+  const liveApk = await updates.get(`/pkg/${APP}-5.apk`)
+  assert.ok(liveApk && b4a.equals(liveApk, apkBody), 'the LIVE artifact bytes are untouched by the refused re-upload')
+  assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].sha256, apkSha, 'manifest sha still matches the live artifact')
+
   // …unless forced (same versionCode republish is the rollback/fix-up path).
   r = await postUpdate(APP, { platform: 'android', versionCode: 5, versionName: '0.5.0', force: 1 }, apkBody)
   assert.strictEqual(r.status, 200, 'force republish of the same versionCode works')
@@ -1050,8 +1063,8 @@ try {
   r = await postUpdate('1bad-app-id', { platform: 'android', versionCode: 1, versionName: 'x' }, apkBody)
   assert.ok(r.status === 400 || r.status === 0, 'invalid app id refused')
   r = await postUpdate(APP, { platform: 'android', versionCode: 9, versionName: '' }, apkBody)
-  assert.strictEqual(r.status, 400, 'missing versionName refused after the stream')
-  assert.strictEqual(await updates.entry(`/pkg/${APP}-9.apk`), null, 'its artifact was reclaimed')
+  assert.ok(r.status === 400 || r.status === 0, 'missing versionName refused by the precheck (got ' + r.status + ')')
+  assert.strictEqual(await updates.entry(`/pkg/${APP}-9.apk`), null, 'no artifact was written for it')
 
   // Windows entry beside the Android one — and platform is sticky per app id.
   const DESKTOP = 'app.aliran.desktop'
@@ -1060,7 +1073,8 @@ try {
   assert.strictEqual(r.status, 200, 'publish windows v1: ' + JSON.stringify(r.body))
   assert.strictEqual(r.body.entry.file, `/pkg/${DESKTOP}-1.exe`)
   r = await postUpdate(DESKTOP, { platform: 'android', versionCode: 2, versionName: '0.2.0' }, apkBody)
-  assert.strictEqual(r.status, 400, 'platform flip on an existing app id refused')
+  assert.ok(r.status === 400 || r.status === 0, 'platform flip on an existing app id refused (got ' + r.status + ')')
+  assert.strictEqual((await api('GET', '/api/updates', undefined, { token })).body.entries[DESKTOP].platform, 'windows', 'platform flip changed nothing')
 
   // Magic check: a body that is not a ZIP is refused for android — nothing stranded.
   r = await postUpdate('com.aliranclient.badmagic', { platform: 'android', versionCode: 1, versionName: 'x' }, hcrypto.randomBytes(64 * 1024))
@@ -1087,6 +1101,17 @@ try {
   assert.ok(await updates.entry(`/pkg/${APP}-7.apk`), 'latest artifact kept')
   assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].versionCode, 7)
 
+  // Bug guard: a FORCED downgrade publishes a versionCode BELOW artifacts already on
+  // disk — prune must protect the file the manifest now references (a plain
+  // two-highest-vc rule deleted the just-published v5 while v6+v7 sat above it).
+  r = await postUpdate(APP, { platform: 'android', versionCode: 5, versionName: '0.5.0', force: 1 }, apkBody)
+  assert.strictEqual(r.status, 200, 'forced downgrade republish: ' + JSON.stringify(r.body))
+  assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].versionCode, 5, 'manifest now points at v5')
+  const downgraded = await updates.get(`/pkg/${APP}-5.apk`)
+  assert.ok(downgraded && b4a.equals(downgraded, apkBody), 'the manifest-referenced v5 artifact SURVIVED prune, bytes intact')
+  assert.ok(await updates.entry(`/pkg/${APP}-7.apk`), 'newest other artifact kept beside it')
+  assert.strictEqual(await updates.entry(`/pkg/${APP}-6.apk`), null, 'v6 pruned (neither manifest-referenced nor newest other)')
+
   // Delete removes the entry AND every stored artifact for the app id.
   r = await api('DELETE', '/api/updates/' + DESKTOP, undefined, { token })
   assert.strictEqual(r.status, 200)
@@ -1110,7 +1135,7 @@ try {
   for (const marker of ['api/updates', 'renderUpdates', 'update-file']) {
     assert.ok(appJsV.includes(marker), `app.js wires the app-updates flows: ${marker}`)
   }
-  log('V: app updates — streamed publish (server sha256/size, magic + cap aborts strand nothing), pointer + drive verified, regression/force, per-appId platform lock, prune keeps latest+previous, delete reclaims, audit + UI ✓')
+  log('V: app updates — streamed publish (server sha256/size, magic + cap aborts strand nothing), pointer + drive verified, regression/same-vc refusals leave the live artifact untouched, forced downgrade survives prune, per-appId platform lock, prune keeps manifest+newest, delete reclaims, audit + UI ✓')
 
   // ===== Test W: reclaimStrayCores accounts for ALL FIVE panel cores =====
   // reclaimStrayCores returns null when the keep set does not match PANEL_CORE_COUNT —

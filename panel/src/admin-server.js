@@ -767,25 +767,28 @@ export function startAdminServer (ctx, opts = {}) {
       }
       if (seg.length === 3 && req.method === 'POST') {
         const q = url.searchParams
-        // Validate the whole addressing triple BEFORE a single body byte is consumed —
-        // a bad request must never open a drive write stream.
-        const target = ops.updateTarget(r2, q.get('platform'), q.get('versionCode'))
+        const meta = {
+          platform: q.get('platform'),
+          versionCode: q.get('versionCode'),
+          versionName: q.get('versionName'),
+          minVersionCode: q.get('minVersionCode') || undefined,
+          notes: q.get('notes') || undefined,
+          force: /^(1|true)$/i.test(q.get('force') || '')
+        }
+        // The FULL publish gate runs BEFORE a single body byte is consumed. Not just
+        // fail-fast: without force, a same-versionCode re-upload streams to the very
+        // path the live manifest references — refusing here is what keeps a doomed
+        // publish from overwriting (and its cleanup from deleting) a live artifact.
+        const target = await ops.precheckUpdate(ctx, r2, meta)
         const limit = (ctx.config && ctx.config.updates && ctx.config.updates.maxBytes) || UPDATE_BODY_LIMIT
         const { sha256, size } = await streamToUpdateDrive(ctx, req, target, limit)
         let out
         try {
-          out = await ops.putUpdate(ctx, target.appId, {
-            platform: target.platform,
-            versionCode: target.versionCode,
-            versionName: q.get('versionName'),
-            minVersionCode: q.get('minVersionCode') || undefined,
-            notes: q.get('notes') || undefined,
-            force: /^(1|true)$/i.test(q.get('force') || ''),
-            sha256,
-            size
-          })
+          out = await ops.putUpdate(ctx, target.appId, { ...meta, sha256, size })
         } catch (err) {
-          // The bytes landed but the manifest refused them — reclaim the orphan.
+          // The bytes landed but the manifest refused them (a concurrent publish won
+          // the race past the precheck) — reclaim the orphan. discardUpdateArtifact
+          // itself refuses to touch a file the current manifest references.
           await ops.discardUpdateArtifact(ctx, target.file)
           throw err
         }
@@ -839,9 +842,11 @@ export function startAdminServer (ctx, opts = {}) {
 // whole payload and caps at 10 MiB, while APKs run 60-150 MB. Bytes flow
 // req → incremental sha256 → the drive write stream under backpressure, with a hard
 // byte cap and a first-bytes magic check. EVERY abort path — cap, magic, client
-// disconnect, stream error — destroys the write stream and reclaims the partial file
-// before the error surfaces (the manifest is only written after a clean finish, so
-// no abort can strand an entry).
+// disconnect, stream error — destroys the write stream and drops any partial drive
+// ENTRY before the error surfaces (the manifest is only written after a clean
+// finish, so no abort can strand an entry). Honest limit: a pre-finish abort never
+// created an entry, and the blocks it already appended to the append-only blobs
+// core stay there unreferenced — a bounded disk leak, not addressable at this layer.
 function streamToUpdateDrive (ctx, req, target, limit) {
   const magic = UPDATE_MAGIC[target.platform]
   const state = b4a.alloc(sodium.crypto_hash_sha256_STATEBYTES)
