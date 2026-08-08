@@ -226,5 +226,12 @@
   "vod.series.notice.noVideo": "This episode has no playable video yet. Try another one.",
   "vod.series.notice.noEpisodes": "This series has no episodes yet.",
   "vod.series.notice.listAdded": "Added to My List.",
-  "vod.series.notice.listRemoved": "Removed from My List."
+  "vod.series.notice.listRemoved": "Removed from My List.",
+
+  "vod.player.starting": "Starting {title}…",
+  "vod.player.failedTitle": "This title won't play",
+  "vod.player.failedHint": "The movie catalog couldn't deliver it right now. Try another title, or come back later.",
+  "vod.player.tracks": "Audio and subtitles",
+  "vod.player.back": "Back {n} seconds",
+  "vod.player.forward": "Forward {n} seconds"
 }
