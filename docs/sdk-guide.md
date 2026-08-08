@@ -405,6 +405,8 @@ channel class, which needs no client config at all.
 | `setNetworkProfile({ expensive })` | Host network hint: `expensive: true` suspends zap-prefetch until the network is cheap again. Wire it to NetInfo (`isConnectionExpensive` / cellular). |
 | `setUploadPolicy(policy)` | Live upload-policy flip. Re-joins active topics with the new announce flag, and tears down standing reseed connections **without blipping playback**. Resolves `{ policy, changed, rejoined }`, echoed as an `upload-policy` event. |
 | `reconnectActiveFeed()` | Tear down the active feed's peer connections and dial fresh — the wedged-transport escalation; the tune ladder calls it for you. |
+| `checkUpdate({ appId, platform, versionCode })` | OTA: look the running build up in the operator's update manifest → `{ status, entry?, mandatory? }` (`unknown` while the drive is still cold). |
+| `downloadUpdate()` | OTA: fetch + sha256-verify the update the last `available` check found — throttled `update-progress` events, then `update-ready { path, entry }`. Operator side: [App updates](app-updates.md). |
 | `stop()` | Full teardown. |
 
 The login retry pattern every host should use:
@@ -547,6 +549,20 @@ the URL. Options (`EpgServiceOpts`): `maxBytes` (8 MiB), `minRefetchMs`
 (5 min), `maxAgeMs` (3 h), `fetchTimeoutMs` (15 s), `nextCount` (4), plus
 injectable `fetchImpl`/`now` for tests. Playback never depends on it — a
 missing or unreachable feed just yields no guide.
+
+### App updates (OTA)
+
+The binding carries the whole in-app update path, so an SDK-based app
+gets OTA with no native code of its own: `backend.checkUpdate(appInfo)`
+and `backend.downloadUpdate()` drive the engine (subscribe with
+`backend.onUpdate(fn)` for `update-status` / `update-progress` /
+`update-ready` / `update-error`), and the package's native Android
+module supplies `getAppInfo()` (the running build's identity),
+`canRequestInstall()` / `openInstallSettings()` (the "install unknown
+apps" gate), and `installApk(path)` (a PackageInstaller session; the
+library manifest-merges `REQUEST_INSTALL_PACKAGES` into your app). The
+operator flow is [App updates](app-updates.md);
+`client/src/update.ts` + `UpdateBanner.tsx` are the dogfooded consumer.
 
 ---
 

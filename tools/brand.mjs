@@ -7,12 +7,17 @@
 //   node tools/brand.mjs /path/to/acme             # real operator brand (outside the repo)
 //
 // What it does:
-//   1. validate the brand dir (descriptor sanity; credentials are REJECTED)
+//   1. validate the brand dir (descriptor sanity; credentials are REJECTED — that
+//      includes signing.json: keystore file + alias only, passwords are env-only)
 //   2. generate an Android res overlay under client/android/app/build/aliranBrand/<id>/
 //      (adaptive launcher icon, app_name, splash logo / wallpaper / TV banner drawables)
 //   3. swap the Metro-bundled client/config/service.json for the brand descriptor
 //      (the dev config is backed up and ALWAYS restored, even on failure)
-//   4. run the property-gated gradle flavor build (-PaliranBrandId/-PaliranBrandRes)
+//   4. run the property-gated gradle flavor build (-PaliranBrandId/-PaliranBrandRes),
+//      plus, when configured, per-brand release signing (signing.json →
+//      -PaliranStoreFile/-PaliranKeyAlias + ALIRAN_STORE_PASSWORD/ALIRAN_KEY_PASSWORD)
+//      and per-release versioning (--version-code/--version-name, or build.json →
+//      -PaliranVersionCode/-PaliranVersionName)
 //
 // The default no-flavor build is untouched: without those properties build.gradle
 // declares no flavors, and the swapped config is restored the moment the build ends.
@@ -34,14 +39,23 @@ const GENERATED_MARKER = '//brand-mjs'
 // Flavor names may not collide with build types / standard source sets.
 const RESERVED_IDS = ['debug', 'release', 'main', 'test', 'androidtest', 'profile', 'app']
 
-const usage = `usage: node tools/brand.mjs <brand> [--dev] [--id <id>] [--variant release|debug] [--install] [--no-build]
+const usage = `usage: node tools/brand.mjs <brand> [--dev] [--id <id>] [--variant release|debug] [--version-code <int>] [--version-name <string>] [--install] [--no-build]
   <brand>      brand id under client/brands/<id>, or a path to a brand dir outside the repo
   --dev        fill panelPubKey / bootstrap / hybrid / dev login from the local gitignored
                client/config/service.json (demo + local testing builds only)
   --id <id>    override the brand id (default: the brand dir's basename)
   --variant    release (default) or debug
+  --version-code <int>     Android versionCode for this build — must increase every release
+                           (fallback: build.json in the brand dir, then the build.gradle default)
+  --version-name <string>  Android versionName shown to users (fallback: build.json, then default)
   --install    adb install -r the built APK when the build succeeds
-  --no-build   validate + generate the res overlay only (no config swap, no gradle)`
+  --no-build   validate + generate the res overlay only (no config swap, no gradle)
+
+  release signing: put signing.json { "keystore": "<file in brand dir>", "keyAlias": "<alias>" }
+  in the brand dir and export ALIRAN_STORE_PASSWORD + ALIRAN_KEY_PASSWORD. Passwords are
+  env-only — a signing.json carrying password fields is refused. Without signing.json a
+  release APK is debug-signed: demo-only, and P2P OTA updates cannot install over a
+  properly-signed build.`
 
 function fail (msg) {
   console.error(`brand.mjs: ${msg}`)
@@ -51,12 +65,14 @@ function fail (msg) {
 // ---------- arguments ----------
 const argv = process.argv.slice(2)
 let brandArg = null
-const opts = { dev: false, id: null, variant: 'release', install: false, build: true }
+const opts = { dev: false, id: null, variant: 'release', install: false, build: true, versionCode: null, versionName: null }
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]
   if (a === '--dev') opts.dev = true
   else if (a === '--id') opts.id = argv[++i]
   else if (a === '--variant') opts.variant = argv[++i]
+  else if (a === '--version-code') opts.versionCode = argv[++i]
+  else if (a === '--version-name') opts.versionName = argv[++i]
   else if (a === '--install') opts.install = true
   else if (a === '--no-build') opts.build = false
   else if (a === '--help' || a === '-h') { console.log(usage); process.exit(0) }
@@ -66,6 +82,10 @@ for (let i = 0; i < argv.length; i++) {
 }
 if (!brandArg) fail(usage)
 if (!['release', 'debug'].includes(opts.variant)) fail(`--variant must be release or debug`)
+if (opts.versionCode != null && !/^[1-9]\d{0,9}$/.test(String(opts.versionCode))) {
+  fail(`--version-code must be a positive integer (got '${opts.versionCode}')`)
+}
+if (opts.versionName != null && !String(opts.versionName).trim()) fail('--version-name must be a non-empty string')
 
 const brandDir = (brandArg.includes('/') || brandArg.includes(sep) || isAbsolute(brandArg))
   ? resolve(brandArg)
@@ -78,10 +98,18 @@ if (!/^[a-z][a-z0-9]{0,23}$/.test(id)) {
 }
 if (RESERVED_IDS.includes(id)) fail(`brand id '${id}' collides with an Android build-type/source-set name — use --id`)
 
+// Operator-authored JSON: Windows editors (Notepad, PowerShell redirects) prepend a
+// UTF-8 BOM, which JSON.parse rejects — strip it.
+function readJson (path) {
+  let s = readFileSync(path, 'utf8')
+  if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1)
+  return JSON.parse(s)
+}
+
 // ---------- read + validate the descriptor ----------
 let descriptor
 try {
-  descriptor = JSON.parse(readFileSync(join(brandDir, 'service.json'), 'utf8'))
+  descriptor = readJson(join(brandDir, 'service.json'))
 } catch (err) {
   fail(`invalid JSON in ${join(brandDir, 'service.json')}: ${err.message}`)
 }
@@ -107,6 +135,68 @@ if (!keyOk) {
   const msg = `descriptor panelPubKey is missing or a placeholder — set the operator's panel public key in the brand service.json, or build with --dev`
   if (opts.build) fail(msg)
   console.warn(`brand.mjs: warning: ${msg}`)
+}
+
+// ---------- optional signing.json (per-brand release keystore) ----------
+// Same rule as the dev block above: credentials are not brand data. signing.json
+// names the keystore file + key alias only; both passwords come from the
+// ALIRAN_STORE_PASSWORD / ALIRAN_KEY_PASSWORD environment variables at build time,
+// so a brand dir stays safe to share and back up.
+let signing = null
+const signingPath = join(brandDir, 'signing.json')
+if (existsSync(signingPath)) {
+  try {
+    signing = readJson(signingPath)
+  } catch (err) {
+    fail(`invalid JSON in ${signingPath}: ${err.message}`)
+  }
+  const passwordKeys = Object.keys(signing).filter(k => /pass|pwd|secret/i.test(k))
+  if (passwordKeys.length) {
+    fail(`signing.json carries password field(s) (${passwordKeys.join(', ')}) — brand dirs must never contain credentials. Keep only { "keystore", "keyAlias" }; set the passwords in the ALIRAN_STORE_PASSWORD and ALIRAN_KEY_PASSWORD environment variables instead.`)
+  }
+  if (typeof signing.keystore !== 'string' || !signing.keystore.trim()) {
+    fail('signing.json needs "keystore": the keystore filename inside the brand dir')
+  }
+  if (typeof signing.keyAlias !== 'string' || !signing.keyAlias.trim()) {
+    fail('signing.json needs a non-empty "keyAlias"')
+  }
+  signing.storeFile = resolve(brandDir, signing.keystore)
+  if (!existsSync(signing.storeFile)) fail(`signing.json keystore not found: ${signing.storeFile}`)
+  if (opts.variant !== 'release') {
+    console.warn('brand.mjs: note: signing.json applies to release builds only — the debug variant keeps the debug keystore')
+  } else {
+    for (const env of ['ALIRAN_STORE_PASSWORD', 'ALIRAN_KEY_PASSWORD']) {
+      if (process.env[env]) continue
+      const msg = `signing.json is configured but the ${env} environment variable is not set — release signing needs both ALIRAN_STORE_PASSWORD and ALIRAN_KEY_PASSWORD (passwords are never stored in the brand dir)`
+      if (opts.build) fail(msg)
+      console.warn(`brand.mjs: warning: ${msg}`)
+    }
+  }
+}
+
+// ---------- version: flags win over an optional build.json in the brand dir ----------
+let versionCode = opts.versionCode
+let versionName = opts.versionName
+const buildJsonPath = join(brandDir, 'build.json')
+if (existsSync(buildJsonPath)) {
+  let buildMeta
+  try {
+    buildMeta = readJson(buildJsonPath)
+  } catch (err) {
+    fail(`invalid JSON in ${buildJsonPath}: ${err.message}`)
+  }
+  if (versionCode == null && buildMeta.versionCode != null) {
+    if (!/^[1-9]\d{0,9}$/.test(String(buildMeta.versionCode))) {
+      fail(`build.json versionCode must be a positive integer (got '${buildMeta.versionCode}')`)
+    }
+    versionCode = buildMeta.versionCode
+  }
+  if (versionName == null && buildMeta.versionName != null) {
+    if (typeof buildMeta.versionName !== 'string' || !buildMeta.versionName.trim()) {
+      fail('build.json versionName must be a non-empty string')
+    }
+    versionName = buildMeta.versionName
+  }
 }
 
 // Baked art is exposed to the app as Android drawable resources; RN's <Image>
@@ -163,10 +253,48 @@ const apkPath = join(androidDir, 'app', 'build', 'outputs', 'apk', id, opts.vari
 
 console.log(`brand: ${id}  ("${descriptor.name}", com.aliranclient.${id})`)
 console.log(`overlay: ${overlay}`)
+if (opts.variant === 'release' && !signing) {
+  console.warn('brand.mjs: WARNING: release build without signing.json — the APK is signed with the public RN debug keystore. It is NOT shippable, and P2P OTA updates will not install over a properly-signed build. See docs/white-label.md "Shipping to production".')
+}
+if (opts.dev) {
+  console.warn('brand.mjs: WARNING: --dev build carries dev credentials — NEVER upload it to the panel updates drive (the drive is readable by anyone who holds the panel key).')
+}
 if (!opts.build) {
   console.log('--no-build: validation + res overlay done; skipping config swap and gradle.')
   process.exit(0)
 }
+
+// ---------- assemble + validate the gradle invocation ----------
+// This happens BEFORE the config swap: fail() is process.exit(1), which skips
+// finally blocks — a refusal in here after the swap would strand the brand
+// descriptor over the dev config.
+const gradleArgs = [
+  `:app:assemble${flavor}${variantCap}`,
+  `-PaliranBrandId=${id}`,
+  `-PaliranBrandRes=${overlay}`
+]
+if (versionCode != null) gradleArgs.push(`-PaliranVersionCode=${versionCode}`)
+if (versionName != null) gradleArgs.push(`-PaliranVersionName=${versionName}`)
+if (signing && opts.variant === 'release') {
+  gradleArgs.push(`-PaliranStoreFile=${signing.storeFile}`, `-PaliranKeyAlias=${signing.keyAlias}`)
+}
+gradleArgs.push('--no-daemon')
+// cmd.exe leg: node's default Windows escaping rewrites our embedded quotes as
+// \" — cmd.exe does not understand that, so spaced args (keystore path,
+// versionName) arrive at gradle mangled. Build the /c command line ourselves
+// and hand it over verbatim. Quote any arg carrying whitespace or a cmd
+// metacharacter; a literal double quote cannot survive the
+// cmd -> gradlew.bat -> java chain, so refuse it outright.
+const quoteForCmd = (a) => {
+  if (a.includes('"')) fail(`gradle argument carries a double quote, which cannot pass through cmd.exe: ${a}`)
+  // cmd expands %NAME% even inside quotes — refuse rather than corrupt silently.
+  if (/%[^%]*%/.test(a)) fail(`gradle argument carries a %...% sequence, which cmd.exe would expand as an environment variable: ${a}`)
+  return /[\s&^()!%<>|,;=]/.test(a) ? `"${a}"` : a
+}
+const winCmdLine = process.platform === 'win32'
+  // NoDefaultCurrentDirectoryInExePath-safe: invoke the wrapper with an explicit .\ prefix.
+  ? `".\\gradlew.bat ${gradleArgs.map(quoteForCmd).join(' ')}"`
+  : null
 
 // ---------- swap the bundled config, build, ALWAYS restore ----------
 if (existsSync(backupPath)) {
@@ -193,16 +321,10 @@ try {
   // (docs/client-build.md gotcha) — drop its outputs so the swapped descriptor
   // is guaranteed to land in this APK.
   rmSync(join(androidDir, 'app', 'build', 'generated', 'assets', 'react'), { recursive: true, force: true })
-  const gradleArgs = [
-    `:app:assemble${flavor}${variantCap}`,
-    `-PaliranBrandId=${id}`,
-    `-PaliranBrandRes=${overlay}`,
-    '--no-daemon'
-  ]
   console.log(`gradle ${gradleArgs.join(' ')}`)
   const res = process.platform === 'win32'
-    // NoDefaultCurrentDirectoryInExePath-safe: invoke the wrapper with an explicit .\ prefix.
-    ? spawnSync('cmd.exe', ['/d', '/s', '/c', `.\\gradlew.bat ${gradleArgs.join(' ')}`], { cwd: androidDir, stdio: 'inherit' })
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', winCmdLine],
+        { cwd: androidDir, stdio: 'inherit', windowsVerbatimArguments: true })
     : spawnSync('./gradlew', gradleArgs, { cwd: androidDir, stdio: 'inherit' })
   status = res.status ?? 1
 } finally {
@@ -217,6 +339,18 @@ try {
 if (status !== 0) fail(`gradle build failed (exit ${status})`)
 if (!existsSync(apkPath)) fail(`build reported success but no APK at ${apkPath}`)
 console.log(`APK: ${apkPath}`)
+
+// The operator needs exactly these three values to publish the APK on the panel
+// updates drive. When no version was passed, read the fallbacks out of
+// build.gradle so the printed numbers match what gradle actually baked.
+if (versionCode == null || versionName == null) {
+  const gradleSrc = readFileSync(join(androidDir, 'app', 'build.gradle'), 'utf8')
+  versionCode ??= gradleSrc.match(/versionCode\([^\n]*?:\s*(\d+)\)/)?.[1] ?? '(see client/android/app/build.gradle)'
+  versionName ??= gradleSrc.match(/versionName\([^\n]*?\?:\s*"([^"]+)"\)/)?.[1] ?? '(see client/android/app/build.gradle)'
+}
+console.log(`applicationId: com.aliranclient.${id}`)
+console.log(`versionCode:   ${versionCode}`)
+console.log(`versionName:   ${versionName}`)
 
 if (opts.install) {
   const res = spawnSync('adb', ['install', '-r', apkPath], { stdio: 'inherit', shell: process.platform === 'win32' })

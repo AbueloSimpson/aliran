@@ -1,0 +1,65 @@
+// Android side of @aliran/react-native: the OTA update installer module
+// (NativeModules.AliranUpdate — see src/main/java/app/aliran/reactnative). RN CLI
+// autolinking discovers this dir in any consuming app; no manual registration.
+// SDK levels resolve from the consuming app's rootProject.ext (the RN community
+// convention); the fallbacks only matter when this folder is built stand-alone and
+// mirror react-native-bare-kit's floor (compileSdk 34 / minSdk 24).
+
+buildscript {
+  // Only needed when this folder is opened stand-alone: inside an app build the
+  // root project already carries AGP + the Kotlin plugin on its buildscript
+  // classpath (the RN template), and re-adding them here could pin conflicting
+  // versions (the @react-native-community/netinfo pattern).
+  if (project == rootProject) {
+    repositories {
+      google()
+      mavenCentral()
+    }
+
+    dependencies {
+      classpath "com.android.tools.build:gradle:+"
+      classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20"
+    }
+  }
+}
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+
+android {
+  namespace "app.aliran.reactnative"
+  compileSdk safeExtGet("compileSdkVersion", 34)
+
+  defaultConfig {
+    minSdk safeExtGet("minSdkVersion", 24)
+    targetSdk safeExtGet("targetSdkVersion", 34)
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled false
+    }
+  }
+}
+
+repositories {
+  google()
+  mavenCentral()
+}
+
+dependencies {
+  implementation "com.facebook.react:react-native:+"
+}

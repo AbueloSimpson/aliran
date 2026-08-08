@@ -72,6 +72,9 @@ node tools/brand.mjs <brand> [options]
                gitignored client/config/service.json (demo + local testing only)
   --id <id>    override the brand id (default: the dir's basename)
   --variant    release (default) or debug
+  --version-code <int>     Android versionCode for this build (fallback: build.json,
+                           then the build.gradle default)
+  --version-name <string>  Android versionName (same fallback chain)
   --install    adb install -r the APK after a successful build
   --no-build   validate + generate the res overlay, then stop
 ```
@@ -94,6 +97,10 @@ What a build does:
    (`-PaliranBrandId=<id> -PaliranBrandRes=<overlay>` →
    `:app:assemble<Id>Release`). Without those properties, `build.gradle`
    declares no flavors at all, so plain dev/release builds are unaffected.
+   With `signing.json` and a version, the builder also passes
+   `-PaliranStoreFile`/`-PaliranKeyAlias` and
+   `-PaliranVersionCode`/`-PaliranVersionName` — see
+   [Shipping to production](#shipping-to-production).
 
 The APK lands in
 `client/android/app/build/outputs/apk/<id>/<variant>/app-<id>-<variant>.apk`.
@@ -333,18 +340,126 @@ your own privacy copy, you can state this plainly.
 
 ## Shipping to production
 
-- **Signing.** Like the stock client, branded release builds sign with
-  the **public RN debug keystore** — fine for demos, **not shippable**.
-  Generate a per-brand keystore and wire it into
-  `client/android/app/build.gradle` (`signingConfigs`) before
-  distributing anything (see the
-  [React Native signed-APK guide](https://reactnative.dev/docs/signed-apk-android)).
-- **Versioning.** `versionCode` / `versionName` are shared app defaults
-  today. Bump them in `client/android/app/build.gradle` per release
-  train.
-- **One generic APK instead.** If you prefer a single unbranded binary,
-  the public keyless flavor takes the descriptor at runtime: first run
-  shows a **Connect screen** where the viewer enters your panel key and
-  account. See [Client build](client-build.md). Brand packaging exists
-  for the opposite goal: a store listing that *is* the operator's
-  product.
+### Sign releases with a per-brand key
+
+Without a signing configuration, `brand.mjs` signs release builds with
+the **public RN debug keystore**, and prints a warning. A debug-signed
+build is fine for demos. It is **not shippable**. Android installs an
+update only when the update has the same signature as the installed app.
+So a debug-signed install can never receive a
+[P2P OTA update](app-updates.md) from a correctly signed build. Sign
+every release of a brand with the same private key, from the first
+shipped APK on.
+
+Set up signing one time per brand:
+
+1. Generate a keystore in the brand directory:
+
+   ```bash
+   keytool -genkeypair -v -keystore ../acme/release.keystore \
+     -alias acme -keyalg RSA -keysize 2048 -validity 10950
+   ```
+
+2. Add `signing.json` next to it:
+
+   ```json
+   { "keystore": "release.keystore", "keyAlias": "acme" }
+   ```
+
+3. Set the two password variables, then build:
+
+   ```bash
+   export ALIRAN_STORE_PASSWORD='...'
+   export ALIRAN_KEY_PASSWORD='...'
+   node tools/brand.mjs ../acme --version-code 5 --version-name 1.1.0
+   ```
+
+`signing.json` holds **no passwords**. The builder refuses a
+`signing.json` that contains a password field. The passwords come only
+from the environment. The builder checks the keystore file, the key
+alias, and both variables before it starts gradle. At the end it prints
+the `applicationId`, `versionCode`, and `versionName` — the values you
+need when you [publish the APK as an update](app-updates.md).
+
+### Guard the key
+
+- **Keep the keystore and the passwords out of git.** Real brand dirs
+  live outside the repo. Keep them there, especially once a keystore is
+  inside.
+- **Back the keystore up in private storage.** If you lose it, no future
+  build can update the installed fleet. Every device then needs a manual
+  reinstall.
+- **Do not share the keystore.** The holder of the key can sign updates
+  that your installed apps accept.
+
+### Safe backup in a private git repository
+
+A private repository is a good backup location — but only for an
+encrypted copy. Repository access alone must not give a person your
+signing identity.
+
+1. Use a long random keystore password (20 or more characters, from a
+   password manager). The keystore file is an encrypted container. Its
+   strength is the strength of this password.
+2. Encrypt the keystore file one more time, with a different passphrase:
+
+   ```bash
+   openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -in release.keystore -out release.keystore.enc
+   ```
+
+3. Commit only the `.enc` file. Never commit the plain keystore.
+4. Keep both passwords in a password manager. Do not keep them in any
+   repository, and do not keep them in a file beside the `.enc` file.
+
+To restore the keystore on a new machine:
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in release.keystore.enc -out release.keystore
+```
+
+If you rotate the keystore, encrypt and commit the new file. Remove the
+old `.enc` files, so no copy remains that needs a forgotten passphrase.
+
+### Version each release
+
+Increase `versionCode` on every release — installed apps only offer an
+update with a higher `versionCode`. Set the version with the
+`--version-code` / `--version-name` flags, or put defaults in an
+optional `build.json` in the brand dir:
+
+```json
+{ "versionCode": 5, "versionName": "1.1.0" }
+```
+
+The flags win over `build.json`. Without either, the build uses the
+shared defaults in `client/android/app/build.gradle`. Those defaults are
+not per-brand, so pass a real version for every shipped build.
+
+### Official public builds
+
+The stock keyless APK uses the same property-gated gradle plumbing,
+without `brand.mjs`:
+
+```bash
+export ALIRAN_STORE_PASSWORD='...'
+export ALIRAN_KEY_PASSWORD='...'
+cd client/android
+./gradlew :app:assembleRelease \
+  -PaliranStoreFile=/secure/aliran-public-release.keystore \
+  -PaliranKeyAlias=public \
+  -PaliranVersionCode=5 -PaliranVersionName=0.6.0
+```
+
+Official public builds must be release-signed with the **project-held
+public-build keystore**. That keystore lives in the project's private
+ops storage. It is never in the repo. This signature is what makes
+operator re-hosting of public builds tamper-proof: a paired device
+accepts an update only from the same signer.
+
+### One generic APK instead
+
+If you prefer a single unbranded binary, the public keyless flavor takes
+the descriptor at runtime: first run shows a **Connect screen** where
+the viewer enters your panel key and account. See
+[Client build](client-build.md). Brand packaging exists for the opposite
+goal: a store listing that *is* the operator's product.

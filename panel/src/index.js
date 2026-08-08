@@ -37,7 +37,7 @@ export async function startPanel () {
   const keys = openKeys(config.dataDir)
   if (!keys) { console.error('No panel keys. Run: node src/admin-cli.js init'); process.exit(1) }
 
-  const { store, db, assets } = await openStore(config.dataDir, keys)
+  const { store, db, assets, updates } = await openStore(config.dataDir, keys)
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   // Service pairing code: a 12-character alias for the key above, DERIVED from it with
   // a memory-hard KDF (core/pairing.js). Nothing is minted or stored — it is a property
@@ -70,7 +70,7 @@ export async function startPanel () {
   // provenance fields (manualGrants/packages). Idempotent: a converged deployment
   // appends nothing, so this is silent and free on every later boot.
   const pkgCount = Object.keys(loadPackages(config.dataDir)).length
-  const rec = await reconcilePackages({ config, keys, db, assets, dataDir: config.dataDir })
+  const rec = await reconcilePackages({ config, keys, db, assets, updates, dataDir: config.dataDir })
   if (rec.users > 0) console.log(`[packages] reconciled ${pkgCount} package(s): +${rec.sealed} sealed, -${rec.removed} removed across ${rec.users} user record(s)`)
   else if (pkgCount > 0) console.log(`[packages] ${pkgCount} package(s) registered — all user grants converged`)
 
@@ -147,7 +147,7 @@ export async function startPanel () {
     // pairingCode is passed in ALREADY DERIVED: /api/status is polled by every open
     // dashboard, and the KDF that makes the code hard to grind would make that endpoint
     // expensive to serve. It is constant for the life of the keypair anyway.
-    admin = await startAdminServer({ config, keys, db, assets, dataDir: config.dataDir, swarm, activity, analytics, reports, notifier, pairingCode: code }, {
+    admin = await startAdminServer({ config, keys, db, assets, updates, dataDir: config.dataDir, swarm, activity, analytics, reports, notifier, pairingCode: code }, {
       host: config.admin.host,
       port: config.admin.port,
       sessionTtlMs: config.admin.sessionTtlHours * 3600000,
@@ -159,7 +159,7 @@ export async function startPanel () {
   // Remote channel sources (S27): pull provider JSON feeds on their intervals and
   // materialize them as redirect-channel categories. Runs in-process for the same
   // single-writer reason as the admin API.
-  const sourcesSched = makeSourcesScheduler({ config, keys, db, assets, dataDir: config.dataDir, activity })
+  const sourcesSched = makeSourcesScheduler({ config, keys, db, assets, updates, dataDir: config.dataDir, activity })
   const sourceCount = Object.keys(loadSources(config.dataDir)).length
   if (sourceCount > 0) console.log(`Channel sources: ${sourceCount} registered — due feeds sync ~${Math.round(config.sources.bootDelayMs / 1000)}s after boot, then every tick.`)
 

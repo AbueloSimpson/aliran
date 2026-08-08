@@ -63,7 +63,7 @@ try {
   // ===== Panel =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
-  const { store: panelStore, db, assets, core: panelCore } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
+  const { store: panelStore, db, assets, updates, core: panelCore } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
   const throttle = makeThrottle(1000, 60)
   const topic = hcrypto.hash(keys.signing.publicKey)
   const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
@@ -386,8 +386,8 @@ try {
     throw e
   }
   const ownCores = panelCores(dirs.panel).sort()
-  assert.strictEqual(ownCores.length, 3,
-    `the panel owns exactly 3 cores (bee + assets metadata/blobs) — got ${ownCores.length}: ${ownCores.map((c) => c.slice(0, 8)).join(' ')}`)
+  assert.strictEqual(ownCores.length, 5,
+    `the panel owns exactly 5 cores (bee + assets metadata/blobs + updates metadata/blobs) — got ${ownCores.length}: ${ownCores.map((c) => c.slice(0, 8)).join(' ')}`)
 
   // Strand cores the way a pre-purge probe did: open the feed's metadata + blobs cores on the
   // panel's own store and close() without purging. They are KEYED, so they land under
@@ -405,16 +405,18 @@ try {
   for (const id of [disc(feedKey2Hex), disc(realBlobsKey2), junk]) {
     assert.ok(strayed.includes(id), 'planted stray ' + id.slice(0, 8) + ' is on disk before the restart')
   }
-  assert.strictEqual(strayed.length, 6, 'three strays planted alongside the panel\'s own three cores')
+  assert.strictEqual(strayed.length, 8, 'three strays planted alongside the panel\'s own five cores')
 
-  // The guard that makes this safe to ship: unless all three of the panel's own cores are
+  // The guard that makes this safe to ship: unless all five of the panel's own cores are
   // positively resolved, the sweep must delete NOTHING — leaking is recoverable, deleting
   // the bee is not.
-  assert.strictEqual(reclaimStrayCores(dirs.panel, { store: panelStore, core: null, assets }), null,
+  assert.strictEqual(reclaimStrayCores(dirs.panel, { store: panelStore, core: null, assets, updates }), null,
     'an unresolved bee core refuses the sweep')
-  assert.strictEqual(reclaimStrayCores(dirs.panel, { store: panelStore, core: panelCore, assets: {} }), null,
+  assert.strictEqual(reclaimStrayCores(dirs.panel, { store: panelStore, core: panelCore, assets: {}, updates }), null,
     'an unresolved assets drive refuses the sweep')
-  assert.strictEqual(panelCores(dirs.panel).length, 6, 'a refused sweep deleted nothing')
+  assert.strictEqual(reclaimStrayCores(dirs.panel, { store: panelStore, core: panelCore, assets, updates: {} }), null,
+    'an unresolved updates drive refuses the sweep')
+  assert.strictEqual(panelCores(dirs.panel).length, 8, 'a refused sweep deleted nothing')
   log('panel: an incomplete keep set refuses the sweep (leak, never delete) ✓')
 
   // Restart the panel: close the store and reopen it exactly as startPanel() does.

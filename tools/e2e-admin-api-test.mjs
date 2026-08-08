@@ -13,6 +13,7 @@ import Hyperbee from 'hyperbee'
 import hcrypto from 'hypercore-crypto'
 import assert from 'assert'
 import os from 'os'; import fs from 'fs'; import path from 'path'
+import { createHash } from 'crypto'
 import b4a from 'b4a'
 import { panelClient, login, checkSession, sessionLive } from '../sdk/login.js'
 import { initKeys, openKeys } from '../panel/src/keys.js'
@@ -31,8 +32,9 @@ const ADMIN_PASSWORD = 'correct-horse-battery'
 const USER_PASSWORD = 'bob-secret-1'
 const PNG_1PX = b4a.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 
-// Fast Argon2 for the test (argonOpts clamps to the sodium minimums).
-const config = { argon2: { memKiB: 8192, time: 1 }, maxDevicesDefault: 2 }
+// Fast Argon2 for the test (argonOpts clamps to the sodium minimums). The tiny
+// updates cap makes the oversize-abort path testable without a 512 MB body.
+const config = { argon2: { memKiB: 8192, time: 1 }, maxDevicesDefault: 2, updates: { maxBytes: 4 * 1024 * 1024 } }
 
 const dirs = { panel: fs.mkdtempSync(path.join(os.tmpdir(), 'e2ea-panel-')), cli: fs.mkdtempSync(path.join(os.tmpdir(), 'e2ea-cli-')) }
 const cleanups = []
@@ -42,9 +44,9 @@ try {
   // ===== Panel store + one bootstrapped admin (the `admin-cli add-admin` path) =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
-  const { store: panelStore, db, assets } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
+  const { store: panelStore, db, assets, updates } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
   const ring = makeRing(200)
-  const ctx = { config, keys, db, assets, dataDir: dirs.panel, activity: ring } // ctx.swarm attached in Test D
+  const ctx = { config, keys, db, assets, updates, dataDir: dirs.panel, activity: ring } // ctx.swarm attached in Test D
 
   assert.throws(() => ops.addAdmin(ctx, 'root', 'short'), /8 characters/, 'weak admin password must be rejected')
   ops.addAdmin(ctx, 'root', ADMIN_PASSWORD)
@@ -967,7 +969,206 @@ try {
   await api('DELETE', `/api/config/snapshots/${snapId}`, undefined, { token })
   log('U: config snapshots + templates — template leaked NONE of 5 seeded secrets (2 credential URLs stripped to origin+path), snapshot keeps them on-box and is never served, restore brings a purged channel back WITH its original key, a live differing key is never clobbered, cross-service refused, backup listing read-only ✓')
 
-  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record, identity key escrow, crash-safe registry writes, config snapshots + secret-free templates — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
+  // ===== Test V: app updates (OTA) — streaming publish, manifest, prune, delete =====
+  // The artifact body goes over the wire CHUNKED (a real ReadableStream, duplex half)
+  // so the server's streaming intake — incremental sha256, magic check, byte cap —
+  // is exercised, not a one-shot buffer.
+  const streamBody = (buf, chunk = 64 * 1024) => new ReadableStream({
+    start (c) {
+      for (let i = 0; i < buf.length; i += chunk) c.enqueue(new Uint8Array(buf.subarray(i, i + chunk)))
+      c.close()
+    }
+  })
+  // An aborted intake (cap / magic) destroys the request socket, so fetch may surface
+  // a network error instead of the status — both count as "refused" here; the real
+  // assertion is that NOTHING was stranded (no manifest entry, no drive file).
+  const postUpdate = async (appId, params, buf) => {
+    const q = new URLSearchParams(params)
+    const res = await fetch(`${base}/api/updates/${encodeURIComponent(appId)}?${q}`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + token, 'content-type': 'application/octet-stream' },
+      body: streamBody(buf),
+      duplex: 'half'
+    }).catch(() => null)
+    if (!res) return { status: 0, body: {} }
+    let body = {}
+    try { body = await res.json() } catch {}
+    return { status: res.status, body }
+  }
+
+  const APP = 'com.aliranclient.demo'
+  const ZIP_MAGIC = b4a.from([0x50, 0x4b, 0x03, 0x04])
+  const apkBody = b4a.concat([ZIP_MAGIC, hcrypto.randomBytes(2 * 1024 * 1024 - 4)])
+  const apkSha = createHash('sha256').update(apkBody).digest('hex')
+  r = await postUpdate(APP, { platform: 'android', versionCode: 5, versionName: '0.5.0', minVersionCode: 3, notes: 'first OTA' }, apkBody)
+  assert.strictEqual(r.status, 200, 'publish android v5: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.entry.sha256, apkSha, 'server-computed sha256 matches the bytes sent')
+  assert.strictEqual(r.body.entry.size, apkBody.length, 'server-computed size matches')
+  assert.strictEqual(r.body.entry.file, `/pkg/${APP}-5.apk`, 'artifact path per the contract')
+  assert.strictEqual(r.body.entry.platform, 'android')
+  assert.strictEqual(r.body.entry.versionName, '0.5.0')
+  assert.strictEqual(r.body.entry.minVersionCode, 3)
+  assert.strictEqual(r.body.entry.notes, 'first OTA')
+  assert.ok(!Number.isNaN(Date.parse(r.body.entry.releasedAt)), 'releasedAt is a date')
+
+  // The signed bee advertises the drive; the drive really holds manifest + bytes.
+  const upPointer = (await db.get('meta/updatesKey')).value
+  assert.strictEqual(upPointer.key, b4a.toString(updates.key, 'hex'), 'meta/updatesKey.key = the updates drive key')
+  assert.strictEqual(upPointer.blobsKey, b4a.toString(updates.blobs.core.key, 'hex'), 'meta/updatesKey.blobsKey = the blobs core key')
+  const manifestV = JSON.parse(b4a.toString(await updates.get('/manifest.json')))
+  assert.strictEqual(manifestV[APP].versionCode, 5, 'manifest entry in the drive')
+  const storedApk = await updates.get(`/pkg/${APP}-5.apk`)
+  assert.ok(storedApk && b4a.equals(storedApk, apkBody), 'artifact bytes stored verbatim')
+
+  r = await api('GET', '/api/updates', undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.driveKey, upPointer.key, 'GET echoes the drive key')
+  assert.strictEqual(r.body.blobsKey, upPointer.blobsKey, 'GET echoes the blobs key')
+  assert.strictEqual(r.body.entries[APP].sha256, apkSha)
+  assert.strictEqual(r.body.entries[APP].storedBytes, apkBody.length, 'per-file blob length reported')
+
+  // versionCode regression refused BEFORE the stream (precheck) — no artifact is
+  // ever written, the manifest untouched. (An early refusal may surface as a
+  // socket error instead of the status — tolerated; the drive state is the contract.)
+  r = await postUpdate(APP, { platform: 'android', versionCode: 4, versionName: '0.4.9' }, apkBody)
+  assert.ok(r.status === 400 || r.status === 0, 'versionCode regression refused (got ' + r.status + ')')
+  assert.strictEqual(await updates.entry(`/pkg/${APP}-4.apk`), null, 'regressed upload leaves no artifact')
+  assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].versionCode, 5, 'manifest untouched by the refusal')
+
+  // Bug guard: re-uploading the LIVE versionCode without force targets the very file
+  // the manifest references — it must refuse WITHOUT touching the published artifact
+  // (an earlier build streamed over it first, then "cleaned up" the live file,
+  // leaving the fleet a manifest entry it could never download).
+  const trojan = b4a.concat([ZIP_MAGIC, hcrypto.randomBytes(128 * 1024)])
+  r = await postUpdate(APP, { platform: 'android', versionCode: 5, versionName: '0.5.0' }, trojan)
+  assert.ok(r.status === 400 || r.status === 0, 'same-versionCode re-upload without force refused (got ' + r.status + ')')
+  const liveApk = await updates.get(`/pkg/${APP}-5.apk`)
+  assert.ok(liveApk && b4a.equals(liveApk, apkBody), 'the LIVE artifact bytes are untouched by the refused re-upload')
+  assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].sha256, apkSha, 'manifest sha still matches the live artifact')
+
+  // …unless forced (same versionCode republish is the rollback/fix-up path).
+  r = await postUpdate(APP, { platform: 'android', versionCode: 5, versionName: '0.5.0', force: 1 }, apkBody)
+  assert.strictEqual(r.status, 200, 'force republish of the same versionCode works')
+
+  // Addressing validated BEFORE any byte is consumed.
+  for (const [params, why] of [
+    [{ platform: 'ios', versionCode: 1, versionName: 'x' }, 'unknown platform'],
+    [{ platform: 'android', versionCode: 0, versionName: 'x' }, 'versionCode 0'],
+    [{ platform: 'android', versionCode: 1.5, versionName: 'x' }, 'fractional versionCode'],
+    [{ platform: 'android', versionCode: 1, versionName: 'x', minVersionCode: 2 }, 'minVersionCode above versionCode']
+  ]) {
+    r = await postUpdate(APP, params, apkBody)
+    assert.ok(r.status === 400 || r.status === 0, `must refuse ${why} (got ${r.status})`)
+  }
+  r = await postUpdate('1bad-app-id', { platform: 'android', versionCode: 1, versionName: 'x' }, apkBody)
+  assert.ok(r.status === 400 || r.status === 0, 'invalid app id refused')
+  r = await postUpdate(APP, { platform: 'android', versionCode: 9, versionName: '' }, apkBody)
+  assert.ok(r.status === 400 || r.status === 0, 'missing versionName refused by the precheck (got ' + r.status + ')')
+  assert.strictEqual(await updates.entry(`/pkg/${APP}-9.apk`), null, 'no artifact was written for it')
+
+  // Windows entry beside the Android one — and platform is sticky per app id.
+  const DESKTOP = 'app.aliran.desktop'
+  const exeBody = b4a.concat([b4a.from([0x4d, 0x5a]), hcrypto.randomBytes(256 * 1024)])
+  r = await postUpdate(DESKTOP, { platform: 'windows', versionCode: 1, versionName: '0.1.0' }, exeBody)
+  assert.strictEqual(r.status, 200, 'publish windows v1: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.entry.file, `/pkg/${DESKTOP}-1.exe`)
+  r = await postUpdate(DESKTOP, { platform: 'android', versionCode: 2, versionName: '0.2.0' }, apkBody)
+  assert.ok(r.status === 400 || r.status === 0, 'platform flip on an existing app id refused (got ' + r.status + ')')
+  assert.strictEqual((await api('GET', '/api/updates', undefined, { token })).body.entries[DESKTOP].platform, 'windows', 'platform flip changed nothing')
+
+  // Magic check: a body that is not a ZIP is refused for android — nothing stranded.
+  r = await postUpdate('com.aliranclient.badmagic', { platform: 'android', versionCode: 1, versionName: 'x' }, hcrypto.randomBytes(64 * 1024))
+  assert.ok(r.status === 400 || r.status === 0, 'magic-fail refused (got ' + r.status + ')')
+  r = await api('GET', '/api/updates', undefined, { token })
+  assert.ok(!('com.aliranclient.badmagic' in r.body.entries), 'magic-fail stranded no manifest entry')
+  assert.strictEqual(await updates.entry('/pkg/com.aliranclient.badmagic-1.apk'), null, 'magic-fail stranded no artifact')
+
+  // Byte cap (shrunk to 4 MiB via config.updates.maxBytes): a 5 MiB body aborts cleanly.
+  const bigBody = b4a.concat([ZIP_MAGIC, hcrypto.randomBytes(5 * 1024 * 1024)])
+  r = await postUpdate('com.aliranclient.big', { platform: 'android', versionCode: 1, versionName: 'x' }, bigBody)
+  assert.ok(r.status === 413 || r.status === 0, 'oversize refused (got ' + r.status + ')')
+  r = await api('GET', '/api/updates', undefined, { token })
+  assert.ok(!('com.aliranclient.big' in r.body.entries), 'oversize stranded no manifest entry')
+  assert.strictEqual(await updates.entry('/pkg/com.aliranclient.big-1.apk'), null, 'oversize stranded no artifact')
+
+  // Prune on publish: latest + previous artifact kept per app id, older reclaimed.
+  for (const vc of [6, 7]) {
+    r = await postUpdate(APP, { platform: 'android', versionCode: vc, versionName: '0.5.' + vc }, apkBody)
+    assert.strictEqual(r.status, 200, `publish v${vc}`)
+  }
+  assert.strictEqual(await updates.entry(`/pkg/${APP}-5.apk`), null, 'v5 artifact pruned (older than latest+previous)')
+  assert.ok(await updates.entry(`/pkg/${APP}-6.apk`), 'previous artifact kept')
+  assert.ok(await updates.entry(`/pkg/${APP}-7.apk`), 'latest artifact kept')
+  assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].versionCode, 7)
+
+  // Bug guard: a FORCED downgrade publishes a versionCode BELOW artifacts already on
+  // disk — prune must protect the file the manifest now references (a plain
+  // two-highest-vc rule deleted the just-published v5 while v6+v7 sat above it).
+  r = await postUpdate(APP, { platform: 'android', versionCode: 5, versionName: '0.5.0', force: 1 }, apkBody)
+  assert.strictEqual(r.status, 200, 'forced downgrade republish: ' + JSON.stringify(r.body))
+  assert.strictEqual(JSON.parse(b4a.toString(await updates.get('/manifest.json')))[APP].versionCode, 5, 'manifest now points at v5')
+  const downgraded = await updates.get(`/pkg/${APP}-5.apk`)
+  assert.ok(downgraded && b4a.equals(downgraded, apkBody), 'the manifest-referenced v5 artifact SURVIVED prune, bytes intact')
+  assert.ok(await updates.entry(`/pkg/${APP}-7.apk`), 'newest other artifact kept beside it')
+  assert.strictEqual(await updates.entry(`/pkg/${APP}-6.apk`), null, 'v6 pruned (neither manifest-referenced nor newest other)')
+
+  // Delete removes the entry AND every stored artifact for the app id.
+  r = await api('DELETE', '/api/updates/' + DESKTOP, undefined, { token })
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.filesRemoved, 1, 'delete reclaimed the exe')
+  assert.strictEqual(await updates.entry(`/pkg/${DESKTOP}-1.exe`), null, 'exe gone from the drive')
+  assert.ok(!(DESKTOP in JSON.parse(b4a.toString(await updates.get('/manifest.json')))), 'manifest entry gone')
+  r = await api('DELETE', '/api/updates/' + DESKTOP, undefined, { token })
+  assert.strictEqual(r.status, 404, 'double delete is 404')
+
+  // Auth + audit + UI surface.
+  const updNoAuth = await fetch(base + '/api/updates')
+  assert.strictEqual(updNoAuth.status, 401, 'updates endpoint requires auth')
+  const kindsV = new Set(ring.list().map((e) => e.op))
+  assert.ok(kindsV.has('update-publish'), 'publishes audited in the activity ring')
+  assert.ok(kindsV.has('update-delete'), 'deletes audited in the activity ring')
+  const homeHtmlV = await (await fetch(base + '/')).text()
+  for (const marker of ['data-tab="updates"', 'update-upload-form', 'updates-table', 'Do not upload internal or development builds']) {
+    assert.ok(homeHtmlV.includes(marker), `dashboard carries the app-updates card: ${marker}`)
+  }
+  const appJsV = await (await fetch(base + '/app.js')).text()
+  for (const marker of ['api/updates', 'renderUpdates', 'update-file']) {
+    assert.ok(appJsV.includes(marker), `app.js wires the app-updates flows: ${marker}`)
+  }
+  log('V: app updates — streamed publish (server sha256/size, magic + cap aborts strand nothing), pointer + drive verified, regression/same-vc refusals leave the live artifact untouched, forced downgrade survives prune, per-appId platform lock, prune keeps manifest+newest, delete reclaims, audit + UI ✓')
+
+  // ===== Test W: reclaimStrayCores accounts for ALL FIVE panel cores =====
+  // reclaimStrayCores returns null when the keep set does not match PANEL_CORE_COUNT —
+  // which fails SAFE but silently disables GC. Booting a fresh panel twice proves the
+  // count is right (a planted stray is reclaimed, the owned cores survive), and that
+  // the meta pointer re-puts are idempotent across boots.
+  dirs.gc = fs.mkdtempSync(path.join(os.tmpdir(), 'e2ea-gc-'))
+  initKeys(dirs.gc)
+  const gcKeys = openKeys(dirs.gc)
+  const first = await openStore(dirs.gc, gcKeys)
+  cleanups.push(() => first.store.close())
+  assert.notStrictEqual(first.reclaimed, null, 'boot 1: keep set complete — null would mean PANEL_CORE_COUNT no longer matches what openStore opens (GC silently off)')
+  assert.strictEqual(first.reclaimed.removed, 0, 'boot 1: fresh dir has no strays')
+  const beeLenBoot1 = first.core.length
+  await first.store.close()
+  // Plant the debris the sweep exists for: one stray 64-hex core dir.
+  const strayId = b4a.toString(hcrypto.randomBytes(32), 'hex')
+  const strayDir = path.join(dirs.gc, 'cores', strayId.slice(0, 2), strayId.slice(2, 4), strayId)
+  fs.mkdirSync(strayDir, { recursive: true })
+  fs.writeFileSync(path.join(strayDir, 'oplog'), b4a.alloc(4096))
+  const second = await openStore(dirs.gc, gcKeys)
+  cleanups.push(() => second.store.close())
+  assert.notStrictEqual(second.reclaimed, null, 'boot 2: keep set complete again')
+  assert.strictEqual(second.reclaimed.removed, 1, 'boot 2: the planted stray was reclaimed — and only it')
+  assert.ok(!fs.existsSync(strayDir), 'stray core dir really deleted')
+  assert.strictEqual(second.core.length, beeLenBoot1, 'boot 2 appended nothing — meta/assetsKey + meta/updatesKey re-puts are conditional')
+  const wPointer = (await second.db.get('meta/updatesKey')).value
+  assert.strictEqual(wPointer.key, b4a.toString(second.updates.key, 'hex'), 'updates pointer stable across boots')
+  assert.strictEqual(wPointer.blobsKey, b4a.toString(second.updates.blobs.core.key, 'hex'))
+  await second.store.close()
+  log('W: reclaimStrayCores — 5-core keep set complete on both boots, planted stray reclaimed, owned cores + pointer records stable ✓')
+
+  log('\nRESULT: PASS ✅  (admin auth + lockout; CRUD, admins mgmt, purge/delete, paging, curation, redirect channels, publishers + scopes, device revoke + sessionLive, observability, category registry, channel packages, the external VOD provider record, identity key escrow, crash-safe registry writes, config snapshots + secret-free templates, app-update OTA publish + the 5-core GC keep set — all land in the signed DB; viewer login works end-to-end, and it carries the VOD config only while it is enabled)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

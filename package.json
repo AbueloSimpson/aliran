@@ -70,6 +70,7 @@
     "test:panel-link": "node tools/panel-link-test.mjs",
     "bench:scale": "node --expose-gc tools/scale-bench.mjs",
     "test:epg-p2p": "node tools/e2e-epg-p2p-test.mjs",
+    "test:updates": "node tools/e2e-updates-test.mjs",
     "test:epg-xmltv": "node tools/epg-xmltv-test.mjs",
     "test:thumbs": "node tools/e2e-thumbs-test.mjs"
   },

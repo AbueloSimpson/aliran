@@ -77,6 +77,7 @@ Add these optional services later:
 - **[White-label branding](white-label.md)** — set names, colours, logos, splash
 - **[Client build](client-build.md)** — build the Android phone and TV app
 - **[Desktop player](desktop-player.md)** — the Electron player for Windows and macOS
+- **[App updates over P2P](app-updates.md)** — ship APK updates to installed apps, no store needed
 
 ### I'm integrating the player SDK
 
