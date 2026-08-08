@@ -3,5 +3,8 @@
   "common.cancel": "Cancel",
   "common.close": "Close",
   "common.back": "Back",
-  "common.tryAgain": "Try again"
+  "common.tryAgain": "Try again",
+
+  "splash.connecting": "Connecting",
+  "splash.authorizing": "Authorizing device"
 }

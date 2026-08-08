@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, Image, ActivityIndicator, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
@@ -21,7 +22,10 @@ const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up to Login
 type Props = NativeStackScreenProps<RootStackParamList, 'Splash'> & { backendReady: boolean }
 
 export function SplashScreen ({ navigation, backendReady }: Props) {
-  const [status, setStatus] = useState('Connecting')
+  const { t } = useI18n()
+  // The status is held as a STATE NAME, not as copy: the string is looked up at render
+  // so a locale change (the prefs reply carries the saved language) repaints it.
+  const [status, setStatus] = useState<'connecting' | 'authorizing'>('connecting')
   const routed = useRef(false)
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -47,7 +51,7 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
           backend.connect(m.service.panelPubKey)
         }
         if (m.creds) {
-          setStatus('Authorizing device')
+          setStatus('authorizing')
           backend.login(m.creds.username, m.creds.password)
         } else {
           route('Login')
@@ -75,14 +79,14 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
 
   useEffect(() => {
     if (backendReady && !routed.current && backend.prefsLoaded && backend.creds) {
-      setStatus('Authorizing device')
+      setStatus('authorizing')
     }
   }, [backendReady])
 
   return (
     <View style={styles.container}>
       <View style={styles.corner}>
-        <Text style={styles.status}>{status === 'Connecting' ? 'Connecting' : 'Authorizing device'}</Text>
+        <Text style={styles.status}>{status === 'connecting' ? t('splash.connecting') : t('splash.authorizing')}</Text>
         <ActivityIndicator size="small" color={theme.colors.primary} />
       </View>
       {service.branding?.logo
