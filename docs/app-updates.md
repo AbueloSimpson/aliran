@@ -153,5 +153,6 @@ manually (sideload), one time. From then on, they update over P2P.
 | The update never appears on a device | The device is a keyless build that is not paired with your panel | Pair the device first. An unpaired app has no update source. |
 | The install fails at the Android dialog | The update's signature is not the installed app's signature | Sign with the same keystore as the installed build. A debug-signed install can never update to a release-signed build — reinstall once. |
 | The install fails at the Android dialog | The viewer did not permit "install unknown apps" for the app | The app opens the permission screen itself. Tell the viewer to allow it and try again. |
+| Google Play Protect blocks the install | The signing key is not known to Google. This is normal for self-hosted apps. | Tell the viewer to tap **More details**, then **Install anyway**. Google can also ask for the device password here. This is a device function, not an app function. |
 | The download stops or does not start | The device is on a metered network | This is the default protection. The viewer can tap "Download anyway". |
 | The download stops or does not start | No reachable peers hold the file | Make sure the panel is up and reachable. The panel always serves its own drive. |
