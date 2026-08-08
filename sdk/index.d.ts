@@ -190,6 +190,37 @@ export interface SourceInfo {
   url: string | null
 }
 
+// --- OTA app updates (the panel's updates drive, meta/updatesKey) ---
+
+export type UpdatePlatform = 'android' | 'windows'
+
+/** One /manifest.json entry (keyed by app id) on the panel's updates drive. */
+export interface UpdateEntry {
+  platform: UpdatePlatform
+  versionCode: number
+  versionName: string
+  /** Hex sha256 of the artifact — verified after download, before 'update-ready'. */
+  sha256: string
+  /** Artifact size in bytes (the progress total). */
+  size: number
+  /** Drive path of the artifact, e.g. '/pkg/<appId>-<versionCode>.apk'. */
+  file: string
+  /** Builds below this versionCode must update (the `mandatory` flag). */
+  minVersionCode?: number
+  notes?: string
+  releasedAt?: string
+}
+
+export interface UpdateCheckResult {
+  /** 'unknown' = cannot say right now (no updates drive advertised, or the manifest
+   *  did not land within the bound) — try again later, never an error. */
+  status: 'available' | 'current' | 'none' | 'unknown'
+  /** The manifest entry ('available' and 'current'). */
+  entry?: UpdateEntry
+  /** 'available' only: the running build is below entry.minVersionCode. */
+  mandatory?: boolean
+}
+
 export interface PlayerEvents {
   /** connect() joined the panel topic. */
   ready: []
@@ -211,6 +242,12 @@ export interface PlayerEvents {
   'zap-prefetch': [info: { enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }]
   /** setUploadPolicy() applied: how many topic joins were flipped live. */
   'upload-policy': [info: { policy: UploadPolicy; rejoined: number }]
+  /** OTA download progress (throttled: ~500 ms / 5% steps). */
+  'update-progress': [info: { received: number; total: number }]
+  /** OTA artifact downloaded + sha256-verified; path is on this device's disk. */
+  'update-ready': [info: { path: string; entry: UpdateEntry }]
+  /** OTA download/verify failure — downloadUpdate() also rejects with the same error. */
+  'update-error': [info: { message: string }]
 }
 
 /**
@@ -262,6 +299,20 @@ export class AliranPlayer {
    * a pre-S50 panel answers 'unsupported'.
    */
   report(input: { category: ReportCategory; text?: string }): Promise<ReportResult>
+  /**
+   * Check the panel's updates drive for a newer build of THIS app. Lazy: the first
+   * call opens the sparse replica and joins its topic client-only (a viewer never
+   * re-serves APK blobs, whatever the uploadPolicy). Only bad arguments throw —
+   * an unreachable drive resolves { status: 'unknown' }.
+   */
+  checkUpdate(appInfo: { appId: string; platform: UpdatePlatform; versionCode: number }): Promise<UpdateCheckResult>
+  /**
+   * Download + sha256-verify the update the last 'available' checkUpdate() found:
+   * throttled 'update-progress' events, then 'update-ready' { path, entry } with the
+   * verified file path for the host's installer. A failure deletes the partial file,
+   * emits 'update-error' AND rejects. Single-flight while a download runs.
+   */
+  downloadUpdate(): Promise<{ path: string; entry: UpdateEntry }>
   /** Full teardown. */
   stop(): Promise<void>
 }
