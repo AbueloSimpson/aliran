@@ -279,8 +279,10 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
         // HEVC playback depends on platform hardware decode).
         if (/incompatiblecodecs|bufferaddcodec/i.test(String(data.details))) {
           tune.current.tuning = false
+          // Our own sentence, not the engine's — so it goes through the catalog. The
+          // codec string is a MIME type: data, never translated.
           const codec = (data as { mimeType?: string }).mimeType
-          cb.current.onError?.(`This device can't decode this channel's video format${codec ? ` (${codec})` : ''}.`)
+          cb.current.onError?.(codec ? t('live.error.codecDetail', { codec }) : t('live.error.codec'))
           return
         }
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecovered) {

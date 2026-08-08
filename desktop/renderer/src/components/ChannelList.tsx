@@ -177,6 +177,7 @@ interface RowProps {
 }
 
 function ChannelRow ({ stream, top, number, playing, focused, favorite, onHover, onClick, onContextMenu }: RowProps) {
+  const { t } = useI18n()
   // Off-air channel, or a vod title the library took down (vod records carry no
   // isLive — their availability signal is status 'available'/'unavailable').
   const vod = isVod(stream)
@@ -201,7 +202,7 @@ function ChannelRow ({ stream, top, number, playing, focused, favorite, onHover,
       <span className="row-main">
         <span className="row-title-line">
           <span className={'row-title' + (dimmed ? ' dimmed' : '')}>{stream.title || stream.id}</span>
-          {stream.isLive && <span className="badge-live">LIVE</span>}
+          {stream.isLive && <span className="badge-live">{t('common.live')}</span>}
           {duration && <span className="row-duration">{duration}</span>}
           {favorite && <span className="row-star">★</span>}
         </span>

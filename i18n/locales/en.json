@@ -98,6 +98,8 @@
   "live.holdForDetails": "hold for details",
   "live.waitingForChannels": "Waiting for the channel list…",
   "live.playbackFailed": "Playback failed",
+  "live.error.codec": "This device can't decode this channel's video format.",
+  "live.error.codecDetail": "This device can't decode this channel's video format ({codec}).",
   "live.enterPin": "Enter PIN",
   "live.restricted": "\"{title}\" is access controlled.",
   "live.peers.one": "{n} peer",
