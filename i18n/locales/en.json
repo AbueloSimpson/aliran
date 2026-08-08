@@ -154,6 +154,7 @@
   "pin.error.wrongCurrent": "Wrong current PIN.",
 
   "report.title": "REPORT A PROBLEM",
+  "report.dialogAria": "Report a problem",
   "report.hint": "What went wrong?",
   "report.send": "Send report",
   "report.sending": "Sending…",
