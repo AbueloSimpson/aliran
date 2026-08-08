@@ -121,5 +121,9 @@
 
   "favorites.header": "FAVORITES",
   "favorites.empty": "No favorites yet",
-  "favorites.emptyHint": "In Live TV, hold a channel and choose \"Add favorite\"."
+  "favorites.emptyHint": "In Live TV, hold a channel and choose \"Add favorite\".",
+
+  "search.header": "SEARCH",
+  "search.placeholder": "Channel, program or category…",
+  "search.noResults": "No channels match \"{query}\""
 }
