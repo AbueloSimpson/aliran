@@ -117,5 +117,9 @@
   "tracks.audio": "Audio",
   "tracks.off": "Off",
   "tracks.subtitleFallback": "Subtitle",
-  "tracks.audioFallback": "Audio"
+  "tracks.audioFallback": "Audio",
+
+  "favorites.header": "FAVORITES",
+  "favorites.empty": "No favorites yet",
+  "favorites.emptyHint": "In Live TV, hold a channel and choose \"Add favorite\"."
 }
