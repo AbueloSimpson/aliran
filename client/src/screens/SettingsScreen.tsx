@@ -119,138 +119,146 @@ export function SettingsScreen ({ navigation }: Props) {
     navigation.reset({ index: 0, routes: [{ name: 'Connect' }] })
   }
 
+  // The ScrollView sits inside a viewport-sized root ON PURPOSE. The LanguageMenu
+  // overlay fills its parent absolutely; mounted inside the ScrollView it would fill
+  // the SCROLLABLE CONTENT box — about twice the viewport on a phone — and centre
+  // itself below the fold. Every other overlay in the app (SortMenu, TrackMenu) is a
+  // sibling of the scrolling area for the same reason.
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.header}>{t('settings.header')}</Text>
+    <View style={styles.root}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <Text style={styles.header}>{t('settings.header')}</Text>
 
-      <Text style={styles.groupTitle}>{t('settings.group.account')}</Text>
-      <View style={styles.group}>
-        <Row label={t('settings.signedInAs')} value={username ?? '—'} />
-        <Row label={t('settings.entitledChannels')} value={String(channels)} />
-      </View>
+        <Text style={styles.groupTitle}>{t('settings.group.account')}</Text>
+        <View style={styles.group}>
+          <Row label={t('settings.signedInAs')} value={username ?? '—'} />
+          <Row label={t('settings.entitledChannels')} value={String(channels)} />
+        </View>
 
-      <Text style={styles.groupTitle}>{t('settings.group.playback')}</Text>
-      <View style={styles.group}>
-        <ToggleRow
-          label={t('settings.smoothZap')}
-          hint={t('settings.smoothZapHint')}
-          value={smoothZap}
-          onToggle={toggleSmoothZap}
-        />
-      </View>
+        <Text style={styles.groupTitle}>{t('settings.group.playback')}</Text>
+        <View style={styles.group}>
+          <ToggleRow
+            label={t('settings.smoothZap')}
+            hint={t('settings.smoothZapHint')}
+            value={smoothZap}
+            onToggle={toggleSmoothZap}
+          />
+        </View>
 
-      <Text style={styles.groupTitle}>{t('settings.group.language')}</Text>
-      <View style={styles.group}>
-        {/* The value line names the language the app is speaking right now: the pinned
-            one, or the device's with the resolved language in parentheses — so a
-            viewer whose device is set to a language we do not ship can see WHICH one
-            they are getting instead. The parentheses are punctuation, not copy. */}
-        <PickerRow
-          label={t('settings.language')}
-          value={language ? nativeName(language) : `${t('settings.language.device')} (${nativeName(locale)})`}
-          hint={t('settings.language.hint')}
-          onPress={() => setLanguageMenu(true)}
-        />
-      </View>
+        <Text style={styles.groupTitle}>{t('settings.group.language')}</Text>
+        <View style={styles.group}>
+          {/* The value line names the language the app is speaking right now: the pinned
+              one, or the device's with the resolved language in parentheses — so a
+              viewer whose device is set to a language we do not ship can see WHICH one
+              they are getting instead. The parentheses are punctuation, not copy. */}
+          <PickerRow
+            label={t('settings.language')}
+            value={language ? nativeName(language) : `${t('settings.language.device')} (${nativeName(locale)})`}
+            hint={t('settings.language.hint')}
+            onPress={() => setLanguageMenu(true)}
+          />
+        </View>
 
-      <Text style={styles.groupTitle}>{t('settings.group.parental')}</Text>
-      <View style={styles.group}>
-        {!parental && (
+        <Text style={styles.groupTitle}>{t('settings.group.parental')}</Text>
+        <View style={styles.group}>
+          {!parental && (
+            <>
+              <Row label={t('settings.pin')} value={t('settings.pinNotSet')} />
+              <ActionRow label={t('settings.setPin')} onPress={() => setPinModal({ kind: 'setup' })} />
+            </>
+          )}
+          {parental && (
+            <>
+              <ToggleRow
+                label={t('settings.hideRestricted')}
+                hint={t('settings.hideRestrictedHint')}
+                value={parental.hide}
+                onToggle={() => setPinModal({ kind: 'verify', then: 'toggle' })}
+              />
+              <ActionRow label={t('settings.changePin')} onPress={() => setPinModal({ kind: 'change' })} />
+              <ActionRow label={t('settings.removePin')} onPress={() => setPinModal({ kind: 'verify', then: 'remove' })} danger />
+            </>
+          )}
+        </View>
+
+        <Text style={styles.groupTitle}>{t('settings.group.service')}</Text>
+        <View style={styles.group}>
+          <Row label={t('settings.service')} value={(hasBakedKey() ? service.name : backend.service?.name) ?? service.name} />
+          <Row label={t('settings.panelKey')} value={panelKeyLabel()} />
+          <Row label={t('settings.playback')} value={service.hybrid?.mode ?? 'p2p-only'} />
+        </View>
+
+        <Text style={styles.groupTitle}>{t('settings.group.updates')}</Text>
+        <View style={styles.group}>
+          <Row label={t('settings.appVersion')} value={appVersion ?? '—'} />
+          <ActionRow label={t('settings.checkUpdates')} onPress={checkUpdates} />
+          {updateStatus != null && <Row label={t('settings.result')} value={t('settings.update.' + updateStatus.code, { version: updateStatus.version ?? '' })} />}
+        </View>
+
+        <Text style={styles.groupTitle}>{t('settings.group.diagnostics')}</Text>
+        <View style={styles.group}>
+          <Row label={t('settings.activeSource')} value={source ? source.toUpperCase() : '—'} />
+          <Row label={t('settings.peers')} value={peers != null ? String(peers) : '—'} />
+        </View>
+
+        {/* "Report a problem" moved to the player (S51): the report must carry the
+            channel being watched, which Settings cannot know. */}
+
+        <Pressable
+          style={[styles.signOut, signOutFocused && styles.signOutFocused]}
+          onFocus={() => setSignOutFocused(true)}
+          onBlur={() => setSignOutFocused(false)}
+          onPress={signOut}
+        >
+          <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
+        </Pressable>
+        <Text style={styles.signOutHint}>{t('settings.signOutHint')}</Text>
+
+        {!hasBakedKey() && (
           <>
-            <Row label={t('settings.pin')} value={t('settings.pinNotSet')} />
-            <ActionRow label={t('settings.setPin')} onPress={() => setPinModal({ kind: 'setup' })} />
+            <Pressable
+              style={[styles.changeService, changeFocused && styles.changeServiceFocused]}
+              onFocus={() => setChangeFocused(true)}
+              onBlur={() => setChangeFocused(false)}
+              onPress={changeService}
+            >
+              <Text style={styles.signOutText}>{t('settings.changeService')}</Text>
+            </Pressable>
+            <Text style={styles.signOutHint}>{t('settings.changeServiceHint')}</Text>
           </>
         )}
-        {parental && (
-          <>
-            <ToggleRow
-              label={t('settings.hideRestricted')}
-              hint={t('settings.hideRestrictedHint')}
-              value={parental.hide}
-              onToggle={() => setPinModal({ kind: 'verify', then: 'toggle' })}
-            />
-            <ActionRow label={t('settings.changePin')} onPress={() => setPinModal({ kind: 'change' })} />
-            <ActionRow label={t('settings.removePin')} onPress={() => setPinModal({ kind: 'verify', then: 'remove' })} danger />
-          </>
-        )}
-      </View>
 
-      <Text style={styles.groupTitle}>{t('settings.group.service')}</Text>
-      <View style={styles.group}>
-        <Row label={t('settings.service')} value={(hasBakedKey() ? service.name : backend.service?.name) ?? service.name} />
-        <Row label={t('settings.panelKey')} value={panelKeyLabel()} />
-        <Row label={t('settings.playback')} value={service.hybrid?.mode ?? 'p2p-only'} />
-      </View>
-
-      <Text style={styles.groupTitle}>{t('settings.group.updates')}</Text>
-      <View style={styles.group}>
-        <Row label={t('settings.appVersion')} value={appVersion ?? '—'} />
-        <ActionRow label={t('settings.checkUpdates')} onPress={checkUpdates} />
-        {updateStatus != null && <Row label={t('settings.result')} value={t('settings.update.' + updateStatus.code, { version: updateStatus.version ?? '' })} />}
-      </View>
-
-      <Text style={styles.groupTitle}>{t('settings.group.diagnostics')}</Text>
-      <View style={styles.group}>
-        <Row label={t('settings.activeSource')} value={source ? source.toUpperCase() : '—'} />
-        <Row label={t('settings.peers')} value={peers != null ? String(peers) : '—'} />
-      </View>
-
-      {/* "Report a problem" moved to the player (S51): the report must carry the
-          channel being watched, which Settings cannot know. */}
-
-      <Pressable
-        style={[styles.signOut, signOutFocused && styles.signOutFocused]}
-        onFocus={() => setSignOutFocused(true)}
-        onBlur={() => setSignOutFocused(false)}
-        onPress={signOut}
-      >
-        <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
-      </Pressable>
-      <Text style={styles.signOutHint}>{t('settings.signOutHint')}</Text>
-
-      {!hasBakedKey() && (
-        <>
-          <Pressable
-            style={[styles.changeService, changeFocused && styles.changeServiceFocused]}
-            onFocus={() => setChangeFocused(true)}
-            onBlur={() => setChangeFocused(false)}
-            onPress={changeService}
-          >
-            <Text style={styles.signOutText}>{t('settings.changeService')}</Text>
-          </Pressable>
-          <Text style={styles.signOutHint}>{t('settings.changeServiceHint')}</Text>
-        </>
-      )}
-
-      <PinSetupModal
-        visible={pinModal?.kind === 'setup' || pinModal?.kind === 'change'}
-        change={pinModal?.kind === 'change'}
-        onDone={() => setPinModal(null)} // the worklet's 'prefs' reply updates `parental`
-        onClose={() => setPinModal(null)}
-      />
-      <PinEntryModal
-        visible={pinModal?.kind === 'verify'}
-        title={pinModal?.kind === 'verify' && pinModal.then === 'remove' ? t('settings.removePinTitle') : t('settings.hideRestricted')}
-        hint={pinModal?.kind === 'verify' && pinModal.then === 'remove'
-          ? t('settings.removePinHint')
-          : t('settings.hideRestrictedPinHint')}
-        onOk={() => {
-          if (pinModal?.kind === 'verify') {
-            if (pinModal.then === 'remove') backend.parentalClear()
-            else backend.parentalSetHide(!(parental?.hide ?? false))
-          }
-          setPinModal(null)
-        }}
-        onClose={() => setPinModal(null)}
-      />
+        <PinSetupModal
+          visible={pinModal?.kind === 'setup' || pinModal?.kind === 'change'}
+          change={pinModal?.kind === 'change'}
+          onDone={() => setPinModal(null)} // the worklet's 'prefs' reply updates `parental`
+          onClose={() => setPinModal(null)}
+        />
+        <PinEntryModal
+          visible={pinModal?.kind === 'verify'}
+          title={pinModal?.kind === 'verify' && pinModal.then === 'remove' ? t('settings.removePinTitle') : t('settings.hideRestricted')}
+          hint={pinModal?.kind === 'verify' && pinModal.then === 'remove'
+            ? t('settings.removePinHint')
+            : t('settings.hideRestrictedPinHint')}
+          onOk={() => {
+            if (pinModal?.kind === 'verify') {
+              if (pinModal.then === 'remove') backend.parentalClear()
+              else backend.parentalSetHide(!(parental?.hide ?? false))
+            }
+            setPinModal(null)
+          }}
+          onClose={() => setPinModal(null)}
+        />
+      </ScrollView>
 
       {/* An overlay, not a Modal: on TV a Modal is its own focus container and
-          swallows the remote (the SortMenu/TrackMenu lesson). */}
+          swallows the remote (the SortMenu/TrackMenu lesson). A SIBLING of the
+          ScrollView, never a child — see the note above the return. */}
       {/* On close, take the choice from the backend's optimistic mirror rather than
           waiting for the worklet's 'prefs' reply — the row must not lag a round trip
           behind the language it is already rendering in. The reply confirms it. */}
       {languageMenu && <LanguageMenu value={language} onClose={() => { setLanguage(backend.language); setLanguageMenu(false) }} />}
-    </ScrollView>
+    </View>
   )
 }
 
@@ -337,6 +345,7 @@ function ToggleRow ({ label, hint, value, onToggle }: { label: string; hint: str
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.background },
   container: { flex: 1, backgroundColor: theme.colors.background },
   content: { paddingHorizontal: theme.safeX, paddingVertical: theme.safeY, maxWidth: 720, alignSelf: 'stretch' },
   header: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginBottom: theme.spacing(1.5) },

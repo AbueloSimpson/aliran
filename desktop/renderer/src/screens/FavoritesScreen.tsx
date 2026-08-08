@@ -11,7 +11,7 @@ import { ChannelList } from '../components/ChannelList'
 import { visibleStreams } from '../parental'
 
 export function FavoritesScreen ({ onWatch, onBack }: { onWatch: (streamId: string) => void; onBack: () => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
 
@@ -24,7 +24,7 @@ export function FavoritesScreen ({ onWatch, onBack }: { onWatch: (streamId: stri
   }, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
-  const list = useMemo(() => sortByCuration(streams.filter((s) => favorites.includes(s.id))), [streams, favorites])
+  const list = useMemo(() => sortByCuration(streams.filter((s) => favorites.includes(s.id))), [streams, favorites, locale])
 
   if (list.length === 0) {
     return (

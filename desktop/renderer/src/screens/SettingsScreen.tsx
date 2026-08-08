@@ -60,12 +60,14 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
     backend.setZapPrefetch(next)
   }
 
-  // Persist first, then re-resolve: applyLocale() reads the same saved > system order
-  // the app booted with, so "System language" needs no separate branch here.
+  // Persist, then resolve from the CHOICE — not from the store. applyLocale() takes
+  // the same saved > system order the app booted with, so "System language" (code '')
+  // still needs no separate branch, but a blocked or full localStorage can no longer
+  // leave the UI in the old language while this row shows the new one.
   function chooseLanguage (code: string) {
     setLanguage(code)
     saveLanguage(code || null)
-    applyLocale()
+    applyLocale(code || null)
   }
 
   function signOut () {

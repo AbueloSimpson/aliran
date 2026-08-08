@@ -331,7 +331,9 @@ function EpisodeRow ({ episode, seen, onClick }: { episode: VodEpisode; seen: Vo
     <button className="vod-episode" onClick={onClick}>
       <span className="vod-episode-num">{episode.number || '-'}</span>
       <span className="vod-episode-body">
-        <span className="vod-episode-title">{episode.title || t('vod.series.episode', { n: episode.number || '' }).trim()}</span>
+        {/* Only template a label when there IS a number — see the client twin: the
+            trimmed-empty-hole trick is English-only ('. bölüm', '화', '第  集'). */}
+        <span className="vod-episode-title">{episode.title || (episode.number ? t('vod.series.episode', { n: episode.number }) : '')}</span>
         {!!episode.plot && <span className="vod-episode-plot">{episode.plot}</span>}
       </span>
       <span className="vod-episode-side">

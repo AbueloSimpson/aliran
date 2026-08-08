@@ -11,7 +11,7 @@ import { ChannelList } from '../components/ChannelList'
 import { visibleStreams } from '../parental'
 
 export function SearchScreen ({ onWatch, onBack }: { onWatch: (streamId: string) => void; onBack: () => void }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -30,7 +30,7 @@ export function SearchScreen ({ onWatch, onBack }: { onWatch: (streamId: string)
       s.description?.toLowerCase().includes(q) ||
       s.category?.some((c) => c.toLowerCase().includes(q))
     ))
-  }, [streams, query])
+  }, [streams, query, locale])
 
   return (
     <div className="search">

@@ -16,7 +16,7 @@ import { theme } from '../theme'
 type Props = NativeStackScreenProps<RootStackParamList, 'Favorites'>
 
 export function FavoritesScreen ({ navigation }: Props) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   const [loaded, setLoaded] = useState(backend.prefsLoaded)
@@ -30,7 +30,7 @@ export function FavoritesScreen ({ navigation }: Props) {
   }, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
-  const list = useMemo(() => sortByCuration(streams.filter(s => favorites.includes(s.id))), [streams, favorites])
+  const list = useMemo(() => sortByCuration(streams.filter(s => favorites.includes(s.id))), [streams, favorites, locale])
 
   if (!loaded) return <SectionLoading section={t('menu.favorites')} />
 

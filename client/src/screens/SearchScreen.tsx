@@ -15,7 +15,7 @@ import { theme } from '../theme'
 type Props = NativeStackScreenProps<RootStackParamList, 'Search'>
 
 export function SearchScreen ({ navigation }: Props) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   const [query, setQuery] = useState('')
@@ -37,7 +37,7 @@ export function SearchScreen ({ navigation }: Props) {
       s.description?.toLowerCase().includes(q) ||
       s.category?.some(c => c.toLowerCase().includes(q))
     ))
-  }, [streams, query])
+  }, [streams, query, locale])
 
   return (
     <View style={styles.container}>

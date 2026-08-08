@@ -81,7 +81,10 @@ const EN: Catalog = en
 // Static imports on purpose — Metro and esbuild both resolve them at build time, and a
 // dynamic import() would make the first paint of a non-English device asynchronous.
 // The map stays Partial so a half-written catalog degrades key by key to English (t())
-// rather than breaking the build.
+// rather than breaking the build. NOTE the one gap: that fallback is per KEY, and en
+// carries no `.few`/`.many`, so a missing plural sibling in a locale with more forms
+// than English (ru) renders the raw key, not English. tools/i18n-test.mjs §3 is what
+// actually keeps that from shipping.
 const CATALOGS: Partial<Record<Locale, Catalog>> = {
   en: EN,
   es,
@@ -133,8 +136,11 @@ export function resolveLocale (tag: string | null | undefined): Locale {
   return CODES.has(base) ? (base as Locale) : 'en'
 }
 
-/** CLDR-exact for our 14 locales. Negative and fractional counts fold onto the
- *  absolute value — the UI only ever counts things. */
+/** CLDR's INTEGER plural categories for our 14 locales — the only ones a counted UI
+ *  string can reach. Deliberately NOT the full CLDR rule set: the categories CLDR
+ *  reserves for fractions (ru `other`) and for large compact numbers (fr/es/it/pt
+ *  `many`) are absent, because negative and fractional counts fold onto the absolute
+ *  value and the UI only ever counts whole things. */
 export function pluralForm (locale: Locale, n: number): PluralForm {
   const i = Math.abs(n)
   switch (locale) {
@@ -161,13 +167,17 @@ export function pluralForm (locale: Locale, n: number): PluralForm {
   }
 }
 
-// Plain `{name}` substitution, split/join rather than String.replace so a value
-// containing `$&` cannot turn into a replacement pattern. No escaping: every value is
-// rendered as React text, never as markup.
+// Plain `{name}` substitution in ONE pass. A per-key loop would be order-sensitive:
+// whichever key ran first could inject a `{laterKey}` that the next iteration then
+// substituted again, so a channel or version string containing braces could reach
+// through into another placeholder. A single scan can only ever replace the braces
+// that were in the CATALOG value. The replacer is a function, so a value containing
+// `$&` still cannot turn into a replacement pattern. An unknown `{name}` is left
+// alone. No escaping: every value is rendered as React text, never as markup.
 function interpolate (s: string, vars: Record<string, string | number>): string {
-  let out = s
-  for (const k of Object.keys(vars)) out = out.split('{' + k + '}').join(String(vars[k]))
-  return out
+  return s.replace(/\{(\w+)\}/g, (whole, k: string) => (
+    Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : whole
+  ))
 }
 
 /** Translate `key`, substituting `{name}` placeholders. Falls back to English, then to

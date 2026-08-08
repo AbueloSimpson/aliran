@@ -47,9 +47,18 @@ export function pickLocale (...tags: (string | null | undefined)[]): Locale {
   return 'en'
 }
 
-/** Apply the resolution order: saved choice > system language > English. */
-export function applyLocale (): Locale {
-  const locale = pickLocale(savedLanguage(), navigator.language)
+/**
+ * Apply the resolution order: saved choice > system language > English.
+ *
+ * Pass `preferred` when the viewer has JUST picked a language. saveLanguage() is
+ * deliberately silent when storage is blocked or full, so re-reading the store would
+ * resolve back to the system language while the picker sits there showing the new one
+ * — the choice must come from the CHOICE, not from what storage happened to accept.
+ * Omit it (boot) to resolve from the persisted value.
+ */
+export function applyLocale (preferred?: string | null): Locale {
+  const saved = preferred === undefined ? savedLanguage() : preferred
+  const locale = pickLocale(saved, navigator.language)
   setLocale(locale)
   return locale
 }

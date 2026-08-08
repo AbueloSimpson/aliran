@@ -194,7 +194,9 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
   const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
   const railItems = inDrill
     ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
-    : model.top.map((key) => ({ key, label: key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
+    // 'All' is the everything-group this app adds itself, so it is the only label here
+    // that comes out of the catalog. Every other key is an operator category name.
+    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
   const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0]
   const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find((s) => s.id === playingId) ?? null

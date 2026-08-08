@@ -375,7 +375,12 @@ function EpisodeRow ({ episode, seen, onPress }: { episode: VodEpisode; seen: Vo
     >
       <Text style={styles.episodeNum}>{episode.number || '-'}</Text>
       <View style={styles.episodeBody}>
-        <Text style={styles.episodeTitle} numberOfLines={1}>{episode.title || t('vod.series.episode', { n: episode.number || '' }).trim()}</Text>
+        {/* Only template a label when there IS a number. Feeding '' to the template
+            and trimming worked while the English 'Episode {n}' left the hole at the
+            end; it does not survive translation — tr renders '. bölüm', ko a bare
+            counter '화', zh-Hans '第  集'. Without a number the '-' badge beside this
+            line and the plot carry the row. */}
+        <Text style={styles.episodeTitle} numberOfLines={1}>{episode.title || (episode.number ? t('vod.series.episode', { n: episode.number }) : '')}</Text>
         {!!episode.plot && <Text style={styles.episodePlot} numberOfLines={2}>{episode.plot}</Text>}
       </View>
       <View style={styles.episodeSide}>
