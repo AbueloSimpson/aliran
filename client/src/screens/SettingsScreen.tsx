@@ -11,6 +11,7 @@ import React, { useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { appInfoCached, checkForUpdate } from '../update'
@@ -25,7 +26,13 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>
 // one before a destructive/visibility change ('remove' / 'toggle').
 type PinModalState = null | { kind: 'setup' } | { kind: 'change' } | { kind: 'verify'; then: 'remove' | 'toggle' }
 
+// The outcome of a manual update check, held as a LEAF NAME (plus the version the
+// 'available' line names) rather than as copy — the sentence is looked up at render,
+// so a language change repaints a result that is already on the row.
+type UpdateOutcome = { code: string; version?: string }
+
 export function SettingsScreen ({ navigation }: Props) {
+  const { t } = useI18n()
   const [username, setUsername] = useState<string | null>(backend.creds?.username ?? null)
   const [channels, setChannels] = useState(backend.streams.length)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
@@ -42,7 +49,7 @@ export function SettingsScreen ({ navigation }: Props) {
   // OTA updates: the installed build's native version (null while resolving / no
   // installer module) + the manual check's one-line outcome.
   const [appVersion, setAppVersion] = useState<string | null>(null)
-  const [updateStatus, setUpdateStatus] = useState<string | null>(null)
+  const [updateStatus, setUpdateStatus] = useState<UpdateOutcome | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -56,15 +63,15 @@ export function SettingsScreen ({ navigation }: Props) {
   // the App-level update banner via update.ts's shared listener — the status line
   // here just says what happened in words.
   async function checkUpdates () {
-    setUpdateStatus('Checking…')
+    setUpdateStatus({ code: 'checking' })
     try {
       const res = await checkForUpdate({ force: true })
-      if (res == null) setUpdateStatus(hasBakedKey() || backend.service ? 'Updates are not available on this build.' : 'Connect to a service first.')
-      else if (res.status === 'available') setUpdateStatus(`A new version is available: ${res.entry?.versionName ?? ''}.`)
-      else if (res.status === 'current' || res.status === 'none') setUpdateStatus('You have the newest version.')
-      else setUpdateStatus('The check is not possible now. Try again later.')
+      if (res == null) setUpdateStatus({ code: hasBakedKey() || backend.service ? 'unsupported' : 'connectFirst' })
+      else if (res.status === 'available') setUpdateStatus({ code: 'available', version: res.entry?.versionName ?? '' })
+      else if (res.status === 'current' || res.status === 'none') setUpdateStatus({ code: 'current' })
+      else setUpdateStatus({ code: 'failed' })
     } catch {
-      setUpdateStatus('The check is not possible now. Try again later.')
+      setUpdateStatus({ code: 'failed' })
     }
   }
 
@@ -108,64 +115,64 @@ export function SettingsScreen ({ navigation }: Props) {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.header}>SETTINGS</Text>
+      <Text style={styles.header}>{t('settings.header')}</Text>
 
-      <Text style={styles.groupTitle}>ACCOUNT</Text>
+      <Text style={styles.groupTitle}>{t('settings.group.account')}</Text>
       <View style={styles.group}>
-        <Row label="Signed in as" value={username ?? '—'} />
-        <Row label="Entitled channels" value={String(channels)} />
+        <Row label={t('settings.signedInAs')} value={username ?? '—'} />
+        <Row label={t('settings.entitledChannels')} value={String(channels)} />
       </View>
 
-      <Text style={styles.groupTitle}>PLAYBACK</Text>
+      <Text style={styles.groupTitle}>{t('settings.group.playback')}</Text>
       <View style={styles.group}>
         <ToggleRow
-          label="Smooth zapping"
-          hint="Preloads nearby channels while you watch, so channel surfing starts instantly. Uses more data; pauses itself on metered connections or when your stream is struggling."
+          label={t('settings.smoothZap')}
+          hint={t('settings.smoothZapHint')}
           value={smoothZap}
           onToggle={toggleSmoothZap}
         />
       </View>
 
-      <Text style={styles.groupTitle}>PARENTAL CONTROLS</Text>
+      <Text style={styles.groupTitle}>{t('settings.group.parental')}</Text>
       <View style={styles.group}>
         {!parental && (
           <>
-            <Row label="PIN" value="not set — access-controlled channels are hidden" />
-            <ActionRow label="Set PIN…" onPress={() => setPinModal({ kind: 'setup' })} />
+            <Row label={t('settings.pin')} value={t('settings.pinNotSet')} />
+            <ActionRow label={t('settings.setPin')} onPress={() => setPinModal({ kind: 'setup' })} />
           </>
         )}
         {parental && (
           <>
             <ToggleRow
-              label="Hide restricted channels"
-              hint="Off: access-controlled channels show in the lists and ask for the PIN before playing. On: they disappear from the lists entirely. Changing this asks for the PIN."
+              label={t('settings.hideRestricted')}
+              hint={t('settings.hideRestrictedHint')}
               value={parental.hide}
               onToggle={() => setPinModal({ kind: 'verify', then: 'toggle' })}
             />
-            <ActionRow label="Change PIN…" onPress={() => setPinModal({ kind: 'change' })} />
-            <ActionRow label="Remove PIN…" onPress={() => setPinModal({ kind: 'verify', then: 'remove' })} danger />
+            <ActionRow label={t('settings.changePin')} onPress={() => setPinModal({ kind: 'change' })} />
+            <ActionRow label={t('settings.removePin')} onPress={() => setPinModal({ kind: 'verify', then: 'remove' })} danger />
           </>
         )}
       </View>
 
-      <Text style={styles.groupTitle}>SERVICE</Text>
+      <Text style={styles.groupTitle}>{t('settings.group.service')}</Text>
       <View style={styles.group}>
-        <Row label="Service" value={(hasBakedKey() ? service.name : backend.service?.name) ?? service.name} />
-        <Row label="Panel key" value={panelKeyLabel()} />
-        <Row label="Playback" value={service.hybrid?.mode ?? 'p2p-only'} />
+        <Row label={t('settings.service')} value={(hasBakedKey() ? service.name : backend.service?.name) ?? service.name} />
+        <Row label={t('settings.panelKey')} value={panelKeyLabel()} />
+        <Row label={t('settings.playback')} value={service.hybrid?.mode ?? 'p2p-only'} />
       </View>
 
-      <Text style={styles.groupTitle}>UPDATES</Text>
+      <Text style={styles.groupTitle}>{t('settings.group.updates')}</Text>
       <View style={styles.group}>
-        <Row label="App version" value={appVersion ?? '—'} />
-        <ActionRow label="Check for updates…" onPress={checkUpdates} />
-        {updateStatus != null && <Row label="Result" value={updateStatus} />}
+        <Row label={t('settings.appVersion')} value={appVersion ?? '—'} />
+        <ActionRow label={t('settings.checkUpdates')} onPress={checkUpdates} />
+        {updateStatus != null && <Row label={t('settings.result')} value={t('settings.update.' + updateStatus.code, { version: updateStatus.version ?? '' })} />}
       </View>
 
-      <Text style={styles.groupTitle}>DIAGNOSTICS</Text>
+      <Text style={styles.groupTitle}>{t('settings.group.diagnostics')}</Text>
       <View style={styles.group}>
-        <Row label="Active source" value={source ? source.toUpperCase() : '—'} />
-        <Row label="Peers" value={peers != null ? String(peers) : '—'} />
+        <Row label={t('settings.activeSource')} value={source ? source.toUpperCase() : '—'} />
+        <Row label={t('settings.peers')} value={peers != null ? String(peers) : '—'} />
       </View>
 
       {/* "Report a problem" moved to the player (S51): the report must carry the
@@ -177,9 +184,9 @@ export function SettingsScreen ({ navigation }: Props) {
         onBlur={() => setSignOutFocused(false)}
         onPress={signOut}
       >
-        <Text style={styles.signOutText}>Sign out</Text>
+        <Text style={styles.signOutText}>{t('settings.signOut')}</Text>
       </Pressable>
-      <Text style={styles.signOutHint}>Sign out forgets the saved sign-in on this device.</Text>
+      <Text style={styles.signOutHint}>{t('settings.signOutHint')}</Text>
 
       {!hasBakedKey() && (
         <>
@@ -189,9 +196,9 @@ export function SettingsScreen ({ navigation }: Props) {
             onBlur={() => setChangeFocused(false)}
             onPress={changeService}
           >
-            <Text style={styles.signOutText}>Change service…</Text>
+            <Text style={styles.signOutText}>{t('settings.changeService')}</Text>
           </Pressable>
-          <Text style={styles.signOutHint}>Forgets this service's panel key and sign-in, then returns to the Connect screen.</Text>
+          <Text style={styles.signOutHint}>{t('settings.changeServiceHint')}</Text>
         </>
       )}
 
@@ -203,10 +210,10 @@ export function SettingsScreen ({ navigation }: Props) {
       />
       <PinEntryModal
         visible={pinModal?.kind === 'verify'}
-        title={pinModal?.kind === 'verify' && pinModal.then === 'remove' ? 'Remove PIN' : 'Hide restricted channels'}
+        title={pinModal?.kind === 'verify' && pinModal.then === 'remove' ? t('settings.removePinTitle') : t('settings.hideRestricted')}
         hint={pinModal?.kind === 'verify' && pinModal.then === 'remove'
-          ? 'Enter the current PIN to remove it. Access-controlled channels go back to being hidden.'
-          : 'Enter the PIN to change the visibility of access-controlled channels.'}
+          ? t('settings.removePinHint')
+          : t('settings.hideRestrictedPinHint')}
         onOk={() => {
           if (pinModal?.kind === 'verify') {
             if (pinModal.then === 'remove') backend.parentalClear()
@@ -254,6 +261,7 @@ function Row ({ label, value }: { label: string; value: string }) {
 // Focusable settings switch (phone tap + TV d-pad select). Rendered as a pill so the
 // state reads at TV distance; the hint explains the data cost per the S21 brief.
 function ToggleRow ({ label, hint, value, onToggle }: { label: string; hint: string; value: boolean; onToggle: () => void }) {
+  const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
@@ -269,7 +277,7 @@ function ToggleRow ({ label, hint, value, onToggle }: { label: string; hint: str
         <Text style={styles.toggleHint}>{hint}</Text>
       </View>
       <View style={[styles.togglePill, value && styles.togglePillOn]}>
-        <Text style={[styles.togglePillText, value && styles.togglePillTextOn]}>{value ? 'ON' : 'OFF'}</Text>
+        <Text style={[styles.togglePillText, value && styles.togglePillTextOn]}>{value ? t('common.on') : t('common.off')}</Text>
       </View>
     </Pressable>
   )
