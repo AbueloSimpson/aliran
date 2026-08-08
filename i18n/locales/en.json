@@ -135,6 +135,8 @@
   "search.header": "SEARCH",
   "search.placeholder": "Channel, program or category…",
   "search.noResults": "No channels match \"{query}\"",
+  "search.resultsHeading": "RESULTS ({count})",
+  "search.allChannels": "ALL CHANNELS",
 
   "pin.label": "PIN",
   "pin.current": "Current PIN",
