@@ -392,6 +392,34 @@ need when you [publish the APK as an update](app-updates.md).
 - **Do not share the keystore.** The holder of the key can sign updates
   that your installed apps accept.
 
+### Safe backup in a private git repository
+
+A private repository is a good backup location — but only for an
+encrypted copy. Repository access alone must not give a person your
+signing identity.
+
+1. Use a long random keystore password (20 or more characters, from a
+   password manager). The keystore file is an encrypted container. Its
+   strength is the strength of this password.
+2. Encrypt the keystore file one more time, with a different passphrase:
+
+   ```bash
+   openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -in release.keystore -out release.keystore.enc
+   ```
+
+3. Commit only the `.enc` file. Never commit the plain keystore.
+4. Keep both passwords in a password manager. Do not keep them in any
+   repository, and do not keep them in a file beside the `.enc` file.
+
+To restore the keystore on a new machine:
+
+```bash
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in release.keystore.enc -out release.keystore
+```
+
+If you rotate the keystore, encrypt and commit the new file. Remove the
+old `.enc` files, so no copy remains that needs a forgotten passphrase.
+
 ### Version each release
 
 Increase `versionCode` on every release — installed apps only offer an
