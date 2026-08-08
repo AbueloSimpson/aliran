@@ -3,15 +3,20 @@
 // Desktop port of client/src/catalog.ts — keep the two in step when curation rules
 // change (they implement the same S16c/S18/S27j/S8a contracts).
 
+import { getLocale } from '@aliran/i18n'
 import type { Stream } from './types'
 
 // Panel curation sort: (order ?? Infinity, title). Stable for equal keys.
+// The title tie-break sorts in the VIEWER's locale (S56 design D9): collation is not
+// universal — Swedish files "ä" after "z", Turkish files "ı" before "i" — and the list
+// a viewer scans should be alphabetical to THEM. Engines without a real collator ignore
+// the argument and fall back to code-point order, which is what they did before.
 export function sortByCuration (streams: Stream[]): Stream[] {
   return [...streams].sort((a, b) => {
     const ao = a.order ?? Infinity
     const bo = b.order ?? Infinity
     if (ao !== bo) return ao - bo
-    return (a.title || '').localeCompare(b.title || '')
+    return (a.title || '').localeCompare(b.title || '', getLocale())
   })
 }
 
