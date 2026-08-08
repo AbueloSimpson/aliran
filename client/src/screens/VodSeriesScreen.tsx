@@ -24,6 +24,7 @@ import { View, Text, Image, Pressable, ScrollView, ActivityIndicator, StyleSheet
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import type { VodConfig, VodHistoryEntry, VodListEntry } from '@aliran/react-native'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { getSeriesInfo, type VodEpisode, type VodErrorCode, type VodSeason, type VodSeriesDetail } from '../vod/zencontent'
 import { formatDuration } from '../catalog'
@@ -58,14 +59,20 @@ export function episodeTitle (seriesName: string, seasonNumber: number, ep: Pick
 }
 
 /** Honest, named failure states — the viewer is told which of the two things broke, and
- *  never sees a provider message or an HTTP code (the VodScreen wording, for series). */
-function errorText (error: VodErrorCode): { title: string; hint: string } {
-  if (error === 'auth') return { title: "Couldn't sign in to the movie catalog", hint: 'Your account was not accepted by the provider. Contact your service.' }
-  if (error === 'network') return { title: "Couldn't reach the movie catalog", hint: 'Check your connection and try again in a moment.' }
-  return { title: 'The movie catalog answered unexpectedly', hint: 'Nothing to show right now — try again later.' }
+ *  never sees a provider message or an HTTP code (the VodScreen wording, for series —
+ *  literally so: both screens read the same vod.error.* keys). */
+function errorText (t: ReturnType<typeof useI18n>['t'], error: VodErrorCode): { title: string; hint: string } {
+  if (error === 'auth') return { title: t('vod.error.authTitle'), hint: t('vod.error.authHint') }
+  if (error === 'network') return { title: t('vod.error.networkTitle'), hint: t('vod.error.networkHint') }
+  return { title: t('vod.error.otherTitle'), hint: t('vod.error.otherHint') }
 }
 
+/** The four things this screen says for itself, held by NAME so the line is looked up
+ *  at render — see t('vod.series.notice.' + …). */
+type Notice = 'noVideo' | 'noEpisodes' | 'listAdded' | 'listRemoved'
+
 export function VodSeriesScreen ({ navigation, route }: Props) {
+  const { t } = useI18n()
   const { id, name, icon, anio } = route.params
   // Login-scoped, exactly as on the grid: the coordinates ride the 'streams' message.
   const config: VodConfig | null = backend.vod ?? null
@@ -74,7 +81,7 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
   const [error, setError] = useState<VodErrorCode | null>(null)
   const [seasonId, setSeasonId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<Notice | null>(null)
   // Device-local (D9). Seeded from the backend's cached prefs and kept current from the
   // 'prefs' reply — which is the TRUTH: the worklet gates and caps what it stored.
   const [myList, setMyList] = useState<VodListEntry[]>(backend.vodList || [])
@@ -140,7 +147,7 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
     if (!episode.url) {
       // D3: a non-https (or absent) provider path never becomes a playback attempt —
       // this app will not put a viewer's password on a cleartext URL.
-      setNotice('This episode has no playable video yet. Try another one.')
+      setNotice('noVideo')
       return
     }
     setNotice(null)
@@ -168,7 +175,7 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
       ? detail.episodes.find((e) => e.seasonId === firstSeason.id) ?? detail.episodes[0]
       : detail.episodes[0]
     if (first) play(first)
-    else setNotice('This series has no episodes yet.')
+    else setNotice('noEpisodes')
   }, [detail, lastWatched, play])
 
   // My List: whole-array replace, newest first (D9). The optimistic local state keeps the
@@ -177,7 +184,7 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
     const rest = (myList || []).filter((e) => !(e && e.kind === 'series' && e.id === id))
     const next: VodListEntry[] = saved ? rest : [{ kind: 'series', id }, ...rest]
     setMyList(next)
-    setNotice(saved ? 'Removed from My List.' : 'Added to My List.')
+    setNotice(saved ? 'listRemoved' : 'listAdded')
     try { backend.setVodList(next) } catch { /* device-local convenience, never fatal */ }
   }, [myList, saved, id])
 
@@ -211,7 +218,7 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
                 accessibilityRole="button"
                 onPress={() => setExpanded((v) => !v)}
               >
-                <Text style={styles.moreText}>{expanded ? 'LESS' : 'MORE'}</Text>
+                <Text style={styles.moreText}>{expanded ? t('vod.series.less') : t('vod.series.more')}</Text>
               </Pressable>
             </>
           )}
@@ -221,27 +228,27 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
   }
 
   function renderDetail () {
-    if (!config) return <Centered title="Not available" hint="This service has no movie provider configured." />
-    if (error) return <Centered {...errorText(error)} />
+    if (!config) return <Centered title={t('vod.empty.noProviderTitle')} hint={t('vod.empty.noProviderHint')} />
+    if (error) return <Centered {...errorText(t, error)} />
     if (!detail) {
       return (
         <View style={styles.center}>
           <ActivityIndicator color={theme.colors.accent} />
-          <Text style={styles.hint}>Loading episodes…</Text>
+          <Text style={styles.hint}>{t('vod.series.loading')}</Text>
         </View>
       )
     }
     return (
       <>
         <FocusPane style={styles.actions}>
-          <ActionButton label="Start" primary preferred onPress={start} />
-          <ActionButton label={saved ? 'Remove from My List' : 'Add to My List'} onPress={toggleSaved} />
-          <ActionButton label="Back" onPress={() => navigation.goBack()} />
+          <ActionButton label={t('vod.series.start')} primary preferred onPress={start} />
+          <ActionButton label={saved ? t('vod.series.removeFromList') : t('vod.series.addToList')} onPress={toggleSaved} />
+          <ActionButton label={t('common.back')} onPress={() => navigation.goBack()} />
         </FocusPane>
 
         {seasons.length > 0 && (
           <>
-            <Text style={styles.section}>SEASONS</Text>
+            <Text style={styles.section}>{t('vod.series.seasons')}</Text>
             <FocusPane style={styles.seasonRow}>
               {seasons.map((s) => (
                 <SeasonTile
@@ -255,9 +262,9 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
           </>
         )}
 
-        <Text style={styles.section}>EPISODES</Text>
+        <Text style={styles.section}>{t('vod.series.episodes')}</Text>
         {episodes.length === 0
-          ? <Text style={styles.hint}>This season has no episodes yet.</Text>
+          ? <Text style={styles.hint}>{t('vod.series.emptySeason')}</Text>
           : (
             <FocusPane style={styles.episodes}>
               {episodes.map((e) => (
@@ -272,7 +279,7 @@ export function VodSeriesScreen ({ navigation, route }: Props) {
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll}>
-        {!!notice && <Text style={styles.notice}>{notice}</Text>}
+        {!!notice && <Text style={styles.notice}>{t('vod.series.notice.' + notice)}</Text>}
         {renderHeader()}
         {renderDetail()}
       </ScrollView>
@@ -322,10 +329,12 @@ function ActionButton ({ label, primary, preferred, onPress }: { label: string; 
 // A season tile wears the poster tile's clothes plus the mockup's episode-count badge in
 // the top-right corner of the art.
 function SeasonTile ({ season, active, onPress }: { season: VodSeason; active: boolean; onPress: () => void }) {
+  const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   const [broken, setBroken] = useState(false)
   const showArt = !!season.icon && !broken
-  const label = season.title || `Season ${season.number || 1}`
+  // The provider's own season title wins when it has one; the numbered fallback is ours.
+  const label = season.title || t('vod.series.season', { n: season.number || 1 })
   return (
     <Pressable
       style={styles.seasonTile}
@@ -350,10 +359,11 @@ function SeasonTile ({ season, active, onPress }: { season: VodSeason; active: b
 // One episode: number + title, the runtime as a chip, one line of plot, and this
 // DEVICE's own progress ("Resume at 12:34" / "Watched").
 function EpisodeRow ({ episode, seen, onPress }: { episode: VodEpisode; seen: VodHistoryEntry | null; onPress: () => void }) {
+  const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   const duration = episode.durationSec && episode.durationSec > 0 ? formatDuration(episode.durationSec) : ''
   const progress = seen
-    ? (seen.positionSec > 0 ? `Resume at ${formatDuration(seen.positionSec)}` : 'Watched')
+    ? (seen.positionSec > 0 ? t('vod.series.resumeAt', { time: formatDuration(seen.positionSec) }) : t('vod.series.watched'))
     : ''
   return (
     <Pressable
@@ -365,7 +375,7 @@ function EpisodeRow ({ episode, seen, onPress }: { episode: VodEpisode; seen: Vo
     >
       <Text style={styles.episodeNum}>{episode.number || '-'}</Text>
       <View style={styles.episodeBody}>
-        <Text style={styles.episodeTitle} numberOfLines={1}>{episode.title || `Episode ${episode.number || ''}`.trim()}</Text>
+        <Text style={styles.episodeTitle} numberOfLines={1}>{episode.title || t('vod.series.episode', { n: episode.number || '' }).trim()}</Text>
         {!!episode.plot && <Text style={styles.episodePlot} numberOfLines={2}>{episode.plot}</Text>}
       </View>
       <View style={styles.episodeSide}>

@@ -208,5 +208,23 @@
   "vod.error.networkTitle": "Couldn't reach the movie catalog",
   "vod.error.networkHint": "Check your connection and try again in a moment.",
   "vod.error.otherTitle": "The movie catalog answered unexpectedly",
-  "vod.error.otherHint": "Nothing to show right now — try again later."
+  "vod.error.otherHint": "Nothing to show right now — try again later.",
+
+  "vod.series.loading": "Loading episodes…",
+  "vod.series.more": "MORE",
+  "vod.series.less": "LESS",
+  "vod.series.start": "Start",
+  "vod.series.addToList": "Add to My List",
+  "vod.series.removeFromList": "Remove from My List",
+  "vod.series.seasons": "SEASONS",
+  "vod.series.episodes": "EPISODES",
+  "vod.series.season": "Season {n}",
+  "vod.series.episode": "Episode {n}",
+  "vod.series.emptySeason": "This season has no episodes yet.",
+  "vod.series.resumeAt": "Resume at {time}",
+  "vod.series.watched": "Watched",
+  "vod.series.notice.noVideo": "This episode has no playable video yet. Try another one.",
+  "vod.series.notice.noEpisodes": "This series has no episodes yet.",
+  "vod.series.notice.listAdded": "Added to My List.",
+  "vod.series.notice.listRemoved": "Removed from My List."
 }
