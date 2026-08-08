@@ -1,0 +1,21 @@
+{
+  "name": "@aliran/i18n",
+  "version": "0.1.0",
+  "description": "Aliran viewer i18n — zero-dependency translation runtime, React hook and locale catalogs shared by the mobile/TV and desktop apps",
+  "license": "MIT",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": [
+    "src",
+    "locales",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "comment": "Ships TypeScript source with NO build step — both viewer apps consume it directly (Metro reads it through client/metro.config.js watchFolders, esbuild bundles TS+JSON natively for the desktop renderer), the same arrangement as sdk/react-native. Operator surfaces (panel/ broadcaster/ reseller/ library/) stay English and must NOT depend on this package."
+}

@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@aliran/client-backend": "file:./backend",
+    "@aliran/i18n": "file:../i18n",
     "@aliran/react-native": "file:../sdk/react-native",
     "@react-native-community/netinfo": "^11.5.2",
     "@react-native/new-app-screen": "0.83.0",
