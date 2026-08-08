@@ -124,6 +124,12 @@ jobs:
       # `restricted` channel and a viewer who was never meant to see it.
       - name: Desktop parental controls (test:desktop-parental)
         run: npm run test:desktop-parental
+      # Viewer translation catalogs (S56a): key/placeholder/plural parity across the
+      # 14 locales, the report-copy pins against the never-touch label table, and a
+      # scan proving no t()/tn() call site names a key that does not exist. Reads
+      # files only — no bundler, no app, no network.
+      - name: Translation catalogs (test:i18n)
+        run: npm run test:i18n
       # Reseller panel: pure logic (roles, credit ledger, store) …
       - name: Reseller panel units (test:reseller-unit)
         run: npm run test:reseller-unit
