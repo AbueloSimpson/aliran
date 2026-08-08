@@ -61,8 +61,8 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
   // Viewers read "Spanish", not "spa t2" — full language names from the track's code,
   // the provider's own title only when the code resolves to nothing (lang.ts).
   // The numbered last resort ('Subtitle 2') is the one word in a track label this app
-  // owns — the language names themselves come from lang.ts (S56f makes those follow the
-  // locale), and a provider's own title is never translated.
+  // owns — the language names themselves come from lang.ts, which follows the viewer's
+  // locale (S56f/D8), and a provider's own title is never translated.
   const textLabels = trackDisplayLabels(textTracks, t('tracks.subtitleFallback'))
   const audioLabels = trackDisplayLabels(audioTracks, t('tracks.audioFallback'))
 

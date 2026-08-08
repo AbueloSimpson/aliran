@@ -4,6 +4,11 @@
 // has it (desktop Chromium, jest's node); Hermes on Android may not, so a static map
 // of the codes that actually occur in the wild backs it up. MIRRORED in
 // desktop/renderer/src/lang.ts — keep the two copies in step.
+//
+// S56f/D8: the names follow the viewer's UI language where the engine can translate
+// them — a Turkish viewer reads "İspanyolca". The English table below is what an engine
+// without Intl.DisplayNames falls back to, so it stays exactly as it is.
+import { getLocale } from '@aliran/i18n'
 
 const NAMES: Record<string, string> = {
   en: 'English', eng: 'English',
@@ -54,25 +59,37 @@ const NAMES: Record<string, string> = {
   fil: 'Filipino', tl: 'Filipino'
 }
 
-/** "spa" → "Spanish", "pt-BR" → "Portuguese (BR)". Unknown/absent code → null. */
-export function languageName (code: string | null | undefined): string | null {
+/** `Intl.DisplayNames` in one guarded call, or null. Guarded twice over: Hermes may not
+ *  ship DisplayNames at all, and `of()` throws on the malformed codes providers emit. */
+function displayName (key: string, locale: string): string | null {
+  try {
+    const DN = (Intl as unknown as { DisplayNames?: new (l: string[], o: { type: string }) => { of (c: string): string | undefined } }).DisplayNames
+    if (typeof DN !== 'function') return null
+    const resolved = new DN([locale], { type: 'language' }).of(key)
+    // of() echoes the input back for unknown codes — an echo is not a name.
+    return resolved && resolved.toLowerCase() !== key ? resolved : null
+  } catch { return null } /* invalid code, unknown locale or no Intl */
+}
+
+/**
+ * "spa" → "Spanish", "pt-BR" → "Portuguese (BR)". Unknown/absent code → null.
+ *
+ * In the viewer's own language when the engine can: `locale` defaults to the UI locale,
+ * and a non-English one asks Intl.DisplayNames FIRST ("İspanyolca" for a Turkish
+ * viewer). English — and any engine without DisplayNames — takes the static table, then
+ * English DisplayNames for the codes the table does not carry. The region suffix stays
+ * ASCII-uppercased on purpose: it is a BCP-47 subtag, not prose, and Turkish casing
+ * would turn "(IT)" into "(İT)".
+ */
+export function languageName (code: string | null | undefined, locale: string = getLocale()): string | null {
   if (!code || typeof code !== 'string') return null
   const trimmed = code.trim()
   if (!trimmed) return null
   const [base, region] = trimmed.replace(/_/g, '-').split('-')
   const key = base.toLowerCase()
-  let name = NAMES[key] ?? null
-  if (name === null) {
-    // Engines with Intl.DisplayNames resolve anything the map does not carry.
-    try {
-      const DN = (Intl as unknown as { DisplayNames?: new (l: string[], o: { type: string }) => { of (c: string): string | undefined } }).DisplayNames
-      if (DN) {
-        const resolved = new DN(['en'], { type: 'language' }).of(key)
-        // of() echoes the input back for unknown codes — an echo is not a name.
-        if (resolved && resolved.toLowerCase() !== key) name = resolved
-      }
-    } catch { /* invalid code or no Intl — fall through */ }
-  }
+  let name = locale !== 'en' ? displayName(key, locale) : null
+  if (name === null) name = NAMES[key] ?? null
+  if (name === null) name = displayName(key, 'en')
   if (name === null) return null
   return region ? `${name} (${region.toUpperCase()})` : name
 }
