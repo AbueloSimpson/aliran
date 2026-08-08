@@ -22,5 +22,5 @@ export type { ReportCategory, ReportError } from './report'
 // build identity for backend.checkUpdate(), the install-permission gate, and the
 // PackageInstaller handoff for the verified file 'update-ready' points at. Safe to
 // call anywhere — degrades gracefully where the module is absent. See src/update.ts.
-export { getAppInfo, canRequestInstall, openInstallSettings, installApk } from './update'
+export { getAppInfo, canRequestInstall, openInstallSettings, installApk, onInstallResult } from './update'
 export type { NativeAppInfo } from './update'

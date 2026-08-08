@@ -9,7 +9,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { View, Text, Pressable, StyleSheet } from 'react-native'
-import { canRequestInstall, installApk, openInstallSettings, type UpdateEntry } from '@aliran/react-native'
+import { canRequestInstall, installApk, onInstallResult, openInstallSettings, type UpdateEntry } from '@aliran/react-native'
 import { backend } from '../worklet'
 import { theme } from '../theme'
 
@@ -79,6 +79,20 @@ export function UpdateBanner ({ entry, mandatory, onDismiss }: UpdateBannerProps
       setPhase('error')
     }
   }
+
+  // The handoff is not the outcome: the OS reports the terminal verdict later
+  // (e.g. a signature refusal AFTER the viewer confirms). Without this listener
+  // the banner waits on "Starting the installer…" forever (found on-device).
+  // A success needs no handling — the update replaces the process.
+  useEffect(() => {
+    const off = onInstallResult((r) => {
+      if (!r.success) {
+        setError(r.message || 'The install did not complete.')
+        setPhase('error')
+      }
+    })
+    return off
+  }, [])
 
   const sizeMb = entry.size > 0 ? Math.max(1, Math.round(entry.size / 1048576)) : null
 

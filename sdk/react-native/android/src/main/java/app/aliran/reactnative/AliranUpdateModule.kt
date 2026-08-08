@@ -15,6 +15,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
 import java.io.FileInputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -145,31 +146,43 @@ class AliranUpdateModule(reactContext: ReactApplicationContext) : ReactContextBa
           when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
               // The OS wrapped its confirmation UI in EXTRA_INTENT — launch it and
-              // report the handoff. From here the platform installer owns the flow.
+              // report the handoff. The receiver stays REGISTERED: the terminal
+              // status (success, or e.g. a signature refusal after the user
+              // confirms) arrives through this same PendingIntent later, and the
+              // promise is already settled by then — it goes out as an event.
               val confirm: Intent? =
                 if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
                 else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
+              var launched = false
               try {
                 if (confirm != null) {
                   confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                   context.startActivity(confirm)
+                  launched = true
                 }
-              } catch (_: Exception) {
-                // Launch failed (background restriction) — the session stays pending
-                // in the OS; still report the handoff rather than a phantom error.
+              } catch (_: Exception) {}
+              if (launched) {
+                resolveOnce()
+              } else {
+                // No confirmation UI reached the screen — the session is stuck
+                // pending in the OS with nothing visible. A silent resolve here
+                // leaves the app UI waiting forever (found on-device, S22 pass).
+                unregisterQuietly(ctx, this)
+                try { installer.abandonSession(sessionId) } catch (_: Exception) {}
+                rejectOnce("could not open the system installer — try again from the app")
               }
-              unregisterQuietly(ctx, this)
-              resolveOnce()
             }
             PackageInstaller.STATUS_SUCCESS -> {
               unregisterQuietly(ctx, this)
               resolveOnce()
+              emitInstallResult(ctx, true, null)
             }
             else -> {
               unregisterQuietly(ctx, this)
               val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
                 ?: "install failed (status $status)"
               rejectOnce(msg)
+              emitInstallResult(ctx, false, msg)
             }
           }
         }
@@ -205,6 +218,19 @@ class AliranUpdateModule(reactContext: ReactApplicationContext) : ReactContextBa
 
   private fun unregisterQuietly(ctx: ReactApplicationContext, receiver: BroadcastReceiver) {
     try { ctx.unregisterReceiver(receiver) } catch (_: Exception) {}
+  }
+
+  // Terminal install verdicts arrive AFTER installApk()'s promise settled at the
+  // user-action handoff, so they travel as an event. A successful update replaces
+  // the process before this can fire — in practice only failures are ever heard.
+  private fun emitInstallResult(ctx: ReactApplicationContext, ok: Boolean, message: String?) {
+    try {
+      val map = Arguments.createMap()
+      map.putBoolean("success", ok)
+      if (message != null) map.putString("message", message)
+      ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit("aliranUpdateInstallResult", map)
+    } catch (_: Exception) {}
   }
 
   companion object {

@@ -11,7 +11,7 @@
 // openInstallSettings() → installApk(path). The engine sha256-verifies before
 // 'update-ready'; Android's same-signer check is the final backstop.
 
-import { NativeModules, Platform } from 'react-native'
+import { DeviceEventEmitter, NativeModules, Platform } from 'react-native'
 
 /** What the running APK says about itself. Native and flavor-aware: packageName is
  *  the brand applicationId — exactly the appId the panel's updates manifest keys on —
@@ -67,4 +67,14 @@ export function installApk (path: string): Promise<boolean> {
   const m = native()
   if (!m) return Promise.reject(new Error('APK installer unavailable on this platform'))
   return m.installApk(path)
+}
+
+/** The install's TERMINAL verdict. installApk() resolves at the confirmation-UI
+ *  handoff, but the OS reports the real outcome later through the same session —
+ *  e.g. a same-signer refusal after the viewer confirms. A successful update
+ *  replaces the process before this can fire, so in practice only failures are
+ *  heard. Returns an unsubscribe. */
+export function onInstallResult (cb: (r: { success: boolean, message?: string }) => void): () => void {
+  const sub = DeviceEventEmitter.addListener('aliranUpdateInstallResult', cb)
+  return () => sub.remove()
 }
