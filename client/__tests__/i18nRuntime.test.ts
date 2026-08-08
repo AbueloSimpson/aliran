@@ -123,7 +123,7 @@ describe('t / tn', () => {
     expect(tn('nothing.here', 4)).toBe('nothing.here.few')
     expect(tn('nothing.here', 11)).toBe('nothing.here.many')
     setLocale('ja')
-    // Japanese sets a counter directly against the numeral — no space (S56g review).
-    expect(tn('live.peers', 4)).toBe('4ピア')
+    // Japanese needs a real counter, set against the numeral with no space (S56g).
+    expect(tn('live.peers', 4)).toBe('ピア4台')
   })
 })

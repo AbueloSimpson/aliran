@@ -136,11 +136,13 @@ export function resolveLocale (tag: string | null | undefined): Locale {
   return CODES.has(base) ? (base as Locale) : 'en'
 }
 
-/** CLDR's INTEGER plural categories for our 14 locales — the only ones a counted UI
- *  string can reach. Deliberately NOT the full CLDR rule set: the categories CLDR
- *  reserves for fractions (ru `other`) and for large compact numbers (fr/es/it/pt
- *  `many`) are absent, because negative and fractional counts fold onto the absolute
- *  value and the UI only ever counts whole things. */
+/** CLDR-exact for our 14 locales over the INTEGER counts this UI produces. Two
+ *  deliberate omissions: es/it/fr/pt drop CLDR's `many` (it fires only at 1e6 and its
+ *  multiples) and ru drops `other` (fractional counts only) — pluralForm() can never
+ *  select either, so carrying them would be dead strings AND a key-parity break in
+ *  tools/i18n-test.mjs. Do not "fix" the table against a CLDR chart. `pt` follows the
+ *  pt-BR rule, where `one` covers zero. Negative and fractional counts fold onto the
+ *  absolute value — the UI only ever counts things. */
 export function pluralForm (locale: Locale, n: number): PluralForm {
   const i = Math.abs(n)
   switch (locale) {
