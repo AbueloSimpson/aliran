@@ -13,6 +13,7 @@
   "common.mute": "Mute",
   "common.unmute": "Unmute",
   "common.save": "Save",
+  "common.volume": "Volume",
 
   "splash.connecting": "Connecting",
   "splash.authorizing": "Authorizing device",
@@ -125,6 +126,7 @@
   "tracks.off": "Off",
   "tracks.subtitleFallback": "Subtitle",
   "tracks.audioFallback": "Audio",
+  "tracks.trackFallback": "Track",
 
   "favorites.header": "FAVORITES",
   "favorites.empty": "No favorites yet",
@@ -256,5 +258,13 @@
   "update.installNow": "Install now",
   "update.later": "Later",
 
-  "hints.escBack": "{esc} back"
+  "hints.escBack": "{esc} back",
+  "hints.escClose": "{esc} close",
+  "hints.enterWatch": "{enter} watch",
+  "hints.arrowsBrowse": "{arrows} browse",
+  "hints.infoKeyClick": "{key} / right-click info",
+  "hints.keyFavorite": "{key} favorite",
+  "hints.retryEnter": "Pick the channel again to retry ({enter} opens the list).",
+  "hints.muteKey": "Mute ({key})",
+  "hints.unmuteKey": "Unmute ({key})"
 }

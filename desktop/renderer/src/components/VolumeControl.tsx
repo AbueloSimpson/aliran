@@ -3,6 +3,7 @@
 // localStorage — a presentation preference, renderer-owned, device-local.
 // Muting keeps the level so unmuting restores it; dragging while muted unmutes.
 import React from 'react'
+import { useI18n } from '@aliran/i18n'
 
 const KEY = 'aliran.volume'
 
@@ -27,11 +28,14 @@ export function VolumeControl ({ volume, muted, onChange }: {
   muted: boolean
   onChange: (volume: number, muted: boolean) => void
 }) {
+  const { t } = useI18n()
   return (
     <div className="np-volume">
       <button
         className="np-btn"
-        title={muted ? 'Unmute (m)' : 'Mute (m)'}
+        // The key token is a variable, not part of the sentence: 'm' is the same
+        // keyboard key in every language.
+        title={muted ? t('hints.unmuteKey', { key: 'm' }) : t('hints.muteKey', { key: 'm' })}
         onClick={() => onChange(volume, !muted)}
       >
         <span className="np-btn-glyph">{muted || volume === 0 ? '🔇' : '🔊'}</span>
@@ -42,7 +46,7 @@ export function VolumeControl ({ volume, muted, onChange }: {
         min={0}
         max={100}
         value={Math.round((muted ? 0 : volume) * 100)}
-        aria-label="Volume"
+        aria-label={t('common.volume')}
         onChange={(e) => onChange(Number(e.target.value) / 100, false)}
       />
     </div>

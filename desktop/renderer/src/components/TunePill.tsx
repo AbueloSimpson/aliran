@@ -9,18 +9,15 @@
 // on the tune id. Purely presentational — pointer-events none.
 
 import React, { useEffect, useRef, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber } from '../catalog'
 
 const TICK_MS = 140
 const HOLD_MS = 450 // keep the completed bar up briefly so 100% is actually seen
 
+// The phase is a CATALOG LEAF (live.phase.<phase>), never a label: the word is looked
+// up at render, so a language change repaints a pill that is already on screen.
 export type TunePillPhase = 'tuning' | 'retune' | 'reconnect'
-
-const LABELS: Record<TunePillPhase, string> = {
-  tuning: 'Tuning',
-  retune: 'Retuning',
-  reconnect: 'Reconnecting'
-}
 
 export function TunePill ({ active, phase = 'tuning', number, title }: {
   active: boolean
@@ -28,6 +25,7 @@ export function TunePill ({ active, phase = 'tuning', number, title }: {
   number?: number
   title?: string
 }) {
+  const { t } = useI18n()
   const [progress, setProgress] = useState(0)
   const [visible, setVisible] = useState(false)
   const shown = useRef(false)
@@ -63,7 +61,7 @@ export function TunePill ({ active, phase = 'tuning', number, title }: {
     <div className="tune-pill">
       <div className="tune-pill-row">
         <span className="spinner" />
-        <span className="tune-pill-label">{LABELS[phase]} {formatChannelNumber(number)}</span>
+        <span className="tune-pill-label">{t('live.phase.' + phase)} {formatChannelNumber(number)}</span>
         {showPct && <span className="tune-pill-pct">{pct}%</span>}
       </div>
       {title && <div className="tune-pill-title">{title}</div>}

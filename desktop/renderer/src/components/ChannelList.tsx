@@ -10,6 +10,7 @@
 // one, the station logo otherwise.
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
@@ -50,6 +51,7 @@ function useChannelThumb (thumbBase?: string): [string | null, () => void] {
 
 export interface ChannelListProps {
   streams: Stream[]
+  /** Panel heading. Absent = the generic "CHANNELS" from the catalog. */
   heading?: string
   numbers: Map<string, number>
   playingId: string | null
@@ -65,7 +67,8 @@ export interface ChannelListProps {
   active?: boolean
 }
 
-export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onClose, onActivity, active = true }: ChannelListProps) {
+export function ChannelList ({ streams, heading, numbers, playingId, favorites, onSelect, onInfo, onClose, onActivity, active = true }: ChannelListProps) {
+  const { t } = useI18n()
   const [focus, setFocus] = useState(() => {
     const i = streams.findIndex((s) => s.id === playingId)
     return i >= 0 ? i : 0
@@ -124,7 +127,7 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
 
   return (
     <div className="channel-list">
-      <div className="panel-heading">{heading}</div>
+      <div className="panel-heading">{heading ?? t('live.channels')}</div>
       <div
         className="channel-rows"
         ref={viewportRef}
@@ -150,7 +153,12 @@ export function ChannelList ({ streams, heading = 'CHANNELS', numbers, playingId
           })}
         </div>
       </div>
-      <div className="panel-hint">↑↓ browse · Enter watch{onInfo ? ' · i / right-click info' : ''} · Esc close</div>
+      {/* Key hints: each one is its own template with the key token supplied here, and
+          the " · " joins are punctuation the composing code owns — never copy. */}
+      <div className="panel-hint">
+        {t('hints.arrowsBrowse', { arrows: '↑↓' })} · {t('hints.enterWatch', { enter: 'Enter' })}
+        {onInfo ? ' · ' + t('hints.infoKeyClick', { key: 'i' }) : ''} · {t('hints.escClose', { esc: 'Esc' })}
+      </div>
     </div>
   )
 }
