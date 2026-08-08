@@ -36,7 +36,7 @@
 //                                        the player plays it directly, no localhost)
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
 //        { type:'prefs-get' }         -> { type:'prefs', creds, favorites, smoothZapping,
-//                                        service, vodList, vodHistory }
+//                                        service, vodList, vodHistory, language }
 //        { type:'creds-save', username, password } | { type:'creds-clear' }
 //        { type:'service-save', service: { panelPubKey, name? } } | { type:'service-clear' }
 //                                        (S36 runtime descriptor: the public keyless app
@@ -63,6 +63,12 @@
 //                                        from <AliranVideo>'s stall ladder)
 //        { type:'zap-prefetch-set', zapPrefetch }  -> runtime "Smooth zapping" toggle:
 //                                        boolean or config object, applied mid-play
+//        { type:'language-set', language }         -> the viewer's UI-language choice
+//                                        (S56e): one of the 14 supported codes, or null
+//                                        to clear the override and follow the DEVICE
+//                                        language again. Anything else is stored as
+//                                        null — an unknown code must never outlive the
+//                                        build that wrote it.
 //        { type:'net-info', expensive }            -> host network profile (NetInfo):
 //                                        expensive=true suspends zap prefetch
 //        { type:'update-check', appId, platform, versionCode, tag? }
@@ -109,8 +115,10 @@
 //        { type:'prefs', creds: {username,password}|null, favorites: [streamId],
 //          smoothZapping: true|false|null,   (null = user never set the toggle)
 //          service: {panelPubKey,name?}|null,   (runtime-entered operator service)
-//          vodList: […], vodHistory: […] }   (device-local VOD prefs, S54a — always
+//          vodList: […], vodHistory: […],   (device-local VOD prefs, S54a — always
 //          arrays, empty on a build that never wrote one)
+//          language: 'es'|…|null }   (S56e UI language; null = no override, the app
+//          follows the device language)
 //        { type:'report-result', ok, error?, retryAfter?, id? }   (answer to 'report';
 //          error 'unsupported' = the panel predates reports / has them disabled)
 //        { type:'update-status', status, entry?, mandatory?, error?, tag? }   (answer
@@ -242,6 +250,13 @@ function gateVodHistory (v) {
   return out
 }
 
+// The UI languages a viewer may pin (S56e). This is a RUNTIME-BOUNDARY DUPLICATE of
+// SUPPORTED_LOCALES in i18n/src/index.ts — the Bare worklet cannot import the app's
+// TypeScript — so tools/i18n-test.mjs asserts the two lists stay identical. Whitelisted
+// on READ as well as on write: the prefs file is plain JSON on the device, and a code
+// no build understands must resolve to "no override", never to a blank UI.
+const LANGUAGES = ['en', 'es', 'pt', 'fr', 'nl', 'de', 'it', 'ru', 'tr', 'hi', 'ja', 'zh-Hans', 'ko', 'th']
+
 function readPrefs () {
   try {
     const p = JSON.parse(b4a.toString(fs.readFileSync(prefsPath())))
@@ -251,6 +266,9 @@ function readPrefs () {
       // "Smooth zapping" toggle: null = the user never chose (boot uses the app's
       // compiled default), true/false = their persisted choice wins.
       smoothZapping: typeof (p && p.smoothZapping) === 'boolean' ? p.smoothZapping : null,
+      // UI language (S56e): null = the user never picked one, so the app follows the
+      // DEVICE language. A pinned code survives restarts and beats device detection.
+      language: LANGUAGES.includes(p && p.language) ? p.language : null,
       // Runtime service descriptor (S36): the operator panel key the public keyless
       // app connected to. Builds with a baked key ignore it (baked always wins).
       service: p && p.service && /^[0-9a-f]{64}$/.test(p.service.panelPubKey)
@@ -272,7 +290,7 @@ function readPrefs () {
         : null
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null }
+    return { creds: null, favorites: [], smoothZapping: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null }
   }
 }
 
@@ -427,6 +445,12 @@ IPC.on('data', (data) => {
       // overrides the compiled default at the next boot) and apply it mid-play.
       writePrefs({ ...readPrefs(), smoothZapping: !!msg.zapPrefetch })
       if (player) { try { player.setZapPrefetch(msg.zapPrefetch) } catch (err) { fail(err) } }
+      sendPrefs()
+    } else if (msg.type === 'language-set') {
+      // The viewer's UI language (S56e). Persist-only: nothing in the engine is
+      // localized, so this never touches the player. A null/absent/unknown code clears
+      // the override, which is what "Device language" sends.
+      writePrefs({ ...readPrefs(), language: LANGUAGES.includes(msg.language) ? msg.language : null })
       sendPrefs()
     } else if (msg.type === 'net-info') {
       if (player) {

@@ -21,6 +21,10 @@
 //      consent line and category labels are shown verbatim to viewers; the English
 //      catalog entries that replace them at render time must still equal them
 //      byte-for-byte. Only checked once those keys exist (they arrive in S56b).
+//   4b WORKLET WHITELIST. client/backend/backend.mjs gates the persisted `language`
+//      pref against its own copy of the locale codes (the Bare worklet cannot import
+//      the TypeScript runtime). Same duplicate-and-assert treatment: the two lists must
+//      stay identical, or a language the picker offers is silently not persisted.
 //   5  USAGE SCAN. Every key a t()/tn() call site names — literal, or a literal prefix
 //      with a runtime tail like t('report.category.' + c) — exists in en. Unused
 //      catalog keys are a warning, never a failure: en grows one screen at a time.
@@ -34,6 +38,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 const LOCALES_DIR = path.join(root, 'i18n', 'locales')
 const RUNTIME = path.join(root, 'i18n', 'src', 'index.ts')
 const REPORT_TS = path.join(root, 'sdk', 'react-native', 'src', 'report.ts')
+const WORKLET = path.join(root, 'client', 'backend', 'backend.mjs')
 const SCAN_DIRS = [path.join(root, 'client', 'src'), path.join(root, 'desktop', 'renderer', 'src')]
 const ALL_FORMS = ['one', 'few', 'many', 'other']
 
@@ -201,6 +206,34 @@ if (!labelKeys.length) {
     if (en[key] === undefined) fail(`en ${key} is missing — the category enum is extracted as a whole`)
     else check(en[key] === labels[c], `en ${key} is REPORT_CATEGORY_LABELS['${c}'] verbatim`)
   }
+}
+
+// ---- 4b. worklet language whitelist (client/backend/backend.mjs) --------------------
+
+console.log('\n4b. worklet language whitelist (client/backend/backend.mjs)')
+function runtimeLocaleCodes () {
+  const src = fs.readFileSync(RUNTIME, 'utf8')
+  const block = src.match(/export const SUPPORTED_LOCALES[^=]*=\s*\[([\s\S]*?)\n\]/)
+  if (!block) throw new Error('i18n/src/index.ts: SUPPORTED_LOCALES not found in a shape the guard can read')
+  return [...block[1].matchAll(/code:\s*'([\w-]+)'/g)].map((m) => m[1])
+}
+
+function workletLanguageCodes () {
+  const src = fs.readFileSync(WORKLET, 'utf8')
+  const block = src.match(/const LANGUAGES\s*=\s*\[([^\]]*)\]/)
+  if (!block) return null
+  return [...block[1].matchAll(/'([\w-]+)'/g)].map((m) => m[1])
+}
+
+const runtimeCodes = runtimeLocaleCodes()
+check(sorted(new Set(runtimeCodes)).join(',') === sorted(new Set(KNOWN)).join(','),
+  'SUPPORTED_LOCALES and PLURAL_FORMS cover the same locales')
+const workletCodes = workletLanguageCodes()
+if (!workletCodes) {
+  fail('client/backend/backend.mjs declares no LANGUAGES whitelist the guard can read')
+} else {
+  check(sorted(new Set(workletCodes)).join(',') === sorted(new Set(runtimeCodes)).join(','),
+    `the worklet persists exactly the ${runtimeCodes.length} locales the picker offers`)
 }
 
 // ---- 5. usage scan -------------------------------------------------------------------

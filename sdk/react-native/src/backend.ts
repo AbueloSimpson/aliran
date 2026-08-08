@@ -296,7 +296,9 @@ export type BackendMessage =
   // parental: the device parental-control state — null = no PIN on this device;
   // { hide } = a PIN exists (the digest itself never crosses into the RN layer).
   // Absent on worklet bundles older than the field — treat as null.
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null }
+  // language: the viewer's pinned UI language — null/absent = no override, so the host
+  // follows the DEVICE language (the worklet whitelists the code before it stores it).
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null }
   // Answer to parentalVerify(): did the submitted PIN match? tag echoes the request's.
   | { type: 'parental-verify'; ok: boolean; tag?: string }
   // Answer to resolvePairing(): the panel key a service pairing code stands for, after
@@ -384,6 +386,10 @@ export class AliranBackend {
   favorites: string[] = []
   /** Persisted "Smooth zapping" choice; null until the user first sets the toggle. */
   smoothZapping: boolean | null = null
+  /** The viewer's pinned UI language; null while they follow the device language.
+   *  The SDK stores and relays it — WHAT it means is the host app's business (this
+   *  binding renders no localized copy of its own). */
+  language: string | null = null
   /** Runtime-entered operator service mirrored from the worklet prefs (S36); null
    *  until a keyless build's Connect screen saves one. */
   service: SavedService | null = null
@@ -484,6 +490,14 @@ export class AliranBackend {
    *  prefetch mid-play. Echoed back as {type:'zap-prefetch', enabled}. At boot, pass
    *  the persisted preference via StartOptions.zapPrefetch instead. */
   setZapPrefetch (v: boolean | ZapPrefetchConfig) { this.send({ type: 'zap-prefetch-set', zapPrefetch: v }) }
+
+  /** Pin the viewer's UI language (device-local, survives restarts), or pass null to
+   *  clear it and follow the device language again. The worklet whitelists the code
+   *  and answers with a {type:'prefs'} carrying what it actually stored. */
+  setLanguage (language: string | null) {
+    this.language = language // optimistic; the 'prefs' reply confirms
+    this.send({ type: 'language-set', language })
+  }
   /** Host network profile (feed RN NetInfo changes down): expensive=true suspends
    *  zap prefetch immediately; false lifts the suspension on the next tick. */
   // `cellular` is separate from `expensive` on purpose: an unmetered cellular plan
@@ -654,7 +668,7 @@ export class AliranBackend {
         // collapse to their type to keep the log readable — EXCEPT 'error', where the
         // payload (often a worklet stack trace) is the only diagnostic there is.
         if (this.debug) console.log('[backend]', msg.type === 'prefs' ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
           this.port = msg.port ?? null
