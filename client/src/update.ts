@@ -62,5 +62,9 @@ export async function checkForUpdate (opts: { force?: boolean } = {}): Promise<U
     // entry between checks). 'unknown' clears nothing — it is not an answer.
     available = null
   }
+  // 'unknown' must not consume the throttle window: the launch-time check fires
+  // before the engine is ready, and swallowing the ready-time retry would leave
+  // the app blind for 6 h (found on-device, S22 pass).
+  if (res.status === 'unknown') lastCheckAt = 0
   return res
 }

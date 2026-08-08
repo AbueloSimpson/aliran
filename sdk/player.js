@@ -2202,6 +2202,11 @@ export class AliranPlayer extends Emitter {
         (async () => {
           await this._openUpdates()
           if (!this._updatesDrive) return undefined
+          // A cold replica checkout has length 0 and get() answers null WITHOUT
+          // waiting for a peer — which reads as a false "nothing published". Learn
+          // the real length from a peer first; no peer inside the bound → the race
+          // times out → 'unknown', which is the truthful cold answer.
+          await this._updatesDrive.core.update({ wait: true })
           const buf = await this._updatesDrive.get('/manifest.json')
           if (!buf) return null
           const parsed = JSON.parse(b4a.toString(buf))
