@@ -129,8 +129,10 @@ export default function App () {
     // Baked (operator) flavor: connect to the shipped key right away — unchanged.
     // Public (keyless) flavor: boot the worklet idle; Splash reads the persisted
     // runtime service and either connect()s or routes to the Connect screen.
-    if (hasBakedKey()) backend.boot(service.panelPubKey, service.hybrid)
-    else backend.bootIdle(service.hybrid)
+    // boot()/bootIdle() are async (they await the native app version first); a start()
+    // throw must not become an unhandled rejection — surface it on the adb log instead.
+    if (hasBakedKey()) backend.boot(service.panelPubKey, service.hybrid).catch((e) => console.error('worklet boot failed', e))
+    else backend.bootIdle(service.hybrid).catch((e) => console.error('worklet boot failed', e))
     let offNet: (() => void) | undefined
     try {
       // Both signals matter: `isConnectionExpensive` gates prefetch, and either that OR
