@@ -101,22 +101,28 @@ describe('t / tn', () => {
     expect(t('Hi {name}, {name}!', { name: 'Ana' })).toBe('Hi Ana, Ana!')
   })
 
-  it('falls back to English, then to the key — never to an empty label', () => {
+  it('renders the active catalog, and falls back to the key — never to an empty label', () => {
     setLocale('ru')
     expect(getLocale()).toBe('ru')
-    expect(t('common.ok')).toBe('OK') // ru catalog not written yet (S56d)
+    expect(t('common.back')).toBe('Назад')
+    expect(t('common.ok')).toBe('OK') // the Russian catalog keeps the English token
+    // Every locale has a catalog since S56d, so the catalog→en leg only fires for a
+    // key a translator has not filled in yet; the key→itself leg still fires here.
     expect(t('nothing.here')).toBe('nothing.here')
   })
 
   it('picks the plural sibling for the active locale and passes {n}', () => {
-    // live.peers is a real family now (S56b), so English renders. An UNWRITTEN family
-    // still falls through to the key, which is how the rest of this test reads back
-    // the form the runtime picked.
     expect(tn('live.peers', 1)).toBe('1 peer')
     expect(tn('live.peers', 4)).toBe('4 peers')
+    // An UNWRITTEN family falls through to the key, which reads back the form the
+    // runtime picked — including the two forms English does not have.
     expect(tn('nothing.here', 1)).toBe('nothing.here.one')
     setLocale('ru')
-    expect(tn('live.peers', 4)).toBe('live.peers.few')
-    expect(tn('live.peers', 11)).toBe('live.peers.many')
+    expect(tn('live.peers', 4)).toBe('4 пира')
+    expect(tn('live.peers', 11)).toBe('11 пиров')
+    expect(tn('nothing.here', 4)).toBe('nothing.here.few')
+    expect(tn('nothing.here', 11)).toBe('nothing.here.many')
+    setLocale('ja')
+    expect(tn('live.peers', 4)).toBe('4 ピア')
   })
 })

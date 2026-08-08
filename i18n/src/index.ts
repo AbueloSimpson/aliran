@@ -7,6 +7,19 @@
 // does operator/provider content: channel names, categories, EPG programme titles, VOD
 // titles and service.name are NEVER translated.
 import en from '../locales/en.json'
+import es from '../locales/es.json'
+import pt from '../locales/pt.json'
+import fr from '../locales/fr.json'
+import nl from '../locales/nl.json'
+import de from '../locales/de.json'
+import it from '../locales/it.json'
+import ru from '../locales/ru.json'
+import tr from '../locales/tr.json'
+import hi from '../locales/hi.json'
+import ja from '../locales/ja.json'
+import zhHans from '../locales/zh-Hans.json'
+import ko from '../locales/ko.json'
+import th from '../locales/th.json'
 
 export type Locale =
   | 'en' | 'es' | 'pt' | 'fr' | 'nl' | 'de' | 'it'
@@ -65,8 +78,26 @@ export const PLURAL_FORMS: Record<Locale, PluralForm[]> = {
 const EN: Catalog = en
 
 // Catalogs are bundled, never fetched: the apps must render offline and on first run.
-// A locale with no catalog yet falls through to English key by key (see t()).
-const CATALOGS: Partial<Record<Locale, Catalog>> = { en: EN }
+// Static imports on purpose — Metro and esbuild both resolve them at build time, and a
+// dynamic import() would make the first paint of a non-English device asynchronous.
+// The map stays Partial so a half-written catalog degrades key by key to English (t())
+// rather than breaking the build.
+const CATALOGS: Partial<Record<Locale, Catalog>> = {
+  en: EN,
+  es,
+  pt,
+  fr,
+  nl,
+  de,
+  it,
+  ru,
+  tr,
+  hi,
+  ja,
+  'zh-Hans': zhHans,
+  ko,
+  th
+}
 
 const CODES = new Set<string>(SUPPORTED_LOCALES.map((l) => l.code))
 
