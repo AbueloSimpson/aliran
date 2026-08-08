@@ -1,21 +1,16 @@
-// End-to-end OTA app-update test (SDK side): a panel-shaped publisher advertises an
-// updates Hyperdrive (meta/updatesKey = { key, blobsKey }) carrying /manifest.json +
-// artifacts under /pkg/, and the REAL SDK engine (connect + OPRF login against a real
-// panel RPC) discovers it lazily, answers checkUpdate() for every verdict
-// (unknown / available+mandatory / current / none), then downloadUpdate() streams the
-// artifact over P2P with throttled progress, verifies its sha256 and lands the file on
-// disk — while a manifest entry with a WRONG sha256 must be discarded, surfaced as an
-// error, and never produce a final file. Also: the stale-download sweep, and the
-// updates topic joined client-only (a viewer never re-serves APK blobs).
-//
-// The publisher half here stands in for the panel's own updates support (segment A,
-// built in parallel): the test writes the meta/updatesKey record into the panel bee
-// in-process and feeds the drive from its own corestore, using the EXACT record and
-// manifest shapes the panel publishes — integration swaps in the real publisher.
+// End-to-end OTA app-update test: the REAL panel (openStore creates the updates
+// Hyperdrive and advertises meta/updatesKey at boot) publishes artifacts through the
+// REAL ops (precheckUpdate/putUpdate — the same path the admin server's streaming
+// intake drives), and the REAL SDK engine (connect + OPRF login against the real
+// login RPC) discovers the drive lazily, answers checkUpdate() for every verdict
+// (none on an empty drive / available+mandatory / current / none / unknown on a junk
+// entry), then downloadUpdate() streams the artifact over P2P with throttled
+// progress, verifies its sha256 and lands the file on disk — while a manifest entry
+// whose sha256 does not match its blob must be discarded, surfaced as an error, and
+// never produce a final file. Also: the stale-download sweep, and the updates topic
+// joined client-only (a viewer never re-serves APK blobs).
 // Local DHT testnet only (never the public DHT). No ffmpeg. Exits 0 on PASS.
-import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
-import Hyperdrive from 'hyperdrive'
 import hcrypto from 'hypercore-crypto'
 import assert from 'assert'
 import crypto from 'crypto'
@@ -29,6 +24,7 @@ import {
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
+import { precheckUpdate, putUpdate, updateTarget } from '../panel/src/ops.js'
 import { createPlayer } from '../sdk/index.js'
 
 const log = (...a) => console.log(...a)
@@ -46,7 +42,7 @@ const APP_ID = 'com.aliranclient.e2e'
 const BAD_ID = 'com.aliranclient.bad'
 const JUNK_ID = 'com.aliranclient.junk'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2eu-panel-'), pub: tmp('e2eu-pub-'), cli: tmp('e2eu-cli-') }
+const dirs = { panel: tmp('e2eu-panel-'), cli: tmp('e2eu-cli-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -56,10 +52,15 @@ try {
   const bootstrap = testnet.bootstrap
   log('testnet up:', JSON.stringify(bootstrap))
 
-  // ===== Panel: keys, one enrolled viewer + catalog record, real login RPC =====
+  // ===== Panel: keys, one enrolled viewer + catalog record, real login RPC.
+  // openStore itself creates the updates drive and advertises meta/updatesKey.
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
-  const { store: panelStore, db } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
+  const { store: panelStore, db, updates } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
+  const ctx = { updates } // the ops ctx slice the updates publishers use
+  const ptr = (await db.get('meta/updatesKey'))?.value
+  assert.ok(ptr && ptr.key === b4a.toString(updates.key, 'hex'), 'openStore advertises the updates drive key')
+  assert.strictEqual(ptr.blobsKey, b4a.toString(updates.blobs.core.key, 'hex'), 'pointer carries the blobs key')
   const encKey = hcrypto.randomBytes(32) // never played — login just needs an entitlement to seal
   const rwd = evaluateFull(keys.oprf, PASSWORD)
   const salt = randomSalt()
@@ -83,7 +84,7 @@ try {
   const panelSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => panelSwarm.destroy())
   panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: DIFFICULTY, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000 }) })
   panelSwarm.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false }); await panelSwarm.flush()
-  log('panel: serving login RPC; pubkey', panelPubKey.slice(0, 16) + '…')
+  log('panel: serving login RPC; updates drive advertised at boot; pubkey', panelPubKey.slice(0, 16) + '…')
 
   // ===== SDK: connect + login (the real engine, headless) =====
   const ev = { progress: [], ready: [], errors: [] }
@@ -107,79 +108,61 @@ try {
   }
   log('sdk: login OK; entitled to', JSON.stringify(streams.map(x => x.id)))
 
-  // ===== No updates drive advertised yet -> 'unknown' (and only bad args throw) =====
-  const u0 = await player.checkUpdate({ appId: APP_ID, platform: 'android', versionCode: 4 })
-  assert.strictEqual(u0.status, 'unknown', "no meta/updatesKey must answer 'unknown', got " + JSON.stringify(u0))
+  // ===== Pre-publish: pointer advertised, drive EMPTY -> 'none' (and bad args throw) =====
+  // The panel always advertises the drive now, so an operator who never uploaded
+  // reads as an honest 'none', not 'unknown'. (waitFor: the first sparse metadata
+  // sync of the drive may briefly answer 'unknown' while cold.)
+  const pre = await waitFor(async () => {
+    const r = await player.checkUpdate({ appId: APP_ID, platform: 'android', versionCode: 4 })
+    return r.status !== 'unknown' ? r : null
+  }, 60000, 'pre-publish verdict (empty drive)')
+  assert.strictEqual(pre.status, 'none', "an advertised but EMPTY updates drive must answer 'none', got " + JSON.stringify(pre))
   await assert.rejects(async () => player.checkUpdate({ appId: APP_ID, platform: 'ios', versionCode: 4 }), /platform/, 'unsupported platform must throw (host bug)')
   await assert.rejects(async () => player.checkUpdate({ appId: APP_ID, platform: 'android', versionCode: 4.5 }), /versionCode/, 'non-integer versionCode must throw (host bug)')
-  log("check: pre-publish verdict is 'unknown'; bad arguments throw")
+  log("check: pre-publish (empty drive) verdict is 'none'; bad arguments throw")
 
   // A leftover from "a previous install run": the first manifest read must sweep it.
   fs.mkdirSync(path.join(dirs.cli, 'updates'), { recursive: true })
   const stalePath = path.join(dirs.cli, 'updates', 'com.aliranclient.e2e-1.apk')
   fs.writeFileSync(stalePath, crypto.randomBytes(1024))
 
-  // ===== Publisher (segment A stand-in): updates drive + manifest + pointer =====
-  const upStore = new Corestore(dirs.pub); await upStore.ready(); cleanups.push(() => upStore.close())
-  const updates = new Hyperdrive(upStore.namespace('updates')); await updates.ready()
-  const upBlobs = await updates.getBlobs()
-  const upSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => upSwarm.destroy())
-  upSwarm.on('connection', (s) => upStore.replicate(s))
-  upSwarm.join(updates.discoveryKey, { server: true, client: false }); await upSwarm.flush()
-
+  // ===== Publish through the REAL panel ops (the admin server's streaming order:
+  // precheck -> artifact into the drive -> putUpdate with the stream's hash) =====
   const good = crypto.randomBytes(2 * 1024 * 1024) // ~2 MB artifact
   const bad = crypto.randomBytes(300 * 1024)
-  await updates.put(`/pkg/${APP_ID}-5.apk`, good)
-  await updates.put(`/pkg/${BAD_ID}-2.apk`, bad)
-  const manifest = {
-    [APP_ID]: {
-      platform: 'android',
-      versionCode: 5,
-      versionName: '0.5.1',
-      sha256: sha256(good),
-      size: good.length,
-      file: `/pkg/${APP_ID}-5.apk`,
-      minVersionCode: 3,
-      notes: 'e2e test build',
-      releasedAt: new Date().toISOString()
-    },
-    [BAD_ID]: {
-      platform: 'android',
-      versionCode: 2,
-      versionName: '0.2.0',
-      sha256: sha256(good), // WRONG on purpose — the blob is `bad`
-      size: bad.length,
-      file: `/pkg/${BAD_ID}-2.apk`,
-      releasedAt: new Date().toISOString()
-    },
-    [JUNK_ID]: {
-      platform: 'android',
-      versionCode: '7', // junk on purpose — a broken publisher must read as 'unknown'
-      versionName: 'not-a-real-build',
-      sha256: sha256(good),
-      size: 1,
-      file: `/pkg/${JUNK_ID}-7.apk`,
-      releasedAt: new Date().toISOString()
-    }
-  }
-  await updates.put('/manifest.json', b4a.from(JSON.stringify(manifest)))
-  // The exact pointer shape the panel's store advertises (segment A contract).
-  await db.put('meta/updatesKey', { key: b4a.toString(updates.key, 'hex'), blobsKey: b4a.toString(upBlobs.core.key, 'hex') })
-  log('publisher: updates drive seeded (manifest + 2 artifacts); meta/updatesKey advertised')
+  const goodMeta = { platform: 'android', versionCode: 5, versionName: '0.5.1', minVersionCode: 3, notes: 'e2e test build' }
+  const goodTarget = await precheckUpdate(ctx, APP_ID, goodMeta)
+  assert.strictEqual(goodTarget.file, `/pkg/${APP_ID}-5.apk`, 'precheck derives the artifact path')
+  await updates.put(goodTarget.file, good)
+  const put1 = await putUpdate(ctx, APP_ID, { ...goodMeta, sha256: sha256(good), size: good.length })
+  assert.strictEqual(put1.entry.file, goodTarget.file, 'putUpdate publishes the streamed path')
+  // The corrupt case: the artifact bytes and the manifest sha256 disagree — putUpdate
+  // trusts the (server-side) stream hash, so a wrong hash models a corrupted blob.
+  const badTarget = updateTarget(BAD_ID, 'android', 2)
+  await updates.put(badTarget.file, bad)
+  await putUpdate(ctx, BAD_ID, { platform: 'android', versionCode: 2, versionName: '0.2.0', sha256: sha256(good), size: bad.length })
+  // A junk entry the real ops REFUSE to write (updateTarget validates versionCode) —
+  // inject it raw to model a broken publisher: the SDK must answer 'unknown', never
+  // 'current' with garbage attached.
+  const rawManifest = JSON.parse(b4a.toString(await updates.get('/manifest.json')))
+  rawManifest[JUNK_ID] = { platform: 'android', versionCode: '7', versionName: 'not-a-real-build', sha256: sha256(good), size: 1, file: `/pkg/${JUNK_ID}-7.apk`, releasedAt: new Date().toISOString() }
+  await updates.put('/manifest.json', b4a.from(JSON.stringify(rawManifest)))
+  log('publisher: 2 artifacts published via precheckUpdate/putUpdate; junk entry injected raw')
 
   // ===== checkUpdate: every verdict =====
-  // The pointer replicates to the viewer's bee and the lazy open joins the drive
-  // topic — the first bounded reads may still answer 'unknown' while cold, so poll.
   const avail = await waitFor(async () => {
     const r = await player.checkUpdate({ appId: APP_ID, platform: 'android', versionCode: 4 })
     return r.status === 'available' ? r : null
-  }, 90000, "checkUpdate 'available' once the pointer + manifest replicate")
+  }, 90000, "checkUpdate 'available' once the published manifest replicates")
   assert.strictEqual(avail.entry.versionCode, 5, 'entry.versionCode')
   assert.strictEqual(avail.entry.versionName, '0.5.1', 'entry.versionName')
   assert.strictEqual(avail.entry.sha256, sha256(good), 'entry.sha256')
   assert.strictEqual(avail.entry.size, good.length, 'entry.size')
   assert.strictEqual(avail.entry.file, `/pkg/${APP_ID}-5.apk`, 'entry.file')
+  assert.ok(avail.entry.releasedAt, 'putUpdate stamps releasedAt')
   assert.strictEqual(avail.mandatory, false, 'versionCode 4 >= minVersionCode 3 must NOT be mandatory')
+  // The SDK follows the PANEL's own drive — the pointer openStore advertised.
+  assert.strictEqual(b4a.toString(player._updatesDrive.key, 'hex'), b4a.toString(updates.key, 'hex'), 'the SDK replica is the panel-advertised updates drive')
   // The updates topic must never be announced — whatever the uploadPolicy, a viewer
   // does not re-serve bulk APK blobs.
   assert.strictEqual(player._updatesDiscovery.isClient, true, 'updates topic joined as client')
@@ -235,7 +218,7 @@ try {
   assert.ok(fs.existsSync(res.path), 'the previously verified good artifact is untouched')
   log('corrupt: wrong manifest sha256 -> rejected + update-error, partial deleted, no final file')
 
-  log('\nRESULT: PASS ✅  (meta/updatesKey -> lazy client-only replica -> check unknown/available+mandatory/current/none -> P2P download + progress + sha256 verify -> corrupt blob refused, stale files swept)')
+  log('\nRESULT: PASS ✅  (panel-advertised drive -> real precheckUpdate/putUpdate publish -> lazy client-only replica -> check none/available+mandatory/current/unknown -> P2P download + progress + sha256 verify -> corrupt blob refused, stale files swept)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
