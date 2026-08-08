@@ -264,6 +264,7 @@
   "hints.arrowsBrowse": "{arrows} browse",
   "hints.infoKeyClick": "{key} / right-click info",
   "hints.keyFavorite": "{key} favorite",
+  "hints.favoriteKeyHint": "In Live TV, press {key} (or the {star} button) on a channel.",
   "hints.retryEnter": "Pick the channel again to retry ({enter} opens the list).",
   "hints.muteKey": "Mute ({key})",
   "hints.unmuteKey": "Unmute ({key})"
