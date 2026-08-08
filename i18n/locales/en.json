@@ -61,6 +61,7 @@
   "settings.entitledChannels": "Entitled channels",
   "settings.smoothZap": "Smooth zapping",
   "settings.smoothZapHint": "Preloads nearby channels while you watch, so channel surfing starts instantly. Uses more data; pauses itself on metered connections or when your stream is struggling.",
+  "settings.smoothZapHintDesktop": "Preloads nearby channels while you watch, so channel surfing starts instantly. Uses more data; pauses itself on constrained connections or when your stream is struggling.",
   "settings.pin": "PIN",
   "settings.pinNotSet": "not set — access-controlled channels are hidden",
   "settings.setPin": "Set PIN…",
@@ -83,6 +84,7 @@
   "settings.signOutHint": "Sign out forgets the saved sign-in on this device.",
   "settings.changeService": "Change service…",
   "settings.changeServiceHint": "Forgets this service's panel key and sign-in, then returns to the Connect screen.",
+  "settings.changeServiceHintDesktop": "Forgets this service's panel key and sign-in, then restarts the app.",
   "settings.update.checking": "Checking…",
   "settings.update.unsupported": "Updates are not available on this build.",
   "settings.update.connectFirst": "Connect to a service first.",
@@ -252,5 +254,7 @@
   "update.download": "Download",
   "update.downloadAnyway": "Download anyway",
   "update.installNow": "Install now",
-  "update.later": "Later"
+  "update.later": "Later",
+
+  "hints.escBack": "{esc} back"
 }

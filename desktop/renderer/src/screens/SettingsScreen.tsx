@@ -8,6 +8,7 @@
 // being watched — which Settings cannot know.
 
 import React, { useEffect, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import { clearPin, hasPin, hideRestricted, setHideRestricted } from '../parental'
 import { PinEntryModal, PinSetupModal } from '../components/PinModal'
@@ -17,6 +18,7 @@ import { PinEntryModal, PinSetupModal } from '../components/PinModal'
 type PinModalState = null | { kind: 'setup' } | { kind: 'change' } | { kind: 'verify'; then: 'remove' | 'toggle' }
 
 export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; onBack: () => void }) {
+  const { t } = useI18n()
   const [username, setUsername] = useState<string | null>(backend.creds?.username ?? null)
   const [channels, setChannels] = useState(backend.streams.length)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
@@ -64,35 +66,35 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
   const d = backend.descriptor
   return (
     <div className="settings">
-      <div className="section-header">SETTINGS</div>
+      <div className="section-header">{t('settings.header')}</div>
 
-      <div className="settings-group-title">ACCOUNT</div>
+      <div className="settings-group-title">{t('settings.group.account')}</div>
       <div className="settings-group">
-        <Row label="Signed in as" value={username ?? '—'} />
-        <Row label="Entitled channels" value={String(channels)} />
+        <Row label={t('settings.signedInAs')} value={username ?? '—'} />
+        <Row label={t('settings.entitledChannels')} value={String(channels)} />
       </div>
 
-      <div className="settings-group-title">PLAYBACK</div>
+      <div className="settings-group-title">{t('settings.group.playback')}</div>
       <div className="settings-group">
         <div className="toggle-row" role="switch" aria-checked={smoothZap} onClick={toggleSmoothZap}>
           <span className="toggle-texts">
-            <span className="row-label">Smooth zapping</span>
-            <span className="toggle-hint">Preloads nearby channels while you watch, so channel surfing starts instantly. Uses more data; pauses itself on constrained connections or when your stream is struggling.</span>
+            <span className="row-label">{t('settings.smoothZap')}</span>
+            <span className="toggle-hint">{t('settings.smoothZapHintDesktop')}</span>
           </span>
-          <span className={'toggle-pill' + (smoothZap ? ' on' : '')}>{smoothZap ? 'ON' : 'OFF'}</span>
+          <span className={'toggle-pill' + (smoothZap ? ' on' : '')}>{smoothZap ? t('common.on') : t('common.off')}</span>
         </div>
       </div>
 
-      <div className="settings-group-title">PARENTAL CONTROLS</div>
+      <div className="settings-group-title">{t('settings.group.parental')}</div>
       <div className="settings-group">
         {!pinSet && (
           <>
             <div className="settings-row">
-              <span className="row-label">PIN</span>
-              <span className="row-value">not set — access-controlled channels are hidden</span>
+              <span className="row-label">{t('settings.pin')}</span>
+              <span className="row-value">{t('settings.pinNotSet')}</span>
             </div>
             <div className="settings-row">
-              <button className="settings-btn" onClick={() => setPinModal({ kind: 'setup' })}>Set PIN…</button>
+              <button className="settings-btn" onClick={() => setPinModal({ kind: 'setup' })}>{t('settings.setPin')}</button>
             </div>
           </>
         )}
@@ -105,42 +107,44 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
               onClick={() => setPinModal({ kind: 'verify', then: 'toggle' })}
             >
               <span className="toggle-texts">
-                <span className="row-label">Hide restricted channels</span>
-                <span className="toggle-hint">Off: access-controlled channels show in the lists and ask for the PIN before playing. On: they disappear from the lists entirely. Changing this asks for the PIN.</span>
+                <span className="row-label">{t('settings.hideRestricted')}</span>
+                <span className="toggle-hint">{t('settings.hideRestrictedHint')}</span>
               </span>
-              <span className={'toggle-pill' + (hideR ? ' on' : '')}>{hideR ? 'ON' : 'OFF'}</span>
+              <span className={'toggle-pill' + (hideR ? ' on' : '')}>{hideR ? t('common.on') : t('common.off')}</span>
             </div>
             <div className="settings-row">
-              <button className="settings-btn" onClick={() => setPinModal({ kind: 'change' })}>Change PIN…</button>
-              <button className="settings-btn danger" onClick={() => setPinModal({ kind: 'verify', then: 'remove' })}>Remove PIN…</button>
+              <button className="settings-btn" onClick={() => setPinModal({ kind: 'change' })}>{t('settings.changePin')}</button>
+              <button className="settings-btn danger" onClick={() => setPinModal({ kind: 'verify', then: 'remove' })}>{t('settings.removePin')}</button>
             </div>
           </>
         )}
       </div>
 
-      <div className="settings-group-title">SERVICE</div>
+      <div className="settings-group-title">{t('settings.group.service')}</div>
       <div className="settings-group">
-        <Row label="Service" value={d?.name ?? '—'} />
-        <Row label="Panel key" value={(d?.panelPubKey ?? '').slice(0, 16) + '…'} />
-        <Row label="Playback" value="p2p-only" />
+        <Row label={t('settings.service')} value={d?.name ?? '—'} />
+        <Row label={t('settings.panelKey')} value={(d?.panelPubKey ?? '').slice(0, 16) + '…'} />
+        <Row label={t('settings.playback')} value="p2p-only" />
       </div>
 
-      <div className="settings-group-title">DIAGNOSTICS</div>
+      <div className="settings-group-title">{t('settings.group.diagnostics')}</div>
       <div className="settings-group">
-        <Row label="Active source" value={source ? source.toUpperCase() : '—'} />
-        <Row label="Peers" value={peers != null ? String(peers) : '—'} />
+        <Row label={t('settings.activeSource')} value={source ? source.toUpperCase() : '—'} />
+        <Row label={t('settings.peers')} value={peers != null ? String(peers) : '—'} />
       </div>
 
-      <button className="signout" onClick={signOut}>Sign out</button>
-      <div className="signout-hint">Sign out forgets the saved sign-in on this device. · Esc back</div>
+      <button className="signout" onClick={signOut}>{t('settings.signOut')}</button>
+      {/* Sentence + key hint, composed here: the catalog never carries a key name
+          baked into prose, and the "·" join is punctuation, not copy. */}
+      <div className="signout-hint">{t('settings.signOutHint')} · {t('hints.escBack', { esc: 'Esc' })}</div>
 
       {/* Public build only (the runtime-entered service): forget the panel key +
           credentials and restart to the Connect screen. Operator builds bake their
           descriptor into the artifact — nothing to change. */}
       {backend.descriptorSource === 'runtime' && (
         <>
-          <button className="change-service" onClick={() => backend.clearService()}>Change service…</button>
-          <div className="signout-hint">Forgets this service's panel key and sign-in, then restarts the app.</div>
+          <button className="change-service" onClick={() => backend.clearService()}>{t('settings.changeService')}</button>
+          <div className="signout-hint">{t('settings.changeServiceHintDesktop')}</div>
         </>
       )}
 
@@ -153,10 +157,10 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
       )}
       {pinModal?.kind === 'verify' && (
         <PinEntryModal
-          title={pinModal.then === 'remove' ? 'Remove PIN' : 'Hide restricted channels'}
+          title={pinModal.then === 'remove' ? t('settings.removePinTitle') : t('settings.hideRestricted')}
           hint={pinModal.then === 'remove'
-            ? 'Enter the current PIN to remove it. Access-controlled channels go back to being hidden.'
-            : 'Enter the PIN to change the visibility of access-controlled channels.'}
+            ? t('settings.removePinHint')
+            : t('settings.hideRestrictedPinHint')}
           onOk={() => {
             if (pinModal.then === 'remove') { clearPin(); setPinSet(false); setHideR(false) } else {
               const next = !hideR
