@@ -902,9 +902,12 @@ export class AliranPlayer extends Emitter {
     this._sweepUpdatesDir(manifest)
     const entry = manifest ? manifest[appId] : null
     if (!entry || typeof entry !== 'object' || entry.platform !== platform) return { status: 'none' }
-    if (!Number.isInteger(entry.versionCode) || entry.versionCode <= versionCode) return { status: 'current', entry }
+    // A junk versionCode must not come back as 'current' with the entry attached —
+    // a UI printing entry.versionName would show garbage. Broken publisher == "cannot say".
+    if (!Number.isInteger(entry.versionCode)) return { status: 'unknown' }
+    if (entry.versionCode <= versionCode) return { status: 'current', entry }
     // A malformed entry (unusable path / no verifiable hash) must never be OFFERED —
-    // downloadUpdate() could only fail on it. Broken publisher == "cannot say".
+    // downloadUpdate() could only fail on it.
     if (typeof entry.file !== 'string' || !UPDATE_BASENAME_RE.test(this._updateBasename(entry.file)) ||
         typeof entry.sha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(entry.sha256)) return { status: 'unknown' }
     const mandatory = Number.isInteger(entry.minVersionCode) && versionCode < entry.minVersionCode
@@ -2268,7 +2271,8 @@ export class AliranPlayer extends Emitter {
     sodium.crypto_hash_sha256_init(state)
     const fd = this._fs.openSync(partPath, 'w')
     let received = 0
-    let ok = false
+    let closed = false
+    let ok = false // only after the verified RENAME — the finally cleanup owns every other exit
     try {
       const rs = drive.createReadStream(entry.file)
       const it = rs[Symbol.asyncIterator]()
@@ -2299,20 +2303,22 @@ export class AliranPlayer extends Emitter {
         }
       }
       this._fs.closeSync(fd)
-      ok = true
+      closed = true
       const digest = b4a.alloc(sodium.crypto_hash_sha256_BYTES)
       sodium.crypto_hash_sha256_final(state, digest)
       if (b4a.toString(digest, 'hex') !== entry.sha256.toLowerCase()) {
-        try { this._fs.rmSync(partPath, { force: true }) } catch {}
         throw new Error('update failed verification (sha256 mismatch) — the download was discarded')
       }
       try { this._fs.rmSync(finalPath, { force: true }) } catch {} // a re-download replaces any older copy
+      // A renameSync throw (Windows file lock / AV scan) must also land in the
+      // cleanup below — the caller gets the reject, never a stranded .part.
       this._fs.renameSync(partPath, finalPath)
+      ok = true
       this.emit('update-ready', { path: finalPath, entry })
       return { path: finalPath, entry }
     } finally {
       if (!ok) {
-        try { this._fs.closeSync(fd) } catch {}
+        if (!closed) { try { this._fs.closeSync(fd) } catch {} }
         try { this._fs.rmSync(partPath, { force: true }) } catch {}
       }
     }

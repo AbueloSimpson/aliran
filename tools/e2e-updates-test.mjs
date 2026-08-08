@@ -44,6 +44,7 @@ const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const APP_ID = 'com.aliranclient.e2e'
 const BAD_ID = 'com.aliranclient.bad'
+const JUNK_ID = 'com.aliranclient.junk'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
 const dirs = { panel: tmp('e2eu-panel-'), pub: tmp('e2eu-pub-'), cli: tmp('e2eu-cli-') }
 const cleanups = []
@@ -150,6 +151,15 @@ try {
       size: bad.length,
       file: `/pkg/${BAD_ID}-2.apk`,
       releasedAt: new Date().toISOString()
+    },
+    [JUNK_ID]: {
+      platform: 'android',
+      versionCode: '7', // junk on purpose — a broken publisher must read as 'unknown'
+      versionName: 'not-a-real-build',
+      sha256: sha256(good),
+      size: 1,
+      file: `/pkg/${JUNK_ID}-7.apk`,
+      releasedAt: new Date().toISOString()
     }
   }
   await updates.put('/manifest.json', b4a.from(JSON.stringify(manifest)))
@@ -186,8 +196,11 @@ try {
   assert.strictEqual(nn.status, 'none', "unknown appId answers 'none'")
   const wrongPlat = await player.checkUpdate({ appId: APP_ID, platform: 'windows', versionCode: 1 })
   assert.strictEqual(wrongPlat.status, 'none', "platform mismatch answers 'none'")
+  const junk = await player.checkUpdate({ appId: JUNK_ID, platform: 'android', versionCode: 1 })
+  assert.strictEqual(junk.status, 'unknown', "a malformed entry (non-integer versionCode) answers 'unknown', never 'current' with junk attached")
+  assert.strictEqual(junk.entry, undefined, 'the malformed entry itself must not be handed to the UI')
   assert.ok(!fs.existsSync(stalePath), 'the stale download must be swept on the first manifest read')
-  log('check: available(+mandatory both ways) / current / none(appId, platform) OK; stale file swept; join is client-only')
+  log('check: available(+mandatory both ways) / current / none(appId, platform) / unknown(junk entry) OK; stale file swept; join is client-only')
 
   // ===== downloadUpdate: P2P stream -> progress -> sha256 verify -> final file =====
   const availAgain = await player.checkUpdate({ appId: APP_ID, platform: 'android', versionCode: 4 })
