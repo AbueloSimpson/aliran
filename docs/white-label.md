@@ -417,8 +417,11 @@ To restore the keystore on a new machine:
 openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in release.keystore.enc -out release.keystore
 ```
 
-If you rotate the keystore, encrypt and commit the new file. Remove the
-old `.enc` files, so no copy remains that needs a forgotten passphrase.
+If you rotate the keystore, encrypt and commit the new file. Keep the
+old `.enc` file as long as one installed device still uses the old key —
+that key is the only key those devices accept. Record its passphrase in
+your password manager. Remove an old `.enc` file only when no installed
+device depends on its key.
 
 ### Version each release
 
