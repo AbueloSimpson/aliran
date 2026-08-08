@@ -14,6 +14,7 @@
   "common.unmute": "Com som",
   "common.save": "Salvar",
   "common.volume": "Volume",
+  "common.selected": "ATIVO",
 
   "splash.connecting": "Conectando",
   "splash.authorizing": "Autorizando o aparelho",
@@ -54,6 +55,7 @@
   "settings.header": "AJUSTES",
   "settings.group.account": "CONTA",
   "settings.group.playback": "REPRODUÇÃO",
+  "settings.group.language": "IDIOMA",
   "settings.group.parental": "CONTROLE DOS PAIS",
   "settings.group.service": "SERVIÇO",
   "settings.group.updates": "ATUALIZAÇÕES",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "Troca rápida de canais",
   "settings.smoothZapHint": "Carrega antes os canais vizinhos enquanto você assiste, então a troca de canais começa na hora. Usa mais dados; para sozinha em redes com franquia de dados ou quando sua transmissão tem problemas.",
   "settings.smoothZapHintDesktop": "Carrega antes os canais vizinhos enquanto você assiste, então a troca de canais começa na hora. Usa mais dados; para sozinha em redes limitadas ou quando sua transmissão tem problemas.",
+  "settings.language": "Idioma",
+  "settings.language.device": "Idioma do aparelho",
+  "settings.language.system": "Idioma do sistema",
+  "settings.language.hint": "Isto muda apenas o texto do app. Os nomes dos canais e o guia de programação vêm do seu serviço.",
   "settings.pin": "PIN",
   "settings.pinNotSet": "não definido: os canais com controle de acesso ficam ocultos",
   "settings.setPin": "Definir o PIN…",
@@ -268,6 +274,8 @@
   "update.downloadAnyway": "Baixar mesmo assim",
   "update.installNow": "Instalar agora",
   "update.later": "Depois",
+
+  "notice.engineUnsupported": "Este aparelho não consegue executar o motor P2P: é necessário Android 10 ou mais recente.",
 
   "hints.escBack": "{esc} voltar",
   "hints.escClose": "{esc} fechar",

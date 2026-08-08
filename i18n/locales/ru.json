@@ -14,6 +14,7 @@
   "common.unmute": "Включить звук",
   "common.save": "Сохранить",
   "common.volume": "Громкость",
+  "common.selected": "ВЫБРАНО",
 
   "splash.connecting": "Подключение",
   "splash.authorizing": "Авторизация устройства",
@@ -54,6 +55,7 @@
   "settings.header": "НАСТРОЙКИ",
   "settings.group.account": "УЧЁТНАЯ ЗАПИСЬ",
   "settings.group.playback": "ВОСПРОИЗВЕДЕНИЕ",
+  "settings.group.language": "ЯЗЫК",
   "settings.group.parental": "РОДИТЕЛЬСКИЙ КОНТРОЛЬ",
   "settings.group.service": "СЕРВИС",
   "settings.group.updates": "ОБНОВЛЕНИЯ",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "Плавное переключение",
   "settings.smoothZapHint": "Заранее загружает соседние каналы во время просмотра, поэтому переключение начинается сразу. Расходует больше трафика; сам останавливается на лимитных подключениях или когда поток идёт с трудом.",
   "settings.smoothZapHintDesktop": "Заранее загружает соседние каналы во время просмотра, поэтому переключение начинается сразу. Расходует больше трафика; сам останавливается на ограниченных подключениях или когда поток идёт с трудом.",
+  "settings.language": "Язык",
+  "settings.language.device": "Язык устройства",
+  "settings.language.system": "Язык системы",
+  "settings.language.hint": "Это меняет только текст приложения. Названия каналов и телепрограмма приходят от вашего сервиса.",
   "settings.pin": "PIN-код",
   "settings.pinNotSet": "не задан: каналы с контролем доступа скрыты",
   "settings.setPin": "Задать PIN-код…",
@@ -271,6 +277,8 @@
   "update.downloadAnyway": "Всё равно загрузить",
   "update.installNow": "Установить",
   "update.later": "Позже",
+
+  "notice.engineUnsupported": "Это устройство не может запустить движок P2P: нужен Android 10 или новее.",
 
   "hints.escBack": "{esc} назад",
   "hints.escClose": "{esc} закрыть",

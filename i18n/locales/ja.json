@@ -14,6 +14,7 @@
   "common.unmute": "ミュート解除",
   "common.save": "保存",
   "common.volume": "音量",
+  "common.selected": "選択中",
 
   "splash.connecting": "接続中",
   "splash.authorizing": "デバイスを認証中",
@@ -54,6 +55,7 @@
   "settings.header": "設定",
   "settings.group.account": "アカウント",
   "settings.group.playback": "再生",
+  "settings.group.language": "言語",
   "settings.group.parental": "ペアレンタルコントロール",
   "settings.group.service": "サービス",
   "settings.group.updates": "アップデート",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "スムーズなチャンネル切り替え",
   "settings.smoothZapHint": "視聴中に近くのチャンネルを先読みするので、チャンネル切り替えがすぐ始まります。データ通信量が増えます。従量制の回線のときや配信が不安定なときは自動で停止します。",
   "settings.smoothZapHintDesktop": "視聴中に近くのチャンネルを先読みするので、チャンネル切り替えがすぐ始まります。データ通信量が増えます。制限のある回線のときや配信が不安定なときは自動で停止します。",
+  "settings.language": "言語",
+  "settings.language.device": "端末の言語",
+  "settings.language.system": "システムの言語",
+  "settings.language.hint": "変わるのはアプリの文字だけです。チャンネル名と番組表はサービスから届きます。",
   "settings.pin": "PIN",
   "settings.pinNotSet": "未設定 — アクセス制限付きチャンネルは非表示です",
   "settings.setPin": "PINを設定…",
@@ -265,6 +271,8 @@
   "update.downloadAnyway": "それでもダウンロード",
   "update.installNow": "今すぐインストール",
   "update.later": "あとで",
+
+  "notice.engineUnsupported": "この端末ではP2Pエンジンを実行できません — Android 10以降が必要です。",
 
   "hints.escBack": "{esc} 戻る",
   "hints.escClose": "{esc} 閉じる",

@@ -11,11 +11,12 @@ import React, { useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
-import { useI18n } from '@aliran/i18n'
+import { SUPPORTED_LOCALES, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { appInfoCached, checkForUpdate } from '../update'
 import { theme } from '../theme'
+import { LanguageMenu } from '../components/LanguageMenu'
 import { PinEntryModal, PinSetupModal } from '../components/PinModal'
 
 const service = loadServiceDescriptor()
@@ -32,7 +33,7 @@ type PinModalState = null | { kind: 'setup' } | { kind: 'change' } | { kind: 've
 type UpdateOutcome = { code: string; version?: string }
 
 export function SettingsScreen ({ navigation }: Props) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [username, setUsername] = useState<string | null>(backend.creds?.username ?? null)
   const [channels, setChannels] = useState(backend.streams.length)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
@@ -46,6 +47,10 @@ export function SettingsScreen ({ navigation }: Props) {
   // only ever sees "a PIN exists" + the hide toggle).
   const [parental, setParental] = useState<{ hide: boolean } | null>(backend.parental)
   const [pinModal, setPinModal] = useState<PinModalState>(null)
+  // UI language: the PINNED choice (null = follow the device) plus whether its picker
+  // is open. What is actually being rendered right now is `locale`, above.
+  const [language, setLanguage] = useState<string | null>(backend.language)
+  const [languageMenu, setLanguageMenu] = useState(false)
   // OTA updates: the installed build's native version (null while resolving / no
   // installer module) + the manual check's one-line outcome.
   const [appVersion, setAppVersion] = useState<string | null>(null)
@@ -82,6 +87,7 @@ export function SettingsScreen ({ navigation }: Props) {
         setUsername(m.creds?.username ?? null)
         setSmoothZap(m.smoothZapping ?? false)
         setParental(m.parental ?? null)
+        setLanguage(m.language ?? null)
       }
       if (m.type === 'streams') setChannels(m.streams.length)
       if (m.type === 'status' && typeof m.peers === 'number') setPeers(m.peers)
@@ -130,6 +136,20 @@ export function SettingsScreen ({ navigation }: Props) {
           hint={t('settings.smoothZapHint')}
           value={smoothZap}
           onToggle={toggleSmoothZap}
+        />
+      </View>
+
+      <Text style={styles.groupTitle}>{t('settings.group.language')}</Text>
+      <View style={styles.group}>
+        {/* The value line names the language the app is speaking right now: the pinned
+            one, or the device's with the resolved language in parentheses — so a
+            viewer whose device is set to a language we do not ship can see WHICH one
+            they are getting instead. The parentheses are punctuation, not copy. */}
+        <PickerRow
+          label={t('settings.language')}
+          value={language ? nativeName(language) : `${t('settings.language.device')} (${nativeName(locale)})`}
+          hint={t('settings.language.hint')}
+          onPress={() => setLanguageMenu(true)}
         />
       </View>
 
@@ -223,8 +243,18 @@ export function SettingsScreen ({ navigation }: Props) {
         }}
         onClose={() => setPinModal(null)}
       />
+
+      {/* An overlay, not a Modal: on TV a Modal is its own focus container and
+          swallows the remote (the SortMenu/TrackMenu lesson). */}
+      {languageMenu && <LanguageMenu value={language} onClose={() => setLanguageMenu(false)} />}
     </ScrollView>
   )
+}
+
+// A language's name in its own language — never translated (see LanguageMenu). Falls
+// back to the raw code, which only a pref written by a newer build could produce.
+function nativeName (code: string): string {
+  return SUPPORTED_LOCALES.find((l) => l.code === code)?.nativeName ?? code
 }
 
 // Focusable one-line action button rendered as a settings row (phone tap + TV d-pad).
@@ -247,6 +277,26 @@ function ActionRow ({ label, onPress, danger }: { label: string; onPress: () => 
 function panelKeyLabel (): string {
   const key = hasBakedKey() ? service.panelPubKey : backend.service?.panelPubKey
   return key ? key.slice(0, 16) + '…' : '—'
+}
+
+// A settings row that opens a picker: reads like Row, focuses like ActionRow, and
+// carries the same hint line a ToggleRow does.
+function PickerRow ({ label, value, hint, onPress }: { label: string; value: string; hint: string; onPress: () => void }) {
+  const [focused, setFocused] = useState(false)
+  return (
+    <Pressable
+      style={[styles.toggleRow, focused && styles.toggleRowFocused]}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      <View style={styles.toggleTexts}>
+        <Text style={styles.rowLabel}>{label}</Text>
+        <Text style={styles.toggleHint}>{hint}</Text>
+      </View>
+      <Text style={styles.rowValue} numberOfLines={1}>{value}</Text>
+    </Pressable>
+  )
 }
 
 function Row ({ label, value }: { label: string; value: string }) {

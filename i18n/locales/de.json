@@ -14,6 +14,7 @@
   "common.unmute": "Ton ein",
   "common.save": "Speichern",
   "common.volume": "Lautstärke",
+  "common.selected": "AKTIV",
 
   "splash.connecting": "Verbinden",
   "splash.authorizing": "Gerät wird autorisiert",
@@ -54,6 +55,7 @@
   "settings.header": "EINSTELLUNGEN",
   "settings.group.account": "KONTO",
   "settings.group.playback": "WIEDERGABE",
+  "settings.group.language": "SPRACHE",
   "settings.group.parental": "JUGENDSCHUTZ",
   "settings.group.service": "DIENST",
   "settings.group.updates": "UPDATES",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "Flüssiges Zappen",
   "settings.smoothZapHint": "Lädt benachbarte Sender schon beim Zuschauen vor, damit das Zappen sofort startet. Braucht mehr Daten; pausiert selbst bei getakteten Verbindungen oder wenn Ihr Stream Mühe hat.",
   "settings.smoothZapHintDesktop": "Lädt benachbarte Sender schon beim Zuschauen vor, damit das Zappen sofort startet. Braucht mehr Daten; pausiert selbst bei eingeschränkten Verbindungen oder wenn Ihr Stream Mühe hat.",
+  "settings.language": "Sprache",
+  "settings.language.device": "Gerätesprache",
+  "settings.language.system": "Systemsprache",
+  "settings.language.hint": "Das ändert nur den Text der App. Sendernamen und der Programmführer kommen von Ihrem Dienst.",
   "settings.pin": "PIN",
   "settings.pinNotSet": "nicht gesetzt: zugangsgeschützte Sender sind ausgeblendet",
   "settings.setPin": "PIN setzen…",
@@ -268,6 +274,8 @@
   "update.downloadAnyway": "Trotzdem laden",
   "update.installNow": "Jetzt installieren",
   "update.later": "Später",
+
+  "notice.engineUnsupported": "Dieses Gerät kann die P2P-Engine nicht ausführen: Android 10 oder neuer ist erforderlich.",
 
   "hints.escBack": "{esc} zurück",
   "hints.escClose": "{esc} schließen",

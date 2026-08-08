@@ -14,6 +14,7 @@
   "common.unmute": "Geluid aan",
   "common.save": "Opslaan",
   "common.volume": "Volume",
+  "common.selected": "ACTIEF",
 
   "splash.connecting": "Verbinden",
   "splash.authorizing": "Apparaat autoriseren",
@@ -54,6 +55,7 @@
   "settings.header": "INSTELLINGEN",
   "settings.group.account": "ACCOUNT",
   "settings.group.playback": "AFSPELEN",
+  "settings.group.language": "TAAL",
   "settings.group.parental": "KINDERSLOT",
   "settings.group.service": "DIENST",
   "settings.group.updates": "UPDATES",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "Vloeiend zappen",
   "settings.smoothZapHint": "Laadt de zenders in de buurt alvast tijdens het kijken, zodat zappen meteen begint. Gebruikt meer data; pauzeert vanzelf op verbindingen met datalimiet of als je stream moeite heeft.",
   "settings.smoothZapHintDesktop": "Laadt de zenders in de buurt alvast tijdens het kijken, zodat zappen meteen begint. Gebruikt meer data; pauzeert vanzelf op beperkte verbindingen of als je stream moeite heeft.",
+  "settings.language": "Taal",
+  "settings.language.device": "Taal van het apparaat",
+  "settings.language.system": "Taal van het systeem",
+  "settings.language.hint": "Dit verandert alleen de tekst van de app. Zendernamen en de programmagids komen van je dienst.",
   "settings.pin": "Pincode",
   "settings.pinNotSet": "niet ingesteld: zenders met toegangscontrole zijn verborgen",
   "settings.setPin": "Pincode instellen…",
@@ -268,6 +274,8 @@
   "update.downloadAnyway": "Toch downloaden",
   "update.installNow": "Nu installeren",
   "update.later": "Later",
+
+  "notice.engineUnsupported": "Dit apparaat kan de P2P-engine niet draaien: Android 10 of nieuwer is nodig.",
 
   "hints.escBack": "{esc} terug",
   "hints.escClose": "{esc} sluiten",

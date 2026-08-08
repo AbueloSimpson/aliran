@@ -14,6 +14,7 @@
   "common.unmute": "取消静音",
   "common.save": "保存",
   "common.volume": "音量",
+  "common.selected": "已选",
 
   "splash.connecting": "正在连接",
   "splash.authorizing": "正在授权设备",
@@ -54,6 +55,7 @@
   "settings.header": "设置",
   "settings.group.account": "账户",
   "settings.group.playback": "播放",
+  "settings.group.language": "语言",
   "settings.group.parental": "家长控制",
   "settings.group.service": "服务",
   "settings.group.updates": "更新",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "流畅换台",
   "settings.smoothZapHint": "在你观看时预载附近的频道，换台立即开始。会用更多流量；在按流量计费的网络上，或你的播放不稳定时会自动暂停。",
   "settings.smoothZapHintDesktop": "在你观看时预载附近的频道，换台立即开始。会用更多流量；在受限的网络上，或你的播放不稳定时会自动暂停。",
+  "settings.language": "语言",
+  "settings.language.device": "设备语言",
+  "settings.language.system": "系统语言",
+  "settings.language.hint": "这只会改变应用界面的文字。频道名称和节目指南来自你的服务。",
   "settings.pin": "PIN 码",
   "settings.pinNotSet": "未设置：受访问控制的频道已隐藏",
   "settings.setPin": "设置 PIN 码…",
@@ -265,6 +271,8 @@
   "update.downloadAnyway": "仍然下载",
   "update.installNow": "立即安装",
   "update.later": "稍后",
+
+  "notice.engineUnsupported": "此设备无法运行 P2P 引擎：需要 Android 10 或更高版本。",
 
   "hints.escBack": "{esc} 返回",
   "hints.escClose": "{esc} 关闭",

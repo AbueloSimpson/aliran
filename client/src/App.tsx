@@ -23,6 +23,11 @@ import { AppState, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranBackend, EngineNotice } from '@aliran/react-native'
+import { setLocale, useI18n } from '@aliran/i18n'
+// FIRST i18n import on purpose: this module reads the device language and sets the
+// locale as it loads, so the first frame is already in the viewer's language (S56e,
+// design D5). The saved override arrives below with the worklet's prefs reply.
+import { deviceLocaleTag, pickLocale, serviceDefaultLocale } from './i18n'
 import { backend } from './worklet'
 import { hasBakedKey, loadServiceDescriptor } from './config'
 import { checkForUpdate, onUpdateAvailable, type AvailableUpdate } from './update'
@@ -91,10 +96,15 @@ const engineSupported = AliranBackend.isSupported()
 // The SDK's ready-made notice, branded from the service theme (dogfooding the
 // exported component; hosts with a fallback method also pass actionLabel/onAction —
 // this app has no non-P2P delivery, so it shows the notice alone).
+// The notice renders before any prefs exist, so it speaks the DEVICE language — by
+// design (D10). The SDK's own default copy stays English; the catalog line is passed
+// in as a prop, which is the only seam a host needs.
 function EngineUnavailable () {
+  const { t } = useI18n()
   return (
     <EngineNotice
       title={loadServiceDescriptor().name}
+      message={t('notice.engineUnsupported')}
       colors={{
         background: theme.colors.background,
         text: theme.colors.text,
@@ -121,6 +131,11 @@ export default function App () {
       // manifest changes without the pointer changing) and each return to the
       // foreground, throttled to 6 h inside checkForUpdate().
       if (m.type === 'ready') { setReady(true); checkForUpdate().catch(() => {}) }
+      // The viewer's saved language (S56e). It rides the prefs reply the splash
+      // already waits for, so the only screen visible during a swap is the splash.
+      // No saved choice (null) means "follow the device", which is what the module
+      // import above already decided — recomputing it keeps ONE resolution order.
+      if (m.type === 'prefs') setLocale(pickLocale(m.language, deviceLocaleTag(), serviceDefaultLocale()))
     })
     const offUpdate = onUpdateAvailable(setUpdate)
     const appState = AppState.addEventListener('change', (s) => {

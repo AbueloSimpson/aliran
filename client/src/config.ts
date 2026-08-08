@@ -70,6 +70,11 @@ export interface ServiceDescriptor {
     colors?: BrandColors
   }
   sections?: SectionToggles
+  /** Language this brand's app starts in when the DEVICE language is not one of the
+   *  14 it ships (S56e): one of those codes, e.g. 'es'. The viewer's own device
+   *  language always wins, and their Settings choice wins over both. Omit for
+   *  English. */
+  defaultLocale?: string
   bootstrap?: string[]
   // Optional hybrid CDN<->P2P playback policy (cdnUrl is a '{streamId}' template
   // string). Omit for pure P2P. See sdk/react-native and sdk/README.md.

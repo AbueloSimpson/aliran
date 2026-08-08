@@ -14,6 +14,7 @@
   "common.unmute": "Unmute",
   "common.save": "Save",
   "common.volume": "Volume",
+  "common.selected": "SELECTED",
 
   "splash.connecting": "Connecting",
   "splash.authorizing": "Authorizing device",
@@ -54,6 +55,7 @@
   "settings.header": "SETTINGS",
   "settings.group.account": "ACCOUNT",
   "settings.group.playback": "PLAYBACK",
+  "settings.group.language": "LANGUAGE",
   "settings.group.parental": "PARENTAL CONTROLS",
   "settings.group.service": "SERVICE",
   "settings.group.updates": "UPDATES",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "Smooth zapping",
   "settings.smoothZapHint": "Preloads nearby channels while you watch, so channel surfing starts instantly. Uses more data; pauses itself on metered connections or when your stream is struggling.",
   "settings.smoothZapHintDesktop": "Preloads nearby channels while you watch, so channel surfing starts instantly. Uses more data; pauses itself on constrained connections or when your stream is struggling.",
+  "settings.language": "Language",
+  "settings.language.device": "Device language",
+  "settings.language.system": "System language",
+  "settings.language.hint": "This changes the app text only. Channel names and the program guide come from your service.",
   "settings.pin": "PIN",
   "settings.pinNotSet": "not set — access-controlled channels are hidden",
   "settings.setPin": "Set PIN…",
@@ -268,6 +274,8 @@
   "update.downloadAnyway": "Download anyway",
   "update.installNow": "Install now",
   "update.later": "Later",
+
+  "notice.engineUnsupported": "This device can't run the P2P engine — Android 10 or newer is required.",
 
   "hints.escBack": "{esc} back",
   "hints.escClose": "{esc} close",

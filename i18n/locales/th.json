@@ -14,6 +14,7 @@
   "common.unmute": "เปิดเสียง",
   "common.save": "บันทึก",
   "common.volume": "ระดับเสียง",
+  "common.selected": "เลือกอยู่",
 
   "splash.connecting": "กำลังเชื่อมต่อ",
   "splash.authorizing": "กำลังอนุญาตอุปกรณ์",
@@ -54,6 +55,7 @@
   "settings.header": "การตั้งค่า",
   "settings.group.account": "บัญชี",
   "settings.group.playback": "การเล่น",
+  "settings.group.language": "ภาษา",
   "settings.group.parental": "การควบคุมโดยผู้ปกครอง",
   "settings.group.service": "บริการ",
   "settings.group.updates": "การอัปเดต",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "เปลี่ยนช่องลื่นไหล",
   "settings.smoothZapHint": "โหลดช่องใกล้เคียงล่วงหน้าขณะที่คุณดู การเปลี่ยนช่องจึงเริ่มทันที ใช้ดาต้ามากขึ้น และหยุดเองเมื่ออยู่บนการเชื่อมต่อแบบจำกัดปริมาณ หรือเมื่อสตรีมของคุณมีปัญหา",
   "settings.smoothZapHintDesktop": "โหลดช่องใกล้เคียงล่วงหน้าขณะที่คุณดู การเปลี่ยนช่องจึงเริ่มทันที ใช้ดาต้ามากขึ้น และหยุดเองเมื่ออยู่บนการเชื่อมต่อที่จำกัด หรือเมื่อสตรีมของคุณมีปัญหา",
+  "settings.language": "ภาษา",
+  "settings.language.device": "ภาษาของอุปกรณ์",
+  "settings.language.system": "ภาษาของระบบ",
+  "settings.language.hint": "การตั้งค่านี้เปลี่ยนเฉพาะข้อความในแอป ชื่อช่องและผังรายการมาจากบริการของคุณ",
   "settings.pin": "รหัส PIN",
   "settings.pinNotSet": "ยังไม่ได้ตั้ง — ช่องที่ควบคุมการเข้าถึงถูกซ่อนไว้",
   "settings.setPin": "ตั้งรหัส PIN…",
@@ -265,6 +271,8 @@
   "update.downloadAnyway": "ดาวน์โหลดต่อไป",
   "update.installNow": "ติดตั้งเลย",
   "update.later": "ภายหลัง",
+
+  "notice.engineUnsupported": "อุปกรณ์นี้เรียกใช้เอนจิน P2P ไม่ได้ — ต้องใช้ Android 10 ขึ้นไป",
 
   "hints.escBack": "{esc} ย้อนกลับ",
   "hints.escClose": "{esc} ปิด",

@@ -14,6 +14,7 @@
   "common.unmute": "आवाज़ चालू करें",
   "common.save": "सहेजें",
   "common.volume": "आवाज़",
+  "common.selected": "चुना हुआ",
 
   "splash.connecting": "कनेक्ट हो रहा है",
   "splash.authorizing": "डिवाइस को अधिकृत किया जा रहा है",
@@ -54,6 +55,7 @@
   "settings.header": "सेटिंग",
   "settings.group.account": "खाता",
   "settings.group.playback": "प्लेबैक",
+  "settings.group.language": "भाषा",
   "settings.group.parental": "पैरेंटल कंट्रोल",
   "settings.group.service": "सेवा",
   "settings.group.updates": "अपडेट",
@@ -63,6 +65,10 @@
   "settings.smoothZap": "तेज़ चैनल बदलाव",
   "settings.smoothZapHint": "आपके देखते समय आस-पास के चैनल पहले से लोड करता है, इसलिए चैनल बदलना तुरंत शुरू होता है। ज़्यादा डेटा लेता है; सीमित डेटा वाले कनेक्शन पर या आपकी स्ट्रीम में दिक़्क़त होने पर खुद रुक जाता है।",
   "settings.smoothZapHintDesktop": "आपके देखते समय आस-पास के चैनल पहले से लोड करता है, इसलिए चैनल बदलना तुरंत शुरू होता है। ज़्यादा डेटा लेता है; सीमित कनेक्शन पर या आपकी स्ट्रीम में दिक़्क़त होने पर खुद रुक जाता है।",
+  "settings.language": "भाषा",
+  "settings.language.device": "डिवाइस की भाषा",
+  "settings.language.system": "सिस्टम की भाषा",
+  "settings.language.hint": "इससे सिर्फ़ ऐप का टेक्स्ट बदलता है। चैनल के नाम और प्रोग्राम गाइड आपकी सेवा से आते हैं।",
   "settings.pin": "पिन",
   "settings.pinNotSet": "सेट नहीं है — पहुँच-नियंत्रित चैनल छिपे हैं",
   "settings.setPin": "पिन सेट करें…",
@@ -268,6 +274,8 @@
   "update.downloadAnyway": "फिर भी डाउनलोड करें",
   "update.installNow": "अभी इंस्टॉल करें",
   "update.later": "बाद में",
+
+  "notice.engineUnsupported": "यह डिवाइस P2P इंजन नहीं चला सकता — Android 10 या नया ज़रूरी है।",
 
   "hints.escBack": "{esc} वापस",
   "hints.escClose": "{esc} बंद करें",
