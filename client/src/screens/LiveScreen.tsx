@@ -176,8 +176,8 @@ export function LiveScreen ({ route }: Props) {
 
   // Wall clock for the bottom menu — tick twice a minute so the minute never lags far behind.
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 30000)
-    return () => clearInterval(t)
+    const timer = setInterval(() => setNow(new Date()), 30000)
+    return () => clearInterval(timer)
   }, [])
 
   // Left menu auto-hide: refresh the idle timer while the browse overlay is up; clear it
@@ -281,7 +281,7 @@ export function LiveScreen ({ route }: Props) {
   // self-heals; 'playing' — the first real playback of the CURRENT tune, edge-proof
   // against mid-tune remounts — completes it (snap to 100%, brief hold, hide).
   function onTune (e: TuneEvent) {
-    if (e.phase === 'playing') setTuneUI(t => (t && t.id === e.id ? { ...t, active: false } : t))
+    if (e.phase === 'playing') setTuneUI(p => (p && p.id === e.id ? { ...p, active: false } : p))
     else setTuneUI({ id: e.id, phase: e.phase === 'start' ? 'tuning' : e.phase, active: true })
   }
 

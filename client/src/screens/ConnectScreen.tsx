@@ -208,7 +208,7 @@ export function ConnectScreen ({ navigation }: Props) {
                 maxLength={PAIRING_GROUP_SIZE}
                 hasTVPreferredFocus={i === 0}
                 value={g}
-                onChangeText={(t) => onGroupChange(i, t)}
+                onChangeText={(v) => onGroupChange(i, v)}
                 onKeyPress={(e) => onGroupKey(i, e.nativeEvent.key)}
                 onFocus={() => setFocused('g' + i)}
                 onBlur={() => setFocused(null)}

@@ -36,10 +36,10 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
   // is open; it stays instant for the same reason. onScrollToIndexFailed is the belt.
   useEffect(() => {
     if (playingIndex < 1) return
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       try { listRef.current?.scrollToIndex({ index: playingIndex, animated: false, viewPosition: 0.35 }) } catch {}
     }, 0)
-    return () => clearTimeout(t)
+    return () => clearTimeout(timer)
   }, [playingIndex])
   return (
     <View style={styles.panel}>

@@ -48,10 +48,10 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
   // "Off" is active when nothing is selected (DISABLED); for audio with no explicit pick,
   // reflect the player's currently-selected track (`selected`).
   const eqSel = (a: SelectedTrack | undefined, b: SelectedTrack) => !!a && a.type === b.type && a.value === b.value
-  const textActive = (t?: TextTrack) =>
-    t == null ? selectedText.type === SelectedTrackType.DISABLED : eqSel(selectedText, trackChoice(t))
-  const audioActive = (t: AudioTrack) =>
-    selectedAudio ? eqSel(selectedAudio, trackChoice(t)) : !!t.selected
+  const textActive = (track?: TextTrack) =>
+    track == null ? selectedText.type === SelectedTrackType.DISABLED : eqSel(selectedText, trackChoice(track))
+  const audioActive = (track: AudioTrack) =>
+    selectedAudio ? eqSel(selectedAudio, trackChoice(track)) : !!track.selected
 
   // Picking a track applies it AND dismisses the menu — a subtitle/audio choice is a
   // one-shot action, and leaving the panel over the video was the annoyance.
@@ -74,24 +74,24 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <Text style={styles.heading}>{t('tracks.subtitles')}</Text>
           <Row label={t('tracks.off')} active={textActive()} onPress={() => chooseText({ type: SelectedTrackType.DISABLED })} />
-          {textTracks.map((t, i) => (
+          {textTracks.map((track, i) => (
             <Row
-              key={t.index}
+              key={track.index}
               label={textLabels[i]}
-              active={textActive(t)}
-              onPress={() => chooseText(trackChoice(t))}
+              active={textActive(track)}
+              onPress={() => chooseText(trackChoice(track))}
             />
           ))}
 
           {audioTracks.length > 1 && (
             <>
               <Text style={[styles.heading, styles.headingGap]}>{t('tracks.audio')}</Text>
-              {audioTracks.map((t, i) => (
+              {audioTracks.map((track, i) => (
                 <Row
-                  key={t.index}
+                  key={track.index}
                   label={audioLabels[i]}
-                  active={audioActive(t)}
-                  onPress={() => chooseAudio(trackChoice(t))}
+                  active={audioActive(track)}
+                  onPress={() => chooseAudio(trackChoice(track))}
                 />
               ))}
             </>
