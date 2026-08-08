@@ -10,6 +10,7 @@
 import React from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import { SelectedTrackType, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
+import { useI18n } from '@aliran/i18n'
 import { trackDisplayLabels } from '../lang'
 import { theme } from '../theme'
 
@@ -42,6 +43,7 @@ export interface TrackMenuProps {
 }
 
 export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudio, onSelectText, onSelectAudio, onClose }: TrackMenuProps) {
+  const { t } = useI18n()
   // A row is active when the current selection equals what this track maps to (trackChoice).
   // "Off" is active when nothing is selected (DISABLED); for audio with no explicit pick,
   // reflect the player's currently-selected track (`selected`).
@@ -58,8 +60,11 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
 
   // Viewers read "Spanish", not "spa t2" — full language names from the track's code,
   // the provider's own title only when the code resolves to nothing (lang.ts).
-  const textLabels = trackDisplayLabels(textTracks, 'Subtitle')
-  const audioLabels = trackDisplayLabels(audioTracks, 'Audio')
+  // The numbered last resort ('Subtitle 2') is the one word in a track label this app
+  // owns — the language names themselves come from lang.ts (S56f makes those follow the
+  // locale), and a provider's own title is never translated.
+  const textLabels = trackDisplayLabels(textTracks, t('tracks.subtitleFallback'))
+  const audioLabels = trackDisplayLabels(audioTracks, t('tracks.audioFallback'))
 
   return (
     <View style={styles.overlay}>
@@ -67,8 +72,8 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
       <View style={styles.panel} pointerEvents="box-none">
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          <Text style={styles.heading}>Subtitles</Text>
-          <Row label="Off" active={textActive()} onPress={() => chooseText({ type: SelectedTrackType.DISABLED })} />
+          <Text style={styles.heading}>{t('tracks.subtitles')}</Text>
+          <Row label={t('tracks.off')} active={textActive()} onPress={() => chooseText({ type: SelectedTrackType.DISABLED })} />
           {textTracks.map((t, i) => (
             <Row
               key={t.index}
@@ -80,7 +85,7 @@ export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudi
 
           {audioTracks.length > 1 && (
             <>
-              <Text style={[styles.heading, styles.headingGap]}>Audio</Text>
+              <Text style={[styles.heading, styles.headingGap]}>{t('tracks.audio')}</Text>
               {audioTracks.map((t, i) => (
                 <Row
                   key={t.index}

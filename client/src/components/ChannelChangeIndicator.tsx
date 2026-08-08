@@ -15,6 +15,7 @@
 // intercepts a tap meant for the video.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native'
+import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber } from '../catalog'
 import { theme } from '../theme'
 
@@ -23,12 +24,6 @@ const HOLD_MS = 450 // keep the completed bar up briefly so 100% is actually see
 
 /** Mirrors <AliranVideo>'s tune phases: a plain tune vs the engine's self-heal cycle. */
 export type ChannelChangePhase = 'tuning' | 'retune' | 'reconnect'
-
-const LABELS: Record<ChannelChangePhase, string> = {
-  tuning: 'Tuning',
-  retune: 'Retuning',
-  reconnect: 'Reconnecting'
-}
 
 export interface ChannelChangeIndicatorProps {
   /** True from the moment a switch starts until the new feed's first real playback. */
@@ -40,6 +35,7 @@ export interface ChannelChangeIndicatorProps {
 }
 
 export function ChannelChangeIndicator ({ active, phase = 'tuning', number, title }: ChannelChangeIndicatorProps) {
+  const { t } = useI18n()
   const [progress, setProgress] = useState(0)
   const [visible, setVisible] = useState(false)
   const shown = useRef(false)
@@ -80,7 +76,7 @@ export function ChannelChangeIndicator ({ active, phase = 'tuning', number, titl
     <View style={styles.wrap} pointerEvents="none">
       <View style={styles.row}>
         <ActivityIndicator size="small" color={theme.colors.accent} />
-        <Text style={styles.label}>{LABELS[phase]} {formatChannelNumber(number)}</Text>
+        <Text style={styles.label}>{t('live.phase.' + phase)} {formatChannelNumber(number)}</Text>
         {showPct && <Text style={styles.pct}>{pct}%</Text>}
       </View>
       {!!title && <Text style={styles.title} numberOfLines={1}>{title}</Text>}

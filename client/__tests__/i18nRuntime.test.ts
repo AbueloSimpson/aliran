@@ -109,8 +109,12 @@ describe('t / tn', () => {
   })
 
   it('picks the plural sibling for the active locale and passes {n}', () => {
-    expect(tn('live.peers', 1)).toBe('live.peers.one')
-    expect(tn('live.peers', 4)).toBe('live.peers.other')
+    // live.peers is a real family now (S56b), so English renders. An UNWRITTEN family
+    // still falls through to the key, which is how the rest of this test reads back
+    // the form the runtime picked.
+    expect(tn('live.peers', 1)).toBe('1 peer')
+    expect(tn('live.peers', 4)).toBe('4 peers')
+    expect(tn('nothing.here', 1)).toBe('nothing.here.one')
     setLocale('ru')
     expect(tn('live.peers', 4)).toBe('live.peers.few')
     expect(tn('live.peers', 11)).toBe('live.peers.many')
