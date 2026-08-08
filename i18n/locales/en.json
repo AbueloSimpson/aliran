@@ -12,6 +12,7 @@
   "common.off": "OFF",
   "common.mute": "Mute",
   "common.unmute": "Unmute",
+  "common.save": "Save",
 
   "splash.connecting": "Connecting",
   "splash.authorizing": "Authorizing device",
@@ -125,5 +126,18 @@
 
   "search.header": "SEARCH",
   "search.placeholder": "Channel, program or category…",
-  "search.noResults": "No channels match \"{query}\""
+  "search.noResults": "No channels match \"{query}\"",
+
+  "pin.label": "PIN",
+  "pin.current": "Current PIN",
+  "pin.new": "New PIN",
+  "pin.repeat": "Repeat new PIN",
+  "pin.setupTitle": "SET PARENTAL PIN",
+  "pin.changeTitle": "CHANGE PIN",
+  "pin.setupHint": "A 4–8 digit PIN, saved only on this device. Access-controlled channels stay hidden until a PIN exists; with one set, they appear and ask for it before playing.",
+  "pin.changeHint": "Pick a new 4–8 digit PIN for access-controlled channels.",
+  "pin.error.wrong": "Wrong PIN — try again.",
+  "pin.error.format": "PIN must be 4 to 8 digits.",
+  "pin.error.mismatch": "The PINs do not match.",
+  "pin.error.wrongCurrent": "Wrong current PIN."
 }
