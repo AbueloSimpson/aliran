@@ -86,7 +86,7 @@ async function enterApp () {
   await refresh()
 }
 
-const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'epg', 'categories', 'reports', 'analytics', 'overview', 'backup']
+const TAB_NAMES = ['streams', 'users', 'packages', 'admins', 'publishers', 'sources', 'epg', 'categories', 'reports', 'analytics', 'overview', 'updates', 'backup']
 // One-line topbar description per tab, shown under the page title.
 const TAB_SUBTITLES = {
   streams: 'the live channel catalog your viewers see',
@@ -100,6 +100,7 @@ const TAB_SUBTITLES = {
   reports: 'viewer problem reports and correlation alerts',
   analytics: 'aggregate usage counts — no per-user tracking exists',
   overview: 'panel health and recent activity',
+  updates: 'app installers the viewer apps download over P2P',
   backup: 'config snapshots, config templates and recovery archives'
 }
 for (const tab of document.querySelectorAll('.tab')) {
@@ -115,9 +116,10 @@ for (const tab of document.querySelectorAll('.tab')) {
     else stopAnalyticsPoll()
     if (tab.dataset.tab === 'reports') startReportsPoll()
     else stopReportsPoll()
-    // Loaded on demand: three API calls nobody needs until they open the tab.
+    // Loaded on demand: API calls nobody needs until they open the tab.
     if (tab.dataset.tab === 'backup') loadBackup().catch((err) => toast(err.message, true))
     if (tab.dataset.tab === 'epg') loadEpg().catch((err) => toast(err.message, true))
+    if (tab.dataset.tab === 'updates') loadUpdates().catch((err) => toast(err.message, true))
   })
 }
 
@@ -1035,6 +1037,97 @@ $('#epg-streams-table').addEventListener('click', async (e) => {
   } catch (err) {
     toast(err.message, true)
   }
+})
+
+// ---------------------------------------------------------------- app updates (OTA)
+
+let updatesData = null // GET /api/updates — fetched when the tab opens or on refresh
+
+async function loadUpdates () {
+  updatesData = await api('GET', '/api/updates')
+  renderUpdates()
+}
+
+function renderUpdates () {
+  const d = updatesData || { entries: {} }
+  const rows = Object.entries(d.entries || {}).sort((a, b) => a[0].localeCompare(b[0]))
+  $('#update-count').textContent = rows.length ? `${rows.length} app${rows.length === 1 ? '' : 's'}` : ''
+  $('#updates-table tbody').innerHTML = rows.map(([appId, e]) => `<tr>
+    <td class="mono">${esc(appId)}</td>
+    <td>${esc(e.platform)}</td>
+    <td><b>${esc(e.versionName)}</b> <span class="muted">(code ${esc(e.versionCode)})</span></td>
+    <td class="muted" title="${e.storedBytes != null ? esc(e.storedBytes) + ' bytes stored in the drive' : ''}">${fmtBytes(e.size)}</td>
+    <td>${e.minVersionCode ? `<span class="badge alert" title="apps below versionCode ${esc(e.minVersionCode)} show a persistent update banner">≥ ${esc(e.minVersionCode)}</span>` : '<span class="muted">—</span>'}</td>
+    <td class="muted">${e.releasedAt ? new Date(e.releasedAt).toLocaleString() : '—'}</td>
+    <td class="actions-col"><button class="btn small danger update-del" data-id="${esc(appId)}" type="button">remove</button></td>
+  </tr>`).join('') || '<tr><td colspan="7" class="muted">no updates published yet — use the form below</td></tr>'
+}
+
+$('#update-refresh').addEventListener('click', () => loadUpdates().catch((err) => toast(err.message, true)))
+
+$('#updates-table').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.update-del')
+  if (!btn) return
+  const appId = btn.dataset.id
+  const ok = await dialog(`Remove update — ${appId}`, [], {
+    okLabel: 'Remove',
+    danger: true,
+    body: `<p class="muted">This removes the manifest entry and the stored installer files for <b>${esc(appId)}</b>. Installed apps stop seeing an update. Apps that already updated keep working.</p>`
+  })
+  if (!ok) return
+  try {
+    await api('DELETE', '/api/updates/' + encodeURIComponent(appId))
+    toast(`update entry removed for "${appId}"`)
+    await loadUpdates()
+  } catch (err) { toast(err.message, true) }
+})
+
+// The form gathers the metadata; submitting opens the file picker; picking a file
+// starts the upload. XHR instead of fetch for one reason: upload progress events —
+// a 100 MB APK with no feedback reads as a hang.
+$('#update-upload-form').addEventListener('submit', (e) => {
+  e.preventDefault()
+  $('#update-file').value = ''
+  $('#update-file').click()
+})
+
+$('#update-file').addEventListener('change', (e) => {
+  const file = e.target.files[0]
+  if (!file) return
+  const platform = $('#up-platform').value
+  const ext = platform === 'android' ? '.apk' : '.exe'
+  if (!file.name.toLowerCase().endsWith(ext)) return toast(`select a ${ext} file for ${platform}`, true)
+  const appId = $('#up-appid').value.trim()
+  const q = new URLSearchParams({
+    platform,
+    versionCode: $('#up-vcode').value.trim(),
+    versionName: $('#up-vname').value.trim()
+  })
+  const minv = $('#up-minvcode').value.trim()
+  if (minv) q.set('minVersionCode', minv)
+  const notes = $('#up-notes').value.trim()
+  if (notes) q.set('notes', notes)
+  const prog = $('#update-progress')
+  prog.hidden = false
+  prog.textContent = 'uploading 0%…'
+  $('#update-upload-btn').disabled = true
+  const done = () => { prog.hidden = true; $('#update-upload-btn').disabled = false }
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', '/api/updates/' + encodeURIComponent(appId) + '?' + q)
+  xhr.setRequestHeader('authorization', 'Bearer ' + token)
+  xhr.upload.onprogress = (ev) => {
+    if (ev.lengthComputable) prog.textContent = `uploading ${Math.round(ev.loaded / ev.total * 100)}% of ${fmtBytes(ev.total)}…`
+  }
+  xhr.onerror = () => { done(); toast('upload failed — the panel refused the file or the connection dropped', true) }
+  xhr.onload = () => {
+    done()
+    let body = {}
+    try { body = JSON.parse(xhr.responseText) } catch {}
+    if (xhr.status >= 400) return toast(body.error || 'upload failed (HTTP ' + xhr.status + ')', true)
+    toast(`published ${appId} versionCode ${body.entry ? body.entry.versionCode : ''}`)
+    loadUpdates().catch((err) => toast(err.message, true))
+  }
+  xhr.send(file)
 })
 
 // ---------------------------------------------------------------- dialog helper

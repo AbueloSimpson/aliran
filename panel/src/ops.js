@@ -2,7 +2,7 @@
 // BOTH the admin CLI (src/admin-cli.js) and the admin HTTP API (src/admin-server.js),
 // so the two cannot drift.
 //
-// Every op takes a `ctx` = { config, keys, db, assets, dataDir }. Ops throw OpsError
+// Every op takes a `ctx` = { config, keys, db, assets, updates, dataDir }. Ops throw OpsError
 // with a `code` ('bad-request' | 'not-found' | 'exists') that callers map to exit
 // codes / HTTP statuses. Stream encryption keys stay in the panel-private secrets
 // file; admin credentials live in DATA_DIR/secrets/admins.json — neither is ever
@@ -446,6 +446,149 @@ async function requireStream (ctx, id) {
   const node = await ctx.db.get('catalog/' + id)
   if (!node) notFound(`no such stream: ${id}`)
   return node.value
+}
+
+// ---------------------------------------------------------------- app updates (OTA)
+//
+// The panel-owned "updates" Hyperdrive (store.js, advertised as meta/updatesKey =
+// { key, blobsKey }) carries the app installers viewer apps download over P2P:
+//   /manifest.json                       { [appId]: entry } — ONE entry per app id
+//   /pkg/<appId>-<versionCode>.<apk|exe> the artifact blobs
+// entry = { platform, versionCode, versionName, sha256, size, file,
+//           minVersionCode?, notes?, releasedAt }
+// The drive is world-readable to anyone holding the panel key — internal/dev builds
+// must NEVER be published through it (admin-ui + docs repeat this).
+
+export const UPDATE_PLATFORMS = { android: '.apk', windows: '.exe' }
+const UPDATE_MANIFEST = '/manifest.json'
+// Android applicationIds and the desktop app id are dot-separated reverse-DNS names;
+// no '-' allowed, so '<appId>-<versionCode>' stays unambiguous in artifact paths.
+const UPDATE_APPID_RE = /^[a-z][a-z0-9_.]{2,254}$/i
+
+// Validates the addressing triple and derives the artifact path. Exported so the
+// admin server can refuse a bad request BEFORE it opens a drive write stream.
+export function updateTarget (appId, platform, versionCode) {
+  if (typeof appId !== 'string' || !UPDATE_APPID_RE.test(appId)) bad('invalid app id (allowed: letters, digits, _ . ; 3-255 chars, starts with a letter)')
+  if (!UPDATE_PLATFORMS[platform]) bad('platform must be ' + Object.keys(UPDATE_PLATFORMS).join('|'))
+  const vc = Number(versionCode)
+  if (!Number.isInteger(vc) || vc < 1) bad('versionCode must be an integer >= 1')
+  return { appId, platform, versionCode: vc, file: `/pkg/${appId}-${vc}${UPDATE_PLATFORMS[platform]}` }
+}
+
+// Manifest writes are read-modify-write over one drive file — two interleaved
+// publishes would drop an entry, so every mutation runs through this chain
+// (uploadArt has no such hazard: a single put per call).
+let updatesChain = Promise.resolve()
+function serializeUpdates (fn) {
+  const run = updatesChain.then(fn)
+  updatesChain = run.then(() => {}, () => {})
+  return run
+}
+
+async function readUpdateManifest (drive) {
+  const buf = await drive.get(UPDATE_MANIFEST)
+  if (!buf) return {}
+  // Written only by the ops below — a parse failure is real corruption; surface it.
+  return JSON.parse(b4a.toString(buf))
+}
+
+const appIdArtifactRe = (appId) => new RegExp('^/pkg/' + appId.replace(/\./g, '\\.') + '-(\\d+)\\.[a-z0-9]+$')
+
+// Disk bound: per app id keep the newest artifact plus the one before it (a rollback
+// cushion); everything older is cleared out of the blobs core AND dropped from the
+// drive — del alone would keep the bytes.
+async function pruneUpdateArtifacts (drive, appId) {
+  const re = appIdArtifactRe(appId)
+  const files = []
+  for await (const entry of drive.list('/pkg/')) {
+    const m = re.exec(entry.key)
+    if (m) files.push({ key: entry.key, vc: parseInt(m[1], 10) })
+  }
+  files.sort((a, b) => b.vc - a.vc)
+  const removed = []
+  for (const f of files.slice(2)) {
+    try { await drive.clear(f.key) } catch {}
+    await drive.del(f.key)
+    removed.push(f.key)
+  }
+  return removed
+}
+
+// meta = { platform, versionCode, versionName, sha256, size, minVersionCode?, notes?,
+// force? }. sha256/size come from the server-side stream hash, never from the client.
+export function putUpdate (ctx, appId, meta = {}) {
+  return serializeUpdates(async () => {
+    const t = updateTarget(appId, meta.platform, meta.versionCode)
+    const versionName = typeof meta.versionName === 'string' ? meta.versionName.trim() : ''
+    if (!versionName || versionName.length > 64 || /[\r\n]/.test(versionName)) bad('versionName is required (max 64 characters, one line)')
+    if (typeof meta.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(meta.sha256)) bad('sha256 must be 64 hex characters')
+    const size = Number(meta.size)
+    if (!Number.isInteger(size) || size < 1) bad('size must be an integer >= 1')
+    let minVersionCode
+    if (meta.minVersionCode !== undefined && meta.minVersionCode !== null && meta.minVersionCode !== '') {
+      minVersionCode = Number(meta.minVersionCode)
+      if (!Number.isInteger(minVersionCode) || minVersionCode < 1) bad('minVersionCode must be an integer >= 1')
+      // Above the shipped versionCode, even a freshly updated install would sit below
+      // the floor — every device banner-locked forever, including the newest build.
+      if (minVersionCode > t.versionCode) bad('minVersionCode must not exceed versionCode')
+    }
+    let notes
+    if (meta.notes !== undefined && meta.notes !== null && String(meta.notes).length > 0) {
+      notes = String(meta.notes)
+      if (notes.length > 2000) bad('notes must be at most 2000 characters')
+    }
+    const manifest = await readUpdateManifest(ctx.updates)
+    const existing = manifest[t.appId]
+    if (existing && existing.platform !== t.platform) bad(`app "${t.appId}" is published for ${existing.platform} — delete the entry before republishing for ${t.platform}`)
+    if (existing && t.versionCode <= existing.versionCode && !meta.force) {
+      bad(`versionCode ${t.versionCode} does not exceed the published ${existing.versionCode} (pass force to republish)`)
+    }
+    const entry = {
+      platform: t.platform,
+      versionCode: t.versionCode,
+      versionName,
+      sha256: meta.sha256,
+      size,
+      file: t.file,
+      ...(minVersionCode !== undefined ? { minVersionCode } : {}),
+      ...(notes !== undefined ? { notes } : {}),
+      releasedAt: new Date().toISOString()
+    }
+    manifest[t.appId] = entry
+    await ctx.updates.put(UPDATE_MANIFEST, b4a.from(JSON.stringify(manifest)))
+    const pruned = await pruneUpdateArtifacts(ctx.updates, t.appId)
+    return { appId: t.appId, entry, pruned }
+  })
+}
+
+export function listUpdates (ctx) {
+  return serializeUpdates(() => readUpdateManifest(ctx.updates))
+}
+
+export function deleteUpdate (ctx, appId) {
+  return serializeUpdates(async () => {
+    if (typeof appId !== 'string' || !UPDATE_APPID_RE.test(appId)) bad('invalid app id')
+    const manifest = await readUpdateManifest(ctx.updates)
+    if (!manifest[appId]) notFound(`no update entry for "${appId}"`)
+    delete manifest[appId]
+    await ctx.updates.put(UPDATE_MANIFEST, b4a.from(JSON.stringify(manifest)))
+    const re = appIdArtifactRe(appId)
+    let filesRemoved = 0
+    for await (const entry of ctx.updates.list('/pkg/')) {
+      if (!re.test(entry.key)) continue
+      try { await ctx.updates.clear(entry.key) } catch {}
+      await ctx.updates.del(entry.key)
+      filesRemoved++
+    }
+    return { appId, deleted: true, filesRemoved }
+  })
+}
+
+// Abort-path cleanup for the streaming upload (admin-server.js): reclaim the partial
+// blob and drop the entry. Never throws — cleanup must not mask the original failure.
+export async function discardUpdateArtifact (ctx, file) {
+  try { await ctx.updates.clear(file) } catch {}
+  try { await ctx.updates.del(file) } catch {}
 }
 
 // ---------------------------------------------------------------- categories

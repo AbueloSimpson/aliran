@@ -44,6 +44,7 @@
       <button class="tab" data-tab="analytics"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>Analytics</button>
       <button class="tab" data-tab="overview"><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Overview</button>
       <div class="nav-label">Maintenance</div>
+      <button class="tab" data-tab="updates"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>App updates</button>
       <button class="tab" data-tab="backup"><svg viewBox="0 0 24 24"><path d="M21 8v11a2 2 0 01-2 2H5a2 2 0 01-2-2V8M2 3h20v5H2zM10 12h4"/></svg>Backup</button>
     </nav>
     <div class="side-foot">
@@ -467,6 +468,48 @@
       </div>
     </section>
 
+    <section id="updates-section" hidden>
+      <div class="card toolbar">
+        <span class="muted">App installers that viewer apps download over P2P.</span>
+        <button class="btn ghost small" id="update-refresh" type="button">refresh</button>
+        <span class="spacer"></span>
+        <span id="update-count" class="muted"></span>
+      </div>
+      <div class="card table-card scroll">
+        <table id="updates-table">
+          <thead><tr>
+            <th>App id</th><th>Platform</th><th>Version</th><th>Size</th><th>Min. version</th><th>Released</th><th class="actions-col"></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card" id="update-upload-card">
+        <h3 class="card-title">Publish an update</h3>
+        <p class="warn-line">Do not upload internal or development builds. All viewers can download these files.</p>
+        <form id="update-upload-form" class="row-form">
+          <select id="up-platform" title="platform">
+            <option value="android">android (.apk)</option>
+            <option value="windows">windows (.exe)</option>
+          </select>
+          <input id="up-appid" placeholder="app id (com.aliranclient.brand)" required>
+          <input id="up-vcode" type="number" min="1" step="1" placeholder="versionCode" required>
+          <input id="up-vname" placeholder="versionName (0.5.1)" required>
+          <input id="up-minvcode" type="number" min="1" step="1" placeholder="min. versionCode (optional)">
+          <input id="up-notes" placeholder="notes (optional)">
+          <button class="btn primary" id="update-upload-btn">Choose file and publish…</button>
+        </form>
+        <p id="update-progress" class="muted" hidden></p>
+        <details class="footnote"><summary>How app updates work</summary>
+        <p class="muted footnote">The panel stores each installer in a public drive. The signed catalog tells the apps the
+          drive key. An installed app checks the manifest for its own app id. If the manifest shows a higher
+          <span class="mono">versionCode</span>, the app offers the update. The app downloads the file over P2P and
+          verifies the SHA-256 hash. The <b>app id</b> must equal the installed application id — the build tool prints it.
+          For Android, sign the APK with the same key as the installed app. A different key stops the installation.
+          Set <b>min. versionCode</b> to make the update mandatory: apps below that value show a persistent banner.
+          The panel keeps the new file and one file before it. The panel removes older files automatically.</p></details>
+      </div>
+    </section>
+
     <section id="backup-section" hidden>
       <div class="card">
         <h3 class="card-title">Three different files, three different jobs</h3>
@@ -558,6 +601,7 @@
 <div id="toast" hidden></div>
 <input type="file" id="art-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
 <input type="file" id="bk-tpl-file" accept="application/json,.json" hidden>
+<input type="file" id="update-file" accept=".apk,.exe,application/vnd.android.package-archive" hidden>
 
 <script src="app.js"></script>
 </body>

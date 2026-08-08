@@ -56,6 +56,11 @@
 //   DELETE /api/streams/:id                  FULL purge (catalog+secret+grants+art)
 //   POST   /api/streams/:id/art/:kind        raw image body (content-type → extension)
 //   GET    /api/assets/:id/:file             art bytes from the assets drive (authed)
+//   GET    /api/updates                      app OTA manifest + the updates-drive pointer (meta/updatesKey)
+//   POST   /api/updates/:appId?platform=&versionCode=&versionName=&minVersionCode=&notes=&force=
+//                                            raw installer body, STREAMED into the updates drive
+//                                            (android → .apk, windows → .exe; 512 MB cap)
+//   DELETE /api/updates/:appId               drop the manifest entry + every stored artifact
 //   GET    /api/admins
 //   POST   /api/admins                       {username,password}
 //   DELETE /api/admins/:name
@@ -105,6 +110,7 @@ import path from 'path'
 import { Worker } from 'worker_threads'
 import { fileURLToPath } from 'url'
 import b4a from 'b4a'
+import sodium from 'sodium-native'
 import { signToken, tokenValid } from '@aliran/core'
 import { makeSnapshotStore } from '@aliran/core/config-snapshot.js'
 import { makeConfigRoutes } from '@aliran/core/config-routes.js'
@@ -124,6 +130,14 @@ const JSON_BODY_LIMIT = 1024 * 1024 // 1 MiB
 // so the dashboard has exactly one "off" branch to render.
 const REPORTS_OFF_SUMMARY = { enabled: false, total: 0, new: 0, ack: 0, resolved: 0, openAlerts: 0, shed: 0, byChannel: {}, byCategory: {}, byHour: [] }
 const ART_BODY_LIMIT = 10 * 1024 * 1024 // 10 MiB
+// App-update artifacts are STREAMED (never through readBody) — this caps the byte
+// count of the stream, not a buffer. Tests shrink it via config.updates.maxBytes.
+const UPDATE_BODY_LIMIT = 512 * 1024 * 1024
+// First-bytes check per platform: an APK is a ZIP; a Windows installer is a PE image.
+const UPDATE_MAGIC = {
+  android: b4a.from([0x50, 0x4b, 0x03, 0x04]), // 'PK\x03\x04'
+  windows: b4a.from([0x4d, 0x5a]) // 'MZ'
+}
 
 const CONTENT_EXT = {
   'image/png': '.png',
@@ -735,6 +749,56 @@ export function startAdminServer (ctx, opts = {}) {
       }
     }
 
+    // App updates (OTA): the manifest + installer blobs on the panel-owned updates
+    // drive (ops.js "app updates" section; pointer record meta/updatesKey).
+    if (r1 === 'updates') {
+      if (seg.length === 2 && req.method === 'GET') {
+        const pointer = (await ctx.db.get('meta/updatesKey'))?.value ?? null
+        const manifest = await ops.listUpdates(ctx)
+        const entries = {}
+        for (const [appId, e] of Object.entries(manifest)) {
+          // The bytes actually present in the drive — cheap (one bee lookup), and a
+          // mismatch against e.size would mean a manifest/blob divergence worth seeing.
+          let storedBytes = null
+          try { storedBytes = (await ctx.updates.entry(e.file))?.value?.blob?.byteLength ?? null } catch {}
+          entries[appId] = { ...e, storedBytes }
+        }
+        return sendJson(res, 200, { driveKey: pointer?.key ?? null, blobsKey: pointer?.blobsKey ?? null, entries })
+      }
+      if (seg.length === 3 && req.method === 'POST') {
+        const q = url.searchParams
+        // Validate the whole addressing triple BEFORE a single body byte is consumed —
+        // a bad request must never open a drive write stream.
+        const target = ops.updateTarget(r2, q.get('platform'), q.get('versionCode'))
+        const limit = (ctx.config && ctx.config.updates && ctx.config.updates.maxBytes) || UPDATE_BODY_LIMIT
+        const { sha256, size } = await streamToUpdateDrive(ctx, req, target, limit)
+        let out
+        try {
+          out = await ops.putUpdate(ctx, target.appId, {
+            platform: target.platform,
+            versionCode: target.versionCode,
+            versionName: q.get('versionName'),
+            minVersionCode: q.get('minVersionCode') || undefined,
+            notes: q.get('notes') || undefined,
+            force: /^(1|true)$/i.test(q.get('force') || ''),
+            sha256,
+            size
+          })
+        } catch (err) {
+          // The bytes landed but the manifest refused them — reclaim the orphan.
+          await ops.discardUpdateArtifact(ctx, target.file)
+          throw err
+        }
+        act('update-publish', { appId: target.appId, platform: target.platform, versionCode: target.versionCode, bytes: size })
+        return sendJson(res, 200, out)
+      }
+      if (seg.length === 3 && req.method === 'DELETE') {
+        const out = await ops.deleteUpdate(ctx, r2)
+        act('update-delete', { appId: r2, filesRemoved: out.filesRemoved })
+        return sendJson(res, 200, out)
+      }
+    }
+
     // Config snapshots, templates and the disaster-recovery archive listing. The handler is
     // transport-agnostic (core/config-routes.js) and returns null for a path it does not
     // own, so it can sit in front of the 404 without swallowing anything.
@@ -766,6 +830,73 @@ export function startAdminServer (ctx, opts = {}) {
         close: () => { loginVerifier.close(); return new Promise((r) => server.close(r)) }
       })
     })
+  })
+}
+
+// ---------------------------------------------------------------- app updates intake
+
+// Streaming installer intake — deliberately NOT readBody: that helper buffers the
+// whole payload and caps at 10 MiB, while APKs run 60-150 MB. Bytes flow
+// req → incremental sha256 → the drive write stream under backpressure, with a hard
+// byte cap and a first-bytes magic check. EVERY abort path — cap, magic, client
+// disconnect, stream error — destroys the write stream and reclaims the partial file
+// before the error surfaces (the manifest is only written after a clean finish, so
+// no abort can strand an entry).
+function streamToUpdateDrive (ctx, req, target, limit) {
+  const magic = UPDATE_MAGIC[target.platform]
+  const state = b4a.alloc(sodium.crypto_hash_sha256_STATEBYTES)
+  sodium.crypto_hash_sha256_init(state)
+  const ws = ctx.updates.createWriteStream(target.file)
+  return new Promise((resolve, reject) => {
+    let size = 0
+    let head = null // first bytes accumulated until the magic check has enough
+    let checked = false
+    let ended = false
+    let settled = false
+    const fail = (err) => {
+      if (settled) return
+      settled = true
+      try { ws.destroy() } catch {}
+      try { req.destroy() } catch {}
+      ops.discardUpdateArtifact(ctx, target.file).then(() => reject(err), () => reject(err))
+    }
+    ws.on('error', (err) => fail(httpError(500, 'update write failed: ' + (err.message || err))))
+    ws.on('close', () => {
+      if (settled) return
+      if (!ended) return fail(httpError(500, 'update write stream closed early'))
+      settled = true
+      const out = b4a.alloc(sodium.crypto_hash_sha256_BYTES)
+      sodium.crypto_hash_sha256_final(state, out)
+      resolve({ sha256: b4a.toString(out, 'hex'), size })
+    })
+    req.on('data', (chunk) => {
+      if (settled) return
+      size += chunk.length
+      if (size > limit) return fail(httpError(413, `artifact exceeds the ${Math.floor(limit / 1048576)} MB limit`))
+      if (!checked) {
+        const piece = chunk.subarray(0, magic.length - (head ? head.length : 0))
+        head = head ? b4a.concat([head, piece]) : piece
+        if (head.length >= magic.length) {
+          checked = true
+          if (!b4a.equals(head, magic)) {
+            return fail(httpError(400, target.platform === 'android' ? 'not an APK (ZIP magic missing)' : 'not a Windows installer (MZ magic missing)'))
+          }
+        }
+      }
+      sodium.crypto_hash_sha256_update(state, chunk)
+      if (!ws.write(chunk)) {
+        req.pause()
+        ws.once('drain', () => { if (!settled) req.resume() })
+      }
+    })
+    req.on('end', () => {
+      if (settled) return
+      if (!checked) return fail(httpError(400, 'artifact body is empty or too small'))
+      ended = true
+      ws.end()
+    })
+    req.on('error', () => fail(httpError(400, 'client disconnected during upload')))
+    req.on('aborted', () => fail(httpError(400, 'client disconnected during upload')))
   })
 }
 
