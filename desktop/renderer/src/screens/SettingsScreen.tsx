@@ -8,8 +8,9 @@
 // being watched — which Settings cannot know.
 
 import React, { useEffect, useState } from 'react'
-import { useI18n } from '@aliran/i18n'
+import { SUPPORTED_LOCALES, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
+import { applyLocale, saveLanguage, savedLanguage } from '../i18n'
 import { clearPin, hasPin, hideRestricted, setHideRestricted } from '../parental'
 import { PinEntryModal, PinSetupModal } from '../components/PinModal'
 
@@ -27,6 +28,8 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
   const [pinSet, setPinSet] = useState<boolean>(hasPin)
   const [hideR, setHideR] = useState<boolean>(hideRestricted)
   const [pinModal, setPinModal] = useState<PinModalState>(null)
+  // The PINNED language ('' = follow the system, which is the <select>'s empty value).
+  const [language, setLanguage] = useState<string>(savedLanguage() ?? '')
 
   useEffect(() => {
     backend.requestPrefs()
@@ -57,6 +60,14 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
     backend.setZapPrefetch(next)
   }
 
+  // Persist first, then re-resolve: applyLocale() reads the same saved > system order
+  // the app booted with, so "System language" needs no separate branch here.
+  function chooseLanguage (code: string) {
+    setLanguage(code)
+    saveLanguage(code || null)
+    applyLocale()
+  }
+
   function signOut () {
     backend.clearCredentials()
     backend.streams = [] // drop the session's display list; a fresh login rebuilds it
@@ -82,6 +93,30 @@ export function SettingsScreen ({ onSignOut, onBack }: { onSignOut: () => void; 
             <span className="toggle-hint">{t('settings.smoothZapHintDesktop')}</span>
           </span>
           <span className={'toggle-pill' + (smoothZap ? ' on' : '')}>{smoothZap ? t('common.on') : t('common.off')}</span>
+        </div>
+      </div>
+
+      <div className="settings-group-title">{t('settings.group.language')}</div>
+      <div className="settings-group">
+        <div className="toggle-row">
+          <span className="toggle-texts">
+            <span className="row-label">{t('settings.language')}</span>
+            <span className="toggle-hint">{t('settings.language.hint')}</span>
+          </span>
+          {/* The 14 names are rendered in their own language and never translated —
+              nobody should have to read a foreign word to find their own language.
+              Only the "follow the system" row names a behavior, so only it is copy. */}
+          <select
+            className="settings-select"
+            aria-label={t('settings.language')}
+            value={language}
+            onChange={(e) => chooseLanguage(e.target.value)}
+          >
+            <option value="">{t('settings.language.system')}</option>
+            {SUPPORTED_LOCALES.map((l) => (
+              <option key={l.code} value={l.code}>{l.nativeName}</option>
+            ))}
+          </select>
         </div>
       </div>
 

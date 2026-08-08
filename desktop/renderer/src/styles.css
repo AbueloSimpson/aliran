@@ -764,6 +764,14 @@ img { -webkit-user-drag: none; }
   margin-right: 10px;
 }
 .settings-btn:hover { border-color: var(--c-focus); color: var(--c-accent); }
+/* The language picker: a native <select> wearing the settings-button skin, so the OS
+   still owns the popup (keyboard, scrolling and IME all keep working). */
+.settings-select {
+  background: var(--c-background); color: var(--c-text);
+  border: 1px solid var(--c-text-dim); border-radius: 8px;
+  padding: 9px 12px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.settings-select:hover, .settings-select:focus { border-color: var(--c-focus); outline: none; }
 .settings-btn.danger { border-color: var(--c-live); }
 .settings-btn.danger:hover { color: var(--c-live); border-color: var(--c-live); }
 
