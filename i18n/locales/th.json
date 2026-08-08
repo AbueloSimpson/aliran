@@ -17,7 +17,7 @@
   "common.selected": "เลือกอยู่",
 
   "splash.connecting": "กำลังเชื่อมต่อ",
-  "splash.authorizing": "กำลังอนุญาตอุปกรณ์",
+  "splash.authorizing": "กำลังตรวจสอบสิทธิ์อุปกรณ์",
 
   "connect.intro": "เชื่อมต่อกับบริการของผู้ให้บริการของคุณ คุณต้องใช้สามอย่างที่เขาให้มา: {method}, {username} และ {password} ไม่ต้องใช้ URL เพราะแอปจะค้นหาบริการผ่านเครือข่าย P2P",
   "connect.introCode": "รหัสจับคู่",
@@ -170,7 +170,7 @@
   "report.category.black-screen": "จอดำ / ไม่เล่นอะไรเลย",
   "report.category.visual-artifacts": "ภาพเสียหรือแตก",
   "report.category.buffering": "บัฟเฟอร์หรือค้างตลอด",
-  "report.category.wrong-content": "รายการผิดช่อง",
+  "report.category.wrong-content": "รายการในช่องนี้ไม่ถูกต้อง",
   "report.category.login": "เข้าสู่ระบบมีปัญหา",
   "report.category.other": "อย่างอื่น",
   "report.result.sent": "ขอบคุณ ส่งรายงานของคุณแล้ว",
@@ -268,7 +268,7 @@
   "update.permission": "อนุญาตให้แอปนี้ติดตั้งการอัปเดต แล้วกด “ติดตั้งเลย” อีกครั้ง",
   "update.installFailed": "การติดตั้งไม่เสร็จสมบูรณ์",
   "update.download": "ดาวน์โหลด",
-  "update.downloadAnyway": "ดาวน์โหลดต่อไป",
+  "update.downloadAnyway": "ดาวน์โหลดอยู่ดี",
   "update.installNow": "ติดตั้งเลย",
   "update.later": "ภายหลัง",
 

@@ -96,7 +96,7 @@
   "settings.update.unsupported": "此版本不提供更新。",
   "settings.update.connectFirst": "请先连接到一个服务。",
   "settings.update.available": "有新版本：{version}。",
-  "settings.update.current": "你已是最新版本。",
+  "settings.update.current": "已是最新版本。",
   "settings.update.failed": "现在无法检查。请稍后再试。",
 
   "live.all": "全部",
@@ -262,7 +262,7 @@
   "update.newVersion": "有新版本：{version}。",
   "update.newVersionSized": "有新版本：{version}（{size} MB）。",
   "update.mustInstall": "你必须安装此更新。",
-  "update.metered": "你正在按流量计费的网络上。下载可能用掉很多流量。",
+  "update.metered": "你正在使用按流量计费的网络。下载可能用掉很多流量。",
   "update.downloading": "正在下载更新… {percent}%",
   "update.installing": "正在启动安装程序…",
   "update.permission": "请允许此应用安装更新。然后再次点击“立即安装”。",

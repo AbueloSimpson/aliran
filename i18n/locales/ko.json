@@ -141,7 +141,7 @@
 
   "search.header": "검색",
   "search.placeholder": "채널, 프로그램 또는 분류…",
-  "search.noResults": "‘{query}’와 맞는 채널이 없어요",
+  "search.noResults": "‘{query}’에 해당하는 채널이 없어요",
   "search.resultsHeading": "결과 ({count})",
   "search.allChannels": "전체 채널",
 
@@ -191,7 +191,7 @@
   "vod.searchPlaceholder": "작품 검색…",
   "vod.loading": "작품을 불러오는 중…",
   "vod.countOf": "{total}개 중 {shown}개",
-  "vod.countTitles.other": "{n}개 작품",
+  "vod.countTitles.other": "작품 {n}개",
   "vod.chip.genre": "장르: {name}",
   "vod.chip.genreUnnamed": "이름 없음",
   "vod.chip.sortBy": "정렬: {label}",
@@ -217,7 +217,7 @@
   "vod.empty.nothingTitle": "여기에는 아직 아무것도 없어요",
   "vod.empty.nothingHint": "공급자가 작품을 하나도 주지 않았어요.",
   "vod.empty.noMatchesTitle": "결과 없음",
-  "vod.empty.noMatchesHint": "‘{query}’와 맞는 작품이 없어요.",
+  "vod.empty.noMatchesHint": "‘{query}’에 해당하는 작품이 없어요.",
   "vod.empty.myListTitle": "내 목록이 비어 있어요",
   "vod.empty.myListHint": "내 목록에 추가한 작품이 여기에 보여요.",
   "vod.empty.noGenresTitle": "장르 없음",
