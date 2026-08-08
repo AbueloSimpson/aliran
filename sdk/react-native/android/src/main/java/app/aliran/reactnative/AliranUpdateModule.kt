@@ -76,7 +76,7 @@ class AliranUpdateModule(reactContext: ReactApplicationContext) : ReactContextBa
         Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
         Uri.parse("package:" + ctx.packageName)
       )
-      val activity = currentActivity
+      val activity = reactApplicationContext.currentActivity
       if (activity != null) {
         activity.startActivity(intent)
       } else {
