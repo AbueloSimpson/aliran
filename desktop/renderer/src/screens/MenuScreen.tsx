@@ -9,6 +9,7 @@
 // is null otherwise), and a brand can still switch it off with sections.vod:false.
 
 import React, { useEffect, useMemo, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { pickHero } from '../catalog'
@@ -16,9 +17,13 @@ import { visibleStreams } from '../parental'
 
 export type MenuTarget = 'live' | 'vod' | 'favorites' | 'search' | 'settings' | 'exit'
 
-interface MenuItem { key: MenuTarget; label: string; glyph: string }
+// The tile carries its TARGET and its glyph, never its label: the label is looked up
+// at render (t('menu.' + key)), so a language change repaints a menu this memo would
+// otherwise hold frozen in the language it was first built in.
+interface MenuItem { key: MenuTarget; glyph: string }
 
 export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [focus, setFocus] = useState(0)
   // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
@@ -36,12 +41,12 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
 
   const items = useMemo<MenuItem[]>(() => {
     const s = backend.descriptor?.sections ?? {}
-    const list: MenuItem[] = [{ key: 'live', label: 'Live TV', glyph: '📺' }]
-    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: 'Movies & Series', glyph: '🎬' })
-    if (s.favorites !== false) list.push({ key: 'favorites', label: 'Favorites', glyph: '⭐' })
-    if (s.search !== false) list.push({ key: 'search', label: 'Search', glyph: '🔍' })
-    if (s.settings !== false) list.push({ key: 'settings', label: 'Settings', glyph: '⚙️' })
-    if (s.exit !== false) list.push({ key: 'exit', label: 'Exit', glyph: '🚪' })
+    const list: MenuItem[] = [{ key: 'live', glyph: '📺' }]
+    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', glyph: '🎬' })
+    if (s.favorites !== false) list.push({ key: 'favorites', glyph: '⭐' })
+    if (s.search !== false) list.push({ key: 'search', glyph: '🔍' })
+    if (s.settings !== false) list.push({ key: 'settings', glyph: '⚙️' })
+    if (s.exit !== false) list.push({ key: 'exit', glyph: '🚪' })
     return list
   }, [vodEnabled])
 
@@ -72,7 +77,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
             onClick={() => onGo(item.key)}
           >
             <span className="menu-glyph">{item.glyph}</span>
-            <span className="menu-label">{item.label.toUpperCase()}</span>
+            <span className="menu-label">{t('menu.' + item.key).toUpperCase()}</span>
           </div>
         ))}
       </div>
@@ -81,7 +86,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
         <div className="menu-wordmark">{backend.descriptor?.name ?? 'Aliran'}</div>
         {hero && (
           <div className="menu-hero-line">
-            {hero.isLive && <span className="np-live">● LIVE</span>}
+            {hero.isLive && <span className="np-live">{t('common.liveBadge')}</span>}
             <span className="menu-hero-title">{hero.title}</span>
           </div>
         )}
