@@ -256,6 +256,38 @@ if (!opts.build) {
   process.exit(0)
 }
 
+// ---------- assemble + validate the gradle invocation ----------
+// This happens BEFORE the config swap: fail() is process.exit(1), which skips
+// finally blocks — a refusal in here after the swap would strand the brand
+// descriptor over the dev config.
+const gradleArgs = [
+  `:app:assemble${flavor}${variantCap}`,
+  `-PaliranBrandId=${id}`,
+  `-PaliranBrandRes=${overlay}`
+]
+if (versionCode != null) gradleArgs.push(`-PaliranVersionCode=${versionCode}`)
+if (versionName != null) gradleArgs.push(`-PaliranVersionName=${versionName}`)
+if (signing && opts.variant === 'release') {
+  gradleArgs.push(`-PaliranStoreFile=${signing.storeFile}`, `-PaliranKeyAlias=${signing.keyAlias}`)
+}
+gradleArgs.push('--no-daemon')
+// cmd.exe leg: node's default Windows escaping rewrites our embedded quotes as
+// \" — cmd.exe does not understand that, so spaced args (keystore path,
+// versionName) arrive at gradle mangled. Build the /c command line ourselves
+// and hand it over verbatim. Quote any arg carrying whitespace or a cmd
+// metacharacter; a literal double quote cannot survive the
+// cmd -> gradlew.bat -> java chain, so refuse it outright.
+const quoteForCmd = (a) => {
+  if (a.includes('"')) fail(`gradle argument carries a double quote, which cannot pass through cmd.exe: ${a}`)
+  // cmd expands %NAME% even inside quotes — refuse rather than corrupt silently.
+  if (/%[^%]*%/.test(a)) fail(`gradle argument carries a %...% sequence, which cmd.exe would expand as an environment variable: ${a}`)
+  return /[\s&^()!%<>|,;=]/.test(a) ? `"${a}"` : a
+}
+const winCmdLine = process.platform === 'win32'
+  // NoDefaultCurrentDirectoryInExePath-safe: invoke the wrapper with an explicit .\ prefix.
+  ? `".\\gradlew.bat ${gradleArgs.map(quoteForCmd).join(' ')}"`
+  : null
+
 // ---------- swap the bundled config, build, ALWAYS restore ----------
 if (existsSync(backupPath)) {
   // A previous run died before restoring. Only auto-heal when the current config
@@ -281,33 +313,9 @@ try {
   // (docs/client-build.md gotcha) — drop its outputs so the swapped descriptor
   // is guaranteed to land in this APK.
   rmSync(join(androidDir, 'app', 'build', 'generated', 'assets', 'react'), { recursive: true, force: true })
-  const gradleArgs = [
-    `:app:assemble${flavor}${variantCap}`,
-    `-PaliranBrandId=${id}`,
-    `-PaliranBrandRes=${overlay}`
-  ]
-  if (versionCode != null) gradleArgs.push(`-PaliranVersionCode=${versionCode}`)
-  if (versionName != null) gradleArgs.push(`-PaliranVersionName=${versionName}`)
-  if (signing && opts.variant === 'release') {
-    gradleArgs.push(`-PaliranStoreFile=${signing.storeFile}`, `-PaliranKeyAlias=${signing.keyAlias}`)
-  }
-  gradleArgs.push('--no-daemon')
   console.log(`gradle ${gradleArgs.join(' ')}`)
-  // cmd.exe leg: node's default Windows escaping rewrites our embedded quotes as
-  // \" — cmd.exe does not understand that, so spaced args (keystore path,
-  // versionName) arrive at gradle mangled. Build the /c command line ourselves
-  // and hand it over verbatim. Quote any arg carrying whitespace or a cmd
-  // metacharacter; a literal double quote cannot survive the
-  // cmd -> gradlew.bat -> java chain, so refuse it outright.
-  const quoteForCmd = (a) => {
-    if (a.includes('"')) fail(`gradle argument carries a double quote, which cannot pass through cmd.exe: ${a}`)
-    // cmd expands %NAME% even inside quotes — refuse rather than corrupt silently.
-    if (/%[^%]*%/.test(a)) fail(`gradle argument carries a %...% sequence, which cmd.exe would expand as an environment variable: ${a}`)
-    return /[\s&^()!%<>|,;=]/.test(a) ? `"${a}"` : a
-  }
   const res = process.platform === 'win32'
-    // NoDefaultCurrentDirectoryInExePath-safe: invoke the wrapper with an explicit .\ prefix.
-    ? spawnSync('cmd.exe', ['/d', '/s', '/c', `".\\gradlew.bat ${gradleArgs.map(quoteForCmd).join(' ')}"`],
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', winCmdLine],
         { cwd: androidDir, stdio: 'inherit', windowsVerbatimArguments: true })
     : spawnSync('./gradlew', gradleArgs, { cwd: androidDir, stdio: 'inherit' })
   status = res.status ?? 1
