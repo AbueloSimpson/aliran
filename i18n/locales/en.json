@@ -4,7 +4,27 @@
   "common.close": "Close",
   "common.back": "Back",
   "common.tryAgain": "Try again",
+  "common.username": "Username",
+  "common.password": "Password",
 
   "splash.connecting": "Connecting",
-  "splash.authorizing": "Authorizing device"
+  "splash.authorizing": "Authorizing device",
+
+  "connect.intro": "Connect to your operator's service. You need the three things they gave you: the {method}, a {username} and a {password}. No URLs — the app finds the service over the peer-to-peer network.",
+  "connect.introCode": "pairing code",
+  "connect.introKey": "panel key",
+  "connect.introUsername": "username",
+  "connect.introPassword": "password",
+  "connect.keyPlaceholder": "Panel public key (64 characters)",
+  "connect.switchToKey": "Enter the 64-character panel key instead",
+  "connect.switchToCode": "Enter the 12-character pairing code instead",
+  "connect.submit": "Connect",
+  "connect.status.connecting": "Connecting to the service…",
+  "connect.status.finding": "Finding the service…",
+  "connect.error.credentials": "Enter your username and password.",
+  "connect.error.badKey": "The panel key should be 64 characters (0–9, a–f) — ask your operator for it.",
+  "connect.error.unreachable": "Cannot reach the service — check the details you entered and your connection.",
+  "connect.error.malformed": "That code is not complete. It has 12 characters, like A3K7-9QF2-M4XR.",
+  "connect.error.timeout": "No service answered that code. Check the code, and check your connection.",
+  "connect.error.unverified": "A service answered that code but could not prove it owns it. Ask your operator for the code again."
 }
