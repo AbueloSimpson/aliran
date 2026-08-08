@@ -63,6 +63,7 @@ nav:
       - White-label branding: white-label.md
       - Client build (Android phone & TV): client-build.md
       - Desktop player (Windows & macOS): desktop-player.md
+      - App updates over P2P (OTA): app-updates.md
   - Integrate the SDK:
       - Player SDK: sdk.md
       - Installation & configuration: sdk-guide.md

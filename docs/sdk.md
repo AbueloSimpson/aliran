@@ -137,6 +137,10 @@ native code of its own.
   metered networks ([measured numbers](kb/viewer-bandwidth.md)).
 - **Seed nodes.** `swarm: { maxPeers }` raises the connection budget for
   repeater-style hosts ([scaling](kb/scaling.md)).
+- **App updates (OTA).** `checkUpdate()` looks the running build up in the
+  operator's published manifest; `downloadUpdate()` fetches the new APK
+  over P2P and sha256-verifies it. The RN package includes the Android
+  installer module. Operator side: [App updates](app-updates.md).
 
 The full option/event reference is the
 [package README](https://github.com/AbueloSimpson/aliran/tree/main/sdk) and its
