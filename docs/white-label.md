@@ -413,6 +413,8 @@ The stock keyless APK uses the same property-gated gradle plumbing,
 without `brand.mjs`:
 
 ```bash
+export ALIRAN_STORE_PASSWORD='...'
+export ALIRAN_KEY_PASSWORD='...'
 cd client/android
 ./gradlew :app:assembleRelease \
   -PaliranStoreFile=/secure/aliran-public-release.keystore \

@@ -293,12 +293,22 @@ try {
   }
   gradleArgs.push('--no-daemon')
   console.log(`gradle ${gradleArgs.join(' ')}`)
-  // Operator-supplied values (keystore path, versionName) can carry spaces — quote
-  // them on the cmd.exe leg, where the args collapse into one command string.
-  const cmdLine = gradleArgs.map(a => /\s/.test(a) ? `"${a}"` : a).join(' ')
+  // cmd.exe leg: node's default Windows escaping rewrites our embedded quotes as
+  // \" — cmd.exe does not understand that, so spaced args (keystore path,
+  // versionName) arrive at gradle mangled. Build the /c command line ourselves
+  // and hand it over verbatim. Quote any arg carrying whitespace or a cmd
+  // metacharacter; a literal double quote cannot survive the
+  // cmd -> gradlew.bat -> java chain, so refuse it outright.
+  const quoteForCmd = (a) => {
+    if (a.includes('"')) fail(`gradle argument carries a double quote, which cannot pass through cmd.exe: ${a}`)
+    // cmd expands %NAME% even inside quotes — refuse rather than corrupt silently.
+    if (/%[^%]*%/.test(a)) fail(`gradle argument carries a %...% sequence, which cmd.exe would expand as an environment variable: ${a}`)
+    return /[\s&^()!%<>|,;=]/.test(a) ? `"${a}"` : a
+  }
   const res = process.platform === 'win32'
     // NoDefaultCurrentDirectoryInExePath-safe: invoke the wrapper with an explicit .\ prefix.
-    ? spawnSync('cmd.exe', ['/d', '/s', '/c', `.\\gradlew.bat ${cmdLine}`], { cwd: androidDir, stdio: 'inherit' })
+    ? spawnSync('cmd.exe', ['/d', '/s', '/c', `".\\gradlew.bat ${gradleArgs.map(quoteForCmd).join(' ')}"`],
+        { cwd: androidDir, stdio: 'inherit', windowsVerbatimArguments: true })
     : spawnSync('./gradlew', gradleArgs, { cwd: androidDir, stdio: 'inherit' })
   status = res.status ?? 1
 } finally {

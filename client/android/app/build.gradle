@@ -84,10 +84,14 @@ android {
     // as the installed build, so shippable / OTA-able releases must pass a real
     // keystore. Operator guide: docs/white-label.md "Shipping to production".
     def aliranVersionCode = project.findProperty('aliranVersionCode')
-    if (aliranVersionCode != null && !aliranVersionCode.toString().isInteger()) {
-        throw new GradleException("-PaliranVersionCode must be an integer versionCode (got '${aliranVersionCode}')")
+    if (aliranVersionCode != null && (!aliranVersionCode.toString().isInteger() || aliranVersionCode.toString().toInteger() < 1)) {
+        throw new GradleException("-PaliranVersionCode must be a positive integer versionCode (got '${aliranVersionCode}')")
     }
     def aliranStoreFile = project.findProperty('aliranStoreFile')
+    if (aliranStoreFile != null && !aliranStoreFile.toString().trim()) {
+        // An empty -PaliranStoreFile= must never silently fall back to debug signing.
+        throw new GradleException('-PaliranStoreFile is empty — pass the absolute keystore path, or omit the property entirely for a debug-signed build')
+    }
 
     namespace "com.aliranclient"
     defaultConfig {
