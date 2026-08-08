@@ -25,6 +25,7 @@
 // browser's own Tab order for no gain).
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import { formatDuration } from '../catalog'
 import type {
@@ -69,6 +70,7 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
   onPlay: (p: VodPick) => void
   onBack: () => void
 }) {
+  const { t } = useI18n()
   const { id, name, icon, anio } = pick
   // Login-scoped, exactly as on the grid: the coordinates ride the 'streams' message.
   const config: VodConfig | null = backend.vod ?? null
@@ -197,7 +199,7 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
 
   function renderDetail () {
     if (!config) return <Centered title="Not available" hint="This service has no movie provider configured." />
-    if (error) return <Centered {...errorText(error)} />
+    if (error) return <Centered {...errorText(t, error)} />
     if (!detail) return <div className="section-loading"><span className="spinner" />Loading episodes…</div>
     return (
       <>
