@@ -21,9 +21,10 @@ with it.
   Then Android shows the system install dialog. The install never
   starts without the viewer's confirmation.
 
-An app looks for updates at app start, and again approximately every
-6 hours while it is open. A viewer can also check at once: **Settings →
-Check for updates**. On a metered network (for example, mobile data)
+The app looks for updates when it starts, and when the viewer returns
+to the app. It does this not more than one time each 6 hours. A viewer
+can also check immediately: **Settings → Check for updates…**. On a
+metered network (for example, mobile data)
 the app does not start the download by itself. It tells the viewer and
 offers a "Download anyway" button.
 
@@ -69,8 +70,7 @@ builder prints the `applicationId`, the `versionCode`, and the
 
 In the admin dashboard, open the **App updates** tab. Fill in the
 `applicationId`, the `versionCode`, and the `versionName` from the
-build output. Then click **Choose file and publish** and select the
-APK.
+build output. Then click **Choose file and publish…**. Select the APK.
 
 Or use the admin API. The request body is the raw file:
 
@@ -98,9 +98,10 @@ files.
 
 ### Step 3 — wait for the devices
 
-Devices see the new version in approximately 6 hours, or at their
-next app start. A viewer can check at once in **Settings**. The viewer
-then downloads, and confirms the install in the Android dialog.
+Devices see the new version at their next app start, or when the
+viewer returns to the app. A viewer can check immediately in
+**Settings**. The viewer then downloads, and confirms the install in
+the Android dialog.
 
 ## The public (keyless) app
 
@@ -115,8 +116,8 @@ stay the official source. The flow:
 
 If you do not upload it, nothing breaks. Viewers update by hand from
 GitHub, as before. You cannot serve a changed public APK: official
-public builds are release-signed, and a device refuses an update from
-a different signer.
+public builds must be release-signed, and a device refuses an update
+from a different signer.
 
 ## Mandatory updates
 
