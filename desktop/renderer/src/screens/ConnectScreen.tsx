@@ -14,6 +14,7 @@
 // away for anyone who was given a key instead.
 
 import React, { useEffect, useRef, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 
 const GROUPS = 3
@@ -31,23 +32,38 @@ function cleanCode (s: string): string {
 }
 
 // A pairing code that failed is never a "try again" — each reason has its own fix.
-const PAIR_ERRORS: Record<string, string> = {
-  malformed: 'That code is not complete. It has 12 characters, like A3K7-9QF2-M4XR.',
-  timeout: 'No service answered that code. Check the code, and check your connection.',
-  network: 'No service answered that code. Check the code, and check your connection.',
+// The engine's code maps onto a CATALOG LEAF, never onto copy: the sentence is looked
+// up at render (t('connect.error.' + …)), so a language change repaints an error that
+// is already on screen. 'network' and 'timeout' share one leaf — from here they are
+// the same event, "nothing answered".
+const PAIR_ERROR_CODES: Record<string, string> = {
+  malformed: 'malformed',
+  timeout: 'timeout',
+  network: 'timeout',
   // The dangerous one: something DID answer and could not prove it owns the code.
-  unverified: 'A service answered that code but could not prove it owns it. Ask your operator for the code again.'
+  unverified: 'unverified'
 }
 
+// The two things this screen can show: our own copy (a connect.error.* leaf) or the
+// engine's message verbatim, which stays English by design (S56 — no error-code
+// refactor in the SDK).
+type Failure = { code: string } | { text: string }
+
+// The intro is ONE sentence in the catalog, never assembled from translated fragments.
+// Its three emphasised nouns arrive as {placeholders} — a translator can move them
+// wherever the language needs them — and are re-wrapped in bold at render.
+const INTRO_SLOTS = /(\{method\}|\{username\}|\{password\})/
+
 export function ConnectScreen () {
+  const { t } = useI18n()
   const [mode, setMode] = useState<'code' | 'key'>('code')
   const [groups, setGroups] = useState<string[]>(() => Array(GROUPS).fill(''))
   const [panelKey, setPanelKey] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'finding' | 'saving' | null>(null)
+  const [error, setError] = useState<Failure | null>(null)
   const keyRef = useRef<HTMLInputElement | null>(null)
   const groupRefs = useRef<Array<HTMLInputElement | null>>([])
   const creds = useRef({ username: '', password: '' })
@@ -61,12 +77,12 @@ export function ConnectScreen () {
       // Key accepted + engine booting: hand the credentials over. The main-process
       // login already retries the whole swarm-dialing window, so this is one shot.
       if (m.type === 'service') {
-        setStatus('Connecting to the service…')
+        setStatus('connecting')
         backend.login(creds.current.username, creds.current.password)
       }
       // 'streams' routes in App; a final login-error (bad key looks like
       // unreachable, bad credentials say so) lands back here.
-      if (m.type === 'login-error') { setBusy(false); setStatus(null); setError(m.message) }
+      if (m.type === 'login-error') { setBusy(false); setStatus(null); setError({ text: m.message }) }
     })
   }, [])
 
@@ -98,7 +114,7 @@ export function ConnectScreen () {
   // login sequence.
   const start = (key: string, name?: string) => {
     setError(null)
-    setStatus('Saving service…')
+    setStatus('saving')
     setBusy(true)
     creds.current = { username, password }
     backend.setService(key, name)
@@ -107,37 +123,46 @@ export function ConnectScreen () {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (busy) return
-    if (!username || !password) { setError('Enter your username and password.'); return }
+    if (!username || !password) { setError({ code: 'credentials' }); return }
     if (mode === 'key') {
       const key = panelKey.trim().toLowerCase()
-      if (!/^[0-9a-f]{64}$/.test(key)) { setError('The panel key should be 64 hex characters — ask your operator for it.'); return }
+      if (!/^[0-9a-f]{64}$/.test(key)) { setError({ code: 'badKeyDesktop' }); return }
       start(key)
       return
     }
     const code = groups.join('')
-    if (code.length !== GROUPS * GROUP_SIZE) { setError(PAIR_ERRORS.malformed); return }
+    if (code.length !== GROUPS * GROUP_SIZE) { setError({ code: 'malformed' }); return }
     // Resolving is a DHT search plus one memory-hard verification, so it is slow
     // enough to need its own status line.
     setError(null)
-    setStatus('Finding the service…')
+    setStatus('finding')
     setBusy(true)
     const res = await backend.resolvePairing(code)
     if (!res.ok || !res.panelPubKey) {
       setBusy(false)
       setStatus(null)
-      setError(PAIR_ERRORS[res.error ?? ''] ?? res.message ?? PAIR_ERRORS.timeout)
+      const known = PAIR_ERROR_CODES[res.error ?? '']
+      setError(known ? { code: known } : res.message ? { text: res.message } : { code: 'timeout' })
       return
     }
     start(res.panelPubKey, res.name ?? undefined)
+  }
+
+  // What each intro placeholder renders as. Resolved every render, so the sentence
+  // follows both the current mode and the current language.
+  const slots: Record<string, string> = {
+    '{method}': mode === 'code' ? t('connect.introCode') : t('connect.introKey'),
+    '{username}': t('connect.introUsername'),
+    '{password}': t('connect.introPassword')
   }
 
   return (
     <form className="login connect" onSubmit={submit}>
       <div className="login-title">Aliran</div>
       <div className="connect-intro">
-        Connect to your operator's service. You need the three things they gave
-        you: the <b>{mode === 'code' ? 'pairing code' : 'panel key'}</b>, a <b>username</b> and
-        a <b>password</b>. No URLs — the app finds the service over the peer-to-peer network.
+        {t('connect.intro').split(INTRO_SLOTS).map((part, i) => (
+          slots[part] ? <b key={i}>{slots[part]}</b> : part
+        ))}
       </div>
       {mode === 'code'
         ? (
@@ -148,7 +173,7 @@ export function ConnectScreen () {
                 ref={(r) => { groupRefs.current[i] = r }}
                 className="login-input pair-group"
                 placeholder="––––"
-                aria-label={`Pairing code, group ${i + 1} of ${GROUPS}`}
+                aria-label={t('connect.groupAria', { n: i + 1, total: GROUPS })}
                 autoCapitalize="characters"
                 spellCheck={false}
                 maxLength={GROUP_SIZE}
@@ -164,7 +189,7 @@ export function ConnectScreen () {
           <input
             ref={keyRef}
             className="login-input connect-key"
-            placeholder="Panel public key (64 hex characters)"
+            placeholder={t('connect.keyPlaceholderDesktop')}
             autoCapitalize="none"
             spellCheck={false}
             value={panelKey}
@@ -176,11 +201,11 @@ export function ConnectScreen () {
         type="button"
         onClick={() => { setError(null); setMode((m) => (m === 'code' ? 'key' : 'code')) }}
       >
-        {mode === 'code' ? 'Enter the 64-character panel key instead' : 'Enter the 12-character pairing code instead'}
+        {mode === 'code' ? t('connect.switchToKey') : t('connect.switchToCode')}
       </button>
       <input
         className="login-input"
-        placeholder="Username"
+        placeholder={t('common.username')}
         autoCapitalize="none"
         spellCheck={false}
         value={username}
@@ -188,15 +213,15 @@ export function ConnectScreen () {
       />
       <input
         className="login-input"
-        placeholder="Password"
+        placeholder={t('common.password')}
         type="password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
-      {error && <div className="login-error">{error}</div>}
-      {status && !error && <div className="connect-status">{status}</div>}
+      {error && <div className="login-error">{'code' in error ? t('connect.error.' + error.code) : error.text}</div>}
+      {status && !error && <div className="connect-status">{t('connect.status.' + status)}</div>}
       <button className="login-button" type="submit" disabled={busy}>
-        {busy ? <span className="spinner" /> : 'Connect'}
+        {busy ? <span className="spinner" /> : t('connect.submit')}
       </button>
     </form>
   )
