@@ -98,10 +98,18 @@ if (!/^[a-z][a-z0-9]{0,23}$/.test(id)) {
 }
 if (RESERVED_IDS.includes(id)) fail(`brand id '${id}' collides with an Android build-type/source-set name — use --id`)
 
+// Operator-authored JSON: Windows editors (Notepad, PowerShell redirects) prepend a
+// UTF-8 BOM, which JSON.parse rejects — strip it.
+function readJson (path) {
+  let s = readFileSync(path, 'utf8')
+  if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1)
+  return JSON.parse(s)
+}
+
 // ---------- read + validate the descriptor ----------
 let descriptor
 try {
-  descriptor = JSON.parse(readFileSync(join(brandDir, 'service.json'), 'utf8'))
+  descriptor = readJson(join(brandDir, 'service.json'))
 } catch (err) {
   fail(`invalid JSON in ${join(brandDir, 'service.json')}: ${err.message}`)
 }
@@ -138,7 +146,7 @@ let signing = null
 const signingPath = join(brandDir, 'signing.json')
 if (existsSync(signingPath)) {
   try {
-    signing = JSON.parse(readFileSync(signingPath, 'utf8'))
+    signing = readJson(signingPath)
   } catch (err) {
     fail(`invalid JSON in ${signingPath}: ${err.message}`)
   }
@@ -173,7 +181,7 @@ const buildJsonPath = join(brandDir, 'build.json')
 if (existsSync(buildJsonPath)) {
   let buildMeta
   try {
-    buildMeta = JSON.parse(readFileSync(buildJsonPath, 'utf8'))
+    buildMeta = readJson(buildJsonPath)
   } catch (err) {
     fail(`invalid JSON in ${buildJsonPath}: ${err.message}`)
   }
