@@ -58,6 +58,7 @@
   "guide.now": "NU",
   "guide.tomorrow": "MORGEN",
   "guide.yesterday": "GISTEREN",
+  "guide.tapAgainToWatch": "Tik nogmaals om te kijken",
 
   "settings.header": "INSTELLINGEN",
   "settings.group.account": "ACCOUNT",
@@ -137,6 +138,11 @@
   "live.bar.favorite": "Favoriet",
   "live.bar.report": "Melden",
   "live.bar.subtitles": "Ondertitels",
+  "live.search.placeholder": "Zendernaam of -nummer…",
+  "live.search.clear": "Zoekopdracht wissen",
+  "live.search.backspace": "Laatste teken wissen",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "ABC",
 
   "tracks.subtitles": "Ondertitels",
   "tracks.audio": "Audio",

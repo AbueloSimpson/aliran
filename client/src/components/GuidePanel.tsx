@@ -1,7 +1,7 @@
 // Phone guide panel (WS7): the TV timeline grid rebuilt for touch — the SAME
 // zoomed-out time-grid method (a 2 h window of absolutely-positioned program cells
 // from src/guide.ts's cellRect/visiblePrograms, paged in discrete 30-min slots), at
-// phone density: a compact 72px channel column (number + live thumb) beside ~52px
+// phone density: a compact 72px channel column (number + station logo) beside ~52px
 // rows so 8-12 channels sit on screen at once. Self-contained (streams, category
 // chips, the slow clock, the windowStart pager) so BOTH hosts stay thin:
 //
@@ -12,22 +12,33 @@
 //                         landscape = the grid over the fullscreen video like the
 //                         channel-list panel. Playback never stops either way.
 //
+// Preview pane (WS11 — the live thumbnail's ONE surface, the TiviMate pattern): in
+// landscape overlay mode (preview='overlay', LiveScreen passes it) the first tap on
+// a row SELECTS it — highlight + a display-only preview card in the upper right
+// (that channel's rolling live thumb, logo fallback, + its airing program) — and a
+// second tap on the SAME row tunes. Tapping another row moves the selection; paging
+// the window or switching category clears it. PORTRAIT (and the standalone screen)
+// keeps tap = tune immediately and shows NO preview pane: the 16:9 strip above the
+// grid already shows the playing channel, and a second picture would fight it.
+//
 // Paging is DISCRETE (the TV grid's windowStart model — never a free horizontal
 // scroll): a clearly-sideways fling on the grid area moves the window one slot,
 // clamped to the SDK's data horizons (windowFloor/windowCeil). Vertical scrolling is
 // the channel FlatList, under the same mounted-window discipline as the TV grid —
-// every mounted row runs an EPG fetch and a 30 s thumb probe. Tapping a row tunes
-// its channel; guide-less rows show the honest "No program information" cell (D2).
+// every mounted row runs an EPG fetch (the thumb probe left the rows with WS11 —
+// only the single preview card probes). Tapping a row tunes its channel (or selects,
+// see above); guide-less rows show the honest "No program information" cell (D2).
 //
 // This file also owns the guide chrome BOTH presentations share (the TV grid header
-// imports it from here): category chips, the NOW pill, and the time bar.
+// imports it from here): category chips, the NOW pill, the time bar — and the
+// GuidePreviewCard the TV grid mounts in its header.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Image, Pressable, FlatList, ScrollView, StyleSheet, PanResponder } from 'react-native'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, categoryModel, splitCategory, subLabel, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
-import { useEpgPrograms, useChannelThumb } from '@aliran/react-native'
+import { useEpg, useEpgPrograms, useChannelThumb, type EpgProgram } from '@aliran/react-native'
 import { ProgressHairline } from './ProgressHairline'
 import { SectionLoading } from './SectionLoading'
 import {
@@ -40,10 +51,10 @@ import { theme } from '../theme'
 // bar (the TV grid's value — GuideScreen imports it from here).
 export const CELL_GAP = 2
 
-// Compact phone channel column: number over a small 16:9 live thumb.
+// Compact phone channel column: number over a small 16:9 station-logo box.
 const PH_COL_W = 72
-const PH_THUMB_W = 56
-const PH_THUMB_H = 32
+const PH_LOGO_W = 56
+const PH_LOGO_H = 32
 // Dense "zoomed-out" rows (the getItemLayout exact-height discipline): ~52px puts
 // 8-12 channels on a phone screen beside the 2 h window.
 const PH_ROW_INNER_H = 50
@@ -78,9 +89,16 @@ export interface GuidePanelProps {
   playingId: string | null
   /** Tap-to-tune — the host decides how (navigate to Live, or switch in place). */
   onTune: (s: Stream) => void
+  /** 'overlay' (LiveScreen landscape guide mode): tap selects + shows the preview
+   *  card, a second tap on the same row tunes. Default 'none': tap tunes at once. */
+  preview?: 'overlay' | 'none'
+  /** Optional search affordance in the header (LiveScreen guide mode passes it):
+   *  portrait's resting state is the guide, so without this chip a portrait viewer
+   *  has no route to the in-player search (the bar only shows in fullscreen). */
+  onSearch?: () => void
 }
 
-export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
+export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch }: GuidePanelProps) {
   const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // Category scope — the same chips grammar as the TV grid header.
@@ -89,6 +107,11 @@ export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The discrete paging window (the TV grid's windowStart model).
   const [windowStart, setWindowStart] = useState(() => snapToNow(Date.now()))
+  // Overlay-preview selection (WS11): the row the first tap placed the viewer on —
+  // its channel fills the preview card; a second tap on it tunes. null = nothing
+  // selected (no card). Cleared on paging and category switches (the window the
+  // selection was made in is gone).
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   useEffect(() => {
     return backend.onMessage((m) => {
@@ -110,10 +133,23 @@ export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
   const pickCategory = useCallback((key: string) => {
     // Re-tapping the selected sub-category deselects it (back to the whole parent).
     setSelected((prev) => (prev === key && key.includes(SUBCAT_SEP) ? splitCategory(key)[0] : key))
+    setSelectedId(null)
   }, [])
 
   const listRef = useRef<FlatList<Stream>>(null)
   const playingIndex = list.findIndex((s) => s.id === playingId)
+  // The preview card's channel — only in overlay mode, and only while the selection
+  // is still in the visible list (a category race drops it harmlessly).
+  const selectedStream = preview === 'overlay' && selectedId ? list.find((s) => s.id === selectedId) ?? null : null
+
+  // Two-tier tap (overlay mode): first tap places the selection, the second tap on
+  // the SAME row commits the tune. Everywhere else a tap tunes immediately.
+  const rowPress = useCallback((s: Stream) => {
+    if (preview !== 'overlay') { onTune(s); return }
+    // Tune OUTSIDE the state updater (an updater may run twice under StrictMode —
+    // a double-tune would double-zap).
+    if (selectedId === s.id) { setSelectedId(null); onTune(s) } else setSelectedId(s.id)
+  }, [preview, onTune, selectedId])
 
   // Strip geometry from the MEASURED panel width (the host decides how wide this
   // panel is — full screen, or the Live overlay's pane), floored so a tiny first
@@ -126,6 +162,7 @@ export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
   const page = useCallback((dir: 1 | -1) => {
     const now = Date.now()
     setWindowStart((ws) => Math.min(Math.max(ws + dir * SLOT_MS, windowFloor(now)), windowCeil(now)))
+    setSelectedId(null)
   }, [])
   const pan = useMemo(() => PanResponder.create({
     // Capture only a clearly-sideways drag; taps and vertical scrolls pass through.
@@ -149,39 +186,68 @@ export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
 
   return (
     <View style={styles.panel} onLayout={(e) => setPanelW(e.nativeEvent.layout.width)}>
-      <CategoryChips model={model} activeKey={activeKey} onSelect={pickCategory} />
+      <View style={styles.headerRow}>
+        <View style={styles.headerChips}>
+          <CategoryChips model={model} activeKey={activeKey} onSelect={pickCategory} />
+        </View>
+        {onSearch && (
+          <Pressable
+            style={({ pressed }) => [styles.searchChip, pressed && styles.chipFocused]}
+            onPress={onSearch}
+            accessibilityRole="button"
+            accessibilityLabel={t('menu.search')}
+          >
+            <Text style={styles.searchChipText}>⌕ {t('menu.search').toLocaleUpperCase(getLocale())}</Text>
+          </Pressable>
+        )}
+      </View>
       <View style={styles.gridArea} {...pan.panHandlers}>
         <TimeBar windowStart={windowStart} nowMs={nowMs} pxPerMin={pxPerMin} leadW={PH_COL_W} />
-        <FlatList
-          ref={listRef}
-          data={list}
-          keyExtractor={(s) => s.id}
-          getItemLayout={(_, index) => ({ length: PH_ROW_H, offset: PH_ROW_H * index, index })}
-          initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
-          onScrollToIndexFailed={(info) => {
-            listRef.current?.scrollToOffset({ offset: PH_ROW_H * info.index, animated: false })
-            setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
-          }}
-          // The TV grid's mounted-window discipline: every mounted row runs an EPG
-          // interval and a 30 s thumb probe — a 150-channel category must not keep
-          // 150 of each alive.
-          windowSize={5}
-          initialNumToRender={12}
-          removeClippedSubviews
-          extraData={[nowMs, windowStart, stripW]}
-          renderItem={({ item }) => (
-            <GuideRowPhone
-              stream={item}
-              number={numbers.get(item.id)}
-              playing={item.id === playingId}
-              windowStart={windowStart}
-              stripW={stripW}
-              pxPerMin={pxPerMin}
-              nowMs={nowMs}
-              onPress={() => onTune(item)}
-            />
+        <View style={styles.listArea}>
+          <FlatList
+            ref={listRef}
+            data={list}
+            keyExtractor={(s) => s.id}
+            getItemLayout={(_, index) => ({ length: PH_ROW_H, offset: PH_ROW_H * index, index })}
+            initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
+            onScrollToIndexFailed={(info) => {
+              listRef.current?.scrollToOffset({ offset: PH_ROW_H * info.index, animated: false })
+              setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
+            }}
+            // The TV grid's mounted-window discipline: every mounted row runs an
+            // EPG interval — a 150-channel category must not keep 150 alive.
+            windowSize={5}
+            initialNumToRender={12}
+            removeClippedSubviews
+            extraData={[nowMs, windowStart, stripW, selectedId]}
+            renderItem={({ item }) => (
+              <GuideRowPhone
+                stream={item}
+                number={numbers.get(item.id)}
+                playing={item.id === playingId}
+                selected={item.id === selectedStream?.id}
+                windowStart={windowStart}
+                stripW={stripW}
+                pxPerMin={pxPerMin}
+                nowMs={nowMs}
+                onPress={() => rowPress(item)}
+              />
+            )}
+          />
+          {/* The preview pane (WS11) — the live thumbnail's one surface. Upper
+              right, floating OVER the grid's corner (the TiviMate placement);
+              display-only and pointer-transparent, so the rows beneath keep
+              their taps. */}
+          {selectedStream && (
+            <View style={styles.previewOverlay} pointerEvents="none">
+              <OverlayPreview
+                stream={selectedStream}
+                number={numbers.get(selectedStream.id)}
+                playing={selectedStream.id === playingId}
+              />
+            </View>
           )}
-        />
+        </View>
       </View>
       <Pressable style={styles.nowFloat} accessibilityRole="button" onPress={jumpToNow}>
         <Text style={styles.nowPillText}>{t('guide.now')}</Text>
@@ -190,13 +256,15 @@ export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
   )
 }
 
-// One phone grid row — the whole row is the tap-to-tune surface (any cell tunes the
-// channel; schedules are for reading, per the reference guides). Only MOUNTED rows
-// fetch (useEpgPrograms/useChannelThumb live here — the thumbs.ts contract).
-function GuideRowPhone ({ stream, number, playing, windowStart, stripW, pxPerMin, nowMs, onPress }: {
+// One phone grid row — the whole row is the tap surface (tune, or select in overlay
+// mode; schedules are for reading, per the reference guides). Only MOUNTED rows
+// fetch (useEpgPrograms lives here). The channel column is IDENTITY: number +
+// station logo — the live thumb belongs to the preview card alone (WS11).
+function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW, pxPerMin, nowMs, onPress }: {
   stream: Stream
   number?: number
   playing: boolean
+  selected: boolean
   windowStart: number
   stripW: number
   pxPerMin: number
@@ -205,22 +273,21 @@ function GuideRowPhone ({ stream, number, playing, windowStart, stripW, pxPerMin
 }) {
   const { t } = useI18n()
   const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
-  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
-  const art = thumbUri || stream.logo
   const visible = visiblePrograms(programs, windowStart, windowStart + GUIDE_WINDOW_MS)
 
   return (
     <Pressable
-      style={[styles.row, playing && styles.rowPlaying]}
+      style={[styles.row, playing && styles.rowPlaying, selected && styles.rowSelected]}
       accessibilityRole="button"
+      accessibilityState={{ selected }}
       accessibilityLabel={`${formatChannelNumber(number)} ${stream.title}`}
       onPress={onPress}
     >
       <View style={styles.chCol}>
-        <Text style={styles.chNumber}>{formatChannelNumber(number)}</Text>
-        {art
-          ? <Image source={{ uri: art }} style={styles.chThumb} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? t('live.livePreview', { title: stream.title }) : undefined} />
-          : <View style={[styles.chThumb, styles.chThumbFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+        <Text style={[styles.chNumber, selected && styles.chTextSelected]}>{formatChannelNumber(number)}</Text>
+        {stream.logo
+          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
+          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0
@@ -249,9 +316,61 @@ function GuideRowPhone ({ stream, number, playing, windowStart, stripW, pxPerMin
   )
 }
 
+// Overlay-mode wrapper: the phone card shows the selected channel's AIRING program
+// ("now info" — useEpg's now/next, one cached fetch), plus the second-tap hint.
+function OverlayPreview ({ stream, number, playing }: { stream: Stream; number?: number; playing: boolean }) {
+  const { t } = useI18n()
+  const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
+  return <GuidePreviewCard stream={stream} number={number} playing={playing} program={data?.now ?? null} hint={t('guide.tapAgainToWatch')} />
+}
+
 // ---------------------------------------------------------------------------
 // Shared guide chrome (this phone grid + the TV grid header import these).
 // ---------------------------------------------------------------------------
+
+// The guide preview pane (WS11) — the live thumbnail's ONE surface in the app's
+// lists/guides. Display-only (no focusables — it must never enter the TV focus
+// rig or a touch path): the channel the viewer is placed on but has not tuned,
+// as a rolling live frame (useChannelThumb, 30 s roll) over identity text.
+// `playing` = the placed channel is the one already on air behind/next to this
+// guide — the live picture would duplicate it, so the card shows the logo
+// version instead; a thumb 404 (the ordinary "no thumbnail" answer) falls back
+// the same way. TV mounts it in the grid header (upper right); the phone
+// landscape overlay floats it over the grid corner (OverlayPreview above).
+export function GuidePreviewCard ({ stream, number, playing, program, hint }: {
+  stream: Stream
+  number?: number
+  playing: boolean
+  /** The program to caption (TV: the focused cell; phone: the airing one). */
+  program?: EpgProgram | null
+  /** Phone overlay only: the second-tap teaching line. */
+  hint?: string
+}) {
+  const { t } = useI18n()
+  // No probe at all for the playing channel — undefined thumbBase disarms the hook.
+  const [thumbUri, onThumbError] = useChannelThumb(playing ? undefined : stream.thumbBase)
+  return (
+    <View style={styles.previewCard} pointerEvents="none">
+      {thumbUri
+        ? <Image source={{ uri: thumbUri }} style={styles.previewArt} resizeMode="cover" onError={onThumbError} accessibilityLabel={t('live.livePreview', { title: stream.title })} />
+        : stream.logo
+          ? <Image source={{ uri: stream.logo }} style={styles.previewArt} resizeMode="contain" accessibilityLabel={stream.title} />
+          : <View style={[styles.previewArt, styles.previewArtFallback]}><Text style={styles.previewInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+      <View style={styles.previewInfo}>
+        <Text style={styles.previewName} numberOfLines={1}>{formatChannelNumber(number)}  {stream.title}</Text>
+        {program
+          ? (
+            <>
+              <Text style={styles.previewProgram} numberOfLines={1}>{program.title}</Text>
+              <Text style={styles.previewTime} numberOfLines={1}>{hhmm(program.start)}–{hhmm(program.stop)}</Text>
+            </>
+            )
+          : null}
+        {hint ? <Text style={styles.previewHint} numberOfLines={1}>{hint}</Text> : null}
+      </View>
+    </View>
+  )
+}
 
 export function TimeBar ({ windowStart, nowMs, pxPerMin, leadW }: { windowStart: number; nowMs: number; pxPerMin: number; leadW: number }) {
   const { t } = useI18n()
@@ -332,6 +451,17 @@ export function NowPill ({ onPress, innerRef }: { onPress: () => void; innerRef?
 const styles = StyleSheet.create({
   panel: { flex: 1 },
   gridArea: { flex: 1 },
+  // Header: chips take the width, the optional search chip pins to the right end.
+  headerRow: { flexDirection: 'row', alignItems: 'center' },
+  headerChips: { flex: 1 },
+  searchChip: {
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999, backgroundColor: theme.colors.surface,
+    borderWidth: Math.max(theme.focusRing, 1), borderColor: 'transparent', marginLeft: theme.spacing(0.75)
+  },
+  searchChipText: { color: theme.colors.text, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 1 },
+  // Wraps the FlatList so the preview card can anchor to the grid's own corner
+  // (below the time bar — the bar's slot labels stay readable).
+  listArea: { flex: 1 },
 
   // Chips + NOW pill (shared with the TV grid header).
   chipsRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(0.75), paddingBottom: theme.spacing(0.5) },
@@ -362,10 +492,15 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3, borderLeftColor: 'transparent'
   },
   rowPlaying: { borderLeftColor: theme.colors.accent },
+  // Overlay selection (WS11): the light fill is the app's "you are here" grammar
+  // (ChannelRow's focus fill); the program cells keep their own surface on top, so
+  // the fill reads on the channel column and the cell gaps.
+  rowSelected: { backgroundColor: theme.colors.focusFill, borderRadius: 8 },
+  chTextSelected: { color: theme.colors.focusFillText },
   chCol: { width: PH_COL_W, alignItems: 'center', justifyContent: 'center', paddingRight: 4 },
   chNumber: { color: theme.colors.textDim, fontSize: theme.type.caption - 1, fontVariant: ['tabular-nums'] },
-  chThumb: { width: PH_THUMB_W, height: PH_THUMB_H, borderRadius: 4, backgroundColor: theme.colors.surface, marginTop: 1 },
-  chThumbFallback: { alignItems: 'center', justifyContent: 'center' },
+  chLogo: { width: PH_LOGO_W, height: PH_LOGO_H, borderRadius: 4, backgroundColor: theme.colors.surface, marginTop: 1 },
+  chLogoFallback: { alignItems: 'center', justifyContent: 'center' },
   chInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' },
   strip: { height: PH_ROW_INNER_H, overflow: 'hidden' },
   cell: {
@@ -385,5 +520,29 @@ const styles = StyleSheet.create({
     position: 'absolute', right: theme.spacing(1), bottom: theme.spacing(1),
     paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, backgroundColor: theme.colors.live,
     elevation: 4
-  }
+  },
+
+  // Preview pane (WS11). Phone overlay: floats over the grid's upper-right corner
+  // (below the time bar), pointer-transparent. TV: the SAME card mounts inline in
+  // the grid header row (GuideScreen reserves the space — no overlap there).
+  previewOverlay: { position: 'absolute', top: theme.spacing(0.5), right: theme.spacing(0.5), elevation: 4, zIndex: 4 },
+  previewCard: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1),
+    backgroundColor: theme.isTV ? theme.colors.surface : theme.colors.overlayStrong,
+    borderRadius: 10, padding: theme.spacing(0.75),
+    // A constant footprint (art + padding tall): the TV header must not breathe as
+    // the focus walks rows, and the phone card must not resize between guided and
+    // guide-less channels.
+    width: theme.isTV ? 420 : 300, height: theme.isTV ? 108 : 80
+  },
+  // 16:9 — the frames the broadcaster rolls into the feed (logo letterboxes in the
+  // same box, so thumb→logo fallback never moves the card's text).
+  previewArt: { width: theme.isTV ? 160 : 96, height: theme.isTV ? 90 : 54, borderRadius: 6, backgroundColor: theme.colors.surface },
+  previewArtFallback: { alignItems: 'center', justifyContent: 'center' },
+  previewInitial: { color: theme.colors.textDim, fontSize: theme.type.title, fontWeight: '800' },
+  previewInfo: { flex: 1 },
+  previewName: { color: theme.colors.text, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '800' },
+  previewProgram: { color: theme.colors.text, fontSize: theme.isTV ? theme.type.label : theme.type.caption, marginTop: 2 },
+  previewTime: { color: theme.colors.textDim, fontSize: theme.type.caption, fontVariant: ['tabular-nums'], marginTop: 1 },
+  previewHint: { color: theme.colors.textDim, fontSize: theme.type.caption - 1, fontStyle: 'italic', marginTop: 2 }
 })

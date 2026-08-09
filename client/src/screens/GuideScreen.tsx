@@ -3,10 +3,18 @@
 // feed fallback). ONE screen, two presentations (the VodScreen TV/phone split), both
 // the SAME zoomed-out time-grid method over src/guide.ts's math:
 //
-//   GuideGrid (TV)   a classic timeline grid — channel column (number + live thumb)
+//   GuideGrid (TV)   a classic timeline grid — channel column (number + station
+//                    logo; channel identity, per the WS11 thumbnail policy)
 //                    beside a 2 h window of absolutely-positioned program cells,
 //                    paged in 30-min slots between now − 6 h and now + 48 h (the SDK's
-//                    data window). Focus is VIRTUAL: react-native-tvos on Android
+//                    data window). The header's upper right carries the PREVIEW
+//                    CARD (GuidePreviewCard — the live thumbnail's one surface):
+//                    the channel the virtual focus is placed on but has not tuned,
+//                    as a rolling live frame + the focused program's title/time;
+//                    the playing channel (or a thumb 404) shows the logo version.
+//                    Display-only — it owns no focusables, and it sits INSIDE the
+//                    header row's layout, so it can never overlap the time bar or
+//                    the grid. Focus is VIRTUAL: react-native-tvos on Android
 //                    does not dispatch HW key events while a view holds native focus
 //                    (the S7 lesson), so native focus stays parked on an invisible
 //                    catcher and four edge strips bounce D-pad presses into the pure
@@ -38,10 +46,10 @@ import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, categoryModel, splitCategory, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
-import { useEpgPrograms, useChannelThumb, type EpgProgram } from '@aliran/react-native'
+import { useEpgPrograms, type EpgProgram } from '@aliran/react-native'
 import { ProgressHairline } from '../components/ProgressHairline'
 import { SectionLoading } from '../components/SectionLoading'
-import { GuidePanel, CategoryChips, TimeBar, CELL_GAP, hhmm } from '../components/GuidePanel'
+import { GuidePanel, GuidePreviewCard, CategoryChips, TimeBar, CELL_GAP, hhmm } from '../components/GuidePanel'
 import {
   GUIDE_ROW_H, GUIDE_ROW_INNER_H, GUIDE_ROW_MB, GUIDE_WINDOW_MS, GUIDE_WINDOW_MIN, GUIDE_SLOTS,
   MIN_CELL_W, cellRect, visiblePrograms, moveFocus, snapToNow,
@@ -54,10 +62,11 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Guide'>
 // On phone TVFocusGuideView is just a View; on TV autoFocus restores focus memory (S7).
 const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGuideView
 
-// TV channel column: number (52, the ChannelRow width) + 96×54 live thumb + padding.
+// TV channel column: number (52, the ChannelRow width) + 96×54 logo box + padding
+// (the box kept the thumb era's size, so the grid geometry never moved — WS11).
 const CH_COL_W = 176
-const THUMB_W = 96
-const THUMB_H = 54
+const LOGO_W = 96
+const LOGO_H = 54
 
 // The focus-engine rig (TV): invisible edge strips around a central catcher, laid
 // out INSIDE the grid body so the header chips stay out of the strip geometry.
@@ -173,9 +182,14 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
   // Programs per stream id, reported up by the MOUNTED rows (each row owns its
   // useEpgPrograms hook) — the reducer reads whatever is known; a row not yet
   // loaded/mounted reads as guide-less, which is exactly its on-screen state.
+  // The version bump re-renders the header's preview card when the focused row's
+  // programs arrive (the ref alone would leave its caption blank until the next
+  // focus move or clock tick).
   const programsRef = useRef(new Map<string, EpgProgram[]>())
+  const [, setProgramsVersion] = useState(0)
   const reportPrograms = useCallback((id: string, programs: EpgProgram[]) => {
     programsRef.current.set(id, programs)
+    setProgramsVersion((v) => v + 1)
   }, [])
 
   const listRef = useRef<FlatList<Stream>>(null)
@@ -238,6 +252,15 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
 
   const initialIndex = Math.max(0, list.findIndex((s) => s.id === playingId))
 
+  // The preview card's subject: the channel the virtual focus is placed on, and the
+  // exact program cell the reducer named (nothing when the focus position fell in a
+  // schedule gap or the row's programs have not arrived — the card shows identity
+  // only, constant footprint either way).
+  const previewStream = list[focus.focusRow] ?? null
+  const previewProgram = previewStream
+    ? (programsRef.current.get(previewStream.id) ?? []).find((p) => p.start === focus.focusCellStart) ?? null
+    : null
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
@@ -245,6 +268,17 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
         <FocusPane autoFocus style={styles.chipsPane}>
           <CategoryChips model={model} activeKey={activeKey} onSelect={onSelectCategory} onNow={jumpToNow} nowPillRef={nowPillRef} />
         </FocusPane>
+        {/* Upper-right preview pane — display-only (no focusables, so the focus rig
+            never sees it) and INSIDE the header row, so the reserved width/height
+            keep it clear of the time bar and the grid below. */}
+        {previewStream && (
+          <GuidePreviewCard
+            stream={previewStream}
+            number={numbers.get(previewStream.id)}
+            playing={previewStream.id === playingId}
+            program={previewProgram}
+          />
+        )}
       </View>
 
       <TimeBar windowStart={focus.windowStart} nowMs={nowMs} pxPerMin={pxPerMin} leadW={CH_COL_W} />
@@ -305,9 +339,10 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
   )
 }
 
-// One grid row: channel cell + the window's program cells, absolutely positioned
-// from cellRect. Only MOUNTED rows fetch (useEpgPrograms/useChannelThumb live here,
-// so a 300-row lineup costs only the visible window — the thumbs.ts contract).
+// One grid row: channel cell (number + station logo — identity, never the live
+// thumb; that belongs to the header's preview card, WS11) + the window's program
+// cells, absolutely positioned from cellRect. Only MOUNTED rows fetch
+// (useEpgPrograms lives here, so a 300-row lineup costs only the visible window).
 function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, nowMs, focusedCellStart, onPrograms }: {
   stream: Stream
   number?: number
@@ -323,8 +358,6 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
   const { t } = useI18n()
   const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
   useEffect(() => { onPrograms(stream.id, programs) }, [stream.id, programs, onPrograms])
-  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
-  const art = thumbUri || stream.logo
 
   const visible = visiblePrograms(programs, windowStart, windowStart + GUIDE_WINDOW_MS)
   // The focus highlight: the exact cell the reducer named; if the focus position
@@ -338,9 +371,9 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
     <View style={[styles.gridRow, playing && styles.rowPlaying]}>
       <View style={styles.chCell}>
         <Text style={styles.chNumber}>{formatChannelNumber(number)}</Text>
-        {art
-          ? <Image source={{ uri: art }} style={styles.chThumb} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? t('live.livePreview', { title: stream.title }) : undefined} />
-          : <View style={[styles.chThumb, styles.chThumbFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+        {stream.logo
+          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
+          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0
@@ -391,8 +424,8 @@ const styles = StyleSheet.create({
   rowPlaying: { borderLeftColor: theme.colors.accent },
   chCell: { width: CH_COL_W, flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: theme.spacing(1) },
   chNumber: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: 52 },
-  chThumb: { width: THUMB_W, height: THUMB_H, borderRadius: 4, backgroundColor: theme.colors.surface },
-  chThumbFallback: { alignItems: 'center', justifyContent: 'center' },
+  chLogo: { width: LOGO_W, height: LOGO_H, borderRadius: 4, backgroundColor: theme.colors.surface },
+  chLogoFallback: { alignItems: 'center', justifyContent: 'center' },
   chInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' },
   strip: { height: GUIDE_ROW_INNER_H, overflow: 'hidden' },
   cell: {

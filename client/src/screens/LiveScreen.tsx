@@ -3,7 +3,7 @@
 //
 //   base   : fullscreen <AliranVideo> — playback NEVER stops while browsing. Over it a
 //            persistent bottom menu (NowPlayingBar) carries the channel identity + touch
-//            controls (Channels / Info / Favorite) whenever a channel is open and the
+//            controls (Search / Info / Favorite) whenever a channel is open and the
 //            left menu is gone. A top-right ChannelChangeIndicator shows tuning progress
 //            (spinner + 0→100%) while a zap/select replicates the new feed.
 //   overlay1: CategoryRail + ChannelListPanel — the "left menu" browse & zap surface;
@@ -42,6 +42,23 @@
 // clean fullscreen — tap opens the left menu, BACK collapses guide/list to
 // fullscreen then pops, and rotating to landscape collapses the guide. A playback
 // error suppresses every auto-guide rule so the error + retry flow stays visible.
+// Fullscreen is ALWAYS landscape (S22 round 4, phone): the portrait guide's strip
+// tap locks the Activity to landscape via a tiny native module (src/orientation.ts →
+// android OrientationModule) and drops to fullscreen; BACK from that fullscreen
+// releases the lock, the phone falls back to its physical orientation, and the
+// rotation rule above raises the guide if that's portrait. Portrait mounts with a
+// channel therefore start in 'guide' (portrait + overlay 'none' exists only
+// transiently); errors still show fullscreen-with-error in any orientation.
+// Search overlay (WS15, phone only): the NowPlayingBar's Search button raises the
+// in-player channel search as another mode of this screen — portrait uses the
+// guide's strip layout (video strip on top, SearchPanel below), landscape lays the
+// panel over the fullscreen video on the translucent bed. It SURVIVES rotation in
+// both directions (the query must not be lost; only the strip appears/disappears),
+// the idle timers never touch it, and BACK (or a result tune — search has a
+// destination, so tune CLOSES it, unlike the guide) returns to the orientation
+// default: portrait 'guide', landscape 'none'. A playback error collapses it like
+// the guide (the error text must stay visible). Result tunes go through play() —
+// the same PIN-gated path as the channel list.
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView, Animated, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -49,6 +66,7 @@ import { AliranVideo, SelectedTrackType, type AliranVideoHandle, type TuneEvent,
 import type { RootStackParamList } from '../App'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
+import { setOrientation } from '../orientation'
 import { markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
 import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
@@ -56,6 +74,7 @@ import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
 import { GuidePanel } from '../components/GuidePanel'
+import { SearchPanel } from '../components/SearchPanel'
 import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/ChannelChangeIndicator'
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { TrackMenu } from '../components/TrackMenu'
@@ -64,7 +83,7 @@ import { SectionLoading } from '../components/SectionLoading'
 import { theme } from '../theme'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Live'>
-type Overlay = 'none' | 'list' | 'info' | 'guide'
+type Overlay = 'none' | 'list' | 'info' | 'guide' | 'search'
 
 // On phone TVFocusGuideView is just a View; on TV autoFocus restores focus memory (S7).
 const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGuideView
@@ -102,11 +121,26 @@ export function LiveScreen ({ route, navigation }: Props) {
     const s = backend.streams.find(x => x.id === candidate)
     return s && needsPin(s) ? null : candidate // the mount effect below raises the PIN modal
   })
+  // Guide-mode geometry (phone): portrait puts the ONE video surface as a 16:9
+  // strip on top of the grid; landscape overlays the grid on the fullscreen video.
+  // Only the video's STYLE changes between these layouts (same element, same tree
+  // position), so the player never remounts and playback never stops. Lives up here
+  // (above the overlay state) because the overlay INITIALIZER below reads `portrait`
+  // too — as do the orientation state machine and the BACK handler further down.
+  const { width: winW, height: winH } = useWindowDimensions()
+  const portrait = winH >= winW
+  const stripH = Math.round(winW * 9 / 16)
   const [overlay, setOverlay] = useState<Overlay>(() => {
     // The Menu's GUIDE tile (phone): open straight into the guide mode around the
     // resumed/hero channel. TV never sets it — the Guide route stays its surface.
     if (route.params?.guide && !theme.isTV) return 'guide'
-    return (route.params?.streamId || lastStreamId) ? 'none' : 'list'
+    if (!(route.params?.streamId || lastStreamId)) return 'list'
+    // Phone PORTRAIT mounts with a resume/tuned channel start in the guide, not
+    // fullscreen (S22 round 4: fullscreen is ALWAYS landscape, so portrait
+    // fullscreen no longer exists as a resting state — only transiently, with the
+    // round-3 catcher/BACK portrait→guide rules as the safety net). Landscape
+    // mounts (and TV) keep clean fullscreen.
+    return !theme.isTV && portrait ? 'guide' : 'none'
   })
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
   // Two-level category browse: `selected` is the group key whose channels show
@@ -161,17 +195,37 @@ export function LiveScreen ({ route, navigation }: Props) {
   const drillRef = useRef(drillParent); drillRef.current = drillParent
   const selectedRef = useRef(selected); selectedRef.current = selected
 
-  // Guide-mode geometry (phone): portrait puts the ONE video surface as a 16:9
-  // strip on top of the grid; landscape overlays the grid on the fullscreen video.
-  // Only the video's STYLE changes between these layouts (same element, same tree
-  // position), so the player never remounts and playback never stops. Lives up here
-  // (not by the render) because the orientation state machine below and the BACK
-  // handler read `portrait` too.
-  const { width: winW, height: winH } = useWindowDimensions()
-  const portrait = winH >= winW
-  const stripH = Math.round(winW * 9 / 16)
   const portraitRef = useRef(portrait); portraitRef.current = portrait
   const errorRef = useRef(error); errorRef.current = error
+
+  // S22 round 4 — fullscreen is ALWAYS landscape (phone). Tapping the portrait
+  // guide's video strip LOCKS the Activity to landscape (native module) and drops
+  // to fullscreen; `lockedByUs` remembers the lock is ours. BACK from that
+  // fullscreen releases the lock — the phone returns to its physical orientation,
+  // and if that is portrait the rotation effect below raises the guide again (the
+  // release does not touch the effect, so the chain is: unlock → dimension change →
+  // setOverlay('guide')). The lock survives panel browsing (list/info/guide opened
+  // over locked landscape keep it — the viewer is browsing in landscape on
+  // purpose); it releases only on the BACK-to-guide intent or unmount. TV never
+  // locks (the strip tap is phone-portrait-only UI).
+  const lockedByUs = useRef(false)
+  function lockLandscape () {
+    lockedByUs.current = true
+    setOrientation('landscape')
+    setOverlay('none')
+  }
+  // Returns whether a lock was actually held, so the BACK handler can consume the
+  // press that released it (and do nothing else with it).
+  function releaseOrientationLock () {
+    if (!lockedByUs.current) return false
+    lockedByUs.current = false
+    setOrientation('unspecified')
+    return true
+  }
+  // Unmount (leaving Live for the Menu, or any navigation away): never leave the
+  // Activity pinned — other screens own their own orientation behavior.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => { releaseOrientationLock() }, [])
 
   useEffect(() => {
     backend.requestPrefs() // favorites may not be loaded yet
@@ -230,7 +284,10 @@ export function LiveScreen ({ route, navigation }: Props) {
     const was = prevPortrait.current
     prevPortrait.current = portrait
     if (theme.isTV || was === portrait || errorRef.current) return
-    if (portrait) setOverlay('guide')
+    // The search overlay survives rotation in BOTH directions (WS15): the query
+    // must not be lost mid-search — only the video strip appears/disappears with
+    // the orientation (the render section swaps layouts around the same panel).
+    if (portrait) setOverlay((o) => (o === 'search' ? o : 'guide'))
     else setOverlay((o) => (o === 'guide' ? 'none' : o))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [portrait])
@@ -426,6 +483,12 @@ export function LiveScreen ({ route, navigation }: Props) {
       // alive; it must not swallow that screen's BACK against its own stale overlay
       // state. The navigation object is stable, so reading isFocused() here is live.
       if (!navigation.isFocused()) return false
+      if (overlayRef.current === 'search') {
+        // BACK from search (WS15): the orientation default browse surface —
+        // portrait's is the guide, landscape's is clean fullscreen.
+        setOverlay(!theme.isTV && portraitRef.current ? 'guide' : 'none')
+        return true
+      }
       if (overlayRef.current === 'guide') {
         // Portrait (phone): the guide IS the default surface — BACK exits to Menu.
         if (!theme.isTV && portraitRef.current) return false
@@ -439,8 +502,12 @@ export function LiveScreen ({ route, navigation }: Props) {
         if (drillRef.current != null) { setDrillParent(null); return true }
         setOverlay('none'); return true // hide the left menu
       }
-      // Fullscreen: portrait raises the guide (portrait's default surface, unless a
-      // playback error is up); landscape default back = exit to Menu.
+      // Fullscreen: a strip-tap landscape lock releases FIRST (the BACK-to-guide
+      // intent, S22 round 4) — consuming the press; the phone rotates back to its
+      // physical orientation, and if that is portrait the rotation effect raises
+      // the guide. Then: portrait raises the guide (portrait's default surface,
+      // unless a playback error is up); landscape default back = exit to Menu.
+      if (releaseOrientationLock()) return true
       if (!theme.isTV && portraitRef.current && !errorRef.current) { setOverlay('guide'); return true }
       return false
     })
@@ -448,6 +515,10 @@ export function LiveScreen ({ route, navigation }: Props) {
   }, [navigation]) // stable identity — the listener registers once in practice
 
   const guideStrip = overlay === 'guide' && portrait
+  // Portrait search uses the SAME strip layout as the portrait guide (the one video
+  // surface as a 16:9 strip on top); only the guide gets the strip's tap-to-
+  // fullscreen (search keeps its overlay — BACK is its way out).
+  const stripMode = guideStrip || (overlay === 'search' && portrait)
 
   if (!streams.length) return <SectionLoading section={t('menu.live')} hint={t('live.waitingForChannels')} />
 
@@ -457,7 +528,7 @@ export function LiveScreen ({ route, navigation }: Props) {
         <AliranVideo
           ref={videoHandle}
           backend={backend}
-          style={guideStrip ? [styles.videoStrip, { height: stripH }] : undefined}
+          style={stripMode ? [styles.videoStrip, { height: stripH }] : undefined}
           streamId={playingId}
           controls={false}
           resizeMode="contain"
@@ -474,10 +545,10 @@ export function LiveScreen ({ route, navigation }: Props) {
           // Live-edge freeze self-heal (log only — onTune 'start' re-arms the pill;
           // the SDK disarms the whole ladder for vod).
           onStall={() => console.log('[live] stall resync', playingIdRef.current)}
-          // Pill hands off to the error UI — and the guide overlay collapses so the
-          // error text (with its retry instruction) is never hidden under the grid's
-          // opaque bed.
-          onError={(msg) => { setError(msg); setTuneUI(null); setOverlay((o) => (o === 'guide' ? 'none' : o)) }}
+          // Pill hands off to the error UI — and the guide/search overlays collapse
+          // so the error text (with its retry instruction) is never hidden under
+          // their opaque beds (the error-collapse pattern).
+          onError={(msg) => { setError(msg); setTuneUI(null); setOverlay((o) => (o === 'guide' || o === 'search' ? 'none' : o)) }}
           // vod transport feed (chained by the SDK behind its own handlers): playhead
           // in whole seconds (one re-render/second), the player-reported runtime, and
           // end-of-title parking the transport on ▶ (no auto-anything — the viewer
@@ -524,7 +595,7 @@ export function LiveScreen ({ route, navigation }: Props) {
                 number={numbers.get(playing.id)}
                 clock={clockText(now)}
                 favorite={favorites.includes(playing.id)}
-                onChannels={() => setOverlay('list')}
+                onSearch={() => setOverlay('search')}
                 onInfo={() => { setInfoStream(playing); setOverlay('info') }}
                 onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
                 onReport={() => { showBar(); setReportOpen(true) }}
@@ -569,23 +640,54 @@ export function LiveScreen ({ route, navigation }: Props) {
       {/* Guide mode (phone): the shared time-grid around the playing stream. Tuning
           from the grid switches the stream IN PLACE — portrait keeps the guide up
           (the strip above shows the pick, the YouTube-TV pattern); landscape
-          collapses to fullscreen like a channel-list select. */}
+          collapses to fullscreen like a channel-list select. Landscape also runs
+          the panel's 'overlay' preview mode (WS11): first tap selects a row and
+          raises the upper-right live-thumb preview card, the second tap tunes.
+          Portrait stays tap-to-tune — the strip above IS the picture there. */}
       {overlay === 'guide' && (
         <View style={portrait ? [styles.guidePortrait, { top: stripH }] : styles.guideLandscape}>
-          <GuidePanel playingId={playingId} onTune={(s) => play(s, { collapse: !portrait })} />
+          <GuidePanel
+            playingId={playingId}
+            preview={portrait ? 'none' : 'overlay'}
+            onTune={(s) => play(s, { collapse: !portrait })}
+            // Portrait's resting state is the guide and the bar only shows in
+            // fullscreen — this chip is the portrait route into the in-player search.
+            onSearch={() => setOverlay('search')}
+          />
         </View>
       )}
 
-      {/* Portrait guide: tapping the video STRIP expands to portrait fullscreen
-          (overlay none) — "portrait fullscreen is an option"; BACK (or rotating)
-          brings the guide right back. Covers the strip region only, so the grid
-          below keeps its own touches. */}
+      {/* Search mode (WS15, phone): the in-player channel search around the ONE
+          playing video surface — portrait borrows the guide's strip layout (video
+          strip on top, panel on the opaque bed below), landscape lays the panel
+          over the fullscreen video on the translucent bed. A result tap tunes
+          through play() (the channel list's PIN-gated path) and CLOSES the overlay
+          to the orientation default — a search has a destination. The panel keeps
+          its own query state, so the rotation-survival rule above never loses it. */}
+      {overlay === 'search' && (
+        <View style={portrait ? [styles.guidePortrait, { top: stripH }] : styles.guideLandscape}>
+          <SearchPanel
+            playingId={playingId}
+            onTune={(s) => {
+              setOverlay(!theme.isTV && portraitRef.current ? 'guide' : 'none')
+              play(s)
+            }}
+          />
+        </View>
+      )}
+
+      {/* Portrait guide: tapping the video STRIP goes fullscreen — and fullscreen
+          is ALWAYS landscape (S22 round 4), so the tap locks the Activity to
+          landscape (the device rotates) besides collapsing the guide. BACK from
+          that fullscreen releases the lock and the guide comes right back in
+          portrait. Covers the strip region only, so the grid below keeps its own
+          touches. */}
       {guideStrip && (
         <Pressable
           style={[styles.stripTap, { height: stripH }]}
           accessibilityRole="button"
           accessibilityLabel={t('live.fullscreen')}
-          onPress={() => setOverlay('none')}
+          onPress={lockLandscape}
         />
       )}
 
@@ -681,7 +783,10 @@ export function LiveScreen ({ route, navigation }: Props) {
           markUnlocked()
           const s = pinTarget
           setPinTarget(null)
-          if (s) play(s, { collapse: true })
+          // Collapse lands on the orientation default: landscape/TV = fullscreen,
+          // portrait = the guide (matching the non-PIN tune paths — a PIN entry must
+          // not strand the viewer on the portrait fullscreen that no longer exists).
+          if (s) { play(s, { collapse: true }); if (!theme.isTV && portraitRef.current && !errorRef.current) setOverlay('guide') }
         }}
         onClose={() => {
           setPinTarget(null)

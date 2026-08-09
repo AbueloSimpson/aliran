@@ -58,6 +58,7 @@
   "guide.now": "ŞİMDİ",
   "guide.tomorrow": "YARIN",
   "guide.yesterday": "DÜN",
+  "guide.tapAgainToWatch": "İzlemek için tekrar dokunun",
 
   "settings.header": "AYARLAR",
   "settings.group.account": "HESAP",
@@ -137,6 +138,11 @@
   "live.bar.favorite": "Favori",
   "live.bar.report": "Bildir",
   "live.bar.subtitles": "Altyazı",
+  "live.search.placeholder": "Kanal adı veya numarası…",
+  "live.search.clear": "Aramayı temizle",
+  "live.search.backspace": "Son karakteri sil",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "ABC",
 
   "tracks.subtitles": "Altyazı",
   "tracks.audio": "Ses",

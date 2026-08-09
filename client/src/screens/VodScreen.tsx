@@ -73,6 +73,29 @@ export const VOD_ROW_H = VOD_TILE_H + TILE_MB
 // narrower than the S53 layout was (mockup proportions).
 const LEFT_PCT = theme.isTV ? 0.18 : 0.22
 
+/** Grid geometry per orientation (WS13, S22 feedback). Landscape and TV keep the fixed
+ *  mockup tile (TILE_W) and the left menu pane's width math. Phone PORTRAIT drops the
+ *  left pane (it becomes a chip row above the grid), so the grid owns the full width —
+ *  and sizes exactly THREE columns out of it, which means the tile (and therefore the
+ *  row height) becomes a function of the width. getItemLayout, the A–Z jump math and
+ *  the test suite all read the same numbers from here so they cannot drift. */
+export function gridGeometry (width: number, height: number, railShown: boolean) {
+  const portrait = !theme.isTV && height >= width
+  const inner = Math.max(TILE_W, width - theme.safeX * 2)
+  if (!portrait) {
+    const gridWidth = Math.max(
+      TILE_W,
+      inner * (1 - LEFT_PCT) - theme.spacing(1.5) - GRID_PAD * 2 - (railShown ? ALPHA_RAIL_W : 0)
+    )
+    const columns = Math.max(2, Math.floor((gridWidth + TILE_GAP) / (TILE_W + TILE_GAP)))
+    return { portrait, columns, tileW: TILE_W, rowH: VOD_ROW_H }
+  }
+  const gridWidth = Math.max(TILE_W, inner - GRID_PAD * 2 - (railShown ? ALPHA_RAIL_W : 0))
+  const columns = 3
+  const tileW = Math.max(72, Math.floor((gridWidth - (columns - 1) * TILE_GAP) / columns))
+  return { portrait, columns, tileW, rowH: Math.round(tileW * 3 / 2) + LABEL_H + TILE_MB }
+}
+
 // A Recommended carousel carries at most this many titles — "SEE N MORE…" is the
 // path to the rest (user decision, S54 polish).
 const RAIL_MAX = 50
@@ -130,7 +153,7 @@ export function VodScreen ({ navigation }: Props) {
   // Index of the first tile the grid is showing — the rail's highlight follows it.
   const [firstVisible, setFirstVisible] = useState(0)
 
-  const { width } = useWindowDimensions()
+  const { width, height } = useWindowDimensions()
   const listRef = useRef<FlatList<VodItem> | null>(null)
 
   // A My-List confirmation is a FLASH, not a state: it says what just happened and then
@@ -246,21 +269,16 @@ export function VodScreen ({ navigation }: Props) {
   const railShown = !search && onGrid && sort === 'az' && grid.length > 0
   const buckets = useMemo(() => (railShown ? letterBuckets(grid) : []), [railShown, grid])
 
-  // Grid width = the content pane minus its padding and (when shown) the A–Z rail.
-  // n tiles carry n-1 gaps between them, hence the +TILE_GAP in the division.
-  const inner = Math.max(TILE_W, width - theme.safeX * 2)
-  const gridWidth = Math.max(
-    TILE_W,
-    inner * (1 - LEFT_PCT) - theme.spacing(1.5) - GRID_PAD * 2 - (railShown ? ALPHA_RAIL_W : 0)
-  )
-  const columns = Math.max(2, Math.floor((gridWidth + TILE_GAP) / (TILE_W + TILE_GAP)))
+  // Orientation-aware grid geometry (WS13): landscape/TV = fixed tile + left-pane
+  // math; phone portrait = the full width divided into exactly three columns.
+  const { portrait, columns, tileW, rowH } = gridGeometry(width, height, railShown)
 
   // FlatList with numColumns feeds getItemLayout and scrollToIndex ROW indexes (it
   // packs `columns` items into one virtualized cell) — every jump therefore has to be
   // divided down, and the layout describes a ROW, not a tile.
   const getItemLayout = useCallback(
-    (_: unknown, rowIndex: number) => ({ length: VOD_ROW_H, offset: VOD_ROW_H * rowIndex, index: rowIndex }),
-    []
+    (_: unknown, rowIndex: number) => ({ length: rowH, offset: rowH * rowIndex, index: rowIndex }),
+    [rowH]
   )
 
   // onViewableItemsChanged pairs MUST keep their identity for the life of the list or
@@ -284,8 +302,8 @@ export function VodScreen ({ navigation }: Props) {
 
   const onScrollToIndexFailed = useCallback((info: { index: number }) => {
     // Outside the render window: fall back to the offset the exact row math gives us.
-    listRef.current?.scrollToOffset({ offset: info.index * VOD_ROW_H, animated: true })
-  }, [])
+    listRef.current?.scrollToOffset({ offset: info.index * rowH, animated: true })
+  }, [rowH])
 
   const open = useCallback(async (item: VodItem) => {
     if (!config || resolving) return
@@ -363,6 +381,7 @@ export function VodScreen ({ navigation }: Props) {
               item={item}
               first={index === 0}
               busy={resolving === item.id}
+              w={portrait ? tileW : undefined}
               onPress={() => { void open(item) }}
               onLongPress={() => toggleSaved(item)}
             />
@@ -456,7 +475,7 @@ export function VodScreen ({ navigation }: Props) {
           columnWrapperStyle={columns > 1 ? styles.row : undefined}
           contentContainerStyle={styles.grid}
           renderItem={({ item, index }) => (
-            <GenreCard genre={item} first={index === 0} onPress={() => setGenre(item.index)} />
+            <GenreCard genre={item} first={index === 0} w={portrait ? tileW : undefined} onPress={() => setGenre(item.index)} />
           )}
         />
       )
@@ -471,21 +490,50 @@ export function VodScreen ({ navigation }: Props) {
 
   const showChips = !search && onGrid
 
+  // The section menu, one source of truth for both orientations: the landscape LEFT
+  // PANE renders it as MenuButtons, phone portrait as a horizontal chip row (WS13).
+  const menu = [
+    { key: 'movies', label: t('vod.menu.movies'), active: !search && kind === 'movies', go: () => chooseKind('movies') },
+    { key: 'series', label: t('vod.menu.series'), active: !search && kind === 'series', go: () => chooseKind('series') },
+    { key: 'search', label: t('vod.menu.search'), active: search, go: () => { setSearch(true); setGenre(null) } }
+  ]
+
   return (
-    <View style={styles.container}>
-      <FocusPane autoFocus style={styles.leftPane}>
-        <Text style={styles.header}>{t('vod.header')}</Text>
-        <MenuButton label={t('vod.menu.movies')} active={!search && kind === 'movies'} onPress={() => chooseKind('movies')} />
-        <MenuButton label={t('vod.menu.series')} active={!search && kind === 'series'} onPress={() => chooseKind('series')} />
-        <MenuButton label={t('vod.menu.search')} active={search} onPress={() => { setSearch(true); setGenre(null) }} />
-      </FocusPane>
+    <View style={[styles.container, portrait && styles.containerPortrait]}>
+      {portrait
+        ? (
+          // PHONE PORTRAIT (WS13, S22 feedback): the left pane collapses into a
+          // horizontal chip row above the grid (the guide's chip grammar), so the
+          // poster grid gets the full width underneath.
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.menuRow} contentContainerStyle={styles.menuRowContent} testID="vod-menu-row">
+            {menu.map((m) => <MenuChip key={m.key} label={m.label} active={m.active} onPress={m.go} />)}
+          </ScrollView>
+          )
+        : (
+          <FocusPane autoFocus style={styles.leftPane}>
+            <Text style={styles.header}>{t('vod.header')}</Text>
+            {menu.map((m) => <MenuButton key={m.key} label={m.label} active={m.active} onPress={m.go} />)}
+          </FocusPane>
+          )}
 
       <FocusPane autoFocus style={styles.contentPane}>
-        <View style={styles.tabs}>
-          {TABS.map((key) => (
-            <TabButton key={key} label={t('vod.tab.' + key)} active={!search && tab === key} onPress={() => chooseTab(key)} />
-          ))}
-        </View>
+        {portrait
+          ? (
+            // Full-width tab bar that SCROLLS instead of wrapping/clipping (the S22
+            // complaint) — same TabButtons, laid in one horizontal row.
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsScroll} contentContainerStyle={styles.tabsRowPortrait}>
+              {TABS.map((key) => (
+                <TabButton key={key} label={t('vod.tab.' + key)} active={!search && tab === key} onPress={() => chooseTab(key)} />
+              ))}
+            </ScrollView>
+            )
+          : (
+            <View style={styles.tabs}>
+              {TABS.map((key) => (
+                <TabButton key={key} label={t('vod.tab.' + key)} active={!search && tab === key} onPress={() => chooseTab(key)} />
+              ))}
+            </View>
+            )}
 
         {showChips && (
           <View style={styles.chips}>
@@ -540,6 +588,24 @@ function MenuButton ({ label, active, onPress }: { label: string; active: boolea
       onPress={onPress}
     >
       <Text style={[styles.menuText, active && styles.menuTextActive]}>{label.toLocaleUpperCase(getLocale())}</Text>
+    </Pressable>
+  )
+}
+
+// Portrait section chip (WS13): the guide's chip grammar (rounded pill, uppercase
+// caption), with the vod menu's active color (primary fill) so the active KIND reads
+// differently from the active TAB underneath it.
+function MenuChip ({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  const [focused, setFocused] = useState(false)
+  return (
+    <Pressable
+      style={[styles.menuChip, active && styles.menuChipActive, focused && styles.menuChipFocused]}
+      accessibilityRole="button"
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      onPress={onPress}
+    >
+      <Text style={[styles.menuChipText, active && styles.menuChipTextActive]}>{label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
@@ -615,26 +681,30 @@ function Rail ({ title, items, more, busyId, onPressItem, onLongPressItem, onSee
 
 // A genre card wears the tile's clothes: the genre's first title as the art, the
 // provider's genre NAME in the label box.
-function GenreCard ({ genre, first, onPress }: { genre: { index: number; name: string; item: VodItem }; first: boolean; onPress: () => void }) {
-  return <Tile art={genre.item.icon} label={genre.name} initial={genre.name} first={first} busy={false} onPress={onPress} />
+function GenreCard ({ genre, first, w, onPress }: { genre: { index: number; name: string; item: VodItem }; first: boolean; w?: number; onPress: () => void }) {
+  return <Tile art={genre.item.icon} label={genre.name} initial={genre.name} first={first} busy={false} w={w} onPress={onPress} />
 }
 
 // Poster + title. A missing or broken `icon` falls back to the title's initial on a
 // plain surface (the ChannelInfoPanel art pattern) — a grid of grey holes reads as
 // breakage, an initial reads as "no art".
-function PosterTile ({ item, first, busy, onPress, onLongPress }: { item: VodItem; first: boolean; busy: boolean; onPress: () => void; onLongPress: () => void }) {
-  return <Tile art={item.icon} label={titleWithYear(item)} initial={item.name} first={first} busy={busy} onPress={onPress} onLongPress={onLongPress} />
+function PosterTile ({ item, first, busy, w, onPress, onLongPress }: { item: VodItem; first: boolean; busy: boolean; w?: number; onPress: () => void; onLongPress: () => void }) {
+  return <Tile art={item.icon} label={titleWithYear(item)} initial={item.name} first={first} busy={busy} w={w} onPress={onPress} onLongPress={onLongPress} />
 }
 
 // The shared tile: a framed poster with a fixed-height LABEL BOX underneath (D8). The
 // height is fixed on purpose — the A–Z rail's scrollToIndex math depends on every row
-// being exactly VOD_ROW_H tall.
-function Tile ({ art, label, initial, first, busy, onPress, onLongPress }: {
+// being exactly VOD_ROW_H tall (or, in the portrait grid, exactly the gridGeometry
+// row: `w` overrides the tile/poster width so three columns fill the freed width, and
+// the height stays a pure function of that width — same discipline, computed once).
+function Tile ({ art, label, initial, first, busy, w, onPress, onLongPress }: {
   art: string
   label: string
   initial: string
   first: boolean
   busy: boolean
+  /** Portrait grid tile width (gridGeometry). Absent = the fixed TILE_W layout. */
+  w?: number
   onPress: () => void
   /** Long press = the My List toggle (D9). Absent on the genre cards, which are not
    *  titles and have nothing to save. */
@@ -643,9 +713,10 @@ function Tile ({ art, label, initial, first, busy, onPress, onLongPress }: {
   const [focused, setFocused] = useState(false)
   const [broken, setBroken] = useState(false)
   const showArt = !!art && !broken
+  const posterH = w === undefined ? undefined : Math.round(w * 3 / 2)
   return (
     <Pressable
-      style={styles.tile}
+      style={[styles.tile, w !== undefined && { width: w, height: posterH! + LABEL_H }]}
       accessibilityRole="button"
       // TV-only: D-pad entry into the grid should land on the first tile. On the
       // PHONE this same flag stole focus from the search field on every results
@@ -656,7 +727,7 @@ function Tile ({ art, label, initial, first, busy, onPress, onLongPress }: {
       onPress={onPress}
       onLongPress={onLongPress}
     >
-      <View style={[styles.posterBox, focused && styles.posterBoxFocused]}>
+      <View style={[styles.posterBox, posterH !== undefined && { height: posterH }, focused && styles.posterBoxFocused]}>
         {showArt
           ? <Image source={{ uri: art }} style={styles.poster} resizeMode="cover" onError={() => setBroken(true)} />
           : <View style={[styles.poster, styles.posterFallback]}><Text style={styles.posterInitial}>{(initial || '?').slice(0, 1).toUpperCase()}</Text></View>}
@@ -671,8 +742,25 @@ function Tile ({ art, label, initial, first, busy, onPress, onLongPress }: {
 
 const styles = StyleSheet.create({
   container: { flex: 1, flexDirection: 'row', backgroundColor: theme.colors.background, paddingVertical: theme.safeY, paddingHorizontal: theme.safeX },
+  // Portrait stacks: menu chip row, then the (full-width) content pane under it.
+  containerPortrait: { flexDirection: 'column' },
   leftPane: { width: theme.isTV ? '18%' : '22%', paddingRight: theme.spacing(1.5) },
   contentPane: { flex: 1 },
+  // --- phone portrait (WS13): the left pane as a horizontal chip row ---
+  menuRow: { flexGrow: 0, marginBottom: theme.spacing(1.25) },
+  menuRowContent: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(0.75), paddingRight: theme.spacing(1) },
+  menuChip: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, backgroundColor: theme.colors.surface,
+    borderWidth: theme.focusRing, borderColor: 'transparent'
+  },
+  menuChipActive: { backgroundColor: theme.colors.primary },
+  menuChipFocused: { borderColor: theme.colors.focus },
+  menuChipText: { color: theme.colors.text, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 1 },
+  menuChipTextActive: { color: theme.colors.onPrimary },
+  // Portrait tab bar: one non-wrapping row with room to breathe (the landscape
+  // flexWrap row clipped and wrapped labels in portrait — the S22 complaint).
+  tabsScroll: { flexGrow: 0, marginBottom: theme.spacing(1) },
+  tabsRowPortrait: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(0.75), paddingRight: theme.spacing(1) },
   header: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginBottom: theme.spacing(1.5) },
   input: {
     backgroundColor: theme.colors.surface, color: theme.colors.text, borderRadius: 10,

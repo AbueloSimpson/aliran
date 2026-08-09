@@ -8,12 +8,21 @@
 // fake data). vod library titles (S8a) show their runtime (badge on the art) and an
 // availability note instead of LIVE state, and omit the guide slot — titles have no
 // schedule.
+//
+// TWO PRESENTATIONS (WS12, S22 feedback). TV keeps the original stacked layout —
+// header, 16:9 art box, chips, synopsis, guide — unchanged. The PHONE panel is short
+// (~360dp tall in landscape) and the stacked art pushed the guide below the fold, so
+// on phone the resolved art becomes a full-panel BACKGROUND under a dark scrim (the
+// MenuScreen wallpaper+scrim grammar) and the foreground compacts: a small logo +
+// number + single-line title identity row, a clamped synopsis, then the program guide
+// — the now-program sits above the fold; the ScrollView only carries long overflow
+// (up-next lists, the action row).
 import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
-import { useEpg, useChannelThumb, programProgress, type EpgProgram } from '@aliran/react-native'
+import { useEpg, programProgress, type EpgProgram } from '@aliran/react-native'
 import { theme } from '../theme'
 
 // Local wall-clock HH:MM (no Intl dependency — Hermes' Intl is uneven on Android).
@@ -36,66 +45,138 @@ export interface ChannelInfoPanelProps {
 
 export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite, onReport }: ChannelInfoPanelProps) {
   const { t, tn } = useI18n()
-  // Thumb-first art: what is on screen RIGHT NOW beats curated art — the panel opens
-  // on a channel the viewer is deciding whether to watch. The thumb is 16:9 like the
-  // art box (aspectRatio below), so cover doesn't crop it; a 404 (the ordinary "no
-  // thumbnail" answer — see thumbBase in the SDK) falls back to the curated chain.
-  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
-  const art = thumbUri || stream.poster || stream.backdrop || stream.logo
+  // CURATED art only (S22 round 4 thumbnail policy): live thumbs live in the guide's
+  // preview card and the Menu hero — everywhere else channel identity is the curated
+  // chain. The panel most often opens for the PLAYING channel, whose live picture is
+  // already on screen; a rolling probe here duplicated it.
+  const art = stream.poster || stream.backdrop || stream.logo
   // vod library title (S8a): runtime + availability instead of LIVE state, and the
   // program-guide slot does not apply (a title has no schedule).
   const vod = isVod(stream)
   const duration = vod ? formatDuration(stream.durationSec) : ''
+
+  if (theme.isTV) {
+    // TV: the original stacked layout, untouched (the 10-foot panel is fine as-is).
+    return (
+      <ScrollView style={styles.panel} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.header}>
+          <Text style={styles.number}>{formatChannelNumber(number)}</Text>
+          <Text style={styles.title} numberOfLines={2}>{stream.title}</Text>
+        </View>
+
+        <View style={styles.artBox}>
+          {art
+            ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" />
+            : <View style={[styles.art, styles.artFallback]}><Text style={styles.artInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          {stream.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
+          {!!duration && <Text style={styles.durationBadge}>{duration}</Text>}
+        </View>
+
+        {/* Operator category names, upper-cased in the VIEWER's locale — same rule as the
+            category rail, so the same word is cased the same way on both surfaces. */}
+        {!!stream.category?.length && (
+          <View style={styles.chips}>
+            {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toLocaleUpperCase(getLocale())}</Text>)}
+          </View>
+        )}
+
+        {vod && stream.status === 'unavailable' && (
+          <Text style={styles.unavailable}>{t('live.unavailable')}</Text>
+        )}
+
+        {!!stream.description && <Text style={styles.desc}>{stream.description}</Text>}
+
+        {playing && (
+          <View style={styles.stats}>
+            {source && <Text style={source === 'p2p' ? styles.srcP2P : styles.srcCDN}>{source.toUpperCase()}</Text>}
+            {source !== 'cdn' && peers != null && <Text style={styles.peers}>{tn('live.peers', peers)}</Text>}
+          </View>
+        )}
+
+        {/* EPG slot: live now/next for channels that carry a guide (S27), else an
+            honest placeholder (D2 — no fake data). A vod title has no schedule — the
+            slot is omitted entirely rather than showing "No program information". */}
+        {!vod && <EpgGuide stream={stream} />}
+
+        <View style={styles.actions}>
+          <ActionButton label={playing ? t('live.watching') : t('live.watch')} primary onPress={onWatch} hasTVPreferredFocus />
+          <ActionButton label={favorite ? t('live.removeFavorite') : t('live.addFavorite')} onPress={onToggleFavorite} />
+          {/* Report rides the info panel only for the channel BEING WATCHED — the
+              engine attaches the active stream to the report, so offering it on a
+              merely-browsed channel would report the wrong one (S51). */}
+          {playing && onReport && <ActionButton label={t('live.reportProblem')} onPress={onReport} />}
+        </View>
+      </ScrollView>
+    )
+  }
+
+  // PHONE (WS12). The resolved CURATED art (same chain as TV) fills the panel as
+  // a background under the MenuScreen scrim; the foreground is compact so the guide's
+  // now-program shows without scrolling even in a ~360dp-tall landscape panel. The
+  // rounded right edge matches the host pane (LiveScreen infoPane) — overflow hidden
+  // clips the background image to it.
   return (
-    <ScrollView style={styles.panel} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-      <View style={styles.header}>
-        <Text style={styles.number}>{formatChannelNumber(number)}</Text>
-        <Text style={styles.title} numberOfLines={2}>{stream.title}</Text>
-      </View>
-
-      <View style={styles.artBox}>
-        {art
-          ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? t('live.livePreview', { title: stream.title }) : undefined} />
-          : <View style={[styles.art, styles.artFallback]}><Text style={styles.artInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
-        {stream.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
-        {!!duration && <Text style={styles.durationBadge}>{duration}</Text>}
-      </View>
-
-      {/* Operator category names, upper-cased in the VIEWER's locale — same rule as the
-          category rail, so the same word is cased the same way on both surfaces. */}
-      {!!stream.category?.length && (
-        <View style={styles.chips}>
-          {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toLocaleUpperCase(getLocale())}</Text>)}
+    <View style={styles.phoneRoot}>
+      {!!art && (
+        <Image
+          source={{ uri: art }}
+          style={StyleSheet.absoluteFill}
+          resizeMode="cover"
+          testID="info-art-bg"
+        />
+      )}
+      {!!art && <View style={[StyleSheet.absoluteFill, styles.phoneScrim]} />}
+      <ScrollView style={styles.panel} contentContainerStyle={styles.phoneContent} showsVerticalScrollIndicator={false}>
+        {/* Compact identity row: small logo (or initial), number, ONE title line. */}
+        <View style={styles.phoneIdentity}>
+          {stream.logo
+            ? <Image source={{ uri: stream.logo }} style={styles.phoneLogo} resizeMode="contain" testID="info-logo" />
+            : <View style={[styles.phoneLogo, styles.phoneLogoFallback]}><Text style={styles.phoneLogoInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          <View style={styles.phoneIdentityText}>
+            <View style={styles.phoneTitleRow}>
+              <Text style={styles.number}>{formatChannelNumber(number)}</Text>
+              <Text style={styles.title} numberOfLines={1}>{stream.title}</Text>
+            </View>
+            <View style={styles.phoneBadges}>
+              {stream.isLive && <Text style={styles.phoneLive}>{t('common.liveBadge')}</Text>}
+              {!!duration && <Text style={styles.phoneDuration}>{duration}</Text>}
+              {playing && source && <Text style={source === 'p2p' ? styles.srcP2P : styles.srcCDN}>{source.toUpperCase()}</Text>}
+              {playing && source !== 'cdn' && peers != null && <Text style={styles.peers}>{tn('live.peers', peers)}</Text>}
+            </View>
+          </View>
         </View>
-      )}
 
-      {vod && stream.status === 'unavailable' && (
-        <Text style={styles.unavailable}>{t('live.unavailable')}</Text>
-      )}
+        {/* Operator category names, upper-cased in the VIEWER's locale — same rule as the
+            category rail, so the same word is cased the same way on both surfaces. */}
+        {!!stream.category?.length && (
+          <View style={styles.chips}>
+            {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toLocaleUpperCase(getLocale())}</Text>)}
+          </View>
+        )}
 
-      {!!stream.description && <Text style={styles.desc}>{stream.description}</Text>}
+        {vod && stream.status === 'unavailable' && (
+          <Text style={styles.unavailable}>{t('live.unavailable')}</Text>
+        )}
 
-      {playing && (
-        <View style={styles.stats}>
-          {source && <Text style={source === 'p2p' ? styles.srcP2P : styles.srcCDN}>{source.toUpperCase()}</Text>}
-          {source !== 'cdn' && peers != null && <Text style={styles.peers}>{tn('live.peers', peers)}</Text>}
+        {/* Clamped on phone: a long synopsis must not push the now-program below the
+            fold — the guide is what the viewer opened the panel for (S22 feedback). */}
+        {!!stream.description && <Text style={styles.desc} numberOfLines={3}>{stream.description}</Text>}
+
+        {/* EPG slot: live now/next for channels that carry a guide (S27), else an
+            honest placeholder (D2 — no fake data). A vod title has no schedule — the
+            slot is omitted entirely rather than showing "No program information". */}
+        {!vod && <EpgGuide stream={stream} />}
+
+        <View style={styles.actions}>
+          <ActionButton label={playing ? t('live.watching') : t('live.watch')} primary onPress={onWatch} hasTVPreferredFocus />
+          <ActionButton label={favorite ? t('live.removeFavorite') : t('live.addFavorite')} onPress={onToggleFavorite} />
+          {/* Report rides the info panel only for the channel BEING WATCHED — the
+              engine attaches the active stream to the report, so offering it on a
+              merely-browsed channel would report the wrong one (S51). */}
+          {playing && onReport && <ActionButton label={t('live.reportProblem')} onPress={onReport} />}
         </View>
-      )}
-
-      {/* EPG slot: live now/next for channels that carry a guide (S27), else an
-          honest placeholder (D2 — no fake data). A vod title has no schedule — the
-          slot is omitted entirely rather than showing "No program information". */}
-      {!vod && <EpgGuide stream={stream} />}
-
-      <View style={styles.actions}>
-        <ActionButton label={playing ? t('live.watching') : t('live.watch')} primary onPress={onWatch} hasTVPreferredFocus />
-        <ActionButton label={favorite ? t('live.removeFavorite') : t('live.addFavorite')} onPress={onToggleFavorite} />
-        {/* Report rides the info panel only for the channel BEING WATCHED — the
-            engine attaches the active stream to the report, so offering it on a
-            merely-browsed channel would report the wrong one (S51). */}
-        {playing && onReport && <ActionButton label={t('live.reportProblem')} onPress={onReport} />}
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   )
 }
 
@@ -195,6 +276,24 @@ const styles = StyleSheet.create({
   epgNextTime: { color: theme.colors.textDim, fontSize: theme.type.caption, fontVariant: ['tabular-nums'], minWidth: 42 },
   epgNextTitle: { color: theme.colors.text, fontSize: theme.type.caption, flexShrink: 1 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: theme.spacing(2) },
+  // --- phone presentation (WS12): art-as-background under the MenuScreen scrim ---
+  // The radii mirror LiveScreen's infoPane so overflow:hidden clips the background
+  // image to the host pane's rounded right edge.
+  phoneRoot: { flex: 1, borderTopRightRadius: 12, borderBottomRightRadius: 12, overflow: 'hidden' },
+  // Same token values as MenuScreen's wallpaper scrim — one darkening grammar.
+  phoneScrim: { backgroundColor: theme.colors.overlay, opacity: 0.55 },
+  phoneContent: { padding: theme.spacing(1.5) },
+  phoneIdentity: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  phoneLogo: { width: 48, height: 48, borderRadius: 8 },
+  phoneLogoFallback: { backgroundColor: theme.colors.surface, alignItems: 'center', justifyContent: 'center' },
+  phoneLogoInitial: { color: theme.colors.textDim, fontSize: theme.type.title, fontWeight: '800' },
+  phoneIdentityText: { flex: 1 },
+  phoneTitleRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  phoneBadges: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 3 },
+  // The art-box badges (live/duration) restated as inline chips — same colors/weights,
+  // no absolute positioning (there is no art box on the phone panel).
+  phoneLive: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption - 2, fontWeight: '800', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
+  phoneDuration: { color: theme.colors.text, backgroundColor: theme.colors.overlayStrong, fontSize: theme.type.caption - 1, fontWeight: '700', fontVariant: ['tabular-nums'], paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, overflow: 'hidden' },
   button: { backgroundColor: theme.colors.surface, borderRadius: 8, paddingHorizontal: 18, paddingVertical: 10, borderWidth: theme.focusRing, borderColor: 'transparent' },
   buttonPrimary: { backgroundColor: theme.colors.primary },
   buttonFocused: { borderColor: theme.colors.focus },

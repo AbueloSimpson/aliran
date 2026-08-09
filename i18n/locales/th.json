@@ -58,6 +58,7 @@
   "guide.now": "ตอนนี้",
   "guide.tomorrow": "พรุ่งนี้",
   "guide.yesterday": "เมื่อวาน",
+  "guide.tapAgainToWatch": "แตะอีกครั้งเพื่อรับชม",
 
   "settings.header": "การตั้งค่า",
   "settings.group.account": "บัญชี",
@@ -136,6 +137,11 @@
   "live.bar.favorite": "รายการโปรด",
   "live.bar.report": "แจ้งปัญหา",
   "live.bar.subtitles": "คำบรรยาย",
+  "live.search.placeholder": "ชื่อช่องหรือหมายเลข…",
+  "live.search.clear": "ล้างการค้นหา",
+  "live.search.backspace": "ลบตัวอักษรสุดท้าย",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "กขค",
 
   "tracks.subtitles": "คำบรรยาย",
   "tracks.audio": "เสียง",

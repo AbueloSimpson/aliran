@@ -58,6 +58,7 @@
   "guide.now": "지금",
   "guide.tomorrow": "내일",
   "guide.yesterday": "어제",
+  "guide.tapAgainToWatch": "한 번 더 누르면 시청",
 
   "settings.header": "설정",
   "settings.group.account": "계정",
@@ -136,6 +137,11 @@
   "live.bar.favorite": "즐겨찾기",
   "live.bar.report": "신고",
   "live.bar.subtitles": "자막",
+  "live.search.placeholder": "채널 이름 또는 번호…",
+  "live.search.clear": "검색 지우기",
+  "live.search.backspace": "마지막 글자 삭제",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "가나다",
 
   "tracks.subtitles": "자막",
   "tracks.audio": "오디오",

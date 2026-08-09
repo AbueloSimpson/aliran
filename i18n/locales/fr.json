@@ -58,6 +58,7 @@
   "guide.now": "MAINTENANT",
   "guide.tomorrow": "DEMAIN",
   "guide.yesterday": "HIER",
+  "guide.tapAgainToWatch": "Touchez à nouveau pour regarder",
 
   "settings.header": "RÉGLAGES",
   "settings.group.account": "COMPTE",
@@ -137,6 +138,11 @@
   "live.bar.favorite": "Favori",
   "live.bar.report": "Signaler",
   "live.bar.subtitles": "Sous-titres",
+  "live.search.placeholder": "Nom ou numéro de chaîne…",
+  "live.search.clear": "Effacer la recherche",
+  "live.search.backspace": "Effacer le dernier caractère",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "ABC",
 
   "tracks.subtitles": "Sous-titres",
   "tracks.audio": "Audio",

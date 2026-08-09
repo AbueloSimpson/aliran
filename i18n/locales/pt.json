@@ -58,6 +58,7 @@
   "guide.now": "AGORA",
   "guide.tomorrow": "AMANHÃ",
   "guide.yesterday": "ONTEM",
+  "guide.tapAgainToWatch": "Toque novamente para assistir",
 
   "settings.header": "AJUSTES",
   "settings.group.account": "CONTA",
@@ -137,6 +138,11 @@
   "live.bar.favorite": "Favorito",
   "live.bar.report": "Relatar",
   "live.bar.subtitles": "Legendas",
+  "live.search.placeholder": "Nome ou número do canal…",
+  "live.search.clear": "Limpar pesquisa",
+  "live.search.backspace": "Apagar o último caractere",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "ABC",
 
   "tracks.subtitles": "Legendas",
   "tracks.audio": "Áudio",

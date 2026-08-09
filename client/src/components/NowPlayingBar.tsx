@@ -2,7 +2,9 @@
 // (overlay 'none'). Replaces the old transient bottom OSD: instead of a channel-identity
 // chip that peeked on a tap and faded, the bottom of fullscreen now carries a standing
 // bar — derived number + logo + title/synopsis + wall clock on top, a row of touch
-// controls (Channels / Info / Favorite) beneath.
+// controls (Search / Info / Favorite) beneath. Search (WS15) replaced the Channels
+// button: it opens the in-player channel search overlay so the viewer never backs
+// fully out — the channel list itself stays one tap away on the video (landscape).
 //
 // Touch model: the container is pointerEvents "box-none" and the identity row is "none",
 // so only the three buttons capture touches — a tap anywhere else on the bar (or the
@@ -14,12 +16,12 @@
 // transport row — play/pause, elapsed / runtime, and a scrubbable seek bar (tap or
 // drag; pure JS, no native slider dep). Phone-only interactivity for the same S7
 // reason; TV renders the row display-only (position + runtime, no focusables).
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, PanResponder } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration } from '../catalog'
-import { useEpg, useChannelThumb } from '@aliran/react-native'
+import { useEpg } from '@aliran/react-native'
 import { VolumeControl } from './VolumeControl'
 import { ProgressHairline } from './ProgressHairline'
 import { theme } from '../theme'
@@ -36,7 +38,7 @@ export interface NowPlayingBarProps {
   number?: number
   clock: string
   favorite: boolean
-  onChannels: () => void
+  onSearch: () => void
   onInfo: () => void
   onToggleFavorite: () => void
   onReport: () => void
@@ -57,39 +59,22 @@ export interface NowPlayingBarProps {
   onVolume?: (volume: number, muted: boolean) => void
 }
 
-export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
+export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
   const { t } = useI18n()
   // What's on NOW from the program guide (S27) — the airing program is more useful on
   // the bar than the channel synopsis. Falls back to the description ("via demotv")
   // for channels without an EPG. The channel synopsis still lives in the Info panel.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const subtitle = data?.now?.title || stream.description
-  // Live thumb between the identity (logo + number) and the text block — what is on
-  // screen right now, straight off the channel's own feed. A 404 is the ordinary "no
-  // thumbnail" answer (see thumbBase in the SDK). The probe happens OFF-LAYOUT
-  // (absolute + opacity 0, real dims so Fresco still fetches): the bar is the
-  // zap-flash surface and the slot mounting before the 404 answer would snap the
-  // text block sideways on every zap to a thumb-less channel. Only a decoded frame
-  // (onLoad) lets the thumb take layout space; the latch re-arms per channel.
-  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
-  const [thumbShown, setThumbShown] = useState(false)
-  useEffect(() => { setThumbShown(false) }, [stream.thumbBase])
+  // No live thumb on the bar (WS11): the bar sits under/next to the ACTUAL live
+  // video, so a rolling feed frame here only duplicated the picture (and cost an
+  // off-layout probe per zap). The thumb's one surface is the guide preview pane.
   return (
     <View style={styles.wrap} pointerEvents="box-none">
       <View style={styles.bar} pointerEvents="box-none">
         <View style={styles.info} pointerEvents="none">
           {!!stream.logo && <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" />}
           <Text style={styles.number}>{formatChannelNumber(number)}</Text>
-          {!!thumbUri && (
-            <Image
-              source={{ uri: thumbUri }}
-              style={thumbShown ? styles.liveThumb : styles.liveThumbProbe}
-              resizeMode="cover"
-              onLoad={() => setThumbShown(true)}
-              onError={() => { setThumbShown(false); onThumbError() }}
-              accessibilityLabel={thumbShown ? t('live.livePreview', { title: stream.title }) : undefined}
-            />
-          )}
           <View style={styles.main}>
             <View style={styles.titleLine}>
               <Text style={styles.title} numberOfLines={1}>{stream.title}</Text>
@@ -121,7 +106,9 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
         {/* Touch controls — phone only (see file header). */}
         {!theme.isTV && (
           <View style={styles.buttons}>
-            <BarButton glyph="☰" label={t('live.bar.channels')} onPress={onChannels} />
+            {/* ⌕ (text presentation) — U+1F50D renders as a COLOR emoji on Android,
+                which would break the monochrome glyph set (☰ ⓘ ★ ⚑). */}
+            <BarButton glyph="⌕" label={t('menu.search')} onPress={onSearch} />
             <BarButton glyph="ⓘ" label={t('live.bar.info')} onPress={onInfo} />
             <BarButton glyph={favorite ? '★' : '☆'} label={t('live.bar.favorite')} active={favorite} onPress={onToggleFavorite} />
             <BarButton glyph="⚑" label={t('live.bar.report')} onPress={onReport} />
@@ -190,12 +177,6 @@ const styles = StyleSheet.create({
   },
   info: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.25) },
   logo: { width: theme.isTV ? 60 : 44, height: theme.isTV ? 34 : 24, borderRadius: 4 },
-  // 16:9 — matches the frames the broadcaster rolls into the feed. ("thumb" below
-  // is the SeekBar's scrubber knob — unrelated.)
-  liveThumb: { width: theme.isTV ? 96 : 72, height: theme.isTV ? 54 : 40, borderRadius: 4 },
-  // Off-layout probe: real dims (a 0×0 Image may never fetch under Fresco), invisible,
-  // out of the flex flow so a 404 never moves a pixel of the bar.
-  liveThumbProbe: { position: 'absolute', opacity: 0, width: theme.isTV ? 96 : 72, height: theme.isTV ? 54 : 40 },
   hairline: { marginTop: 4 },
   number: { color: theme.colors.accent, fontSize: theme.type.title, fontWeight: '800', fontVariant: ['tabular-nums'] },
   main: { flexShrink: 1, flexGrow: 1 },

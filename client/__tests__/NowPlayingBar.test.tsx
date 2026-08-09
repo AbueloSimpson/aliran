@@ -13,7 +13,7 @@ function texts (tree: RendererInstance): string {
   return tree.root.findAllByType(Text).map(t => [t.props.children].flat(9).map(String).join('')).join(' | ')
 }
 
-const props = { number: 1, clock: '17:45', favorite: false, onChannels: () => {}, onInfo: () => {}, onToggleFavorite: () => {}, onReport: () => {} }
+const props = { number: 1, clock: '17:45', favorite: false, onSearch: () => {}, onInfo: () => {}, onToggleFavorite: () => {}, onReport: () => {} }
 const mounted: RendererInstance[] = []
 async function createTree (el: React.ReactElement): Promise<RendererInstance> {
   let tree!: RendererInstance
@@ -64,36 +64,19 @@ test('no transport row for live channels', async () => {
   expect(t).not.toContain('--:--')
 })
 
-// --- live thumbnail (WS1): the bar carries the channel's rolling feed frame next to
-// the logo; a 404 (the ordinary "no thumbnail" answer) leaves the bar exactly as
-// before — logo only, no broken image.
+// --- no live thumb on the bar (WS11) ---
+// The bar sits under/next to the ACTUAL live video, so a rolling feed frame here only
+// duplicated the picture. The engine still hands out thumbBase for every channel; the
+// bar must ignore it — station logo only, no probe, ever.
 
 const LOGO = 'http://127.0.0.1:1234/assets/news/logo.png'
 const THUMB = 'http://127.0.0.1:1234/feedthumb/news'
 
-test('live thumb probes off-layout, then takes layout space only after onLoad', async () => {
+test('the bar shows only the station logo — thumbBase never probes, nothing rolls', async () => {
   const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv', logo: LOGO, thumbBase: THUMB }
   const tree = await createTree(<NowPlayingBar stream={stream} {...props} />)
-  let images = tree.root.findAllByType(Image)
-  expect(images).toHaveLength(2) // logo stays
-  expect(images[0].props.source.uri).toBe(LOGO)
-  expect(images[1].props.source.uri).toMatch(new RegExp('^' + THUMB + '\\?t='))
-  // Before a frame decodes, the probe is out of the flex flow and invisible —
-  // the bar's layout is byte-identical to the no-thumb bar (zap-flash stability).
-  expect(images[1].props.style).toMatchObject({ position: 'absolute', opacity: 0 })
-  expect(images[1].props.accessibilityLabel).toBeUndefined()
-  await ReactTestRenderer.act(async () => { images[1].props.onLoad() })
-  images = tree.root.findAllByType(Image)
-  expect(images[1].props.style).not.toMatchObject({ opacity: 0 })
-  expect(images[1].props.resizeMode).toBe('cover')
-  expect(images[1].props.accessibilityLabel).toBe('News 24 — live preview')
-})
-
-test('a thumb 404 leaves the bar as it was — logo only', async () => {
-  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv', logo: LOGO, thumbBase: THUMB }
-  const tree = await createTree(<NowPlayingBar stream={stream} {...props} />)
-  await ReactTestRenderer.act(async () => { tree.root.findAllByType(Image)[1].props.onError() })
   const images = tree.root.findAllByType(Image)
-  expect(images).toHaveLength(1)
+  expect(images).toHaveLength(1) // the identity logo, nothing else
   expect(images[0].props.source.uri).toBe(LOGO)
+  expect(images[0].props.resizeMode).toBe('contain')
 })

@@ -58,6 +58,7 @@
   "guide.now": "अभी",
   "guide.tomorrow": "कल",
   "guide.yesterday": "बीता कल",
+  "guide.tapAgainToWatch": "देखने के लिए फिर से टैप करें",
 
   "settings.header": "सेटिंग",
   "settings.group.account": "खाता",
@@ -137,6 +138,11 @@
   "live.bar.favorite": "पसंदीदा",
   "live.bar.report": "रिपोर्ट",
   "live.bar.subtitles": "सबटाइटल",
+  "live.search.placeholder": "चैनल का नाम या नंबर…",
+  "live.search.clear": "खोज साफ़ करें",
+  "live.search.backspace": "अंतिम अक्षर हटाएँ",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "कखग",
 
   "tracks.subtitles": "सबटाइटल",
   "tracks.audio": "ऑडियो",

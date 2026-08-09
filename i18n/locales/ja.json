@@ -58,6 +58,7 @@
   "guide.now": "現在",
   "guide.tomorrow": "明日",
   "guide.yesterday": "昨日",
+  "guide.tapAgainToWatch": "もう一度タップして視聴",
 
   "settings.header": "設定",
   "settings.group.account": "アカウント",
@@ -136,6 +137,11 @@
   "live.bar.favorite": "お気に入り",
   "live.bar.report": "報告",
   "live.bar.subtitles": "字幕",
+  "live.search.placeholder": "チャンネル名または番号…",
+  "live.search.clear": "検索をクリア",
+  "live.search.backspace": "最後の文字を削除",
+  "live.search.latinRail": "ABC",
+  "live.search.localRail": "かな",
 
   "tracks.subtitles": "字幕",
   "tracks.audio": "音声",
