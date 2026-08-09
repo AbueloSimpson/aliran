@@ -38,10 +38,17 @@
 //      desktop/renderer/src/vod-sort.ts) and its code must stay identical, so the same
 //      catalog produces the same grid on a phone and on a desktop.
 //
+// The guide UI (WS2) rides the same "desktop renderer has no jest" reasoning — section
+// L is the desktop twin of the client's ProgressHairline suite plus the pinned liveness
+// geometry (row/thumb sizes, off-layout bar probe, reduced-motion-gated focus lift),
+// which desktop keeps in styles.css rather than component StyleSheets.
+//
 // Run: node tools/desktop-vod-test.mjs   (npm run test:desktop-vod)
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import esbuild from 'esbuild'
 import {
   listMovies, listSeries, listCategories, getMovieInfo, getSeriesInfo,
   extractMovieInfo, extractSeriesInfo, resolveCredentials, clearVodCache,
@@ -557,6 +564,75 @@ console.log('K. the phone and desktop sort modules')
     ok(phone.includes(`'${key}'`), `the sort set carries ${key}`)
   }
   ok(!/'zA'|'za'/.test(phone), 'there is no Z-A sort (the mockup set, not a superset)')
+}
+
+// ---- L. guide UI liveness (WS2) ----
+// Desktop twin of client/__tests__/ProgressHairline.test.tsx + the WS1 geometry pins.
+// The hairline component renders for real (esbuild bundle -> react-dom/server, the
+// same transpile the app's build does); the geometry lives in styles.css on desktop
+// (components carry classes, not StyleSheets), so that is where it is pinned.
+console.log('L. guide UI liveness (WS2): hairline render contract + pinned geometry')
+{
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-hairline-'))
+  const outFile = path.join(outDir, 'hairline.mjs')
+  await esbuild.build({
+    stdin: {
+      contents: [
+        "import React from 'react'",
+        "import { renderToStaticMarkup } from 'react-dom/server'",
+        "import { ProgressHairline } from './components/ProgressHairline'",
+        'export const render = (props) => renderToStaticMarkup(React.createElement(ProgressHairline, props))'
+      ].join('\n'),
+      resolveDir: path.join(repoRoot, 'desktop/renderer/src'),
+      loader: 'js'
+    },
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    outfile: outFile,
+    logLevel: 'silent',
+    // react-dom/server is CJS and requires node builtins; esbuild's ESM require
+    // shim only forwards when a real `require` is in scope — hand it one.
+    banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" }
+  })
+  const { render } = await import(pathToFileURL(outFile).href)
+  const now = Date.now()
+
+  // No program: a transparent track, never collapsed — rows are height-pinned.
+  const none = render({ program: null })
+  ok(none.includes('hairline-track') && none.includes('hidden'), 'no program: a transparent (hidden) track')
+  ok(!none.includes('hairline-fill'), 'no program: no fill element')
+
+  const half = render({ program: { title: 'Halfway', start: now - 600_000, stop: now + 600_000 } })
+  const width = parseFloat((half.match(/width:([\d.]+)%/) || [])[1])
+  ok(Math.abs(width - 50) < 1, `mid-program: the fill is the elapsed fraction (${width}%)`)
+  ok(!half.includes('hidden'), 'mid-program: the track is not hidden')
+
+  const over = render({ program: { title: 'Over', start: now - 7_200_000, stop: now - 3_600_000 } })
+  ok(over.includes('width:100%'), 'finished program: the fill spans the whole track')
+
+  const tinted = render({ program: { title: 'On', start: now - 60_000, stop: now + 60_000 }, color: '#22D3EE' })
+  ok(tinted.includes('#22D3EE'), 'color overrides the default live fill')
+  fs.rmSync(outDir, { recursive: true, force: true })
+
+  // Pinned geometry (the client's TV numbers: ROW_INNER_H 80, thumb 112x63, bar
+  // thumb 96x54, 2px hairline).
+  const css = fs.readFileSync(path.join(repoRoot, 'desktop/renderer/src/styles.css'), 'utf8')
+  ok(/\.channel-row\s*\{[^}]*height:\s*80px/.test(css), 'row height pinned at 80px (the client TV ROW_INNER_H)')
+  ok(/\.row-logo\s*\{[^}]*width:\s*112px;\s*height:\s*63px/.test(css), 'row live thumb/logo box is 112x63 (client TV)')
+  ok(/\.np-live-thumb\s*\{[^}]*width:\s*96px;\s*height:\s*54px[^}]*object-fit:\s*cover/.test(css), 'bar live thumb is 96x54, cover')
+  ok(/\.np-live-thumb\.probe\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0/.test(css), 'bar thumb probe is off-layout (absolute + invisible)')
+  ok(/\.hairline-track\s*\{[^}]*height:\s*2px/.test(css) && /\.hairline-fill\s*\{[^}]*height:\s*2px/.test(css), 'hairline track + fill are 2px')
+  ok(/\.hairline-track\.hidden\s*\{[^}]*transparent/.test(css), 'a program-less track paints transparent, never collapses')
+
+  // Focus lift: ONE token (theme.ts, the client's theme.focusScale value), applied
+  // transform-only to focused rows, gated by the OS reduced-motion setting.
+  const themeTs = fs.readFileSync(path.join(repoRoot, 'desktop/renderer/src/theme.ts'), 'utf8')
+  ok(/FOCUS_SCALE\s*=\s*1\.025/.test(themeTs), 'theme.ts carries focusScale 1.025 (the client token value)')
+  ok(/--focus-scale/.test(themeTs), 'applyTheme lands it as --focus-scale')
+  const gate = css.match(/@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{([\s\S]*?)\}\s*\}/)
+  ok(!!gate && /\.channel-row\.focused\s*\{\s*transform:\s*scale\(var\(--focus-scale/.test(gate[1]), 'the scale lift applies to focused rows only, inside the reduced-motion gate')
+  ok(!/transform:\s*scale\(var\(--focus-scale/.test(css.replace(gate?.[0] ?? '', '')), 'no ungated focus-scale transform anywhere else')
 }
 
 if (failures > 0) { console.error(`\n${failures} FAILURE(S)`); process.exit(1) }
