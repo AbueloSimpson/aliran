@@ -58,9 +58,19 @@ export function cellRect (program: EpgProgram, windowStart: number, pxPerMin: nu
 }
 
 /** The programs overlapping [windowStart, windowEnd) — a program merely touching a
- *  boundary (stop === windowStart, or start === windowEnd) is NOT in the window. */
+ *  boundary (stop === windowStart, or start === windowEnd) is NOT in the window.
+ *  Feeds can carry fully-duplicate entries (same start AND stop — seen in prod);
+ *  the input is sorted by start, so consecutive-equal spans collapse to one cell
+ *  here, keeping cell keys unique and the grid free of stacked twins. */
 export function visiblePrograms (programs: EpgProgram[], windowStart: number, windowEnd: number): EpgProgram[] {
-  return programs.filter((p) => p.stop > windowStart && p.start < windowEnd)
+  const out: EpgProgram[] = []
+  for (const p of programs) {
+    if (!(p.stop > windowStart && p.start < windowEnd)) continue
+    const prev = out[out.length - 1]
+    if (prev && prev.start === p.start && prev.stop === p.stop) continue
+    out.push(p)
+  }
+  return out
 }
 
 /** windowStart aligned to the previous half-hour (the NOW pill's reset). */

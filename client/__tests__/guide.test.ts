@@ -76,6 +76,17 @@ test('visiblePrograms: overlap only — boundary-touching programs are out', () 
   expect(v.map((x) => x.title)).toEqual(['clipped-left', 'inside', 'clipped-right'])
 })
 
+test('visiblePrograms: fully-duplicate entries collapse to one cell (prod feeds carry them)', () => {
+  const programs = [
+    p('dup', N, N + 30 * MIN),
+    p('dup again', N, N + 30 * MIN), // same start AND stop → dropped (key uniqueness)
+    p('after', N + 30 * MIN, N + H),
+    p('after twin', N + 30 * MIN, N + H)
+  ]
+  const v = visiblePrograms(programs, N, N + GUIDE_WINDOW_MS)
+  expect(v.map((x) => x.title)).toEqual(['dup', 'after'])
+})
+
 // --- snapToNow --------------------------------------------------------------
 
 test('snapToNow aligns to the previous half-hour', () => {
