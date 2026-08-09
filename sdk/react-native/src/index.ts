@@ -1,5 +1,5 @@
 export { AliranBackend } from './backend'
-export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, PairingResult, PairingErrorCode, VodConfig, VodListEntry, VodHistoryEntry } from './backend'
+export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, PairingResult, PairingErrorCode, VodConfig, VodListEntry, VodHistoryEntry, UpdatePlatform, AppUpdateInfo, UpdateEntry, UpdateCheckStatus, UpdateCheckResult, UpdateMessage } from './backend'
 export { AliranVideo, SelectedTrackType } from './AliranVideo'
 export type { AliranVideoProps, AliranVideoHandle, TuneEvent, TunePhase, SelectedTrack, AudioTrack, TextTrack, BufferConfig } from './AliranVideo'
 // Ready-made "engine can't run here" screen for single-APK builds: render in the
@@ -21,3 +21,9 @@ export { useChannelThumb } from './thumbs'
 // arrives as {type:'report-result'}. See src/report.ts.
 export { REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, REPORT_CONSENT, REPORT_TEXT_MAX } from './report'
 export type { ReportCategory, ReportError } from './report'
+// OTA app updates, native half (Android installer — this package's android/ library):
+// build identity for backend.checkUpdate(), the install-permission gate, and the
+// PackageInstaller handoff for the verified file 'update-ready' points at. Safe to
+// call anywhere — degrades gracefully where the module is absent. See src/update.ts.
+export { getAppInfo, canRequestInstall, openInstallSettings, installApk, onInstallResult } from './update'
+export type { NativeAppInfo } from './update'

@@ -768,6 +768,13 @@ export function ingestTuningArgs (t) {
 export function ffmpegArgs (spec, outDir) {
   const encoder = (spec.transcode && spec.transcode.encoder) || TRANSCODE_DEFAULTS.encoder
   return [
+    // -y, unconditionally: a watchdog respawn reuses the run's staging dir, and the spawn
+    // has stdin ignored — so the moment a thumb.jpg from the previous spawn is sitting
+    // there, image2's "already exists. Overwrite?" prompt reads EOF and ffmpeg exits
+    // before writing a segment. Every respawn after a thumbnail has landed then
+    // crash-loops the channel into backoff. The HLS muxer always overwrote its own
+    // files; -y just extends that to the second (image2) output.
+    '-y',
     ...hwDeviceArgs(encoder, spec.vaapiDevice),
     ...ingestTuningArgs(spec.ingestTuning),
     // -hwaccel is a PER-INPUT option: it applies to the -i that follows it, so it has to

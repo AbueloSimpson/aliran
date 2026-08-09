@@ -6,6 +6,7 @@
 import React, { useRef, useEffect } from 'react'
 import { View, Text, FlatList, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
+import { useI18n } from '@aliran/i18n'
 import { ChannelRow, CHANNEL_ROW_H } from './ChannelRow'
 import { theme } from '../theme'
 
@@ -27,7 +28,8 @@ export interface ChannelListPanelProps {
   onActivity?: () => void
 }
 
-export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onGuide, onActivity }: ChannelListPanelProps) {
+export function ChannelListPanel ({ streams, heading, numbers, playingId, favorites, onSelect, onInfo, onGuide, onActivity }: ChannelListPanelProps) {
+  const { t } = useI18n()
   const listRef = useRef<FlatList<Stream>>(null)
   const playingIndex = streams.findIndex((s) => s.id === playingId)
   // On open, bring the currently-playing channel into view. Rows are EXACTLY
@@ -38,14 +40,14 @@ export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, play
   // is open; it stays instant for the same reason. onScrollToIndexFailed is the belt.
   useEffect(() => {
     if (playingIndex < 1) return
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       try { listRef.current?.scrollToIndex({ index: playingIndex, animated: false, viewPosition: 0.35 }) } catch {}
     }, 0)
-    return () => clearTimeout(t)
+    return () => clearTimeout(timer)
   }, [playingIndex])
   return (
     <View style={styles.panel}>
-      <Text style={styles.header} numberOfLines={1}>{heading}</Text>
+      <Text style={styles.header} numberOfLines={1}>{heading ?? t('live.channels')}</Text>
       <FlatList
         ref={listRef}
         data={streams}
@@ -70,7 +72,7 @@ export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, play
           />
         )}
       />
-      <Text style={styles.hint}>hold for details</Text>
+      <Text style={styles.hint}>{t('live.holdForDetails')}</Text>
     </View>
   )
 }

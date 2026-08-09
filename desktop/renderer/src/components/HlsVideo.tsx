@@ -35,6 +35,7 @@
 
 import React, { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import Hls from 'hls.js'
+import { t } from '@aliran/i18n'
 import type { DesktopBackend } from '../bridge'
 import type { BackendMessage } from '../types'
 import { trackDisplayLabels } from '../lang'
@@ -105,8 +106,8 @@ function isHlsUrl (url: string) {
  *  track's code ("Spanish", not "spa t2" — S54 polish, lang.ts); the manifest's own
  *  name only fills in when the code resolves to nothing. */
 export function trackList (tracks: Array<{ name?: string; lang?: string }>): MediaTrack[] {
-  const labels = trackDisplayLabels(tracks.map((t) => ({ language: t.lang, title: t.name })), 'Track')
-  return tracks.map((t, i) => ({ index: i, label: labels[i], lang: t.lang || undefined }))
+  const labels = trackDisplayLabels(tracks.map((track) => ({ language: track.lang, title: track.name })), t('tracks.trackFallback'))
+  return tracks.map((track, i) => ({ index: i, label: labels[i], lang: track.lang || undefined }))
 }
 
 export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function HlsVideo ({
@@ -278,8 +279,10 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
         // HEVC playback depends on platform hardware decode).
         if (/incompatiblecodecs|bufferaddcodec/i.test(String(data.details))) {
           tune.current.tuning = false
+          // Our own sentence, not the engine's — so it goes through the catalog. The
+          // codec string is a MIME type: data, never translated.
           const codec = (data as { mimeType?: string }).mimeType
-          cb.current.onError?.(`This device can't decode this channel's video format${codec ? ` (${codec})` : ''}.`)
+          cb.current.onError?.(codec ? t('live.error.codecDetail', { codec }) : t('live.error.codec'))
           return
         }
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecovered) {

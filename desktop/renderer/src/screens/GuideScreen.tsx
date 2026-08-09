@@ -26,6 +26,7 @@
 // no fake data), and vod titles have no schedule, so they stay out entirely.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { visibleStreams } from '../parental'
@@ -59,12 +60,13 @@ function hhmm (ms: number): string {
 
 // Time-bar date hint once paging crosses local midnight: nothing while the window
 // starts today; TOMORROW / YESTERDAY on the neighbor days, a short date past those.
-function dayHint (windowStart: number, now: number): string | null {
+// The caller passes its useI18n t so the hint re-renders on a language switch.
+function dayHint (windowStart: number, now: number, t: (key: string) => string): string | null {
   const same = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
   const w = new Date(windowStart)
   if (same(w, new Date(now))) return null
-  if (same(w, new Date(now + 86400000))) return 'TOMORROW'
-  if (same(w, new Date(now - 86400000))) return 'YESTERDAY'
+  if (same(w, new Date(now + 86400000))) return t('guide.tomorrow')
+  if (same(w, new Date(now - 86400000))) return t('guide.yesterday')
   return `${w.getDate()}/${w.getMonth() + 1}`
 }
 
@@ -80,6 +82,7 @@ export interface GuideScreenProps {
 }
 
 export function GuideScreen ({ playingId = null, onTune, onBack }: GuideScreenProps) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // Category scope — the CategoryModel rendered as chips (the client's grammar; a
   // rail would eat width this timeline needs). The drill state is DERIVED from the
@@ -115,7 +118,7 @@ export function GuideScreen ({ playingId = null, onTune, onBack }: GuideScreenPr
   const tune = useCallback((s: Stream) => onTune(s.id), [onTune])
 
   if (!streams.length) {
-    return <div className="section-loading"><span className="spinner" /><div>Waiting for the channel list…</div></div>
+    return <div className="section-loading"><span className="spinner" /><div>{t('live.waitingForChannels')}</div></div>
   }
 
   return (
@@ -152,6 +155,7 @@ interface HeaderFocus { row: 0 | 1; index: number }
 // Exported for the twin lane (tools/desktop-guide-test.mjs) — a static render with
 // injected props, the client's GuideScreen.test.tsx counterpart.
 export function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playingId, nowMs, onTune, onBack }: GuideGridProps) {
+  const { t } = useI18n()
   // Strip geometry from the measured body width (ResizeObserver — desktop windows
   // resize; the pre-measure fallback only covers the very first frame).
   const [bodyW, setBodyW] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth) - SCREEN_PAD_X * 2)
@@ -331,7 +335,7 @@ export function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const hint = dayHint(focus.windowStart, nowMs)
+  const hint = dayHint(focus.windowStart, nowMs, t)
   // The floating jump control (the client list's nowFloat grammar): shows once the
   // window paged away from the current half-hour; one click resets to NOW.
   const paged = focus.windowStart !== snapToNow(nowMs)
@@ -369,13 +373,13 @@ export function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, 
   return (
     <div className="guide-screen">
       <div className="guide-header-row">
-        <div className="guide-heading">GUIDE</div>
+        <div className="guide-heading">{t('guide.header')}</div>
         <div className="guide-chips-pane">
           <div className="guide-chips-row">
             <div
               className={'guide-chip guide-now-pill' + (headerFocus?.row === 0 && headerFocus.index === 0 ? ' focused' : '')}
               onClick={jumpToNow}
-            >NOW</div>
+            >{t('guide.now')}</div>
             {model.top.map((key, i) => (
               <GuideChip
                 key={key}
@@ -418,10 +422,15 @@ export function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, 
       </div>
 
       {paged && (
-        <div className="guide-now-float" onClick={jumpToNow}>NOW</div>
+        <div className="guide-now-float" onClick={jumpToNow}>{t('guide.now')}</div>
       )}
 
-      <div className="panel-hint">↑↓←→ browse · Enter watch · scroll wheel over the timeline pages · Esc back</div>
+      {/* Key hints: each one is its own template with the key token supplied here, and
+          the " · " joins are punctuation the composing code owns — never copy. */}
+      <div className="panel-hint">
+        {t('hints.arrowsBrowse', { arrows: '↑↓←→' })} · {t('hints.enterWatch', { enter: 'Enter' })}
+        {' · '}{t('hints.wheelPages')} · {t('hints.escBack', { esc: 'Esc' })}
+      </div>
     </div>
   )
 }
@@ -429,7 +438,7 @@ export function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, 
 function GuideChip ({ label, active, focused, onPick }: { label: string; active: boolean; focused: boolean; onPick: () => void }) {
   return (
     <div className={'guide-chip' + (active ? ' active' : '') + (focused ? ' focused' : '')} onClick={onPick}>
-      {label.toUpperCase()}
+      {label.toLocaleUpperCase(getLocale())}
     </div>
   )
 }
@@ -453,6 +462,7 @@ function GuideRow ({ stream, number, playing, windowStart, stripW, pxPerMin, now
   onHoverCell: (cellStart: number | null) => void
   onTune: () => void
 }) {
+  const { t } = useI18n()
   const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
   useEffect(() => { onPrograms(stream.id, programs) }, [stream.id, programs, onPrograms])
   const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
@@ -471,7 +481,7 @@ function GuideRow ({ stream, number, playing, windowStart, stripW, pxPerMin, now
       <div className="guide-ch-cell" onMouseMove={() => onHoverCell(null)} onClick={onTune}>
         <span className="guide-ch-number">{formatChannelNumber(number)}</span>
         {art
-          ? <img className={'guide-ch-thumb' + (thumbUri ? ' thumb' : '')} src={art} alt={thumbUri ? `${stream.title} — live preview` : ''} loading="lazy" onError={thumbUri ? onThumbError : undefined} />
+          ? <img className={'guide-ch-thumb' + (thumbUri ? ' thumb' : '')} src={art} alt={thumbUri ? t('live.livePreview', { title: stream.title ?? '' }) : ''} loading="lazy" onError={thumbUri ? onThumbError : undefined} />
           : <span className="guide-ch-thumb guide-ch-thumb-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</span>}
       </div>
       <div className="guide-strip" style={{ width: stripW }}>
@@ -483,7 +493,7 @@ function GuideRow ({ stream, number, playing, windowStart, stripW, pxPerMin, now
               onMouseMove={() => onHoverCell(null)}
               onClick={onTune}
             >
-              <span className="guide-cell-title guide-cell-empty">No program information</span>
+              <span className="guide-cell-title guide-cell-empty">{t('live.noProgramInfo')}</span>
             </div>
             )
           : visible.map((p) => {

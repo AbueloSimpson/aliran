@@ -3,6 +3,7 @@
 // Results reuse ChannelList; selecting one jumps into Live TV.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { channelNumbers, sortByCuration } from '../catalog'
@@ -10,6 +11,7 @@ import { ChannelList } from '../components/ChannelList'
 import { visibleStreams } from '../parental'
 
 export function SearchScreen ({ onWatch, onBack }: { onWatch: (streamId: string) => void; onBack: () => void }) {
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -28,15 +30,15 @@ export function SearchScreen ({ onWatch, onBack }: { onWatch: (streamId: string)
       s.description?.toLowerCase().includes(q) ||
       s.category?.some((c) => c.toLowerCase().includes(q))
     ))
-  }, [streams, query])
+  }, [streams, query, locale])
 
   return (
     <div className="search">
-      <div className="section-header">SEARCH</div>
+      <div className="section-header">{t('search.header')}</div>
       <input
         ref={inputRef}
         className="search-input"
-        placeholder="Channel, program or category…"
+        placeholder={t('search.placeholder')}
         spellCheck={false}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
@@ -48,12 +50,12 @@ export function SearchScreen ({ onWatch, onBack }: { onWatch: (streamId: string)
         }}
       />
       {results.length === 0
-        ? <div className="empty-center"><div className="empty-title">No channels match "{query.trim()}"</div></div>
+        ? <div className="empty-center"><div className="empty-title">{t('search.noResults', { query: query.trim() })}</div></div>
         : (
           <div className="search-results">
             <ChannelList
               streams={results}
-              heading={query.trim() ? `RESULTS (${results.length})` : 'ALL CHANNELS'}
+              heading={query.trim() ? t('search.resultsHeading', { count: results.length }) : t('search.allChannels')}
               numbers={numbers}
               playingId={null}
               favorites={backend.favorites}

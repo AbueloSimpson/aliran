@@ -8,11 +8,15 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { validPinFormat } from '../parental'
 import { theme } from '../theme'
 
-const FORMAT_HINT = 'PIN must be 4 to 8 digits.'
+// Both dialogs hold the FAILURE, not its sentence: the copy is looked up at render
+// through t('pin.error.' + …), so a language change repaints an error already on the
+// card. Every one of these is our own copy — nothing here comes from the worklet.
+type PinError = 'wrong' | 'format' | 'mismatch' | 'wrongCurrent'
 
 function PinField ({ label, value, onChange, autoFocus }: { label: string; value: string; onChange: (v: string) => void; autoFocus?: boolean }) {
   const [focused, setFocused] = useState(false)
@@ -56,8 +60,9 @@ export function PinEntryModal ({ visible, title, hint, onOk, onClose }: {
   onOk: () => void
   onClose: () => void
 }) {
+  const { t } = useI18n()
   const [pin, setPin] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<PinError | null>(null)
   const busy = useRef(false)
 
   useEffect(() => {
@@ -70,20 +75,20 @@ export function PinEntryModal ({ visible, title, hint, onOk, onClose }: {
     if (await backend.parentalVerify(pin)) { onOk(); return }
     busy.current = false
     setPin('')
-    setError('Wrong PIN — try again.')
+    setError('wrong')
   }
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title}>{title.toUpperCase()}</Text>
+          <Text style={styles.title}>{title.toLocaleUpperCase(getLocale())}</Text>
           {hint ? <Text style={styles.hint}>{hint}</Text> : null}
-          <PinField label="PIN" value={pin} onChange={(v) => { setPin(v); setError(null) }} autoFocus />
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <PinField label={t('pin.label')} value={pin} onChange={(v) => { setPin(v); setError(null) }} autoFocus />
+          {error ? <Text style={styles.error}>{t('pin.error.' + error)}</Text> : null}
           <View style={styles.buttons}>
-            <ModalButton label="Cancel" onPress={onClose} />
-            <ModalButton label="OK" onPress={submit} primary disabled={pin.length < 4} />
+            <ModalButton label={t('common.cancel')} onPress={onClose} />
+            <ModalButton label={t('common.ok')} onPress={submit} primary disabled={pin.length < 4} />
           </View>
         </View>
       </View>
@@ -98,10 +103,11 @@ export function PinSetupModal ({ visible, change, onDone, onClose }: {
   onDone: () => void
   onClose: () => void
 }) {
+  const { t } = useI18n()
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
   const [confirm, setConfirm] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<PinError | null>(null)
   const busy = useRef(false)
 
   useEffect(() => {
@@ -110,13 +116,13 @@ export function PinSetupModal ({ visible, change, onDone, onClose }: {
 
   async function submit () {
     if (busy.current) return
-    if (!validPinFormat(next)) { setError(FORMAT_HINT); return }
-    if (next !== confirm) { setError('The PINs do not match.'); setConfirm(''); return }
+    if (!validPinFormat(next)) { setError('format'); return }
+    if (next !== confirm) { setError('mismatch'); setConfirm(''); return }
     busy.current = true
     if (change && !(await backend.parentalVerify(current))) {
       busy.current = false
       setCurrent('')
-      setError('Wrong current PIN.')
+      setError('wrongCurrent')
       return
     }
     backend.parentalSetPin(next) // the worklet answers with the new prefs
@@ -128,19 +134,17 @@ export function PinSetupModal ({ visible, change, onDone, onClose }: {
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title}>{change ? 'CHANGE PIN' : 'SET PARENTAL PIN'}</Text>
+          <Text style={styles.title}>{change ? t('pin.changeTitle') : t('pin.setupTitle')}</Text>
           <Text style={styles.hint}>
-            {change
-              ? 'Pick a new 4–8 digit PIN for access-controlled channels.'
-              : 'A 4–8 digit PIN, saved only on this device. Access-controlled channels stay hidden until a PIN exists; with one set, they appear and ask for it before playing.'}
+            {change ? t('pin.changeHint') : t('pin.setupHint')}
           </Text>
-          {change ? <PinField label="Current PIN" value={current} onChange={(v) => { setCurrent(v); setError(null) }} autoFocus /> : null}
-          <PinField label="New PIN" value={next} onChange={(v) => { setNext(v); setError(null) }} autoFocus={!change} />
-          <PinField label="Repeat new PIN" value={confirm} onChange={(v) => { setConfirm(v); setError(null) }} />
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {change ? <PinField label={t('pin.current')} value={current} onChange={(v) => { setCurrent(v); setError(null) }} autoFocus /> : null}
+          <PinField label={t('pin.new')} value={next} onChange={(v) => { setNext(v); setError(null) }} autoFocus={!change} />
+          <PinField label={t('pin.repeat')} value={confirm} onChange={(v) => { setConfirm(v); setError(null) }} />
+          {error ? <Text style={styles.error}>{t('pin.error.' + error)}</Text> : null}
           <View style={styles.buttons}>
-            <ModalButton label="Cancel" onPress={onClose} />
-            <ModalButton label="Save" onPress={submit} primary disabled={incomplete} />
+            <ModalButton label={t('common.cancel')} onPress={onClose} />
+            <ModalButton label={t('common.save')} onPress={submit} primary disabled={incomplete} />
           </View>
         </View>
       </View>

@@ -20,6 +20,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, Platform, BackHandler, ScrollView, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { loadServiceDescriptor, type SectionToggles } from '../config'
@@ -62,6 +63,7 @@ const BackgroundWash = React.memo(function BackgroundWash () {
 })
 
 export function MenuScreen ({ navigation }: Props) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
   // mounted before login sees it the moment the catalog lands.
@@ -97,23 +99,26 @@ export function MenuScreen ({ navigation }: Props) {
   const { width, height } = useWindowDimensions()
   const portrait = height >= width
 
-  const items = useMemo<MenuItem[]>(() => {
+  // Built fresh every render rather than memoized: the labels are translated, and a
+  // memo keyed on the data alone would keep showing the previous language's bar after
+  // a switch. Seven objects is not a cost worth a stale menu.
+  const items = ((): MenuItem[] => {
     // sections.guide is new with the guide hub (WS5) — typed locally until the
     // descriptor's SectionToggles grows the field.
     const s: SectionToggles & { guide?: boolean } = service.sections ?? {}
     const list: MenuItem[] = [
-      { key: 'live', label: 'Live TV', glyph: '📺', go: () => navigation.navigate('Live', {}) }
+      { key: 'live', label: t('menu.live'), glyph: '📺', go: () => navigation.navigate('Live', {}) }
     ]
     // TV opens the standalone Guide screen (D-pad grid); phone opens Live with the
     // guide overlay up, so the playing stream shows above the grid (WS7).
-    if (s.guide !== false) list.push({ key: 'guide', label: 'Guide', glyph: '🗓️', go: () => (theme.isTV ? navigation.navigate('Guide') : navigation.navigate('Live', { guide: true })) })
-    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: 'Movies & Series', glyph: '🎬', go: () => navigation.navigate('Vod') })
-    if (s.favorites !== false) list.push({ key: 'favorites', label: 'Favorites', glyph: '⭐', go: () => navigation.navigate('Favorites') })
-    if (s.search !== false) list.push({ key: 'search', label: 'Search', glyph: '🔍', go: () => navigation.navigate('Search') })
-    if (s.settings !== false) list.push({ key: 'settings', label: 'Settings', glyph: '⚙️', go: () => navigation.navigate('Settings') })
-    if (s.exit ?? Platform.isTV) list.push({ key: 'exit', label: 'Exit', glyph: '🚪', go: () => BackHandler.exitApp() })
+    if (s.guide !== false) list.push({ key: 'guide', label: t('menu.guide'), glyph: '🗓️', go: () => (theme.isTV ? navigation.navigate('Guide') : navigation.navigate('Live', { guide: true })) })
+    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: t('menu.vod'), glyph: '🎬', go: () => navigation.navigate('Vod') })
+    if (s.favorites !== false) list.push({ key: 'favorites', label: t('menu.favorites'), glyph: '⭐', go: () => navigation.navigate('Favorites') })
+    if (s.search !== false) list.push({ key: 'search', label: t('menu.search'), glyph: '🔍', go: () => navigation.navigate('Search') })
+    if (s.settings !== false) list.push({ key: 'settings', label: t('menu.settings'), glyph: '⚙️', go: () => navigation.navigate('Settings') })
+    if (s.exit ?? Platform.isTV) list.push({ key: 'exit', label: t('menu.exit'), glyph: '🚪', go: () => BackHandler.exitApp() })
     return list
-  }, [navigation, vodEnabled])
+  })()
 
   if (theme.isTV) {
     // TV branch — unchanged (the redesign below is phone-first; TV keeps its top bar).
@@ -129,7 +134,7 @@ export function MenuScreen ({ navigation }: Props) {
             resizeMode="cover"
             onError={() => { setThumbShown(false); onHeroThumbError() }}
             onLoad={() => setThumbShown(true)}
-            accessibilityLabel={`${hero.title} — live now`}
+            accessibilityLabel={t('menu.heroLiveNow', { title: hero.title })}
           />
         )}
         <View style={[StyleSheet.absoluteFill, styles.scrim]} />
@@ -142,14 +147,14 @@ export function MenuScreen ({ navigation }: Props) {
           <Text style={styles.wordmark}>{service.name}</Text>
           {hero && (
             <View style={styles.heroLine}>
-              {hero.isLive && <Text style={styles.live}>● LIVE</Text>}
+              {hero.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
               <Text style={styles.heroTitle} numberOfLines={1}>{hero.title}</Text>
             </View>
           )}
           {!!nowTitle && (
             <View style={styles.heroLine}>
               {/* The chip needs live evidence: only after a feed frame actually loaded. */}
-              {thumbShown && <Text style={styles.liveChip}>LIVE</Text>}
+              {thumbShown && <Text style={styles.liveChip}>{t('common.live')}</Text>}
               <Text style={styles.heroTitle} numberOfLines={1}>{nowTitle}</Text>
             </View>
           )}
@@ -172,7 +177,7 @@ export function MenuScreen ({ navigation }: Props) {
           resizeMode="cover"
           onError={() => { setThumbShown(false); onHeroThumbError() }}
           onLoad={() => setThumbShown(true)}
-          accessibilityLabel={`${hero.title} — live now`}
+          accessibilityLabel={t('menu.heroLiveNow', { title: hero.title })}
         />
       )}
       <View style={[StyleSheet.absoluteFill, styles.scrim]} />
@@ -189,14 +194,14 @@ export function MenuScreen ({ navigation }: Props) {
           <Text style={styles.wordmark}>{service.name}</Text>
           {hero && (
             <View style={styles.heroLine}>
-              {hero.isLive && <Text style={styles.live}>● LIVE</Text>}
+              {hero.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
               <Text style={styles.heroTitle} numberOfLines={1}>{hero.title}</Text>
             </View>
           )}
           {!!nowTitle && (
             <View style={styles.heroLine}>
               {/* The chip needs live evidence: only after a feed frame actually loaded. */}
-              {thumbShown && <Text style={styles.liveChip}>LIVE</Text>}
+              {thumbShown && <Text style={styles.liveChip}>{t('common.live')}</Text>}
               <Text style={styles.heroTitle} numberOfLines={1}>{nowTitle}</Text>
             </View>
           )}
@@ -217,7 +222,7 @@ function MenuEntry ({ item, first }: { item: MenuItem; first: boolean }) {
       onPress={item.go}
     >
       <Text style={styles.glyph}>{item.glyph}</Text>
-      <Text style={[styles.label, focused && styles.labelFocused]}>{item.label.toUpperCase()}</Text>
+      <Text style={[styles.label, focused && styles.labelFocused]}>{item.label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
@@ -235,7 +240,7 @@ function RailEntry ({ item }: { item: MenuItem }) {
       {({ pressed }) => (
         <>
           <Text style={styles.railGlyph}>{item.glyph}</Text>
-          <Text style={[styles.railLabel, pressed && styles.railLabelActive]}>{item.label.toUpperCase()}</Text>
+          <Text style={[styles.railLabel, pressed && styles.railLabelActive]}>{item.label.toLocaleUpperCase(getLocale())}</Text>
         </>
       )}
     </Pressable>

@@ -11,6 +11,7 @@
 import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg, useChannelThumb, programProgress, type EpgProgram } from '@aliran/react-native'
 import { theme } from '../theme'
@@ -34,6 +35,7 @@ export interface ChannelInfoPanelProps {
 }
 
 export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite, onReport }: ChannelInfoPanelProps) {
+  const { t, tn } = useI18n()
   // Thumb-first art: what is on screen RIGHT NOW beats curated art — the panel opens
   // on a channel the viewer is deciding whether to watch. The thumb is 16:9 like the
   // art box (aspectRatio below), so cover doesn't crop it; a 404 (the ordinary "no
@@ -53,20 +55,22 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 
       <View style={styles.artBox}>
         {art
-          ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? `${stream.title} — live preview` : undefined} />
+          ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? t('live.livePreview', { title: stream.title }) : undefined} />
           : <View style={[styles.art, styles.artFallback]}><Text style={styles.artInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
-        {stream.isLive && <Text style={styles.live}>● LIVE</Text>}
+        {stream.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
         {!!duration && <Text style={styles.durationBadge}>{duration}</Text>}
       </View>
 
+      {/* Operator category names, upper-cased in the VIEWER's locale — same rule as the
+          category rail, so the same word is cased the same way on both surfaces. */}
       {!!stream.category?.length && (
         <View style={styles.chips}>
-          {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toUpperCase()}</Text>)}
+          {stream.category.map((c) => <Text key={c} style={styles.chip}>{c.toLocaleUpperCase(getLocale())}</Text>)}
         </View>
       )}
 
       {vod && stream.status === 'unavailable' && (
-        <Text style={styles.unavailable}>Currently unavailable</Text>
+        <Text style={styles.unavailable}>{t('live.unavailable')}</Text>
       )}
 
       {!!stream.description && <Text style={styles.desc}>{stream.description}</Text>}
@@ -74,7 +78,7 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
       {playing && (
         <View style={styles.stats}>
           {source && <Text style={source === 'p2p' ? styles.srcP2P : styles.srcCDN}>{source.toUpperCase()}</Text>}
-          {source !== 'cdn' && peers != null && <Text style={styles.peers}>{peers} peer{peers === 1 ? '' : 's'}</Text>}
+          {source !== 'cdn' && peers != null && <Text style={styles.peers}>{tn('live.peers', peers)}</Text>}
         </View>
       )}
 
@@ -84,12 +88,12 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
       {!vod && <EpgGuide stream={stream} />}
 
       <View style={styles.actions}>
-        <ActionButton label={playing ? 'Watching' : 'Watch'} primary onPress={onWatch} hasTVPreferredFocus />
-        <ActionButton label={favorite ? '★ Remove favorite' : '☆ Add favorite'} onPress={onToggleFavorite} />
+        <ActionButton label={playing ? t('live.watching') : t('live.watch')} primary onPress={onWatch} hasTVPreferredFocus />
+        <ActionButton label={favorite ? t('live.removeFavorite') : t('live.addFavorite')} onPress={onToggleFavorite} />
         {/* Report rides the info panel only for the channel BEING WATCHED — the
             engine attaches the active stream to the report, so offering it on a
             merely-browsed channel would report the wrong one (S51). */}
-        {playing && onReport && <ActionButton label="⚑ Report a problem" onPress={onReport} />}
+        {playing && onReport && <ActionButton label={t('live.reportProblem')} onPress={onReport} />}
       </View>
     </ScrollView>
   )
@@ -100,19 +104,20 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 // otherwise the honest placeholder. Never blocks on the fetch — it shows the
 // placeholder until data arrives, and keeps it if the feed is empty/unreachable.
 function EpgGuide ({ stream }: { stream: Stream }) {
+  const { t } = useI18n()
   const { data, loaded } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const has = !!(data && (data.now || data.next.length))
   return (
     <View style={styles.epgSlot}>
-      <Text style={styles.epgTitle}>PROGRAM GUIDE</Text>
+      <Text style={styles.epgTitle}>{t('live.programGuide')}</Text>
       {!has
-        ? <Text style={styles.epgEmpty}>{(stream.epgUrl || stream.guideBase) && !loaded ? 'Loading guide…' : 'No program information'}</Text>
+        ? <Text style={styles.epgEmpty}>{(stream.epgUrl || stream.guideBase) && !loaded ? t('live.loadingGuide') : t('live.noProgramInfo')}</Text>
         : (
           <>
             {data!.now && <NowRow program={data!.now} />}
             {data!.next.length > 0 && (
               <View style={styles.epgNext}>
-                <Text style={styles.epgNextLabel}>UP NEXT</Text>
+                <Text style={styles.epgNextLabel}>{t('live.upNext')}</Text>
                 {data!.next.map((p) => (
                   <View key={p.start} style={styles.epgNextRow}>
                     <Text style={styles.epgNextTime}>{hhmm(p.start)}</Text>

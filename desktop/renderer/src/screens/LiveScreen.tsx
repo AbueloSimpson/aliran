@@ -21,6 +21,7 @@
 // live-only ring: zapping from a title lands on channel 001.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { channelNumbers, categoryModel, isVod, pickHero, splitCategory, subLabel, zapOrder } from '../catalog'
@@ -61,6 +62,7 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
    *  guide anchored on that channel. Absent = the old single-tier behavior. */
   onGuide?: (streamId: string) => void
 }) {
+  const { t, tn } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   // Parental gate (device-local): a restricted channel about to play while the PIN
@@ -148,8 +150,8 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
 
   // Wall clock for the bottom bar.
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 30000)
-    return () => clearInterval(t)
+    const timer = setInterval(() => setNow(new Date()), 30000)
+    return () => clearInterval(timer)
   }, [])
 
   // --- idle timers (browse overlay, bottom bar, cursor) ---
@@ -198,9 +200,11 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
   const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
   const railItems = inDrill
     ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
-    : model.top.map((key) => ({ key, label: key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
+    // 'All' is the everything-group this app adds itself, so it is the only label here
+    // that comes out of the catalog. Every other key is an operator category name.
+    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
   const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0]
-  const listHeading = activeKey === 'All' ? 'CHANNELS' : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toUpperCase()).join('  ›  ')
+  const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find((s) => s.id === playingId) ?? null
   const playingVod = !!playing && isVod(playing)
 
@@ -263,7 +267,7 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
   }
 
   function onTune (e: TuneEvent) {
-    if (e.phase === 'playing') setTuneUI((t) => (t && t.id === e.id ? { ...t, active: false } : t))
+    if (e.phase === 'playing') setTuneUI((ui) => (ui && ui.id === e.id ? { ...ui, active: false } : ui))
     else setTuneUI({ id: e.id, phase: e.phase === 'start' ? 'tuning' : e.phase, active: true })
   }
 
@@ -325,7 +329,7 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
   }
 
   if (!streams.length) {
-    return <div className="section-loading"><span className="spinner" /><div>Waiting for the channel list…</div></div>
+    return <div className="section-loading"><span className="spinner" /><div>{t('live.waitingForChannels')}</div></div>
   }
 
   return (
@@ -360,9 +364,10 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
 
       {error && (
         <div className="live-error">
-          <div className="live-error-title">Playback failed</div>
+          <div className="live-error-title">{t('live.playbackFailed')}</div>
+          {/* The engine's own message, English by design (S56) — never translated. */}
           <div className="live-error-msg">{error}</div>
-          <div className="live-error-hint">Pick the channel again to retry (Enter opens the list).</div>
+          <div className="live-error-hint">{t('hints.retryEnter', { enter: 'Enter' })}</div>
         </div>
       )}
 
@@ -441,7 +446,7 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
           {source && (
             <div className="status-badge">
               <span className={source === 'p2p' ? 'src-p2p' : 'src-cdn'}>{source.toUpperCase()}</span>
-              {source === 'p2p' && peers != null && <span className="badge-peers">{peers} peer{peers === 1 ? '' : 's'}</span>}
+              {source === 'p2p' && peers != null && <span className="badge-peers">{tn('live.peers', peers)}</span>}
             </div>
           )}
         </div>
@@ -477,8 +482,8 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
           PIN unlocks the rest of the app session. */}
       {pinTarget && (
         <PinEntryModal
-          title="Enter PIN"
-          hint={`"${pinTarget.title ?? pinTarget.id}" is access controlled.`}
+          title={t('live.enterPin')}
+          hint={t('live.restricted', { title: pinTarget.title ?? pinTarget.id })}
           onOk={() => {
             markUnlocked()
             const s = pinTarget

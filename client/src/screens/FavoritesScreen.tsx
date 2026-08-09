@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { View, Text, FlatList, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, sortByCuration } from '../catalog'
@@ -15,6 +16,7 @@ import { theme } from '../theme'
 type Props = NativeStackScreenProps<RootStackParamList, 'Favorites'>
 
 export function FavoritesScreen ({ navigation }: Props) {
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   const [loaded, setLoaded] = useState(backend.prefsLoaded)
@@ -28,18 +30,18 @@ export function FavoritesScreen ({ navigation }: Props) {
   }, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
-  const list = useMemo(() => sortByCuration(streams.filter(s => favorites.includes(s.id))), [streams, favorites])
+  const list = useMemo(() => sortByCuration(streams.filter(s => favorites.includes(s.id))), [streams, favorites, locale])
 
-  if (!loaded) return <SectionLoading section="Favorites" />
+  if (!loaded) return <SectionLoading section={t('menu.favorites')} />
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>FAVORITES</Text>
+      <Text style={styles.header}>{t('favorites.header')}</Text>
       {list.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyStar}>☆</Text>
-          <Text style={styles.emptyText}>No favorites yet</Text>
-          <Text style={styles.emptyHint}>In Live TV, hold a channel and choose "Add favorite".</Text>
+          <Text style={styles.emptyText}>{t('favorites.empty')}</Text>
+          <Text style={styles.emptyHint}>{t('favorites.emptyHint')}</Text>
         </View>
       ) : (
         <FlatList

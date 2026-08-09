@@ -214,6 +214,55 @@ export interface VodHistoryEntry {
   at: number
 }
 
+/** Platforms the panel's updates manifest distinguishes (OTA app updates). */
+export type UpdatePlatform = 'android' | 'windows'
+
+/** What checkUpdate() sends: the RUNNING build's identity. On Android the native
+ *  module's getAppInfo() supplies it (packageName/versionCode) so branded builds
+ *  automatically check their own manifest entry. */
+export interface AppUpdateInfo {
+  appId: string
+  platform: UpdatePlatform
+  versionCode: number
+}
+
+/** One /manifest.json entry on the panel's updates drive (keyed by app id). */
+export interface UpdateEntry {
+  platform: UpdatePlatform
+  versionCode: number
+  versionName: string
+  /** Hex sha256 of the artifact — the engine verifies it before 'update-ready'. */
+  sha256: string
+  /** Artifact size in bytes (the progress total). */
+  size: number
+  /** Drive path of the artifact, e.g. '/pkg/<appId>-<versionCode>.apk'. */
+  file: string
+  /** Builds below this versionCode must update (the `mandatory` flag). */
+  minVersionCode?: number
+  notes?: string
+  releasedAt?: string
+}
+
+/** 'unknown' = cannot say right now (no updates drive advertised, manifest out of
+ *  reach) — try again later, never an error. 'none' = the manifest has no entry for
+ *  this appId+platform (the operator never uploaded one). */
+export type UpdateCheckStatus = 'available' | 'current' | 'none' | 'unknown'
+
+/** Answer to checkUpdate() (the 'update-status' message, minus the envelope). */
+export interface UpdateCheckResult {
+  status: UpdateCheckStatus
+  /** The manifest entry ('available' and 'current'). */
+  entry?: UpdateEntry
+  /** 'available' only: the running build is below entry.minVersionCode — surface a
+   *  persistent (non-dismissable) update banner. */
+  mandatory?: boolean
+  error?: string
+}
+
+/** The update lifecycle messages onUpdate() subscribes to. */
+export type UpdateMessage = Extract<BackendMessage,
+  { type: 'update-status' } | { type: 'update-progress' } | { type: 'update-ready' } | { type: 'update-error' }>
+
 export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[]; vod?: VodConfig }
@@ -247,7 +296,9 @@ export type BackendMessage =
   // parental: the device parental-control state — null = no PIN on this device;
   // { hide } = a PIN exists (the digest itself never crosses into the RN layer).
   // Absent on worklet bundles older than the field — treat as null.
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null }
+  // language: the viewer's pinned UI language — null/absent = no override, so the host
+  // follows the DEVICE language (the worklet whitelists the code before it stores it).
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null }
   // Answer to parentalVerify(): did the submitted PIN match? tag echoes the request's.
   | { type: 'parental-verify'; ok: boolean; tag?: string }
   // Answer to resolvePairing(): the panel key a service pairing code stands for, after
@@ -260,6 +311,15 @@ export type BackendMessage =
   // error 'unsupported' = this panel predates reports or has them disabled; 'cooldown'
   // / 'locked' carry retryAfter seconds; 'not-logged-in' / 'offline' are transient.
   | { type: 'report-result'; ok: boolean; error?: ReportError | string; retryAfter?: number; id?: string }
+  // Answer to checkUpdate() (tag echoes the request's). See UpdateCheckResult.
+  | { type: 'update-status'; status: UpdateCheckStatus; entry?: UpdateEntry; mandatory?: boolean; error?: string; tag?: string }
+  // OTA download progress, throttled by the engine (~500 ms / 5% steps).
+  | { type: 'update-progress'; received: number; total: number }
+  // OTA artifact downloaded + sha256-verified. path is inside the app sandbox — hand
+  // it to the installer promptly (the store dir is a disposable cache).
+  | { type: 'update-ready'; path: string; entry: UpdateEntry }
+  // OTA download/verify failure (sha256 mismatch, stalled transfer, missing file).
+  | { type: 'update-error'; message: string }
 
 export interface StartOptions {
   /** Omit to boot the worklet WITHOUT connecting (S36 runtime-descriptor flow: read
@@ -326,6 +386,10 @@ export class AliranBackend {
   favorites: string[] = []
   /** Persisted "Smooth zapping" choice; null until the user first sets the toggle. */
   smoothZapping: boolean | null = null
+  /** The viewer's pinned UI language; null while they follow the device language.
+   *  The SDK stores and relays it — WHAT it means is the host app's business (this
+   *  binding renders no localized copy of its own). */
+  language: string | null = null
   /** Runtime-entered operator service mirrored from the worklet prefs (S36); null
    *  until a keyless build's Connect screen saves one. */
   service: SavedService | null = null
@@ -426,6 +490,14 @@ export class AliranBackend {
    *  prefetch mid-play. Echoed back as {type:'zap-prefetch', enabled}. At boot, pass
    *  the persisted preference via StartOptions.zapPrefetch instead. */
   setZapPrefetch (v: boolean | ZapPrefetchConfig) { this.send({ type: 'zap-prefetch-set', zapPrefetch: v }) }
+
+  /** Pin the viewer's UI language (device-local, survives restarts), or pass null to
+   *  clear it and follow the device language again. The worklet whitelists the code
+   *  and answers with a {type:'prefs'} carrying what it actually stored. */
+  setLanguage (language: string | null) {
+    this.language = language // optimistic; the 'prefs' reply confirms
+    this.send({ type: 'language-set', language })
+  }
   /** Host network profile (feed RN NetInfo changes down): expensive=true suspends
    *  zap prefetch immediately; false lifts the suspension on the next tick. */
   // `cellular` is separate from `expensive` on purpose: an unmetered cellular plan
@@ -444,6 +516,44 @@ export class AliranBackend {
    */
   sendReport (category: ReportCategory, text?: string) {
     this.send({ type: 'report', category, ...(text ? { text } : {}) })
+  }
+
+  /**
+   * Check the panel's updates drive for a newer build of THIS app (OTA app updates).
+   * Lazy engine-side: the first check opens the sparse manifest replica and joins its
+   * topic client-only — a viewer never re-serves APK blobs. Resolves (never rejects):
+   * 'available' carries the manifest entry + the mandatory flag, 'unknown' means
+   * "cannot say right now — try again later" (also the verdict on an engine-less
+   * build, a dead engine, or a 30 s reply timeout).
+   */
+  checkUpdate (appInfo: AppUpdateInfo): Promise<UpdateCheckResult> {
+    if (this.inactive) return Promise.resolve({ status: 'unknown' })
+    return new Promise((resolve) => {
+      const tag = Math.random().toString(36).slice(2, 10)
+      const timer = setTimeout(() => { off(); resolve({ status: 'unknown', error: 'timeout' }) }, 30000)
+      const off = this.onMessage((m) => {
+        if (m.type !== 'update-status' || m.tag !== tag) return
+        clearTimeout(timer)
+        off()
+        const { type, tag: _tag, ...result } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+        resolve(result as UpdateCheckResult)
+      })
+      this.send({ type: 'update-check', ...appInfo, tag })
+    })
+  }
+
+  /** Download + verify the update the last 'available' checkUpdate() found.
+   *  Fire-and-forget: subscribe with onUpdate() first — progress arrives as
+   *  {type:'update-progress'}, the verified file path as {type:'update-ready'}
+   *  (hand it to the installer), a failure as {type:'update-error'}. */
+  downloadUpdate () { this.send({ type: 'update-download' }) }
+
+  /** Subscribe to the update lifecycle messages only (status/progress/ready/error).
+   *  Returns the unsubscribe function (usable as a useEffect cleanup). */
+  onUpdate (fn: (m: UpdateMessage) => void) {
+    return this.onMessage((m) => {
+      if (m.type === 'update-status' || m.type === 'update-progress' || m.type === 'update-ready' || m.type === 'update-error') fn(m)
+    })
   }
 
   /** Ask the worklet for saved credentials + favorites + the device-local VOD arrays;
@@ -554,9 +664,11 @@ export class AliranBackend {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line) as BackendMessage
-        // Never log the raw 'prefs' line — it can carry the saved password.
-        if (this.debug) console.log('[backend]', msg.type === 'prefs' || line.length > 200 ? msg.type : line)
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
+        // Never log the raw 'prefs' line — it can carry the saved password. Long lines
+        // collapse to their type to keep the log readable — EXCEPT 'error', where the
+        // payload (often a worklet stack trace) is the only diagnostic there is.
+        if (this.debug) console.log('[backend]', msg.type === 'prefs' ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
           this.port = msg.port ?? null

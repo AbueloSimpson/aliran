@@ -10,6 +10,7 @@
 // is open (the TrackMenu rule).
 
 import React, { useEffect, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { VOD_SORTS, type VodSortKey } from '../vod-sort'
 
 export interface SortMenuProps {
@@ -20,6 +21,7 @@ export interface SortMenuProps {
 }
 
 export function SortMenu ({ value, onSelect, onClose }: SortMenuProps) {
+  const { t } = useI18n()
   // Opening lands on the option already in force, so Enter is a no-op rather than a
   // surprise (and the arrows start from where the viewer actually is).
   const [focus, setFocus] = useState(() => Math.max(0, VOD_SORTS.findIndex((o) => o.key === value)))
@@ -45,7 +47,7 @@ export function SortMenu ({ value, onSelect, onClose }: SortMenuProps) {
   return (
     <div className="sort-overlay" onClick={onClose}>
       <div className="sort-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="sort-heading">SORT BY</div>
+        <div className="sort-heading">{t('vod.sortMenu.title')}</div>
         {VOD_SORTS.map((o, i) => (
           <div
             key={o.key}
@@ -53,8 +55,10 @@ export function SortMenu ({ value, onSelect, onClose }: SortMenuProps) {
             onMouseMove={() => setFocus(i)}
             onClick={() => choose(o.key)}
           >
-            <span className="sort-label">{o.label}</span>
-            {o.key === value && <span className="sort-selected">SELECTED</span>}
+            {/* vod-sort.ts is byte-guarded against its RN twin, so its English labels
+                stay where they are — the row renders the catalog's copy instead. */}
+            <span className="sort-label">{t('vod.sort.' + o.key)}</span>
+            {o.key === value && <span className="sort-selected">{t('vod.sortMenu.selected')}</span>}
           </div>
         ))}
       </div>

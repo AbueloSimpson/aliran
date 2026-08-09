@@ -38,10 +38,11 @@
 // viewer outside the grid. The sort menu and the track menu capture their own keys.
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { VodConfig, VodErrorCode, VodHistoryEntry, VodItem, VodListEntry } from '../types'
 import {
-  DEFAULT_SORT, fold, letterBuckets, letterOf, sortItems, sortLabel, titleWithYear, type VodSortKey
+  DEFAULT_SORT, fold, letterBuckets, letterOf, sortItems, titleWithYear, type VodSortKey
 } from '../vod-sort'
 import { SortMenu } from '../components/SortMenu'
 import type { VodSeriesPick } from './VodSeriesScreen'
@@ -49,12 +50,9 @@ import type { VodSeriesPick } from './VodSeriesScreen'
 type Kind = 'movies' | 'series'
 type Tab = 'recommended' | 'mylist' | 'genres' | 'all'
 
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'recommended', label: 'Recommended' },
-  { key: 'mylist', label: 'My List' },
-  { key: 'genres', label: 'Genres' },
-  { key: 'all', label: 'All' }
-]
+// The tab bar in its rendered order. Each tab carries only its KEY — the label is
+// looked up at render (t('vod.tab.' + key)), never frozen into this table.
+const TABS: Tab[] = ['recommended', 'mylist', 'genres', 'all']
 
 // The DOM is not virtualized (a provider catalog runs to tens of thousands of
 // titles), so the grid renders a bounded page and grows as the viewer scrolls or
@@ -83,11 +81,12 @@ export function filterItems (items: VodItem[], query: string): VodItem[] {
 }
 
 /** Honest, named failure states — the viewer is told which of the two things broke,
- *  and never shown a provider message or an HTTP code. */
-export function errorText (error: VodErrorCode): { title: string; hint: string } {
-  if (error === 'auth') return { title: "Couldn't sign in to the movie catalog", hint: 'Your account was not accepted by the provider. Contact your service.' }
-  if (error === 'network') return { title: "Couldn't reach the movie catalog", hint: 'Check your connection and try again in a moment.' }
-  return { title: 'The movie catalog answered unexpectedly', hint: 'Nothing to show right now — try again later.' }
+ *  and never shown a provider message or an HTTP code. `t` is a parameter so this
+ *  stays the pure lookup it was; both screens call it at render. */
+export function errorText (t: ReturnType<typeof useI18n>['t'], error: VodErrorCode): { title: string; hint: string } {
+  if (error === 'auth') return { title: t('vod.error.authTitle'), hint: t('vod.error.authHint') }
+  if (error === 'network') return { title: t('vod.error.networkTitle'), hint: t('vod.error.networkHint') }
+  return { title: t('vod.error.otherTitle'), hint: t('vod.error.otherHint') }
 }
 
 /** What the grid hands the player screen. `id`/`kind` let the player remember where
@@ -108,6 +107,7 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
   onOpenSeries: (pick: VodSeriesPick) => void
   onBack: () => void
 }) {
+  const { t, tn } = useI18n()
   // Login-scoped: the config rides the 'streams' message and never changes
   // mid-session (an operator's change lands at the viewer's next login).
   const config: VodConfig | null = backend.vod ?? null
@@ -247,10 +247,12 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
     return out
   }, [history, all, kind])
 
+  // `title` is a CATALOG LEAF (vod.rail.<leaf>), not a heading: this memo would
+  // otherwise hold the shelf headings in whatever language it first ran in.
   const rails = useMemo(() => ([
-    { key: 'watched' as VodSortKey, title: 'CONTINUE WATCHING', items: continueWatching },
-    { key: 'added' as VodSortKey, title: 'RECENTLY ADDED', items: sortItems(all, 'added') },
-    { key: 'yearDesc' as VodSortKey, title: 'NEWEST RELEASES', items: sortItems(all, 'yearDesc') }
+    { key: 'watched' as VodSortKey, title: 'continueWatching', items: continueWatching },
+    { key: 'added' as VodSortKey, title: 'recentlyAdded', items: sortItems(all, 'added') },
+    { key: 'yearDesc' as VodSortKey, title: 'newestReleases', items: sortItems(all, 'yearDesc') }
   ]), [all, continueWatching])
 
   // Which surface is on screen. The genre CARDS are their own thing (they are not
@@ -348,8 +350,8 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
         kind: 'movie',
         ...(seen && seen.positionSec > 0 ? { resumeSec: seen.positionSec } : {})
       })
-    } else setNotice(errorText(res.error).title)
-  }, [config, resolving, onPlay, onOpenSeries, kind, history])
+    } else setNotice(errorText(t, res.error).title)
+  }, [config, resolving, onPlay, onOpenSeries, kind, history, t])
 
   // My List (D9). Whole-array replace, newest first; the optimistic local state keeps
   // the grid honest for the frame or two before main answers with a 'prefs', which is
@@ -361,15 +363,15 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
     const rest = current.filter((e) => !(e && e.kind === entryKind && e.id === item.id))
     const next: VodListEntry[] = has ? rest : [{ kind: entryKind, id: item.id }, ...rest]
     setMyList(next)
-    flashNotice(has ? `Removed from My List: ${item.name}` : `Added to My List: ${item.name}`)
+    flashNotice(has ? t('vod.myList.removed', { name: item.name }) : t('vod.myList.added', { name: item.name }))
     try { backend.setVodPrefs({ list: next }) } catch { /* device-local convenience, never fatal */ }
-  }, [kind, myList, flashNotice])
+  }, [kind, myList, flashNotice, t])
 
   const chooseKind = useCallback((k: Kind) => {
     setKind(k); setSearch(false); setGenre(null); setQuery(''); setNotice(null)
   }, [])
-  const chooseTab = useCallback((t: Tab) => {
-    setTab(t); setSearch(false); setGenre(null)
+  const chooseTab = useCallback((next: Tab) => {
+    setTab(next); setSearch(false); setGenre(null)
   }, [])
   const seeMore = useCallback((key: VodSortKey) => {
     setSort(key); setTab('all'); setSearch(false); setGenre(null)
@@ -478,14 +480,14 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
   }
 
   function renderBody () {
-    if (!config) return <Centered title="Not available" hint="This service has no movie provider configured." />
+    if (!config) return <Centered title={t('vod.empty.noProviderTitle')} hint={t('vod.empty.noProviderHint')} />
     if (noSource) {
       return kind === 'movies'
-        ? <Centered title="No movies yet" hint="Movies are not part of this catalog yet." />
-        : <Centered title="No series yet" hint="Series are not part of this catalog yet." />
+        ? <Centered title={t('vod.empty.noMoviesTitle')} hint={t('vod.empty.noMoviesHint')} />
+        : <Centered title={t('vod.empty.noSeriesTitle')} hint={t('vod.empty.noSeriesHint')} />
     }
-    if (items === null) return <div className="section-loading"><span className="spinner" />Loading titles…</div>
-    if (error) return <Centered {...errorText(error)} />
+    if (items === null) return <div className="section-loading"><span className="spinner" />{t('vod.loading')}</div>
+    if (error) return <Centered {...errorText(t, error)} />
 
     if (search) {
       return (
@@ -493,7 +495,7 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
           <input
             ref={inputRef}
             className="search-input vod-search"
-            placeholder="Search titles…"
+            placeholder={t('vod.searchPlaceholder')}
             spellCheck={false}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -505,20 +507,20 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
             }}
           />
           {renderGrid(query.trim()
-            ? { title: 'No matches', hint: `No title matches "${query.trim()}".` }
-            : { title: 'Nothing here yet', hint: 'The provider returned no titles.' })}
+            ? { title: t('vod.empty.noMatchesTitle'), hint: t('vod.empty.noMatchesHint', { query: query.trim() }) }
+            : { title: t('vod.empty.nothingTitle'), hint: t('vod.empty.nothingHint') })}
         </>
       )
     }
 
     if (railsMode) {
-      if (all.length === 0) return <Centered title="Nothing here yet" hint="The provider returned no titles." />
+      if (all.length === 0) return <Centered title={t('vod.empty.nothingTitle')} hint={t('vod.empty.nothingHint')} />
       return (
         <div className="vod-rails">
           {rails.map((r) => (
             <Shelf
               key={r.key}
-              title={r.title}
+              title={t('vod.rail.' + r.title)}
               items={r.items.slice(0, RAIL_MAX)}
               more={Math.max(0, r.items.length - RAIL_MAX)}
               busyId={resolving}
@@ -533,11 +535,11 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
     }
 
     if (tab === 'mylist') {
-      return renderGrid({ title: 'Your list is empty', hint: 'Titles you add to My List appear here.' })
+      return renderGrid({ title: t('vod.empty.myListTitle'), hint: t('vod.empty.myListHint') })
     }
 
     if (cardsMode) {
-      if (genreCards.length === 0) return <Centered title="No genres" hint="The provider named no genres for these titles." />
+      if (genreCards.length === 0) return <Centered title={t('vod.empty.noGenresTitle')} hint={t('vod.empty.noGenresHint')} />
       return (
         <div className="vod-grid vod-genres" ref={gridRef}>
           {genreCards.map((g, i) => (
@@ -561,8 +563,8 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
 
     // 'all', and a genre that has been opened from the cards.
     return renderGrid({
-      title: genre === null ? 'Nothing here yet' : 'Nothing in this genre',
-      hint: genre === null ? 'The provider returned no titles.' : 'No title here carries that genre.'
+      title: genre === null ? t('vod.empty.nothingTitle') : t('vod.empty.genreTitle'),
+      hint: genre === null ? t('vod.empty.nothingHint') : t('vod.empty.genreHint')
     })
   }
 
@@ -570,39 +572,41 @@ export function VodScreen ({ onPlay, onOpenSeries, onBack }: {
     <>
       <div className="vod">
         <div className="vod-left">
-          <div className="section-header">MOVIES &amp; SERIES</div>
+          <div className="section-header">{t('vod.header')}</div>
           <div className="vod-modes">
-            <button className={'vod-mode' + (!search && kind === 'movies' ? ' active' : '')} onClick={() => chooseKind('movies')}>MOVIES</button>
-            <button className={'vod-mode' + (!search && kind === 'series' ? ' active' : '')} onClick={() => chooseKind('series')}>SERIES</button>
-            <button className={'vod-mode' + (search ? ' active' : '')} onClick={() => { setSearch(true); setGenre(null) }}>SEARCH</button>
+            <button className={'vod-mode' + (!search && kind === 'movies' ? ' active' : '')} onClick={() => chooseKind('movies')}>{t('vod.menu.movies').toLocaleUpperCase(getLocale())}</button>
+            <button className={'vod-mode' + (!search && kind === 'series' ? ' active' : '')} onClick={() => chooseKind('series')}>{t('vod.menu.series').toLocaleUpperCase(getLocale())}</button>
+            <button className={'vod-mode' + (search ? ' active' : '')} onClick={() => { setSearch(true); setGenre(null) }}>{t('vod.menu.search').toLocaleUpperCase(getLocale())}</button>
           </div>
           {items !== null && !error && !noSource && (
             <div className="vod-count">
               {search
-                ? `${results.length} of ${all.length}`
-                : `${all.length} title${all.length === 1 ? '' : 's'}`}
+                ? t('vod.countOf', { shown: results.length, total: all.length })
+                : tn('vod.countTitles', all.length)}
             </div>
           )}
         </div>
 
         <div className="vod-right" ref={paneRef}>
           <div className="vod-tabs">
-            {TABS.map((t) => (
+            {TABS.map((key) => (
               <button
-                key={t.key}
-                className={'vod-tab' + (!search && tab === t.key ? ' active' : '')}
-                onClick={() => chooseTab(t.key)}
-              >{t.label.toUpperCase()}</button>
+                key={key}
+                className={'vod-tab' + (!search && tab === key ? ' active' : '')}
+                onClick={() => chooseTab(key)}
+              >{t('vod.tab.' + key).toLocaleUpperCase(getLocale())}</button>
             ))}
           </div>
 
           {onGrid && (
             <div className="vod-chips">
               {genre !== null && (
-                <button className="vod-chip" onClick={() => setGenre(null)}>{`Genre: ${genreName || 'Unnamed'}`}</button>
+                <button className="vod-chip" onClick={() => setGenre(null)}>{t('vod.chip.genre', { name: genreName || t('vod.chip.genreUnnamed') })}</button>
               )}
               <span className="vod-chip-spacer" />
-              <button className="vod-chip vod-sort" onClick={() => setSortOpen(true)}>{`Sort by: ${sortLabel(sort)}`}</button>
+              {/* vod-sort.ts is a byte-guarded twin of the RN module — its English
+                  labels stay put and the chip renders the catalog's copy instead. */}
+              <button className="vod-chip vod-sort" onClick={() => setSortOpen(true)}>{t('vod.chip.sortBy', { label: t('vod.sort.' + sort) })}</button>
             </div>
           )}
 
@@ -643,12 +647,13 @@ function Shelf ({ title, items, more, busyId, savedIds, onPressItem, onToggleSav
   onToggleSave: (it: VodItem) => void
   onSeeMore: () => void
 }) {
+  const { t } = useI18n()
   if (items.length === 0) return null
   return (
     <div className="vod-rails-item">
       <div className="vod-rails-head">
         <span className="vod-rails-title">{title}</span>
-        {more > 0 && <button className="vod-chip" onClick={onSeeMore}>{`SEE ${more} MORE…`}</button>}
+        {more > 0 && <button className="vod-chip" onClick={onSeeMore}>{t('vod.chip.seeMore', { count: more })}</button>}
       </div>
       <div className="vod-rails-row">
         {items.map((it) => (
@@ -692,6 +697,7 @@ const PosterTile = React.forwardRef<HTMLDivElement, {
   /** Absent on the genre cards, which are not titles and have nothing to save. */
   onToggleSave?: () => void
 }>(function PosterTile ({ label, art, initial, title, focused, busy, saved, onHover, onClick, onToggleSave }, ref) {
+  const { t } = useI18n()
   const [broken, setBroken] = useState(false)
   const showArt = !!art && !broken
   return (
@@ -717,8 +723,8 @@ const PosterTile = React.forwardRef<HTMLDivElement, {
         {!!onToggleSave && (
           <button
             className={'vod-save' + (saved ? ' active' : '')}
-            title={saved ? 'Remove from My List' : 'Add to My List'}
-            aria-label={saved ? 'Remove from My List' : 'Add to My List'}
+            title={saved ? t('vod.series.removeFromList') : t('vod.series.addToList')}
+            aria-label={saved ? t('vod.series.removeFromList') : t('vod.series.addToList')}
             onClick={(e) => { e.stopPropagation(); onToggleSave() }}
           >{saved ? '✓' : '＋'}</button>
         )}

@@ -33,9 +33,10 @@ import { View, Text, Image, Pressable, TextInput, FlatList, ScrollView, Activity
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import type { VodConfig, VodHistoryEntry, VodListEntry } from '@aliran/react-native'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { listMovies, listSeries, listCategories, getMovieInfo, type VodItem, type VodErrorCode } from '../vod/zencontent'
-import { DEFAULT_SORT, fold, letterBuckets, letterOf, sortItems, sortLabel, titleWithYear, type VodSortKey } from '../vod/sort'
+import { DEFAULT_SORT, fold, letterBuckets, letterOf, sortItems, titleWithYear, type VodSortKey } from '../vod/sort'
 import { SortMenu } from '../components/SortMenu'
 import { AlphaRail, ALPHA_RAIL_W } from '../components/AlphaRail'
 import { theme } from '../theme'
@@ -47,12 +48,9 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Vod'>
 type Kind = 'movies' | 'series'
 type Tab = 'recommended' | 'mylist' | 'genres' | 'all'
 
-const TABS: { key: Tab; label: string }[] = [
-  { key: 'recommended', label: 'Recommended' },
-  { key: 'mylist', label: 'My List' },
-  { key: 'genres', label: 'Genres' },
-  { key: 'all', label: 'All' }
-]
+// Tab ORDER, not tab copy — the label is looked up per render from vod.tab.<key>,
+// so a language change repaints the bar (a module-level label table could not).
+const TABS: Tab[] = ['recommended', 'mylist', 'genres', 'all']
 
 // Poster tile geometry (2:3 art). Every one of these is load-bearing for the A–Z rail:
 // the row height has to be EXACT or scrollToIndex lands on the wrong row, so the tile
@@ -96,6 +94,7 @@ export function filterItems (items: VodItem[], query: string): VodItem[] {
 }
 
 export function VodScreen ({ navigation }: Props) {
+  const { t } = useI18n()
   // Login-scoped: the config rides the 'streams' message and never changes mid-session
   // (an operator's change lands at the viewer's next login).
   const config: VodConfig | null = backend.vod ?? null
@@ -228,11 +227,18 @@ export function VodScreen ({ navigation }: Props) {
     return out
   }, [history, all, kind])
 
-  const rails = useMemo(() => ([
-    { key: 'watched' as VodSortKey, title: 'CONTINUE WATCHING', items: continueWatching },
-    { key: 'added' as VodSortKey, title: 'RECENTLY ADDED', items: sortItems(all, 'added') },
-    { key: 'yearDesc' as VodSortKey, title: 'NEWEST RELEASES', items: sortItems(all, 'yearDesc') }
-  ]), [all, continueWatching])
+  // The orderings stay memoized (sorting a 50k-title catalog is real work); the shelf
+  // HEADINGS are resolved outside the memo, which a language change can reach.
+  const railItems = useMemo(() => ({
+    watched: continueWatching,
+    added: sortItems(all, 'added'),
+    yearDesc: sortItems(all, 'yearDesc')
+  }), [all, continueWatching])
+  const rails = [
+    { key: 'watched' as VodSortKey, title: t('vod.rail.continueWatching'), items: railItems.watched },
+    { key: 'added' as VodSortKey, title: t('vod.rail.recentlyAdded'), items: railItems.added },
+    { key: 'yearDesc' as VodSortKey, title: t('vod.rail.newestReleases'), items: railItems.yearDesc }
+  ]
 
   // The rail belongs to whichever grid is showing the SORTED list — "All", and a genre
   // opened from the cards. It is never drawn in any other sort (D5).
@@ -303,8 +309,8 @@ export function VodScreen ({ navigation }: Props) {
         kind: 'movie',
         ...(seen && seen.positionSec > 0 ? { resumeSec: seen.positionSec } : {})
       })
-    } else setNotice(errorText(res.error).title)
-  }, [config, resolving, navigation, kind, history])
+    } else setNotice(errorText(t, res.error).title)
+  }, [config, resolving, navigation, kind, history, t])
 
   // My List, from a LONG PRESS on the tile (D9). Whole-array replace, newest first; the
   // optimistic local state keeps the grid honest for the frame or two before the worklet
@@ -316,15 +322,15 @@ export function VodScreen ({ navigation }: Props) {
     const rest = current.filter((e) => !(e && e.kind === entryKind && e.id === item.id))
     const next: VodListEntry[] = has ? rest : [{ kind: entryKind, id: item.id }, ...rest]
     setMyList(next)
-    flashNotice(has ? `Removed from My List: ${item.name}` : `Added to My List: ${item.name}`)
+    flashNotice(has ? t('vod.myList.removed', { name: item.name }) : t('vod.myList.added', { name: item.name }))
     try { backend.setVodList(next) } catch { /* device-local convenience, never fatal */ }
-  }, [kind, myList, flashNotice])
+  }, [kind, myList, flashNotice, t])
 
   const chooseKind = useCallback((k: Kind) => {
     setKind(k); setSearch(false); setGenre(null); setQuery(''); setDraft(''); setNotice(null); setFirstVisible(0)
   }, [])
-  const chooseTab = useCallback((t: Tab) => {
-    setTab(t); setSearch(false); setGenre(null); setFirstVisible(0)
+  const chooseTab = useCallback((next: Tab) => {
+    setTab(next); setSearch(false); setGenre(null); setFirstVisible(0)
   }, [])
   const seeMore = useCallback((key: VodSortKey) => {
     setSort(key); setTab('all'); setGenre(null); setFirstVisible(0)
@@ -374,21 +380,21 @@ export function VodScreen ({ navigation }: Props) {
   }
 
   function renderBody () {
-    if (!config) return <Centered title="Not available" hint="This service has no movie provider configured." />
+    if (!config) return <Centered title={t('vod.empty.noProviderTitle')} hint={t('vod.empty.noProviderHint')} />
     if (noSource) {
       return kind === 'movies'
-        ? <Centered title="No movies yet" hint="Movies are not part of this catalog yet." />
-        : <Centered title="No series yet" hint="Series are not part of this catalog yet." />
+        ? <Centered title={t('vod.empty.noMoviesTitle')} hint={t('vod.empty.noMoviesHint')} />
+        : <Centered title={t('vod.empty.noSeriesTitle')} hint={t('vod.empty.noSeriesHint')} />
     }
-    if (items === null) return <View style={styles.center}><ActivityIndicator color={theme.colors.accent} /><Text style={styles.hint}>Loading titles…</Text></View>
-    if (error) return <Centered {...errorText(error)} />
+    if (items === null) return <View style={styles.center}><ActivityIndicator color={theme.colors.accent} /><Text style={styles.hint}>{t('vod.loading')}</Text></View>
+    if (error) return <Centered {...errorText(t, error)} />
 
     if (search) {
       return (
         <>
           <TextInput
             style={[styles.input, searchFocused && styles.inputFocused]}
-            placeholder="Search titles…"
+            placeholder={t('vod.searchPlaceholder')}
             placeholderTextColor={theme.colors.textDim}
             autoCapitalize="none"
             autoCorrect={false}
@@ -403,14 +409,14 @@ export function VodScreen ({ navigation }: Props) {
             onBlur={() => setSearchFocused(false)}
           />
           {renderGrid(results, query.trim()
-            ? { title: 'No matches', hint: `No title matches "${query.trim()}".` }
-            : { title: 'Nothing here yet', hint: 'The provider returned no titles.' }, false)}
+            ? { title: t('vod.empty.noMatchesTitle'), hint: t('vod.empty.noMatchesHint', { query: query.trim() }) }
+            : { title: t('vod.empty.nothingTitle'), hint: t('vod.empty.nothingHint') }, false)}
         </>
       )
     }
 
     if (tab === 'recommended') {
-      if (all.length === 0) return <Centered title="Nothing here yet" hint="The provider returned no titles." />
+      if (all.length === 0) return <Centered title={t('vod.empty.nothingTitle')} hint={t('vod.empty.nothingHint')} />
       // The stack of shelves scrolls VERTICALLY (a second shelf must never clip dead),
       // and each shelf is a horizontal carousel capped at RAIL_MAX titles — "SEE N
       // MORE…" (right-aligned in the shelf head) covers the rest.
@@ -434,13 +440,13 @@ export function VodScreen ({ navigation }: Props) {
 
     if (tab === 'mylist') {
       return renderGrid(saved, {
-        title: 'Your list is empty',
-        hint: 'Titles you add to My List appear here.'
+        title: t('vod.empty.myListTitle'),
+        hint: t('vod.empty.myListHint')
       }, false)
     }
 
     if (tab === 'genres' && genre === null) {
-      if (genreCards.length === 0) return <Centered title="No genres" hint="The provider named no genres for these titles." />
+      if (genreCards.length === 0) return <Centered title={t('vod.empty.noGenresTitle')} hint={t('vod.empty.noGenresHint')} />
       return (
         <FlatList
           key={`genres-${columns}`}
@@ -458,8 +464,8 @@ export function VodScreen ({ navigation }: Props) {
 
     // 'all', and a genre that has been opened from the cards.
     return renderGrid(grid, {
-      title: genre === null ? 'Nothing here yet' : 'Nothing in this genre',
-      hint: genre === null ? 'The provider returned no titles.' : 'No title here carries that genre.'
+      title: genre === null ? t('vod.empty.nothingTitle') : t('vod.empty.genreTitle'),
+      hint: genre === null ? t('vod.empty.nothingHint') : t('vod.empty.genreHint')
     }, railShown)
   }
 
@@ -468,26 +474,26 @@ export function VodScreen ({ navigation }: Props) {
   return (
     <View style={styles.container}>
       <FocusPane autoFocus style={styles.leftPane}>
-        <Text style={styles.header}>MOVIES &amp; SERIES</Text>
-        <MenuButton label="Movies" active={!search && kind === 'movies'} onPress={() => chooseKind('movies')} />
-        <MenuButton label="Series" active={!search && kind === 'series'} onPress={() => chooseKind('series')} />
-        <MenuButton label="Search" active={search} onPress={() => { setSearch(true); setGenre(null) }} />
+        <Text style={styles.header}>{t('vod.header')}</Text>
+        <MenuButton label={t('vod.menu.movies')} active={!search && kind === 'movies'} onPress={() => chooseKind('movies')} />
+        <MenuButton label={t('vod.menu.series')} active={!search && kind === 'series'} onPress={() => chooseKind('series')} />
+        <MenuButton label={t('vod.menu.search')} active={search} onPress={() => { setSearch(true); setGenre(null) }} />
       </FocusPane>
 
       <FocusPane autoFocus style={styles.contentPane}>
         <View style={styles.tabs}>
-          {TABS.map((t) => (
-            <TabButton key={t.key} label={t.label} active={!search && tab === t.key} onPress={() => chooseTab(t.key)} />
+          {TABS.map((key) => (
+            <TabButton key={key} label={t('vod.tab.' + key)} active={!search && tab === key} onPress={() => chooseTab(key)} />
           ))}
         </View>
 
         {showChips && (
           <View style={styles.chips}>
             {genre !== null && (
-              <Chip label={`Genre: ${genreName || 'Unnamed'}`} onPress={() => setGenre(null)} />
+              <Chip label={t('vod.chip.genre', { name: genreName || t('vod.chip.genreUnnamed') })} onPress={() => setGenre(null)} />
             )}
             <View style={styles.chipSpacer} />
-            <Chip label={`Sort by: ${sortLabel(sort)}`} onPress={() => setSortOpen(true)} />
+            <Chip label={t('vod.chip.sortBy', { label: t('vod.sort.' + sort) })} onPress={() => setSortOpen(true)} />
           </View>
         )}
 
@@ -508,10 +514,10 @@ export function VodScreen ({ navigation }: Props) {
 
 /** Honest, named failure states — the viewer is told which of the two things broke,
  *  and never shown a provider message or an HTTP code. */
-function errorText (error: VodErrorCode): { title: string; hint: string } {
-  if (error === 'auth') return { title: "Couldn't sign in to the movie catalog", hint: 'Your account was not accepted by the provider. Contact your service.' }
-  if (error === 'network') return { title: "Couldn't reach the movie catalog", hint: 'Check your connection and try again in a moment.' }
-  return { title: 'The movie catalog answered unexpectedly', hint: 'Nothing to show right now — try again later.' }
+function errorText (t: ReturnType<typeof useI18n>['t'], error: VodErrorCode): { title: string; hint: string } {
+  if (error === 'auth') return { title: t('vod.error.authTitle'), hint: t('vod.error.authHint') }
+  if (error === 'network') return { title: t('vod.error.networkTitle'), hint: t('vod.error.networkHint') }
+  return { title: t('vod.error.otherTitle'), hint: t('vod.error.otherHint') }
 }
 
 function Centered ({ title, hint }: { title: string; hint: string }) {
@@ -533,7 +539,7 @@ function MenuButton ({ label, active, onPress }: { label: string; active: boolea
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={[styles.menuText, active && styles.menuTextActive]}>{label.toUpperCase()}</Text>
+      <Text style={[styles.menuText, active && styles.menuTextActive]}>{label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
@@ -548,7 +554,7 @@ function TabButton ({ label, active, onPress }: { label: string; active: boolean
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={[styles.tabText, active && styles.tabTextActive]}>{label.toUpperCase()}</Text>
+      <Text style={[styles.tabText, active && styles.tabTextActive]}>{label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
@@ -579,12 +585,13 @@ function Rail ({ title, items, more, busyId, onPressItem, onLongPressItem, onSee
   onLongPressItem: (it: VodItem) => void
   onSeeMore: () => void
 }) {
+  const { t } = useI18n()
   if (items.length === 0) return null
   return (
     <View style={styles.rail}>
       <View style={styles.railHead}>
         <Text style={styles.railTitle}>{title}</Text>
-        {more > 0 && <Chip label={`SEE ${more} MORE…`} onPress={onSeeMore} />}
+        {more > 0 && <Chip label={t('vod.chip.seeMore', { count: more })} onPress={onSeeMore} />}
       </View>
       <FlatList
         horizontal

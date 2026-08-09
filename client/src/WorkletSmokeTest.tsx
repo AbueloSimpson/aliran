@@ -76,7 +76,7 @@ export default function WorkletSmokeTest () {
           }
         }
       })
-      backend.boot(panelPubKey)
+      backend.boot(panelPubKey).catch((e) => setLog((prev) => [...prev, 'ERROR: ' + String(e?.message || e)]))
       setLog((prev) => [...prev, `started; panel=${panelPubKey.slice(0, 16)}â€¦`])
       return () => { off(); if (timer.current) clearTimeout(timer.current) }
     } catch (e: any) {

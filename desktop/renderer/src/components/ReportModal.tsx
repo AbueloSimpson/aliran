@@ -8,38 +8,53 @@
 // panel's login alert rule is unaffected.)
 
 import React, { useEffect, useState } from 'react'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
-import { REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, REPORT_CONSENT, type ReportCategory } from '../types'
+import { REPORT_CATEGORIES, type ReportCategory } from '../types'
 
 const PLAYER_CATEGORIES = REPORT_CATEGORIES.filter((c) => c !== 'login')
 
 // Human text for every error code AliranPlayer.report() can answer with. A viewer must
 // never see a wire code, and must never be told to retry into a closed door:
 // 'unsupported' and the throttles all end with "nothing more to do".
-function reportMessage (error: string | undefined, retryAfter?: number): string {
+//
+// The i18n pair is a parameter rather than a hook call so this stays the pure lookup it
+// was; the modal calls it at RENDER time (it stores the engine's answer, not the
+// sentence), which is what keeps an outcome already on screen following a language
+// change.
+function reportMessage (
+  { t, tn }: ReturnType<typeof useI18n>,
+  error: string | undefined,
+  retryAfter?: number
+): string {
   const mins = retryAfter ? Math.max(1, Math.round(retryAfter / 60)) : 10
   switch (error) {
-    case undefined: return 'Thanks — your report was sent.'
+    case undefined: return t('report.result.sent')
     case 'cooldown':
-    case 'locked': return `You already reported this. Try again in about ${mins} minute${mins === 1 ? '' : 's'}.`
-    case 'unsupported': return "This service doesn't accept problem reports."
+    case 'locked': return tn('report.result.cooldown', mins)
+    case 'unsupported': return t('report.result.unsupported')
     case 'not-logged-in':
     case 'unauthorized':
-    case 'expired': return 'Please sign in again, then report the problem.'
-    case 'offline': return 'Not connected to the service right now — try again in a moment.'
-    default: return "Couldn't send the report. Try again in a moment."
+    case 'expired': return t('report.result.signIn')
+    case 'offline': return t('report.result.offline')
+    default: return t('report.result.failed')
   }
 }
 
+/** What the engine answered, kept verbatim so the sentence is built at render. */
+interface ReportOutcome { error?: string; retryAfter?: number }
+
 export function ReportModal ({ channelTitle, onClose }: { channelTitle?: string; onClose: () => void }) {
+  const i18n = useI18n()
+  const { t } = i18n
   const [category, setCategory] = useState<ReportCategory | null>(null)
   const [sending, setSending] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
+  const [result, setResult] = useState<ReportOutcome | null>(null)
 
   useEffect(() => backend.onMessage((m) => {
     if (m.type !== 'report-result') return
     setSending(false)
-    setResult(reportMessage(m.ok ? undefined : (m.error ?? 'failed'), m.retryAfter))
+    setResult({ error: m.ok ? undefined : (m.error ?? 'failed'), retryAfter: m.retryAfter })
   }), [])
 
   function submit () {
@@ -51,19 +66,19 @@ export function ReportModal ({ channelTitle, onClose }: { channelTitle?: string;
 
   return (
     <div className="report-backdrop" onClick={onClose}>
-      <div className="report-card" role="dialog" aria-label="Report a problem" onClick={(e) => e.stopPropagation()}>
-        <div className="section-header">REPORT A PROBLEM</div>
+      <div className="report-card" role="dialog" aria-label={t('report.dialogAria')} onClick={(e) => e.stopPropagation()}>
+        <div className="section-header">{t('report.title')}</div>
         {channelTitle && <div className="report-channel">{channelTitle}</div>}
         {result
           ? (
             <>
-              <p className="report-result">{result}</p>
-              <button className="report-send" autoFocus onClick={onClose}>Close</button>
+              <p className="report-result">{reportMessage(i18n, result.error, result.retryAfter)}</p>
+              <button className="report-send" autoFocus onClick={onClose}>{t('common.close')}</button>
             </>
             )
           : (
             <>
-              <div className="settings-group-title">WHAT WENT WRONG?</div>
+              <div className="settings-group-title">{t('report.hint').toLocaleUpperCase(getLocale())}</div>
               <div className="report-categories">
                 {PLAYER_CATEGORIES.map((c, i) => (
                   <button
@@ -74,17 +89,19 @@ export function ReportModal ({ channelTitle, onClose }: { channelTitle?: string;
                     onClick={() => setCategory(c)}
                   >
                     <span className="report-mark">{category === c ? '●' : '○'}</span>
-                    <span>{REPORT_CATEGORY_LABELS[c]}</span>
+                    <span>{t('report.category.' + c)}</span>
                   </button>
                 ))}
               </div>
 
-              <p className="report-consent">{REPORT_CONSENT}</p>
+              {/* The catalog's copy of REPORT_CONSENT — tools/i18n-test.mjs pins the
+                  English against sdk/react-native/src/report.ts byte for byte. */}
+              <p className="report-consent">{t('report.consent')}</p>
 
               <button className="report-send" disabled={!category || sending} onClick={submit}>
-                {sending ? 'Sending…' : 'Send report'}
+                {sending ? t('report.sending') : t('report.send')}
               </button>
-              <button className="report-cancel" onClick={onClose}>Cancel</button>
+              <button className="report-cancel" onClick={onClose}>{t('common.cancel')}</button>
             </>
             )}
       </div>

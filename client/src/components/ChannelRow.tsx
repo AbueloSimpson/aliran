@@ -9,6 +9,7 @@
 import React, { useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
+import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg, useChannelThumb } from '@aliran/react-native'
 import { prefersReducedMotion } from '../motion'
@@ -39,6 +40,7 @@ export interface ChannelRowProps {
 }
 
 export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, onFocus, onPress, onLongPress }: ChannelRowProps) {
+  const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   // Off-air channel, or a vod title the library took down (S8a: vod records carry no
   // isLive — their availability signal is status 'available'/'unavailable').
@@ -76,7 +78,7 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
       <View style={styles.main}>
         <View style={styles.titleLine}>
           <Text style={[styles.title, focused && styles.textOnFill, dimmed && styles.dimmed]} numberOfLines={1}>{stream.title}</Text>
-          {stream.isLive && <Text style={styles.live}>LIVE</Text>}
+          {stream.isLive && <Text style={styles.live}>{t('common.live')}</Text>}
           {!!duration && <Text style={[styles.duration, dimmed && styles.dimmed]}>{duration}</Text>}
           {favorite && <Text style={[styles.star, focused && styles.textOnFill]}>★</Text>}
         </View>
@@ -89,7 +91,7 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
         {!vod && <ProgressHairline program={data?.now} style={styles.hairline} />}
       </View>
       {art
-        ? <Image source={{ uri: art }} style={styles.logo} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? `${stream.title} — live preview` : undefined} />
+        ? <Image source={{ uri: art }} style={styles.logo} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? t('live.livePreview', { title: stream.title }) : undefined} />
         : <View style={[styles.logo, styles.logoFallback]}><Text style={[styles.logoInitial, focused && styles.textOnFill]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
     </Pressable>
   )

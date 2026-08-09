@@ -8,6 +8,7 @@
 // unmuting restores it; dragging the slider while muted unmutes.
 import React, { useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet, PanResponder } from 'react-native'
+import { useI18n } from '@aliran/i18n'
 import { theme } from '../theme'
 
 export interface VolumeControlProps {
@@ -18,6 +19,7 @@ export interface VolumeControlProps {
 }
 
 export function VolumeControl ({ volume, muted, onChange }: VolumeControlProps) {
+  const { t } = useI18n()
   const width = useRef(0)
   const [drag, setDrag] = useState<number | null>(null)
   const latest = useRef({ volume, muted, onChange }); latest.current = { volume, muted, onChange }
@@ -39,7 +41,7 @@ export function VolumeControl ({ volume, muted, onChange }: VolumeControlProps) 
     <View style={styles.wrap}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={muted ? 'Unmute' : 'Mute'}
+        accessibilityLabel={muted ? t('common.unmute') : t('common.mute')}
         style={({ pressed }) => [styles.btn, pressed && styles.btnActive]}
         onPress={() => latest.current.onChange(latest.current.volume, !latest.current.muted)}
       >

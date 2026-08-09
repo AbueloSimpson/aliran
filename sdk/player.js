@@ -37,6 +37,10 @@
 //                        echoes setZapPrefetch(); {state:'suspended',reason} /
 //                        {state:'resumed'} when the adaptive gate pauses/resumes the
 //                        neighbor warm loop (reason 'metered'|'stall'|'thin').
+//   'update-progress' ({received,total})  OTA app-update download progress (throttled)
+//   'update-ready' ({path,entry})   OTA artifact downloaded, sha256-verified, on disk
+//   'update-error' ({message})      OTA download/verify failure (downloadUpdate() also
+//                        rejects with the same error — hosts pick one surface)
 //
 // Tune self-heal (p2p-only): pass `tune` { timeoutMs, relookupMinMs, relookupMaxMs } to
 // bound a tune. While the active feed's playlist is not ADVANCING-and-SERVABLE
@@ -102,6 +106,7 @@ import Rache from 'rache'
 import Hyperbee from 'hyperbee'
 import Hyperdrive from 'hyperdrive'
 import hcrypto from 'hypercore-crypto'
+import sodium from 'sodium-native'
 import b4a from 'b4a'
 import { panelClient, login as oprfLogin } from './login.js'
 import { isCorruptionError, withRecovery } from './recover.js'
@@ -296,6 +301,15 @@ function normalizeSwarmOpts (v) {
   return out
 }
 
+// OTA app updates: bounded manifest wait — a cold/unreachable updates drive answers
+// {status:'unknown'}, never a hang. Download inactivity bound: a download that moves
+// no bytes this long surfaces an error instead of a wedged single-flight promise.
+const UPDATE_CHECK_TIMEOUT_MS = 15000
+const UPDATE_STALL_MS = 60000
+// Artifact basenames come from the (panel-signed) manifest, but they become local fs
+// paths — allow only plain file names, never separators or dot-walks.
+const UPDATE_BASENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
 // Short free-form host strings that ride along on a problem report (appVersion,
 // platform) and the per-install device id. Anything that is not a non-empty string is
 // dropped rather than coerced — a host that passes an object must not turn into
@@ -369,6 +383,13 @@ export class AliranPlayer extends Emitter {
     this._rescanDead = null // active play whose tune ladder already surfaced the friendly error — the rescan leaves it alone
     this._assetsOpen = null
     this._epgOpen = null // single-flight open/swap of the guide replica
+    // --- OTA app updates (the panel's updates drive, meta/updatesKey) ---
+    this._updatesDrive = null // sparse replica of the updates drive — LAZY, first checkUpdate() only
+    this._updatesDiscovery = null
+    this._updatesOpen = null // single-flight open (the assets pattern)
+    this._updateCheck = null // last 'available' verdict { appId, platform, versionCode, entry } — what downloadUpdate() fetches
+    this._updateDownload = null // in-flight download promise (single-flight)
+    this._updatesSwept = false // stale-file sweep under <storeDir>/updates ran (once per engine)
     this._purging = null
     this._replicaSweep = null // single-flight stale-namespace sweep, once per engine (see _sweepStaleReplicas)
     this._streams = []
@@ -849,6 +870,80 @@ export class AliranPlayer extends Emitter {
   // shell's state snapshot).
   vodConfig () { return this._vod }
 
+  // --- OTA app updates ---
+  //
+  // The panel advertises an updates Hyperdrive under meta/updatesKey ({ key, blobsKey }
+  // — blobsKey rides along so repeater mirroring stays a config-only follow-up, the EPG
+  // pointer precedent). The drive holds /manifest.json keyed by app id, entries
+  // { platform, versionCode, versionName, sha256, size, file, minVersionCode?, notes?,
+  // releasedAt }, artifacts under /pkg/. LAZY by design: nothing opens at login — the
+  // replica + swarm join happen on the first checkUpdate(). The join is ALWAYS
+  // { client:true, server:false }, regardless of uploadPolicy: a viewer must never
+  // re-serve bulk APK blobs (a phone uplink is the wrong place for a 100 MB fan-out —
+  // operators arm repeaters for that instead), so setUploadPolicy() skips this topic.
+
+  /**
+   * Check the panel's updates manifest for a newer build of THIS app. Resolves to
+   *   { status:'available', entry, mandatory }  a newer versionCode is published;
+   *     mandatory = the running build is below the entry's minVersionCode
+   *   { status:'current', entry }   the published versionCode is not newer than ours
+   *   { status:'none' }             manifest readable, no entry for this appId+platform
+   *                                 (the operator never uploaded one)
+   *   { status:'unknown' }          cannot say right now: no updates drive advertised,
+   *     or the manifest did not land within the bound (cold replica, no reachable
+   *     peer). "Try again later", never an error — only bad ARGUMENTS throw here.
+   */
+  async checkUpdate ({ appId, platform, versionCode } = {}) {
+    if (typeof appId !== 'string' || !appId) throw new Error('checkUpdate needs an appId string')
+    if (platform !== 'android' && platform !== 'windows') throw new Error("checkUpdate needs platform 'android' | 'windows'")
+    if (!Number.isInteger(versionCode) || versionCode < 0) throw new Error('checkUpdate needs an integer versionCode')
+    const manifest = await this._readUpdatesManifest(UPDATE_CHECK_TIMEOUT_MS)
+    if (manifest === undefined) return { status: 'unknown' }
+    this._sweepUpdatesDir(manifest)
+    const entry = manifest ? manifest[appId] : null
+    if (!entry || typeof entry !== 'object' || entry.platform !== platform) return { status: 'none' }
+    // A junk versionCode must not come back as 'current' with the entry attached —
+    // a UI printing entry.versionName would show garbage. Broken publisher == "cannot say".
+    if (!Number.isInteger(entry.versionCode)) return { status: 'unknown' }
+    if (entry.versionCode <= versionCode) return { status: 'current', entry }
+    // A malformed entry (unusable path / no verifiable hash) must never be OFFERED —
+    // downloadUpdate() could only fail on it.
+    if (typeof entry.file !== 'string' || !UPDATE_BASENAME_RE.test(this._updateBasename(entry.file)) ||
+        typeof entry.sha256 !== 'string' || !/^[0-9a-fA-F]{64}$/.test(entry.sha256)) return { status: 'unknown' }
+    const mandatory = Number.isInteger(entry.minVersionCode) && versionCode < entry.minVersionCode
+    this._updateCheck = { appId, platform, versionCode, entry }
+    return { status: 'available', entry, mandatory }
+  }
+
+  /**
+   * Download the update the last 'available' checkUpdate() found: stream the drive
+   * file to <storeDir>/updates/<basename>.part with an incremental sha256, verify
+   * against the manifest on completion, rename to the final path. Emits throttled
+   * 'update-progress' {received,total} and, on success, 'update-ready' {path,entry};
+   * resolves to { path, entry }. A failure (unreachable blobs, stalled transfer,
+   * sha256 mismatch) deletes the partial file, emits 'update-error' {message} AND
+   * rejects with the same error. Single-flight: a second call while one runs returns
+   * the same promise. The verified file is a CACHE (it lives with the disposable
+   * store): install it promptly — a corruption purge may reclaim it.
+   */
+  downloadUpdate () {
+    if (this._updateDownload) return this._updateDownload
+    const check = this._updateCheck
+    const run = check
+      ? this._doDownloadUpdate(check.entry)
+      : Promise.reject(new Error('no update to download — call checkUpdate() first'))
+    const p = run.then(
+      (res) => { if (this._updateDownload === p) this._updateDownload = null; return res },
+      (err) => {
+        if (this._updateDownload === p) this._updateDownload = null
+        this.emit('update-error', { message: String((err && err.message) || err) })
+        throw err
+      }
+    )
+    this._updateDownload = p
+    return p
+  }
+
   // Start (or reuse) the localhost server for an entitled stream and return where to
   // point the host's video player. `url`/`source` reflect the ACTIVE source under the
   // hybrid policy (p2p-only: always the localhost URL — pre-hybrid shape unchanged).
@@ -1242,13 +1337,16 @@ export class AliranPlayer extends Emitter {
     this._closeFeeds() // fire-and-forget close of every opened feed (see _closeFeeds)
     const epgWatcher = this._epgWatcher; this._epgWatcher = null
     if (epgWatcher) { try { await epgWatcher.close() } catch {} }
-    const closing = [this._assetsDrive, this._epgDrive, this._panelBee, this._store]
-    this._feedDrive = this._assetsDrive = this._epgDrive = this._panelBee = this._store = null
+    const closing = [this._assetsDrive, this._epgDrive, this._updatesDrive, this._panelBee, this._store]
+    this._feedDrive = this._assetsDrive = this._epgDrive = this._updatesDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._epgDiscovery = null
     this._epgKeyHex = null
     this._assetsOpen = null
     this._epgOpen = null
+    this._updatesDiscovery = null
+    this._updatesOpen = null
+    this._updateCheck = null // the verdict names an entry on the closed drive — a fresh check must precede a download
     this._call = null
     this._panelPeerKey = null
     this._panelDiscovery = null
@@ -1883,13 +1981,16 @@ export class AliranPlayer extends Emitter {
     this._closeFeeds() // drop every cached feed on the dead store (fire-and-forget; see _closeFeeds)
     const epgWatcher = this._epgWatcher; this._epgWatcher = null
     if (epgWatcher) { try { await epgWatcher.close() } catch {} }
-    const closing = [this._assetsDrive, this._epgDrive, this._panelBee, this._store]
-    this._feedDrive = this._assetsDrive = this._epgDrive = this._panelBee = this._store = null
+    const closing = [this._assetsDrive, this._epgDrive, this._updatesDrive, this._panelBee, this._store]
+    this._feedDrive = this._assetsDrive = this._epgDrive = this._updatesDrive = this._panelBee = this._store = null
     this._feedDiscovery = null
     this._epgDiscovery = null
     this._epgKeyHex = null
     this._assetsOpen = null
     this._epgOpen = null
+    this._updatesDiscovery = null
+    this._updatesOpen = null
+    this._updateCheck = null // the entry belonged to the purged replica — force a fresh check (lazy re-open)
     this._call = null
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
     for (const c of closing) { if (c) { try { await c.close() } catch {} } } // corrupt cores may refuse to close
@@ -2064,6 +2165,168 @@ export class AliranPlayer extends Emitter {
         }
       } catch { /* bee closing under us (shutdown/purge) */ }
     })()
+  }
+
+  // Open the panel's updates Hyperdrive advertised under meta/updatesKey. The assets
+  // single-flight pattern exactly — the pointer is written once and never rotates
+  // (the manifest changes INSIDE the drive), so no swap handling — except the join:
+  // client-only ALWAYS, never announced, whatever the uploadPolicy (see checkUpdate).
+  _openUpdates () {
+    if (!this._updatesOpen) {
+      const p = this._doOpenUpdates().then(
+        () => { if (this._updatesOpen === p && !this._updatesDrive) this._updatesOpen = null }, // nothing advertised yet — re-check on the next call
+        (err) => { if (this._updatesOpen === p) this._updatesOpen = null; throw err }
+      )
+      this._updatesOpen = p
+    }
+    return this._updatesOpen
+  }
+
+  async _doOpenUpdates () {
+    if (this._updatesDrive || !this._panelBee) return
+    const meta = await this._panelBee.get('meta/updatesKey')
+    const keyHex = meta?.value?.key
+    if (!keyHex || typeof keyHex !== 'string') return
+    this._updatesDrive = new Hyperdrive(this._store.namespace('updates-replica'), b4a.from(keyHex, 'hex'))
+    await this._updatesDrive.ready()
+    this._updatesDiscovery = this._swarm.join(this._updatesDrive.discoveryKey, { client: true, server: false })
+  }
+
+  // Bounded manifest read. Three-way verdict: an object = the manifest; null = the
+  // drive answered and has no /manifest.json (nothing ever published — honest 'none');
+  // undefined = cannot say (no pointer, cold replica past the bound, unparseable).
+  async _readUpdatesManifest (ms) {
+    let timer
+    try {
+      const res = await Promise.race([
+        (async () => {
+          await this._openUpdates()
+          if (!this._updatesDrive) return undefined
+          // A cold replica checkout has length 0 and get() answers null WITHOUT
+          // waiting for a peer — which reads as a false "nothing published". Learn
+          // the real length from a peer first; no peer inside the bound → the race
+          // times out → 'unknown', which is the truthful cold answer.
+          await this._updatesDrive.core.update({ wait: true })
+          const buf = await this._updatesDrive.get('/manifest.json')
+          if (!buf) return null
+          const parsed = JSON.parse(b4a.toString(buf))
+          return parsed && typeof parsed === 'object' ? parsed : undefined
+        })(),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(undefined), ms) })
+      ])
+      return res
+    } catch {
+      return undefined
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // Downloaded artifacts live BESIDE the replica cores, inside the disposable store
+  // dir (the replicas.json precedent) — a corruption purge reclaims them wholesale,
+  // which is correct for a cache: the next check re-downloads.
+  _updatesDir () { return String(this._storeDir).replace(/[\\/]+$/, '') + '/updates' }
+
+  _updateBasename (file) { return String(file).slice(String(file).lastIndexOf('/') + 1) }
+
+  // Reclaim downloads the manifest no longer names (superseded versions, aborted
+  // .part files from a previous process) — once per engine, on the first successful
+  // manifest read. Current entries keep BOTH their final file and their .part (an
+  // in-flight download must not be swept out from under itself). Best-effort: every
+  // fs call is wrapped, a failure just leaves bytes for the next boot's sweep.
+  _sweepUpdatesDir (manifest) {
+    if (this._updatesSwept || !manifest) return
+    this._updatesSwept = true
+    try {
+      const keep = new Set()
+      for (const e of Object.values(manifest)) {
+        if (!e || typeof e.file !== 'string') continue
+        const base = this._updateBasename(e.file)
+        if (UPDATE_BASENAME_RE.test(base)) { keep.add(base); keep.add(base + '.part') }
+      }
+      const dir = this._updatesDir()
+      for (const name of this._fs.readdirSync(dir)) {
+        if (!keep.has(String(name))) { try { this._fs.rmSync(dir + '/' + name, { force: true }) } catch {} }
+      }
+    } catch { /* no dir yet — nothing downloaded, nothing to sweep */ }
+  }
+
+  async _doDownloadUpdate (entry) {
+    const drive = this._updatesDrive
+    if (!drive) throw new Error('updates drive is not open — call checkUpdate() first')
+    const base = this._updateBasename(entry.file)
+    if (!UPDATE_BASENAME_RE.test(base)) throw new Error('update entry has an unusable file name: ' + entry.file)
+    // Metadata first (bounded): a file the drive never had must fail fast, not sit in
+    // the byte loop's stall window with zero progress.
+    let entTimer
+    const ent = await Promise.race([
+      drive.entry(entry.file),
+      new Promise((resolve) => { entTimer = setTimeout(() => resolve(null), UPDATE_CHECK_TIMEOUT_MS) })
+    ]).finally(() => clearTimeout(entTimer))
+    const blob = ent && ent.value && ent.value.blob
+    if (!blob || !(blob.byteLength > 0)) throw new Error('update file is not available from the updates drive: ' + entry.file)
+    const total = Number.isInteger(entry.size) && entry.size > 0 ? entry.size : blob.byteLength
+    const dir = this._updatesDir()
+    try { this._fs.mkdirSync(dir, { recursive: true }) } catch {}
+    const partPath = dir + '/' + base + '.part'
+    const finalPath = dir + '/' + base
+    // Incremental sha256 (sodium) WHILE writing — a 100+ MB artifact must never need
+    // a second full read (or a full in-memory copy) just to be verified.
+    const state = b4a.alloc(sodium.crypto_hash_sha256_STATEBYTES)
+    sodium.crypto_hash_sha256_init(state)
+    const fd = this._fs.openSync(partPath, 'w')
+    let received = 0
+    let closed = false
+    let ok = false // only after the verified RENAME — the finally cleanup owns every other exit
+    try {
+      const rs = drive.createReadStream(entry.file)
+      const it = rs[Symbol.asyncIterator]()
+      let lastEmit = 0
+      let lastPct = 0
+      while (true) {
+        let timer
+        const r = await Promise.race([
+          it.next(),
+          new Promise((resolve) => { timer = setTimeout(() => resolve('stalled'), UPDATE_STALL_MS) })
+        ]).finally(() => clearTimeout(timer))
+        if (r === 'stalled') {
+          try { rs.destroy() } catch {}
+          throw new Error(`update download stalled — no data for ${Math.round(UPDATE_STALL_MS / 1000)}s, try again later`)
+        }
+        if (r.done) break
+        const chunk = b4a.isBuffer(r.value) ? r.value : b4a.from(r.value)
+        this._fs.writeSync(fd, chunk, 0, chunk.byteLength)
+        sodium.crypto_hash_sha256_update(state, chunk)
+        received += chunk.byteLength
+        // Throttled progress: every ~500 ms or 5% step, plus the final byte.
+        const now = Date.now()
+        const pct = total > 0 ? received / total : 0
+        if (now - lastEmit >= 500 || pct - lastPct >= 0.05 || received >= total) {
+          lastEmit = now
+          lastPct = pct
+          this.emit('update-progress', { received, total })
+        }
+      }
+      this._fs.closeSync(fd)
+      closed = true
+      const digest = b4a.alloc(sodium.crypto_hash_sha256_BYTES)
+      sodium.crypto_hash_sha256_final(state, digest)
+      if (b4a.toString(digest, 'hex') !== entry.sha256.toLowerCase()) {
+        throw new Error('update failed verification (sha256 mismatch) — the download was discarded')
+      }
+      try { this._fs.rmSync(finalPath, { force: true }) } catch {} // a re-download replaces any older copy
+      // A renameSync throw (Windows file lock / AV scan) must also land in the
+      // cleanup below — the caller gets the reject, never a stranded .part.
+      this._fs.renameSync(partPath, finalPath)
+      ok = true
+      this.emit('update-ready', { path: finalPath, entry })
+      return { path: finalPath, entry }
+    } finally {
+      if (!ok) {
+        if (!closed) { try { this._fs.closeSync(fd) } catch {} }
+        try { this._fs.rmSync(partPath, { force: true }) } catch {}
+      }
+    }
   }
 
   // One persistent localhost server for the whole session: /assets/* from the panel's

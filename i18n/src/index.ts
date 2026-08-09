@@ -1,0 +1,197 @@
+// Aliran viewer i18n — the whole translation runtime (S56 design D1). No i18next, no
+// format.js, no dependency of any kind, and deliberately no `Intl.PluralRules`: Hermes
+// on Android ships without a dependable ICU (the same reason client/src/lang.ts keeps a
+// static language table), and the 14 locales below need exactly four plural rules.
+//
+// Engine and SDK error prose stays English by design — only UI chrome lives here. So
+// does operator/provider content: channel names, categories, EPG programme titles, VOD
+// titles and service.name are NEVER translated.
+import en from '../locales/en.json'
+import es from '../locales/es.json'
+import pt from '../locales/pt.json'
+import fr from '../locales/fr.json'
+import nl from '../locales/nl.json'
+import de from '../locales/de.json'
+import it from '../locales/it.json'
+import ru from '../locales/ru.json'
+import tr from '../locales/tr.json'
+import hi from '../locales/hi.json'
+import ja from '../locales/ja.json'
+import zhHans from '../locales/zh-Hans.json'
+import ko from '../locales/ko.json'
+import th from '../locales/th.json'
+
+export type Locale =
+  | 'en' | 'es' | 'pt' | 'fr' | 'nl' | 'de' | 'it'
+  | 'ru' | 'tr' | 'hi' | 'ja' | 'zh-Hans' | 'ko' | 'th'
+
+export type PluralForm = 'one' | 'few' | 'many' | 'other'
+
+/** A locale catalog: flat, dot-namespaced keys onto ready-to-render strings. */
+export type Catalog = Record<string, string>
+
+export interface LocaleInfo {
+  code: Locale
+  nativeName: string
+}
+
+/** Picker order. Native names on purpose — nobody should have to read a foreign name
+ *  to find their own language. */
+export const SUPPORTED_LOCALES: LocaleInfo[] = [
+  { code: 'en', nativeName: 'English' },
+  { code: 'es', nativeName: 'Español' },
+  { code: 'pt', nativeName: 'Português' },
+  { code: 'fr', nativeName: 'Français' },
+  { code: 'nl', nativeName: 'Nederlands' },
+  { code: 'de', nativeName: 'Deutsch' },
+  { code: 'it', nativeName: 'Italiano' },
+  { code: 'ru', nativeName: 'Русский' },
+  { code: 'tr', nativeName: 'Türkçe' },
+  { code: 'hi', nativeName: 'हिन्दी' },
+  { code: 'ja', nativeName: '日本語' },
+  { code: 'zh-Hans', nativeName: '中文（简体）' },
+  { code: 'ko', nativeName: '한국어' },
+  { code: 'th', nativeName: 'ไทย' }
+]
+
+// The forms pluralForm() can return for each locale — i.e. exactly the sibling keys a
+// catalog must carry for every tn() family. tools/i18n-test.mjs MACHINE-READS this
+// literal, so keep it a plain object of string arrays and change it together with
+// pluralForm() below.
+export const PLURAL_FORMS: Record<Locale, PluralForm[]> = {
+  en: ['one', 'other'],
+  es: ['one', 'other'],
+  pt: ['one', 'other'],
+  fr: ['one', 'other'],
+  nl: ['one', 'other'],
+  de: ['one', 'other'],
+  it: ['one', 'other'],
+  ru: ['one', 'few', 'many'],
+  tr: ['one', 'other'],
+  hi: ['one', 'other'],
+  ja: ['other'],
+  'zh-Hans': ['other'],
+  ko: ['other'],
+  th: ['other']
+}
+
+const EN: Catalog = en
+
+// Catalogs are bundled, never fetched: the apps must render offline and on first run.
+// Static imports on purpose — Metro and esbuild both resolve them at build time, and a
+// dynamic import() would make the first paint of a non-English device asynchronous.
+// The map stays Partial so a half-written catalog degrades key by key to English (t())
+// rather than breaking the build. NOTE the one gap: that fallback is per KEY, and en
+// carries no `.few`/`.many`, so a missing plural sibling in a locale with more forms
+// than English (ru) renders the raw key, not English. tools/i18n-test.mjs §3 is what
+// actually keeps that from shipping.
+const CATALOGS: Partial<Record<Locale, Catalog>> = {
+  en: EN,
+  es,
+  pt,
+  fr,
+  nl,
+  de,
+  it,
+  ru,
+  tr,
+  hi,
+  ja,
+  'zh-Hans': zhHans,
+  ko,
+  th
+}
+
+const CODES = new Set<string>(SUPPORTED_LOCALES.map((l) => l.code))
+
+let current: Locale = 'en'
+const listeners = new Set<() => void>()
+
+export function getLocale (): Locale {
+  return current
+}
+
+export function setLocale (locale: Locale): void {
+  if (locale === current) return
+  current = locale
+  for (const fn of listeners) fn()
+}
+
+/** Subscribe to locale changes; the return value unsubscribes. Module-level identity,
+ *  so it is safe as the `subscribe` argument of useSyncExternalStore. */
+export function onLocaleChange (fn: () => void): () => void {
+  listeners.add(fn)
+  return () => { listeners.delete(fn) }
+}
+
+/**
+ * Map any BCP-47-ish tag a device may hand us onto a supported locale.
+ * `es_MX` / `es-419` → es, `pt-BR` → pt, any `zh-*` → zh-Hans, unknown → en.
+ */
+export function resolveLocale (tag: string | null | undefined): Locale {
+  if (!tag) return 'en'
+  const base = tag.replace(/_/g, '-').toLowerCase().split('-')[0]
+  // Simplified is the only Chinese script we ship, so every zh-* tag lands on it.
+  if (base === 'zh') return 'zh-Hans'
+  return CODES.has(base) ? (base as Locale) : 'en'
+}
+
+/** CLDR-exact for our 14 locales over the INTEGER counts this UI produces. Two
+ *  deliberate omissions: es/it/fr/pt drop CLDR's `many` (it fires only at 1e6 and its
+ *  multiples) and ru drops `other` (fractional counts only) — pluralForm() can never
+ *  select either, so carrying them would be dead strings AND a key-parity break in
+ *  tools/i18n-test.mjs. Do not "fix" the table against a CLDR chart. `pt` follows the
+ *  pt-BR rule, where `one` covers zero. Negative and fractional counts fold onto the
+ *  absolute value — the UI only ever counts things. */
+export function pluralForm (locale: Locale, n: number): PluralForm {
+  const i = Math.abs(n)
+  switch (locale) {
+    case 'ru': {
+      const m10 = i % 10
+      const m100 = i % 100
+      if (m10 === 1 && m100 !== 11) return 'one'
+      if (m10 >= 2 && m10 <= 4 && !(m100 >= 12 && m100 <= 14)) return 'few'
+      return 'many'
+    }
+    // French, Portuguese and Hindi count zero with the singular.
+    case 'fr':
+    case 'pt':
+    case 'hi':
+      return i <= 1 ? 'one' : 'other'
+    // No grammatical number — one form for every count.
+    case 'ja':
+    case 'zh-Hans':
+    case 'ko':
+    case 'th':
+      return 'other'
+    default:
+      return i === 1 ? 'one' : 'other'
+  }
+}
+
+// Plain `{name}` substitution in ONE pass. A per-key loop would be order-sensitive:
+// whichever key ran first could inject a `{laterKey}` that the next iteration then
+// substituted again, so a channel or version string containing braces could reach
+// through into another placeholder. A single scan can only ever replace the braces
+// that were in the CATALOG value. The replacer is a function, so a value containing
+// `$&` still cannot turn into a replacement pattern. An unknown `{name}` is left
+// alone. No escaping: every value is rendered as React text, never as markup.
+function interpolate (s: string, vars: Record<string, string | number>): string {
+  return s.replace(/\{(\w+)\}/g, (whole, k: string) => (
+    Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : whole
+  ))
+}
+
+/** Translate `key`, substituting `{name}` placeholders. Falls back to English, then to
+ *  the key itself — a missing string is never a blank screen. */
+export function t (key: string, vars?: Record<string, string | number>): string {
+  const s = CATALOGS[current]?.[key] ?? EN[key] ?? key
+  return vars ? interpolate(s, vars) : s
+}
+
+/** Count-aware translate: picks the `key`.<form> sibling for `n` and passes `{n}`. */
+export function tn (key: string, n: number, vars?: Record<string, string | number>): string {
+  return t(key + '.' + pluralForm(current, n), { n, ...vars })
+}
+
+export { useI18n } from './react'

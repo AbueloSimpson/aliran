@@ -19,12 +19,20 @@
 // every color/string flows from the service descriptor via theme.ts).
 
 import React, { useEffect, useState } from 'react'
+import { AppState, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranBackend, EngineNotice } from '@aliran/react-native'
+import { setLocale, useI18n } from '@aliran/i18n'
+// FIRST i18n import on purpose: this module reads the device language and sets the
+// locale as it loads, so the first frame is already in the viewer's language (S56e,
+// design D5). The saved override arrives below with the worklet's prefs reply.
+import { deviceLocaleTag, pickLocale, serviceDefaultLocale } from './i18n'
 import { backend } from './worklet'
 import { hasBakedKey, loadServiceDescriptor } from './config'
+import { checkForUpdate, onUpdateAvailable, type AvailableUpdate } from './update'
 import { theme } from './theme'
+import { UpdateBanner } from './components/UpdateBanner'
 import { SplashScreen } from './screens/SplashScreen'
 import { ConnectScreen } from './screens/ConnectScreen'
 import { LoginScreen } from './screens/LoginScreen'
@@ -99,10 +107,15 @@ const engineSupported = AliranBackend.isSupported()
 // The SDK's ready-made notice, branded from the service theme (dogfooding the
 // exported component; hosts with a fallback method also pass actionLabel/onAction —
 // this app has no non-P2P delivery, so it shows the notice alone).
+// The notice renders before any prefs exist, so it speaks the DEVICE language — by
+// design (D10). The SDK's own default copy stays English; the catalog line is passed
+// in as a prop, which is the only seam a host needs.
 function EngineUnavailable () {
+  const { t } = useI18n()
   return (
     <EngineNotice
       title={loadServiceDescriptor().name}
+      message={t('notice.engineUnsupported')}
       colors={{
         background: theme.colors.background,
         text: theme.colors.text,
@@ -116,18 +129,36 @@ function EngineUnavailable () {
 
 export default function App () {
   const [ready, setReady] = useState(false)
+  // The available OTA update, when a check found one (App renders the banner; the
+  // shared state lives in update.ts so Settings' manual check feeds it too).
+  // Dismissing hides it until a LATER check finds it again (never for mandatory).
+  const [update, setUpdate] = useState<AvailableUpdate | null>(null)
 
   useEffect(() => {
     if (!engineSupported) return // nothing to boot — the backend would no-op anyway
     const service = loadServiceDescriptor()
     const off = backend.onMessage((m) => {
-      if (m.type === 'ready') setReady(true)
+      // The update check rides backend readiness (not the meta watcher — the
+      // manifest changes without the pointer changing) and each return to the
+      // foreground, throttled to 6 h inside checkForUpdate().
+      if (m.type === 'ready') { setReady(true); checkForUpdate().catch(() => {}) }
+      // The viewer's saved language (S56e). It rides the prefs reply the splash
+      // already waits for, so the only screen visible during a swap is the splash.
+      // No saved choice (null) means "follow the device", which is what the module
+      // import above already decided — recomputing it keeps ONE resolution order.
+      if (m.type === 'prefs') setLocale(pickLocale(m.language, deviceLocaleTag(), serviceDefaultLocale()))
+    })
+    const offUpdate = onUpdateAvailable(setUpdate)
+    const appState = AppState.addEventListener('change', (s) => {
+      if (s === 'active') checkForUpdate().catch(() => {})
     })
     // Baked (operator) flavor: connect to the shipped key right away — unchanged.
     // Public (keyless) flavor: boot the worklet idle; Splash reads the persisted
     // runtime service and either connect()s or routes to the Connect screen.
-    if (hasBakedKey()) backend.boot(service.panelPubKey, service.hybrid)
-    else backend.bootIdle(service.hybrid)
+    // boot()/bootIdle() are async (they await the native app version first); a start()
+    // throw must not become an unhandled rejection — surface it on the adb log instead.
+    if (hasBakedKey()) backend.boot(service.panelPubKey, service.hybrid).catch((e) => console.error('worklet boot failed', e))
+    else backend.bootIdle(service.hybrid).catch((e) => console.error('worklet boot failed', e))
     let offNet: (() => void) | undefined
     try {
       // Both signals matter: `isConnectionExpensive` gates prefetch, and either that OR
@@ -135,35 +166,44 @@ export default function App () {
       // the viewer battery and uplink.
       offNet = NetInfo?.addEventListener((s) => backend.setNetworkProfile(!!s?.details?.isConnectionExpensive, s?.type === 'cellular'))
     } catch { /* native module absent (stale APK / jest) — expensive-network gate just stays off */ }
-    return () => { off(); if (offNet) offNet() }
+    return () => { off(); offUpdate(); appState.remove(); if (offNet) offNet() }
   }, [])
 
   if (!engineSupported) return <EngineUnavailable />
 
   return (
     <NavigationContainer>
-      <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Splash">
-          {(props: NativeStackScreenProps<RootStackParamList, 'Splash'>) => (
-            <SplashScreen {...props} backendReady={ready} />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Connect" component={ConnectScreen} />
-        <Stack.Screen name="Login">
-          {(props: NativeStackScreenProps<RootStackParamList, 'Login'>) => (
-            <LoginScreen {...props} backendReady={ready} />
-          )}
-        </Stack.Screen>
-        <Stack.Screen name="Menu" component={MenuScreen} />
-        <Stack.Screen name="Live" component={LiveScreen} />
-        <Stack.Screen name="Guide" component={GuideScreen} />
-        <Stack.Screen name="Favorites" component={FavoritesScreen} />
-        <Stack.Screen name="Search" component={SearchScreen} />
-        <Stack.Screen name="Settings" component={SettingsScreen} />
-        <Stack.Screen name="Vod" component={VodScreen} />
-        <Stack.Screen name="VodSeries" component={VodSeriesScreen} />
-        <Stack.Screen name="VodPlayer" component={VodPlayerScreen} />
-      </Stack.Navigator>
+      <View style={{ flex: 1 }}>
+        <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Splash">
+            {(props: NativeStackScreenProps<RootStackParamList, 'Splash'>) => (
+              <SplashScreen {...props} backendReady={ready} />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Connect" component={ConnectScreen} />
+          <Stack.Screen name="Login">
+            {(props: NativeStackScreenProps<RootStackParamList, 'Login'>) => (
+              <LoginScreen {...props} backendReady={ready} />
+            )}
+          </Stack.Screen>
+          <Stack.Screen name="Menu" component={MenuScreen} />
+          <Stack.Screen name="Live" component={LiveScreen} />
+          <Stack.Screen name="Guide" component={GuideScreen} />
+          <Stack.Screen name="Favorites" component={FavoritesScreen} />
+          <Stack.Screen name="Search" component={SearchScreen} />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="Vod" component={VodScreen} />
+          <Stack.Screen name="VodSeries" component={VodSeriesScreen} />
+          <Stack.Screen name="VodPlayer" component={VodPlayerScreen} />
+        </Stack.Navigator>
+        {update && (
+          <UpdateBanner
+            entry={update.entry}
+            mandatory={update.mandatory}
+            onDismiss={() => setUpdate(null)}
+          />
+        )}
+      </View>
     </NavigationContainer>
   )
 }

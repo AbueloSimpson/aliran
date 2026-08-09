@@ -10,6 +10,7 @@
 // (hardware) still leaves the screen.
 import React, { useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet, Platform, TVFocusGuideView } from 'react-native'
+import { useI18n } from '@aliran/i18n'
 import { VOD_SORTS, type VodSortKey } from '../vod/sort'
 import { theme } from '../theme'
 
@@ -23,6 +24,7 @@ export interface SortMenuProps {
 }
 
 export function SortMenu ({ value, onSelect, onClose }: SortMenuProps) {
+  const { t } = useI18n()
   // Choosing a sort applies it AND dismisses: it is a one-shot action and leaving the
   // panel over the grid was the annoyance (same call as TrackMenu's).
   const choose = (key: VodSortKey) => { onSelect(key); onClose() }
@@ -30,10 +32,13 @@ export function SortMenu ({ value, onSelect, onClose }: SortMenuProps) {
     <View style={styles.overlay}>
       <Pressable style={StyleSheet.absoluteFill} accessibilityRole="button" onPress={onClose} />
       <FocusPane autoFocus style={styles.panel}>
-        <Text style={styles.heading}>SORT BY</Text>
+        <Text style={styles.heading}>{t('vod.sortMenu.title')}</Text>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          {/* The option's English label still lives in vod/sort.ts (a byte-guarded
+              module, and the desktop twin of it); the ROW renders the catalog's copy
+              of it, keyed by the same enum. */}
           {VOD_SORTS.map((o) => (
-            <Row key={o.key} label={o.label} active={o.key === value} onPress={() => choose(o.key)} />
+            <Row key={o.key} label={t('vod.sort.' + o.key)} active={o.key === value} onPress={() => choose(o.key)} />
           ))}
         </ScrollView>
       </FocusPane>
@@ -42,6 +47,7 @@ export function SortMenu ({ value, onSelect, onClose }: SortMenuProps) {
 }
 
 function Row ({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
@@ -53,7 +59,7 @@ function Row ({ label, active, onPress }: { label: string; active: boolean; onPr
       onPress={onPress}
     >
       <Text style={[styles.rowLabel, active && styles.rowLabelActive]} numberOfLines={1}>{label}</Text>
-      {active && <Text style={styles.selected}>SELECTED</Text>}
+      {active && <Text style={styles.selected}>{t('vod.sortMenu.selected')}</Text>}
     </Pressable>
   )
 }

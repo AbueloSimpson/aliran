@@ -8,6 +8,7 @@
 // transport row — play/pause, elapsed / runtime, and a scrubbable seek bar.
 
 import React, { useEffect, useRef, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration } from '../catalog'
 import { VolumeControl } from './VolumeControl'
@@ -42,6 +43,7 @@ export interface NowPlayingBarProps {
 }
 
 export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
+  const { t } = useI18n()
   // What's on NOW from the program guide — more useful on the bar than the channel
   // synopsis; the synopsis still lives in the Info panel.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
@@ -65,7 +67,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
           <img
             className={'np-live-thumb' + (thumbShown ? '' : ' probe')}
             src={thumbUri}
-            alt={thumbShown ? `${stream.title} — live preview` : ''}
+            alt={thumbShown ? t('live.livePreview', { title: stream.title ?? '' }) : ''}
             onLoad={() => setThumbShown(true)}
             onError={() => { setThumbShown(false); onThumbError() }}
           />
@@ -73,7 +75,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
         <span className="np-main">
           <span className="np-title-line">
             <span className="np-title">{stream.title}</span>
-            {stream.isLive && <span className="np-live">● LIVE</span>}
+            {stream.isLive && <span className="np-live">{t('common.liveBadge')}</span>}
           </span>
           {subtitle && <span className="np-desc">{subtitle}</span>}
           {/* Program progress under the title/now line — the zap-flash surface, so a
@@ -93,11 +95,11 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
       )}
 
       <div className="np-buttons">
-        <BarButton glyph="☰" label="Channels" onClick={onChannels} />
-        <BarButton glyph="ⓘ" label="Info" onClick={onInfo} />
-        <BarButton glyph={favorite ? '★' : '☆'} label="Favorite" active={favorite} onClick={onToggleFavorite} />
-        <BarButton glyph="⚑" label="Report" onClick={onReport} />
-        {hasTracks && <BarButton glyph="CC" label="Subtitles" onClick={() => onTracks?.()} />}
+        <BarButton glyph="☰" label={t('live.bar.channels')} onClick={onChannels} />
+        <BarButton glyph="ⓘ" label={t('live.bar.info')} onClick={onInfo} />
+        <BarButton glyph={favorite ? '★' : '☆'} label={t('live.bar.favorite')} active={favorite} onClick={onToggleFavorite} />
+        <BarButton glyph="⚑" label={t('live.bar.report')} onClick={onReport} />
+        {hasTracks && <BarButton glyph="CC" label={t('live.bar.subtitles')} onClick={() => onTracks?.()} />}
         {onVolume && <VolumeControl volume={volume ?? 1} muted={!!muted} onChange={onVolume} />}
       </div>
     </div>

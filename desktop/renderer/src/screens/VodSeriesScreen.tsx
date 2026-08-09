@@ -25,6 +25,7 @@
 // browser's own Tab order for no gain).
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import { formatDuration } from '../catalog'
 import type {
@@ -69,6 +70,7 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
   onPlay: (p: VodPick) => void
   onBack: () => void
 }) {
+  const { t } = useI18n()
   const { id, name, icon, anio } = pick
   // Login-scoped, exactly as on the grid: the coordinates ride the 'streams' message.
   const config: VodConfig | null = backend.vod ?? null
@@ -77,6 +79,9 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
   const [error, setError] = useState<VodErrorCode | null>(null)
   const [seasonId, setSeasonId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
+  // A notice is held as a CATALOG LEAF (vod.series.notice.<code>), never as copy: the
+  // sentence is looked up at render, so a language change repaints a banner that is
+  // already on screen.
   const [notice, setNotice] = useState<string | null>(null)
   // Device-local (D9). Seeded from the bridge's cached prefs and kept current from the
   // 'prefs' reply — which is the TRUTH: main gates and caps what it stored.
@@ -152,7 +157,7 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
     if (!episode.url) {
       // D3: a non-https (or absent) provider path never becomes a playback attempt —
       // this app will not put a viewer's password on a cleartext URL.
-      setNotice('This episode has no playable video yet. Try another one.')
+      setNotice('noVideo')
       return
     }
     setNotice(null)
@@ -180,7 +185,7 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
       ? detail.episodes.find((e) => e.seasonId === firstSeason.id) ?? detail.episodes[0]
       : detail.episodes[0]
     if (first) play(first)
-    else setNotice('This series has no episodes yet.')
+    else setNotice('noEpisodes')
   }, [detail, lastWatched, play])
 
   // My List: whole-array replace, newest first (D9). The optimistic local state keeps the
@@ -189,27 +194,27 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
     const rest = (myList || []).filter((e) => !(e && e.kind === 'series' && e.id === id))
     const next: VodListEntry[] = saved ? rest : [{ kind: 'series', id }, ...rest]
     setMyList(next)
-    setNotice(saved ? 'Removed from My List.' : 'Added to My List.')
+    setNotice(saved ? 'listRemoved' : 'listAdded')
     try { backend.setVodPrefs({ list: next }) } catch { /* device-local convenience, never fatal */ }
   }, [myList, saved, id])
 
   const rating = detail ? ratingStars(detail.rating) : null
 
   function renderDetail () {
-    if (!config) return <Centered title="Not available" hint="This service has no movie provider configured." />
-    if (error) return <Centered {...errorText(error)} />
-    if (!detail) return <div className="section-loading"><span className="spinner" />Loading episodes…</div>
+    if (!config) return <Centered title={t('vod.empty.noProviderTitle')} hint={t('vod.empty.noProviderHint')} />
+    if (error) return <Centered {...errorText(t, error)} />
+    if (!detail) return <div className="section-loading"><span className="spinner" />{t('vod.series.loading')}</div>
     return (
       <>
         <div className="vod-series-actions">
-          <button className="vod-series-btn primary" onClick={start}>Start</button>
-          <button className="vod-series-btn" onClick={toggleSaved}>{saved ? 'Remove from My List' : 'Add to My List'}</button>
-          <button className="vod-series-btn" onClick={onBack}>Back</button>
+          <button className="vod-series-btn primary" onClick={start}>{t('vod.series.start')}</button>
+          <button className="vod-series-btn" onClick={toggleSaved}>{saved ? t('vod.series.removeFromList') : t('vod.series.addToList')}</button>
+          <button className="vod-series-btn" onClick={onBack}>{t('common.back')}</button>
         </div>
 
         {seasons.length > 0 && (
           <>
-            <div className="section-header vod-series-section">SEASONS</div>
+            <div className="section-header vod-series-section">{t('vod.series.seasons')}</div>
             <div className="vod-series-seasons">
               {seasons.map((s) => (
                 <SeasonTile key={s.id} season={s} active={s.id === seasonId} onClick={() => setSeasonId(s.id)} />
@@ -218,9 +223,9 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
           </>
         )}
 
-        <div className="section-header vod-series-section">EPISODES</div>
+        <div className="section-header vod-series-section">{t('vod.series.episodes')}</div>
         {episodes.length === 0
-          ? <div className="empty-hint">This season has no episodes yet.</div>
+          ? <div className="empty-hint">{t('vod.series.emptySeason')}</div>
           : (
             <div className="vod-episodes">
               {episodes.map((e) => (
@@ -238,7 +243,7 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
   return (
     <div className="vod-series">
       <div className="vod-series-scroll">
-        {!!notice && <div className="vod-notice">{notice}</div>}
+        {!!notice && <div className="vod-notice">{t('vod.series.notice.' + notice)}</div>}
 
         <div className="vod-series-top">
           <div className="vod-series-left">
@@ -258,7 +263,7 @@ export function VodSeriesScreen ({ pick, onPlay, onBack }: {
             {!!detail?.plot && (
               <>
                 <div className={'vod-series-plot' + (expanded ? ' expanded' : '')}>{detail.plot}</div>
-                <button className="vod-chip" onClick={() => setExpanded((v) => !v)}>{expanded ? 'LESS' : 'MORE'}</button>
+                <button className="vod-chip" onClick={() => setExpanded((v) => !v)}>{expanded ? t('vod.series.less') : t('vod.series.more')}</button>
               </>
             )}
           </div>
@@ -296,9 +301,11 @@ function Poster ({ art, initial }: { art: string; initial: string }) {
 // A season tile wears the poster tile's clothes plus the mockup's episode-count badge in
 // the top-right corner of the art.
 function SeasonTile ({ season, active, onClick }: { season: VodSeason; active: boolean; onClick: () => void }) {
+  const { t } = useI18n()
   const [broken, setBroken] = useState(false)
   const showArt = !!season.icon && !broken
-  const label = season.title || `Season ${season.number || 1}`
+  // The provider's own season title wins; only the generated one is ours to translate.
+  const label = season.title || t('vod.series.season', { n: season.number || 1 })
   return (
     <button className={'vod-season' + (active ? ' active' : '')} onClick={onClick} title={label}>
       <span className="vod-poster">
@@ -315,15 +322,18 @@ function SeasonTile ({ season, active, onClick }: { season: VodSeason; active: b
 // One episode: number + title, the runtime as a chip, one line of plot, and this
 // DEVICE's own progress ("Resume at 12:34" / "Watched").
 function EpisodeRow ({ episode, seen, onClick }: { episode: VodEpisode; seen: VodHistoryEntry | null; onClick: () => void }) {
+  const { t } = useI18n()
   const duration = episode.durationSec && episode.durationSec > 0 ? formatDuration(episode.durationSec) : ''
   const progress = seen
-    ? (seen.positionSec > 0 ? `Resume at ${formatDuration(seen.positionSec)}` : 'Watched')
+    ? (seen.positionSec > 0 ? t('vod.series.resumeAt', { time: formatDuration(seen.positionSec) }) : t('vod.series.watched'))
     : ''
   return (
     <button className="vod-episode" onClick={onClick}>
       <span className="vod-episode-num">{episode.number || '-'}</span>
       <span className="vod-episode-body">
-        <span className="vod-episode-title">{episode.title || `Episode ${episode.number || ''}`.trim()}</span>
+        {/* Only template a label when there IS a number — see the client twin: the
+            trimmed-empty-hole trick is English-only ('. bölüm', '화', '第  集'). */}
+        <span className="vod-episode-title">{episode.title || (episode.number ? t('vod.series.episode', { n: episode.number }) : '')}</span>
         {!!episode.plot && <span className="vod-episode-plot">{episode.plot}</span>}
       </span>
       <span className="vod-episode-side">

@@ -47,6 +47,7 @@ import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideV
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranVideo, SelectedTrackType, type AliranVideoHandle, type TuneEvent, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
@@ -90,6 +91,7 @@ function clockText (d: Date) {
 }
 
 export function LiveScreen ({ route, navigation }: Props) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   // Parental gate (device policy): a restricted channel about to play while the PIN
@@ -250,8 +252,8 @@ export function LiveScreen ({ route, navigation }: Props) {
 
   // Wall clock for the bottom menu — tick twice a minute so the minute never lags far behind.
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 30000)
-    return () => clearInterval(t)
+    const timer = setInterval(() => setNow(new Date()), 30000)
+    return () => clearInterval(timer)
   }, [])
 
   // Left menu auto-hide: refresh the idle timer while the browse overlay is up; clear it
@@ -279,11 +281,14 @@ export function LiveScreen ({ route, navigation }: Props) {
   const list = model.groups[activeKey] ?? []
   // Rail contents: top-level categories, or (when drilled) the parent's sub-categories.
   const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
+  // Every rail name but one is the OPERATOR's own category and is never translated;
+  // 'All' is the everything-group this app adds itself, so it is the only label here
+  // that comes out of the catalog.
   const railItems = inDrill
     ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
-    : model.top.map((key) => ({ key, label: key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
+    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
   const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0] // top view highlights the parent
-  const listHeading = activeKey === 'All' ? 'CHANNELS' : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toUpperCase()).join('  ›  ')
+  const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find(s => s.id === playingId) ?? null
   // The playing record is a vod library title (S8a): transport UI on the bar, pause is
   // app-owned, and the SDK's live self-heal is off (it keys on the port recordType).
@@ -352,7 +357,7 @@ export function LiveScreen ({ route, navigation }: Props) {
   // self-heals; 'playing' — the first real playback of the CURRENT tune, edge-proof
   // against mid-tune remounts — completes it (snap to 100%, brief hold, hide).
   function onTune (e: TuneEvent) {
-    if (e.phase === 'playing') setTuneUI(t => (t && t.id === e.id ? { ...t, active: false } : t))
+    if (e.phase === 'playing') setTuneUI(p => (p && p.id === e.id ? { ...p, active: false } : p))
     else setTuneUI({ id: e.id, phase: e.phase === 'start' ? 'tuning' : e.phase, active: true })
   }
 
@@ -444,7 +449,7 @@ export function LiveScreen ({ route, navigation }: Props) {
 
   const guideStrip = overlay === 'guide' && portrait
 
-  if (!streams.length) return <SectionLoading section="Live TV" hint="Waiting for the channel list…" />
+  if (!streams.length) return <SectionLoading section={t('menu.live')} hint={t('live.waitingForChannels')} />
 
   return (
     <View style={styles.container}>
@@ -555,7 +560,8 @@ export function LiveScreen ({ route, navigation }: Props) {
 
       {error && (
         <View style={styles.center} pointerEvents="none">
-          <Text style={styles.errorTitle}>Playback failed</Text>
+          <Text style={styles.errorTitle}>{t('live.playbackFailed')}</Text>
+          {/* The engine's own words, verbatim: SDK error prose stays English (S56). */}
           <Text style={styles.dim}>{error}</Text>
         </View>
       )}
@@ -578,7 +584,7 @@ export function LiveScreen ({ route, navigation }: Props) {
         <Pressable
           style={[styles.stripTap, { height: stripH }]}
           accessibilityRole="button"
-          accessibilityLabel="Full screen"
+          accessibilityLabel={t('live.fullscreen')}
           onPress={() => setOverlay('none')}
         />
       )}
@@ -669,8 +675,8 @@ export function LiveScreen ({ route, navigation }: Props) {
           PIN unlocks the rest of the app session. */}
       <PinEntryModal
         visible={!!pinTarget}
-        title="Enter PIN"
-        hint={pinTarget ? `"${pinTarget.title ?? pinTarget.id}" is access controlled.` : undefined}
+        title={t('live.enterPin')}
+        hint={pinTarget ? t('live.restricted', { title: pinTarget.title ?? pinTarget.id }) : undefined}
         onOk={() => {
           markUnlocked()
           const s = pinTarget

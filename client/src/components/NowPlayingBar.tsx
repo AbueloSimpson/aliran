@@ -17,6 +17,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, PanResponder } from 'react-native'
 import type { Stream } from '../worklet'
+import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration } from '../catalog'
 import { useEpg, useChannelThumb } from '@aliran/react-native'
 import { VolumeControl } from './VolumeControl'
@@ -57,6 +58,7 @@ export interface NowPlayingBarProps {
 }
 
 export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
+  const { t } = useI18n()
   // What's on NOW from the program guide (S27) — the airing program is more useful on
   // the bar than the channel synopsis. Falls back to the description ("via demotv")
   // for channels without an EPG. The channel synopsis still lives in the Info panel.
@@ -85,13 +87,13 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
               resizeMode="cover"
               onLoad={() => setThumbShown(true)}
               onError={() => { setThumbShown(false); onThumbError() }}
-              accessibilityLabel={thumbShown ? `${stream.title} — live preview` : undefined}
+              accessibilityLabel={thumbShown ? t('live.livePreview', { title: stream.title }) : undefined}
             />
           )}
           <View style={styles.main}>
             <View style={styles.titleLine}>
               <Text style={styles.title} numberOfLines={1}>{stream.title}</Text>
-              {stream.isLive && <Text style={styles.live}>● LIVE</Text>}
+              {stream.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
             </View>
             {!!subtitle && <Text style={styles.desc} numberOfLines={1}>{subtitle}</Text>}
             {/* Program progress under the title/now line — the zap-flash surface, so a
@@ -119,11 +121,11 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
         {/* Touch controls — phone only (see file header). */}
         {!theme.isTV && (
           <View style={styles.buttons}>
-            <BarButton glyph="☰" label="Channels" onPress={onChannels} />
-            <BarButton glyph="ⓘ" label="Info" onPress={onInfo} />
-            <BarButton glyph={favorite ? '★' : '☆'} label="Favorite" active={favorite} onPress={onToggleFavorite} />
-            <BarButton glyph="⚑" label="Report" onPress={onReport} />
-            {hasTracks && <BarButton glyph="CC" label="Subtitles" onPress={() => onTracks?.()} />}
+            <BarButton glyph="☰" label={t('live.bar.channels')} onPress={onChannels} />
+            <BarButton glyph="ⓘ" label={t('live.bar.info')} onPress={onInfo} />
+            <BarButton glyph={favorite ? '★' : '☆'} label={t('live.bar.favorite')} active={favorite} onPress={onToggleFavorite} />
+            <BarButton glyph="⚑" label={t('live.bar.report')} onPress={onReport} />
+            {hasTracks && <BarButton glyph="CC" label={t('live.bar.subtitles')} onPress={() => onTracks?.()} />}
             {onVolume && <VolumeControl volume={volume ?? 1} muted={!!muted} onChange={onVolume} />}
           </View>
         )}

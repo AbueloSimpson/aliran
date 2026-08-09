@@ -29,19 +29,34 @@ export async function openStore (dataDir, keys) {
   const metaNode = await db.get('meta/assetsKey')
   if (!metaNode || metaNode.value.key !== assetsKeyHex) await db.put('meta/assetsKey', { key: assetsKeyHex })
 
+  // Updates Hyperdrive (app OTA artifacts: /manifest.json + /pkg/ installers, ops.js).
+  // Same ownership/discovery pattern as assets, advertised under meta/updatesKey.
+  // blobsKey rides the record from day one so a keyless repeater can mirror the
+  // artifact blobs without opening the drive (precedent: the EPG pointer). Reading
+  // updates.blobs.core post-ready is safe on a writable drive — see guard 1 below.
+  const updates = new Hyperdrive(store.namespace('updates'))
+  await updates.ready()
+  const updatesKeyHex = b4a.toString(updates.key, 'hex')
+  const updatesBlobsHex = b4a.toString(updates.blobs.core.key, 'hex')
+  const upNode = await db.get('meta/updatesKey')
+  if (!upNode || upNode.value.key !== updatesKeyHex || upNode.value.blobsKey !== updatesBlobsHex) {
+    await db.put('meta/updatesKey', { key: updatesKeyHex, blobsKey: updatesBlobsHex })
+  }
+
   // Every core the panel owns is now open, and nothing else has opened one yet — the one
   // moment where the keep set below is complete by construction.
-  const reclaimed = reclaimStrayCores(dataDir, { store, core, assets })
+  const reclaimed = reclaimStrayCores(dataDir, { store, core, assets, updates })
   if (reclaimed && reclaimed.removed > 0) {
     console.log(`[gc] reclaimed ${reclaimed.removed} stray core dir(s), ${(reclaimed.bytesFreed / 1e6).toFixed(2)} MB freed (blobsKey probe cores stranded by earlier builds)`)
   }
 
-  return { store, db, core, assets, reclaimed }
+  return { store, db, core, assets, updates, reclaimed }
 }
 
-// The cores the panel OWNS: the signed bee (accounts + catalog) and the assets drive's
-// metadata + blobs cores. Anything else under <dataDir>/cores/ is stray.
-const PANEL_CORE_COUNT = 3
+// The cores the panel OWNS: the signed bee (accounts + catalog) plus the metadata +
+// blobs cores of the assets and updates drives. Anything else under <dataDir>/cores/
+// is stray.
+const PANEL_CORE_COUNT = 5
 
 // One-shot start-time reclaim of stray cores (the sweep itself is @aliran/core/store-gc.js,
 // shared with the broadcaster's retired-generation GC).
@@ -57,17 +72,21 @@ const PANEL_CORE_COUNT = 3
 // re-replicate it from. So it is guarded twice, and both guards fail SAFE (skip the sweep,
 // leak the disk, retry next start) rather than deleting anything they cannot account for:
 //
-//   1. all THREE of the panel's own discovery keys must resolve. They do by construction
+//   1. all FIVE of the panel's own discovery keys must resolve. They do by construction
 //      here — the bee core is opened by keyPair, and hyperdrive's _open() creates a WRITABLE
-//      drive's blobs core during ready(), so assets.blobs is never null at this point.
+//      drive's blobs core during ready(), so neither drive's .blobs is null at this point.
 //   2. every core the store currently holds OPEN is kept regardless. Today that is the same
-//      three, but it is what keeps this correct if openStore ever opens a fourth: it is kept
+//      five, but it is what keeps this correct if openStore ever opens a sixth: it is kept
 //      automatically, with no edit here. It also means a sweep can never yank a core out
 //      from under a live session, so calling this later (with an enricher probe in flight)
 //      would still be safe.
-export function reclaimStrayCores (dataDir, { store, core, assets }) {
+export function reclaimStrayCores (dataDir, { store, core, assets, updates }) {
   const keep = new Set()
-  for (const c of [core, assets && assets.core, assets && assets.blobs && assets.blobs.core]) {
+  for (const c of [
+    core,
+    assets && assets.core, assets && assets.blobs && assets.blobs.core,
+    updates && updates.core, updates && updates.blobs && updates.blobs.core
+  ]) {
     try { if (c && c.discoveryKey) keep.add(b4a.toString(c.discoveryKey, 'hex')) } catch {}
   }
   if (keep.size !== PANEL_CORE_COUNT) return null // cannot account for our own cores — delete nothing

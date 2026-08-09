@@ -36,7 +36,7 @@
 //                                        the player plays it directly, no localhost)
 //        { feedKey, encryptionKey }   -> dev direct-play (no login)
 //        { type:'prefs-get' }         -> { type:'prefs', creds, favorites, smoothZapping,
-//                                        service, vodList, vodHistory }
+//                                        service, vodList, vodHistory, language }
 //        { type:'creds-save', username, password } | { type:'creds-clear' }
 //        { type:'service-save', service: { panelPubKey, name? } } | { type:'service-clear' }
 //                                        (S36 runtime descriptor: the public keyless app
@@ -63,8 +63,22 @@
 //                                        from <AliranVideo>'s stall ladder)
 //        { type:'zap-prefetch-set', zapPrefetch }  -> runtime "Smooth zapping" toggle:
 //                                        boolean or config object, applied mid-play
+//        { type:'language-set', language }         -> the viewer's UI-language choice
+//                                        (S56e): one of the 14 supported codes, or null
+//                                        to clear the override and follow the DEVICE
+//                                        language again. Anything else is stored as
+//                                        null — an unknown code must never outlive the
+//                                        build that wrote it.
 //        { type:'net-info', expensive }            -> host network profile (NetInfo):
 //                                        expensive=true suspends zap prefetch
+//        { type:'update-check', appId, platform, versionCode, tag? }
+//                                     -> OTA app-update check against the panel's
+//                                        updates drive (meta/updatesKey; lazy,
+//                                        client-only join). Answers 'update-status'.
+//        { type:'update-download' }   -> download + sha256-verify the update the last
+//                                        'available' check found; progress/outcome
+//                                        arrive as 'update-progress' / 'update-ready'
+//                                        / 'update-error'
 //        { type:'report', category, text? }        -> viewer problem report (S50c):
 //                                        one of the seven sdk/report.js categories +
 //                                        optional free text. The engine attaches the
@@ -101,10 +115,20 @@
 //        { type:'prefs', creds: {username,password}|null, favorites: [streamId],
 //          smoothZapping: true|false|null,   (null = user never set the toggle)
 //          service: {panelPubKey,name?}|null,   (runtime-entered operator service)
-//          vodList: […], vodHistory: […] }   (device-local VOD prefs, S54a — always
+//          vodList: […], vodHistory: […],   (device-local VOD prefs, S54a — always
 //          arrays, empty on a build that never wrote one)
+//          language: 'es'|…|null }   (S56e UI language; null = no override, the app
+//          follows the device language)
 //        { type:'report-result', ok, error?, retryAfter?, id? }   (answer to 'report';
 //          error 'unsupported' = the panel predates reports / has them disabled)
+//        { type:'update-status', status, entry?, mandatory?, error?, tag? }   (answer
+//          to 'update-check'; status 'available' | 'current' | 'none' | 'unknown' —
+//          'unknown' = cannot say right now, try again later)
+//        { type:'update-progress', received, total }   (throttled download progress)
+//        { type:'update-ready', path, entry }   (artifact downloaded + sha256-verified;
+//          path is inside the app sandbox — hand it to the installer promptly, the
+//          store dir is a disposable cache)
+//        { type:'update-error', message }       (download/verify failure)
 //        { type:'pair-result', ok, panelPubKey?, name?, code?, error?, message?, tag? }
 //          (answer to 'pair-resolve'; error 'malformed' | 'timeout' | 'unverified' —
 //          'unverified' means a peer answered and could NOT prove it owns the code)
@@ -135,6 +159,15 @@ function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
 if (typeof Bare !== 'undefined' && typeof Bare.on === 'function') {
   Bare.on('uncaughtException', (err) => {
     try { send({ type: 'error', message: 'worklet: ' + String((err && err.message) || err) }) } catch {}
+  })
+  // A rejected promise nobody awaits is just as fatal as a throw — bare aborts the
+  // process unless a listener claims it. Same surface-over-IPC treatment; include the
+  // stack because the rejection site is otherwise invisible (no Java trace on Android).
+  Bare.on('unhandledRejection', (reason) => {
+    try {
+      const detail = (reason && reason.stack) || String((reason && reason.message) || reason)
+      send({ type: 'error', message: 'worklet: unhandled rejection: ' + detail })
+    } catch {}
   })
 }
 
@@ -217,6 +250,13 @@ function gateVodHistory (v) {
   return out
 }
 
+// The UI languages a viewer may pin (S56e). This is a RUNTIME-BOUNDARY DUPLICATE of
+// SUPPORTED_LOCALES in i18n/src/index.ts — the Bare worklet cannot import the app's
+// TypeScript — so tools/i18n-test.mjs asserts the two lists stay identical. Whitelisted
+// on READ as well as on write: the prefs file is plain JSON on the device, and a code
+// no build understands must resolve to "no override", never to a blank UI.
+const LANGUAGES = ['en', 'es', 'pt', 'fr', 'nl', 'de', 'it', 'ru', 'tr', 'hi', 'ja', 'zh-Hans', 'ko', 'th']
+
 function readPrefs () {
   try {
     const p = JSON.parse(b4a.toString(fs.readFileSync(prefsPath())))
@@ -226,6 +266,9 @@ function readPrefs () {
       // "Smooth zapping" toggle: null = the user never chose (boot uses the app's
       // compiled default), true/false = their persisted choice wins.
       smoothZapping: typeof (p && p.smoothZapping) === 'boolean' ? p.smoothZapping : null,
+      // UI language (S56e): null = the user never picked one, so the app follows the
+      // DEVICE language. A pinned code survives restarts and beats device detection.
+      language: LANGUAGES.includes(p && p.language) ? p.language : null,
       // Runtime service descriptor (S36): the operator panel key the public keyless
       // app connected to. Builds with a baked key ignore it (baked always wins).
       service: p && p.service && /^[0-9a-f]{64}$/.test(p.service.panelPubKey)
@@ -247,7 +290,7 @@ function readPrefs () {
         : null
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null }
+    return { creds: null, favorites: [], smoothZapping: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null }
   }
 }
 
@@ -316,6 +359,11 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
   player.on('zap-prefetch', (e) => send({ type: 'zap-prefetch', ...e }))
+  // OTA app updates: download progress/outcome relay 1:1 (the check reply is sent by
+  // its own dispatch case — it needs the request's tag).
+  player.on('update-progress', (e) => send({ type: 'update-progress', ...e }))
+  player.on('update-ready', (e) => send({ type: 'update-ready', ...e }))
+  player.on('update-error', (e) => send({ type: 'update-error', ...e }))
   // Background engine failures with no caller to throw to — most importantly the tune
   // watchdog's timeout. Dropping these left the app spinning forever on a dead tune.
   player.on('error', (err) => send({ type: 'error', message: String((err && err.message) || err) }))
@@ -398,6 +446,12 @@ IPC.on('data', (data) => {
       writePrefs({ ...readPrefs(), smoothZapping: !!msg.zapPrefetch })
       if (player) { try { player.setZapPrefetch(msg.zapPrefetch) } catch (err) { fail(err) } }
       sendPrefs()
+    } else if (msg.type === 'language-set') {
+      // The viewer's UI language (S56e). Persist-only: nothing in the engine is
+      // localized, so this never touches the player. A null/absent/unknown code clears
+      // the override, which is what "Device language" sends.
+      writePrefs({ ...readPrefs(), language: LANGUAGES.includes(msg.language) ? msg.language : null })
+      sendPrefs()
     } else if (msg.type === 'net-info') {
       if (player) {
         try {
@@ -413,6 +467,23 @@ IPC.on('data', (data) => {
           }).catch(() => {})
         } catch (err) { fail(err) }
       }
+    } else if (msg.type === 'update-check') {
+      // OTA update check. A UI awaiting 'update-status' must never hang on a dead
+      // engine, and only bad arguments make checkUpdate() throw — map both to the
+      // honest "cannot say right now" verdict rather than an error dialog.
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      if (!player) {
+        send({ type: 'update-status', status: 'unknown', ...tag })
+      } else {
+        player.checkUpdate({ appId: msg.appId, platform: msg.platform, versionCode: msg.versionCode })
+          .then((res) => send({ type: 'update-status', ...res, ...tag }))
+          .catch((err) => send({ type: 'update-status', status: 'unknown', error: String((err && err.message) || err), ...tag }))
+      }
+    } else if (msg.type === 'update-download') {
+      // Progress/outcome ride the event relays; the rejection carries the same error
+      // 'update-error' already delivered, so it is swallowed here (never doubled).
+      if (!player) send({ type: 'update-error', message: 'engine not started' })
+      else { try { player.downloadUpdate().catch(() => {}) } catch (err) { fail(err) } }
     } else if (msg.type === 'report') {
       // Viewer problem report (S50c). player.report() never throws and never rejects,
       // so this branch always answers — a UI waiting on 'report-result' must not be

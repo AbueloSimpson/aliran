@@ -33,11 +33,15 @@ This page covers how the client's embedded P2P node (a
   name → `/data/data/<pkg>/files`, for example) and **create** the dir —
   after a data clear it doesn't exist, and a bare probe strands you on a
   relative path.
-- **Any uncaught exception SIGABRTs the whole app process.** Install an
-  `uncaughtException` guard that reports over IPC as the last resort, and
-  treat every HTTP response your code writes as abortable (players cancel
-  requests constantly) — an unhandled "write after close" stream error
-  was exactly such a crash.
+- **Any uncaught exception SIGABRTs the whole app process — and so does an
+  unhandled promise rejection.** Install BOTH `Bare.on('uncaughtException')`
+  and `Bare.on('unhandledRejection')` guards that report over IPC as the
+  last resort (`client/backend/backend.mjs` shows the pair). A floating
+  promise that rejects aborts just like a throw, and the abort is a bare
+  native `js_callback` with no JS stack in the tombstone — near-impossible
+  to attribute after the fact. Also treat every HTTP response your code
+  writes as abortable (players cancel requests constantly) — an unhandled
+  "write after close" stream error was exactly such a crash.
 - **Debug loop:** worklet errors reach logcat as `E <package>: Uncaught …`
   with a `bare:/worklet.bundle/...` stack, then the abort. App-level
   errors after boot come back over IPC as `{type:'error'}`.

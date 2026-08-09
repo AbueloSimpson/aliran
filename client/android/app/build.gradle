@@ -77,13 +77,29 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
+    // Per-release version + signing properties (OTA update plumbing). Only active
+    // when tools/brand.mjs (or a release operator) passes the -P properties — a
+    // plain build keeps the hardcoded defaults and the debug keystore exactly as
+    // before. Android installs an update only when it is signed with the same key
+    // as the installed build, so shippable / OTA-able releases must pass a real
+    // keystore. Operator guide: docs/white-label.md "Shipping to production".
+    def aliranVersionCode = project.findProperty('aliranVersionCode')
+    if (aliranVersionCode != null && (!aliranVersionCode.toString().isInteger() || aliranVersionCode.toString().toInteger() < 1)) {
+        throw new GradleException("-PaliranVersionCode must be a positive integer versionCode (got '${aliranVersionCode}')")
+    }
+    def aliranStoreFile = project.findProperty('aliranStoreFile')
+    if (aliranStoreFile != null && !aliranStoreFile.toString().trim()) {
+        // An empty -PaliranStoreFile= must never silently fall back to debug signing.
+        throw new GradleException('-PaliranStoreFile is empty — pass the absolute keystore path, or omit the property entirely for a debug-signed build')
+    }
+
     namespace "com.aliranclient"
     defaultConfig {
         applicationId "com.aliranclient"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 4
-        versionName "0.5.0"
+        versionCode(aliranVersionCode != null ? aliranVersionCode.toString().toInteger() : 4)
+        versionName(project.findProperty('aliranVersionName') ?: "0.5.0")
     }
     signingConfigs {
         debug {
@@ -92,15 +108,39 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // Release keystore, property-gated like the brand flavor below. Passwords
+        // come from the environment only — never from files or -P properties, so
+        // they can't leak into brand dirs, shell history helpers, or gradle scans.
+        if (aliranStoreFile) {
+            def aliranKeyAlias = project.findProperty('aliranKeyAlias')
+            def aliranStorePassword = System.getenv('ALIRAN_STORE_PASSWORD')
+            def aliranKeyPassword = System.getenv('ALIRAN_KEY_PASSWORD')
+            if (!file(aliranStoreFile).isFile()) {
+                throw new GradleException("-PaliranStoreFile keystore not found: ${aliranStoreFile}")
+            }
+            if (!aliranKeyAlias) {
+                throw new GradleException('-PaliranStoreFile is set but -PaliranKeyAlias is missing — release signing needs the key alias')
+            }
+            if (!aliranStorePassword || !aliranKeyPassword) {
+                throw new GradleException('-PaliranStoreFile is set but ALIRAN_STORE_PASSWORD / ALIRAN_KEY_PASSWORD are not — release signing takes both passwords from those environment variables')
+            }
+            brandRelease {
+                storeFile file(aliranStoreFile)
+                storePassword aliranStorePassword
+                keyAlias aliranKeyAlias
+                keyPassword aliranKeyPassword
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Without -PaliranStoreFile the release keeps the public RN debug
+            // keystore: fine for demos, NOT shippable, and OTA updates will not
+            // install over a properly-signed build.
+            signingConfig(aliranStoreFile ? signingConfigs.brandRelease : signingConfigs.debug)
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

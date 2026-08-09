@@ -4,10 +4,20 @@
 
 import React from 'react'
 import { createRoot } from 'react-dom/client'
+import { getLocale, onLocaleChange } from '@aliran/i18n'
 import { backend } from './bridge'
+import { applyLocale } from './i18n'
 import { applyTheme } from './theme'
 import { App } from './App'
 import './styles.css'
+
+// Before anything renders: the saved choice, else the system language (S56e, D5).
+// Synchronous — no IPC, no fetch — so the first paint is already in the viewer's
+// language. index.html's static lang="en" is only the pre-JS default.
+applyLocale()
+const syncDocumentLang = () => { document.documentElement.lang = getLocale() }
+syncDocumentLang()
+onLocaleChange(syncDocumentLang)
 
 backend.init().then(() => {
   applyTheme(backend.descriptor)

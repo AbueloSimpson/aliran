@@ -34,6 +34,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Image, Pressable, FlatList, StyleSheet, Platform, BackHandler, TVFocusGuideView, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, categoryModel, splitCategory, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
@@ -74,6 +75,7 @@ export function GuideScreen (props: Props) {
 // ---------------------------------------------------------------------------
 
 function GuideScreenPhone ({ route, navigation }: Props) {
+  const { t } = useI18n()
   const tune = useCallback((s: Stream) => {
     // The same jump Favorites/Search make; Live honors the param when already
     // mounted. tuneKey makes even a VALUE-EQUAL streamId (re-tuning the channel
@@ -82,7 +84,7 @@ function GuideScreenPhone ({ route, navigation }: Props) {
   }, [navigation])
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>GUIDE</Text>
+      <Text style={styles.header}>{t('guide.header')}</Text>
       <GuidePanel playingId={route.params?.streamId ?? null} onTune={tune} />
     </View>
   )
@@ -93,6 +95,7 @@ function GuideScreenPhone ({ route, navigation }: Props) {
 // ---------------------------------------------------------------------------
 
 function GuideScreenTV ({ route, navigation }: Props) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // Category scope — the CategoryRail's two-level model rendered as chips (a rail
   // would eat width this timeline needs; chips are the VOD tab-bar grammar). The
@@ -135,7 +138,7 @@ function GuideScreenTV ({ route, navigation }: Props) {
     navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now() })
   }, [navigation])
 
-  if (!streams.length) return <SectionLoading section="Guide" hint="Waiting for the channel list…" />
+  if (!streams.length) return <SectionLoading section={t('menu.guide')} hint={t('live.waitingForChannels')} />
 
   return <GuideGrid model={model} activeKey={activeKey} onSelectCategory={pickCategory} list={list} numbers={numbers} playingId={playingId} nowMs={nowMs} onTune={tune} />
 }
@@ -152,6 +155,7 @@ interface GuideBodyProps {
 }
 
 function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playingId, nowMs, onTune }: GuideBodyProps) {
+  const { t } = useI18n()
   const { width } = useWindowDimensions()
   const stripW = Math.max(GUIDE_SLOTS * MIN_CELL_W, width - theme.safeX * 2 - CH_COL_W)
   const pxPerMin = stripW / GUIDE_WINDOW_MIN
@@ -237,7 +241,7 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
-        <Text style={styles.header}>GUIDE</Text>
+        <Text style={styles.header}>{t('guide.header')}</Text>
         <FocusPane autoFocus style={styles.chipsPane}>
           <CategoryChips model={model} activeKey={activeKey} onSelect={onSelectCategory} onNow={jumpToNow} nowPillRef={nowPillRef} />
         </FocusPane>
@@ -316,6 +320,7 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
   focusedCellStart: number | null
   onPrograms: (id: string, programs: EpgProgram[]) => void
 }) {
+  const { t } = useI18n()
   const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
   useEffect(() => { onPrograms(stream.id, programs) }, [stream.id, programs, onPrograms])
   const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
@@ -334,14 +339,14 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
       <View style={styles.chCell}>
         <Text style={styles.chNumber}>{formatChannelNumber(number)}</Text>
         {art
-          ? <Image source={{ uri: art }} style={styles.chThumb} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? `${stream.title} — live preview` : undefined} />
+          ? <Image source={{ uri: art }} style={styles.chThumb} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? t('live.livePreview', { title: stream.title }) : undefined} />
           : <View style={[styles.chThumb, styles.chThumbFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0
           ? (
             <View style={[styles.cell, styles.cellAtStart, { width: stripW }, focusedCellStart != null && styles.cellFocused]}>
-              <Text style={[styles.cellTitle, styles.cellEmpty, focusedCellStart != null && styles.cellTitleFocused]} numberOfLines={1}>No program information</Text>
+              <Text style={[styles.cellTitle, styles.cellEmpty, focusedCellStart != null && styles.cellTitleFocused]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
             </View>
             )
           : visible.map((p) => {

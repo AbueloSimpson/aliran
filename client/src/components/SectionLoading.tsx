@@ -3,6 +3,7 @@
 // mounts before its data is ready — never a blank screen.
 import React from 'react'
 import { View, Text, ActivityIndicator, StyleSheet } from 'react-native'
+import { getLocale } from '@aliran/i18n'
 import { loadServiceDescriptor } from '../config'
 import { theme } from '../theme'
 
@@ -12,7 +13,7 @@ export function SectionLoading ({ section, hint }: { section: string; hint?: str
   return (
     <View style={styles.container}>
       <Text style={styles.wordmark}>{service.name}</Text>
-      <Text style={styles.section}>{section.toUpperCase()}</Text>
+      <Text style={styles.section}>{section.toLocaleUpperCase(getLocale())}</Text>
       <ActivityIndicator size="large" color={theme.colors.primary} style={styles.spinner} />
       {hint ? <Text style={styles.hint}>{hint}</Text> : null}
     </View>

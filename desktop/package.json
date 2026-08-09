@@ -15,6 +15,7 @@
     "dist:mac": "npm run build && electron-builder --mac dmg zip"
   },
   "dependencies": {
+    "@aliran/i18n": "file:../i18n",
     "@aliran/player-sdk": "^0.1.1",
     "hls.js": "^1.6.0",
     "react": "^19.1.0",

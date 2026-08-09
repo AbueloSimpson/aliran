@@ -7,6 +7,7 @@
 // given (items + optional parent header).
 import React, { useState } from 'react'
 import { View, ScrollView, Text, Pressable, StyleSheet, Platform } from 'react-native'
+import { getLocale } from '@aliran/i18n'
 import { theme } from '../theme'
 
 export interface CategoryRailItem {
@@ -28,13 +29,17 @@ export interface CategoryRailProps {
   onActivity?: () => void
 }
 
+// The rail is MIXED copy: 'All' is ours and translated, every other label is the
+// operator's own category name in the operator's language. There is no casing rule that
+// is right for both, so the whole rail follows the VIEWER's locale (S56f decision) —
+// a Turkish viewer's "i" upper-cases to "İ" everywhere on the surface, consistently.
 export function CategoryRail ({ items, selected, parentHeader, onSelect, onActivity }: CategoryRailProps) {
   return (
     <View style={styles.rail}>
       {parentHeader && (
         <BackHeader label={parentHeader.label} onBack={parentHeader.onBack} onActivity={onActivity} />
       )}
-      <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false} onScrollBeginDrag={onActivity}>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} onScrollBeginDrag={onActivity}>
         {items.map((it) => (
           <RailItem
             key={it.key}
@@ -59,7 +64,7 @@ function BackHeader ({ label, onBack, onActivity }: { label: string; onBack: () 
       onBlur={() => setFocused(false)}
       onPress={() => { onActivity?.(); onBack() }}
     >
-      <Text style={[styles.backText, focused && styles.labelActive]} numberOfLines={1}>‹ {label.toUpperCase()}</Text>
+      <Text style={[styles.backText, focused && styles.labelActive]} numberOfLines={1}>‹ {label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
@@ -78,7 +83,7 @@ function RailItem ({ label, hasChildren, active, onSelect, onActivity }: { label
     >
       <View style={styles.itemRow}>
         <Text style={[styles.label, (active || focused) && styles.labelActive]} numberOfLines={1}>
-          {label.toUpperCase()}
+          {label.toLocaleUpperCase(getLocale())}
         </Text>
         {hasChildren && <Text style={[styles.chevron, (active || focused) && styles.labelActive]}>›</Text>}
       </View>
@@ -92,6 +97,10 @@ function RailItem ({ label, hasChildren, active, onSelect, onActivity }: { label
 const styles = StyleSheet.create({
   rail: { flexGrow: 0 },
   scroll: { flexGrow: 0 },
+  // Curved-display phones (S22 Ultra) have a touch dead zone along the bottom edge:
+  // without this, the rail's last item scrolls flush to the glass curve and cannot be
+  // tapped. The pad lets the list scroll one item-height past the end, clear of it.
+  scrollContent: { paddingBottom: theme.spacing(6) },
   back: { paddingVertical: theme.isTV ? 10 : 7, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
   backText: { color: theme.colors.accent, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '800', letterSpacing: 1 },
   item: { paddingVertical: theme.isTV ? 10 : 7, paddingHorizontal: theme.spacing(1) },

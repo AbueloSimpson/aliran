@@ -296,6 +296,8 @@ img { -webkit-user-drag: none; }
 }
 .channel-rows { flex: 1; overflow-y: auto; min-height: 0; }
 
+/* Rows are windowed (ChannelList.tsx): absolutely positioned at a fixed height,
+ * so the inter-row gap lives in the ROW_H math there, not in a margin here. */
 .channel-row {
   display: flex;
   align-items: center;
@@ -303,7 +305,7 @@ img { -webkit-user-drag: none; }
   padding: 8px 10px;
   border-radius: 8px;
   border-left: 3px solid transparent;
-  margin-bottom: 2px;
+  overflow: hidden;
   cursor: pointer;
   /* Pinned TV row geometry (the client's ROW_INNER_H 80 + 2px gap): the 112×63 live
      thumb sets the height, and every row lays out identically whether or not it has
@@ -792,6 +794,14 @@ img { -webkit-user-drag: none; }
   margin-right: 10px;
 }
 .settings-btn:hover { border-color: var(--c-focus); color: var(--c-accent); }
+/* The language picker: a native <select> wearing the settings-button skin, so the OS
+   still owns the popup (keyboard, scrolling and IME all keep working). */
+.settings-select {
+  background: var(--c-background); color: var(--c-text);
+  border: 1px solid var(--c-text-dim); border-radius: 8px;
+  padding: 9px 12px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.settings-select:hover, .settings-select:focus { border-color: var(--c-focus); outline: none; }
 .settings-btn.danger { border-color: var(--c-live); }
 .settings-btn.danger:hover { color: var(--c-live); border-color: var(--c-live); }
 

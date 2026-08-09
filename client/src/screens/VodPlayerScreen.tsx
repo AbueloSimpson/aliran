@@ -31,6 +31,7 @@ import Video, { type VideoRef } from 'react-native-video'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { SelectedTrackType, type AudioTrack, type SelectedTrack, type TextTrack, type VodHistoryEntry } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { TrackMenu } from '../components/TrackMenu'
 import { VolumeControl } from '../components/VolumeControl'
@@ -53,6 +54,7 @@ export const BAR_IDLE_MS = 5000
 export const SKIP_STEPS = [10, 30] as const
 
 export function VodPlayerScreen ({ route, navigation }: Props) {
+  const { t } = useI18n()
   const { url, title, durationSec, id, kind, seriesId, resumeSec } = route.params
   const player = useRef<VideoRef | null>(null)
   const [paused, setPaused] = useState(false)
@@ -238,14 +240,14 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
       {loading && !failed && (
         <View style={styles.center}>
           <ActivityIndicator color={theme.colors.accent} />
-          <Text style={styles.hint}>Starting {title}…</Text>
+          <Text style={styles.hint}>{t('vod.player.starting', { title })}</Text>
         </View>
       )}
 
       {failed && (
         <View style={styles.center}>
-          <Text style={styles.errorTitle}>This title won't play</Text>
-          <Text style={styles.hint}>The movie catalog couldn't deliver it right now. Try another title, or come back later.</Text>
+          <Text style={styles.errorTitle}>{t('vod.player.failedTitle')}</Text>
+          <Text style={styles.hint}>{t('vod.player.failedHint')}</Text>
         </View>
       )}
 
@@ -269,7 +271,7 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
             {!theme.isTV && hasTracks && (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Audio and subtitles"
+                accessibilityLabel={t('vod.player.tracks')}
                 style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
                 onPress={() => { setShowTracks(true); showBar() }}
               >
@@ -282,8 +284,8 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
               ⟲30 ⟲10 ▶ ⟳10 ⟳30. */}
           {!theme.isTV && (
             <View style={styles.skipRow} pointerEvents="auto">
-              <SkipButton label={`↺${SKIP_STEPS[1]}`} a11y={`Back ${SKIP_STEPS[1]} seconds`} onPress={() => { nudge(-SKIP_STEPS[1]); showBar() }} />
-              <SkipButton label={`↺${SKIP_STEPS[0]}`} a11y={`Back ${SKIP_STEPS[0]} seconds`} onPress={() => { nudge(-SKIP_STEPS[0]); showBar() }} />
+              <SkipButton label={`↺${SKIP_STEPS[1]}`} a11y={t('vod.player.back', { n: SKIP_STEPS[1] })} onPress={() => { nudge(-SKIP_STEPS[1]); showBar() }} />
+              <SkipButton label={`↺${SKIP_STEPS[0]}`} a11y={t('vod.player.back', { n: SKIP_STEPS[0] })} onPress={() => { nudge(-SKIP_STEPS[0]); showBar() }} />
               <Pressable
                 accessibilityRole="button"
                 style={({ pressed }) => [styles.playBtn, pressed && styles.playBtnActive]}
@@ -297,8 +299,8 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
               >
                 <Text style={styles.playGlyph}>{paused ? '▶' : '❚❚'}</Text>
               </Pressable>
-              <SkipButton label={`↻${SKIP_STEPS[0]}`} a11y={`Forward ${SKIP_STEPS[0]} seconds`} onPress={() => { nudge(SKIP_STEPS[0]); showBar() }} />
-              <SkipButton label={`↻${SKIP_STEPS[1]}`} a11y={`Forward ${SKIP_STEPS[1]} seconds`} onPress={() => { nudge(SKIP_STEPS[1]); showBar() }} />
+              <SkipButton label={`↻${SKIP_STEPS[0]}`} a11y={t('vod.player.forward', { n: SKIP_STEPS[0] })} onPress={() => { nudge(SKIP_STEPS[0]); showBar() }} />
+              <SkipButton label={`↻${SKIP_STEPS[1]}`} a11y={t('vod.player.forward', { n: SKIP_STEPS[1] })} onPress={() => { nudge(SKIP_STEPS[1]); showBar() }} />
             </View>
           )}
         </Animated.View>

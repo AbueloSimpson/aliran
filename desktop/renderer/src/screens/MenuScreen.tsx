@@ -10,6 +10,7 @@
 // is null otherwise), and a brand can still switch it off with sections.vod:false.
 
 import React, { useEffect, useMemo, useState } from 'react'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream, SectionToggles } from '../types'
 import { pickHero } from '../catalog'
@@ -19,9 +20,13 @@ import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
 
 export type MenuTarget = 'live' | 'guide' | 'vod' | 'favorites' | 'search' | 'settings' | 'exit'
 
-interface MenuItem { key: MenuTarget; label: string; glyph: string }
+// The tile carries its TARGET and its glyph, never its label: the label is looked up
+// at render (t('menu.' + key)), so a language change repaints a menu this memo would
+// otherwise hold frozen in the language it was first built in.
+interface MenuItem { key: MenuTarget; glyph: string }
 
 export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [focus, setFocus] = useState(0)
   // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
@@ -55,13 +60,13 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
     // sections.guide is new with the guide hub (WS5) — typed locally until the
     // descriptor's SectionToggles grows the field.
     const s: SectionToggles & { guide?: boolean } = backend.descriptor?.sections ?? {}
-    const list: MenuItem[] = [{ key: 'live', label: 'Live TV', glyph: '📺' }]
-    if (s.guide !== false) list.push({ key: 'guide', label: 'Guide', glyph: '🗓️' })
-    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: 'Movies & Series', glyph: '🎬' })
-    if (s.favorites !== false) list.push({ key: 'favorites', label: 'Favorites', glyph: '⭐' })
-    if (s.search !== false) list.push({ key: 'search', label: 'Search', glyph: '🔍' })
-    if (s.settings !== false) list.push({ key: 'settings', label: 'Settings', glyph: '⚙️' })
-    if (s.exit !== false) list.push({ key: 'exit', label: 'Exit', glyph: '🚪' })
+    const list: MenuItem[] = [{ key: 'live', glyph: '📺' }]
+    if (s.guide !== false) list.push({ key: 'guide', glyph: '🗓️' })
+    if (vodEnabled && s.vod !== false) list.push({ key: 'vod', glyph: '🎬' })
+    if (s.favorites !== false) list.push({ key: 'favorites', glyph: '⭐' })
+    if (s.search !== false) list.push({ key: 'search', glyph: '🔍' })
+    if (s.settings !== false) list.push({ key: 'settings', glyph: '⚙️' })
+    if (s.exit !== false) list.push({ key: 'exit', glyph: '🚪' })
     return list
   }, [vodEnabled])
 
@@ -87,7 +92,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
         <img
           className="menu-wallpaper"
           src={heroThumb}
-          alt={`${hero.title} — live now`}
+          alt={t('menu.heroLiveNow', { title: hero.title ?? '' })}
           onError={() => { setThumbShown(false); onHeroThumbError() }}
           onLoad={() => setThumbShown(true)}
         />
@@ -103,7 +108,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
             onClick={() => onGo(item.key)}
           >
             <span className="menu-glyph">{item.glyph}</span>
-            <span className="menu-label">{item.label.toUpperCase()}</span>
+            <span className="menu-label">{t('menu.' + item.key).toLocaleUpperCase(getLocale())}</span>
           </div>
         ))}
       </div>
@@ -112,14 +117,14 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
         <div className="menu-wordmark">{backend.descriptor?.name ?? 'Aliran'}</div>
         {hero && (
           <div className="menu-hero-line">
-            {hero.isLive && <span className="np-live">● LIVE</span>}
+            {hero.isLive && <span className="np-live">{t('common.liveBadge')}</span>}
             <span className="menu-hero-title">{hero.title}</span>
           </div>
         )}
         {!!nowTitle && (
           <div className="menu-hero-line">
             {/* The chip needs live evidence: only after a feed frame actually loaded. */}
-            {thumbShown && <span className="badge-live">LIVE</span>}
+            {thumbShown && <span className="badge-live">{t('common.live')}</span>}
             <span className="menu-hero-title">{nowTitle}</span>
           </div>
         )}

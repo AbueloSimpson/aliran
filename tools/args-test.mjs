@@ -117,17 +117,21 @@ assert.deepStrictEqual(hwDeviceArgs('h264_qsv'), ['-init_hw_device', 'qsv=qsv:hw
 assert.deepStrictEqual(hwDeviceArgs('libx264'), [])
 const outDir = path.join('data', 'out')
 assert.deepStrictEqual(ffmpegArgs({ input: 'test', hls: HLS }, outDir), [
+  // -y leads every argv: a watchdog respawn reuses the staging dir with stdin
+  // ignored, so image2's overwrite prompt would read EOF and kill the spawn.
+  '-y',
   ...inputArgs({ kind: 'test' }),
   ...encodeArgs(null, HLS),
   ...hlsMuxArgs(HLS, outDir)
-], 'legacy string input still builds the full pre-S15a pipeline')
+], 'legacy string input still builds the full pre-S15a pipeline (behind the -y overwrite guard)')
 const vaapiFull = ffmpegArgs({
   input: { kind: 'udp', port: 5004, timeoutMs: 10000 },
   transcode: { encoder: 'h264_vaapi' },
   hls: HLS,
   vaapiDevice: '/dev/dri/renderD128'
 }, outDir)
-assert.strictEqual(vaapiFull[0], '-init_hw_device', 'hw device init is a global option')
+assert.strictEqual(vaapiFull[0], '-y', 'the overwrite guard leads every argv — a respawn must never hit the image2 prompt')
+assert.strictEqual(vaapiFull[1], '-init_hw_device', 'hw device init is a global option, right after -y')
 assert.ok(vaapiFull.indexOf('-init_hw_device') < vaapiFull.indexOf('-i'), 'hw init precedes -i')
 assert.deepStrictEqual(hlsMuxArgs(HLS, outDir).slice(-2),
   [path.join(outDir, 'seg%d.ts'), path.join(outDir, 'index.m3u8')].slice(-2))

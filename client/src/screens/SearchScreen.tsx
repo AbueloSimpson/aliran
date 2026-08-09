@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { View, Text, TextInput, FlatList, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, sortByCuration } from '../catalog'
@@ -14,6 +15,7 @@ import { theme } from '../theme'
 type Props = NativeStackScreenProps<RootStackParamList, 'Search'>
 
 export function SearchScreen ({ navigation }: Props) {
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   const [query, setQuery] = useState('')
@@ -35,14 +37,14 @@ export function SearchScreen ({ navigation }: Props) {
       s.description?.toLowerCase().includes(q) ||
       s.category?.some(c => c.toLowerCase().includes(q))
     ))
-  }, [streams, query])
+  }, [streams, query, locale])
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>SEARCH</Text>
+      <Text style={styles.header}>{t('search.header')}</Text>
       <TextInput
         style={[styles.input, focused && styles.inputFocused]}
-        placeholder="Channel, program or category…"
+        placeholder={t('search.placeholder')}
         placeholderTextColor={theme.colors.textDim}
         autoCapitalize="none"
         autoFocus
@@ -53,7 +55,7 @@ export function SearchScreen ({ navigation }: Props) {
       />
       {results.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>No channels match "{query.trim()}"</Text>
+          <Text style={styles.emptyText}>{t('search.noResults', { query: query.trim() })}</Text>
         </View>
       ) : (
         <FlatList

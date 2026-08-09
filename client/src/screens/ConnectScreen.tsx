@@ -18,6 +18,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, TextInput, Pressable, ScrollView, StyleSheet, ActivityIndicator } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { loadServiceDescriptor, PANEL_KEY_RE, PAIRING_GROUPS, PAIRING_GROUP_SIZE, cleanPairingInput } from '../config'
 import { theme } from '../theme'
@@ -33,24 +34,38 @@ const RETRY_MS = 2500
 const MAX_RETRIES = 24 // ≈1 minute of dialing before calling the service unreachable
 
 // A pairing code that failed is never a "try again" — each reason has its own fix.
-const PAIR_ERRORS: Record<string, string> = {
-  malformed: 'That code is not complete. It has 12 characters, like A3K7-9QF2-M4XR.',
-  timeout: 'No service answered that code. Check the code, and check your connection.',
+// The engine's code maps onto a CATALOG LEAF, never onto copy: the sentence is looked
+// up at render (t('connect.error.' + …)), so a language change repaints an error that
+// is already on screen.
+const PAIR_ERROR_CODES: Record<string, string> = {
+  malformed: 'malformed',
+  timeout: 'timeout',
   // The dangerous one: something DID answer and could not prove it owns the code.
-  unverified: 'A service answered that code but could not prove it owns it. Ask your operator for the code again.'
+  unverified: 'unverified'
 }
+
+// The two things this screen can show: our own copy (a connect.error.* leaf) or the
+// engine's message verbatim, which stays English by design (S56 — no error-code
+// refactor in the SDK).
+type Failure = { code: string } | { text: string }
+
+// The intro is ONE sentence in the catalog, never assembled from translated fragments.
+// Its three emphasised nouns arrive as {placeholders} — a translator can move them
+// wherever the language needs them — and are re-wrapped in bold at render.
+const INTRO_SLOTS = /(\{method\}|\{username\}|\{password\})/
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Connect'>
 
 export function ConnectScreen ({ navigation }: Props) {
+  const { t } = useI18n()
   const [mode, setMode] = useState<'code' | 'key'>('code')
   const [groups, setGroups] = useState<string[]>(() => Array(PAIRING_GROUPS).fill(''))
   const [panelKey, setPanelKey] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'finding' | null>(null)
+  const [error, setError] = useState<Failure | null>(null)
   const [focused, setFocused] = useState<string | null>(null)
   const groupRefs = useRef<Array<TextInput | null>>([])
   const tries = useRef(0)
@@ -87,8 +102,8 @@ export function ConnectScreen ({ navigation }: Props) {
           setBusy(false)
           setStatus(null)
           setError(TRANSIENT.test(m.message)
-            ? 'Cannot reach the service — check the details you entered and your connection.'
-            : m.message)
+            ? { code: 'unreachable' }
+            : { text: m.message })
         }
       }
     })
@@ -112,7 +127,7 @@ export function ConnectScreen ({ navigation }: Props) {
   // login -> persist-on-success sequence.
   const start = (key: string, name: string) => {
     setError(null)
-    setStatus('Connecting to the service…')
+    setStatus('connecting')
     setBusy(true)
     tries.current = 0
     attempt.current = { key, username, password, name }
@@ -123,13 +138,13 @@ export function ConnectScreen ({ navigation }: Props) {
   const onSubmit = async () => {
     if (busy) return
     if (!username || !password) {
-      setError('Enter your username and password.')
+      setError({ code: 'credentials' })
       return
     }
     if (mode === 'key') {
       const key = panelKey.trim().toLowerCase()
       if (!PANEL_KEY_RE.test(key)) {
-        setError('The panel key should be 64 characters (0–9, a–f) — ask your operator for it.')
+        setError({ code: 'badKey' })
         return
       }
       start(key, service.name)
@@ -137,19 +152,20 @@ export function ConnectScreen ({ navigation }: Props) {
     }
     const code = groups.join('')
     if (code.length !== PAIRING_GROUPS * PAIRING_GROUP_SIZE) {
-      setError(PAIR_ERRORS.malformed)
+      setError({ code: 'malformed' })
       return
     }
     // Resolving is a DHT search plus one memory-hard verification, so it is slow
     // enough to need its own status line.
     setError(null)
-    setStatus('Finding the service…')
+    setStatus('finding')
     setBusy(true)
     const res = await backend.resolvePairing(code)
     if (!res.ok || !res.panelPubKey) {
       setBusy(false)
       setStatus(null)
-      setError(PAIR_ERRORS[res.error ?? ''] ?? res.message ?? PAIR_ERRORS.timeout)
+      const known = PAIR_ERROR_CODES[res.error ?? '']
+      setError(known ? { code: known } : res.message ? { text: res.message } : { code: 'timeout' })
       return
     }
     start(res.panelPubKey, res.name || service.name)
@@ -160,14 +176,21 @@ export function ConnectScreen ({ navigation }: Props) {
     setMode((m) => (m === 'code' ? 'key' : 'code'))
   }
 
+  // What each intro placeholder renders as. Resolved every render, so the sentence
+  // follows both the current mode and the current language.
+  const slots: Record<string, string> = {
+    '{method}': mode === 'code' ? t('connect.introCode') : t('connect.introKey'),
+    '{username}': t('connect.introUsername'),
+    '{password}': t('connect.introPassword')
+  }
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>{service.name}</Text>
       <Text style={styles.intro}>
-        Connect to your operator's service. You need the three things they gave you: the{' '}
-        <Text style={styles.introBold}>{mode === 'code' ? 'pairing code' : 'panel key'}</Text>, a{' '}
-        <Text style={styles.introBold}>username</Text> and a <Text style={styles.introBold}>password</Text>.
-        No URLs — the app finds the service over the peer-to-peer network.
+        {t('connect.intro').split(INTRO_SLOTS).map((part, i) => (
+          slots[part] ? <Text key={i} style={styles.introBold}>{slots[part]}</Text> : part
+        ))}
       </Text>
 
       {mode === 'code'
@@ -185,7 +208,7 @@ export function ConnectScreen ({ navigation }: Props) {
                 maxLength={PAIRING_GROUP_SIZE}
                 hasTVPreferredFocus={i === 0}
                 value={g}
-                onChangeText={(t) => onGroupChange(i, t)}
+                onChangeText={(v) => onGroupChange(i, v)}
                 onKeyPress={(e) => onGroupKey(i, e.nativeEvent.key)}
                 onFocus={() => setFocused('g' + i)}
                 onBlur={() => setFocused(null)}
@@ -196,7 +219,7 @@ export function ConnectScreen ({ navigation }: Props) {
         : (
           <TextInput
             style={[styles.input, styles.keyInput, focused === 'key' && styles.focusedInput]}
-            placeholder="Panel public key (64 characters)"
+            placeholder={t('connect.keyPlaceholder')}
             placeholderTextColor={theme.colors.textDim}
             autoCapitalize="none"
             autoCorrect={false}
@@ -215,13 +238,13 @@ export function ConnectScreen ({ navigation }: Props) {
         onPress={switchMode}
       >
         <Text style={styles.linkText}>
-          {mode === 'code' ? 'Enter the 64-character panel key instead' : 'Enter the 12-character pairing code instead'}
+          {mode === 'code' ? t('connect.switchToKey') : t('connect.switchToCode')}
         </Text>
       </Pressable>
 
       <TextInput
         style={[styles.input, focused === 'user' && styles.focusedInput]}
-        placeholder="Username"
+        placeholder={t('common.username')}
         placeholderTextColor={theme.colors.textDim}
         autoCapitalize="none"
         autoCorrect={false}
@@ -232,7 +255,7 @@ export function ConnectScreen ({ navigation }: Props) {
       />
       <TextInput
         style={[styles.input, focused === 'pass' && styles.focusedInput]}
-        placeholder="Password"
+        placeholder={t('common.password')}
         placeholderTextColor={theme.colors.textDim}
         secureTextEntry
         value={password}
@@ -240,8 +263,8 @@ export function ConnectScreen ({ navigation }: Props) {
         onFocus={() => setFocused('pass')}
         onBlur={() => setFocused(null)}
       />
-      {error && <Text style={styles.error}>{error}</Text>}
-      {busy && !error && status && <Text style={styles.status}>{status}</Text>}
+      {error && <Text style={styles.error}>{'code' in error ? t('connect.error.' + error.code) : error.text}</Text>}
+      {busy && !error && status && <Text style={styles.status}>{t('connect.status.' + status)}</Text>}
       <Pressable
         style={[styles.button, focused === 'submit' && styles.focusedInput]}
         disabled={busy}
@@ -249,7 +272,7 @@ export function ConnectScreen ({ navigation }: Props) {
         onBlur={() => setFocused(null)}
         onPress={onSubmit}
       >
-        {busy ? <ActivityIndicator color={theme.colors.onPrimary} /> : <Text style={styles.buttonText}>Connect</Text>}
+        {busy ? <ActivityIndicator color={theme.colors.onPrimary} /> : <Text style={styles.buttonText}>{t('connect.submit')}</Text>}
       </Pressable>
     </ScrollView>
   )

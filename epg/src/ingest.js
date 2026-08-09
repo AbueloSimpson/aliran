@@ -119,11 +119,37 @@ export function parseXmltv (xml, opts) {
 
 // --- providers ---
 
+// Per-request time budget for the fetching providers. Without one, a stalled
+// upstream parks a run on undici's default ~5-minute header/body timeouts — and
+// a truly hung socket for as long as the OS keeps it open. The abort signal is
+// handed to fetchImpl; the race also bounds body reads and impls that ignore it.
+const FETCH_TIMEOUT_SECONDS = 60
+
+async function fetchWithTimeout (spec, fn) {
+  const ctl = new AbortController()
+  let timer
+  // Deliberately NOT unref'd (unlike the scheduler's interval timers): it lives
+  // only as long as one request and must fire even if the hung fetch is the last
+  // thing keeping the event loop alive.
+  const timedOut = new Promise((resolve, reject) => {
+    timer = setTimeout(() => { ctl.abort(); reject(new Error('timeout')) }, (spec.timeoutSeconds || FETCH_TIMEOUT_SECONDS) * 1000)
+  })
+  try {
+    return await Promise.race([fn(ctl.signal), timedOut])
+  } catch (err) {
+    throw ctl.signal.aborted ? new Error('timeout') : err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // provider-json: https fetch of the same feed shape epgUrl points at today, with
 // ETag revalidation so a quiet poll costs a 304 and produces an EMPTY guide (the
 // scheduler then touches nothing — zero drive appends).
 // spec.headers (optional, all fetching providers): extra request headers, e.g. the
 // auth secret of a private feed. Never logged; providers.json already holds urls.
+// spec.timeoutSeconds (optional, all fetching providers): per-request budget,
+// default FETCH_TIMEOUT_SECONDS.
 export function providerJson (spec) {
   let etag = null
   return {
@@ -134,11 +160,13 @@ export function providerJson (spec) {
     async fetch ({ guideDays, fetchImpl = fetch }) {
       const headers = { accept: 'application/json', ...(spec.headers || {}) }
       if (etag) headers['if-none-match'] = etag
-      const res = await fetchImpl(spec.url, { headers })
-      if (res.status === 304) return new Map() // unchanged upstream — nothing to write
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      etag = res.headers.get('etag')
-      return parseProviderJson(await res.json(), { guideDays })
+      return fetchWithTimeout(spec, async (signal) => {
+        const res = await fetchImpl(spec.url, { headers, signal })
+        if (res.status === 304) return new Map() // unchanged upstream — nothing to write
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        etag = res.headers.get('etag')
+        return parseProviderJson(await res.json(), { guideDays })
+      })
     }
   }
 }
@@ -176,17 +204,19 @@ export function providerXmltv (spec) {
       const headers = { accept: 'application/xml, text/xml, application/gzip;q=0.9, */*;q=0.8', ...(spec.headers || {}) }
       if (etag) headers['if-none-match'] = etag
       if (lastModified) headers['if-modified-since'] = lastModified
-      const res = await fetchImpl(spec.url, { headers })
-      if (res.status === 304) return new Map() // unchanged upstream — nothing to write
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      etag = res.headers.get('etag')
-      lastModified = res.headers.get('last-modified')
-      let buf = Buffer.from(await res.arrayBuffer())
-      if (buf.length > XMLTV_MAX_BYTES) throw new Error('feed exceeds size cap')
-      if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
-        buf = zlib.gunzipSync(buf, { maxOutputLength: XMLTV_MAX_BYTES })
-      }
-      return parseXmltv(buf.toString('utf8'), { guideDays })
+      return fetchWithTimeout(spec, async (signal) => {
+        const res = await fetchImpl(spec.url, { headers, signal })
+        if (res.status === 304) return new Map() // unchanged upstream — nothing to write
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        etag = res.headers.get('etag')
+        lastModified = res.headers.get('last-modified')
+        let buf = Buffer.from(await res.arrayBuffer())
+        if (buf.length > XMLTV_MAX_BYTES) throw new Error('feed exceeds size cap')
+        if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+          buf = zlib.gunzipSync(buf, { maxOutputLength: XMLTV_MAX_BYTES })
+        }
+        return parseXmltv(buf.toString('utf8'), { guideDays })
+      })
     }
   }
 }

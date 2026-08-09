@@ -23,6 +23,7 @@
 // imports it from here): category chips, the NOW pill, and the time bar.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Image, Pressable, FlatList, ScrollView, StyleSheet, PanResponder } from 'react-native'
+import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, categoryModel, splitCategory, subLabel, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
@@ -62,12 +63,13 @@ export function hhmm (ms: number): string {
 
 // Time-bar date hint once paging crosses local midnight: nothing while the window
 // starts today; TOMORROW / YESTERDAY on the neighbor days, a short date past those.
-function dayHint (windowStart: number, now: number): string | null {
+// The caller passes its useI18n t so the hint re-renders on a language switch.
+function dayHint (windowStart: number, now: number, t: (key: string) => string): string | null {
   const same = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
   const w = new Date(windowStart)
   if (same(w, new Date(now))) return null
-  if (same(w, new Date(now + 86400000))) return 'TOMORROW'
-  if (same(w, new Date(now - 86400000))) return 'YESTERDAY'
+  if (same(w, new Date(now + 86400000))) return t('guide.tomorrow')
+  if (same(w, new Date(now - 86400000))) return t('guide.yesterday')
   return `${w.getDate()}/${w.getMonth() + 1}`
 }
 
@@ -79,6 +81,7 @@ export interface GuidePanelProps {
 }
 
 export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
+  const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // Category scope — the same chips grammar as the TV grid header.
   const [selected, setSelected] = useState('All')
@@ -142,7 +145,7 @@ export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
     }
   }
 
-  if (!streams.length) return <SectionLoading section="Guide" hint="Waiting for the channel list…" />
+  if (!streams.length) return <SectionLoading section={t('menu.guide')} hint={t('live.waitingForChannels')} />
 
   return (
     <View style={styles.panel} onLayout={(e) => setPanelW(e.nativeEvent.layout.width)}>
@@ -181,7 +184,7 @@ export function GuidePanel ({ playingId, onTune }: GuidePanelProps) {
         />
       </View>
       <Pressable style={styles.nowFloat} accessibilityRole="button" onPress={jumpToNow}>
-        <Text style={styles.nowPillText}>NOW</Text>
+        <Text style={styles.nowPillText}>{t('guide.now')}</Text>
       </Pressable>
     </View>
   )
@@ -200,6 +203,7 @@ function GuideRowPhone ({ stream, number, playing, windowStart, stripW, pxPerMin
   nowMs: number
   onPress: () => void
 }) {
+  const { t } = useI18n()
   const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
   const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
   const art = thumbUri || stream.logo
@@ -215,14 +219,14 @@ function GuideRowPhone ({ stream, number, playing, windowStart, stripW, pxPerMin
       <View style={styles.chCol}>
         <Text style={styles.chNumber}>{formatChannelNumber(number)}</Text>
         {art
-          ? <Image source={{ uri: art }} style={styles.chThumb} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? `${stream.title} — live preview` : undefined} />
+          ? <Image source={{ uri: art }} style={styles.chThumb} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? t('live.livePreview', { title: stream.title }) : undefined} />
           : <View style={[styles.chThumb, styles.chThumbFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0
           ? (
             <View style={[styles.cell, styles.cellAtStart, { width: stripW }]}>
-              <Text style={[styles.cellTitle, styles.cellEmpty]} numberOfLines={1}>No program information</Text>
+              <Text style={[styles.cellTitle, styles.cellEmpty]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
             </View>
             )
           : visible.map((p) => {
@@ -250,7 +254,8 @@ function GuideRowPhone ({ stream, number, playing, windowStart, stripW, pxPerMin
 // ---------------------------------------------------------------------------
 
 export function TimeBar ({ windowStart, nowMs, pxPerMin, leadW }: { windowStart: number; nowMs: number; pxPerMin: number; leadW: number }) {
-  const hint = dayHint(windowStart, nowMs)
+  const { t } = useI18n()
+  const hint = dayHint(windowStart, nowMs, t)
   return (
     <View style={styles.timebar}>
       <View style={[styles.timebarLead, { width: leadW }]}>{hint ? <Text style={styles.dayHint} numberOfLines={1}>{hint}</Text> : null}</View>
@@ -301,13 +306,14 @@ function GuideChip ({ label, active, onPress }: { label: string; active: boolean
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label.toUpperCase()}</Text>
+      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
 
 // The red NOW pill — live color, border-box focus (the menu-icon grammar).
 export function NowPill ({ onPress, innerRef }: { onPress: () => void; innerRef?: React.RefObject<any> }) {
+  const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
@@ -318,7 +324,7 @@ export function NowPill ({ onPress, innerRef }: { onPress: () => void; innerRef?
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={styles.nowPillText}>NOW</Text>
+      <Text style={styles.nowPillText}>{t('guide.now')}</Text>
     </Pressable>
   )
 }

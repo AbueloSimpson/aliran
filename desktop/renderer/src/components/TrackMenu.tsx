@@ -6,6 +6,7 @@
 // it AND dismisses (a track choice is a one-shot action). Esc / backdrop click close.
 
 import React, { useEffect, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import type { MediaTrack } from './HlsVideo'
 
 export interface TrackMenuProps {
@@ -23,12 +24,13 @@ export interface TrackMenuProps {
 interface Row { kind: 'text' | 'audio'; index: number; label: string; active: boolean }
 
 export function TrackMenu ({ textTracks, audioTracks, selectedText, selectedAudio, onSelectText, onSelectAudio, onClose }: TrackMenuProps) {
-  const rows: Array<Row | { heading: string }> = [{ heading: 'Subtitles' }]
-  rows.push({ kind: 'text', index: -1, label: 'Off', active: selectedText === -1 })
-  textTracks.forEach((t, i) => rows.push({ kind: 'text', index: i, label: t.label, active: selectedText === i }))
+  const { t } = useI18n()
+  const rows: Array<Row | { heading: string }> = [{ heading: t('tracks.subtitles') }]
+  rows.push({ kind: 'text', index: -1, label: t('tracks.off'), active: selectedText === -1 })
+  textTracks.forEach((track, i) => rows.push({ kind: 'text', index: i, label: track.label, active: selectedText === i }))
   if (audioTracks.length > 1) {
-    rows.push({ heading: 'Audio' })
-    audioTracks.forEach((t, i) => rows.push({ kind: 'audio', index: i, label: t.label, active: selectedAudio != null ? selectedAudio === i : i === 0 }))
+    rows.push({ heading: t('tracks.audio') })
+    audioTracks.forEach((track, i) => rows.push({ kind: 'audio', index: i, label: track.label, active: selectedAudio != null ? selectedAudio === i : i === 0 }))
   }
   const selectable = rows.map((r, i) => ('kind' in r ? i : -1)).filter((i) => i >= 0)
   const [focus, setFocus] = useState(selectable[0] ?? 0)

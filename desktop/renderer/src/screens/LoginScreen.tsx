@@ -6,9 +6,11 @@
 // authorizes automatically; sign out (Settings) clears them.
 
 import React, { useEffect, useRef, useState } from 'react'
+import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 
 export function LoginScreen () {
+  const { t } = useI18n()
   const dev = backend.descriptor?.dev
   const [username, setUsername] = useState(backend.creds?.username ?? dev?.username ?? '')
   const [password, setPassword] = useState(dev?.password ?? '')
@@ -38,7 +40,7 @@ export function LoginScreen () {
       <input
         ref={userRef}
         className="login-input"
-        placeholder="Username"
+        placeholder={t('common.username')}
         autoCapitalize="none"
         spellCheck={false}
         value={username}
@@ -46,14 +48,14 @@ export function LoginScreen () {
       />
       <input
         className="login-input"
-        placeholder="Password"
+        placeholder={t('common.password')}
         type="password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
       {error && <div className="login-error">{error}</div>}
       <button className="login-button" type="submit" disabled={busy}>
-        {busy ? <span className="spinner" /> : 'Sign in'}
+        {busy ? <span className="spinner" /> : t('login.signIn')}
       </button>
     </form>
   )

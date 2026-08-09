@@ -9,6 +9,7 @@
 // and omit the guide slot — titles have no schedule.
 
 import React from 'react'
+import { getLocale, useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
@@ -32,6 +33,7 @@ export interface ChannelInfoPanelProps {
 }
 
 export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite }: ChannelInfoPanelProps) {
+  const { t, tn } = useI18n()
   // Thumb-first art: what is on screen RIGHT NOW beats curated art — the panel opens
   // on a channel the viewer is deciding whether to watch. The thumb is 16:9 like the
   // art box (aspect-ratio in styles.css), so cover doesn't crop it; a 404 (the
@@ -50,26 +52,30 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 
       <div className="info-art-box">
         {art
-          ? <img className="info-art" src={art} alt={thumbUri ? `${stream.title} — live preview` : ''} onError={thumbUri ? onThumbError : undefined} />
+          ? <img className="info-art" src={art} alt={thumbUri ? t('live.livePreview', { title: stream.title ?? '' }) : ''} onError={thumbUri ? onThumbError : undefined} />
           : <div className="info-art info-art-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</div>}
-        {stream.isLive && <span className="info-live badge-live">● LIVE</span>}
+        {stream.isLive && <span className="info-live badge-live">{t('common.liveBadge')}</span>}
         {duration && <span className="info-duration">{duration}</span>}
       </div>
 
+      {/* Operator category names, upper-cased in the VIEWER's locale — same rule as the
+          category rail, so the same word is cased the same way on both surfaces. */}
       {!!stream.category?.length && (
         <div className="info-chips">
-          {stream.category.map((c) => <span key={c} className="info-chip">{c.toUpperCase()}</span>)}
+          {stream.category.map((c) => <span key={c} className="info-chip">{c.toLocaleUpperCase(getLocale())}</span>)}
         </div>
       )}
 
-      {vod && stream.status === 'unavailable' && <div className="info-unavailable">CURRENTLY UNAVAILABLE</div>}
+      {/* Upper-cased at render, the way the menu labels are: the catalog carries the
+          sentence, the surface decides how it is set. */}
+      {vod && stream.status === 'unavailable' && <div className="info-unavailable">{t('live.unavailable').toLocaleUpperCase(getLocale())}</div>}
 
       {stream.description && <div className="info-desc">{stream.description}</div>}
 
       {playing && (
         <div className="info-stats">
           {source && <span className={source === 'p2p' ? 'src-p2p' : 'src-cdn'}>{source.toUpperCase()}</span>}
-          {source !== 'cdn' && peers != null && <span className="badge-peers">{peers} peer{peers === 1 ? '' : 's'}</span>}
+          {source !== 'cdn' && peers != null && <span className="badge-peers">{tn('live.peers', peers)}</span>}
         </div>
       )}
 
@@ -78,10 +84,10 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
       {!vod && <EpgGuide stream={stream} />}
 
       <div className="info-actions">
-        <button className="info-button primary" onClick={onWatch}>{playing ? 'Watching' : 'Watch'}</button>
-        <button className="info-button" onClick={onToggleFavorite}>{favorite ? '★ Remove favorite' : '☆ Add favorite'}</button>
+        <button className="info-button primary" onClick={onWatch}>{playing ? t('live.watching') : t('live.watch')}</button>
+        <button className="info-button" onClick={onToggleFavorite}>{favorite ? t('live.removeFavorite') : t('live.addFavorite')}</button>
       </div>
-      <div className="panel-hint">Esc back · f favorite</div>
+      <div className="panel-hint">{t('hints.escBack', { esc: 'Esc' })} · {t('hints.keyFavorite', { key: 'f' })}</div>
     </div>
   )
 }
@@ -89,19 +95,20 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 // Renders "Now" (with an elapsed bar) + a short "Up next" list when the channel has
 // a guide that resolved; otherwise the placeholder. Never blocks on the fetch.
 function EpgGuide ({ stream }: { stream: Stream }) {
+  const { t } = useI18n()
   const { data, loaded } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const has = !!(data && (data.now || data.next.length))
   return (
     <div className="epg-slot">
-      <div className="epg-heading">PROGRAM GUIDE</div>
+      <div className="epg-heading">{t('live.programGuide')}</div>
       {!has
-        ? <div className="epg-empty">{(stream.epgUrl || stream.guideBase) && !loaded ? 'Loading guide…' : 'No program information'}</div>
+        ? <div className="epg-empty">{(stream.epgUrl || stream.guideBase) && !loaded ? t('live.loadingGuide') : t('live.noProgramInfo')}</div>
         : (
           <>
             {data!.now && <NowRow program={data!.now} />}
             {data!.next.length > 0 && (
               <div className="epg-next">
-                <div className="epg-next-label">UP NEXT</div>
+                <div className="epg-next-label">{t('live.upNext')}</div>
                 {data!.next.map((p) => (
                   <div key={p.start} className="epg-next-row">
                     <span className="epg-next-time">{hhmm(p.start)}</span>
