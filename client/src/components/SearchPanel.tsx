@@ -5,14 +5,25 @@
 // video strip on top + this panel below; landscape = this panel over the fullscreen
 // video on a translucent bed).
 //
-// LAYOUT. A LEFT vertical letter rail (quick input — tapping a key APPENDS it to the
-// query; digits 0–9 for channel numbers; ⌫ backspace), the search field top-right
-// (soft-keyboard capable, with a clear ×), and the results below as a GRID of channel
-// cards: station LOGO (contain; initial-box fallback — logos only, never live thumbs,
-// the WS11 policy), channel number + name under it. ~4 columns landscape, 3 portrait
-// (searchGridGeometry below — the VodScreen gridGeometry discipline, kept local).
+// LAYOUT (S22 round 5, WS16). A LEFT alphabet BOX — a multi-column letter GRID like
+// a TV search keyboard (quick input: tapping a key APPENDS it to the query; the
+// ABC/local-script toggle chip and ⌫ backspace fixed on top, then the letters and
+// the 0-9 digits for channel numbers scrolling in rows) — and a RIGHT pane with the
+// search field on top (soft-keyboard capable, with a clear ×) and the results below
+// as a GRID of SMALL channel cards: station LOGO (contain; initial-box fallback —
+// logos only, never live thumbs, the WS11 policy), channel number + name under it.
+// The box's column count follows the SCRIPT (boxColumns — kana keeps gojūon's
+// 5-per-row, Latin 5, the bigger alphabets 6; portrait compresses every script to 4
+// so the results pane stays readable at ~360dp) and the results grid's column count
+// DERIVES from the right pane's measured width (searchGridGeometry — as many
+// ~96dp-target columns as fit), not the window. The left box and right pane split
+// the panel horizontally in BOTH orientations.
+// TV-READY: the box's keys are plain Pressables with ≥40dp metrics and
+// accessibilityRole="button", so this same component is D-pad navigable when TV
+// adopts it — but this round TV keeps its own SearchScreen (the panel stays
+// phone-gated in LiveScreen).
 //
-// The rail renders the GUI locale's SCRIPT by default (src/alphabets.ts — Cyrillic
+// The box renders the GUI locale's SCRIPT by default (src/alphabets.ts — Cyrillic
 // for ru, Devanagari for hi, kana for ja, jamo for ko, Thai for th, Latin elsewhere)
 // with a toggle chip back to the plain English A–Z: channel names can be English
 // while the GUI is not.
@@ -27,19 +38,40 @@ import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, sortByCuration, formatChannelNumber } from '../catalog'
-import { DIGITS, railLetters, scriptForLocale, normalizeSearch } from '../alphabets'
+import { DIGITS, railLetters, scriptForLocale, normalizeSearch, type RailScript } from '../alphabets'
 import { theme } from '../theme'
 
-// Letter-rail column width (finger-sized keys at phone scale).
-const RAIL_W = 44
+// Alphabet-box key metrics: ≥40dp touch targets (finger-sized now, and the Android
+// TV minimum focusable size later — the D-pad readiness in the header).
+const KEY = 40
+const KEY_GAP = 4
+const BOX_PAD = 6
 const GRID_GAP = theme.spacing(1)
+// Results-card width the column derivation aims for (cards come out between this
+// and a bit above it, whatever divides the pane evenly) — ~35% under the old
+// fixed-4-column landscape cards.
+const CARD_TARGET_W = 96
 
-/** Grid geometry — the VodScreen gridGeometry pattern, local to this panel: the
- *  column COUNT is fixed per orientation (3 portrait / 4 landscape) and the card
- *  width follows from the measured grid width. */
-export function searchGridGeometry (gridW: number, portrait: boolean) {
-  const columns = portrait ? 3 : 4
-  const cardW = Math.max(64, Math.floor((gridW - (columns - 1) * GRID_GAP) / columns))
+/** Letter-grid columns per script. Kana keeps gojūon's natural 5-per-row; Latin's
+ *  26 sit in 5; the bigger alphabets (Cyrillic 33, Devanagari 44, Thai 42) take 6.
+ *  Portrait compresses every script to 4 so the results pane keeps readable card
+ *  widths at ~360dp — the left/right structure itself never changes. */
+export function boxColumns (script: RailScript, portrait: boolean): number {
+  const base = script === 'latin' || script === 'kana' || script === 'hangul' ? 5 : 6
+  return portrait ? Math.min(base, 4) : base
+}
+
+/** The alphabet box's outer width for a column count (keys + gaps + padding). */
+export function boxWidth (columns: number): number {
+  return columns * KEY + (columns - 1) * KEY_GAP + BOX_PAD * 2
+}
+
+/** Results-grid geometry: the column COUNT derives from the measured RIGHT-PANE
+ *  width — as many ~CARD_TARGET_W columns as fit (floor 2) — and the card width
+ *  follows (the VodScreen gridGeometry discipline, kept local). */
+export function searchGridGeometry (gridW: number) {
+  const columns = Math.max(2, Math.floor((gridW + GRID_GAP) / (CARD_TARGET_W + GRID_GAP)))
+  const cardW = Math.max(56, Math.floor((gridW - (columns - 1) * GRID_GAP) / columns))
   return { columns, cardW }
 }
 
@@ -57,6 +89,14 @@ export function searchChannels (streams: Stream[], numbers: Map<string, number>,
     if (n === undefined) return false
     return String(n).startsWith(q) || String(n).padStart(3, '0').startsWith(q)
   }))
+}
+
+// Rows of n for the letter/digit grids (code-point arrays in, so multi-byte
+// letters chunk correctly).
+function chunk<T> (arr: readonly T[], n: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < arr.length; i += n) out.push([...arr.slice(i, i + n)])
+  return out
 }
 
 export interface SearchPanelProps {
@@ -89,55 +129,68 @@ export function SearchPanel ({ playingId, onTune }: SearchPanelProps) {
 
   // Only a locale whose script is not already Latin needs the toggle chip.
   const hasLocalScript = scriptForLocale(locale) !== 'latin'
-  const letters = railLetters(locale, latinRail || !hasLocalScript)
+  const latin = latinRail || !hasLocalScript
+  const letters = railLetters(locale, latin)
+  const script: RailScript = latin ? 'latin' : scriptForLocale(locale)
+  const cols = boxColumns(script, portrait)
+  const boxW = boxWidth(cols)
 
   const append = (ch: string) => setQuery((q) => q + ch)
   // Code-point-aware backspace (kana/jamo/etc. must delete whole characters).
   const backspace = () => setQuery((q) => [...q].slice(0, -1).join(''))
 
-  // Until the first onLayout the grid falls back to the window minus the rail, so
+  // Until the first onLayout the grid falls back to the window minus the box, so
   // the very first frame already lays out with sane card widths.
-  const gw = gridW || Math.max(1, winW - RAIL_W - GRID_GAP)
-  const { columns, cardW } = searchGridGeometry(gw, portrait)
+  const gw = gridW || Math.max(1, winW - boxW - GRID_GAP)
+  const { columns, cardW } = searchGridGeometry(gw)
+
+  const key = (ch: string) => (
+    <Pressable key={ch} style={styles.key} accessibilityRole="button" onPress={() => append(ch)}>
+      <Text style={styles.keyText}>{ch}</Text>
+    </Pressable>
+  )
 
   return (
     <View style={styles.panel}>
-      {/* LEFT: the letter rail. Toggle + backspace stay fixed on top; the letters
-          (locale script, then the 0-9 digits row for channel numbers) scroll.
-          keyboardShouldPersistTaps: the rail must keep working with the soft
-          keyboard up — a rail tap types, it must not just dismiss the IME. */}
-      <View style={styles.rail}>
-        {hasLocalScript && (
+      {/* LEFT: the alphabet box. Toggle + backspace stay fixed on top; the letter
+          grid (locale script, then the 0-9 digits for channel numbers) scrolls in
+          rows below them. keyboardShouldPersistTaps: the box must keep working with
+          the soft keyboard up — a key tap types, it must not just dismiss the IME. */}
+      <View style={[styles.box, { width: boxW }]} testID="search-alpha-box">
+        <View style={styles.boxHeader}>
+          {hasLocalScript && (
+            <Pressable
+              style={styles.boxToggle}
+              accessibilityRole="button"
+              onPress={() => setLatinRail((v) => !v)}
+            >
+              <Text style={styles.boxToggleText}>
+                {latinRail ? t('live.search.localRail') : t('live.search.latinRail')}
+              </Text>
+            </Pressable>
+          )}
           <Pressable
-            style={styles.railToggle}
+            style={[styles.key, !hasLocalScript && styles.keyGrow]}
             accessibilityRole="button"
-            onPress={() => setLatinRail((v) => !v)}
+            accessibilityLabel={t('live.search.backspace')}
+            onPress={backspace}
           >
-            <Text style={styles.railToggleText}>
-              {latinRail ? t('live.search.localRail') : t('live.search.latinRail')}
-            </Text>
+            <Text style={styles.keyText}>⌫</Text>
           </Pressable>
-        )}
-        <Pressable style={styles.railKey} accessibilityRole="button" accessibilityLabel={t('live.search.backspace')} onPress={backspace}>
-          <Text style={styles.railKeyText}>⌫</Text>
-        </Pressable>
+        </View>
         <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="always">
-          {letters.map((ch) => (
-            <Pressable key={ch} style={styles.railKey} accessibilityRole="button" onPress={() => append(ch)}>
-              <Text style={styles.railKeyText}>{ch}</Text>
-            </Pressable>
+          {chunk(letters, cols).map((row, i) => (
+            <View key={`r${i}`} style={styles.keyRow}>{row.map(key)}</View>
           ))}
-          <View style={styles.railDivider} />
-          {DIGITS.map((d) => (
-            <Pressable key={d} style={styles.railKey} accessibilityRole="button" onPress={() => append(d)}>
-              <Text style={styles.railKeyText}>{d}</Text>
-            </Pressable>
+          <View style={styles.boxDivider} />
+          {chunk(DIGITS, cols).map((row, i) => (
+            <View key={`d${i}`} style={styles.keyRow}>{row.map(key)}</View>
           ))}
         </ScrollView>
       </View>
 
       {/* RIGHT: the search field on top, the result grid below. */}
-      <View style={styles.main} onLayout={(e) => setGridW(e.nativeEvent.layout.width)}>
+      <View style={styles.main} testID="search-results-pane" onLayout={(e) => setGridW(e.nativeEvent.layout.width)}>
         <View style={styles.searchRow}>
           <TextInput
             style={[styles.input, focused && styles.inputFocused]}
@@ -227,15 +280,24 @@ function ChannelCard ({ stream, number, w, playing, onPress }: {
 const styles = StyleSheet.create({
   panel: { flex: 1, flexDirection: 'row' },
 
-  rail: { width: RAIL_W, marginRight: GRID_GAP, alignItems: 'stretch' },
-  railToggle: {
-    borderRadius: 8, backgroundColor: theme.colors.surface, paddingVertical: 6,
-    alignItems: 'center', marginBottom: 4
+  box: {
+    marginRight: GRID_GAP, padding: BOX_PAD, borderRadius: 10,
+    backgroundColor: theme.colors.overlay, alignItems: 'stretch'
   },
-  railToggleText: { color: theme.colors.accent, fontSize: theme.type.caption, fontWeight: '800' },
-  railKey: { paddingVertical: 5, alignItems: 'center', borderRadius: 6 },
-  railKeyText: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '700' },
-  railDivider: { height: 1, backgroundColor: theme.colors.textDim, opacity: 0.3, marginVertical: 4, marginHorizontal: 8 },
+  boxHeader: { flexDirection: 'row', gap: KEY_GAP, marginBottom: KEY_GAP },
+  boxToggle: {
+    flex: 1, height: KEY, borderRadius: 8, backgroundColor: theme.colors.surface,
+    alignItems: 'center', justifyContent: 'center'
+  },
+  boxToggleText: { color: theme.colors.accent, fontSize: theme.type.caption, fontWeight: '800' },
+  keyRow: { flexDirection: 'row', gap: KEY_GAP, marginBottom: KEY_GAP },
+  key: {
+    width: KEY, height: KEY, borderRadius: 8, backgroundColor: theme.colors.surface,
+    alignItems: 'center', justifyContent: 'center'
+  },
+  keyGrow: { flex: 1, width: 'auto' },
+  keyText: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '700' },
+  boxDivider: { height: 1, backgroundColor: theme.colors.textDim, opacity: 0.3, marginBottom: KEY_GAP, marginHorizontal: 8 },
 
   main: { flex: 1 },
   searchRow: { flexDirection: 'row', alignItems: 'center', marginBottom: theme.spacing(1) },

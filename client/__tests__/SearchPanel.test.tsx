@@ -1,9 +1,11 @@
-// In-player channel search (WS15, components/SearchPanel.tsx): the letter rail is
-// QUICK INPUT (tap appends, digits row, backspace), the rail's script follows the
-// GUI locale with an English A-Z toggle, matching is case/diacritic-insensitive on
-// the title plus a number-prefix match, cards are LOGO-only (never live thumbs —
-// WS11), and tapping a result hands the stream to onTune (the host tunes AND closes;
-// PIN gating stays the host's play() path).
+// In-player channel search (WS15/WS16, components/SearchPanel.tsx): the LEFT
+// alphabet BOX is QUICK INPUT (a multi-column letter grid — tap appends; digits,
+// backspace), the box's script follows the GUI locale with an English A-Z toggle,
+// matching is case/diacritic-insensitive on the title plus a number-prefix match,
+// cards are LOGO-only (never live thumbs — WS11), and tapping a result hands the
+// stream to onTune (the host tunes AND closes; PIN gating stays the host's play()
+// path). Layout (S22 round 5): letters live in the left box, the field + results
+// grid in the right pane; the results columns derive from the PANE width.
 
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
@@ -27,7 +29,7 @@ jest.mock('react-native/Libraries/Lists/FlatList', () => {
   return { __esModule: true, default: MockFlatList }
 })
 
-import { SearchPanel, searchChannels } from '../src/components/SearchPanel'
+import { SearchPanel, searchChannels, searchGridGeometry, boxColumns } from '../src/components/SearchPanel'
 import { backend } from '../src/worklet'
 import { channelNumbers } from '../src/catalog'
 import { setLocale } from '@aliran/i18n'
@@ -99,7 +101,46 @@ test('searchChannels: empty query = the whole catalog in curated order', () => {
   expect(searchChannels(ALL, channelNumbers(ALL), ' ').map(s => s.id)).toEqual(['moon-cat', 'news', 'cafe'])
 })
 
+// --- the layout geometry (S22 round 5) --------------------------------------------
+
+test('boxColumns: per-script counts; portrait compresses every script to 4', () => {
+  expect(boxColumns('latin', false)).toBe(5)
+  expect(boxColumns('kana', false)).toBe(5) // gojūon rows stay 5-wide
+  expect(boxColumns('hangul', false)).toBe(5)
+  expect(boxColumns('cyrillic', false)).toBe(6)
+  expect(boxColumns('devanagari', false)).toBe(6)
+  expect(boxColumns('thai', false)).toBe(6)
+  for (const s of ['latin', 'cyrillic', 'devanagari', 'kana', 'hangul', 'thai'] as const) {
+    expect(boxColumns(s, true)).toBe(4)
+  }
+})
+
+test('searchGridGeometry: columns derive from the pane width — smaller cards, more columns', () => {
+  const narrow = searchGridGeometry(170) // the right pane at ~360dp portrait
+  expect(narrow.columns).toBe(2) // the floor: side-by-side must survive portrait
+  const wide = searchGridGeometry(550) // a landscape right pane
+  expect(wide.columns).toBeGreaterThanOrEqual(5) // was a fixed 4 over the FULL width
+  expect(wide.cardW).toBeLessThan(130) // ~35-40% under the old ~185dp landscape cards
+  expect(wide.cardW * wide.columns).toBeLessThanOrEqual(550) // cards always fit the pane
+})
+
 // --- the panel --------------------------------------------------------------------
+
+test('layout: letters render inside the left alphabet box, results in the right pane', async () => {
+  const { tree } = await panel()
+  const box = tree.root.findAll((n) => n.props.testID === 'search-alpha-box')[0]
+  const pane = tree.root.findAll((n) => n.props.testID === 'search-results-pane')[0]
+  expect(box).toBeTruthy()
+  expect(pane).toBeTruthy()
+  const boxTexts = box.findAllByType(Text).map((x) => [x.props.children].flat(9).map(String).join(''))
+  expect(boxTexts).toContain('A') // letters…
+  expect(boxTexts).toContain('9') // …the digits…
+  expect(boxTexts).toContain('⌫') // …and backspace all live in the box
+  expect(boxTexts.join(' ')).not.toContain('Moon Cat') // no results in the box
+  const paneTexts = pane.findAllByType(Text).map((x) => [x.props.children].flat(9).map(String).join(''))
+  expect(paneTexts.join(' ')).toContain('Moon Cat') // results in the right pane
+  expect(paneTexts).not.toContain('A') // no stray letter keys among the results
+})
 
 test('all channels show before any input; typing filters; clear × restores', async () => {
   const { tree } = await panel()

@@ -49,6 +49,13 @@
 // rotation rule above raises the guide if that's portrait. Portrait mounts with a
 // channel therefore start in 'guide' (portrait + overlay 'none' exists only
 // transiently); errors still show fullscreen-with-error in any orientation.
+// Locked-fullscreen tap zones (S22 round 5, phone): while the landscape lock is
+// ours, a tap on the LEFT THIRD of the fullscreen catcher returns to the guide
+// (release the lock + raise the guide overlay) and a tap anywhere else toggles the
+// NowPlayingBar — it never opens the channel list, which stays the tap target of
+// the UNLOCKED flow (entered from the LIVE TV tile / zap). A mid-left "‹ Guide"
+// pill, visible while the bar is, advertises the zone. BACK stays the round-4
+// unlock → guide path.
 // Search overlay (WS15, phone only): the NowPlayingBar's Search button raises the
 // in-player channel search as another mode of this screen — portrait uses the
 // guide's strip layout (video strip on top, SearchPanel below), landscape lays the
@@ -206,11 +213,21 @@ export function LiveScreen ({ route, navigation }: Props) {
   // release does not touch the effect, so the chain is: unlock → dimension change →
   // setOverlay('guide')). The lock survives panel browsing (list/info/guide opened
   // over locked landscape keep it — the viewer is browsing in landscape on
-  // purpose); it releases only on the BACK-to-guide intent or unmount. TV never
-  // locks (the strip tap is phone-portrait-only UI).
+  // purpose); it releases only on the BACK-to-guide intent, the left-third tap
+  // below, or unmount. TV never locks (the strip tap is phone-portrait-only UI).
+  // S22 round 5 — while locked, the fullscreen catcher splits into TAP ZONES: the
+  // LEFT THIRD returns to the guide (release the lock + setOverlay('guide') — if
+  // the phone is physically landscape the landscape guide overlay shows; if it
+  // falls back to portrait the rotation effect sets 'guide' again, a harmless
+  // same-value set); the REST toggles the NowPlayingBar like a plain fullscreen
+  // tap — it never opens the channel list (the list stays the LIVE TV flow's
+  // surface). `lockedUI` mirrors the ref for rendering (the ref itself never
+  // re-renders): it gates the zones and the left-edge "‹ Guide" hint chip.
   const lockedByUs = useRef(false)
+  const [lockedUI, setLockedUI] = useState(false)
   function lockLandscape () {
     lockedByUs.current = true
+    setLockedUI(true)
     setOrientation('landscape')
     setOverlay('none')
   }
@@ -219,8 +236,17 @@ export function LiveScreen ({ route, navigation }: Props) {
   function releaseOrientationLock () {
     if (!lockedByUs.current) return false
     lockedByUs.current = false
+    setLockedUI(false)
     setOrientation('unspecified')
     return true
+  }
+  // The left-third tap (and the hint chip): back to the guide the viewer came from.
+  // Error-gated like every other guide entry — with an error up the release still
+  // honors the leave-fullscreen intent, but fullscreen-with-error stays visible
+  // (the message and its retry instruction come first; mirrors the BACK path).
+  function returnToGuide () {
+    releaseOrientationLock()
+    if (!errorRef.current) setOverlay('guide')
   }
   // Unmount (leaving Live for the Menu, or any navigation away): never leave the
   // Activity pinned — other screens own their own orientation behavior.
@@ -436,6 +462,14 @@ export function LiveScreen ({ route, navigation }: Props) {
     Animated.timing(barOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start()
     armBarHide()
   }
+  // The manual half of the locked-fullscreen tap toggle (S22 round 5): fade the bar
+  // out now instead of waiting for the idle timer.
+  function hideBar () {
+    clearBarIdle()
+    barOpacity.stopAnimation()
+    Animated.timing(barOpacity, { toValue: 0, duration: 160, useNativeDriver: true })
+      .start(({ finished }) => { if (finished) setBarShown(false) })
+  }
 
   function clearMenuIdle () { if (menuIdle.current) { clearTimeout(menuIdle.current); menuIdle.current = null } }
   // Called on any touch/focus inside the panels; only the left menu auto-hides, so this
@@ -573,14 +607,28 @@ export function LiveScreen ({ route, navigation }: Props) {
           text). On TV the catcher is a middle band so the zap strips sit strictly
           above/below it in the focus engine's geometry. The bottom menu renders on
           top of the catcher so its buttons catch their own taps while the rest of
-          the surface opens the overlay. */}
+          the surface opens the overlay.
+          LOCKED fullscreen (S22 round 5, phone — entered FROM the portrait guide's
+          strip): the catcher splits by tap x (locationX — the catcher IS the full
+          screen, so it equals the screen x; pageX as the fallback). LEFT THIRD =
+          back to the guide; the rest toggles the NowPlayingBar and NEVER opens the
+          channel list — the list belongs to the LIVE TV flow, not the guide's. */}
       {overlay === 'none' && (
         <>
           <Pressable
             ref={catcherRef}
             style={Platform.isTV ? styles.catcherTV : StyleSheet.absoluteFill}
             hasTVPreferredFocus
-            onPress={() => setOverlay(!theme.isTV && portrait && !error ? 'guide' : 'list')}
+            onPress={(e) => {
+              if (!theme.isTV && lockedByUs.current) {
+                const x = e?.nativeEvent?.locationX ?? e?.nativeEvent?.pageX ?? 0
+                if (x < winW / 3) returnToGuide()
+                else if (barShown) hideBar()
+                else showBar()
+                return
+              }
+              setOverlay(!theme.isTV && portrait && !error ? 'guide' : 'list')
+            }}
           />
           {Platform.isTV && (
             <>
@@ -590,6 +638,21 @@ export function LiveScreen ({ route, navigation }: Props) {
           )}
           {playing && barShown && (
             <Animated.View style={[styles.barFade, { opacity: barOpacity }]} pointerEvents="box-none">
+              {/* Locked-fullscreen affordance (S22 round 5): a mid-left "‹ Guide"
+                  pill makes the left-third zone discoverable. Shows only while the
+                  bar is up (it rides the bar's fade) and taps straight back to the
+                  guide; everywhere else the chip is absent so nothing blocks the
+                  picture. */}
+              {lockedUI && !theme.isTV && (
+                <Pressable
+                  style={styles.guideHint}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('menu.guide')}
+                  onPress={returnToGuide}
+                >
+                  <Text style={styles.guideHintText}>{'‹ ' + t('menu.guide')}</Text>
+                </Pressable>
+              )}
               <NowPlayingBar
                 stream={playing}
                 number={numbers.get(playing.id)}
@@ -812,6 +875,16 @@ const styles = StyleSheet.create({
   // the catcher beneath. The bottom reveal zone re-shows the faded bar on touch.
   barFade: { ...StyleSheet.absoluteFillObject },
   barRevealZone: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 150 },
+  // Locked-fullscreen "‹ Guide" pill: pinned to the left edge at mid-height (it
+  // lives inside barFade's absoluteFill, so '50%' is mid-screen), rounded on the
+  // open side only — reads as a tab growing out of the edge.
+  guideHint: {
+    position: 'absolute', left: 0, top: '50%', marginTop: -16,
+    paddingVertical: 8, paddingLeft: 10, paddingRight: 12,
+    borderTopRightRadius: 16, borderBottomRightRadius: 16,
+    backgroundColor: theme.colors.overlayStrong
+  },
+  guideHintText: { color: theme.colors.text, fontSize: theme.type.caption, fontWeight: '700' },
   zapUp: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
   zapDown: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 80 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
