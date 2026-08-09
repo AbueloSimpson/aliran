@@ -14,12 +14,13 @@
 // transport row — play/pause, elapsed / runtime, and a scrubbable seek bar (tap or
 // drag; pure JS, no native slider dep). Phone-only interactivity for the same S7
 // reason; TV renders the row display-only (position + runtime, no focusables).
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, PanResponder } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber, formatDuration } from '../catalog'
-import { useEpg } from '@aliran/react-native'
+import { useEpg, useChannelThumb } from '@aliran/react-native'
 import { VolumeControl } from './VolumeControl'
+import { ProgressHairline } from './ProgressHairline'
 import { theme } from '../theme'
 
 /** Transport state for a vod title (position/duration in seconds). */
@@ -61,18 +62,42 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
   // for channels without an EPG. The channel synopsis still lives in the Info panel.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const subtitle = data?.now?.title || stream.description
+  // Live thumb between the identity (logo + number) and the text block — what is on
+  // screen right now, straight off the channel's own feed. A 404 is the ordinary "no
+  // thumbnail" answer (see thumbBase in the SDK). The probe happens OFF-LAYOUT
+  // (absolute + opacity 0, real dims so Fresco still fetches): the bar is the
+  // zap-flash surface and the slot mounting before the 404 answer would snap the
+  // text block sideways on every zap to a thumb-less channel. Only a decoded frame
+  // (onLoad) lets the thumb take layout space; the latch re-arms per channel.
+  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
+  const [thumbShown, setThumbShown] = useState(false)
+  useEffect(() => { setThumbShown(false) }, [stream.thumbBase])
   return (
     <View style={styles.wrap} pointerEvents="box-none">
       <View style={styles.bar} pointerEvents="box-none">
         <View style={styles.info} pointerEvents="none">
           {!!stream.logo && <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" />}
           <Text style={styles.number}>{formatChannelNumber(number)}</Text>
+          {!!thumbUri && (
+            <Image
+              source={{ uri: thumbUri }}
+              style={thumbShown ? styles.liveThumb : styles.liveThumbProbe}
+              resizeMode="cover"
+              onLoad={() => setThumbShown(true)}
+              onError={() => { setThumbShown(false); onThumbError() }}
+              accessibilityLabel={thumbShown ? `${stream.title} — live preview` : undefined}
+            />
+          )}
           <View style={styles.main}>
             <View style={styles.titleLine}>
               <Text style={styles.title} numberOfLines={1}>{stream.title}</Text>
               {stream.isLive && <Text style={styles.live}>● LIVE</Text>}
             </View>
             {!!subtitle && <Text style={styles.desc} numberOfLines={1}>{subtitle}</Text>}
+            {/* Program progress under the title/now line — the zap-flash surface, so a
+                zap instantly shows how far into the program the channel is. Guide-less
+                channels render it transparent (same bar height either way). */}
+            {!vod && <ProgressHairline program={data?.now} style={styles.hairline} />}
           </View>
           <View style={styles.divider} />
           <Text style={styles.clock}>{clock}</Text>
@@ -163,6 +188,13 @@ const styles = StyleSheet.create({
   },
   info: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.25) },
   logo: { width: theme.isTV ? 60 : 44, height: theme.isTV ? 34 : 24, borderRadius: 4 },
+  // 16:9 — matches the frames the broadcaster rolls into the feed. ("thumb" below
+  // is the SeekBar's scrubber knob — unrelated.)
+  liveThumb: { width: theme.isTV ? 96 : 72, height: theme.isTV ? 54 : 40, borderRadius: 4 },
+  // Off-layout probe: real dims (a 0×0 Image may never fetch under Fresco), invisible,
+  // out of the flex flow so a 404 never moves a pixel of the bar.
+  liveThumbProbe: { position: 'absolute', opacity: 0, width: theme.isTV ? 96 : 72, height: theme.isTV ? 54 : 40 },
+  hairline: { marginTop: 4 },
   number: { color: theme.colors.accent, fontSize: theme.type.title, fontWeight: '800', fontVariant: ['tabular-nums'] },
   main: { flexShrink: 1, flexGrow: 1 },
   titleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },

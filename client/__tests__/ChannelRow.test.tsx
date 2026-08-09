@@ -7,9 +7,13 @@ import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
 import { Text, Image } from 'react-native'
-import { ChannelRow } from '../src/components/ChannelRow'
+import { ChannelRow, CHANNEL_ROW_H } from '../src/components/ChannelRow'
 import { epg } from '@aliran/react-native'
+import { prefersReducedMotion } from '../src/motion'
 import type { Stream } from '../src/worklet'
+
+// Controllable reduced-motion answer (the real module caches an async OS setting).
+jest.mock('../src/motion', () => ({ prefersReducedMotion: jest.fn(() => false) }))
 
 function texts (tree: RendererInstance): string {
   return tree.root.findAllByType(Text).map(t => [t.props.children].flat(9).map(String).join('')).join(' | ')
@@ -26,6 +30,8 @@ async function createTree (el: React.ReactElement): Promise<RendererInstance> {
 afterEach(async () => {
   while (mounted.length) { const tree = mounted.pop()!; await ReactTestRenderer.act(async () => { tree.unmount() }) }
   jest.restoreAllMocks()
+  // Module-mock state survives restoreAllMocks — put full motion back for the next test.
+  ;(prefersReducedMotion as jest.Mock).mockReturnValue(false)
 })
 
 test('shows the current EPG program on the now-playing line', async () => {
@@ -105,4 +111,57 @@ test('vod row: status unavailable grays the title out', async () => {
   const tree = await createTree(<ChannelRow stream={stream} onPress={() => {}} />)
   const title = tree.root.findAllByType(Text).find(x => [x.props.children].flat().join('') === 'Gone Title')!
   expect(JSON.stringify(title.props.style)).toContain('0.5') // styles.dimmed
+})
+
+test('live thumbnail: labelled for screen readers; the label leaves with the thumb', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, logo: LOGO, thumbBase: THUMB }
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  expect(tree.root.findByType(Image).props.accessibilityLabel).toBe('News 24 — live preview')
+  // After the 404 the picture is the station logo — "live preview" would be a lie.
+  await ReactTestRenderer.act(async () => { tree.root.findByType(Image).props.onError() })
+  expect(tree.root.findByType(Image).props.accessibilityLabel).toBeUndefined()
+})
+
+// --- guide UI (WS1) ---
+
+// The getItemLayout contract: this constant IS the phone row geometry (jest runs the
+// phone branch) — inner 64 + 2 gap. If it drifts, the list jump lands off a row.
+test('row geometry: CHANNEL_ROW_H matches the pinned phone row', () => {
+  expect(CHANNEL_ROW_H).toBe(66)
+})
+
+// Focus grammar: the light fill always announces focus; the scale lift is a TRANSFORM,
+// so the OS reduced-motion setting turns it (and only it) off.
+test('focused row: scale transform + zIndex lift, skipped under reduced motion', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'Rolling headlines' }
+  const row = (tree: RendererInstance) =>
+    tree.root.findAll(n => typeof n.props.onFocus === 'function' && typeof n.props.onPress === 'function')[0]
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  expect(JSON.stringify(row(tree).props.style)).not.toContain('scale')
+  await ReactTestRenderer.act(async () => { row(tree).props.onFocus() })
+  let style = JSON.stringify(row(tree).props.style)
+  expect(style).toContain('scale')
+  expect(style).toContain('zIndex')
+
+  ;(prefersReducedMotion as jest.Mock).mockReturnValue(true)
+  const still = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  await ReactTestRenderer.act(async () => { row(still).props.onFocus() })
+  style = JSON.stringify(row(still).props.style)
+  expect(style).not.toContain('scale')
+  expect(style).toContain('#E5EEF7') // the focus fill still applies
+})
+
+// Jest runs the phone branch, where the lift is an identity transform — the tests
+// above prove the GATING only. The TV value itself is pinned here by rebuilding the
+// theme under a faked Platform.isTV (the i18n-suite defineProperty trick).
+test('focusScale token: identity on phone, 1.025 (Android TV large-element value) on TV', () => {
+  expect(require('../src/theme').theme.focusScale).toBe(1)
+  // isolateModules re-instantiates react-native too — the isTV fake must be applied
+  // to the FRESH instance in the isolated registry, before theme evaluates.
+  jest.isolateModules(() => {
+    const { Platform } = require('react-native')
+    Object.defineProperty(Platform, 'isTV', { get: () => true, configurable: true })
+    const tvTheme = require('../src/theme').theme
+    expect(tvTheme.focusScale).toBe(1.025)
+  })
 })

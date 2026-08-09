@@ -12,7 +12,7 @@ import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
-import { useEpg, type EpgProgram } from '@aliran/react-native'
+import { useEpg, useChannelThumb, programProgress, type EpgProgram } from '@aliran/react-native'
 import { theme } from '../theme'
 
 // Local wall-clock HH:MM (no Intl dependency — Hermes' Intl is uneven on Android).
@@ -34,7 +34,12 @@ export interface ChannelInfoPanelProps {
 }
 
 export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite, onReport }: ChannelInfoPanelProps) {
-  const art = stream.poster || stream.backdrop || stream.logo
+  // Thumb-first art: what is on screen RIGHT NOW beats curated art — the panel opens
+  // on a channel the viewer is deciding whether to watch. The thumb is 16:9 like the
+  // art box (aspectRatio below), so cover doesn't crop it; a 404 (the ordinary "no
+  // thumbnail" answer — see thumbBase in the SDK) falls back to the curated chain.
+  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
+  const art = thumbUri || stream.poster || stream.backdrop || stream.logo
   // vod library title (S8a): runtime + availability instead of LIVE state, and the
   // program-guide slot does not apply (a title has no schedule).
   const vod = isVod(stream)
@@ -48,7 +53,7 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 
       <View style={styles.artBox}>
         {art
-          ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" />
+          ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? `${stream.title} — live preview` : undefined} />
           : <View style={[styles.art, styles.artFallback]}><Text style={styles.artInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
         {stream.isLive && <Text style={styles.live}>● LIVE</Text>}
         {!!duration && <Text style={styles.durationBadge}>{duration}</Text>}
@@ -123,7 +128,7 @@ function EpgGuide ({ stream }: { stream: Stream }) {
 }
 
 function NowRow ({ program }: { program: EpgProgram }) {
-  const pct = Math.max(0, Math.min(1, (Date.now() - program.start) / (program.stop - program.start)))
+  const pct = programProgress(program, Date.now())
   return (
     <View style={styles.epgNow}>
       <View style={styles.epgNowHead}>

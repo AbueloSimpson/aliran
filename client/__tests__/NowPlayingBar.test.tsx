@@ -4,7 +4,7 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text } from 'react-native'
+import { Text, Image } from 'react-native'
 import { NowPlayingBar } from '../src/components/NowPlayingBar'
 import { epg } from '@aliran/react-native'
 import type { Stream } from '../src/worklet'
@@ -62,4 +62,38 @@ test('no transport row for live channels', async () => {
   const t = texts(await createTree(<NowPlayingBar stream={stream} {...props} />))
   expect(t).not.toContain('❚❚')
   expect(t).not.toContain('--:--')
+})
+
+// --- live thumbnail (WS1): the bar carries the channel's rolling feed frame next to
+// the logo; a 404 (the ordinary "no thumbnail" answer) leaves the bar exactly as
+// before — logo only, no broken image.
+
+const LOGO = 'http://127.0.0.1:1234/assets/news/logo.png'
+const THUMB = 'http://127.0.0.1:1234/feedthumb/news'
+
+test('live thumb probes off-layout, then takes layout space only after onLoad', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv', logo: LOGO, thumbBase: THUMB }
+  const tree = await createTree(<NowPlayingBar stream={stream} {...props} />)
+  let images = tree.root.findAllByType(Image)
+  expect(images).toHaveLength(2) // logo stays
+  expect(images[0].props.source.uri).toBe(LOGO)
+  expect(images[1].props.source.uri).toMatch(new RegExp('^' + THUMB + '\\?t='))
+  // Before a frame decodes, the probe is out of the flex flow and invisible —
+  // the bar's layout is byte-identical to the no-thumb bar (zap-flash stability).
+  expect(images[1].props.style).toMatchObject({ position: 'absolute', opacity: 0 })
+  expect(images[1].props.accessibilityLabel).toBeUndefined()
+  await ReactTestRenderer.act(async () => { images[1].props.onLoad() })
+  images = tree.root.findAllByType(Image)
+  expect(images[1].props.style).not.toMatchObject({ opacity: 0 })
+  expect(images[1].props.resizeMode).toBe('cover')
+  expect(images[1].props.accessibilityLabel).toBe('News 24 — live preview')
+})
+
+test('a thumb 404 leaves the bar as it was — logo only', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv', logo: LOGO, thumbBase: THUMB }
+  const tree = await createTree(<NowPlayingBar stream={stream} {...props} />)
+  await ReactTestRenderer.act(async () => { tree.root.findAllByType(Image)[1].props.onError() })
+  const images = tree.root.findAllByType(Image)
+  expect(images).toHaveLength(1)
+  expect(images[0].props.source.uri).toBe(LOGO)
 })
