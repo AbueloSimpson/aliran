@@ -19,8 +19,10 @@ import { theme } from '../theme'
 // FlatList getItemLayout, and that math is only exact when every row is EXACTLY this
 // tall — so the row's height is pinned (a guide-less one-liner centers in the same box)
 // instead of following its text. Same discipline as VOD_ROW_H (D5). Grown for the
-// guide UI (WS1): the live thumb doubled, so the row makes room for it.
-const ROW_INNER_H = theme.isTV ? 80 : 64
+// guide UI (WS1): the live thumb doubled, so the row makes room for it. Phone side
+// re-tightened ~0.85 (S22 round 3: the side panel read too large in landscape) —
+// TV keeps the 10-foot metrics untouched.
+const ROW_INNER_H = theme.isTV ? 80 : 54
 const ROW_MB = 2
 /** One list row + the gap under it — the getItemLayout unit. */
 export const CHANNEL_ROW_H = ROW_INNER_H + ROW_MB
@@ -103,19 +105,21 @@ const styles = StyleSheet.create({
   rowPlaying: { borderLeftColor: theme.colors.accent },
   rowFocused: { backgroundColor: theme.colors.focusFill },
   rowScaled: { transform: [{ scale: theme.focusScale }], zIndex: 1 },
-  number: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: theme.isTV ? 52 : 40 },
+  number: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontVariant: ['tabular-nums'], width: theme.isTV ? 52 : 34 },
   main: { flex: 1, marginRight: theme.spacing(1) },
   titleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', flexShrink: 1 },
+  title: { color: theme.colors.text, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '700', flexShrink: 1 },
   dimmed: { opacity: 0.5 },
   live: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption - 2, fontWeight: '800', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
   duration: { color: theme.colors.textDim, borderColor: theme.colors.textDim, borderWidth: 1, fontSize: theme.type.caption - 2, fontWeight: '700', fontVariant: ['tabular-nums'], paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
   star: { color: theme.colors.accent, fontSize: theme.type.label },
-  nowPlaying: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 2 },
+  nowPlaying: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.caption : theme.type.caption - 1, marginTop: 2 },
   hairline: { marginTop: 4 },
   textOnFill: { color: theme.colors.focusFillText },
   textDimOnFill: { color: theme.colors.focusFillText, opacity: 0.7 },
-  logo: { width: theme.isTV ? 112 : 84, height: theme.isTV ? 63 : 48, borderRadius: 4 },
+  // Phone 72×40 = the NowPlayingBar liveThumb box (one 16:9 art size across the bar
+  // and the rows).
+  logo: { width: theme.isTV ? 112 : 72, height: theme.isTV ? 63 : 40, borderRadius: 4 },
   logoFallback: { backgroundColor: theme.colors.surface, alignItems: 'center', justifyContent: 'center' },
   logoInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' }
 })

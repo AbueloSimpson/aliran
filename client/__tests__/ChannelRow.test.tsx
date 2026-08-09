@@ -125,9 +125,10 @@ test('live thumbnail: labelled for screen readers; the label leaves with the thu
 // --- guide UI (WS1) ---
 
 // The getItemLayout contract: this constant IS the phone row geometry (jest runs the
-// phone branch) — inner 64 + 2 gap. If it drifts, the list jump lands off a row.
+// phone branch) — inner 54 + 2 gap (S22 round 3 re-tighten). If it drifts, the list
+// jump lands off a row.
 test('row geometry: CHANNEL_ROW_H matches the pinned phone row', () => {
-  expect(CHANNEL_ROW_H).toBe(66)
+  expect(CHANNEL_ROW_H).toBe(56)
 })
 
 // Focus grammar: the light fill always announces focus; the scale lift is a TRANSFORM,
