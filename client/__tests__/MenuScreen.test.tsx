@@ -8,10 +8,11 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text, Image } from 'react-native'
+import { Text, Image, StyleSheet } from 'react-native'
 import { MenuScreen } from '../src/screens/MenuScreen'
 import { backend, type Stream } from '../src/worklet'
 import { loadServiceDescriptor } from '../src/config'
+import { theme } from '../src/theme'
 import { epg } from '@aliran/react-native'
 
 const BACKDROP = 'http://127.0.0.1:1234/assets/news/backdrop.jpg'
@@ -58,7 +59,7 @@ test('hero: the featured channel\'s feed thumb layers over the backdrop', async 
   expect(images[1].props.source.uri).toMatch(new RegExp('^' + THUMB + '\\?t='))
   expect(images[1].props.resizeMode).toBe('cover')
   expect(images[1].props.accessibilityLabel).toContain('News 24')
-})
+}, 15000) // first suite render pays the cold transform cache under parallel load
 
 test('hero: no thumbBase leaves today\'s exact backdrop-only wallpaper', async () => {
   backend.streams = [heroStream()]
@@ -110,7 +111,7 @@ test('footer: no LIVE chip without the thumb; no now line at all without EPG', a
 
 // --- Guide section tile ---
 
-test('guide tile: present by default (after Live TV), navigates to Guide', async () => {
+test('guide tile: present by default (after Live TV); phone opens Live with the guide overlay', async () => {
   backend.streams = [heroStream()]
   const tree = await mount(<MenuScreen navigation={navigation} route={{} as any} />)
   const labels = texts(tree)
@@ -119,7 +120,36 @@ test('guide tile: present by default (after Live TV), navigates to Guide', async
   const guide = tree.root.findAll(n => typeof n.props?.onPress === 'function' &&
     n.findAllByType(Text).some(t => [t.props.children].flat().join('') === 'GUIDE'))[0]!
   await ReactTestRenderer.act(async () => { guide.props.onPress() })
-  expect(navigation.navigate).toHaveBeenCalledWith('Guide')
+  // Jest runs the phone branch: the stream must show ABOVE the grid, so the tile
+  // opens Live in guide mode (WS7). The TV branch navigates to 'Guide' instead.
+  expect(navigation.navigate).toHaveBeenCalledWith('Live', { guide: true })
+})
+
+// --- phone left rail (the S22 redesign: sections run vertically down the left edge) ---
+
+test('rail: every section is a button, in tile order down the rail', async () => {
+  backend.streams = [heroStream()]
+  const tree = await mount(<MenuScreen navigation={navigation} route={{} as any} />)
+  // Host Views carry the forwarded accessibilityRole; composites are filtered out.
+  const buttons = tree.root.findAll(n => String(n.type) === 'View' && n.props.accessibilityRole === 'button')
+  const labels = buttons.map(b => b.findAllByType(Text)
+    .map(t => [t.props.children].flat(9).map(String).join(''))
+    .find(s => /[A-Z]/.test(s)))
+  // Default phone set: no VOD (provider off), no Exit (TV-only by default).
+  expect(labels).toEqual(['LIVE TV', 'GUIDE', 'FAVORITES', 'SEARCH', 'SETTINGS'])
+})
+
+test('rail: pressed tile takes the accent border (idle stays transparent)', async () => {
+  backend.streams = [heroStream()]
+  const tree = await mount(<MenuScreen navigation={navigation} route={{} as any} />)
+  // The rail entries pass Pressable a style FUNCTION of the pressed state — evaluate
+  // it directly for both states rather than simulating a gesture.
+  const entry = tree.root.findAll(n => typeof n.props?.style === 'function' &&
+    n.props.accessibilityRole === 'button')[0]!
+  const pressed = StyleSheet.flatten(entry.props.style({ pressed: true }))
+  expect(pressed.borderColor).toBe(theme.colors.accent)
+  const idle = StyleSheet.flatten(entry.props.style({ pressed: false }))
+  expect(idle.borderColor).toBe('transparent')
 })
 
 test('guide tile: sections.guide:false hides it', async () => {

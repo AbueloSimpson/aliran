@@ -1,8 +1,9 @@
-// GuideScreen, phone presentation (WS3): one channel per row — the airing program
-// for guided channels, the honest "No program information" line for guide-less ones
-// (D2 — no fake data), and tapping a row tunes it (the same Live jump Favorites
-// makes). The TV grid's D-pad rules live in guide.test.ts (pure reducer); this
-// suite only pins the list's rendering contract.
+// GuideScreen, phone presentation (WS7): the same zoomed-out TIME-GRID as the TV
+// guide, built for touch (components/GuidePanel.tsx) — program cells from the shared
+// cellRect math inside the 2 h window, the honest "No program information" cell for
+// guide-less channels (D2 — no fake data), and tapping a row tunes it (the same Live
+// jump Favorites makes). The TV grid's D-pad rules live in guide.test.ts (pure
+// reducer); this suite only pins the phone grid's rendering contract.
 
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
@@ -61,7 +62,7 @@ function screen (navigate = jest.fn()) {
   return <GuideScreen navigation={navigation} route={route} />
 }
 
-test('phone list: airing program on guided rows, the honest placeholder on guide-less ones', async () => {
+test('phone grid: airing + upcoming cells on guided rows, the honest placeholder on guide-less ones', async () => {
   const now = Date.now()
   jest.spyOn(epg, 'getPrograms').mockResolvedValue([
     { title: 'El caso del hombre topo (II)', start: now - 6e5, stop: now + 6e5 },
@@ -70,9 +71,13 @@ test('phone list: airing program on guided rows, the honest placeholder on guide
   ;(backend as any).streams = [guided, guideless]
   const t = texts(await createTree(screen()))
   expect(t).toContain('GUIDE')
-  expect(t).toContain('El caso del hombre topo (II)') // the airing program
-  expect(t).toContain('Up Next Show') // next-program line + upcoming cell
+  // Both programs sit inside the 2 h window — each is its OWN timeline cell now
+  // (the old list showed only now/next lines; the on-device feedback that drove
+  // the grid rebuild).
+  expect(t).toContain('El caso del hombre topo (II)') // the airing cell
+  expect(t).toContain('Up Next Show') // the upcoming cell in the same window
   expect(t).toContain('No program information') // guide-less row, never fake data
+  expect(t).toContain('NOW') // the floating jump-back pill
 })
 
 test('tapping a row tunes it (navigates to Live with that channel)', async () => {
@@ -80,9 +85,11 @@ test('tapping a row tunes it (navigates to Live with that channel)', async () =>
   ;(backend as any).streams = [guided, guideless]
   const navigate = jest.fn()
   const tree = await createTree(screen(navigate))
-  // The Pressable COMPOSITE carries onPress (the VodScreen suite's lesson).
+  // The whole grid row is the tap-to-tune surface. The Pressable COMPOSITE carries
+  // onPress (the VodScreen suite's lesson); Shop TV's row is found by its
+  // accessibility label (the channel column shows number + thumb, not the title).
   const row = tree.root.findAll((n) => typeof n.props.onPress === 'function')
-    .find((n) => n.findAllByType(Text).some((tx) => [tx.props.children].flat(9).join('') === 'Shop TV'))!
+    .find((n) => typeof n.props.accessibilityLabel === 'string' && n.props.accessibilityLabel.includes('Shop TV'))!
   await ReactTestRenderer.act(async () => { row.props.onPress() })
   // tuneKey: the fresh stamp that makes a value-equal streamId still fire Live's
   // param effect (re-tuning the channel Live is already on).

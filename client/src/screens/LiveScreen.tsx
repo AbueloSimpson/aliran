@@ -27,8 +27,16 @@
 // seek/pause transport (phone), the SDK's live self-heal disarms itself (port
 // recordType), and CH+/CH- stays a live-only ring: zapping from a title lands on
 // channel 001 and re-arms every live behavior.
+// Guide overlay (WS7, phone only): the full time-grid guide is a MODE of this screen
+// rather than a separate screen, so the single video surface keeps playing while the
+// viewer browses the schedule. Portrait renders the video as a 16:9 strip on top
+// with the grid below (the YouTube-TV/Pluto phone pattern — the AliranVideo element
+// only changes STYLE, never tree position, so it never remounts); landscape lays the
+// grid over the fullscreen video like the channel list panel. Entered via the Menu
+// tile (route param `guide`) or OK/tap on the already-playing row of the channel
+// list; BACK collapses it to fullscreen. TV keeps the dedicated Guide route.
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView, Animated } from 'react-native'
+import { View, Text, Pressable, StyleSheet, Platform, BackHandler, TVFocusGuideView, Animated, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranVideo, SelectedTrackType, type AliranVideoHandle, type TuneEvent, type SelectedTrack, type AudioTrack, type TextTrack } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
@@ -39,6 +47,7 @@ import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOr
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
+import { GuidePanel } from '../components/GuidePanel'
 import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/ChannelChangeIndicator'
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { TrackMenu } from '../components/TrackMenu'
@@ -47,7 +56,7 @@ import { SectionLoading } from '../components/SectionLoading'
 import { theme } from '../theme'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Live'>
-type Overlay = 'none' | 'list' | 'info'
+type Overlay = 'none' | 'list' | 'info' | 'guide'
 
 // On phone TVFocusGuideView is just a View; on TV autoFocus restores focus memory (S7).
 const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGuideView
@@ -84,7 +93,12 @@ export function LiveScreen ({ route, navigation }: Props) {
     const s = backend.streams.find(x => x.id === candidate)
     return s && needsPin(s) ? null : candidate // the mount effect below raises the PIN modal
   })
-  const [overlay, setOverlay] = useState<Overlay>((route.params?.streamId || lastStreamId) ? 'none' : 'list')
+  const [overlay, setOverlay] = useState<Overlay>(() => {
+    // The Menu's GUIDE tile (phone): open straight into the guide mode around the
+    // resumed/hero channel. TV never sets it — the Guide route stays its surface.
+    if (route.params?.guide && !theme.isTV) return 'guide'
+    return (route.params?.streamId || lastStreamId) ? 'none' : 'list'
+  })
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
   // Two-level category browse: `selected` is the group key whose channels show
   // ('All' | 'Anime' | 'Anime/Español'); `drillParent` is the parent whose sub-categories
@@ -171,6 +185,12 @@ export function LiveScreen ({ route, navigation }: Props) {
     if (s) play(s, { collapse: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params?.streamId, route.params?.tuneKey])
+
+  // navigate('Live', { guide: true }) against an ALREADY-MOUNTED Live (the stack
+  // reuses it): raise the guide overlay like the mount-time path above did.
+  useEffect(() => {
+    if (route.params?.guide && !theme.isTV) setOverlay('guide')
+  }, [route.params?.guide])
 
   // A new channel has different tracks — clear the picker so the previous channel's
   // tracks/selection don't carry over, reset subtitles to Off, and close the menu.
@@ -352,6 +372,7 @@ export function LiveScreen ({ route, navigation }: Props) {
       // alive; it must not swallow that screen's BACK against its own stale overlay
       // state. The navigation object is stable, so reading isFocused() here is live.
       if (!navigation.isFocused()) return false
+      if (overlayRef.current === 'guide') { setOverlay('none'); return true } // guide mode → fullscreen
       if (overlayRef.current === 'info') { setOverlay('list'); return true }
       if (overlayRef.current === 'list') {
         // Unwind the category drill before the overlay: sub selected -> back to sub-select;
@@ -365,6 +386,15 @@ export function LiveScreen ({ route, navigation }: Props) {
     return () => sub.remove()
   }, [navigation]) // stable identity — the listener registers once in practice
 
+  // Guide-mode geometry (phone): portrait puts the ONE video surface as a 16:9
+  // strip on top of the grid; landscape overlays the grid on the fullscreen video.
+  // Only the video's STYLE changes between these layouts (same element, same tree
+  // position), so the player never remounts and playback never stops.
+  const { width: winW, height: winH } = useWindowDimensions()
+  const portrait = winH >= winW
+  const stripH = Math.round(winW * 9 / 16)
+  const guideStrip = overlay === 'guide' && portrait
+
   if (!streams.length) return <SectionLoading section="Live TV" hint="Waiting for the channel list…" />
 
   return (
@@ -373,6 +403,7 @@ export function LiveScreen ({ route, navigation }: Props) {
         <AliranVideo
           ref={videoHandle}
           backend={backend}
+          style={guideStrip ? [styles.videoStrip, { height: stripH }] : undefined}
           streamId={playingId}
           controls={false}
           resizeMode="contain"
@@ -389,7 +420,10 @@ export function LiveScreen ({ route, navigation }: Props) {
           // Live-edge freeze self-heal (log only — onTune 'start' re-arms the pill;
           // the SDK disarms the whole ladder for vod).
           onStall={() => console.log('[live] stall resync', playingIdRef.current)}
-          onError={(msg) => { setError(msg); setTuneUI(null) }} // pill hands off to the error UI
+          // Pill hands off to the error UI — and the guide overlay collapses so the
+          // error text (with its retry instruction) is never hidden under the grid's
+          // opaque bed.
+          onError={(msg) => { setError(msg); setTuneUI(null); setOverlay((o) => (o === 'guide' ? 'none' : o)) }}
           // vod transport feed (chained by the SDK behind its own handlers): playhead
           // in whole seconds (one re-render/second), the player-reported runtime, and
           // end-of-title parking the transport on ▶ (no auto-anything — the viewer
@@ -473,9 +507,19 @@ export function LiveScreen ({ route, navigation }: Props) {
         </View>
       )}
 
-      {overlay !== 'none' && (
+      {/* Guide mode (phone): the shared time-grid around the playing stream. Tuning
+          from the grid switches the stream IN PLACE — portrait keeps the guide up
+          (the strip above shows the pick, the YouTube-TV pattern); landscape
+          collapses to fullscreen like a channel-list select. */}
+      {overlay === 'guide' && (
+        <View style={portrait ? [styles.guidePortrait, { top: stripH }] : styles.guideLandscape}>
+          <GuidePanel playingId={playingId} onTune={(s) => play(s, { collapse: !portrait })} />
+        </View>
+      )}
+
+      {(overlay === 'list' || overlay === 'info') && (
         <View style={styles.panels} onTouchStart={bumpMenuIdle}>
-          <FocusPane autoFocus style={styles.railPane}>
+          <FocusPane autoFocus style={[styles.railPane, portrait && styles.railPanePortrait]}>
             <CategoryRail
               items={railItems}
               selected={railSelected}
@@ -484,7 +528,7 @@ export function LiveScreen ({ route, navigation }: Props) {
               onActivity={bumpMenuIdle}
             />
           </FocusPane>
-          <FocusPane autoFocus style={styles.listPane}>
+          <FocusPane autoFocus style={[styles.listPane, portrait && styles.listPanePortrait]}>
             {overlay === 'list' ? (
               <ChannelListPanel
                 streams={list}
@@ -498,7 +542,9 @@ export function LiveScreen ({ route, navigation }: Props) {
                 // re-selecting the SAME channel as the retry the error message
                 // promises (see play()'s 2026-07-16 outage note), and routing that
                 // press to the Guide would shadow it. Absent onGuide = the old path.
-                onGuide={error ? undefined : (s) => navigation.navigate('Guide', { streamId: s.id })}
+                // TV opens the Guide screen; phone raises the guide MODE right here
+                // so the video surface never leaves the tree.
+                onGuide={error ? undefined : (s) => (theme.isTV ? navigation.navigate('Guide', { streamId: s.id }) : setOverlay('guide'))}
                 onActivity={bumpMenuIdle}
               />
             ) : (
@@ -577,6 +623,9 @@ export function LiveScreen ({ route, navigation }: Props) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.videoBackground },
+  // Guide mode, portrait: the video pinned to the top as a strip (height — the
+  // 16:9 of the window width — rides in from render).
+  videoStrip: { position: 'absolute', top: 0, left: 0, right: 0 },
   catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 0, right: 0 },
   // Full-screen wrapper so the NowPlayingBar's own absolute positioning still anchors
   // to the bottom while we fade the whole thing; box-none lets non-button taps reach
@@ -589,6 +638,21 @@ const styles = StyleSheet.create({
   panels: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', paddingVertical: theme.safeY, paddingLeft: theme.safeX / 2 },
   railPane: { width: '20%', backgroundColor: theme.colors.overlayStrong, borderRadius: 12, paddingVertical: theme.spacing(1), marginRight: 2 },
   listPane: { width: theme.isTV ? '38%' : '52%' },
+  // Portrait (phone): the landscape percentages leave the rail/list unreadably
+  // narrow on a ~360dp-wide screen — spread the two panes across the full width.
+  railPanePortrait: { width: '30%' },
+  listPanePortrait: { width: '67%' }, // 30 + 67 leaves room for panels' padding — no right-edge clip
+  // Guide mode: portrait fills everything under the 16:9 strip on an opaque bed
+  // (`top` set inline from the measured strip); landscape overlays the fullscreen
+  // video like the channel-list panel.
+  guidePortrait: {
+    position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: theme.colors.background,
+    paddingHorizontal: theme.safeX, paddingTop: theme.spacing(1), paddingBottom: theme.safeY
+  },
+  guideLandscape: {
+    ...StyleSheet.absoluteFillObject, backgroundColor: theme.colors.overlayStrong,
+    paddingHorizontal: theme.safeX, paddingVertical: theme.safeY
+  },
   infoPane: { flex: 1, backgroundColor: theme.colors.overlay, borderTopRightRadius: 12, borderBottomRightRadius: 12 },
   dim: { color: theme.colors.textDim, fontSize: theme.type.caption },
   errorTitle: { color: theme.colors.text, fontSize: theme.type.title, fontWeight: '700' }

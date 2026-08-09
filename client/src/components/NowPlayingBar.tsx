@@ -203,7 +203,8 @@ const styles = StyleSheet.create({
   desc: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 2 },
   divider: { width: 1, height: 24, backgroundColor: theme.colors.textDim, opacity: 0.3 },
   clock: { color: theme.colors.text, fontSize: theme.type.title, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  buttons: { flexDirection: 'row', gap: theme.spacing(1), marginTop: theme.spacing(1) },
+  // wrap: the row holds 4-6 controls — portrait phones are too narrow for one line.
+  buttons: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing(1), marginTop: theme.spacing(1) },
   transport: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1), marginTop: theme.spacing(1) },
   playBtn: { paddingHorizontal: theme.spacing(1.25), paddingVertical: 6, borderRadius: 10, backgroundColor: theme.colors.overlay },
   playGlyph: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', width: 22, textAlign: 'center' },

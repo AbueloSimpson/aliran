@@ -1,6 +1,7 @@
 // Guide — the full EPG surface (WS3): every channel's schedule from the same data
 // layer the Info panel reads (useEpgPrograms — P2P guide drive first, https provider
-// feed fallback). ONE screen, two presentations (the VodScreen TV/phone split):
+// feed fallback). ONE screen, two presentations (the VodScreen TV/phone split), both
+// the SAME zoomed-out time-grid method over src/guide.ts's math:
 //
 //   GuideGrid (TV)   a classic timeline grid — channel column (number + live thumb)
 //                    beside a 2 h window of absolutely-positioned program cells,
@@ -15,31 +16,34 @@
 //                    DOWN from the header lands back on the catcher. OK tunes the
 //                    focused row's channel; BACK leaves the header for the grid,
 //                    else pops back to where the viewer came from.
-//   GuideList (phone) one channel per row: live thumb, the airing program with its
-//                    progress hairline and the next program's line; swiping the row
-//                    sideways reveals the next few upcoming cells (kept light — a
-//                    plain horizontal ScrollView). Category chips bar on top, a
-//                    floating NOW pill jumps back to the playing channel, tapping a
-//                    row tunes it.
+//   GuidePanel (phone) the same timeline as a touch grid (WS7 — the now/next-only
+//                    list "looked bad" on device): dense ~52px rows, horizontal
+//                    fling pages the window one slot, tap tunes. Lives in
+//                    components/GuidePanel.tsx because LiveScreen also mounts it as
+//                    its 'guide' overlay — portrait shows the playing stream as a
+//                    16:9 strip ABOVE the grid there, video never stopping. This
+//                    screen remains the standalone (no-video) entry.
 //
-// Entry points: the Menu tile, and OK on the ALREADY-PLAYING row of Live TV's
+// Entry points: the Menu tile (TV; on phone the tile opens Live with the guide
+// overlay up — see LiveScreen), and OK on the ALREADY-PLAYING row of Live TV's
 // channel list (previously a no-op re-tune — see ChannelListPanel.onGuide). Tuning
 // navigates back to Live with the picked channel; Live honors the fresh param.
 // Guide-less channels show one honest full-width "No program information" cell
 // (D2 — no fake data), and vod titles have no schedule, so they stay out entirely.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, Image, Pressable, FlatList, ScrollView, StyleSheet, Platform, BackHandler, TVFocusGuideView, useWindowDimensions } from 'react-native'
+import { View, Text, Image, Pressable, FlatList, StyleSheet, Platform, BackHandler, TVFocusGuideView, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
-import { channelNumbers, categoryModel, splitCategory, subLabel, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpgPrograms, useChannelThumb, type EpgProgram } from '@aliran/react-native'
 import { ProgressHairline } from '../components/ProgressHairline'
 import { SectionLoading } from '../components/SectionLoading'
+import { GuidePanel, CategoryChips, TimeBar, CELL_GAP, hhmm } from '../components/GuidePanel'
 import {
   GUIDE_ROW_H, GUIDE_ROW_INNER_H, GUIDE_ROW_MB, GUIDE_WINDOW_MS, GUIDE_WINDOW_MIN, GUIDE_SLOTS,
-  SLOT_MIN, SLOT_MS, MIN_CELL_W, cellRect, visiblePrograms, moveFocus, snapToNow,
+  MIN_CELL_W, cellRect, visiblePrograms, moveFocus, snapToNow,
   type GuideFocus, type GuideDir
 } from '../guide'
 import { theme } from '../theme'
@@ -53,40 +57,42 @@ const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGui
 const CH_COL_W = 176
 const THUMB_W = 96
 const THUMB_H = 54
-// Adjacent program cells keep a hairline gap so the timeline reads as cells, not a bar.
-const CELL_GAP = 2
-
-// Phone list row (exact heights — the getItemLayout discipline of CHANNEL_ROW_H).
-const LIST_THUMB_W = 84
-const LIST_THUMB_H = 48
-const LIST_ROW_INNER_H = 84
-const LIST_ROW_MB = 2
-const LIST_ROW_H = LIST_ROW_INNER_H + LIST_ROW_MB
-// How many upcoming programs a phone row's sideways swipe reveals.
-const LIST_UPCOMING = 4
 
 // The focus-engine rig (TV): invisible edge strips around a central catcher, laid
 // out INSIDE the grid body so the header chips stay out of the strip geometry.
 const STRIP = 64
 
-// Local wall-clock HH:MM (no Intl under Hermes — the ChannelInfoPanel helper).
-function hhmm (ms: number): string {
-  const d = new Date(ms)
-  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+export function GuideScreen (props: Props) {
+  // theme.isTV is fixed for the app's lifetime, so the branch never flips mid-mount.
+  return theme.isTV ? <GuideScreenTV {...props} /> : <GuideScreenPhone {...props} />
 }
 
-// Time-bar date hint once paging crosses local midnight: nothing while the window
-// starts today; TOMORROW / YESTERDAY on the neighbor days, a short date past those.
-function dayHint (windowStart: number, now: number): string | null {
-  const same = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
-  const w = new Date(windowStart)
-  if (same(w, new Date(now))) return null
-  if (same(w, new Date(now + 86400000))) return 'TOMORROW'
-  if (same(w, new Date(now - 86400000))) return 'YESTERDAY'
-  return `${w.getDate()}/${w.getMonth() + 1}`
+// ---------------------------------------------------------------------------
+// Phone: the standalone screen is a thin shell over the shared GuidePanel (the
+// grid itself also mounts inside LiveScreen's 'guide' overlay, where the playing
+// stream renders above it — this route stays for direct navigation).
+// ---------------------------------------------------------------------------
+
+function GuideScreenPhone ({ route, navigation }: Props) {
+  const tune = useCallback((s: Stream) => {
+    // The same jump Favorites/Search make; Live honors the param when already
+    // mounted. tuneKey makes even a VALUE-EQUAL streamId (re-tuning the channel
+    // Live is already on) register as a fresh param there.
+    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now() })
+  }, [navigation])
+  return (
+    <View style={styles.container}>
+      <Text style={styles.header}>GUIDE</Text>
+      <GuidePanel playingId={route.params?.streamId ?? null} onTune={tune} />
+    </View>
+  )
 }
 
-export function GuideScreen ({ route, navigation }: Props) {
+// ---------------------------------------------------------------------------
+// TV: the timeline grid + virtual-focus rig.
+// ---------------------------------------------------------------------------
+
+function GuideScreenTV ({ route, navigation }: Props) {
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // Category scope — the CategoryRail's two-level model rendered as chips (a rail
   // would eat width this timeline needs; chips are the VOD tab-bar grammar). The
@@ -131,8 +137,7 @@ export function GuideScreen ({ route, navigation }: Props) {
 
   if (!streams.length) return <SectionLoading section="Guide" hint="Waiting for the channel list…" />
 
-  const shared = { model, activeKey, onSelectCategory: pickCategory, list, numbers, playingId, nowMs, onTune: tune }
-  return theme.isTV ? <GuideGrid {...shared} /> : <GuideList {...shared} />
+  return <GuideGrid model={model} activeKey={activeKey} onSelectCategory={pickCategory} list={list} numbers={numbers} playingId={playingId} nowMs={nowMs} onTune={tune} />
 }
 
 interface GuideBodyProps {
@@ -145,10 +150,6 @@ interface GuideBodyProps {
   nowMs: number
   onTune: (s: Stream) => void
 }
-
-// ---------------------------------------------------------------------------
-// TV: the timeline grid + virtual-focus rig.
-// ---------------------------------------------------------------------------
 
 function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playingId, nowMs, onTune }: GuideBodyProps) {
   const { width } = useWindowDimensions()
@@ -242,7 +243,7 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
         </FocusPane>
       </View>
 
-      <TimeBar windowStart={focus.windowStart} nowMs={nowMs} pxPerMin={pxPerMin} />
+      <TimeBar windowStart={focus.windowStart} nowMs={nowMs} pxPerMin={pxPerMin} leadW={CH_COL_W} />
 
       <View style={styles.body}>
         <FlatList
@@ -296,18 +297,6 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
           </>
         )}
       </View>
-    </View>
-  )
-}
-
-function TimeBar ({ windowStart, nowMs, pxPerMin }: { windowStart: number; nowMs: number; pxPerMin: number }) {
-  const hint = dayHint(windowStart, nowMs)
-  return (
-    <View style={styles.timebar}>
-      <View style={styles.timebarLead}>{hint ? <Text style={styles.dayHint}>{hint}</Text> : null}</View>
-      {Array.from({ length: GUIDE_SLOTS }, (_, i) => windowStart + i * SLOT_MS).map((t) => (
-        <Text key={t} style={[styles.slotLabel, { width: pxPerMin * SLOT_MIN }]}>{hhmm(t)}</Text>
-      ))}
     </View>
   )
 }
@@ -376,210 +365,11 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
   )
 }
 
-// ---------------------------------------------------------------------------
-// Phone: the portrait list (Tubi pattern — chips bar over channel rows).
-// ---------------------------------------------------------------------------
-
-function GuideList ({ model, activeKey, onSelectCategory, list, numbers, playingId, nowMs, onTune }: GuideBodyProps) {
-  const { width } = useWindowDimensions()
-  const listRef = useRef<FlatList<Stream>>(null)
-  const playingIndex = list.findIndex((s) => s.id === playingId)
-
-  // The info block fills the visible row; upcoming cells sit past its right edge,
-  // revealed by the sideways swipe.
-  const infoW = Math.max(160, width - theme.safeX * 2 - LIST_THUMB_W - theme.spacing(1) * 2)
-
-  // Keep the playing channel in view when the scope changes (ChannelListPanel idiom).
-  useEffect(() => {
-    if (playingIndex < 1) return
-    const t = setTimeout(() => {
-      try { listRef.current?.scrollToIndex({ index: playingIndex, animated: false, viewPosition: 0.35 }) } catch {}
-    }, 0)
-    return () => clearTimeout(t)
-  }, [playingIndex])
-
-  function jumpToNow () {
-    if (playingIndex < 0) return
-    try { listRef.current?.scrollToIndex({ index: playingIndex, animated: true, viewPosition: 0.35 }) } catch {}
-  }
-
-  return (
-    <View style={styles.container}>
-      <Text style={styles.header}>GUIDE</Text>
-      <CategoryChips model={model} activeKey={activeKey} onSelect={onSelectCategory} />
-      <FlatList
-        ref={listRef}
-        data={list}
-        keyExtractor={(s) => s.id}
-        getItemLayout={(_, index) => ({ length: LIST_ROW_H, offset: LIST_ROW_H * index, index })}
-        initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
-        onScrollToIndexFailed={(info) => {
-          listRef.current?.scrollToOffset({ offset: LIST_ROW_H * info.index, animated: false })
-          setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
-        }}
-        // Same discipline as the TV grid: each mounted row holds an EPG interval and
-        // a 30 s thumb probe — a 100+ channel category must not keep them all alive.
-        windowSize={5}
-        removeClippedSubviews
-        extraData={nowMs}
-        renderItem={({ item }) => (
-          <GuideListRow
-            stream={item}
-            number={numbers.get(item.id)}
-            playing={item.id === playingId}
-            nowMs={nowMs}
-            infoW={infoW}
-            onPress={() => onTune(item)}
-          />
-        )}
-      />
-      {playingIndex >= 0 && (
-        <Pressable style={styles.nowFloat} accessibilityRole="button" onPress={jumpToNow}>
-          <Text style={styles.nowPillText}>NOW</Text>
-        </Pressable>
-      )}
-    </View>
-  )
-}
-
-// One phone row. The whole row is the tap-to-tune surface; the horizontal ScrollView
-// only claims the touch on a sideways DRAG (taps fall through to the Pressable), so
-// swiping reveals the upcoming cells without stealing the tap.
-function GuideListRow ({ stream, number, playing, nowMs, infoW, onPress }: {
-  stream: Stream
-  number?: number
-  playing: boolean
-  nowMs: number
-  infoW: number
-  onPress: () => void
-}) {
-  const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
-  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
-  const art = thumbUri || stream.logo
-  const current = programs.find((p) => p.start <= nowMs && nowMs < p.stop) ?? null
-  const upcoming = programs.filter((p) => p.start > nowMs).slice(0, LIST_UPCOMING)
-
-  return (
-    <Pressable style={[styles.listRow, playing && styles.rowPlaying]} onPress={onPress}>
-      {art
-        ? <Image source={{ uri: art }} style={styles.listThumb} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} accessibilityLabel={thumbUri ? `${stream.title} — live preview` : undefined} />
-        : <View style={[styles.listThumb, styles.chThumbFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.listSwipe}>
-        <View style={[styles.listInfo, { width: infoW }]}>
-          <View style={styles.listTitleLine}>
-            <Text style={styles.listNumber}>{formatChannelNumber(number)}</Text>
-            <Text style={styles.listTitle} numberOfLines={1}>{stream.title}</Text>
-          </View>
-          {current
-            ? <Text style={styles.listNow} numberOfLines={1}>{current.title}</Text>
-            : <Text style={[styles.listNow, styles.cellEmpty]} numberOfLines={1}>No program information</Text>}
-          <ProgressHairline program={current} style={styles.listHairline} />
-          {upcoming.length > 0 && (
-            <Text style={styles.listNext} numberOfLines={1}>{`Next  ${hhmm(upcoming[0].start)}  ${upcoming[0].title}`}</Text>
-          )}
-        </View>
-        {upcoming.map((p) => (
-          <View key={`${p.start}-${p.stop}`} style={styles.upCell}>
-            <Text style={styles.upTime}>{hhmm(p.start)}</Text>
-            <Text style={styles.upTitle} numberOfLines={2}>{p.title}</Text>
-          </View>
-        ))}
-      </ScrollView>
-    </Pressable>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Shared header chips (both presentations).
-// ---------------------------------------------------------------------------
-
-function CategoryChips ({ model, activeKey, onSelect, onNow, nowPillRef }: {
-  model: CategoryModel
-  activeKey: string
-  onSelect: (key: string) => void
-  /** TV only: the NOW pill (reset window + refocus the playing channel). The phone
-   *  list has its own floating pill instead. */
-  onNow?: () => void
-  nowPillRef?: React.RefObject<any>
-}) {
-  const parent = splitCategory(activeKey)[0]
-  const subs = model.subs[parent] ?? []
-  return (
-    <View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-        {onNow && <NowPill onPress={onNow} innerRef={nowPillRef} />}
-        {model.top.map((key) => (
-          <GuideChip key={key} label={key} active={key === parent} onPress={() => onSelect(key)} />
-        ))}
-      </ScrollView>
-      {subs.length > 0 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-          {subs.map((key) => (
-            <GuideChip key={key} label={subLabel(key)} active={key === activeKey} onPress={() => onSelect(key)} />
-          ))}
-        </ScrollView>
-      )}
-    </View>
-  )
-}
-
-function GuideChip ({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
-  const [focused, setFocused] = useState(false)
-  return (
-    <Pressable
-      style={[styles.chip, active && styles.chipActive, focused && styles.chipFocused]}
-      accessibilityRole="button"
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onPress={onPress}
-    >
-      <Text style={[styles.chipText, active && styles.chipTextActive]}>{label.toUpperCase()}</Text>
-    </Pressable>
-  )
-}
-
-// The red NOW pill — live color, border-box focus (the menu-icon grammar).
-function NowPill ({ onPress, innerRef }: { onPress: () => void; innerRef?: React.RefObject<any> }) {
-  const [focused, setFocused] = useState(false)
-  return (
-    <Pressable
-      ref={innerRef}
-      style={[styles.nowPill, focused && styles.chipFocused]}
-      accessibilityRole="button"
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      onPress={onPress}
-    >
-      <Text style={styles.nowPillText}>NOW</Text>
-    </Pressable>
-  )
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.background, paddingHorizontal: theme.safeX, paddingVertical: theme.safeY },
   header: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginBottom: theme.spacing(1) },
   headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing(1.5) },
   chipsPane: { flex: 1 },
-  chipsRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(0.75), paddingBottom: theme.spacing(0.5) },
-  chip: {
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999,
-    borderWidth: Math.max(theme.focusRing, 1), borderColor: 'transparent'
-  },
-  chipActive: { backgroundColor: theme.colors.surface },
-  chipFocused: { borderColor: theme.colors.focus },
-  chipText: { color: theme.colors.textDim, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 1 },
-  chipTextActive: { color: theme.colors.text },
-  nowPill: {
-    paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999, backgroundColor: theme.colors.live,
-    borderWidth: Math.max(theme.focusRing, 1), borderColor: 'transparent'
-  },
-  nowPillText: { color: theme.colors.onPrimary, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 1 },
-
-  // Time bar (TV).
-  timebar: { flexDirection: 'row', alignItems: 'baseline', marginTop: theme.spacing(0.5), marginBottom: theme.spacing(0.5) },
-  timebarLead: { width: CH_COL_W, paddingLeft: theme.spacing(1) },
-  dayHint: { color: theme.colors.accent, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 1 },
-  slotLabel: { color: theme.colors.textDim, fontSize: theme.type.caption, fontVariant: ['tabular-nums'] },
 
   // Grid body + the focus rig (TV).
   body: { flex: 1 },
@@ -614,32 +404,5 @@ const styles = StyleSheet.create({
   cellTimeFocused: { color: theme.colors.focusFillText, opacity: 0.7 },
   cellPast: { opacity: 0.5 },
   cellEmpty: { color: theme.colors.textDim, fontStyle: 'italic', fontWeight: '400' },
-  cellHairline: { position: 'absolute', left: 8, right: 8, bottom: 4 },
-
-  // Phone list.
-  listRow: {
-    flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1),
-    height: LIST_ROW_INNER_H, marginBottom: LIST_ROW_MB, paddingLeft: theme.spacing(0.5),
-    borderRadius: 8, borderLeftWidth: 3, borderLeftColor: 'transparent'
-  },
-  listThumb: { width: LIST_THUMB_W, height: LIST_THUMB_H, borderRadius: 4, backgroundColor: theme.colors.surface },
-  listSwipe: { flex: 1 },
-  listInfo: { justifyContent: 'center', paddingVertical: 6 },
-  listTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  listNumber: { color: theme.colors.textDim, fontSize: theme.type.caption, fontVariant: ['tabular-nums'] },
-  listTitle: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', flexShrink: 1 },
-  listNow: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 2 },
-  listHairline: { marginTop: 4, marginBottom: 2 },
-  listNext: { color: theme.colors.textDim, fontSize: theme.type.caption - 1, marginTop: 2, opacity: 0.8 },
-  upCell: {
-    width: 132, marginLeft: theme.spacing(0.75), alignSelf: 'center',
-    backgroundColor: theme.colors.surface, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 6
-  },
-  upTime: { color: theme.colors.textDim, fontSize: theme.type.caption - 1, fontVariant: ['tabular-nums'] },
-  upTitle: { color: theme.colors.text, fontSize: theme.type.caption - 1, marginTop: 2 },
-  nowFloat: {
-    position: 'absolute', right: theme.safeX, bottom: theme.safeY + theme.spacing(1),
-    paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, backgroundColor: theme.colors.live,
-    elevation: 4
-  }
+  cellHairline: { position: 'absolute', left: 8, right: 8, bottom: 4 }
 })
