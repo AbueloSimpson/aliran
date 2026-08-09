@@ -3,7 +3,7 @@
 // advances) while the view stays open. The fetch is cached per feed URL (./epg), so
 // the tick is nearly free. Any app on the SDK can render its own guide from this.
 import { useState, useEffect } from 'react'
-import { epg, type NowNext } from './epg'
+import { epg, type EpgProgram, type NowNext } from './epg'
 
 export function useEpg (epgUrl?: string, epgId?: string, guideBase?: string): { data: NowNext | null; loaded: boolean } {
   const [data, setData] = useState<NowNext | null>(null)
@@ -19,4 +19,23 @@ export function useEpg (epgUrl?: string, epgId?: string, guideBase?: string): { 
     return () => { alive = false; clearInterval(timer) }
   }, [epgUrl, epgId, guideBase])
   return { data, loaded }
+}
+
+// Full-range sibling for guide screens (WS0): the channel's whole program list over
+// the service's default window (now − 6 h … now + 48 h), refreshed on a slow tick so
+// a guide left open rolls forward. The underlying caches floor at minRefetchMs, so
+// the tick is nearly free — an unchanged guide costs no network at all.
+export function useEpgPrograms (epgUrl?: string, epgId?: string, guideBase?: string): EpgProgram[] {
+  const [programs, setPrograms] = useState<EpgProgram[]>([])
+  useEffect(() => {
+    let alive = true
+    setPrograms([])
+    // The P2P guide (guideBase) needs no epgUrl/epgId — either source alone works.
+    if (!guideBase && (!epgUrl || !epgId)) return
+    const run = () => epg.getPrograms(epgUrl, epgId, guideBase).then((p) => { if (alive) setPrograms(p) })
+    run()
+    const timer = setInterval(run, 5 * 60_000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [epgUrl, epgId, guideBase])
+  return programs
 }

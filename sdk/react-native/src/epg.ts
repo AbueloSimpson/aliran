@@ -104,6 +104,33 @@ export class EpgService {
     return this.select(programs)
   }
 
+  // Full program list for one channel over a time range — getNowNext's big sibling,
+  // for guide grids and timelines. Same source order and error posture: the P2P
+  // guide first when a guideBase exists, the https provider feed as fallback, and
+  // an empty list — never a throw — on any failure. Reuses the same caches, so a
+  // guide screen over a category costs the fetches getNowNext already paid. The
+  // default window (now − 6 h … now + 48 h) covers everything the two-day P2P
+  // guide can hold; a program merely OVERLAPPING the range is included.
+  async getPrograms (epgUrl?: string, epgId?: string, guideBase?: string, rangeStart?: number, rangeEnd?: number): Promise<EpgProgram[]> {
+    const t = this.now()
+    const start = rangeStart ?? t - 6 * 3600_000
+    const end = rangeEnd ?? t + 48 * 3600_000
+    let programs: EpgProgram[] | null = null
+    if (guideBase) {
+      try {
+        const p = await this.p2pPrograms(guideBase)
+        if (p && p.length) programs = p
+      } catch { /* engine down / malformed — fall through to https */ }
+    }
+    if (!programs) {
+      if (!epgUrl || !epgId) return []
+      try { await this.ensureFresh(epgUrl) } catch { /* keep any stale cache; fall through */ }
+      programs = this.cache.get(epgUrl)?.byId.get(epgId) ?? null
+    }
+    if (!programs || !programs.length) return []
+    return programs.filter((p) => p.stop > start && p.start < end)
+  }
+
   // Fresh-enough P2P programs for one channel (today + tomorrow files, merged and
   // sorted), or null when the drive does not cover the channel. Same freshness
   // economics as the https path: minRefetchMs floor, maxAgeMs ceiling, per-file
@@ -229,6 +256,16 @@ export class EpgService {
       this.cache.set(url, { fetchedAt: this.now(), etag: res.headers.get('etag'), byId, coversUntil, inflight: prev?.inflight ?? null })
     } finally { clearTimeout(timer) }
   }
+}
+
+// Clamped 0..1 elapsed fraction of a program at `now` — the guide's progress-bar
+// math, kept pure so any renderer can call it per frame. 0 before start, 1 at/after
+// stop; a degenerate program (stop <= start) reads as finished once the clock
+// reaches its start, never NaN/Infinity.
+export function programProgress (program: EpgProgram, now: number): number {
+  if (now < program.start) return 0
+  if (now >= program.stop || program.stop <= program.start) return 1
+  return (now - program.start) / (program.stop - program.start)
 }
 
 // Parse a provider feed ({channels:[{id, epg:[{title,start,stop}]}]} or a bare

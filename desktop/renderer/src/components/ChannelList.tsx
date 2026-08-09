@@ -13,29 +13,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
-
-// Live thumbnail refresh cadence — the broadcaster rolls /thumb.jpg at the same period,
-// so a faster tick would re-fetch the frame the row already shows.
-const THUMB_REFRESH_MS = 30000
-
-// Thumb-first channel art (the desktop half of the client's useChannelThumb). The engine
-// hands out thumbBase for EVERY channel, so a 404 is the normal "nothing to show" answer
-// (thumbnails off, feed not warm, metered network) and the row falls back to the logo —
-// never a broken-image state. The ?t= stamp is load-bearing: the thumbnail rolls IN
-// PLACE, so an unchanged URL would leave the browser cache pinned to the first frame.
-// Each tick also re-probes a missing thumb — the SDK warms a cold feed on that first
-// miss, so the picture appears one tick later instead of never.
-function useChannelThumb (thumbBase?: string): [string | null, () => void] {
-  const [stamp, setStamp] = useState(0)
-  const [broken, setBroken] = useState(false)
-  useEffect(() => {
-    if (!thumbBase) return
-    setBroken(false)
-    const timer = setInterval(() => { setStamp(Date.now()); setBroken(false) }, THUMB_REFRESH_MS)
-    return () => clearInterval(timer)
-  }, [thumbBase])
-  return [thumbBase && !broken ? `${thumbBase}?t=${stamp}` : null, () => setBroken(true)]
-}
+import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
 
 export interface ChannelListProps {
   streams: Stream[]
