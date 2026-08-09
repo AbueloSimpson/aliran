@@ -144,6 +144,23 @@ test('getPrograms serves the P2P guide first — today + tomorrow merged, https 
   expect(f.state.feedCalls).toBe(0) // the drive answered — the provider was never asked
 })
 
+test('getPrograms dedupes identical spans — in-file twins and the midnight double-listing', async () => {
+  const spanStart = BASE + 23 * HOUR // listed in BOTH day files (crosses the boundary)
+  const f = makeGuideFetch({
+    [TODAY]: [
+      { title: 'Twin', start: iso(BASE), stop: iso(BASE + HOUR) },
+      { title: 'Twin again', start: iso(BASE), stop: iso(BASE + HOUR) }, // same span → one cell
+      { title: 'Spanner', start: iso(spanStart), stop: iso(spanStart + 2 * HOUR) }
+    ],
+    [TOMORROW]: [
+      { title: 'Spanner', start: iso(spanStart), stop: iso(spanStart + 2 * HOUR) } // day-boundary repeat
+    ]
+  }, feed())
+  const svc = new EpgService({ fetchImpl: f as any, now: () => BASE + 30 * 60_000 })
+  const programs = await svc.getPrograms('https://epg.example/anime.json', 'moon-cat', 'http://127.0.0.1:9999/epg/v1/moon-cat')
+  expect(programs.map(p => p.title)).toEqual(['Twin', 'Spanner'])
+})
+
 test('getPrograms falls back to the https feed when the drive does not cover the channel', async () => {
   const f = makeGuideFetch({}, feed()) // every day file 404s → channel absent from the drive
   const svc = new EpgService({ fetchImpl: f as any, now: () => BASE + 30 * 60_000 })

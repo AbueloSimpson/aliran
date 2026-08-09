@@ -158,7 +158,9 @@ export class EpgService {
     const days = [...entry.byDay.keys()].sort()
     const programs: EpgProgram[] = []
     for (const d of days) programs.push(...entry.byDay.get(d)!)
-    return programs
+    // Disjoint sorted day files concatenate in start order, so the consecutive
+    // dedupe also collapses a program listed in both files at the day boundary.
+    return dedupeSorted(programs)
   }
 
   private async fetchP2pInto (guideBase: string, entry: P2pCache): Promise<void> {
@@ -193,7 +195,8 @@ export class EpgService {
           }
         }
         programs.sort((a, b) => a.start - b.start)
-        if (programs.length) entry.byDay.set(day, programs); else entry.byDay.delete(day)
+        const deduped = dedupeSorted(programs)
+        if (deduped.length) entry.byDay.set(day, deduped); else entry.byDay.delete(day)
         const e = res.headers.get('etag')
         if (e) entry.etags.set(day, e); else entry.etags.delete(day)
       } finally { clearTimeout(timer) }
@@ -268,6 +271,20 @@ export function programProgress (program: EpgProgram, now: number): number {
   return (now - program.start) / (program.stop - program.start)
 }
 
+// Drop consecutive entries with identical spans from a start-sorted list. Real
+// feeds carry full duplicates (same start AND stop — seen in prod), and a program
+// listed in both day files of the P2P guide duplicates across the midnight merge;
+// one representative cell is the correct guide answer either way.
+function dedupeSorted (programs: EpgProgram[]): EpgProgram[] {
+  const out: EpgProgram[] = []
+  for (const p of programs) {
+    const prev = out[out.length - 1]
+    if (prev && prev.start === p.start && prev.stop === p.stop) continue
+    out.push(p)
+  }
+  return out
+}
+
 // Parse a provider feed ({channels:[{id, epg:[{title,start,stop}]}]} or a bare
 // array) into id -> sorted programs. Malformed entries are skipped, never fatal:
 // the feed is third-party data.
@@ -285,7 +302,7 @@ function index (feed: any): Map<string, EpgProgram[]> {
       if (!title || Number.isNaN(start) || Number.isNaN(stop) || stop <= start) continue
       programs.push({ title, start, stop })
     }
-    if (programs.length) { programs.sort((a, b) => a.start - b.start); byId.set(id, programs) }
+    if (programs.length) { programs.sort((a, b) => a.start - b.start); byId.set(id, dedupeSorted(programs)) }
   }
   return byId
 }
