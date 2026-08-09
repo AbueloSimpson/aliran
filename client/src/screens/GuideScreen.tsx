@@ -417,6 +417,10 @@ function GuideList ({ model, activeKey, onSelectCategory, list, numbers, playing
           listRef.current?.scrollToOffset({ offset: LIST_ROW_H * info.index, animated: false })
           setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
         }}
+        // Same discipline as the TV grid: each mounted row holds an EPG interval and
+        // a 30 s thumb probe — a 100+ channel category must not keep them all alive.
+        windowSize={5}
+        removeClippedSubviews
         extraData={nowMs}
         renderItem={({ item }) => (
           <GuideListRow
