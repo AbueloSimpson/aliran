@@ -19,11 +19,15 @@ export interface ChannelListPanelProps {
   favorites: string[]
   onSelect: (stream: Stream) => void
   onInfo: (stream: Stream) => void
+  /** Two-tier OK (WS3): pressing the row of the channel ALREADY PLAYING — previously
+   *  a no-op re-tune — opens the full program guide instead. Every other row keeps
+   *  tuning via onSelect. Absent = the old single-tier behavior. */
+  onGuide?: (stream: Stream) => void
   /** Fired on user interaction (row focus / scroll) to defer the auto-hide timer. */
   onActivity?: () => void
 }
 
-export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onActivity }: ChannelListPanelProps) {
+export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, playingId, favorites, onSelect, onInfo, onGuide, onActivity }: ChannelListPanelProps) {
   const listRef = useRef<FlatList<Stream>>(null)
   const playingIndex = streams.findIndex((s) => s.id === playingId)
   // On open, bring the currently-playing channel into view. Rows are EXACTLY
@@ -61,7 +65,7 @@ export function ChannelListPanel ({ streams, heading = 'CHANNELS', numbers, play
             favorite={favorites.includes(item.id)}
             hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
             onFocus={onActivity}
-            onPress={() => onSelect(item)}
+            onPress={() => (item.id === playingId && onGuide ? onGuide(item) : onSelect(item))}
             onLongPress={() => onInfo(item)}
           />
         )}

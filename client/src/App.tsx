@@ -30,6 +30,7 @@ import { ConnectScreen } from './screens/ConnectScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { MenuScreen } from './screens/MenuScreen'
 import { LiveScreen } from './screens/LiveScreen'
+import { GuideScreen } from './screens/GuideScreen'
 import { FavoritesScreen } from './screens/FavoritesScreen'
 import { SearchScreen } from './screens/SearchScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
@@ -42,7 +43,14 @@ export type RootStackParamList = {
   Connect: undefined
   Login: undefined
   Menu: undefined
-  Live: { streamId?: string } | undefined
+  // tuneKey: a fresh stamp per Guide tune, so navigating here with a VALUE-EQUAL
+  // streamId (re-tuning the channel the params already name) still fires Live's
+  // param effect. Callers that mount Live fresh (Favorites/Search) don't need it.
+  Live: { streamId?: string; tuneKey?: number } | undefined
+  // The full EPG guide (WS3). streamId = the channel Live was playing when it opened
+  // the guide — the row the grid mounts at and the NOW pill's jump target. Absent
+  // when entered from the Menu tile.
+  Guide: { streamId?: string } | undefined
   Favorites: undefined
   Search: undefined
   Settings: undefined
@@ -145,6 +153,7 @@ export default function App () {
         </Stack.Screen>
         <Stack.Screen name="Menu" component={MenuScreen} />
         <Stack.Screen name="Live" component={LiveScreen} />
+        <Stack.Screen name="Guide" component={GuideScreen} />
         <Stack.Screen name="Favorites" component={FavoritesScreen} />
         <Stack.Screen name="Search" component={SearchScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />

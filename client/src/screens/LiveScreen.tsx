@@ -73,7 +73,7 @@ function clockText (d: Date) {
   return `${h < 10 ? '0' + h : h}:${m < 10 ? '0' + m : m}`
 }
 
-export function LiveScreen ({ route }: Props) {
+export function LiveScreen ({ route, navigation }: Props) {
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   // Parental gate (device policy): a restricted channel about to play while the PIN
@@ -156,6 +156,21 @@ export function LiveScreen ({ route }: Props) {
 
   // Remember the channel across a trip out to the Menu (see lastStreamId).
   useEffect(() => { if (playingId) lastStreamId = playingId }, [playingId])
+
+  // The Guide tuned a channel while THIS screen stayed mounted (Guide sits above Live
+  // in the stack, so navigate('Live') pops back with fresh params instead of
+  // remounting): honor the param like a row select. tuneKey (a fresh stamp per Guide
+  // tune) rides the deps because a value-equal streamId alone would never re-fire the
+  // effect (re-tuning the channel the params already name). A param matching what
+  // already plays is a no-op, so the mount-time path (initial state above, no
+  // tuneKey) is undisturbed.
+  useEffect(() => {
+    const id = route.params?.streamId
+    if (!id || id === playingIdRef.current) return
+    const s = backend.streams.find(x => x.id === id)
+    if (s) play(s, { collapse: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params?.streamId, route.params?.tuneKey])
 
   // A new channel has different tracks — clear the picker so the previous channel's
   // tracks/selection don't carry over, reset subtitles to Off, and close the menu.
@@ -333,6 +348,10 @@ export function LiveScreen ({ route }: Props) {
   // fullscreen → default (pop to Menu). Fullscreen is OPENED via a tap/OK on the catcher.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // A screen stacked ABOVE a still-mounted Live (the Guide) leaves this listener
+      // alive; it must not swallow that screen's BACK against its own stale overlay
+      // state. The navigation object is stable, so reading isFocused() here is live.
+      if (!navigation.isFocused()) return false
       if (overlayRef.current === 'info') { setOverlay('list'); return true }
       if (overlayRef.current === 'list') {
         // Unwind the category drill before the overlay: sub selected -> back to sub-select;
@@ -344,7 +363,7 @@ export function LiveScreen ({ route }: Props) {
       return false // fullscreen: default back = exit to Menu
     })
     return () => sub.remove()
-  }, [])
+  }, [navigation]) // stable identity — the listener registers once in practice
 
   if (!streams.length) return <SectionLoading section="Live TV" hint="Waiting for the channel list…" />
 
@@ -475,6 +494,11 @@ export function LiveScreen ({ route }: Props) {
                 favorites={favorites}
                 onSelect={(s) => play(s, { collapse: true })}
                 onInfo={(s) => { setInfoStream(s); setOverlay('info') }}
+                // Two-tier OK — but NOT while a playback error is up: play() honors
+                // re-selecting the SAME channel as the retry the error message
+                // promises (see play()'s 2026-07-16 outage note), and routing that
+                // press to the Guide would shadow it. Absent onGuide = the old path.
+                onGuide={error ? undefined : (s) => navigation.navigate('Guide', { streamId: s.id })}
                 onActivity={bumpMenuIdle}
               />
             ) : (
