@@ -36,6 +36,12 @@ jobs:
       - run: npm ci
       - name: Crypto unit tests (test:core)
         run: npm run test:core
+      # "Send to TV" rendezvous + mutual proof (core/remote.js): the known-answer
+      # vectors that pin the phone<->TV wire, domain separation against the service
+      # pairing code, the handshake-hash binding that stops a relay replaying a proof,
+      # reflection, and the SAS uniformity check. Pure crypto, no swarm — deterministic.
+      - name: Remote-pairing primitives (test:remote-core)
+        run: npm run test:remote-core
       # Login-RPC hardening (S42): malformed payloads fail closed instead of crashing
       # the panel, a captured register cannot be replayed, the throttle map stays
       # bounded. Loopback SecretStream pair, no DHT — deterministic.

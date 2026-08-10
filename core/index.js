@@ -4,6 +4,7 @@
 //   Passwords   : randomSalt, deriveVerifier, verify
 //   Key wrapping: wrapKeyFrom, wrap, unwrap
 //   Pairing code: pairingCode, normalizePairingCode, pairingTopic, pairingCodeMatches
+//   Remote pair : newSigninCode, signinKeys, remoteSecret/remoteTopic, remoteProof, remoteSas
 //
 // Enrollment (panel/admin, holds password + oprfKey):
 //   rwd      = evaluateFull(oprfKey, password)
@@ -26,3 +27,4 @@ export * from './pow.js'
 export * from './token.js'
 export * from './session.js'
 export * from './pairing.js'
+export * from './remote.js'
