@@ -32,6 +32,7 @@ import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { loadServiceDescriptor, PANEL_KEY_RE, PAIRING_GROUPS, PAIRING_GROUP_SIZE, cleanPairingInput } from '../config'
 import { SignInWithPhone } from '../components/SignInWithPhone'
+import { useSigninPath } from '../signinPath'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -65,6 +66,15 @@ type Failure = { code: string } | { text: string }
 // wherever the language needs them — and are re-wrapped in bold at render.
 const INTRO_SLOTS = /(\{method\}|\{username\}|\{password\})/
 
+// The doors of this screen (see signinPath.ts). BOTH end on {type:'streams'} and they
+// persist different things, so the handler switches on `kind` and never on leftovers:
+//   manual  the typed/resolved key + the typed account — saved once 'streams' proves both
+//   phone   the handover brings its OWN key and no credentials; its panel says so and
+//           persists on the viewer's press (onPhoneSignedIn), not on 'streams'
+type SigninDoor =
+  | { kind: 'manual'; key: string; username: string; password: string; name: string }
+  | { kind: 'phone' }
+
 type Props = NativeStackScreenProps<RootStackParamList, 'Connect'>
 
 export function ConnectScreen ({ navigation }: Props) {
@@ -82,35 +92,50 @@ export function ConnectScreen ({ navigation }: Props) {
   const groupRefs = useRef<Array<TextInput | null>>([])
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const attempt = useRef<{ key: string; username: string; password: string; name: string } | null>(null)
+  const door = useSigninPath<SigninDoor>()
   const awaitingReady = useRef(false)
 
   useEffect(() => {
     const off = backend.onMessage((m) => {
+      // Read the owner ONCE (signinPath.ts): everything below is about the door that is
+      // in flight right now, and a door that has failed owns nothing.
+      const d = door.current
       // The engine confirmed (re)connecting to the entered panel — now log in. On a
       // service SWITCH (second try after a wrong key, or after "Change service…")
       // the worklet tears the old engine down first, so waiting for the fresh
       // 'ready' is what keeps the login from racing the teardown.
-      if (m.type === 'ready' && awaitingReady.current && attempt.current) {
+      if (m.type === 'ready' && awaitingReady.current && d?.kind === 'manual') {
         awaitingReady.current = false
-        backend.login(attempt.current.username, attempt.current.password)
+        backend.login(d.username, d.password)
       }
-      if (m.type === 'streams' && attempt.current) {
+      if (m.type === 'streams' && d?.kind === 'manual') {
         // Both values proved themselves — persist them now (and only now), so the
         // next boot auto-authorizes straight into this service. The name is the
         // operator's own when the pairing code delivered one, the build's otherwise.
-        backend.saveService({ panelPubKey: attempt.current.key, name: attempt.current.name })
-        backend.saveCredentials(attempt.current.username, attempt.current.password)
+        //
+        // ONLY on this door. A 'streams' that a phone handover produced carries a key
+        // this screen never saw — persisting the typed one there would point the next
+        // boot at the wrong operator with the wrong password.
+        door.release()
+        backend.saveService({ panelPubKey: d.key, name: d.name })
+        backend.saveCredentials(d.username, d.password)
         setBusy(false)
         navigation.replace('Menu')
       }
-      if (m.type === 'login-error' && attempt.current) {
+      if (m.type === 'login-error' && d?.kind === 'manual') {
         if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
           tries.current += 1
           timer.current = setTimeout(() => {
-            if (attempt.current) backend.login(attempt.current.username, attempt.current.password)
+            // Re-read: the backoff is seconds long and the viewer may have started
+            // another door inside it. Only the owner retries.
+            const still = door.current
+            if (still?.kind === 'manual') backend.login(still.username, still.password)
           }, RETRY_MS)
         } else {
+          // Terminal. This attempt can no longer produce a session, so it gives the
+          // outcome up here — the fields stay filled for a retry in place, but nothing
+          // that happens afterwards is this attempt's to persist.
+          door.release()
           setBusy(false)
           setStatus(null)
           setError(TRANSIENT.test(m.message)
@@ -142,7 +167,7 @@ export function ConnectScreen ({ navigation }: Props) {
     setStatus('connecting')
     setBusy(true)
     tries.current = 0
-    attempt.current = { key, username, password, name }
+    door.claim({ kind: 'manual', key, username, password, name })
     awaitingReady.current = true
     backend.connect(key)
   }
@@ -197,9 +222,11 @@ export function ConnectScreen ({ navigation }: Props) {
   }
 
   // The handover brings the operator key with it, so a device that came in this way is
-  // ALREADY on that service — persist it (public, never a secret) and go. There are no
-  // credentials to save: key material is not written to disk.
+  // ALREADY on that service — persist THAT key (public, never a secret) and go. It is the
+  // adopted one, never whatever was typed into the form above. There are no credentials
+  // to save: key material is not written to disk.
   const onPhoneSignedIn = (panelPubKey: string | null) => {
+    door.release()
     if (panelPubKey) backend.saveService({ panelPubKey, name: service.name })
     navigation.replace('Menu')
   }
@@ -306,7 +333,7 @@ export function ConnectScreen ({ navigation }: Props) {
         disabled={busy}
         onFocus={() => setFocused('phone')}
         onBlur={() => setFocused(null)}
-        onPress={() => setPhoneSignIn(true)}
+        onPress={() => { door.claim({ kind: 'phone' }); setPhoneSignIn(true) }}
       >
         <Text style={styles.linkText}>{t('sendtv.tvStart')}</Text>
       </Pressable>
@@ -314,7 +341,10 @@ export function ConnectScreen ({ navigation }: Props) {
     </ScrollView>
 
     {phoneSignIn && (
-      <SignInWithPhone onClose={() => setPhoneSignIn(false)} onSignedIn={onPhoneSignedIn} />
+      <SignInWithPhone
+        onClose={() => { door.release(); setPhoneSignIn(false) }}
+        onSignedIn={onPhoneSignedIn}
+      />
     )}
     </View>
   )

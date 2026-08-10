@@ -18,6 +18,7 @@ import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { loadServiceDescriptor } from '../config'
 import { SignInWithPhone } from '../components/SignInWithPhone'
+import { useSigninPath } from '../signinPath'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -41,6 +42,16 @@ const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up
 // engine's message verbatim (SDK error prose stays English by design — S56).
 type Failure = { unreachable: true } | { text: string }
 
+// The doors of this screen (see signinPath.ts). Both end on {type:'streams'}, and only
+// one of them has anything to persist:
+//   manual  "remember me" (D1) — save the credentials that worked, then go
+//   phone   the handover carries key material, which must NEVER reach the prefs file, so
+//           there is nothing to save; its panel stays up to say the sign-in worked and
+//           navigates on the viewer's press
+type SigninDoor =
+  | { kind: 'manual'; username: string; password: string }
+  | { kind: 'phone' }
+
 export function LoginScreen ({ navigation, backendReady }: Props) {
   const { t } = useI18n()
   // Prefill the last-known username (e.g. Splash fell through on a changed password).
@@ -52,11 +63,11 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
   const [phoneSignIn, setPhoneSignIn] = useState(false)
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const creds = useRef({ username: '', password: '' })
-  // Both doors end on the same 'streams' message, so one guard decides who navigates —
-  // and a REF, not the state, because the listener below is registered once.
+  // Which door is in flight, and therefore what a 'streams' means. A REF (inside the
+  // handle), not state, because the listener below is registered once.
+  const door = useSigninPath<SigninDoor>()
+  // Both doors reach the menu, so one guard decides who navigates.
   const routed = useRef(false)
-  const phoneMode = useRef(false)
 
   const goMenu = useCallback(() => {
     if (routed.current) return
@@ -66,32 +77,44 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
 
   useEffect(() => {
     const off = backend.onMessage((m) => {
-      if (m.type === 'streams') {
-        // Remember me (D1): persist the credentials that worked so the next boot
-        // auto-authorizes behind the splash. Sign out (Settings) clears them. A phone
-        // handover has no credentials to save, and its panel stays up to say the
-        // sign-in worked — so it navigates on the viewer's press, not on this message.
-        if (creds.current.username) backend.saveCredentials(creds.current.username, creds.current.password)
+      // Read the owner ONCE (signinPath.ts) — a door that failed owns nothing.
+      const d = door.current
+      if (m.type === 'streams' && d?.kind === 'manual') {
+        // Remember me (D1): persist the credentials THIS door proved, so the next boot
+        // auto-authorizes behind the splash. Sign out (Settings) clears them.
+        //
+        // Only this door writes them. A password that was refused is not made good by a
+        // later phone handover succeeding: saving it there would put a dead password in
+        // the prefs file (plaintext at rest) and fail every auto-login from then on.
+        door.release()
+        backend.saveCredentials(d.username, d.password)
         setBusy(false)
-        if (!phoneMode.current) goMenu()
+        goMenu()
       }
-      if (m.type === 'login-error') {
+      if (m.type === 'login-error' && d?.kind === 'manual') {
         if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
           tries.current += 1
-          timer.current = setTimeout(() => backend.login(creds.current.username, creds.current.password), RETRY_MS)
+          timer.current = setTimeout(() => {
+            // Re-read: only the door that still owns the outcome retries.
+            const still = door.current
+            if (still?.kind === 'manual') backend.login(still.username, still.password)
+          }, RETRY_MS)
         } else {
+          // Terminal — this attempt gives the outcome up rather than leaving its
+          // password behind for the next door's success to save.
+          door.release()
           setBusy(false)
           setError(TRANSIENT.test(m.message) ? { unreachable: true } : { text: m.message })
         }
       }
     })
     return () => { off(); if (timer.current) clearTimeout(timer.current) }
-  }, [navigation, goMenu])
+  }, [navigation, goMenu, door])
 
   const onSubmit = () => {
     setError(null); setBusy(true)
     tries.current = 0
-    creds.current = { username, password }
+    door.claim({ kind: 'manual', username, password })
     backend.login(username, password)
   }
 
@@ -131,14 +154,15 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
       </Pressable>
 
       {/* The other door. Below the ordinary one so the D-pad reaches it after the
-          password button, and disabled until the engine is up — the handover needs the
-          swarm the same way a login does. */}
+          password button; disabled until the engine is up — the handover needs the swarm
+          the same way a login does — and while a password attempt is still running, so
+          the two doors can never be in flight together (Connect does the same). */}
       <Pressable
         style={[styles.link, focused === 'phone' && styles.focused]}
-        disabled={!backendReady}
+        disabled={busy || !backendReady}
         onFocus={() => setFocused('phone')}
         onBlur={() => setFocused(null)}
-        onPress={() => { phoneMode.current = true; setPhoneSignIn(true) }}
+        onPress={() => { door.claim({ kind: 'phone' }); setPhoneSignIn(true) }}
       >
         <Text style={styles.linkText}>{t('sendtv.tvStart')}</Text>
       </Pressable>
@@ -149,8 +173,8 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
           may only bring an account from the operator this device is already on. */}
       {phoneSignIn && (
         <SignInWithPhone
-          onClose={() => { phoneMode.current = false; setPhoneSignIn(false) }}
-          onSignedIn={() => goMenu()}
+          onClose={() => { door.release(); setPhoneSignIn(false) }}
+          onSignedIn={() => { door.release(); goMenu() }}
         />
       )}
     </View>

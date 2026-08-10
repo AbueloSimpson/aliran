@@ -1,0 +1,62 @@
+// WHO OWNS THE OUTCOME OF A SIGN-IN.
+//
+// The two screens a device with no session can land on (Login, Connect) each have more
+// than one door: a typed password, a phone handover, and — as of WP2c — a restore from
+// the device keystore. Every one of them finishes on the SAME worklet message,
+// {type:'streams'}. That message says a session now exists. It does not say which door
+// made it, and the doors do not persist the same things:
+//
+//   password   save the credentials that worked (and, on Connect, the service key that
+//              was typed), then go to the menu
+//   handover   save the operator key the TV ADOPTED — the phone brought it — and no
+//              credentials at all: what crossed is key material, which never goes to the
+//              prefs file. Its own panel stays up to say the sign-in worked, so it
+//              navigates on the viewer's press rather than on 'streams'
+//   restore    (WP2c) nothing to save — the material was already on the device
+//
+// Getting that wrong is not cosmetic. A door that leaves its inputs lying around after
+// it FAILED, and a 'streams' handler that reads them because it has nothing better to
+// go on, writes the failed attempt's key and password over a later door's success — and
+// the device then dials the wrong operator with a dead password on its next boot. That
+// is precisely what a second per-door flag, added each time a door is added, keeps
+// re-introducing: the flags are set on the way in and nobody clears them on the way out.
+//
+// So ownership is one thing, explicit and exclusive:
+//
+//   claim()    a door takes the outcome when the viewer STARTS it. The latest press
+//              owns it; there is no way to start a door except by pressing it.
+//   release()  the door gives the outcome up the moment it can no longer produce one —
+//              a terminal login error, a panel the viewer closed, a completed handover.
+//   current    what the 'streams' handler switches on.
+//
+// THE PROPERTY THAT SURVIVES THE NEXT DOOR. The handler switches on `kind` and does
+// NOTHING in the default case, so a door the handler has not been taught persists
+// nothing rather than inheriting the persistence of whichever door was written first.
+// Adding one is: add a `kind`, claim it where the door opens, release it where the door
+// closes, add its case. Forgetting the case is inert; there is no arrangement of these
+// pieces where forgetting makes some other door's branch run on your door's success.
+import { useRef } from 'react'
+
+/** A door, as its screen describes it. `kind` is what the 'streams' handler switches on;
+ *  everything else on the object is whatever that door has to persist. */
+export interface SigninPathHandle<T extends { kind: string }> {
+  /** The door that owns the outcome right now, or null — nothing is in flight, or what
+   *  was in flight has already failed. Read it ONCE per message and switch on the
+   *  result; never test `kind` and then re-read it. */
+  readonly current: T | null
+  /** Take the outcome. Replaces any previous holder — the viewer's latest press wins. */
+  claim: (path: T) => void
+  /** Give the outcome up. Call it on EVERY terminal end of the door, success included. */
+  release: () => void
+}
+
+export function useSigninPath<T extends { kind: string }> (): SigninPathHandle<T> {
+  // A ref, not state: the worklet listener is registered once, so it closes over this
+  // object and must see the live value rather than the value of its first render.
+  const held = useRef<T | null>(null)
+  return useRef<SigninPathHandle<T>>({
+    get current () { return held.current },
+    claim (path: T) { held.current = path },
+    release () { held.current = null }
+  }).current
+}
