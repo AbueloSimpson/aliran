@@ -94,6 +94,12 @@ export const TEMPLATE_SPEC = {
   ],
   redact: [
     { path: 'sources.*.url', mode: 'url', reason: 'Provider feed URL — user:pass and query parameters removed, origin and path kept.' },
+    // The guide url a source stamps on its channels: same provider, same shape and the same
+    // validator as the feed url above (an operator pastes both out of one provider mail), so
+    // it carries the same risk of a token in the query string and gets the same treatment.
+    // It is redacted even while the source's guide is switched OFF — it reaches no channel
+    // then, but it is still sitting in the registry, and the registry is what exports.
+    { path: 'sources.*.epgUrl', mode: 'url', reason: 'Provider guide URL — user:pass and query parameters removed, origin and path kept.' },
     { path: 'streams.*.feedKey', reason: "This site's swarm key for the channel. A second site mints its own." },
     { path: 'streams.*.blobsKey', reason: 'Derived from feedKey.' },
     { path: 'streams.*.isLive', reason: 'Run state.' },
@@ -197,7 +203,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const catShape = (c) => [c.label, c.order ?? null, !!c.hidden]
 const pkgShape = (p) => [p.label, p.members, !!p.default]
 
-const SOURCE_FIELDS = ['url', 'category', 'prefix', 'autoGrant', 'enabled', 'intervalMs', 'exclude', 'format', 'groups']
+const SOURCE_FIELDS = ['url', 'category', 'prefix', 'autoGrant', 'enabled', 'intervalMs', 'exclude', 'format', 'groups', 'titleInclude', 'titleExclude', 'allowCleartext', 'epg', 'epgUrl']
 
 // Sources diff PER FIELD, exactly like streamDiff and for the same reason: an artifact
 // written before a field existed does not MENTION that field, and "not mentioned" has to
@@ -389,7 +395,7 @@ export async function apply (ctx, env, opts = {}) {
       if (d && !Object.keys(d).length) continue
       try {
         if (!cur) {
-          sources.addSource(ctx, name, { url: s.url, category: s.category, prefix: s.prefix, autoGrant: s.autoGrant, enabled: s.enabled, intervalMs: s.intervalMs, exclude: s.exclude, format: s.format, groups: s.groups })
+          sources.addSource(ctx, name, { url: s.url, category: s.category, prefix: s.prefix, autoGrant: s.autoGrant, enabled: s.enabled, intervalMs: s.intervalMs, exclude: s.exclude, format: s.format, groups: s.groups, titleInclude: s.titleInclude, titleExclude: s.titleExclude, allowCleartext: s.allowCleartext, epg: s.epg, epgUrl: s.epgUrl })
         } else {
           sources.setSource(ctx, name, d)
         }

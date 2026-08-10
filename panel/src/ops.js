@@ -320,18 +320,29 @@ export function normArt (v, kind) {
 // CDN URLs carry query strings. Empty string clears (the entry stops being a
 // redirect channel).
 //
-// One carve-out, mirroring normSourceUrl (sources.js): plain http on LOOPBACK. The
-// Android-cleartext rule that makes https mandatory everywhere else does not reach
-// 127.0.0.1 — the SDK already serves its own HLS over http on localhost by design —
-// and without it a local provider stub cannot be imported end-to-end, which is the
-// only way to prove the header path really carries playback.
-export function normRedirectUrl (v) {
+// One carve-out by default, mirroring normSourceUrl (sources.js): plain http on
+// LOOPBACK. The Android-cleartext rule that makes https mandatory everywhere else does
+// not reach 127.0.0.1 — the SDK already serves its own HLS over http on localhost by
+// design — and without it a local provider stub cannot be imported end-to-end, which is
+// the only way to prove the header path really carries playback.
+//
+// The SECOND carve-out is opt-in and SOURCE-SCOPED: `allowCleartext` lets a provider the
+// operator has explicitly trusted (sources.js, per-source flag) import http entries on
+// ANY host — the exemption the operator turns on to take a provider that serves some
+// events over cleartext http. It is NEVER fleet-wide: addStream/setMeta call this with no
+// options, so the default (allowCleartext=false) keeps every MANUAL redirect channel
+// https-or-loopback-only, exactly as before. Only sources.js, and only for a source that
+// carries the flag, passes { allowCleartext:true }. Cleartext still only PLAYS where the
+// client permits it (the phone/TV app's network-security posture) — this validator only
+// governs what the panel is willing to STORE.
+export function normRedirectUrl (v, { allowCleartext = false } = {}) {
   const s = String(v).trim()
   if (s === '') return null
   if (s.length > 2048) bad('url must be at most 2048 characters')
   if (/[\r\n]/.test(s)) bad('url must not contain line breaks')
   if (/^https:\/\/./i.test(s)) return s
   if (/^http:\/\/./i.test(s)) {
+    if (allowCleartext) return s // source-scoped opt-in: any http host is accepted
     let u
     try { u = new URL(s) } catch { u = null }
     if (u && (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1' || u.hostname === '[::1]')) return s
@@ -386,8 +397,9 @@ export function normRedirectHeaders (v) {
 
 // EPG feed URL: a public https JSON of channels+schedules the CLIENT fetches (never
 // the panel), so https is required for the same Android-cleartext reason as art.
-// Empty clears.
-function normEpgUrl (v) {
+// Empty clears. EXPORTED because a source can put this field on every channel it imports
+// (sources.js): it is one catalog field, so it gets one rule, whoever writes it.
+export function normEpgUrl (v) {
   const s = String(v ?? '').trim()
   if (s === '') return null
   if (s.length > 2048) bad('epgUrl must be at most 2048 characters')

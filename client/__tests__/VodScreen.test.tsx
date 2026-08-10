@@ -46,7 +46,8 @@ jest.mock('react-native/Libraries/Lists/FlatList', () => {
   return { __esModule: true, default: MockFlatList, __spy: spy }
 })
 
-import { VodScreen, VOD_ROW_H } from '../src/screens/VodScreen'
+import { Dimensions } from 'react-native'
+import { VodScreen, gridGeometry } from '../src/screens/VodScreen'
 import { AlphaRail } from '../src/components/AlphaRail'
 import { MenuScreen } from '../src/screens/MenuScreen'
 import { listMovies, listSeries, listCategories, getMovieInfo } from '../src/vod/zencontent'
@@ -406,8 +407,9 @@ test('the rail exists only in the alphabetical sort, and jumps by ROW index', as
   // one letter per bucket the grid actually contains, in grid order ('#' leads)
   expect(tree.root.findByType(AlphaRail).props.letters).toEqual(['#', 'A', 'H', 'S', 'Z'])
 
-  // 'Z' is item index 4; with 4 columns that is row 1 — FlatList's scrollToIndex takes
-  // the ROW, because numColumns packs `columns` items into one virtualized cell.
+  // 'Z' is item index 4; jest's window is portrait (750x1334) so the grid carries the
+  // portrait THREE columns and index 4 is row 1 — FlatList's scrollToIndex takes the
+  // ROW, because numColumns packs `columns` items into one virtualized cell.
   await railPress(tree, 'Z')
   expect(listSpy.scrollToIndex).toHaveBeenCalledWith({ index: 1, animated: true })
   await railPress(tree, '#')
@@ -434,9 +436,14 @@ test('the grid describes exact rows and survives a scrollToIndex miss', async ()
   const tree = await mountAll()
   await press(tree, 'Sort by: Recently added')
   await press(tree, 'A-Z')
-  expect(listSpy.props.getItemLayout(null, 3)).toEqual({ length: VOD_ROW_H, offset: VOD_ROW_H * 3, index: 3 })
+  // jest's window is portrait, and the A–Z sort has the rail up — the row height is
+  // whatever gridGeometry derives for that exact configuration (the portrait tile is
+  // a function of the width, so VOD_ROW_H alone no longer describes this grid).
+  const { width, height } = Dimensions.get('window')
+  const { rowH } = gridGeometry(width, height, true)
+  expect(listSpy.props.getItemLayout(null, 3)).toEqual({ length: rowH, offset: rowH * 3, index: 3 })
   await ReactTestRenderer.act(async () => { listSpy.props.onScrollToIndexFailed({ index: 2 }) })
-  expect(listSpy.scrollToOffset).toHaveBeenCalledWith({ offset: VOD_ROW_H * 2, animated: true })
+  expect(listSpy.scrollToOffset).toHaveBeenCalledWith({ offset: rowH * 2, animated: true })
 })
 
 test('the viewability pair keeps its identity (an unstable one makes RN throw mid-list)', async () => {

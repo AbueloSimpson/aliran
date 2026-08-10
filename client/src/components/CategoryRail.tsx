@@ -92,6 +92,8 @@ function RailItem ({ label, hasChildren, active, onSelect, onActivity }: { label
   )
 }
 
+// Phone metrics one notch tighter (~15%, S22 round 3 — the side panel read too
+// large); TV keeps the 10-foot values untouched.
 const styles = StyleSheet.create({
   rail: { flexGrow: 0 },
   scroll: { flexGrow: 0 },
@@ -99,13 +101,13 @@ const styles = StyleSheet.create({
   // without this, the rail's last item scrolls flush to the glass curve and cannot be
   // tapped. The pad lets the list scroll one item-height past the end, clear of it.
   scrollContent: { paddingBottom: theme.spacing(6) },
-  back: { paddingVertical: theme.isTV ? 10 : 8, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
-  backText: { color: theme.colors.accent, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 1 },
-  item: { paddingVertical: theme.isTV ? 10 : 8, paddingHorizontal: theme.spacing(1) },
+  back: { paddingVertical: theme.isTV ? 10 : 7, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
+  backText: { color: theme.colors.accent, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '800', letterSpacing: 1 },
+  item: { paddingVertical: theme.isTV ? 10 : 7, paddingHorizontal: theme.spacing(1) },
   itemRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
-  label: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '700', letterSpacing: 1, flexShrink: 1 },
-  chevron: { color: theme.colors.textDim, fontSize: theme.type.body, fontWeight: '800' },
+  label: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '700', letterSpacing: 1, flexShrink: 1 },
+  chevron: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '800' },
   labelActive: { color: theme.colors.text },
-  underline: { height: 3, marginTop: 4, borderRadius: 2, backgroundColor: 'transparent', alignSelf: 'flex-start', minWidth: 28 },
+  underline: { height: 3, marginTop: 4, borderRadius: 2, backgroundColor: 'transparent', alignSelf: 'flex-start', minWidth: theme.isTV ? 28 : 24 },
   underlineActive: { backgroundColor: theme.colors.accent }
 })

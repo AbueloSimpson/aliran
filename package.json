@@ -58,6 +58,7 @@
     "test:resource": "node tools/e2e-resource-test.mjs",
     "test:vod": "node tools/e2e-vod-test.mjs",
     "test:desktop-vod": "node tools/desktop-vod-test.mjs",
+    "test:desktop-guide": "node tools/desktop-guide-test.mjs",
     "test:desktop-parental": "node tools/desktop-parental-test.mjs",
     "test:desktop-redirect-headers": "node tools/desktop-redirect-headers-test.mjs",
     "test:admin-api": "node tools/e2e-admin-api-test.mjs",
