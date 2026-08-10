@@ -33,8 +33,34 @@
 // NOTHING in the default case, so a door the handler has not been taught persists
 // nothing rather than inheriting the persistence of whichever door was written first.
 // Adding one is: add a `kind`, claim it where the door opens, release it where the door
-// closes, add its case. Forgetting the case is inert; there is no arrangement of these
-// pieces where forgetting makes some other door's branch run on your door's success.
+// closes, add its case, AND gate it (below). Forgetting the case is inert; there is no
+// arrangement of these pieces where forgetting makes some other door's branch run on your
+// door's success.
+//
+// WHAT THIS DOES NOT DO, AND WHAT THE SCREEN STILL OWES. It answers "whose outcome is
+// this?" It does NOT stop two doors being opened one after the other, and claim()
+// deliberately REPLACES rather than refuses — the viewer's latest press has to win, or a
+// half-finished attempt could lock a screen a viewer is standing in front of. So
+// exclusivity is the SCREEN's job, and it has to run BOTH ways:
+//
+//   - every control that opens door A is disabled while door B is live, and the reverse.
+//     Gating only one direction is the state this file was first shipped in, and it is
+//     worth naming: the phone link went dead during a password attempt, and the submit
+//     button stayed live while the phone panel was open.
+//   - on a television that means DISABLED — not unmounted, and not merely covered. The
+//     phone panel is an overlay rather than a Modal on purpose (a Modal is its own focus
+//     container and swallows the remote), so everything behind it is still mounted and
+//     still focusable, including a button carrying hasTVPreferredFocus.
+//
+// The failure that gets through is an ORDERING, and it is quiet: A claims, B claims over
+// A, and then A's message arrives and is attributed to B. A phone handover completing
+// while a password form owns the outcome writes THAT form's fields — a prefilled username
+// and an empty password — against a session the form had nothing to do with, and the
+// device dials its operator with a dead credential on the next start.
+//
+// A door with no viewer-facing control (SplashScreen's two, which open from the prefs
+// reply rather than from a press) satisfies this by opening at most one: read `current`
+// first and return if anything already owns the outcome.
 import { useRef } from 'react'
 
 /** A door, as its screen describes it. `kind` is what the 'streams' handler switches on;

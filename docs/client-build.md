@@ -147,6 +147,19 @@ Splash (boot + auto-auth: "Authorizing device…")
   plaintext-at-rest inside the Android app sandbox — the normal tradeoff
   for this app class. Sign-out deletes it. Favorites live in the same
   file.
+- **A television stays signed in.** A set signed in from a phone
+  ("send to TV") has no password to save, so it keeps the account key
+  material instead — sealed under a key held in the **Android Keystore**,
+  in the same prefs file, and usable only by this app on this device.
+  Without it, each time Android reclaimed the app process the viewer had
+  to fetch their phone again, which left the feature worse off than the
+  password path it replaced. TV builds only; a phone keeps nothing,
+  because a phone still has a keyboard. Sign-out erases the record **and**
+  destroys the Keystore key. If the key store is unavailable, the record
+  cannot be opened, or the operator refuses the account, the set falls
+  back to the sign-in screen — never to a half-signed-in state. See
+  [Security model — Account keys at rest](security-model.md), which is
+  explicit about what the Keystore does and does not protect against.
 - **White-label contract.** Screens and components contain **no** brand
   names, colors, or section lists. Everything flows from
   `config/service.json` (the service descriptor) through

@@ -49,6 +49,15 @@
 //                        breadcrumb ring (see _recordEmit): a code, a SAS or a PIN must
 //                        never ride along on a report — and for the same reason none of
 //                        the three may reach a log on the host side either.
+//   'signin-keys' ({username,panelPubKey,priv,authPriv})  fires ONCE, at the end of a
+//                        RECEIVED handover, and only on a build constructed with
+//                        { remote: { keepSignIn: true } }. THIS EVENT IS THE ACCOUNT: the
+//                        two private keys, in the clear, so a host can persist them and
+//                        sign itself back in with signInWithKeys() after a restart. Take
+//                        it only if you have somewhere safe to put it, put it there
+//                        immediately, and log nothing about it — not the object, not its
+//                        keys, not its length. Excluded from the breadcrumb ring for the
+//                        same reason 'signin-pair' is (_recordEmit is a whitelist).
 //   'remotes' (list)     the account's OWN other devices on the remote rendezvous
 //                        (sdk/remote-control.js), re-emitted whenever the list changes.
 //                        Only ever fires while startRemote() is running, which needs a
@@ -632,6 +641,38 @@ export class AliranPlayer extends Emitter {
     return this._publishLogin(await this._recover(() => this._doLogin(username, password)))
   }
 
+  /**
+   * The same session, entered with the ACCOUNT KEYS instead of a password — the door a
+   * television comes back through after a restart, holding what a 'signin-keys' event
+   * gave it. Resolves to the same display list login() does, and emits 'streams' the
+   * same way, so a host cannot tell the two apart downstream.
+   *
+   * THIS IS NOT A SECOND AUTHENTICATION PATH. It runs sdk/login.js loginWithKeys, which
+   * does the whole ordinary round — proof-of-work, the panel's throttle, the account
+   * status check, the device registration, maxDevices, and a panel-signed token bound to
+   * THIS device's id. An operator who disables the account, rotates its password or
+   * refuses the device limit stops this exactly as they stop a typed login; what they do
+   * NOT stop with it is a device that still holds working keys, which is the same thing
+   * that is true of a device holding a saved password (docs/security-model.md).
+   *
+   * WHAT A CALLER MUST DO WITH A REJECTION. Tell the two apart and act differently:
+   *
+   *   transient   'not connected to panel', a closed channel, a swarm still dialling —
+   *               keep the stored material and try again.
+   *   terminal    anything the PANEL said (a failed `session`), 'unknown user', or
+   *               'key handover does not match this account' (which is what a password
+   *               rotation looks like from here, because the panel mints a NEW keypair) —
+   *               ERASE the stored material. Keys that no longer work are no longer a
+   *               convenience, only a liability sitting on a disk.
+   *
+   * @param {string} username
+   * @param {object} keys  { priv, authPriv } exactly as 'signin-keys' delivered them
+   *                       (hex or buffers: X25519 secret 32 bytes, Ed25519 secret 64).
+   */
+  async signInWithKeys (username, keys) {
+    return this._publishLogin(await this._recover(() => this._doLoginWithKeys(username, keys)))
+  }
+
   // What every way into a session does once the display list exists — the password
   // login above and the key handover a TV completes (_applySignIn). Shared so a second
   // door cannot quietly skip the prewarm or the orphan sweep.
@@ -1080,6 +1121,23 @@ export class AliranPlayer extends Emitter {
     }
     const streams = await this._recover(() => this._doLoginWithKeys(payload.username, payload))
     this._publishLogin(streams)
+    // The ONE moment this device could keep what it was just given. Everything above ran
+    // on a payload that is a local variable and stops existing when this method returns —
+    // which is the right default, and is where a build that did not ask for `keepSignIn`
+    // stays. A build that DID ask gets the material here, once, and is expected to have
+    // somewhere safe to put it before the next line puts "signed in" on the screen.
+    //
+    // Deliberately NOT on the 'signin-pair' stream. That stream is relayed verbatim to
+    // hosts, screens and (on Android) across an IPC channel a debug build prints; a
+    // separate event is what keeps the keys out of everything that already handles it.
+    if (this._remote.keepSignIn) {
+      this.emit('signin-keys', {
+        username: payload.username,
+        panelPubKey: payload.panelPubKey,
+        priv: payload.priv,
+        authPriv: payload.authPriv
+      })
+    }
     this.emit('signin-pair', { role: 'tv', state: 'signed-in', username: payload.username })
     return streams
   }

@@ -189,10 +189,72 @@ decrypt. Commercial DRM makes the same admission behind more machinery. Operator
 whose licensing demands hardware-enforced DRM or territorial enforcement should
 recognize that this platform is the wrong tool for that content.
 
+## Account keys at rest (televisions)
+
+A television signed in by a phone ("send to TV") never receives a password — what
+crosses is the account's two private keys, and the device has to hold something to
+sign itself back in after Android reclaims its process. It holds this:
+
+| On the device | What it is |
+| --- | --- |
+| `box` | the account record (username, operator key, X25519 secret, Ed25519 secret) sealed with libsodium secretbox under a random 32-byte **file key**, in the app-private prefs file |
+| `key` | that file key, wrapped by an AES-256-GCM key held in the **Android Keystore** under alias `aliran.signin.v1` |
+
+The Keystore key is generated in the key store and never leaves it. On any device
+with a hardware keymaster it lives in the TEE, so the app can ask the OS to
+unwrap but cannot read the key itself — and neither can anything that reads the
+app's files. `secureKeyStatus()` reports whether that is true on a given device
+rather than assuming it.
+
+**What this buys, plainly.** Reading the app's private files is no longer enough:
+the box is inert without the Keystore, and the Keystore only answers this app on
+this device. Copying the files to another device gets nothing. Compare the saved
+password of an ordinary sign-in, which is **plaintext at rest** in the same file —
+this is the first credential in the app that is not.
+
+**What it does not buy.** The key is bound to the *app*, not to a person. There is
+deliberately no `setUserAuthenticationRequired`: a television usually has no secure
+lock screen, so requiring one would mean the key could not be created at all on the
+devices this feature exists for, and where it could, the set could not sign itself in
+until somebody walked over with a remote — the exact problem the feature removes. So
+**anyone who can run code as the app can ask the Keystore to unwrap.** On a rooted
+device, or one with a compromised OS, that is a straightforward extraction; the
+Keystore raises the bar from "read a file" to "execute as this app", and no further.
+An operator who treats set-top boxes in uncontrolled locations as trusted should not
+change that judgement because of this section.
+
+**How an operator actually evicts such a device** (`test:signin-resume` asserts each
+of these):
+
+| Action | Effect on a kept sign-in |
+| --- | --- |
+| Change the viewer's password | **Evicts.** `set-password` mints a *fresh* account keypair and re-seals the grants to it, so the stored keys stop matching the record and the device erases them. |
+| Disable the account | **Evicts.** The panel refuses the session; the device erases. |
+| Rotate the channel's stream key | **Evicts from that channel**, as for every other device. |
+| "Log out all devices" (`tokenVersion`) | **Does not evict.** It ends live sessions; a device still holding working keys takes a new token on its next start. |
+| Revoke the one device | **Does not evict.** It drops the enrolment; the device re-enrols. |
+
+The last two are not new behaviour and not specific to televisions — a device
+holding a saved *password* signs straight back in after both, and always has. They
+are listed because storing keys makes it worth saying out loud which lever is the
+real one: **change the password.**
+
+**Sign out erases it**, and erases both halves — the record in the worklet and the
+Keystore key it was sealed under, so the file cannot be read even if it survives.
+Uninstalling the app, "clear data" and a factory reset destroy the Keystore key too.
+
+Only builds that ask for this hold anything: the engine hands the material over
+solely when constructed with `remote: { keepSignIn: true }`, and the viewer app
+sets that on televisions and nowhere else. A phone signed in by another phone still
+has a keyboard and a password, so it keeps nothing.
+
 ## What this does NOT protect against
 
 - Blocking peers from *connecting* to a public swarm topic (confidentiality comes
   from encryption, not from connection-gating).
+- Extraction of a television's stored sign-in by code running **as the app** on a
+  rooted or compromised device (see "Account keys at rest" — the Keystore binds the
+  key to the app, not to a person).
 - Offline brute-force **if** you enable a fully-offline login fallback (we did
   not).
 - An entitled user retaining decrypted content (no DRM, see above).
@@ -301,6 +363,19 @@ documented rather than implemented:
    reseller/library service credentials via `PANEL_ADMIN_USER`/`PANEL_ADMIN_PASS`,
    never as URL userinfo. The URL is surfaced in diagnostics, and would carry
    embedded credentials with it.
+8. **A device that holds a working credential signs itself back in.** "Log out all
+   devices" ends live sessions and per-device revocation drops one enrolment;
+   neither stops a device that still holds a valid credential from taking a fresh
+   token on its next start. This has always been true of the saved password
+   ("remember me", plaintext at rest in the app-private prefs file) and is now also
+   true of a television's Keystore-wrapped sign-in. The lever that does evict is
+   **changing the password**, which re-keys the account. See "Account keys at rest".
+9. **Account keys at rest are app-bound, not person-bound.** A television's stored
+   sign-in is sealed under an Android Keystore key with no user-authentication
+   requirement — a set-top box generally has no secure lock screen, and demanding
+   one would defeat the feature. Code running as the app on a rooted or compromised
+   device can therefore ask the OS to unwrap it. Accepted: the alternative is a
+   television that cannot stay signed in, which is what this replaced.
 
 ### Dependencies
 

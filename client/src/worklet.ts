@@ -28,18 +28,35 @@ const PREWARM_CHANNELS = 12
 // thin pipe — see sdk/player.js).
 const ZAP_PREFETCH: boolean = false
 
-// "Send to TV": which half of it THIS device may play. Receiving needs nothing — a TV
-// takes a sign-in with no flag at all. SENDING is the one that costs something: it makes
-// every login keep the account's two private keys in memory for the whole session,
-// because a phone cannot recover them later without the password (sdk/login.js
-// `handover`). So it is asked for only where it is used — a phone or a tablet, which is
-// what a viewer picks up to sign a television in. A television is never the sending
-// device, so a TV build holds nothing.
+// "Send to TV": which half of it THIS device may play. The two flags are OPPOSITES on a
+// television, on purpose — reading them as one switch is the mistake this note exists to
+// prevent.
+//
+//   sendToTv    the SENDING half. It makes every login keep the account's two private
+//               keys in memory for the whole session, because a phone cannot recover them
+//               later without the password (sdk/login.js `handover`). So it is asked for
+//               only where it is used — a phone or a tablet, which is what a viewer picks
+//               up to sign a television in. A television is never the sending device, so
+//               a TV build holds nothing it could pass on.
+//
+//   keepSignIn  the RECEIVING half, and the only one about DISK. A set signed in by a
+//               phone has no password to remember, so without this it comes back to the
+//               sign-in screen every time Android reclaims the app process — which left a
+//               handover-signed-in television WORSE off than a password-signed-in one and
+//               defeated the feature. On, the material is kept, sealed under a key held
+//               in the Android Keystore, and the set signs itself back in at the next
+//               start (backend.resumeSignIn — see client/backend/backend.mjs).
+//
+//               TELEVISIONS ONLY, and not because a phone could not: a phone signed in by
+//               another phone still has a keyboard and a password, so an account's keys at
+//               rest on one more device buy nothing there. Every device holding key
+//               material is a device an operator has to be able to reason about, so this
+//               is on exactly where it is needed and nowhere else.
 //
 // Boot-time only, and there is no runtime switch on purpose: by the time one could be
 // flipped the login has already happened, so the key material is either retained or
 // unrecoverable. Settings hides "Sign in a TV" on the same test.
-const REMOTE: RemoteFeatures = { sendToTv: !Platform.isTV }
+const REMOTE: RemoteFeatures = { sendToTv: !Platform.isTV, keepSignIn: Platform.isTV }
 
 // The version stamped on problem reports: the NATIVE versionName when the installer
 // module can say (the truth about the installed build), package.json otherwise.

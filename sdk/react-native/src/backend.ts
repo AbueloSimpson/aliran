@@ -13,6 +13,10 @@
 import { Platform, TurboModuleRegistry } from 'react-native'
 import b4a from 'b4a'
 import type { ReportCategory, ReportError } from './report'
+// The platform key store (Android Keystore). Used for exactly one thing: wrapping the
+// file key that seals a stored phone -> TV sign-in, on behalf of the worklet — which
+// cannot reach a native module from inside Bare. Degrades to null everywhere else.
+import { secureWrap, secureUnwrap, secureReset } from './secure-key'
 
 declare const require: (id: string) => any // Metro/CJS both provide it; typed locally so hosts need no @types/node
 
@@ -275,6 +279,55 @@ export interface RemoteFeatures {
   /** The account rendezvous secret. Not a key, but a live authenticator and a stable
    *  account correlator — leave it off until a feature needs it. */
   control?: boolean
+  /**
+   * The RECEIVING half of "send to TV", and the only one of the three about DISK: a
+   * television that took a sign-in from a phone KEEPS it, sealed under a key held in the
+   * Android Keystore, and signs itself back in with resumeSignIn() after a restart.
+   * Without it a set that Android reclaims comes back to the sign-in screen and needs the
+   * phone again — which is worse than the password path it replaced.
+   *
+   * NOT the same switch as `sendToTv`, and on a television they are opposites: sendToTv
+   * is off there so a set never holds an account it could pass on; this is on there so a
+   * set survives a restart. Android only — elsewhere there is no key store to use and the
+   * worklet keeps nothing.
+   */
+  keepSignIn?: boolean
+}
+
+/** Why a resumeSignIn() did not sign the device in.
+ *
+ *  Only `offline` and `timeout` are worth retrying — for every other value the worklet has
+ *  ALREADY erased what it was holding, and the device needs a fresh sign-in from a phone. */
+export type ResumeSignInError =
+  /** Nothing was stored (the ordinary answer on a device that has never been signed in). */
+  | 'none'
+  /** The key store could not open the record: no key for this app any more, or a device
+   *  whose keystore was reset. Erased. */
+  | 'locked'
+  /** The stored record is not readable — truncated, or written by another build. Erased. */
+  | 'corrupt'
+  /** The record belongs to a different operator than this device is now on. Erased. */
+  | 'service'
+  /** The panel refused: disabled account, device limit, or a password rotation that
+   *  replaced the account's keys. Erased. */
+  | 'rejected'
+  /** No engine yet, or the panel was unreachable. KEPT — try again. */
+  | 'offline'
+  /** The worklet did not answer in time. KEPT — try again. */
+  | 'timeout'
+  | (string & {})
+
+/** Answer to resumeSignIn(). ok=true means 'streams' has already fired and the device is
+ *  signed in exactly as a typed login leaves it. */
+export interface ResumeSignInResult {
+  ok: boolean
+  error?: ResumeSignInError
+  /** English, from the engine. Show it only where a viewer is already being told
+   *  something went wrong. */
+  message?: string
+  /** The material is still stored and this is worth another attempt. Never true together
+   *  with an error that erased. */
+  retry?: boolean
 }
 
 /** Where a phone -> TV sign-in has got to. Three of these are QUESTIONS and the
@@ -422,7 +475,10 @@ export type BackendMessage =
   // Absent on worklet bundles older than the field — treat as null.
   // language: the viewer's pinned UI language — null/absent = no override, so the host
   // follows the DEVICE language (the worklet whitelists the code before it stores it).
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null }
+  // signinSaved: this device is holding a phone -> TV sign-in it can resume (the material
+  // itself never crosses into the RN layer — this is a yes/no). Absent on worklet bundles
+  // older than the field: treat as false, i.e. there is nothing to resume.
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null; signinSaved?: boolean }
   // Answer to parentalVerify(): did the submitted PIN match? tag echoes the request's.
   | { type: 'parental-verify'; ok: boolean; tag?: string }
   // Answer to resolvePairing(): the panel key a service pairing code stands for, after
@@ -457,12 +513,31 @@ export type BackendMessage =
   // confirmSignInMatch). ok=false means the engine had nothing waiting for that answer,
   // or the value was malformed — for a PIN that is the safe outcome and costs nothing.
   | { type: 'signin-ack'; ok: boolean; tag?: string }
+  // Answer to resumeSignIn(): did the stored sign-in put this device back in a session?
+  | { type: 'signin-resumed'; ok: boolean; error?: ResumeSignInError; message?: string; retry?: boolean; tag?: string }
+
+/**
+ * The worklet asking THIS layer to use the platform key store on its behalf (Android
+ * Keystore — see src/secure-key.ts). Internal: it is handled inside onData() and is
+ * deliberately NOT part of BackendMessage, so it never reaches a host listener.
+ *
+ * `data` is the file key that seals the stored sign-in — 32 opaque bytes, base64. It is
+ * not an account key (those never leave the worklet) but it is still the one secret on
+ * this channel, so nothing here may be logged.
+ */
+type VaultRequest = { type: 'vault-request'; op: 'wrap' | 'unwrap'; id: string; data: string }
 
 // How long the two sign-in STARTS may take to answer. Both open the corestore, derive
 // the code's rendezvous with Argon2id (~70 ms, more on a cold TV SoC) and join a DHT
 // topic before they resolve, so this is deliberately generous — a viewer is watching a
 // spinner where the code goes, and "nothing answered" must be the last resort.
 const SIGNIN_START_MS = 20000
+// …and how long a resume may take. Much longer than a start, because it is a whole login:
+// the swarm has to find the panel, the account record has to replicate, and the panel runs
+// proof-of-work and a signature check before it issues a token. The worklet gives up on
+// its own waits first and answers 'offline', so this ceiling is only reached when the
+// worklet itself is gone.
+const SIGNIN_RESUME_MS = 45000
 // …and the three one-word answers, which are in-memory calls on an exchange that is
 // already running. Short: a slow one means the worklet is gone.
 const SIGNIN_ACK_MS = 5000
@@ -557,6 +632,14 @@ export class AliranBackend {
   /** Parental controls (device-local): null = no PIN set; { hide } = PIN exists +
    *  the hide-restricted-channels toggle. The PIN digest stays in the worklet. */
   parental: { hide: boolean } | null = null
+  /**
+   * This device is holding a phone -> TV sign-in it can resume — call resumeSignIn()
+   * instead of showing the sign-in screen. A yes/no and nothing more: the key material
+   * lives in the worklet, sealed under an Android Keystore key, and never crosses here.
+   *
+   * Only ever true on a build started with `remote: { keepSignIn: true }`.
+   */
+  signinSaved = false
   prefsLoaded = false
   /**
    * The last step of a phone -> TV sign-in, per role — so a screen that mounts (or
@@ -731,7 +814,51 @@ export class AliranBackend {
   requestPrefs () { this.send({ type: 'prefs-get' }) }
   /** Persist "remember me" credentials (device-local; sign-out clears them). */
   saveCredentials (username: string, password: string) { this.send({ type: 'creds-save', username, password }) }
-  clearCredentials () { this.creds = null; this.send({ type: 'creds-clear' }) }
+
+  /**
+   * SIGN OUT: erase everything this device could sign itself back in with.
+   *
+   * Both of them, deliberately. The saved password is one way back in; a stored phone -> TV
+   * sign-in is the other, and a "sign out" that left the second one behind would put a
+   * television straight back into the account on its next start. So this clears the record
+   * in the worklet AND destroys the Keystore key that record was sealed under — belt and
+   * braces, because either one alone already makes the material unreadable, and a partial
+   * failure of one must not leave a usable credential behind.
+   */
+  clearCredentials () {
+    this.creds = null
+    this.signinSaved = false
+    this.send({ type: 'creds-clear' })
+    secureReset().catch(() => {})
+  }
+
+  /**
+   * Sign back in with the phone -> TV sign-in this device kept (see RemoteFeatures
+   * `keepSignIn`). Call it INSTEAD of showing the sign-in screen when `signinSaved` is
+   * true — on success 'streams' has already fired and the session is indistinguishable
+   * from a typed login: this device's own id, its own panel-signed token.
+   *
+   * Resolves, never rejects. Retry only on `retry: true` ('offline' / 'timeout'); every
+   * other failure means the worklet has already erased what it held and the device needs a
+   * new handover from a phone.
+   *
+   * ONE OWNER OF THE OUTCOME. Do not run this beside a password login on the same screen.
+   * Both end on the same {type:'streams'} message, and a host that lets two of them race
+   * cannot tell which one won — which is how a failed attempt's state ends up persisted
+   * against a session it did not create.
+   */
+  async resumeSignIn (): Promise<ResumeSignInResult> {
+    const m = await this.request('signin-resumed', {
+      type: 'signin-resume',
+      // The same engine options the {panelPubKey} boot carries: a resume may have to
+      // build the engine itself (the record knows its operator), and the engine that
+      // comes out of it must be the one this build configured, not a bare default.
+      ...this.engineOpts
+    }, SIGNIN_RESUME_MS)
+    if (!m || m.type !== 'signin-resumed') return { ok: false, error: 'timeout', retry: true, message: 'the engine did not answer' }
+    const { type, tag, ...result } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+    return result
+  }
   /**
    * Resolve a 12-character SERVICE PAIRING CODE ('A3K7-9QF2-M4XR') to the operator's
    * panel public key, so a viewer never types 64 hex characters on a TV remote.
@@ -974,8 +1101,8 @@ export class AliranBackend {
       const line = this.buf.slice(0, i); this.buf = this.buf.slice(i + 1)
       if (!line.trim()) continue
       try {
-        const msg = JSON.parse(line) as BackendMessage
-        // NEVER log the raw line for these two families, whatever its length:
+        const msg = JSON.parse(line) as BackendMessage | VaultRequest
+        // NEVER log the raw line for these three families, whatever its length:
         //
         //   prefs     carries the saved password.
         //   signin-*  carries the sign-in code, the four compared digits and the four
@@ -988,15 +1115,23 @@ export class AliranBackend {
         //             where that care would otherwise be undone. The test is on the
         //             PREFIX, not on one message type, so a message added to the family
         //             later is excluded by default rather than by remembering.
+        //   vault-*   carries the file key that seals a stored sign-in. Not an account key
+        //             — those never leave the worklet — but it is the one thing on this
+        //             channel that would let a reader of the log open the record beside it.
         //
         // Everything else: long lines collapse to their type to keep the log readable —
         // EXCEPT 'error', where the payload (often a worklet stack trace) is the only
         // diagnostic there is.
         if (this.debug) {
-          const secret = msg.type === 'prefs' || (typeof msg.type === 'string' && msg.type.startsWith('signin-'))
+          const secret = msg.type === 'prefs' ||
+            (typeof msg.type === 'string' && (msg.type.startsWith('signin-') || msg.type.startsWith('vault-')))
           console.log('[backend]', secret ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
         }
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
+        // Handled HERE and never relayed: the worklet is asking this layer to use the
+        // platform key store, and no host listener has any business seeing the file key
+        // that goes with it.
+        if (msg.type === 'vault-request') { this.onVaultRequest(msg); continue }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.signinSaved = msg.signinSaved === true; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
           this.port = msg.port ?? null
@@ -1022,8 +1157,24 @@ export class AliranBackend {
           if (info.role === 'tv') this.signinTv = info
           else if (info.role === 'phone') this.signinPhone = info
         }
-        this.listeners.forEach(fn => fn(msg))
+        this.listeners.forEach(fn => fn(msg as BackendMessage))
       } catch { /* ignore partial/invalid */ }
     }
+  }
+
+  /**
+   * The worklet cannot reach the Android Keystore — it is a Bare runtime with no bridge to
+   * the native modules — so this layer performs the wrap/unwrap on its behalf and sends
+   * the result straight back. That is the whole reason this hop exists.
+   *
+   * ALWAYS ANSWERS. The worklet is blocked on the reply with a timeout of its own, and a
+   * dropped answer would leave a television sitting on a splash screen; a failure is
+   * reported as ok:false, which the worklet reads as "this device cannot keep a sign-in"
+   * (wrap) or "what it kept is unreadable" (unwrap). Both are handled, neither is fatal.
+   */
+  private onVaultRequest (msg: VaultRequest) {
+    const done = (data: string | null) => this.send({ type: 'vault-reply', id: msg.id, ok: data != null, ...(data != null ? { data } : {}) })
+    const run = msg.op === 'wrap' ? secureWrap(msg.data) : msg.op === 'unwrap' ? secureUnwrap(msg.data) : Promise.resolve(null)
+    run.then(done).catch(() => done(null))
   }
 }

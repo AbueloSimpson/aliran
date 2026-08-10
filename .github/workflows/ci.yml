@@ -65,6 +65,24 @@ jobs:
       - name: Send-to-TV sign-in handover (test:signin-pair)
         timeout-minutes: 10
         run: npm run test:signin-pair
+      # The AT-REST half of the same feature: the stored record's format, its shape gates,
+      # and the predicate that decides whether a refused resume means "try again" or "erase
+      # the account this device is holding". Pure — no DHT, no panel — and it PINS the
+      # engine error prose that predicate matches on, so a reworded message cannot quietly
+      # turn an operator's revocation into an endless retry against a device nobody sees.
+      - name: TV sign-in vault, at rest (test:signin-vault)
+        run: npm run test:signin-vault
+      # …and the same claim end to end: a television is handed the account material once
+      # (and only on a build that asked for it), seals it, and signs itself back in on a
+      # FRESH engine with a fresh store — its own device id, its own panel-signed token,
+      # the real per-stream key, and no second slot off maxDevices. The load-bearing half
+      # is the refusals: a wrong key, a disabled account and a rotated password are each
+      # classified ERASE, while "log out all devices" is asserted to sign straight back in,
+      # because it does — exactly as it does for a saved password, and the security model
+      # says so rather than implying otherwise. Loopback UDP only.
+      - name: TV sign-in survives a restart (test:signin-resume)
+        timeout-minutes: 10
+        run: npm run test:signin-resume
       # "Play on my TV" (WP3): two devices ALREADY signed in to one account find each other
       # on the account rendezvous with no code and no viewer interaction, prove themselves to
       # each other against the Noise handshake hash, and one changes the other's channel —

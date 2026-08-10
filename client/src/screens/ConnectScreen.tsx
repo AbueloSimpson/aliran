@@ -318,7 +318,14 @@ export function ConnectScreen ({ navigation }: Props) {
       {busy && !error && status && <Text style={styles.status}>{t('connect.status.' + status)}</Text>}
       <Pressable
         style={[styles.button, focused === 'submit' && styles.focusedInput]}
-        disabled={busy}
+        // …AND while the phone panel is open — the other half of a gate that only ran one
+        // way. The overlay is deliberately not a Modal (a Modal is its own focus container
+        // and swallows the remote), so on a television this button stays mounted and
+        // focusable behind it. One D-pad press that escapes the panel would claim `manual`
+        // over a live `phone` claim, and the handover's success would then be attributed to
+        // the form. See signinPath.ts: ownership decides WHOSE outcome it is, and gating is
+        // what stops two doors being claimed in the first place.
+        disabled={busy || phoneSignIn}
         onFocus={() => setFocused('submit')}
         onBlur={() => setFocused(null)}
         onPress={onSubmit}

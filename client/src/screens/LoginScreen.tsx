@@ -144,7 +144,17 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
       {error && <Text style={styles.error}>{'text' in error ? error.text : t('login.unreachable')}</Text>}
       <Pressable
         style={[styles.button, focused === 'submit' && styles.focused]}
-        disabled={busy || !backendReady}
+        // …AND while the phone panel is open. The two doors already gate each other in
+        // one direction (the phone link goes dead during a password attempt); this is the
+        // other. The overlay is not a Modal — it must not be, because a Modal is its own
+        // focus container and swallows the remote — so on a television this button stays
+        // mounted, stays focusable, and carries hasTVPreferredFocus. If the D-pad ever
+        // escapes TVFocusGuideView's autoFocus, one OK press claims `manual` over a live
+        // `phone` claim, and the handover's own success then writes the empty password
+        // sitting in this form. Whether the focus can escape is a property of
+        // react-native-tvos that nobody has proved on hardware, so it is closed here
+        // rather than relied upon.
+        disabled={busy || phoneSignIn || !backendReady}
         hasTVPreferredFocus
         onFocus={() => setFocused('submit')}
         onBlur={() => setFocused(null)}

@@ -1,8 +1,24 @@
 // Splash / device authorization (the reference's boot screen): brand surface with the
 // wordmark centered and a small "Authorizing device" status + spinner in the top-right
-// corner. Boot, panel connect, and auto-login with saved credentials (D1) all happen
-// BEHIND this screen — login is the exception path, not the default. Falls through to
-// LoginScreen when there are no saved credentials or auth genuinely fails.
+// corner. Boot, panel connect, and signing the device back in all happen BEHIND this
+// screen — login is the exception path, not the default. Falls through to LoginScreen
+// when there is nothing to sign back in with, or when it genuinely stopped working.
+//
+// TWO DOORS, and this screen is the only place either of them opens (see signinPath.ts):
+//
+//   restore   a phone -> TV sign-in this device KEPT. No password was ever typed on it;
+//             the account key material is sealed on disk under an Android Keystore key,
+//             and the worklet opens it and completes an ordinary login with it. This is
+//             what makes a television that a phone signed in survive Android reclaiming
+//             the app process — without it, every restart sent the viewer back for their
+//             phone, which is worse than the password path it replaced.
+//   saved     the "remember me" credentials of a typed login (D1).
+//
+// The kept sign-in goes first when both exist. It is only ever written by a handover, so
+// it is the newer of the two, and it is the path the device it runs on was built for.
+// When it is refused FOR GOOD the worklet has already erased it, so falling through to
+// the password door — and then to LoginScreen — is a plain sequence with no state to
+// unwind.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, Image, ActivityIndicator, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -10,6 +26,7 @@ import type { RootStackParamList } from '../App'
 import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
+import { useSigninPath } from '../signinPath'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -18,6 +35,14 @@ const service = loadServiceDescriptor()
 const TRANSIENT = /not connected|channel closed/i
 const RETRY_MS = 2500
 const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up to Login
+
+// The doors of this screen (see signinPath.ts). Both end on {type:'streams'}, neither
+// persists anything — the material each one used was already on the device — so what the
+// ownership buys here is the OTHER direction: a 'login-error' belongs to the password
+// door alone, and its retry loop must never fire while a restore is the thing in flight.
+type SigninDoor =
+  | { kind: 'restore' }
+  | { kind: 'saved'; username: string; password: string }
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Splash'> & { backendReady: boolean }
 
@@ -29,6 +54,7 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   const routed = useRef(false)
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const door = useSigninPath<SigninDoor>()
 
   const route = (name: 'Connect' | 'Login' | 'Menu') => {
     if (routed.current) return
@@ -37,6 +63,37 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   }
 
   useEffect(() => {
+    // The password door. Also the fall-through target of a kept sign-in that is gone.
+    const withSaved = (creds: { username: string; password: string } | null) => {
+      if (routed.current) return
+      if (!creds) { door.release(); route('Login'); return }
+      setStatus('authorizing')
+      door.claim({ kind: 'saved', username: creds.username, password: creds.password })
+      backend.login(creds.username, creds.password)
+    }
+
+    // The restore door. resumeSignIn() resolves and never rejects; `retry` is the only
+    // answer that means the material is still there, and every other failure has already
+    // erased it — so there is nothing to clean up on the way out of any branch.
+    const withKept = () => {
+      if (routed.current) return
+      setStatus('authorizing')
+      door.claim({ kind: 'restore' })
+      backend.resumeSignIn().then((res) => {
+        if (routed.current) return
+        if (res.ok) { door.release(); route('Menu'); return }
+        if (res.retry && tries.current < MAX_RETRIES) {
+          tries.current += 1
+          timer.current = setTimeout(() => { if (!routed.current) withKept() }, RETRY_MS)
+          return
+        }
+        // Gone for good — refused by the operator, unreadable, or a service this device
+        // is no longer on. The worklet erased it; try the other door, then the screen.
+        door.release()
+        withSaved(backend.creds)
+      })
+    }
+
     // Prefs live on the device (no network) — ask right away; the SDK queues the
     // request if the worklet is still booting.
     backend.requestPrefs()
@@ -50,25 +107,31 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
           if (!m.service) { route('Connect'); return }
           backend.connect(m.service.panelPubKey)
         }
-        if (m.creds) {
-          setStatus('authorizing')
-          backend.login(m.creds.username, m.creds.password)
-        } else {
-          route('Login')
-        }
+        // THE GATE (signinPath.ts): at most one door is ever open. Neither of these has a
+        // control a viewer can press, so the whole gate is this line — but it is not
+        // optional, because the worklet answers with fresh prefs after EVERY write,
+        // including the ones a resume itself causes, and a second open would run a second
+        // login against the same account and race its own result.
+        if (door.current) return
+        if (m.signinSaved) withKept()
+        else withSaved(m.creds)
       }
-      if (m.type === 'streams') route('Menu')
-      if (m.type === 'login-error') {
+      // Read the owner ONCE (signinPath.ts) — a door that failed owns nothing.
+      const d = door.current
+      if (m.type === 'streams' && d) { door.release(); route('Menu') }
+      if (m.type === 'login-error' && d?.kind === 'saved') {
         if (routed.current) return
         if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
           tries.current += 1
           timer.current = setTimeout(() => {
-            const c = backend.creds
-            if (c && !routed.current) backend.login(c.username, c.password)
+            // Re-read the owner: the door may have been released while we waited.
+            const still = door.current
+            if (still?.kind === 'saved' && !routed.current) backend.login(still.username, still.password)
           }, RETRY_MS)
         } else {
           // Real auth failure (changed password, revoked account, unreachable
           // service): drop to Login — it prefills the saved username.
+          door.release()
           route('Login')
         }
       }
@@ -78,7 +141,7 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   }, [])
 
   useEffect(() => {
-    if (backendReady && !routed.current && backend.prefsLoaded && backend.creds) {
+    if (backendReady && !routed.current && backend.prefsLoaded && (backend.creds || backend.signinSaved)) {
       setStatus('authorizing')
     }
   }, [backendReady])

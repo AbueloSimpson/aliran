@@ -120,6 +120,16 @@
 //                                        false ABORTS — it is the only check in the flow
 //                                        that sees a relay. Answers 'signin-ack'.
 //        { type:'signin-send-cancel' } -> PHONE role: abandon an in-flight send.
+//        { type:'signin-resume', tag?, …engine opts }
+//                                     -> TV role, ON A LATER BOOT: sign back in with the
+//                                        handover this device KEPT (see "The sign-in
+//                                        vault" at the foot of this block). Carries the
+//                                        same engine option fields as the {panelPubKey}
+//                                        boot, because the stored record names its own
+//                                        operator and a resume may be what builds the
+//                                        engine. Answers 'signin-resumed'.
+//        { type:'vault-reply', id, ok, data? }     -> the host's answer to a
+//                                        'vault-request' (below). `data` is base64.
 //   out: { type:'ready' } | { type:'streams', streams, vod? }   (on login, and pushed
 //                                        again live whenever the panel edits the catalog
 //                                        — same shape; the Home screen re-renders on it.
@@ -184,6 +194,14 @@
 //        { type:'signin-ack', ok, tag? }   (answer to the three one-word answers:
 //          submit-pin / confirm-service / confirm-match. ok=false means the engine had
 //          nothing waiting for that answer, or the value was malformed)
+//        { type:'signin-resumed', ok, error?, message?, retry?, tag? }   (answer to
+//          'signin-resume'. retry=true — 'offline' — is the ONLY value that means the
+//          material is still stored; every other error already erased it)
+//        { type:'vault-request', op:'wrap'|'unwrap', id, data }   (NOT an event: the
+//          worklet asking the HOST to use the platform key store on its behalf, because
+//          a Bare runtime cannot reach a native module. `data` is base64 and is the one
+//          secret on this channel — the host must keep it out of its logger. The answer
+//          comes back as 'vault-reply')
 //
 // Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
 // the app-private files dir, the stated tradeoff; sign-out clears them) + favorites
@@ -192,6 +210,35 @@
 // also hold `deviceId`: 8 random bytes minted on first read and never rotated, so the
 // panel's device list and per-device revocation address THIS install (before it, every
 // install of an account collapsed onto one derived fallback id — see sdk/login.js).
+//
+// THE SIGN-IN VAULT (phone -> TV sign-in, at rest).
+//
+// A television signed in by a phone has NO CREDENTIALS to remember: what crossed was key
+// material, and sdk/login.js is explicit that it must not be written down. That left a
+// handover-signed-in set worse off than a password-signed-in one — Android reclaims
+// background app processes as a matter of routine, and the next cold start landed back on
+// the sign-in screen with the phone in another room. So the material IS kept now, and the
+// shape of the keeping is the whole point:
+//
+//   1. The engine emits it once, as 'signin-keys', and ONLY on a build that asked for it
+//      (remote.keepSignIn — client/src/worklet.ts turns it on for televisions and for
+//      nothing else).
+//   2. This worklet mints 32 random bytes, seals the record under them (signin-vault.mjs)
+//      and writes the sealed box into the prefs file beside everything else.
+//   3. The 32 bytes go OUT, as a 'vault-request', to be wrapped by a key held in the
+//      Android Keystore — hardware-held on any device with a keymaster, and unreadable by
+//      this app or any other. The wrapped result comes back and is stored beside the box.
+//
+// The account's two private keys therefore never leave this runtime, and the only secret
+// that crosses the IPC boundary is a file key that is inert without a file the other side
+// never sees. Compare the "remember me" password three paragraphs up, which is plaintext
+// on the same disk: this is the first thing in the app that is not.
+//
+// EVERY FAILURE ENDS THE SAME WAY — erase what is held and let the app show the sign-in
+// screen. No key store, a key that no longer opens the box, a box that does not parse, an
+// operator the device is no longer on, or a panel that refuses the account: five causes,
+// one outcome, and never a half-signed-in state. See docs/security-model.md, "Account
+// keys at rest", for what the Keystore does and does not buy on a television.
 
 /* global BareKit, Bare */
 import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for the Bare worklet
@@ -201,6 +248,14 @@ import b4a from 'b4a'
 import hcrypto from 'hypercore-crypto'
 import { AliranPlayer } from '@aliran/player-sdk/player.js'
 import { resolvePairingCode } from '@aliran/player-sdk/pairing.js'
+// The at-rest half of a phone -> TV sign-in: the record format, its shape gates, and the
+// one judgement that decides whether a refusal is worth retrying or means erase. Kept in
+// its own file because it is pure — no fs, no IPC — and therefore testable off a
+// television (tools/signin-vault-test.mjs).
+import {
+  SIGNIN_VAULT_VERSION, FILE_KEY_BYTES,
+  gateSignInKeys, gateVaultRecord, sealSignIn, openSignIn, terminalSignInError
+} from './signin-vault.mjs'
 
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
@@ -339,10 +394,16 @@ function readPrefs () {
       parental: p && p.parental && typeof p.parental.salt === 'string' && /^[0-9a-f]{32}$/.test(p.parental.salt) &&
         typeof p.parental.hash === 'string' && /^[0-9a-f]{64}$/.test(p.parental.hash)
         ? { salt: p.parental.salt, hash: p.parental.hash, hide: p.parental.hide === true }
-        : null
+        : null,
+      // The kept phone -> TV sign-in: a sealed box plus the wrapped file key that opens
+      // it (see "The sign-in vault" in the header). Gated on read like everything else
+      // here — a half-written record must read as "nothing is saved", because the
+      // alternative is a television that fails a resume it should never have attempted.
+      // NEVER leaves this function's callers: sendPrefs() strips it.
+      signin: gateVaultRecord(p && p.signin)
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null }
+    return { creds: null, favorites: [], smoothZapping: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null, signin: null }
   }
 }
 
@@ -363,9 +424,14 @@ function writePrefs (prefs) {
 // and an identifier that never crosses into the RN layer cannot be logged there.
 // The parental PIN digest stays worklet-side the same way — the UI only learns
 // that a PIN exists and the hide toggle; verification is a message round-trip.
+//
+// The sign-in vault record is the third, and the strictest: the app is told only WHETHER
+// there is one, as a boolean. A screen needs nothing else to decide between resuming and
+// showing the sign-in screen, and a record that never crosses cannot be logged, cached in
+// a component or serialized into a problem report by some later change.
 function sendPrefs () {
-  const { deviceId, parental, ...rest } = readPrefs()
-  send({ type: 'prefs', ...rest, parental: parental ? { hide: parental.hide } : null })
+  const { deviceId, parental, signin, ...rest } = readPrefs()
+  send({ type: 'prefs', ...rest, parental: parental ? { hide: parental.hide } : null, signinSaved: !!signin })
 }
 
 // Per-install device id (S50c): 8 random bytes, minted once and persisted. Read on
@@ -379,6 +445,136 @@ function ensureDeviceId () {
   const id = b4a.toString(b4a.from(bytes), 'hex')
   writePrefs({ ...prefs, deviceId: id })
   return id
+}
+
+// --- the sign-in vault (see "The sign-in vault" in the header) -------------------------
+
+// A Bare worklet has no bridge to a native module, so the Android Keystore is reachable
+// only through the HOST. These four lines are that round trip: a request goes out, a
+// reply comes back against its id, and a reply that never comes resolves null rather than
+// leaving a television blocked on a screen for ever. Null is a first-class answer
+// throughout — "this device cannot keep a sign-in" and "what it kept cannot be read" are
+// both ordinary outcomes, not errors.
+const vaultPending = new Map()
+let vaultSeq = 0
+// Generous for a key-store call (they are milliseconds) because the cost of being wrong
+// is asymmetric: too short strands a device that would have succeeded, too long delays a
+// splash screen that is already spinning.
+const VAULT_REPLY_MS = 10000
+
+function vaultCall (op, data) {
+  return new Promise((resolve) => {
+    const id = 'v' + (++vaultSeq)
+    const timer = setTimeout(() => { if (vaultPending.delete(id)) resolve(null) }, VAULT_REPLY_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    vaultPending.set(id, (v) => { clearTimeout(timer); resolve(v) })
+    send({ type: 'vault-request', op, id, data })
+  })
+}
+
+// Erase the kept sign-in. Called on sign-out and on every failure that proves the record
+// is dead — a written record that cannot produce a session is not a convenience any more,
+// only key material sitting on a disk.
+function forgetSignIn () {
+  const prev = readPrefs()
+  if (!prev.signin) return
+  writePrefs({ ...prev, signin: null })
+  sendPrefs()
+}
+
+// Keep what a handover just delivered. Best-effort BY DESIGN: the device is already
+// signed in for this session either way, so nothing here may throw into the engine's
+// event emitter, and a failure costs the viewer a repeat handover after the next restart
+// rather than a broken sign-in now. It is reported as a status so it is visible in a
+// logcat without anybody having to guess.
+async function persistSignIn (keys) {
+  const rec = gateSignInKeys(keys)
+  if (!rec) return send({ type: 'status', state: 'signin:not-kept', message: 'the sign-in this device received was not storable' })
+  try {
+    const fileKey = hcrypto.randomBytes(FILE_KEY_BYTES)
+    const box = sealSignIn(fileKey, rec)
+    // The ONLY thing that crosses to the host: 32 random bytes that open nothing without
+    // the box above, which the host never sees.
+    const wrapped = await vaultCall('wrap', b4a.toString(fileKey, 'base64'))
+    if (!wrapped) return send({ type: 'status', state: 'signin:not-kept', message: 'no key store on this device — this sign-in ends with the app' })
+    writePrefs({ ...readPrefs(), signin: { v: SIGNIN_VAULT_VERSION, box, key: wrapped, at: Date.now() } })
+    sendPrefs()
+    send({ type: 'status', state: 'signin:kept' })
+  } catch (err) {
+    send({ type: 'status', state: 'signin:not-kept', message: String((err && err.message) || err) })
+  }
+}
+
+// One resume at a time. Two in flight would each run a full login round against the
+// panel's per-account throttle, and the second could only ever duplicate the first.
+let resuming = false
+// How long a resume waits for the swarm to find the panel before it gives up and says so.
+// Bounded like every other cold-start wait in the handover path: a television that cannot
+// reach its operator must say it cannot, not spin.
+const RESUME_CONNECT_MS = 25000
+const RESUME_STEP_MS = 1000
+// The one transient this retries INSIDE the worklet. It is thrown before any RPC leaves
+// the device (sdk/player.js checks for a panel socket first), so retrying it costs the
+// panel nothing and cannot walk the account into a login lockout. Every other failure is
+// answered once and left to the app, which has its own bounded retry.
+const NOT_CONNECTED = /not connected to panel/i
+
+async function resumeSignIn (msg) {
+  const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+  const answer = (o) => { resuming = false; send({ type: 'signin-resumed', ...o, ...tag }) }
+  if (resuming) return send({ type: 'signin-resumed', ok: false, error: 'offline', retry: true, message: 'a sign-in is already being resumed', ...tag })
+  resuming = true
+
+  const stored = readPrefs().signin
+  if (!stored) return answer({ ok: false, error: 'none' })
+
+  // 1. The key store opens the file key, or it does not. "Does not" covers a reinstall, a
+  //    keystore reset and a device that never had one — all of them mean the box beside
+  //    it is now noise.
+  const fileKeyB64 = await vaultCall('unwrap', stored.key)
+  if (!fileKeyB64) { forgetSignIn(); return answer({ ok: false, error: 'locked' }) }
+
+  // 2. The file key opens the box, or it does not.
+  const rec = openSignIn(b4a.from(fileKeyB64, 'base64'), stored.box)
+  if (!rec) { forgetSignIn(); return answer({ ok: false, error: 'corrupt' }) }
+
+  // 3. The record names its operator, and this device may have been pointed at another
+  //    one since ("Change service…"). Signing an account back in to the wrong panel is
+  //    not a thing to attempt and find out about.
+  if (connectedKey && connectedKey !== rec.panelPubKey) { forgetSignIn(); return answer({ ok: false, error: 'service' }) }
+
+  let p = null
+  try {
+    p = playerFor(msg)
+  } catch (err) {
+    // A build whose engine options do not validate. Nothing is wrong with the record, so
+    // it stays: the fix is a new app build, not a new handover.
+    return answer({ ok: false, error: 'offline', retry: true, message: String((err && err.message) || err) })
+  }
+  // A device that has a kept sign-in but no service yet (the keyless flavor, if the
+  // Connect screen never got to persist one) learns its operator from the record — the
+  // same key a viewer already confirmed on screen when the handover happened.
+  if (!connectedKey) {
+    connectedKey = rec.panelPubKey
+    p.connect(rec.panelPubKey).catch(() => {})
+  }
+
+  const deadline = Date.now() + RESUME_CONNECT_MS
+  for (;;) {
+    try {
+      await p.signInWithKeys(rec.username, { priv: rec.priv, authPriv: rec.authPriv })
+      return answer({ ok: true })
+    } catch (err) {
+      const message = String((err && err.message) || err)
+      // The operator said no — disabled account, device limit, a password rotation that
+      // replaced the account's keypair. Erase: these keys will never work again.
+      if (terminalSignInError(err)) { forgetSignIn(); return answer({ ok: false, error: 'rejected', message }) }
+      if (!NOT_CONNECTED.test(message) || Date.now() >= deadline) {
+        return answer({ ok: false, error: 'offline', retry: true, message })
+      }
+      await new Promise((resolve) => { const t = setTimeout(resolve, RESUME_STEP_MS); if (typeof t.unref === 'function') t.unref() })
+    }
+  }
 }
 
 let player = null
@@ -425,6 +621,14 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
   player.on('zap-prefetch', (e) => send({ type: 'zap-prefetch', ...e }))
+  // OTA app updates: download progress/outcome relay 1:1 (the check reply is sent by
+  // its own dispatch case — it needs the request's tag).
+  // The account material a RECEIVED handover delivered. Fires once, and only on a build
+  // that asked for it (remote.keepSignIn — televisions). It NEVER reaches send(): it is
+  // consumed here, sealed, and only the sealed box touches the disk. That asymmetry is
+  // the point of the whole vault — every other engine event on this list is relayed
+  // straight out over the IPC channel, and this is the one that must not be.
+  player.on('signin-keys', (keys) => { persistSignIn(keys).catch(() => {}) })
   // OTA app updates: download progress/outcome relay 1:1 (the check reply is sent by
   // its own dispatch case — it needs the request's tag).
   player.on('update-progress', (e) => send({ type: 'update-progress', ...e }))
@@ -491,7 +695,12 @@ IPC.on('data', (data) => {
       writePrefs({ ...readPrefs(), creds: { username: msg.username, password: msg.password } })
       sendPrefs()
     } else if (msg.type === 'creds-clear') {
-      writePrefs({ ...readPrefs(), creds: null })
+      // SIGN OUT, and it has to mean BOTH ways back in. A device may hold a saved password
+      // or a kept phone -> TV sign-in — a television usually holds only the second — and a
+      // sign-out that cleared one of them would put a set straight back into the account
+      // on its next start. One write clears both; the host destroys the Keystore key that
+      // sealed the second one at the same time (sdk/react-native clearCredentials).
+      writePrefs({ ...readPrefs(), creds: null, signin: null })
       sendPrefs()
     } else if (msg.type === 'service-save' && msg.service && /^[0-9a-f]{64}$/.test(msg.service.panelPubKey)) {
       writePrefs({ ...readPrefs(), service: { panelPubKey: msg.service.panelPubKey, ...(typeof msg.service.name === 'string' ? { name: msg.service.name } : {}) } })
@@ -570,6 +779,28 @@ IPC.on('data', (data) => {
       signinAck(msg, () => player.confirmSignInMatch(msg.ok === true) === true)
     } else if (msg.type === 'signin-send-cancel') {
       if (player) { try { player.cancelSendSignIn() } catch (err) { fail(err) } }
+    } else if (msg.type === 'signin-resume') {
+      // TV role, on a later boot. ALWAYS answers — a splash screen is blocked on it —
+      // and never throws: resumeSignIn() catches its own way to every outcome, and this
+      // guard covers the one thing outside it (a rejected promise from an unexpected
+      // shape), because an uncaught throw here takes the whole app process down.
+      resumeSignIn(msg).catch((err) => send({
+        type: 'signin-resumed',
+        ok: false,
+        error: 'offline',
+        retry: true,
+        message: String((err && err.message) || err),
+        ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {})
+      }))
+    } else if (msg.type === 'vault-reply' && typeof msg.id === 'string') {
+      // The host's answer to a 'vault-request'. ok=false and a missing/!string `data`
+      // both resolve null, which is the caller's "this device cannot keep a sign-in" /
+      // "what it kept cannot be read" — never an error, never a throw.
+      const settle = vaultPending.get(msg.id)
+      if (settle) {
+        vaultPending.delete(msg.id)
+        settle(msg.ok === true && typeof msg.data === 'string' ? msg.data : null)
+      }
     } else if (msg.type === 'parental-verify' && typeof msg.pin === 'string') {
       const rec = readPrefs().parental
       send({ type: 'parental-verify', ok: !!rec && pinDigest(rec.salt, msg.pin) === rec.hash, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })

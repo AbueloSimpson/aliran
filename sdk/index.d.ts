@@ -99,8 +99,8 @@ export interface SwarmConfig {
 export type UploadPolicy = 'reseed' | 'client-only'
 
 /**
- * Which cross-device features this BUILD may use. Both default to false, and both are
- * construction-time only because both change what a login RETAINS for the whole session.
+ * Which cross-device features this BUILD may use. All default to false, and all are
+ * construction-time only because each changes what a login RETAINS for the whole session.
  *
  *   sendToTv  the phone half of "send to TV". On, every login keeps the account's two
  *             private keys in memory (sendSignIn cannot recover them later without the
@@ -110,12 +110,43 @@ export type UploadPolicy = 'reseed' | 'client-only'
  *             — it cannot sign a session or open a stream — but it authenticates this
  *             device to the account's other devices and is a stable account correlator
  *             until "log out all devices".
+ *   keepSignIn  the RECEIVING half of "send to TV", and the only one about DISK. On, a
+ *             completed handover emits its key material once, as 'signin-keys', so a host
+ *             can persist it and come back through signInWithKeys() after a restart. Off,
+ *             the material dies with the method that received it.
+ *
+ *             NOT the same switch as `sendToTv`, and on a television the two are
+ *             opposites: sendToTv is the SENDING role (off on a TV, so a set never holds
+ *             an account it could pass on), keepSignIn is the RECEIVING role (on, so the
+ *             set survives Android reclaiming its process). Turn it on only with a real
+ *             place to put keys — see docs/security-model.md, "Account keys at rest".
  *
  * `remote: true` enables all of them.
  */
 export interface RemoteFeatures {
   sendToTv?: boolean
   control?: boolean
+  keepSignIn?: boolean
+}
+
+/**
+ * The account, in the clear, handed over exactly once at the end of a RECEIVED sign-in
+ * handover — the payload of the 'signin-keys' event, which fires only on a build
+ * constructed with `remote: { keepSignIn: true }`.
+ *
+ * Anything holding these two keys IS the account until the operator disables it or
+ * rotates its password. Persist them where the platform protects them (Android Keystore,
+ * an OS keychain), erase them the moment signInWithKeys() is refused for good, and log
+ * nothing about them — not the object, not its field names, not its size.
+ */
+export interface SignInKeys {
+  username: string
+  /** The operator this account belongs to (hex) — the key the viewer confirmed. */
+  panelPubKey: string
+  /** X25519 secret (32 bytes, hex): opens the sealed per-stream keys. */
+  priv: string
+  /** Ed25519 secret (64 bytes, hex): signs the panel's session challenge. */
+  authPriv: string
 }
 
 export interface PlayerOptions {
@@ -342,6 +373,12 @@ export interface PlayerEvents {
       message?: string
     }
   ]
+  /**
+   * The account keys a RECEIVED handover was given, emitted once so the device can sign
+   * itself back in after a restart (signInWithKeys). Fires only on a build constructed
+   * with `remote: { keepSignIn: true }` — see SignInKeys before you subscribe.
+   */
+  'signin-keys': [keys: SignInKeys]
 }
 
 /**
@@ -364,6 +401,21 @@ export class AliranPlayer {
    * list. Throws 'not connected to panel' while the swarm is still dialing: retry.
    */
   login(username: string, password: string): Promise<Stream[]>
+  /**
+   * The same session entered with the ACCOUNT KEYS instead of a password — the door back
+   * in for a device that persisted a 'signin-keys' event. Resolves to the same display
+   * list and emits 'streams' the same way.
+   *
+   * Not a second authentication path: it runs the whole ordinary round (proof-of-work,
+   * the panel throttle, account status, device registration, maxDevices) and takes a
+   * panel-signed token for THIS device.
+   *
+   * Split the rejections. Transient ('not connected to panel', a closed channel) means
+   * keep the keys and retry. Terminal — anything the panel refused, 'unknown user', or
+   * 'key handover does not match this account' (what a password rotation looks like from
+   * here) — means ERASE them.
+   */
+  signInWithKeys(username: string, keys: { priv: string | Uint8Array; authPriv: string | Uint8Array }): Promise<Stream[]>
   /** Last display list. */
   listStreams(): Stream[]
   /** Replicate + serve an entitled stream; redirect channels return their remote URL. */

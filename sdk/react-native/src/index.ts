@@ -7,8 +7,15 @@ export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfi
 // SIGNIN_PAIR_ERRORS / isSigninPairError() are the runtime whitelist: the engine's
 // vocabulary grows, this build's copy of it does not, so check a reason before you
 // switch on it and always keep a sentence for the ones you do not know.
-export type { RemoteFeatures, SigninPairState, SigninPairErrorCode, SigninPairReason, SigninPairInfo, SignInStartResult, SignInSendResult } from './backend'
+export type { RemoteFeatures, SigninPairState, SigninPairErrorCode, SigninPairReason, SigninPairInfo, SignInStartResult, SignInSendResult, ResumeSignInResult, ResumeSignInError } from './backend'
 export { SIGNIN_PAIR_ERRORS, isSigninPairError } from './backend'
+// Platform key store (Android Keystore), native half. The binding uses it internally to
+// keep a television's sign-in across restarts — `remote: { keepSignIn: true }` at start(),
+// then backend.resumeSignIn() on the next boot. Exported so a host can REPORT what its
+// device offers (secureKeyStatus) and can destroy the key on its own terms. See
+// src/secure-key.ts and docs/security-model.md, "Account keys at rest".
+export { secureKeyStatus, secureReset } from './secure-key'
+export type { SecureKeyStatus } from './secure-key'
 export { AliranVideo, SelectedTrackType } from './AliranVideo'
 export type { AliranVideoProps, AliranVideoHandle, TuneEvent, TunePhase, SelectedTrack, AudioTrack, TextTrack, BufferConfig } from './AliranVideo'
 // Ready-made "engine can't run here" screen for single-APK builds: render in the

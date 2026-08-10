@@ -49,6 +49,8 @@
     "test:login": "node tools/e2e-login-test.mjs",
     "test:pairing": "node tools/e2e-pairing-test.mjs",
     "test:signin-pair": "node tools/e2e-signin-pair-test.mjs",
+    "test:signin-vault": "node tools/signin-vault-test.mjs",
+    "test:signin-resume": "node tools/e2e-signin-resume-test.mjs",
     "test:remote-control": "node tools/e2e-remote-control-test.mjs",
     "test:session": "node tools/e2e-session-test.mjs",
     "test:register": "node tools/e2e-register-test.mjs",
