@@ -7,16 +7,22 @@
 // what keeps those two surfaces from quietly becoming one.
 //
 //   A  SERVE-CORE CONTRACT (pure, one local drive, no DHT) — the `cors` option is OFF by
-//      default (the loopback server's responses must not change by one byte), ON it adds
+//      default (a loopback-shaped handler must emit no CORS header at all), ON it adds
 //      Access-Control-Allow-Origin / -Headers / -Expose-Headers to GETs AND to 404s, and
 //      OPTIONS is answered 204 BEFORE resolveTarget is ever consulted. Plus the per-target
 //      `reclaim: false` opt-out (the same reclaim-enabled handler must free a normal
 //      target's expired blocks and leave an opted-out, cast-pinned drive's alone) and the
 //      method gate: GET/HEAD only, everything else 405 + Allow, before any drive read.
+//      ⚠ The method gate is SHARED and runs before resolveTarget, so it reaches the loopback
+//      server too. The claim that holds for it is the precise one: its GET/HEAD responses
+//      are unchanged, and a POST/DELETE/TRACE that used to be served as a GET now 405s.
 //   A2 THE ADDRESS PICK (pure, a synthetic `os`) — RFC1918 is REQUIRED, not preferred; a
 //      public-only host is REFUSED by name and pointed at advertiseHost; every private
 //      candidate is reported because os.networkInterfaces() cannot tell Wi-Fi from a
 //      container bridge or from carrier CGNAT; APIPA/loopback/IPv6 are skipped.
+//   A3 AND WHAT THE SOCKET BINDS — a second enumeration, taken after the feed opened. An
+//      AUTO-PICKED address the device has since lost (Wi-Fi handoff, VPN, new lease) makes
+//      the bind FAIL; only a caller-supplied host may fall back to 0.0.0.0.
 //   B  LAN REACH — a headless player logs in over a local DHT testnet, startCast() returns
 //      an http:// URL on the engine's exact private-IPv4 pick, the server is BOUND to that
 //      one address (not 0.0.0.0), and fetching it off the loopback interface answers 200.
@@ -45,8 +51,10 @@
 //      same 404 a wrong token gets, and an unpinned session is unchanged.
 //   H  REDIRECT CHANNELS — an operator-set remote https URL casts with NO server at all.
 //      H2: hybrid.mode 'cdn-only' the same way — no drive opened, no swarm topic joined.
-//   I  A SESSION THAT DIES ON ITS OWN — an evicted pinned feed must END the session
-//      (socket closed, state cleared) and emit 'cast', not leave a bound zombie.
+//   I  A SESSION THAT DIES ON ITS OWN — every engine path that drops the pinned drive must
+//      END the session (socket closed, state cleared) and emit 'cast', not leave a bound
+//      zombie. I1: a retune whose reopen rejects, and one that never settles at all (only a
+//      timer can notice that one). I2: a pinned feed evicted out from under the session.
 //
 // Local DHT testnet only (never the public DHT — required lane, must be deterministic).
 // No ffmpeg. Exits 0 on PASS.
@@ -181,7 +189,9 @@ try {
       return { base, seen, close: () => new Promise((r) => server.close(r)) }
     }
 
-    // A1 — cors OFF by default: the loopback server's responses are unchanged.
+    // A1 — cors OFF by default: not one CORS header on a loopback-shaped response. (The
+    // GET/HEAD responses of that server are unchanged; A6 covers the one thing that DID
+    // change for it — a non-GET verb now 405s instead of being served as a GET.)
     {
       const s = await serveWith({})
       const r = await GET(`${s.base}/win.m3u8`)
@@ -299,7 +309,28 @@ try {
     const noOs = new AliranPlayer({ panelPubKey: 'ab'.repeat(32), storeDir: dirs.pure, http, fs })
     assert.throws(() => noOs._lanAddress(), /injected `os` module/, 'a player built without os says what is missing')
     assert.throws(() => noOs._lanAddress(), /advertiseHost/, '…and how to cast anyway')
-    log('A2: address pick — RFC1918 REQUIRED (public-only refused by name), private beats public, every candidate reported, APIPA/loopback/IPv6 skipped, missing os named ✓')
+
+    // A3 — WHAT THE SOCKET BINDS, which is a SECOND enumeration. _lanAddress() runs before
+    // the feed opens and _bindAddress runs after it, up to 2× tune.timeoutMs later, so the two
+    // can legitimately disagree: a Wi-Fi handoff, a VPN toggle or a new DHCP lease inside that
+    // window leaves the device without the address the URL is about to advertise. An
+    // AUTO-PICKED address that is gone by then must FAIL, not fall back to 0.0.0.0 — widening
+    // there would answer on every interface this device has for an address that no longer
+    // works, which is precisely the class the narrow bind exists to remove. A caller-SUPPLIED
+    // one keeps the fallback: that is a host asking to be reachable at a name (or a NAT
+    // address) this device does not own, and only a wide bind can honour it.
+    const bind = withOs(fakeOs({ wlan0: [ifc('192.168.1.104')], lo: [ifc('127.0.0.1', { internal: true })] }))
+    assert.strictEqual(bind._bindAddress('192.168.1.104', true), '192.168.1.104', 'an address this device still owns is bound exactly')
+    assert.throws(() => bind._bindAddress('192.168.1.77', true), /no longer has the LAN address/, 'an AUTO-PICKED address that vanished is REFUSED, never widened to 0.0.0.0')
+    assert.throws(() => bind._bindAddress('192.168.1.77', true), /advertiseHost/, '…and the refusal names the escape hatch')
+    assert.strictEqual(bind._bindAddress('192.168.1.77', false), '0.0.0.0', 'a SUPPLIED address we do not own keeps the documented 0.0.0.0 fallback')
+    assert.strictEqual(bind._bindAddress('tv.local', false), '0.0.0.0', '…as does a hostname')
+    assert.strictEqual(bind._bindAddress('192.168.1.104', false), '192.168.1.104', '…and a supplied address we DO own is still bound narrowly')
+    assert.strictEqual(bind._bindAddress('127.0.0.1', false), '127.0.0.1', 'loopback counts as owned (the lane casts to it)')
+    const blind = withOs({ networkInterfaces: () => { throw new Error('interfaces unavailable') } })
+    assert.throws(() => blind._bindAddress('192.168.1.104', true), /no longer has the LAN address/, 'a pick that cannot be RE-CONFIRMED fails too — a maybe must not widen the bind')
+    assert.strictEqual(blind._bindAddress('192.168.1.104', false), '0.0.0.0', '…while a supplied address still falls back')
+    log('A2: address pick — RFC1918 REQUIRED (public-only refused by name), private beats public, every candidate reported, APIPA/loopback/IPv6 skipped, missing os named; A3: the bind refuses a stale AUTO pick instead of widening ✓')
   }
 
   // =========================================================================================
@@ -681,6 +712,18 @@ try {
     assert.strictEqual((await GET(mapped.url)).status, 200, '…and still matches the peer')
     await player.stopCast()
 
+    // The other two spellings of that same mapped address. Neither is reachable from a
+    // remoteAddress on Node or Bare — both report the dotted form — but both are plausible
+    // things for a HOST to pass, and an unfolded one does not error, it silently pins nothing.
+    const [o1, o2, o3, o4] = expectedHost.split('.').map(Number)
+    const hex = (a, b) => (((a << 8) | b) >>> 0).toString(16).padStart(4, '0')
+    for (const spelling of [`0:0:0:0:0:ffff:${expectedHost}`, `::ffff:${hex(o1, o2)}:${hex(o3, o4)}`]) {
+      const s = await player.startCast('ch1', { receiverHost: spelling })
+      assert.deepStrictEqual(s.receiverHost, [expectedHost], `${spelling} folds to the dotted IPv4`)
+      assert.strictEqual((await GET(s.url)).status, 200, '…and matches the peer')
+      await player.stopCast()
+    }
+
     // An array — a multi-room GROUP fetches from every member, so one address is not enough.
     const group = await player.startCast('ch1', { receiverHost: ['10.99.99.99', expectedHost, '10.99.99.99'] })
     assert.deepStrictEqual(group.receiverHost, ['10.99.99.99', expectedHost], 'an array pins every member, de-duplicated')
@@ -689,12 +732,26 @@ try {
 
     // A hostname would need a DNS round trip per request; a pin that never matches is
     // indistinguishable from a cast that simply does not work. Refuse it on the call.
-    for (const bad of ['tv.local', 'not-an-ip', '999.1.1.1', '1234', 'abcd', '192.168.1.5:8009', '', 7]) {
+    //
+    // ⚠ [] IS IN THIS LIST, and it is the one that matters most, because it is the only bad
+    // value that used to fail OPEN: it returned "unpinned" and the session served every peer
+    // while the caller believed it was pinned. A host builds that value by asking for a
+    // multi-room group's members and getting nothing back (a member offline, an API hiccup,
+    // the group not joined yet) — the exact situation the pin exists for.
+    for (const bad of ['tv.local', 'not-an-ip', '999.1.1.1', '1234', 'abcd', '192.168.1.5:8009', '', 7, [], [''], [{}]]) {
       await assert.rejects(() => player.startCast('ch1', { receiverHost: bad }), /receiverHost must be an IP address/,
         'receiverHost ' + JSON.stringify(bad) + ' is refused on the call')
+      assert.strictEqual(player.castSession(), null,
+        'a refused receiverHost ' + JSON.stringify(bad) + ' stood up NO session — it must never fall back to unpinned')
+    }
+    // …and the only two ways to say "no pin" still mean exactly that.
+    for (const none of [undefined, null]) {
+      const un = await player.startCast('ch1', { receiverHost: none })
+      assert.strictEqual(un.receiverHost, undefined, `receiverHost ${none} is the documented "unpinned"`)
+      await player.stopCast()
     }
     assert.strictEqual(player.castSession(), null, 'a refused receiverHost stood up no session')
-    log('G3: receiver pin — pinned peer served, any other peer 404s identically to a wrong token, IPv4-mapped normalised, groups take an array, unpinned unchanged ✓')
+    log('G3: receiver pin — pinned peer served, any other peer 404s identically to a wrong token, every mapped spelling folded, groups take an array, [] REFUSED (never silently unpinned), unpinned unchanged ✓')
   }
 
   // =========================================================================================
@@ -745,7 +802,74 @@ try {
   }
 
   // =========================================================================================
-  // I. A SESSION THAT DIES ON ITS OWN. Two engine paths null the pinned drive without the
+  // I1. A RETUNE THAT NEVER GIVES THE DRIVE BACK. _retuneActive closes the active feed and
+  // re-opens it, and it drops the cast's handle across that gap on purpose (404 for a few
+  // hundred ms beats 500ing off a closed drive). The reopen is UNBOUNDED, and it was awaited
+  // outside any try: a reopen that REJECTED went to the caller's `.catch(() => {})`, and one
+  // that never SETTLED ran no further code at all — either way the session was left holding a
+  // null drive behind a bound socket with nothing to end it. That is the same zombie the
+  // eviction path (I2) was fixed for, in the same function.
+  //
+  // White-box on purpose: a reopen failure cannot be provoked from outside, and the lane must
+  // not depend on a real DHT going away. _openFeed is stubbed and restored around each case.
+  // =========================================================================================
+  {
+    const realOpen = player._openFeed
+    const pinActive = async () => {
+      await player.resolve('ch1') // the cast must be pinned to the ACTIVE feed's drive
+      await waitFor(async () => /^c\d+\.ts$/m.test((await GET(`${loopbackBase}/index.m3u8`)).body.toString()), 60000, 'phone playing ch1 again')
+      const s = await player.startCast('ch1')
+      assert.strictEqual((await GET(s.url)).status, 200, 'the session serves before the retune')
+      assert.strictEqual(player._cast.drive, player._feedDrive, 'the cast is pinned to the ACTIVE drive — the shape a retune acts on')
+      return s
+    }
+
+    // (a) the reopen REJECTS.
+    {
+      const live = await pinActive()
+      const server = player._castServer
+      const ended = new Promise((resolve) => player.once('cast', resolve))
+      player._openFeed = () => Promise.reject(new Error('synthetic: the reopen failed'))
+      let outcome
+      try { outcome = await player._retuneActive(player._active).then(() => 'resolved', () => 'rejected') } finally { player._openFeed = realOpen }
+      assert.strictEqual(outcome, 'rejected', 'the retune still reports its failure to the watchdog — the tune path is unchanged')
+      const ev = await Promise.race([ended, sleep(15000).then(() => null)])
+      assert.ok(ev, "a failed reopen ENDS the cast and says so (it used to leave a zombie and emit nothing)")
+      assert.strictEqual(ev.reason, 'retune-failed', '…naming the cause')
+      assert.strictEqual(ev.streamId, 'ch1', '…and the channel')
+      assert.strictEqual(player.castSession(), null, 'castSession() stops handing out a dead url + token')
+      assert.strictEqual(server.listening, false, 'the LAN listener is UNBOUND, not left for the process lifetime')
+      await assert.rejects(() => GET(live.url), /ECONNREFUSED|ECONNRESET|socket hang up|timeout/i, 'the URL answers nothing at all')
+    }
+
+    // (b) the reopen never SETTLES — the likelier failure, and the one no catch can see. Only
+    // a timer notices, so the cast gets its own bound (tune.timeoutMs) while the retune's own
+    // wait stays unbounded. Shrunk here so the lane does not sit out a real one; the watchdog
+    // must be stood down first, since it reads the same object.
+    {
+      const live = await pinActive()
+      const server = player._castServer
+      await waitFor(() => player._tuneTimer === null, 60000, 'the tune watchdog stood down before the bound is shrunk')
+      const savedMs = player._tune.timeoutMs
+      player._tune.timeoutMs = 500
+      const ended = new Promise((resolve) => player.once('cast', resolve))
+      player._openFeed = () => new Promise(() => {}) // never settles, exactly like a wedged open
+      player._retuneActive(player._active).catch(() => {}) // NOT awaited — it never returns
+      const ev = await Promise.race([ended, sleep(15000).then(() => null)])
+      player._tune.timeoutMs = savedMs
+      player._openFeed = realOpen
+      assert.ok(ev, 'a reopen that never settles ends the cast too — nothing else in the engine would ever notice')
+      assert.strictEqual(ev.reason, 'retune-failed', '…with the same reason')
+      assert.strictEqual(player.castSession(), null, '…and the session is gone')
+      assert.strictEqual(player._castServer, null, '…the engine dropped the server')
+      assert.strictEqual(server.listening, false, '…and the port is released')
+      await assert.rejects(() => GET(live.url), /ECONNREFUSED|ECONNRESET|socket hang up|timeout/i, 'the URL answers nothing at all')
+    }
+    log('I1: a retune whose reopen fails — or wedges — ENDS the cast instead of stranding it on a null drive ✓')
+  }
+
+  // =========================================================================================
+  // I2. A SESSION THAT DIES ON ITS OWN. Two engine paths null the pinned drive without the
   // host asking: the tune ladder's final rung purges the replica (_evictFeed — and it fires
   // while the phone is ON the cast channel, so it is not the documented "zapped away" limit),
   // and a zap that lands mid-retune abandons the reopen. Both used to leave a ZOMBIE:
@@ -769,7 +893,7 @@ try {
     assert.strictEqual(player._castServer, null, 'the engine dropped the server')
     assert.strictEqual(server.listening, false, 'and the LAN listener is UNBOUND — it used to stay bound for the process lifetime')
     await assert.rejects(() => GET(zombie.url), /ECONNREFUSED|ECONNRESET|socket hang up|timeout/i, 'the zombie URL answers nothing at all now')
-    log('I: an evicted feed ENDS the cast — socket closed, state cleared, host told ✓')
+    log('I2: an evicted feed ENDS the cast — socket closed, state cleared, host told ✓')
   }
 
   // Teardown must not leave the LAN socket behind.
@@ -777,7 +901,7 @@ try {
   await player.stop()
   assert.strictEqual(player._castServer, null, 'stop() tears the cast server down too')
 
-  log('\nRESULT: PASS ✅  (cors opt-in + OPTIONS + GET/HEAD-only + per-target reclaim opt-out; RFC1918-required address pick BOUND to the advertised address; relative segments inherit the token prefix; wrong token 404s; the opt-in receiver pin refuses every other peer the same way; loopback untouched and still refuses /cast/*; pinned feed survives a zap; stopCast closes AND unbinds; a self-terminating session emits and tears down; redirect + cdn-only need no server)')
+  log('\nRESULT: PASS ✅  (cors opt-in + OPTIONS + GET/HEAD-only + per-target reclaim opt-out; RFC1918-required address pick BOUND to the advertised address, and a stale AUTO pick refused rather than widened; relative segments inherit the token prefix; wrong token 404s; the opt-in receiver pin refuses every other peer the same way and refuses an empty pin outright; loopback still refuses /cast/*, stays CORS-free and serves GET/HEAD exactly as before; pinned feed survives a zap; stopCast closes AND unbinds; a session whose feed is evicted OR whose retune never returns a drive emits and tears down; redirect + cdn-only need no server)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

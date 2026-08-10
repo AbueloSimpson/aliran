@@ -216,7 +216,11 @@ export interface CastOptions {
    * with a path, query or userinfo in it is rejected rather than parsed.
    *
    * An IPv4 literal this device actually owns is ALSO what the server binds to. Anything
-   * else (a hostname, a NAT address) falls back to a 0.0.0.0 bind.
+   * else (a hostname, a NAT address) falls back to a 0.0.0.0 bind — that fallback belongs to
+   * THIS option only. An auto-detected address the device has lost by the time the server
+   * binds (a Wi-Fi handoff or VPN toggle while the feed opened) makes startCast() reject
+   * instead: the URL would not have worked anyway, and widening the bind for a dead address
+   * is the one thing worse than failing.
    */
   advertiseHost?: string
   /**
@@ -234,6 +238,11 @@ export interface CastOptions {
    *
    * ⚠ A multi-room GROUP fetches media from each member, not through the device the sender
    * launched on. Pass every member's address, or leave the pin off for groups.
+   *
+   * ⚠ An EMPTY array throws — it is not a way to say "unpinned". Omit the option for that.
+   * Building this list from a group lookup that came back empty is the realistic way to ask
+   * for a pin and name nothing, and a session that silently served every peer while the
+   * caller believed it was pinned is the worst possible answer to it.
    */
   receiverHost?: string | string[]
   /**
@@ -339,11 +348,12 @@ export interface PlayerEvents {
   'feed-changed': [info: { streamId: string; feedKey: string; url: string }]
   /**
    * The cast session ended ON ITS OWN — the pinned feed was purged by the tune ladder
-   * ('feed-evicted') or closed by a retune a zap abandoned ('retune-abandoned'). The
-   * server is closed and the token is dead; stop showing "Casting". stopCast() does NOT
-   * emit this — the caller that asked for the stop already knows.
+   * ('feed-evicted'), closed by a retune a zap abandoned ('retune-abandoned'), or closed by
+   * a retune whose re-open then failed or never landed ('retune-failed'). The server is
+   * closed and the token is dead; stop showing "Casting". stopCast() does NOT emit this —
+   * the caller that asked for the stop already knows.
    */
-  cast: [info: { state: 'ended'; streamId: string; reason: 'feed-evicted' | 'retune-abandoned' }]
+  cast: [info: { state: 'ended'; streamId: string; reason: 'feed-evicted' | 'retune-abandoned' | 'retune-failed' }]
   /** Smooth-zapping lifecycle: {enabled} echoes a toggle; {state,reason} the adaptive gate. */
   'zap-prefetch': [info: { enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }]
   /** setUploadPolicy() applied: how many topic joins were flipped live. */

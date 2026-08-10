@@ -441,13 +441,38 @@ function isIPv4Literal (s) {
 // normalised or the pin below silently never matches. (Not a general IPv6 canonicaliser —
 // receiver pinning is an exact-address check between two values that come from the same
 // LAN, and anything it cannot normalise simply fails to match, which is the safe direction.)
+//
+// IPv4-mapped addresses have THREE spellings for the same host and all of them are folded,
+// because a v4 pin that meets an unfolded one does not error — it silently never matches:
+//
+//   ::ffff:192.168.1.5           what node:net and bare-tcp actually report, and the only
+//                                one reachable from a socket today
+//   0:0:0:0:0:ffff:192.168.1.5   the uncompressed form — a hand-written receiverHost
+//   ::ffff:c0a8:0105             the hex form RFC 4291 also permits
+//
+// The last two are unreachable from a remoteAddress on either runtime; they are folded for
+// the value the HOST supplies, where a plausible spelling that quietly pins nothing is the
+// same failure this whole normaliser exists to prevent. The fold is exact rather than
+// permissive: only ::ffff:0:0/96 (which is by definition v4-mapped) matches, so ::ffff:0:c0a8:105
+// — IPv4-TRANSLATED, a different block — is left alone rather than mistaken for it.
+const V4_MAPPED_RE = /^(?:::|(?:0{1,4}:){5})ffff:(.+)$/
+const V4_MAPPED_HEX_RE = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
 function normalizePeer (addr) {
   if (typeof addr !== 'string' || !addr) return null
   let s = addr.trim().toLowerCase()
   if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1)
   const zone = s.indexOf('%')
   if (zone > 0) s = s.slice(0, zone)
-  if (s.startsWith('::ffff:') && isIPv4Literal(s.slice(7))) s = s.slice(7)
+  const mapped = V4_MAPPED_RE.exec(s)
+  if (mapped) {
+    const tail = mapped[1]
+    const hex = V4_MAPPED_HEX_RE.exec(tail)
+    if (isIPv4Literal(tail)) s = tail
+    else if (hex) {
+      const n = (parseInt(hex[1], 16) * 65536) + parseInt(hex[2], 16)
+      s = [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.')
+    }
+  }
   return s || null
 }
 
@@ -472,10 +497,20 @@ function isCastHost (s) {
 // through the device the sender launched on — a host that casts to a group must pass every
 // member's address, or leave the pin off. That is also why this option is opt-in and unset
 // by default: WP4 does not speak the Cast protocol and cannot discover any of this itself.
+//
+// ⚠ AN EMPTY ARRAY THROWS. Every other bad value here fails closed — '', 0, false, 'tv.local',
+// '192.168.1.5:8009', ['1234'] and [{}] all reject on the call — but `[]` used to return null,
+// and null means UNPINNED. So the one input that says "pin this session" and names nothing was
+// also the one that silently served every peer, while the host's own code believed it had
+// pinned. The way to get there is not exotic: a host building a multi-room group's member list
+// from a lookup that came back empty (a member offline, an API hiccup, the group not joined
+// yet) — precisely the case the pin exists for. Omitting the option is how you ask for no pin.
 function normalizeReceivers (v) {
   if (v == null) return null
   const list = Array.isArray(v) ? v : [v]
-  if (!list.length) return null
+  if (!list.length) {
+    throw new Error('receiverHost must be an IP address, or an array of them (got an empty array — omit receiverHost to leave the session unpinned)')
+  }
   const out = []
   for (const raw of list) {
     const n = normalizePeer(typeof raw === 'string' ? raw : '')
@@ -623,7 +658,7 @@ export class AliranPlayer extends Emitter {
 
   // Every engine event passes through here, so the breadcrumb ring is fed AT the emit
   // sites — all of them, including ones added later — instead of by a dozen hand-placed
-  // calls that a future edit would forget. Only the five diagnostic events are recorded:
+  // calls that a future edit would forget. Only the diagnostic events are recorded:
   // 'peers' and 'streams' fire on a timer / on every catalog edit and would flush the
   // ring of everything that matters, so 'peers' is sampled into _lastPeers instead.
   // Recording can never affect delivery — a bad detail must not swallow an 'error'.
@@ -644,6 +679,17 @@ export class AliranPlayer extends Emitter {
         return this._recordEvent('fallback', `${arg && arg.streamId} (${arg && arg.reason})`)
       case 'source-changed':
         return this._recordEvent('source-changed', `${arg && arg.streamId} -> ${arg && arg.source}`)
+      // A cast that ended ON ITS OWN. "The TV stopped and I do not know why" is a report an
+      // operator gets, and without this the only trace of the cause was a 'cast' event the
+      // host app consumed and dropped — nothing reached the ring, so the report looked like
+      // a normal viewing session.
+      //
+      // ⚠ state + streamId + reason ONLY, listed one field at a time. The ring leaves this
+      // device inside a problem report, and a cast session's url and token must never ride
+      // along on one. _endCast's payload deliberately carries neither, and this case must
+      // stay narrow enough that adding a field to that payload later cannot change it.
+      case 'cast':
+        return this._recordEvent('cast', `${arg && arg.state} ${arg && arg.streamId} (${arg && arg.reason})`)
     }
   }
 
@@ -1311,7 +1357,10 @@ export class AliranPlayer extends Emitter {
    *                  host of a URL that carries the session token. An IPv4 literal that
    *                  is one of this device's own addresses is also what the server binds
    *                  to; anything else (a hostname, a NAT address) falls back to a
-   *                  0.0.0.0 bind, which is then the host's explicit choice.
+   *                  0.0.0.0 bind, which is then the host's explicit choice. That fallback
+   *                  is this option's alone: an AUTO-picked address the device has lost by
+   *                  bind time (the network moved while the feed opened) REJECTS instead of
+   *                  widening — see _bindAddress.
    *   receiverHost   OPT-IN receiver pin: an IP address (or an array of them) that is the
    *                  ONLY peer this session serves — everything else 404s, identically to
    *                  a wrong token. Off by default. It exists because the token is NOT the
@@ -1322,7 +1371,8 @@ export class AliranPlayer extends Emitter {
    *                  WP4 cannot discover the address itself (the engine does not speak the
    *                  Cast protocol) — the host passes it once it knows which device it
    *                  launched on. ⚠ A multi-room GROUP fetches from each member, so pass
-   *                  every member's address or leave the pin off.
+   *                  every member's address or leave the pin off. ⚠ An EMPTY array throws:
+   *                  asking for a pin and naming nothing must not quietly serve everyone.
    *   readIdleMs     stalled-read abort window for THIS session (default
    *                  CAST_READ_IDLE_MS); 0 disables it.
    *   reclaim        opt the cast handler INTO expired-block reclaim (default off — see
@@ -1449,14 +1499,19 @@ export class AliranPlayer extends Emitter {
     this._castFeedKey = cacheKey // pin: _trimFeeds must not purge it mid-cast
     let port
     try {
-      // `host` is passed so the bind can be narrowed to it (see _startCastServer). The
-      // handler needs no session handed to it: it resolves this._cast per request, and
+      // `host` is passed so the bind can be narrowed to it, and `candidates !== undefined`
+      // says the address was AUTO-PICKED rather than supplied — which decides whether a
+      // no-longer-owned address may widen the bind to 0.0.0.0 or must fail (see
+      // _startCastServer). The pick happened before the feed opened, i.e. up to 2×
+      // tune.timeoutMs ago, which is long enough for the network to have moved.
+      //
+      // The handler needs no session handed to it: it resolves this._cast per request, and
       // this._cast is published below, after the bind — a socket that is listening but has
       // no session simply 404s everything, which is the correct answer for that instant.
       port = await this._startCastServer({
         readIdleMs: Number.isFinite(readIdleMs) && readIdleMs >= 0 ? readIdleMs : CAST_READ_IDLE_MS,
         reclaim: reclaim === true
-      }, host)
+      }, host, picked.candidates !== undefined)
     } catch (err) {
       await this._doStopCast() // never leave a pinned feed (or a half-built server) behind a failed bind
       throw err
@@ -1506,6 +1561,12 @@ export class AliranPlayer extends Emitter {
       // caller of _endCast. Tearing down the session that REPLACED the dead one would turn
       // a self-heal into a bug that kills the cast the host just asked for.
       if (this._cast !== dying) return
+      // …and it must still be the DEAD session. Every caller nulls cast.drive immediately
+      // before calling this; a drive back on it means something RE-POINTED the session while
+      // this waited its turn (a rotation follow, or a retune that landed just after the
+      // guard gave up on it). That session recovered — ending it would be the same "kill the
+      // cast the host is watching" bug the identity check above exists to prevent.
+      if (dying.drive) return
       return this._doStopCast().then((ended) => {
         if (ended) this.emit('cast', { state: 'ended', streamId: dying.streamId, reason })
       })
@@ -1595,11 +1656,19 @@ export class AliranPlayer extends Emitter {
     })
     // Only report when the port really may still be held. `listening` is honest on Node
     // (false after close() = the port is already free and only the drain callback is
-    // outstanding, which is not worth an event) and permanently true on Bare, where a
+    // outstanding, which is not worth recording) and permanently true on Bare, where a
     // close that did not settle DOES mean still bound — so the two runtimes land on the
     // right answer through the same expression.
+    //
+    // Into the BREADCRUMB RING, not 'error'. 'error' is the friendly host-UI channel — the
+    // strings on it are written for a viewer to read and act on ("switch to it again to
+    // retry") — and a viewer who just pressed Stop cannot do anything with a port-release
+    // diagnostic, nor should they see one. It is real operator evidence, though (a lingering
+    // off-loopback listener is the exact surface this feature promised to close), so it goes
+    // where operator evidence goes: the ring that rides along on a problem report. Silence
+    // was the one option ruled out; the earlier code chose the loudest instead.
     if (!closed && server.listening !== false) {
-      this.emit('error', new Error(`cast server did not release its port within ${CAST_CLOSE_MS}ms — a wedged connection may be holding the LAN listener open`))
+      this._recordEvent('cast-close', `port not released within ${CAST_CLOSE_MS}ms — a wedged connection may still hold the LAN listener`)
     }
     return closed
   }
@@ -1641,8 +1710,17 @@ export class AliranPlayer extends Emitter {
   // The fallback stays 0.0.0.0 for an `advertiseHost` we cannot bind — a hostname, or a
   // NAT/forwarded address that belongs to a router rather than to us. That is the host
   // explicitly asking to be reachable at a name this device does not own, so a wide bind is
-  // the only thing that can honour it, and it is a choice the caller made, not a default.
-  async _startCastServer (handlerOpts, host) {
+  // the only thing that can honour it, and it is a choice the caller made.
+  //
+  // ⚠ It is a choice ONLY on that path, which an earlier version of this comment got wrong by
+  // claiming it for both. An AUTO-PICKED address (`mustOwn`) nobody chose: _lanAddress() runs
+  // before the feed opens and _bindAddress re-enumerates after it, up to 2× tune.timeoutMs
+  // later, so a Wi-Fi handoff, a VPN toggle or a DHCP change in that window means the device
+  // no longer owns the address the URL is about to advertise — and widening to 0.0.0.0 there
+  // would answer on every interface for an address that is already dead. Failing is both
+  // safer and more useful (the URL would not have worked anyway), and the two cases are
+  // already distinguishable: only the auto-pick reports `candidates`.
+  async _startCastServer (handlerOpts, host, mustOwn = false) {
     const server = this._http.createServer(this._castRequestHandler(handlerOpts))
     server.on('error', () => {}) // a socket-level server error must never throw into the host
     const sockets = new Set()
@@ -1655,7 +1733,7 @@ export class AliranPlayer extends Emitter {
     // _doStopCast had nothing to find. It is the one error path the teardown did not cover.
     this._castServer = server
     this._castSockets = sockets
-    const bind = this._bindAddress(host)
+    const bind = this._bindAddress(host, mustOwn)
     await new Promise((resolve, reject) => {
       let done = false
       server.once('error', (err) => { if (!done) { done = true; reject(err) } })
@@ -1667,17 +1745,26 @@ export class AliranPlayer extends Emitter {
   // What to bind() for an advertised host: the address itself when this device owns it,
   // 0.0.0.0 otherwise. Loopback literals count as owned (the lane casts to 127.0.0.1),
   // which is why this checks every address including the internal ones.
-  _bindAddress (host) {
-    if (!isIPv4Literal(host)) return '0.0.0.0' // a hostname or an IPv6 literal — not ours to bind
-    let ifaces = null
-    try { ifaces = this._os && this._os.networkInterfaces() } catch {}
-    if (!ifaces) return host.startsWith('127.') ? host : '0.0.0.0'
-    for (const list of Object.values(ifaces)) {
-      for (const a of list || []) {
-        if (a && a.address === host) return host
+  //
+  // mustOwn = the address was AUTO-PICKED, not supplied. Then "otherwise" is not a fallback,
+  // it is a stale pick — refuse instead of widening (see _startCastServer).
+  _bindAddress (host, mustOwn = false) {
+    if (isIPv4Literal(host)) {
+      let ifaces = null
+      try { ifaces = this._os && this._os.networkInterfaces() } catch {}
+      for (const list of Object.values(ifaces || {})) {
+        for (const a of list || []) {
+          if (a && a.address === host) return host
+        }
       }
+      if (host.startsWith('127.')) return host // always ours, even with no `os` to ask
     }
-    return host.startsWith('127.') ? host : '0.0.0.0'
+    if (mustOwn) {
+      // Only reachable for an address _lanAddress() DID enumerate a moment ago, so this is
+      // the network moving under the session, not a bad input.
+      throw new Error(`this device no longer has the LAN address ${host} — the network changed while the feed opened (Wi-Fi handoff, VPN, a new lease). Start the cast again, or pass { advertiseHost }.`)
+    }
+    return '0.0.0.0' // a hostname, an IPv6 literal, or a NAT address — not ours to bind
   }
 
   // Cast request handler: a SECOND createDriveHandler instance whose resolveTarget serves
@@ -2426,7 +2513,33 @@ export class AliranPlayer extends Emitter {
       if (castUnpointed) this._endCast('retune-abandoned')
       return
     }
-    const feed = await this._openFeed(a.feedKey, keys.encryptionKey)
+    // The reopen below is UNBOUNDED on purpose (see the note above this function), and a
+    // cast whose drive was just dropped holds null until it lands. If that open REJECTS the
+    // only caller is `.catch(() => {})`; if it never settles — the likelier of the two —
+    // nothing downstream runs at all. Either way castUnpointed was consumed only on the
+    // branch above, so the session sat there with no drive, 404ing behind a bound socket,
+    // with nothing left to end it: the same zombie shape this path was rewritten to remove,
+    // in the same function. The tune watchdog does not cover it either — its last rung calls
+    // _evictFeed on a cache entry this function already deleted, and _evictFeed's own
+    // _endCast rides the OLD open settling. So the CAST gets its own bound here. The
+    // RETUNE's wait is unchanged: a slow reopen still recovers the tune when it lands.
+    const stranded = castUnpointed ? this._cast : null
+    let castGuard = null
+    if (stranded) {
+      castGuard = setTimeout(() => {
+        if (this._cast === stranded && !stranded.drive) this._endCast('retune-failed')
+      }, this._tune.timeoutMs)
+      castGuard.unref?.() // diagnostics must never hold a host process open
+    }
+    let feed
+    try {
+      feed = await this._openFeed(a.feedKey, keys.encryptionKey)
+    } catch (err) {
+      if (castGuard) clearTimeout(castGuard)
+      if (stranded && this._cast === stranded && !stranded.drive) this._endCast('retune-failed')
+      throw err
+    }
+    if (castGuard) clearTimeout(castGuard)
     // Re-point the cast BEFORE the _active check below. A cast is pinned to the CHANNEL,
     // and whether the phone zapped away during the reopen has nothing to do with whether
     // this channel's feed is now open again — doing it after the check is what left a

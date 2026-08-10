@@ -100,7 +100,10 @@ export function contentType (p) {
 export const THUMB_PATH = '/thumb.jpg'
 
 // CORS headers for the LAN-scoped cast server (sdk/player.js startCast). OPT-IN — the
-// loopback server leaves `cors` unset and its responses stay byte-identical to before.
+// loopback server leaves `cors` unset, so not one CORS header appears on any response of
+// its own. That is the whole of what this option changes. (It is NOT the whole of what the
+// cast work changed on loopback: the method gate below is shared and does apply there. The
+// precise claim lives with it — "loopback byte-for-byte unchanged" is the overstated form.)
 //
 // Measured, not assumed (WP0 cast trial against a TCL Terraza, CrKey/1.56.500000
 // DeviceType/AndroidTV, on the stock Default Media Receiver CC1AD845): an http:// LAN URL
@@ -437,6 +440,19 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       // — but it contradicted the Allow-Methods this same server advertises, and a media
       // server that answers every verb is surface with no reason to exist. RFC 9110
       // requires the Allow header on a 405, and it is the same list the preflight sends.
+      //
+      // ⚠ THIS GATE IS SHARED and it sits BEFORE resolveTarget, so it applies to every
+      // consumer of this factory — the SDK's LOOPBACK media server and the tools/lane drive
+      // server (tools/lib/serve-drive.js), not just the cast server it was added for. On
+      // loopback that is the one thing the cast work changed. Precisely: GET/HEAD responses
+      // are unchanged; a POST/DELETE/TRACE that used to fall through and be served as a GET
+      // now answers 405. (The repeater is NOT a consumer — its opt-in status server is a
+      // separate http.createServer carrying a GET-only gate of its own.) Inert for
+      // everything that ships — every non-GET verb in this repo is aimed at a panel /
+      // broadcaster / reseller admin API, the RN, Android, desktop and client trees issue
+      // GET only (no HttpURLConnection or OkHttp anywhere in the Android sources), and the
+      // serve, reclaim, epg-p2p and assets lanes pass. But inert is not "byte-for-byte
+      // unchanged", and the sentence above is the version that is true.
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         res.writeHead(405, { ...cors, Allow: cfg.cors ? 'GET, HEAD, OPTIONS' : 'GET, HEAD' })
         return res.end('method not allowed')
