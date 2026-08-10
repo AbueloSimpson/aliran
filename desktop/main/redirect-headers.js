@@ -14,9 +14,15 @@
 // ONE LISTENER PER EVENT PER SESSION. Electron allows a single onBeforeSendHeaders and
 // a single onHeadersReceived handler per session; a second registration REPLACES the
 // first. So we register ONCE, at app-ready, with the broad ['http://*/*','https://*/*']
-// filter and gate inside the callback against the active rule. A broad filter (rather
-// than a narrow per-origin one that we'd have to re-register on every tune) also means
-// the handler survives provider 302s and cross-host segment URLs without any churn.
+// filter and gate inside the callback against the active rule, rather than a narrow
+// per-origin one we'd have to re-register on every tune. NOTE the filter breadth is not
+// the same as injection breadth: injection is gated to the redirect url's OWN origin
+// (active.origins, one origin per rule), so a provider that serves its HLS segments from
+// a DIFFERENT host than the playlist — or 302s to one — gets no headers on those
+// cross-host requests and they 403. react-native-video applies source.headers to every
+// request regardless of host, so such a provider works on phone but not desktop. This is
+// the deferred multi-origin risk (mitigation: grow active.origins from onBeforeRedirect);
+// verify a real playlist's segment hosts before relying on desktop for it.
 //
 // THE 127.0.0.1 HARD EXCLUSION. The SDK serves P2P playback and channel art from its
 // own localhost HLS/art server on 127.0.0.1. That server must NEVER receive a provider's

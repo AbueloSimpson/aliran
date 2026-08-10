@@ -87,14 +87,45 @@ PATCH /api/streams/promo  {"url":""}                                            
   remote art URLs. Use your CDN's tokenized or signed URLs if the link must not
   be shareable.
 
+### Playback headers (hotlink-protected URLs)
+
+Some providers protect a direct URL against hotlinking. They serve it only when
+the player sends a matching **Referer**, **Origin**, or **User-Agent**. A redirect
+channel can carry these as playback `headers`, and the player sends them with every
+request for the URL.
+
+```bash
+PATCH /api/streams/event-1 {"url":"https://provider.example/e1.m3u8","headers":{"referer":"https://provider.example/","user-agent":"Mozilla/5.0"}}
+```
+
+- Only three keys are allowed: `referer`, `origin`, and `user-agent` (the `referrer`
+  spelling is accepted and folded onto `referer`). These are exactly the "forbidden"
+  headers a player cannot set for itself, which is why the catalog carries them. Any
+  other key is refused, so no `Authorization` or `Cookie` can be smuggled to every
+  viewer's player.
+- Keys are stored in lower case. Each value is at most 1024 characters and must not
+  contain line breaks or other control characters.
+- **Headers need a url.** A record with headers but no url is refused, and clearing
+  the url clears the headers. The dashboard's Add stream / Edit metadata dialogs hold
+  the three header fields; leave a field blank to leave that header unset.
+- **Playback support.** The desktop app sets these headers in its main process (the
+  browser engine cannot set them from the page), and patches the response so the
+  cross-origin fetch is allowed. The phone app hands them to its player. **The
+  `aliran-kit` Kotlin binding does not send them yet**, so a header-protected channel
+  returns `403` on that binding until a later change. See
+  [the SDK reference](sdk.md#redirect-channel-headers).
+
 ## Remote channel sources (provider feeds)
 
-A **source** pulls a provider-prepared JSON of channels from a URL on a schedule
-and materializes it as a **category of [redirect channels](#redirect-channels-cdn-link)**.
+A **source** pulls a provider channel list from a URL on a schedule and
+materializes it as a **category of [redirect channels](#redirect-channels-cdn-link)**.
 One admin action turns a curated list — say, an anime lineup — into a rail of
-playable channels, kept in sync daily. P2P channels tagged with the same
-`category` share the rail; the category field is ordinary catalog metadata
+playable channels, kept in sync on the source's schedule. P2P channels tagged with
+the same `category` share the rail; the category field is ordinary catalog metadata
 either way.
+
+A source has a **`format`**: `json` (the default, below) or `m3u` (a standard
+playlist — see [Playlist (M3U) sources](#playlist-m3u-sources)).
 
 ```bash
 # dashboard: Sources tab → Add (name, feed URL, category label) — the add auto-syncs
@@ -103,6 +134,12 @@ POST  /api/sources/anime/sync    # pull + diff + grant NOW (also: dashboard "Syn
 PATCH /api/sources/anime         {"intervalMs": 43200000}         # any field; enabled:false pauses the schedule
 DELETE /api/sources/anime        # purges its channels; ?keepChannels=1 detaches them instead
 ```
+
+The scheduler scans due sources every 5 minutes (`SOURCES_TICK_MS` — a cheap
+due-check, not a fetch), so a sub-hour `intervalMs` works with no extra tuning. The
+default per source is daily; set `intervalMs` per source (for example, 30 minutes for
+a token-rotating event playlist). A rotated URL reaches a viewer on the next tune,
+with no re-login.
 
 **Feed format** — `{"channels": [...]}` (or a bare array), one object per channel.
 [`docs/demo/channels.json`](demo/channels.json) is a complete example. The
@@ -127,6 +164,45 @@ The position in the array sets the curation `order`, and the panel ignores an
 `order` field in the entry. **You own the category label**, which you set on the
 source. The panel ignores category strings in the feed, so a provider never names
 your rails. The panel also ignores all other fields.
+
+### Playlist (M3U) sources
+
+Set `format: 'm3u'` (dashboard source dialog, `--format m3u` on the CLI, or `format`
+in the API/MCP) to import a standard `#EXTM3U` playlist — the shape almost every IPTV
+provider hands out. Each entry becomes a redirect channel, the same as a JSON source,
+with these differences:
+
+```bash
+POST /api/sources {"name":"events","url":"https://provider.example/live.m3u8","format":"m3u","category":"Live Events","groups":["Live Events"]}
+```
+
+- **Playback headers.** `#EXTVLCOPT:http-referrer`, `http-origin`, and
+  `http-user-agent` lines import as the channel's playback
+  [`headers`](#playback-headers-hotlink-protected-urls). One bad header line drops
+  that one header, never the channel.
+- **Channel ids are name-slugs.** Playlist `tvg-id`s are routinely dummy values, so
+  the id is a slug of the display name (prefix + slug, 64 characters at most, with
+  `-2`/`-3` on a clash). A retitled event becomes a new id — this is normal for
+  live-event lists, and the prune-and-grant machinery handles the churn.
+- **No program guide.** A playlist is not an EPG, so `epgUrl`/`epgId` stay unset. Set
+  them by hand on a channel if you have a compatible guide (see EPG below).
+- **Group filter.** `groups` selects which `group-title`s this source takes. It is a
+  list (or a comma-separated string), matched case-insensitive and exact. Leave it
+  empty (or unset) to take every group. Filtered entries are not errors — the sync
+  report counts them separately as `filtered`.
+
+**Mixed playlists (one URL, many categories).** A provider list often mixes event
+entries with regular channels that belong in different rails. Add **one source per
+group set, all over the same playlist URL**, each with its own `groups`, `category`,
+and `prefix`:
+
+```bash
+POST /api/sources {"name":"events","url":"https://provider.example/all.m3u8","format":"m3u","groups":["Live Events"],"category":"Live Events","prefix":"ev."}
+POST /api/sources {"name":"sports","url":"https://provider.example/all.m3u8","format":"m3u","groups":["Sports"],"category":"Sports","prefix":"sp."}
+```
+
+Ids stay disjoint by prefix, so the sources never collide; each one syncs and prunes
+on its own; and the shared ETag keeps the extra fetches cheap.
 
 **Sync policy:**
 

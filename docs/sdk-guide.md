@@ -430,7 +430,7 @@ for (let i = 0; ; i++) {
 
 ```js
 const r = await player.resolve(streamId)
-// r = { url, source: 'p2p' | 'cdn', localUrl?, port?, feedKey, type: 'live' | 'vod', durationSec? }
+// r = { url, source: 'p2p' | 'cdn', localUrl?, port?, feedKey, headers?, type: 'live' | 'vod', durationSec? }
 ```
 
 - **P2P stream** → `source: 'p2p'`, `url` = `localUrl` =
@@ -452,7 +452,15 @@ const r = await player.resolve(streamId)
 - **Redirect channel** → `source: 'cdn'`, `url` is the operator's remote
   URL **verbatim**, `localUrl`/`port` are `undefined`, `feedKey` is
   `null`. There is no feed, no swarm join, and no watchdogs —
-  remote-URL errors belong to the host player.
+  remote-URL errors belong to the host player. A hotlink-protected channel
+  also returns `headers` (a lower-cased subset of `referer` / `origin` /
+  `user-agent`) that the host player **must** send with every request for
+  `url`, or the provider answers `403`. `headers` is `undefined` on every
+  other branch and on redirect channels that need none. The value is live:
+  a source refresh that rotates the URL and its headers reaches the viewer
+  on the next tune, with no re-login. The RN player and the desktop app do
+  this for you; a custom host must forward them (the `aliran-kit` Kotlin
+  binding does not yet — see [the SDK reference](sdk.md#redirect-channel-headers)).
 - **Not entitled** → throws `not entitled to <id>`.
 - **Entitled but no broadcaster feeding it** (`feedKey` null in the
   catalog) → throws `channel is not broadcasting right now` (for vod:

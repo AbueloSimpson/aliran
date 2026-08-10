@@ -18,6 +18,31 @@ phone + Android TV, and the Windows desktop player).
 
 ### Added
 
+- **M3U playlist sources + redirect-channel playback headers — carry
+  hotlink-protected, token-rotating provider lists (e.g. live-event playlists).**
+  A remote source now takes a `format`: `json` (unchanged) or `m3u`, a standard
+  playlist parsed dependency-free (`#EXTINF` attributes, `#EXTVLCOPT`
+  referrer/origin/user-agent lines, `#EXTGRP`). M3U entries become redirect
+  channels with name-slug ids (playlist `tvg-id`s are routinely dummies), no EPG
+  pointers (a playlist is not a guide), and an optional `groups` filter
+  (case-insensitive exact `group-title` match; the sync report counts `filtered`
+  entries honestly). A mixed-category playlist is handled with no new code: add N
+  sources over the same URL, each with disjoint `groups`, its own `category`, and
+  its own `prefix`. Redirect channels — imported or manual — gain a `headers`
+  field (strict `referer`/`origin`/`user-agent` allowlist, lower-cased, CR/LF
+  refused, headers-without-url refused) that rides login → `resolve()` and reaches
+  a viewer on the next tune, so a rotated token URL needs no re-login. The
+  **React Native** player passes them to `react-native-video`; the **desktop** app
+  injects them from its main process (hls.js cannot set forbidden headers) and
+  patches `Access-Control-Allow-Origin`. The scheduler tick default drops to
+  5 minutes so a sub-hour per-source `intervalMs` (a 30-minute event refresh) works
+  out of the box. Surfaced across admin UI/CLI, `panel_add_source`/`panel_set_source`,
+  and `panel_add_stream`/`panel_set_stream_meta`. **Known gap:** the
+  `sdk/android/aliran-kit` Kotlin binding does not send redirect headers yet, so
+  header-protected channels `403` there until a follow-up. See
+  [content-management.md](docs/content-management.md#playlist-m3u-sources) and
+  [sdk.md](docs/sdk.md#redirect-channel-headers).
+
 - **Live channel thumbnails — a rolling preview frame in every channel's feed
   drive.** The broadcaster's ffmpeg writes a ~320px JPEG (`/thumb.jpg`) beside the
   segments every `THUMB_INTERVAL_SECONDS` (default 30); each refresh replaces the

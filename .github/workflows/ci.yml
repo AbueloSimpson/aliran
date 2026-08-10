@@ -124,6 +124,13 @@ jobs:
       # `restricted` channel and a viewer who was never meant to see it.
       - name: Desktop parental controls (test:desktop-parental)
         run: npm run test:desktop-parental
+      # Desktop redirect-channel header injection (live-events M3U, Part C): the pure
+      # logic behind the main-process webRequest rules — origin-gated Referer/Origin/
+      # User-Agent injection, the 127.0.0.1 hard exclusion, and the ACAO patch. No
+      # Electron, no network. This is the only automated guard on the forbidden-header
+      # injection path that puts a provider identity on the wire, so it must not drift.
+      - name: Desktop redirect headers (test:desktop-redirect-headers)
+        run: npm run test:desktop-redirect-headers
       # Viewer translation catalogs (S56a): key/placeholder/plural parity across the
       # 14 locales, the report-copy pins against the never-touch label table, and a
       # scan proving no t()/tn() call site names a key that does not exist. Reads

@@ -57,9 +57,10 @@ player.on('peers', (n) => console.log(n, 'peers'))
 
 await player.connect()                          // join the panel topic over the DHT
 const streams = await player.login(user, pass)  // OPRF login → entitled display list
-const { url, source } = await player.resolve(streams[0].id)
+const { url, source, headers } = await player.resolve(streams[0].id)
 // source 'p2p'  → url is a localhost HLS playlist served from the replicating feed
 // source 'cdn'  → a redirect channel: play the operator's remote URL directly
+//                 (headers, if present, MUST be sent with every request for url)
 ```
 
 Point `ffplay`, VLC, hls.js, or ExoPlayer — anything that plays HLS — at
@@ -126,7 +127,12 @@ native code of its own.
   URL (`feed-changed` tells the host to reload the player).
 - **Redirect channels.** Catalog entries that play an operator's CDN URL
   instead of a P2P feed ([content management](content-management.md)).
-  `resolve()` returns the URL verbatim with `source: 'cdn'`.
+  `resolve()` returns the URL verbatim with `source: 'cdn'`. A hotlink-protected
+  channel also returns `headers` (Referer / Origin / User-Agent) that the host
+  player **must** send with the URL — the desktop app and the React Native player
+  do this for you. **Custom bindings must forward them, or the URL returns `403`;**
+  the `aliran-kit` Kotlin binding does not send them yet (see [Redirect-channel
+  headers](#redirect-channel-headers)).
 - **Tune self-heal.** Timeouts escalate from cache eviction to
   peer-connection teardown before the engine surfaces a friendly error.
 - **Zap latency.** Progressive serving, playlist read-ahead, optional
@@ -145,6 +151,35 @@ native code of its own.
 The full option/event reference is the
 [package README](https://github.com/AbueloSimpson/aliran/tree/main/sdk) and its
 `index.d.ts`.
+
+## Redirect-channel headers
+
+A hotlink-protected redirect channel needs the player to send a **Referer**,
+**Origin**, or **User-Agent** with every request for its URL. When the catalog
+carries these, `resolve()` returns them:
+
+```js
+const { url, source, headers } = await player.resolve(id)
+// source: 'cdn', headers: { referer, origin, 'user-agent' } | undefined
+```
+
+- Only the redirect (`'cdn'`) branch ever returns `headers`. P2P and hybrid-CDN
+  URLs never carry provider headers, and localhost URLs never receive them.
+- The keys are always lower case, a subset of `referer` / `origin` / `user-agent`.
+- The value is live: a source refresh that rotates the URL and its headers reaches
+  the viewer on the **next tune**, with no re-login.
+
+The **React Native** player passes them to `react-native-video`
+(`source.headers`), and remounts on a headers-only change so the recovery
+watchdogs stay armed. The **desktop** app injects them in the main process (the
+browser engine forbids setting these headers from the page) and patches the CORS
+response so the cross-origin fetch is allowed — no renderer-side code needed.
+
+**A custom host player must send these headers itself.** A `'cdn'` tune whose
+`headers` you ignore returns `403` from a hotlink-protected provider. This is a
+known gap in the `sdk/android/aliran-kit` Kotlin binding: it does **not** forward
+redirect headers yet, so header-protected channels `403` there until a follow-up
+change. Header-free redirect channels are unaffected on every binding.
 
 ## Partial adoption
 

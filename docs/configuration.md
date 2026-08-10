@@ -52,7 +52,7 @@ Every service shares two behaviors:
 | `REPORTS_WEBHOOK_URL` | *(empty)* | Webhook for ops notifications. One request body works for ntfy, Slack, and Discord. **This is a secret** — the credential lives in the URL path. Set it on the box by hand; never set it through the MCP. See [recipes](reports.md#enabling-notifications). |
 | `REPORTS_TELEGRAM_BOT_TOKEN` / `REPORTS_TELEGRAM_CHAT_ID` | *(empty)* | Telegram bot target. Set both, or neither. **The token is a secret.** |
 | `SOURCES_SYNC_INTERVAL_MS` | `86400000` | Default pull interval per source, in milliseconds (one day). Override per source with `intervalMs`. |
-| `SOURCES_TICK_MS` | `3600000` | How often the scheduler checks which sources are due for a pull. This is a check, not a fetch. |
+| `SOURCES_TICK_MS` | `300000` | How often the scheduler checks which sources are due for a pull. This is a check, not a fetch, so 5 minutes is cheap and it lets a sub-hour per-source `intervalMs` (for example, a 30-minute event playlist) work with no extra tuning. |
 | `SOURCES_BOOT_DELAY_MS` | `15000` | Delay before the first due-check after the panel boots. |
 | `SOURCES_FETCH_TIMEOUT_MS` | `30000` | HTTP timeout for one source pull. |
 | `SOURCES_MAX_BYTES` | `5242880` | Maximum feed size the panel accepts. Enforced while streaming the download. |
