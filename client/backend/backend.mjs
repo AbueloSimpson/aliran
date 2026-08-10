@@ -452,6 +452,19 @@ function playerFor (msg) {
   return ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy, msg.appVersion, msg.platform, msg.remote)
 }
 
+// The three one-word answers of a sign-in, which are all the same shape: run an engine
+// call that returns a boolean and answer with it, ALWAYS. A screen is blocked on each of
+// them, so the reply is not optional — and the call is guarded because an uncaught throw
+// in this IPC handler takes the whole app process down (see the Bare hooks at the top).
+// Anything other than a clean `true` answers false, which is the safe outcome for all
+// three: a refused PIN costs the viewer nothing, and a refused confirmation changes
+// nothing.
+function signinAck (msg, run) {
+  let ok = false
+  try { ok = !!player && run() === true } catch { ok = false }
+  send({ type: 'signin-ack', ok, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+}
+
 // --- IPC dispatch ---
 let buf = ''
 IPC.on('data', (data) => {
@@ -520,12 +533,12 @@ IPC.on('data', (data) => {
     } else if (msg.type === 'signin-submit-pin') {
       // TV role. ONE attempt by construction (sdk/signin-pair.js): a well-formed
       // submission is the only answer this handover ever sends, right or wrong. ok=false
-      // is the SAFE outcome — malformed, or nothing waiting — and costs the viewer
-      // nothing, so the screen may validate as the digits are typed.
-      send({ type: 'signin-ack', ok: !!player && typeof msg.pin === 'string' && player.submitSignInPin(msg.pin) === true, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+      // is the SAFE outcome — malformed, nothing waiting, or an engine that threw — and
+      // it costs the viewer nothing, so the screen may validate as the digits are typed.
+      signinAck(msg, () => typeof msg.pin === 'string' && player.submitSignInPin(msg.pin) === true)
     } else if (msg.type === 'signin-confirm-service') {
       // TV role. Anything but an explicit true refuses — and refusing changes nothing.
-      send({ type: 'signin-ack', ok: !!player && player.confirmSignInService(msg.ok === true) === true, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+      signinAck(msg, () => player.confirmSignInService(msg.ok === true) === true)
     } else if (msg.type === 'signin-cancel') {
       if (player) { try { player.cancelSignInPairing() } catch (err) { fail(err) } }
     } else if (msg.type === 'signin-send') {
@@ -546,7 +559,7 @@ IPC.on('data', (data) => {
       // PHONE role, and the single most important answer in the feature: false is what
       // stops a relay. It is never defaulted and never inferred here — only an explicit
       // true proceeds.
-      send({ type: 'signin-ack', ok: !!player && player.confirmSignInMatch(msg.ok === true) === true, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+      signinAck(msg, () => player.confirmSignInMatch(msg.ok === true) === true)
     } else if (msg.type === 'signin-send-cancel') {
       if (player) { try { player.cancelSendSignIn() } catch (err) { fail(err) } }
     } else if (msg.type === 'parental-verify' && typeof msg.pin === 'string') {
