@@ -86,6 +86,40 @@
 //                                        and its recent event breadcrumbs, and proves
 //                                        entitlement with the SESSION TOKEN — never a
 //                                        username. Always answered, never throws.
+//
+//   Phone -> TV sign-in handover (sdk/signin-pair.js). SEVEN messages, and every one of
+//   them that carries a value carries a LIVE SECRET for the next three minutes: the
+//   12-character code, the four compared digits and the four typed digits. Nothing on
+//   this path may be logged — the RN binding excludes the whole `signin-` family from
+//   its debug logger for exactly that reason.
+//        { type:'signin-start', ttlMs?, tag?, …engine opts }
+//                                     -> TV role: mint a code, announce its rendezvous
+//                                        and wait for a phone. Answers 'signin-started'.
+//                                        Carries the SAME engine option fields as the
+//                                        {panelPubKey} boot message, because a virgin
+//                                        device can start this BEFORE it has a panel —
+//                                        the handover is what teaches it one — and the
+//                                        engine that comes out of it must still be the
+//                                        one this build configured.
+//        { type:'signin-submit-pin', pin, tag? }   -> TV role: the four digits the
+//                                        viewer typed on the remote. ONE attempt: a
+//                                        well-formed submission is final, right or
+//                                        wrong. Answers 'signin-ack'.
+//        { type:'signin-confirm-service', ok, tag? }  -> TV role: the viewer's answer to
+//                                        the 'confirm-service' question (sign in as this
+//                                        account, and adopt this operator key).
+//                                        Answers 'signin-ack'.
+//        { type:'signin-cancel' }     -> TV role: abandon the code on screen. It is
+//                                        spent either way — a new one is the only way on.
+//        { type:'signin-send', code, tag? }        -> PHONE role: sign a TV in with the
+//                                        code it shows. Needs a live session AND a build
+//                                        that opted into remote.sendToTv. Answers
+//                                        'signin-sending'.
+//        { type:'signin-confirm-match', ok, tag? } -> PHONE role: the viewer's answer to
+//                                        "does the TV show these same four digits?".
+//                                        false ABORTS — it is the only check in the flow
+//                                        that sees a relay. Answers 'signin-ack'.
+//        { type:'signin-send-cancel' } -> PHONE role: abandon an in-flight send.
 //   out: { type:'ready' } | { type:'streams', streams, vod? }   (on login, and pushed
 //                                        again live whenever the panel edits the catalog
 //                                        — same shape; the Home screen re-renders on it.
@@ -139,6 +173,17 @@
 //        { type:'pair-result', ok, panelPubKey?, name?, code?, error?, message?, tag? }
 //          (answer to 'pair-resolve'; error 'malformed' | 'timeout' | 'unverified' —
 //          'unverified' means a peer answered and could NOT prove it owns the code)
+//        { type:'signin-pair', role, state, … }   (the handover's whole progress stream,
+//          relayed 1:1 from the engine — see sdk/player.js for the states and which of
+//          them are QUESTIONS the host must answer. Carries `code`, `sas` and `pin`:
+//          screen material and live secrets, never log material)
+//        { type:'signin-started', ok, code?, expiresAt?, error?, message?, tag? }
+//          (answer to 'signin-start'; the code also arrives as {state:'code'})
+//        { type:'signin-sending', ok, error?, message?, tag? }   (answer to 'signin-send';
+//          ok only means the rendezvous was JOINED — the outcome rides 'signin-pair')
+//        { type:'signin-ack', ok, tag? }   (answer to the three one-word answers:
+//          submit-pin / confirm-service / confirm-match. ok=false means the engine had
+//          nothing waiting for that answer, or the value was malformed)
 //
 // Prefs (S18): device-local "remember me" credentials (D1 — plaintext at rest inside
 // the app-private files dir, the stated tradeoff; sign-out clears them) + favorites
@@ -345,11 +390,17 @@ let connectedKey = null
 // deployment that ships uploadPolicy:'client-only' is never silently upgraded to reseed
 // by a Wi-Fi event.
 let basePolicy = 'reseed'
+// The operator key a TV sign-in is in the middle of ADOPTING, held between the
+// 'confirm-service' question and 'signed-in'. Without it `connectedKey` would still be
+// null after a virgin device adopted a service through the handover, and the next
+// {panelPubKey} for that same service would look like a service SWITCH — which replaces
+// the engine wholesale and would tear down the session the handover just established.
+let adoptingKey = null
 
-function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform) {
+function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform, remote) {
   if (player) return player
   if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, deviceId: ensureDeviceId(), appVersion, platform })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, remote, deviceId: ensureDeviceId(), appVersion, platform })
   player.on('ready', () => send({ type: 'ready' }))
   // `vod` (S53) rides the streams message only when the panel enabled a provider —
   // the field is absent otherwise, so the UI's "no VOD section" is the default.
@@ -371,10 +422,34 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   player.on('update-progress', (e) => send({ type: 'update-progress', ...e }))
   player.on('update-ready', (e) => send({ type: 'update-ready', ...e }))
   player.on('update-error', (e) => send({ type: 'update-error', ...e }))
+  // Phone -> TV sign-in: the whole progress stream, relayed 1:1. Three of its states are
+  // QUESTIONS and the exchange BLOCKS on each until the screens answer, so nothing here
+  // may filter, batch or reorder — a dropped 'match' is a viewer waiting for ever.
+  // Nothing is logged on this path either: `code`, `sas` and `pin` are live secrets.
+  player.on('signin-pair', (e) => {
+    if (e && e.state === 'confirm-service' && e.adopting === true && /^[0-9a-f]{64}$/.test(String(e.panelPubKey || ''))) {
+      adoptingKey = String(e.panelPubKey)
+    }
+    if (e && e.state === 'signed-in' && adoptingKey) { connectedKey = adoptingKey; adoptingKey = null }
+    if (e && e.state === 'failed') adoptingKey = null
+    send({ type: 'signin-pair', ...e })
+  })
   // Background engine failures with no caller to throw to — most importantly the tune
   // watchdog's timeout. Dropping these left the app spinning forever on a dead tune.
   player.on('error', (err) => send({ type: 'error', message: String((err && err.message) || err) }))
   return player
+}
+
+// The engine an IPC message asks for, built from the option fields that message carries.
+// TWO messages carry them: the {panelPubKey} boot and 'signin-start' — a TV that has
+// never been paired starts a sign-in with no panel at all, and the engine the handover
+// leaves behind has to be the one this build configured, not a bare default.
+// The persisted "Smooth zapping" choice (if the user ever set one) wins over the app's
+// compiled default in both.
+function playerFor (msg) {
+  const saved = readPrefs().smoothZapping
+  const zap = saved == null ? msg.zapPrefetch : saved
+  return ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy, msg.appVersion, msg.platform, msg.remote)
 }
 
 // --- IPC dispatch ---
@@ -428,6 +503,52 @@ IPC.on('data', (data) => {
       resolvePairingCode(msg.code)
         .then((s) => send({ type: 'pair-result', ok: true, panelPubKey: s.panelPubKey, name: s.name, code: s.code, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) }))
         .catch((err) => send({ type: 'pair-result', ok: false, error: err.code || 'failed', message: String((err && err.message) || err), ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) }))
+    } else if (msg.type === 'signin-start') {
+      // TV role. Answered ALWAYS: the screen is showing a spinner where the code goes,
+      // and the two ways this can fail — a second press while the first code is still
+      // being minted (~70 ms of Argon2id), and a stopped engine — both have to reach it.
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      let p = null
+      try { p = playerFor(msg) } catch (err) {
+        send({ type: 'signin-started', ok: false, message: String((err && err.message) || err), ...tag })
+      }
+      if (p) {
+        p.startSignInPairing({ ttlMs: msg.ttlMs })
+          .then((s) => send({ type: 'signin-started', ok: true, code: s.code, expiresAt: s.expiresAt, ...tag }))
+          .catch((err) => send({ type: 'signin-started', ok: false, ...(err && err.code ? { error: err.code } : {}), message: String((err && err.message) || err), ...tag }))
+      }
+    } else if (msg.type === 'signin-submit-pin') {
+      // TV role. ONE attempt by construction (sdk/signin-pair.js): a well-formed
+      // submission is the only answer this handover ever sends, right or wrong. ok=false
+      // is the SAFE outcome — malformed, or nothing waiting — and costs the viewer
+      // nothing, so the screen may validate as the digits are typed.
+      send({ type: 'signin-ack', ok: !!player && typeof msg.pin === 'string' && player.submitSignInPin(msg.pin) === true, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+    } else if (msg.type === 'signin-confirm-service') {
+      // TV role. Anything but an explicit true refuses — and refusing changes nothing.
+      send({ type: 'signin-ack', ok: !!player && player.confirmSignInService(msg.ok === true) === true, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+    } else if (msg.type === 'signin-cancel') {
+      if (player) { try { player.cancelSignInPairing() } catch (err) { fail(err) } }
+    } else if (msg.type === 'signin-send') {
+      // PHONE role. ok only says the rendezvous was joined; the outcome rides the
+      // 'signin-pair' stream. The rejections are all worth showing a viewer by name:
+      // a malformed code, no session on this device, or a build that never opted into
+      // remote.sendToTv (which cannot be fixed at runtime — the key material a send
+      // needs was dropped at login time).
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      if (!player) {
+        send({ type: 'signin-sending', ok: false, message: 'sign in on this device first', ...tag })
+      } else {
+        player.sendSignIn(typeof msg.code === 'string' ? msg.code : '')
+          .then(() => send({ type: 'signin-sending', ok: true, ...tag }))
+          .catch((err) => send({ type: 'signin-sending', ok: false, ...(err && err.code ? { error: err.code } : {}), message: String((err && err.message) || err), ...tag }))
+      }
+    } else if (msg.type === 'signin-confirm-match') {
+      // PHONE role, and the single most important answer in the feature: false is what
+      // stops a relay. It is never defaulted and never inferred here — only an explicit
+      // true proceeds.
+      send({ type: 'signin-ack', ok: !!player && player.confirmSignInMatch(msg.ok === true) === true, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+    } else if (msg.type === 'signin-send-cancel') {
+      if (player) { try { player.cancelSendSignIn() } catch (err) { fail(err) } }
     } else if (msg.type === 'parental-verify' && typeof msg.pin === 'string') {
       const rec = readPrefs().parental
       send({ type: 'parental-verify', ok: !!rec && pinDigest(rec.salt, msg.pin) === rec.hash, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
@@ -516,11 +637,7 @@ IPC.on('data', (data) => {
       // redirect channel) — the video player, not the engine, is what sends them.
       ensurePlayer().resolve(msg.streamId).then(({ port, url, source, type, durationSec, headers }) => send({ type: 'port', port, url, source, streamId: msg.streamId, recordType: type, durationSec, headers })).catch(fail)
     } else if (msg.panelPubKey) {
-      // The persisted "Smooth zapping" choice (if the user ever set it) wins over the
-      // app's compiled zapPrefetch default; true means the SDK's adaptive defaults.
-      const saved = readPrefs().smoothZapping
-      const zap = saved == null ? msg.zapPrefetch : saved
-      const boot = () => ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy, msg.appVersion, msg.platform).connect(msg.panelPubKey).catch(fail)
+      const boot = () => playerFor(msg).connect(msg.panelPubKey).catch(fail)
       if (player && connectedKey && connectedKey !== msg.panelPubKey) {
         // Service switch (S36: a Connect-screen retry after a wrong key, or "Change
         // service…"): the swarm, panel bee and every cached feed belong to the OLD

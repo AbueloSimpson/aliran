@@ -263,6 +263,128 @@ export interface UpdateCheckResult {
 export type UpdateMessage = Extract<BackendMessage,
   { type: 'update-status' } | { type: 'update-progress' } | { type: 'update-ready' } | { type: 'update-error' }>
 
+/** Which of the cross-device features this BUILD may use (engine `remote`, see
+ *  sdk/player.js). Construction-time only, and off by default, because turning one on
+ *  makes every login RETAIN something it would otherwise drop: `sendToTv` keeps the
+ *  account's two private keys in memory for the whole session, which is the only way a
+ *  phone can hand an account to a TV without the password. A build that will never send
+ *  a sign-in should not be holding them. */
+export interface RemoteFeatures {
+  /** The PHONE half of "send to TV" (backend.sendSignIn). Receiving needs nothing. */
+  sendToTv?: boolean
+  /** The account rendezvous secret. Not a key, but a live authenticator and a stable
+   *  account correlator — leave it off until a feature needs it. */
+  control?: boolean
+}
+
+/** Where a phone -> TV sign-in has got to. Three of these are QUESTIONS and the
+ *  exchange BLOCKS on each until the host answers: 'match' (phone → confirmSignInMatch),
+ *  'pin-entry' (TV → submitSignInPin), 'confirm-service' (TV → confirmSignInService). */
+export type SigninPairState =
+  | 'code' | 'announced' | 'searching' | 'linked' | 'match' | 'pin' | 'pin-entry'
+  | 'received' | 'sent' | 'confirm-service' | 'signed-in' | 'failed'
+
+/**
+ * Why a sign-in ended. THREE of these must never be worded as an ordinary "try again",
+ * because for each of them a retry is either useless or the wrong move:
+ *
+ *   mismatch  the viewer said the two screens showed different digits — which is what
+ *             something sitting between the two devices looks like from here. The next
+ *             attempt does not belong on the same network.
+ *   flooded   many devices answered one code, which is what a search for a colliding
+ *             pair of digits looks like. The code is gone; a fresh one on the TV.
+ *   version   the two devices speak different wire versions of this protocol. The fix
+ *             is updating the app on BOTH — no new code will ever help.
+ *
+ * A DELIBERATE DUPLICATE of sdk/index.d.ts SigninPairErrorCode, and it can fall behind
+ * it. This binding has no dependency on the engine package (it hosts the engine over
+ * IPC and never imports it), so re-exporting the engine's type would make
+ * `@aliran/react-native` fail to typecheck for anyone who installs it on its own —
+ * which is every host that is not this repo. The cost of the copy is drift, so the
+ * WIRE TYPES below never promise it is complete: a reason arrives as SigninPairReason,
+ * and isSigninPairError() is the runtime whitelist. Treat an unrecognised code as a
+ * plain failure with words of your own; never render it, and never assert on it.
+ */
+export type SigninPairErrorCode =
+  | 'malformed' | 'timeout' | 'expired' | 'used' | 'busy'
+  | 'unauthorized' | 'mismatch' | 'pin' | 'cancelled' | 'refused' | 'version' | 'flooded'
+
+/** The same list at runtime, so a host can whitelist what it renders. */
+export const SIGNIN_PAIR_ERRORS: readonly SigninPairErrorCode[] = [
+  'malformed', 'timeout', 'expired', 'used', 'busy',
+  'unauthorized', 'mismatch', 'pin', 'cancelled', 'refused', 'version', 'flooded'
+]
+
+/**
+ * A reason AS IT ARRIVES: one this build knows, or a code from an engine newer than it.
+ * Typed this way rather than as the bare union because the value comes off a wire shared
+ * with a device on another app version — calling that a closed set would be a lie the
+ * compiler then helps a host believe.
+ */
+export type SigninPairReason = SigninPairErrorCode | (string & {})
+
+/** Whether a reason is one THIS build has words for. The whitelist a host needs before
+ *  it puts a wire-supplied code anywhere near a screen or a switch statement. */
+export function isSigninPairError (v: unknown): v is SigninPairErrorCode {
+  return typeof v === 'string' && (SIGNIN_PAIR_ERRORS as readonly string[]).includes(v)
+}
+
+/** One step of a phone -> TV sign-in, as the engine reports it.
+ *
+ *  `code`, `sas` and `pin` are SCREEN MATERIAL and live secrets for the length of the
+ *  exchange: show them, and log, store or forward none of them. This binding keeps the
+ *  whole `signin-` message family out of its debug logger for that reason. */
+export interface SigninPairInfo {
+  role: 'tv' | 'phone'
+  state: SigninPairState
+  /** role 'tv', state 'code': the 12 characters to display, with its expiry. */
+  code?: string
+  expiresAt?: number
+  /** state 'match': four digits BOTH devices show. On the phone, ASK whether the TV
+   *  shows the same four and answer with confirmSignInMatch(); on the TV, display only —
+   *  the confirmation belongs on the device that already holds the account. */
+  sas?: string
+  /** role 'phone', state 'pin': four digits to display for the viewer to type INTO the
+   *  TV. One attempt: a wrong entry ends the sign-in and the code is already spent. */
+  pin?: string
+  /** role 'tv', states 'confirm-service' and 'signed-in': the account being signed in. */
+  username?: string
+  /** role 'tv', state 'confirm-service': the operator key about to be used (hex)… */
+  panelPubKey?: string
+  /** …the same key as the operator's printed 12-character pairing code, or null. Show
+   *  THIS, not the 64 hex characters: it is what a viewer can check against a card. */
+  pairingCode?: string | null
+  /** …true when this device has no operator yet and is about to adopt that one. */
+  adopting?: boolean
+  /** state 'failed'. Use it to CHOOSE a sentence, never as one — see SigninPairReason,
+   *  and check it with isSigninPairError() before you switch on it. */
+  reason?: SigninPairReason
+  /** state 'failed', and only where the engine wrote a sentence FOR A VIEWER itself
+   *  (the key-handover failures). English by design. Bound it and strip control
+   *  characters before rendering: the engine's own vocabulary is curated, but this is
+   *  the one field on the stream whose text is not a fixed catalog entry. */
+  message?: string
+}
+
+/** Answer to startSignIn(). ok=false carries the engine's reason — a code is already
+ *  showing on this device, or the engine is not running. */
+export interface SignInStartResult {
+  ok: boolean
+  /** The 12 characters to put on screen, e.g. 'A3K7-9QF2-M4XR'. */
+  code?: string
+  expiresAt?: number
+  error?: SigninPairReason
+  message?: string
+}
+
+/** Answer to sendSignIn(). ok=true only means the rendezvous was joined — the outcome
+ *  of the exchange arrives on the 'signin-pair' stream. */
+export interface SignInSendResult {
+  ok: boolean
+  error?: SigninPairReason
+  message?: string
+}
+
 export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[]; vod?: VodConfig }
@@ -322,6 +444,28 @@ export type BackendMessage =
   | { type: 'update-ready'; path: string; entry: UpdateEntry }
   // OTA download/verify failure (sha256 mismatch, stalled transfer, missing file).
   | { type: 'update-error'; message: string }
+  // Phone -> TV sign-in, the whole progress stream (see SigninPairInfo). NOT a reply to
+  // anything: both roles report through it, and three of its states are questions the
+  // host must answer or the exchange times out. Carries live secrets — never logged.
+  | ({ type: 'signin-pair' } & SigninPairInfo)
+  // Answer to startSignIn() (TV role). The code also arrives as {state:'code'} on the
+  // stream above; this reply exists so a REFUSAL reaches the screen too.
+  | { type: 'signin-started'; ok: boolean; code?: string; expiresAt?: number; error?: SigninPairReason; message?: string; tag?: string }
+  // Answer to sendSignIn() (phone role): the rendezvous was joined, or why not.
+  | { type: 'signin-sending'; ok: boolean; error?: SigninPairReason; message?: string; tag?: string }
+  // Answer to the three one-word answers (submitSignInPin / confirmSignInService /
+  // confirmSignInMatch). ok=false means the engine had nothing waiting for that answer,
+  // or the value was malformed — for a PIN that is the safe outcome and costs nothing.
+  | { type: 'signin-ack'; ok: boolean; tag?: string }
+
+// How long the two sign-in STARTS may take to answer. Both open the corestore, derive
+// the code's rendezvous with Argon2id (~70 ms, more on a cold TV SoC) and join a DHT
+// topic before they resolve, so this is deliberately generous — a viewer is watching a
+// spinner where the code goes, and "nothing answered" must be the last resort.
+const SIGNIN_START_MS = 20000
+// …and the three one-word answers, which are in-memory calls on an exchange that is
+// already running. Short: a slow one means the worklet is gone.
+const SIGNIN_ACK_MS = 5000
 
 export interface StartOptions {
   /** Omit to boot the worklet WITHOUT connecting (S36 runtime-descriptor flow: read
@@ -353,6 +497,12 @@ export interface StartOptions {
   appVersion?: string
   /** Platform label attached to problem reports. Defaults to `${Platform.OS} ${Platform.Version}`. */
   platform?: string
+  /** Cross-device features this build may use (see RemoteFeatures). Both are OFF by
+   *  default and both are BOOT-TIME: by the time a runtime switch could be flipped the
+   *  login has already happened, so the material is either retained or unrecoverable.
+   *  `sendToTv` is required by sendSignIn() and by nothing else — receiving a sign-in
+   *  on a TV needs no flag at all. */
+  remote?: RemoteFeatures
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
 }
@@ -408,6 +558,19 @@ export class AliranBackend {
    *  the hide-restricted-channels toggle. The PIN digest stays in the worklet. */
   parental: { hide: boolean } | null = null
   prefsLoaded = false
+  /**
+   * The last step of a phone -> TV sign-in, per role — so a screen that mounts (or
+   * REmounts) mid-exchange paints the step the engine is actually waiting on instead of
+   * a blank one. The exchange lives in the worklet and survives a screen unmount; its
+   * states are one-shot messages, exactly like {type:'streams'} and {type:'port'}.
+   *
+   * Only ever the LATEST step, and startSignIn()/sendSignIn() clear it — so a stale
+   * 'failed' cannot paint a fresh code, and the digits of a finished exchange are
+   * replaced by the next state rather than kept. Holds screen secrets while a step is
+   * live (`code`, `sas`, `pin`): render them, log and serialize neither.
+   */
+  signinTv: SigninPairInfo | null = null
+  signinPhone: SigninPairInfo | null = null
 
   private worklet: WorkletInstance | null = null
   // Flips when start() finds no engine in this build/device: every later send()
@@ -453,6 +616,7 @@ export class AliranBackend {
       swarm: opts.swarm,
       uploadPolicy: opts.uploadPolicy,
       appVersion: opts.appVersion,
+      remote: opts.remote,
       // A coarse device/OS label for problem reports — 'android 33', 'ios 17'. Coarse
       // ON PURPOSE: an exact device model plus an operator's account list is enough to
       // start re-identifying a pseudonymous reporter.
@@ -656,6 +820,147 @@ export class AliranBackend {
     this.send({ type: 'vod-history-set', entries })
   }
 
+  // --- phone -> TV sign-in handover ---------------------------------------------------
+  //
+  // Signing in on a television means spelling out a password with a D-pad. This replaces
+  // that: the TV shows twelve characters, a phone that is already signed in types them,
+  // TWO checks run, and the phone hands over the account key material so the TV signs
+  // ITSELF in — its own device id, its own panel-signed token. See sdk/signin-pair.js.
+  //
+  // THREE OF THE STATES ARE QUESTIONS and the exchange BLOCKS on each one: 'match' on
+  // the phone (confirmSignInMatch), 'pin-entry' on the TV (submitSignInPin) and
+  // 'confirm-service' on the TV (confirmSignInService). A host that renders the states
+  // as progress and never answers gets timeouts — which is correct: none of the three
+  // has a default, and none may be answered on the viewer's behalf.
+  //
+  // NOTHING ON THIS PATH MAY BE LOGGED. The code, the compared digits and the typed
+  // digits are live secrets for the length of the exchange; onData() below keeps the
+  // whole `signin-` family out of the debug logger.
+
+  /**
+   * TV role. Mint a sign-in code, announce its rendezvous and wait for a phone. Resolves
+   * as soon as the code exists — the viewer is looking at the screen — with the 12
+   * characters to display; everything after that arrives through onSignInPair().
+   *
+   * The device does NOT have to be connected to a panel first: the handover carries the
+   * operator key, which is exactly why 'confirm-service' has to be answered before that
+   * key is adopted.
+   *
+   * Resolves (never rejects): a refusal arrives as { ok: false, message }.
+   */
+  async startSignIn (opts: { ttlMs?: number } = {}): Promise<SignInStartResult> {
+    // A new code, so nothing of the last exchange may still be on a screen.
+    this.signinTv = null
+    const m = await this.request('signin-started', {
+      type: 'signin-start',
+      ...this.engineOpts, // a never-paired TV starts this with no panel — see the worklet
+      ...(opts.ttlMs ? { ttlMs: opts.ttlMs } : {})
+    }, SIGNIN_START_MS)
+    if (!m || m.type !== 'signin-started') return { ok: false, error: 'timeout', message: 'the engine did not answer' }
+    const { type, tag, ...result } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+    return result
+  }
+
+  /**
+   * TV role. The four digits the viewer typed on the remote. False for a malformed entry
+   * or when nothing is waiting for one, so a screen may validate as the digits go in.
+   *
+   * A well-formed submission is FINAL: right or wrong, it is the only answer this
+   * handover ever sends, and a wrong one ends the sign-in with the code already spent.
+   * One attempt is what makes a blind guess one in ten thousand instead of a warm-up.
+   */
+  async submitSignInPin (pin: string): Promise<boolean> {
+    const m = await this.request('signin-ack', { type: 'signin-submit-pin', pin }, SIGNIN_ACK_MS)
+    return !!m && m.type === 'signin-ack' && m.ok === true
+  }
+
+  /**
+   * TV role. The viewer's answer to 'confirm-service': sign in as that account and, when
+   * `adopting`, take that operator key. True adopts; anything else refuses, and the code
+   * is spent either way.
+   *
+   * Ask it as the operator's printed 12-character pairing code (`pairingCode`), never as
+   * 64 hex characters — a viewer can check a card, not a key.
+   */
+  async confirmSignInService (ok: boolean): Promise<boolean> {
+    const m = await this.request('signin-ack', { type: 'signin-confirm-service', ok }, SIGNIN_ACK_MS)
+    return !!m && m.type === 'signin-ack' && m.ok === true
+  }
+
+  /** TV role. Abandon the code on screen. It is spent either way — a new one is the
+   *  only way forward. */
+  cancelSignIn () { this.send({ type: 'signin-cancel' }) }
+
+  /**
+   * Phone role. Sign a TV in with the code it is showing ('a3k7 9qf2 m4xr' is fine —
+   * the engine normalizes it). Resolves as soon as the rendezvous is joined; the
+   * exchange itself arrives through onSignInPair(), and it STOPS at {state:'match'}
+   * until confirmSignInMatch() answers.
+   *
+   * Requires a live session on this device AND a build started with
+   * `remote: { sendToTv: true }` — the payload is key material the login recovered,
+   * which cannot be reconstructed later without the password, so a build that never
+   * sends does not keep it. Resolves (never rejects); refusals carry the reason.
+   */
+  async sendSignIn (code: string): Promise<SignInSendResult> {
+    this.signinPhone = null
+    const m = await this.request('signin-sending', { type: 'signin-send', code }, SIGNIN_START_MS)
+    if (!m || m.type !== 'signin-sending') return { ok: false, error: 'timeout', message: 'the engine did not answer' }
+    const { type, tag, ...result } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+    return result
+  }
+
+  /**
+   * Phone role. The viewer's answer to 'match': do the four digits on this phone appear
+   * on the TV? True proceeds to the typed-digit round; anything else aborts and burns
+   * the TV's code.
+   *
+   * FALSE IS THE IMPORTANT ANSWER. This is the only check in the exchange that sees a
+   * peer relaying between the phone and the TV — such a peer holds the code, so it
+   * satisfies every other proof, but it terminates two connections and cannot make two
+   * screens agree. Never default it, never infer it from a dismissed dialog, and never
+   * let a "skip" answer it.
+   */
+  async confirmSignInMatch (ok: boolean): Promise<boolean> {
+    const m = await this.request('signin-ack', { type: 'signin-confirm-match', ok }, SIGNIN_ACK_MS)
+    return !!m && m.type === 'signin-ack' && m.ok === true
+  }
+
+  /** Phone role. Abandon an in-flight send (the TV's code is spent either way). */
+  cancelSendSignIn () { this.send({ type: 'signin-send-cancel' }) }
+
+  /** Subscribe to the sign-in progress stream only. Returns the unsubscribe function
+   *  (usable as a useEffect cleanup). A screen that mounts late should also read
+   *  `signinTv` / `signinPhone` — the step it missed is cached there. */
+  onSignInPair (fn: (info: SigninPairInfo) => void) {
+    return this.onMessage((m) => {
+      if (m.type !== 'signin-pair') return
+      const { type, ...info } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+      fn(info)
+    })
+  }
+
+  /**
+   * One tagged request/reply round trip. Resolves null when the worklet never answers
+   * (or when there is no engine in this build) — never hangs and never throws, so every
+   * caller above can present a plain "nothing answered" instead of an unhandled
+   * rejection on a screen a viewer is waiting at.
+   */
+  private request (reply: BackendMessage['type'], body: Record<string, unknown>, timeoutMs: number): Promise<BackendMessage | null> {
+    if (this.inactive) return Promise.resolve(null)
+    return new Promise((resolve) => {
+      const tag = Math.random().toString(36).slice(2, 10)
+      const timer = setTimeout(() => { off(); resolve(null) }, timeoutMs)
+      const off = this.onMessage((m) => {
+        if (m.type !== reply || (m as { tag?: string }).tag !== tag) return
+        clearTimeout(timer)
+        off()
+        resolve(m)
+      })
+      this.send({ ...body, tag })
+    })
+  }
+
   private send (obj: unknown) {
     if (this.inactive) return // engine-less build/device: drop silently, never queue
     if (!this.ipc) { this.pending.push(obj); return }
@@ -670,10 +975,27 @@ export class AliranBackend {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line) as BackendMessage
-        // Never log the raw 'prefs' line — it can carry the saved password. Long lines
-        // collapse to their type to keep the log readable — EXCEPT 'error', where the
-        // payload (often a worklet stack trace) is the only diagnostic there is.
-        if (this.debug) console.log('[backend]', msg.type === 'prefs' ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
+        // NEVER log the raw line for these two families, whatever its length:
+        //
+        //   prefs     carries the saved password.
+        //   signin-*  carries the sign-in code, the four compared digits and the four
+        //             typed digits. Every one of them is a LIVE SECRET for the length of
+        //             the exchange, and every message in the family is far shorter than
+        //             the 200-character cut-off below — so without this test a debug
+        //             build would print the whole handover into `adb logcat`, where a
+        //             second app can read it. The engine (sdk/signin-pair.js) goes to
+        //             considerable trouble never to log any of it; this is the boundary
+        //             where that care would otherwise be undone. The test is on the
+        //             PREFIX, not on one message type, so a message added to the family
+        //             later is excluded by default rather than by remembering.
+        //
+        // Everything else: long lines collapse to their type to keep the log readable —
+        // EXCEPT 'error', where the payload (often a worklet stack trace) is the only
+        // diagnostic there is.
+        if (this.debug) {
+          const secret = msg.type === 'prefs' || (typeof msg.type === 'string' && msg.type.startsWith('signin-'))
+          console.log('[backend]', secret ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
+        }
         if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
@@ -693,6 +1015,13 @@ export class AliranBackend {
         if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn'; this.headers = null }
         if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source; this.headers = null }
         if (msg.type === 'feed-changed') this.url = msg.url // unchanged localhost URL; the source (p2p) is unchanged too
+        // The sign-in step a late-mounting (or re-mounting) screen would otherwise have
+        // missed. Kept per role, latest only — see the fields' own note.
+        if (msg.type === 'signin-pair') {
+          const { type, ...info } = msg // eslint-disable-line @typescript-eslint/no-unused-vars
+          if (info.role === 'tv') this.signinTv = info
+          else if (info.role === 'phone') this.signinPhone = info
+        }
         this.listeners.forEach(fn => fn(msg))
       } catch { /* ignore partial/invalid */ }
     }

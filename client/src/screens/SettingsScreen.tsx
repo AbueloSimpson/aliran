@@ -7,6 +7,12 @@
 //
 // "Report a problem" is NOT here (S51): it lives on the player (NowPlayingBar /
 // channel info panel), because a useful report must carry the channel being watched.
+//
+// "Sign in a TV" IS here, and only on a phone: this is the device that holds the
+// account, so it is the device that can hand it to a television without a password
+// being typed on one (<SendSignInToTv>). A TV build never shows the row — it cannot
+// send, by construction: the key material a send needs is only retained where
+// worklet.ts asks for it (remote.sendToTv), which is everywhere except a television.
 import React, { useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -18,6 +24,7 @@ import { appInfoCached, checkForUpdate } from '../update'
 import { theme } from '../theme'
 import { LanguageMenu } from '../components/LanguageMenu'
 import { PinEntryModal, PinSetupModal } from '../components/PinModal'
+import { SendSignInToTv } from '../components/SendSignInToTv'
 
 const service = loadServiceDescriptor()
 
@@ -51,6 +58,8 @@ export function SettingsScreen ({ navigation }: Props) {
   // is open. What is actually being rendered right now is `locale`, above.
   const [language, setLanguage] = useState<string | null>(backend.language)
   const [languageMenu, setLanguageMenu] = useState(false)
+  // "Sign in a TV": the sending half of the phone -> TV handover, as an overlay.
+  const [sendToTv, setSendToTv] = useState(false)
   // OTA updates: the installed build's native version (null while resolving / no
   // installer module) + the manual check's one-line outcome.
   const [appVersion, setAppVersion] = useState<string | null>(null)
@@ -133,6 +142,18 @@ export function SettingsScreen ({ navigation }: Props) {
         <View style={styles.group}>
           <Row label={t('settings.signedInAs')} value={username ?? '—'} />
           <Row label={t('settings.entitledChannels')} value={String(channels)} />
+          {/* Phone only. On a television this row would offer something that build
+              cannot do — and should not be able to do: SENDING is what makes a login
+              hold the account's private keys for the whole session, so a TV asks for
+              none of it (see worklet.ts). */}
+          {!theme.isTV && (
+            <PickerRow
+              label={t('settings.sendTv')}
+              value=""
+              hint={t('settings.sendTvHint')}
+              onPress={() => setSendToTv(true)}
+            />
+          )}
         </View>
 
         <Text style={styles.groupTitle}>{t('settings.group.playback')}</Text>
@@ -258,6 +279,8 @@ export function SettingsScreen ({ navigation }: Props) {
           waiting for the worklet's 'prefs' reply — the row must not lag a round trip
           behind the language it is already rendering in. The reply confirms it. */}
       {languageMenu && <LanguageMenu value={language} onClose={() => { setLanguage(backend.language); setLanguageMenu(false) }} />}
+      {/* Same rule, same reason: a sibling of the ScrollView, never a child. */}
+      {sendToTv && <SendSignInToTv onClose={() => setSendToTv(false)} />}
     </View>
   )
 }

@@ -1,5 +1,14 @@
 export { AliranBackend } from './backend'
 export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, PairingResult, PairingErrorCode, VodConfig, VodListEntry, VodHistoryEntry, UpdatePlatform, AppUpdateInfo, UpdateEntry, UpdateCheckStatus, UpdateCheckResult, UpdateMessage } from './backend'
+// Phone -> TV sign-in handover (sdk/signin-pair.js): the progress stream a host renders
+// and the two start results. Drive it with backend.startSignIn() on the TV and
+// backend.sendSignIn(code) on the phone, and answer the three questions in the stream —
+// they BLOCK. `remote: { sendToTv: true }` at start() is what the phone half needs.
+// SIGNIN_PAIR_ERRORS / isSigninPairError() are the runtime whitelist: the engine's
+// vocabulary grows, this build's copy of it does not, so check a reason before you
+// switch on it and always keep a sentence for the ones you do not know.
+export type { RemoteFeatures, SigninPairState, SigninPairErrorCode, SigninPairReason, SigninPairInfo, SignInStartResult, SignInSendResult } from './backend'
+export { SIGNIN_PAIR_ERRORS, isSigninPairError } from './backend'
 export { AliranVideo, SelectedTrackType } from './AliranVideo'
 export type { AliranVideoProps, AliranVideoHandle, TuneEvent, TunePhase, SelectedTrack, AudioTrack, TextTrack, BufferConfig } from './AliranVideo'
 // Ready-made "engine can't run here" screen for single-APK builds: render in the

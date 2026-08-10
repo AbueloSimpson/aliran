@@ -14,6 +14,16 @@
 // the DHT and VERIFIES the answer by re-deriving the code from the key it receives, so
 // a wrong service cannot be substituted for the right one (sdk/pairing.js). The 64-hex
 // field is still there behind one press for anyone who was given a key instead.
+//
+// A THIRD way in, and on a television the fastest one: "Sign in with your phone"
+// (<SignInWithPhone>). A phone that is already signed in hands this device the whole
+// thing — the account AND the operator key — so nothing at all is typed here. This
+// screen is where a virgin keyless device lands, so it is where that offer belongs; the
+// panel's own last step asks the viewer to check the operator's printed code before this
+// device adopts it, because the key arrives from the phone and not from the operator.
+// Note what it does NOT leave behind: a handover carries key material, which must never
+// be written to the prefs file, so there are no saved credentials afterwards. The
+// SERVICE is saved (it is public), so a restart lands on Login rather than back here.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, TextInput, Pressable, ScrollView, StyleSheet, ActivityIndicator } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -21,6 +31,7 @@ import type { RootStackParamList } from '../App'
 import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { loadServiceDescriptor, PANEL_KEY_RE, PAIRING_GROUPS, PAIRING_GROUP_SIZE, cleanPairingInput } from '../config'
+import { SignInWithPhone } from '../components/SignInWithPhone'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -67,6 +78,7 @@ export function ConnectScreen ({ navigation }: Props) {
   const [status, setStatus] = useState<'connecting' | 'finding' | null>(null)
   const [error, setError] = useState<Failure | null>(null)
   const [focused, setFocused] = useState<string | null>(null)
+  const [phoneSignIn, setPhoneSignIn] = useState(false)
   const groupRefs = useRef<Array<TextInput | null>>([])
   const tries = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -184,7 +196,19 @@ export function ConnectScreen ({ navigation }: Props) {
     '{password}': t('connect.introPassword')
   }
 
+  // The handover brings the operator key with it, so a device that came in this way is
+  // ALREADY on that service — persist it (public, never a secret) and go. There are no
+  // credentials to save: key material is not written to disk.
+  const onPhoneSignedIn = (panelPubKey: string | null) => {
+    if (panelPubKey) backend.saveService({ panelPubKey, name: service.name })
+    navigation.replace('Menu')
+  }
+
+  // The ScrollView sits inside a viewport-sized root so the sign-in overlay fills the
+  // VIEWPORT and not the (much taller) scrollable content box — the same reason the
+  // language picker is a sibling of Settings' ScrollView.
   return (
+    <View style={styles.root}>
     <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>{service.name}</Text>
       <Text style={styles.intro}>
@@ -274,11 +298,30 @@ export function ConnectScreen ({ navigation }: Props) {
       >
         {busy ? <ActivityIndicator color={theme.colors.onPrimary} /> : <Text style={styles.buttonText}>{t('connect.submit')}</Text>}
       </Pressable>
+
+      {/* Last, so the D-pad reaches the ordinary form first. Nothing above needs to be
+          filled in for it: the phone supplies the service and the account together. */}
+      <Pressable
+        style={[styles.link, focused === 'phone' && styles.focusedInput]}
+        disabled={busy}
+        onFocus={() => setFocused('phone')}
+        onBlur={() => setFocused(null)}
+        onPress={() => setPhoneSignIn(true)}
+      >
+        <Text style={styles.linkText}>{t('sendtv.tvStart')}</Text>
+      </Pressable>
+      <Text style={styles.status}>{t('sendtv.tvStartHint')}</Text>
     </ScrollView>
+
+    {phoneSignIn && (
+      <SignInWithPhone onClose={() => setPhoneSignIn(false)} onSignedIn={onPhoneSignedIn} />
+    )}
+    </View>
   )
 }
 
 const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: theme.colors.background },
   container: { flex: 1, backgroundColor: theme.colors.background },
   content: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   title: { color: theme.colors.text, fontSize: theme.isTV ? 56 : 40, fontWeight: '800', marginBottom: 16 },

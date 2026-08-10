@@ -1,7 +1,8 @@
 // Boots the Bare worklet (the P2P backend) via the @aliran/react-native binding —
 // this app dogfoods the public SDK surface. See sdk/react-native and backend/backend.mjs.
 
-import { AliranBackend, getAppInfo, type HybridConfig } from '@aliran/react-native'
+import { Platform } from 'react-native'
+import { AliranBackend, getAppInfo, type HybridConfig, type RemoteFeatures } from '@aliran/react-native'
 // Fallback app version for viewer problem reports (S50c). The REAL version comes
 // from the native installer module (getAppInfo().versionName — the installed build's
 // gradle versionName, per-brand); package.json only answers where that module is
@@ -27,6 +28,19 @@ const PREWARM_CHANNELS = 12
 // thin pipe — see sdk/player.js).
 const ZAP_PREFETCH: boolean = false
 
+// "Send to TV": which half of it THIS device may play. Receiving needs nothing — a TV
+// takes a sign-in with no flag at all. SENDING is the one that costs something: it makes
+// every login keep the account's two private keys in memory for the whole session,
+// because a phone cannot recover them later without the password (sdk/login.js
+// `handover`). So it is asked for only where it is used — a phone or a tablet, which is
+// what a viewer picks up to sign a television in. A television is never the sending
+// device, so a TV build holds nothing.
+//
+// Boot-time only, and there is no runtime switch on purpose: by the time one could be
+// flipped the login has already happened, so the key material is either retained or
+// unrecoverable. Settings hides "Sign in a TV" on the same test.
+const REMOTE: RemoteFeatures = { sendToTv: !Platform.isTV }
+
 // The version stamped on problem reports: the NATIVE versionName when the installer
 // module can say (the truth about the installed build), package.json otherwise.
 // getAppInfo() never rejects — it resolves null where the module is absent.
@@ -42,7 +56,7 @@ class Backend extends AliranBackend {
     // prewarm: open the first N channels' feeds right after login so the FIRST zap to a
     // channel is warm (not just re-zaps). Capped so a large lineup doesn't join hundreds
     // of DHT topics at once; a bounded TV lineup warms fully.
-    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, appVersion: await appVersion(), debug: true })
+    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, remote: REMOTE, appVersion: await appVersion(), debug: true })
   }
 
   // Public (keyless) flavor, S36: boot the worklet WITHOUT a panel so the persisted
@@ -50,7 +64,7 @@ class Backend extends AliranBackend {
   // connect()s to the saved panel or routes to the Connect screen. Same engine policy
   // as boot(); only the panel key arrives later.
   async bootIdle (hybrid?: HybridConfig) {
-    this.start(bundleBase64, { hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, appVersion: await appVersion(), debug: true })
+    this.start(bundleBase64, { hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, remote: REMOTE, appVersion: await appVersion(), debug: true })
   }
 }
 
