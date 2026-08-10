@@ -74,6 +74,7 @@ import type { RootStackParamList } from '../App'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { setOrientation } from '../orientation'
+import { useMountDeferred } from '../defer'
 import { markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
 import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
@@ -135,6 +136,10 @@ export function LiveScreen ({ route, navigation }: Props) {
   // (above the overlay state) because the overlay INITIALIZER below reads `portrait`
   // too — as do the orientation state machine and the BACK handler further down.
   const { width: winW, height: winH } = useWindowDimensions()
+  // Heavy overlay bodies (guide/search) wait for the nav/overlay transition to
+  // finish before mounting — the tap responds instantly (S22 round 6). Phone-only
+  // surfaces; TV never reaches those overlays.
+  const mountReady = useMountDeferred()
   const portrait = winH >= winW
   const stripH = Math.round(winW * 9 / 16)
   const [overlay, setOverlay] = useState<Overlay>(() => {
@@ -709,14 +714,19 @@ export function LiveScreen ({ route, navigation }: Props) {
           Portrait stays tap-to-tune — the strip above IS the picture there. */}
       {overlay === 'guide' && (
         <View style={portrait ? [styles.guidePortrait, { top: stripH }] : styles.guideLandscape}>
-          <GuidePanel
-            playingId={playingId}
-            preview={portrait ? 'none' : 'overlay'}
-            onTune={(s) => play(s, { collapse: !portrait })}
-            // Portrait's resting state is the guide and the bar only shows in
-            // fullscreen — this chip is the portrait route into the in-player search.
-            onSearch={() => setOverlay('search')}
-          />
+          {/* Deferred mount (S22 round 6): the grid's first commit is heavy — gating
+              it lets the screen/overlay transition paint immediately; the grid pops
+              in one interaction later. The bed + strip above show at once. */}
+          {mountReady ? (
+            <GuidePanel
+              playingId={playingId}
+              preview={portrait ? 'none' : 'overlay'}
+              onTune={(s) => play(s, { collapse: !portrait })}
+              // Portrait's resting state is the guide and the bar only shows in
+              // fullscreen — this chip is the portrait route into the in-player search.
+              onSearch={() => setOverlay('search')}
+            />
+          ) : <SectionLoading section={t('menu.guide')} />}
         </View>
       )}
 
@@ -729,13 +739,15 @@ export function LiveScreen ({ route, navigation }: Props) {
           its own query state, so the rotation-survival rule above never loses it. */}
       {overlay === 'search' && (
         <View style={portrait ? [styles.guidePortrait, { top: stripH }] : styles.guideLandscape}>
-          <SearchPanel
-            playingId={playingId}
-            onTune={(s) => {
-              setOverlay(!theme.isTV && portraitRef.current ? 'guide' : 'none')
-              play(s)
-            }}
-          />
+          {mountReady ? (
+            <SearchPanel
+              playingId={playingId}
+              onTune={(s) => {
+                setOverlay(!theme.isTV && portraitRef.current ? 'guide' : 'none')
+                play(s)
+              }}
+            />
+          ) : <SectionLoading section={t('menu.search')} />}
         </View>
       )}
 
