@@ -14,18 +14,25 @@
 //        rec = newSigninCode()                      -> { code: 'A3K7-9QF2-M4XR', … }
 //        { topic, secret } = signinKeys(rec.code)   -> one Argon2id, then two subkeys
 //
+//      The topic is PUBLIC and more than one peer can answer on it. Nothing in this file
+//      excludes anything: consumeSigninCode() is a pure function, so two connection
+//      handlers that both call it before either result is stored both succeed, and both
+//      peers are handed account key material. The TV must hold its own lock around
+//      read -> consume -> store and allow ONE handover in flight per code. See
+//      consumeSigninCode().
+//
 //   B. Account handover. Both devices are already signed in to the SAME account, so
 //      they already share the account's X25519 private key and need no code at all.
 //
-//        secret = remoteSecret(accountPrivateKey)   -> stays inside sdk/login.js's scope
-//        topic  = remoteTopic(secret)
+//        secret = remoteSecret(accountPrivateKey, tokenVersion)  -> inside sdk/login.js
+//        topic  = remoteTopic(secret)                            -> or (secret, epoch)
 //
 //   Both arrive at the same shape: a 32-byte swarm topic plus a 32-byte shared secret
 //   that the topic cannot be worked backwards to. From there both sides run one round:
 //
 //        mine   = remoteProof(secret, socket.handshakeHash, myRole)
 //        ok     = remoteProofValid(secret, socket.handshakeHash, peerRole(myRole), theirs)
-//        digits = remoteSas(secret, socket.handshakeHash)   -> shown on both screens
+//        digits = remoteSas(secret, socket.handshakeHash)   -> see the SAS note below
 //
 // WHY A PROOF AT ALL. A topic is a public rendezvous and anyone may answer on it —
 // sdk/pairing.js:13-19 spells out the same hazard for the service pairing code.
@@ -78,10 +85,16 @@
 //   aliran-signin-code-v1     Argon2id salt: the sign-in code -> one master secret
 //   aliran-signin-topic-v1    master -> the sign-in swarm topic
 //   aliran-signin-secret-v1   master -> the sign-in shared secret
-//   aliran-remote-secret-v1   account X25519 private key -> the account shared secret
-//   aliran-remote-topic-v1    account shared secret -> the account swarm topic
+//   aliran-remote-secret-v1   account X25519 private key + tokenVersion -> the secret
+//   aliran-remote-topic-v1    account shared secret (+ epoch) -> the account swarm topic
 //   aliran-remote-proof-v1    shared secret + handshake hash + role -> a proof
 //   aliran-remote-sas-v1      shared secret + handshake hash -> the compared digits
+//
+// The two labels that take a COMPOUND message (secret + tokenVersion, topic + epoch)
+// stay unambiguous by fixed widths, not by delimiters: 32 bytes of key material then
+// exactly 8 bytes of big-endian counter. A message can therefore only be re-split one
+// way, and the optional-epoch form (40 bytes) can never collide with the plain form (32
+// bytes) except by breaking BLAKE2b.
 //
 // The topic and the secret come from the SAME master under different labels rather than
 // the topic coming from the secret's plaintext, so publishing a topic — which joining
@@ -99,9 +112,11 @@
 // and guessing it IS the whole attack — an attacker who lands on a live code answers on
 // its topic, proves knowledge of it (they hold it), and is handed account key material.
 // There is no second check behind it the way pairingCodeMatches() sits behind a pairing
-// code. Three numbers set the length:
+// code. Three numbers set the length. Read them in order: (1) is a floor that holds
+// whatever the deployment looks like, (3) raises that floor in proportion to how busy
+// the fleet is, and (2) is (3)'s single-target special case.
 //
-//   1. PRECOMPUTATION is the binding constraint, and it is what the KDF is for. The
+//   1. PRECOMPUTATION — a floor of roughly 48-50 bits, and what the KDF is for. The
 //      Argon2id salt has to be a fixed constant — the phone holds nothing but the code
 //      — so an attacker may build the whole code -> topic table once and then find every
 //      live code with a lookup. At 8 characters (40 bits) that table is 35 TB and about
@@ -113,22 +128,38 @@
 //      worth defending against: ~10^5 Argon2id-INTERACTIVE evaluations per second, which
 //      is 64 MiB x ~7000 live slots (≈450 GiB) at tens of TB/s — a rack of top-end GPUs.
 //      In one 180 s window that is 1.8x10^7 candidates against 1.15x10^18 codes: one in
-//      64 billion sign-ins. (We do not even count the DHT lookup each candidate also
-//      needs, which is the far harder half.)
-//   3. THE WHOLE FLEET AT ONCE. An attacker grinding blindly hits ANY code live at that
-//      moment, and the number live worldwide is the sign-in rate times the TTL. So the
-//      TTL earns its keep twice — it bounds one session's exposure and it bounds the
-//      global target set. Even at an implausible 10 sign-ins per second everywhere
-//      (1800 codes live at any instant), that adversary averages 200 years of
-//      uninterrupted flat-out grinding per stolen account — for an account worth a few
-//      dollars a month. At 8 characters the same sum comes out under two hours.
+//      64 billion sign-ins.
+//   3. THE WHOLE FLEET AT ONCE — the binding constraint at any realistic scale, and the
+//      one a proposal to shorten the code has to answer. An attacker grinding blindly
+//      hits ANY code live at that moment, and the number live worldwide is the sign-in
+//      rate times the TTL. Nothing makes the attacker work per candidate to find those
+//      targets, either: HyperDHT stores an announce record on the ~20 nodes closest to
+//      the topic (kademlia-routing-table's default k, which dht-rpc's query converges
+//      on), so a Sybil presence spread over the keyspace HARVESTS live sign-in topics
+//      passively and then tests each candidate offline against every harvested topic at
+//      once. There is no second, harder half to the work. So the TTL earns its keep
+//      twice — it bounds one session's exposure and it bounds the global target set.
+//      Even at an implausible 10 sign-ins per second everywhere (1800 codes live at any
+//      instant), that adversary averages 200 years of uninterrupted flat-out grinding
+//      per stolen account — for an account worth a few dollars a month. At 8 characters
+//      the same sum comes out under two hours.
 //
-//   Given a floor near 48-50 bits from (1), why 12 and not 10? Because the display
-//   grouping is four characters — the pairing code's, and the one that reads correctly
-//   off a screen across a room — which makes the real menu 8 characters or 12, and 8 is
-//   under the floor. Twelve then costs nothing extra: normalizePairingCode() and
-//   formatPairingCode() apply verbatim, so a security-critical Crockford folder does not
-//   get a second, subtly different copy in this file. SIGNIN_CODE_LENGTH is derived from
+//      This item is the one that MOVES with the deployment, so quote the rate with it.
+//      Its arithmetic is (1)'s plus the number of simultaneous targets: expected time to
+//      hit ANY live code is 2^L / (codes live x guess rate), so the demand is (1)'s
+//      demand plus log2(codes live). Codes live = sign-in rate x TTL. That makes THIS
+//      item the binding one for any fleet doing more than one sign-in per TTL — more
+//      than one every three minutes, worldwide — and it costs another bit for every
+//      doubling of that rate. At 10 sign-ins/s (1800 live) it wants ~60 bits against
+//      (1)'s ~49; only a fleet quieter than one sign-in per TTL falls back to (1) alone.
+//      An argument for ten characters has to name the rate it assumes and show this sum.
+//
+//   Given all three, why 12 and not 10? Because the display grouping is four characters
+//   — the pairing code's, and the one that reads correctly off a screen across a room —
+//   which makes the real menu 8 characters or 12, and 8 is under every floor above.
+//   Twelve then costs nothing extra: normalizePairingCode() and formatPairingCode()
+//   apply verbatim, so a security-critical Crockford folder does not get a second,
+//   subtly different copy in this file. SIGNIN_CODE_LENGTH is derived from
 //   PAIRING_CODE_LENGTH below rather than written out, because that coupling is real.
 //
 // Crockford base32 for the same reason pairing.js uses it: nothing is misread off a TV
@@ -180,6 +211,7 @@ const PROOF_LABEL = b4a.from('aliran-remote-proof-v1')
 const SAS_LABEL = b4a.from('aliran-remote-sas-v1')
 
 const KDF_BYTES = 32 // >= crypto_pwhash_BYTES_MIN
+const COUNTER_BYTES = 8 // the fixed width every compound message ends with
 
 // Same construction as pairing.js's private deriveSalt: a label hashed down to
 // crypto_pwhash_SALTBYTES. A different label is a different salt, which is the point.
@@ -224,6 +256,52 @@ function bytes32 (value, what) {
   throw new TypeError(what + ' must be a hex string or a 32-byte buffer')
 }
 
+// A counter as exactly COUNTER_BYTES big-endian bytes. Fixed width so a compound message
+// can be re-split only one way, and written by hand rather than through a Buffer method
+// so it behaves the same in the Bare worklet. Safe-integer range is far past anything a
+// tokenVersion or an epoch reaches.
+function counterBytes (n, what, min) {
+  if (!Number.isSafeInteger(n) || n < min) throw new TypeError(what + ' must be an integer >= ' + min)
+  const out = b4a.alloc(COUNTER_BYTES)
+  let v = n
+  for (let i = COUNTER_BYTES - 1; i >= 0; i--) { out[i] = v % 256; v = Math.floor(v / 256) }
+  return out
+}
+
+// The caller's clock. Absent means "now"; present-but-not-finite is a caller bug and
+// throws, exactly as it does in newSigninCode(). Deliberately a throw and not a quiet
+// 'expired':
+//
+//   - This value is the CALLER's own, never a stranger's. Bytes off the wire and records
+//     off disk are what the malformed state is for, and those still fail closed.
+//   - One rule for one class of bug. It would be indefensible for newSigninCode(NaN) to
+//     throw while signinCodeState(rec, NaN) quietly answered.
+//   - The TTL is load-bearing, not cosmetic: item 3 of the length analysis above uses it
+//     to bound the set of codes live worldwide, which is what makes 60 bits enough. A
+//     clock that has stopped being a number has stopped enforcing that bound, and a
+//     silent 'expired' would hide it while the same broken clock kept stamping records.
+function clockNow (now) {
+  if (!Number.isFinite(now)) throw new TypeError('now must be a finite timestamp')
+  return now
+}
+
+// The 60-bit argument above is an argument about Argon2id COST as much as about code
+// length: at INTERACTIVE the precomputed code -> topic table is 2.6 billion core-years,
+// and a few notches down it is a weekend on rented hardware. So INTERACTIVE is a FLOOR
+// here, not just a default — a WP2 caller who trims it to make a slow TV box feel
+// snappier would collapse that argument with nothing in the system to notice. Heavier is
+// allowed, but benchmark it on the weakest target first: the viewer waits for it.
+function kdfLimits (opts) {
+  const { opslimit, memlimit } = opts || {}
+  if (!Number.isInteger(opslimit) || opslimit < sodium.crypto_pwhash_OPSLIMIT_INTERACTIVE) {
+    throw new RangeError('opslimit must be at least crypto_pwhash_OPSLIMIT_INTERACTIVE (' + sodium.crypto_pwhash_OPSLIMIT_INTERACTIVE + ')')
+  }
+  if (!Number.isInteger(memlimit) || memlimit < sodium.crypto_pwhash_MEMLIMIT_INTERACTIVE) {
+    throw new RangeError('memlimit must be at least crypto_pwhash_MEMLIMIT_INTERACTIVE (' + sodium.crypto_pwhash_MEMLIMIT_INTERACTIVE + ' bytes)')
+  }
+  return { opslimit, memlimit }
+}
+
 // secret-stream 6.9.1 hands us 64 bytes. 32 is accepted so a future BLAKE2b-256
 // transcript would not need a core release; nothing else is, and in particular null is
 // not — that is what a socket returns before its handshake finishes, and it is the one
@@ -265,9 +343,8 @@ export function newSigninCode (opts = {}) {
   // Absent means "use the default"; present-but-wrong is a caller bug and throws. A
   // silently-defaulted ttlMs is how a code ends up living far longer than the screen
   // that shows it claims.
-  const now = opts.now === undefined ? Date.now() : opts.now
+  const now = clockNow(opts.now === undefined ? Date.now() : opts.now)
   const ttlMs = opts.ttlMs === undefined ? SIGNIN_CODE_TTL_MS : opts.ttlMs
-  if (!Number.isFinite(now)) throw new TypeError('now must be a finite timestamp')
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new TypeError('ttlMs must be a positive number of milliseconds')
 
   // 32 symbols is exactly 5 bits, so a uniform byte stream sliced into 5-bit groups is
@@ -298,30 +375,54 @@ export const SIGNIN_CODE_STATES = {
   malformed: 'malformed' // not a record newSigninCode() produced
 }
 
-/** Which of SIGNIN_CODE_STATES this record is in, by the caller's clock. */
+/**
+ * Which of SIGNIN_CODE_STATES this record is in, by the caller's clock. Throws on a
+ * clock that is not a finite number (see clockNow above); every other refusal is a
+ * state, because records arrive off disk and off the wire.
+ */
 export function signinCodeState (rec, now = Date.now()) {
+  clockNow(now)
   if (!rec || typeof rec !== 'object') return SIGNIN_CODE_STATES.malformed
   if (normalizePairingCode(rec.canonical) !== rec.canonical) return SIGNIN_CODE_STATES.malformed
   if (!Number.isFinite(rec.expiresAt)) return SIGNIN_CODE_STATES.malformed
+  // usedAt is null or a finite stamp — nothing else. Belt and braces now that
+  // consumeSigninCode() validates its clock, but it is the cheap half of a nasty pair:
+  // a NaN stamp JSON-serializes to null, so a TV that persisted one and reloaded it
+  // would read a SPENT code as live and hand the account out twice.
+  if (rec.usedAt !== null && rec.usedAt !== undefined && !Number.isFinite(rec.usedAt)) return SIGNIN_CODE_STATES.malformed
   if (rec.usedAt != null) return SIGNIN_CODE_STATES.used
   if (now >= rec.expiresAt) return SIGNIN_CODE_STATES.expired
   return SIGNIN_CODE_STATES.live
 }
 
 /**
- * Spend the code. Returns a NEW record stamped used, or null if it was not live — the
- * check and the state change are one call on purpose, so a caller cannot test liveness,
- * await a peer, and spend a code that expired in between. The caller stores what comes
- * back; this function mutates nothing.
+ * Spend the code. Returns a NEW record stamped used, or null if it was not live. Pure:
+ * it mutates nothing and the caller stores what comes back.
+ *
+ * WHAT THIS DOES GIVE YOU. The liveness check and the state change are one call, so a
+ * caller cannot test liveness, await a peer, and spend a code that expired in between.
+ *
+ * WHAT IT DOES NOT. It is not a lock and it excludes nothing. Two calls on the same
+ * input record both return a used record — that is what "pure" means. The realistic WP2
+ * failure is not the await above; it is that the sign-in topic is public and more than
+ * one peer can answer on it. If the TV runs this in two connection handlers before
+ * either result is written back, BOTH succeed and both peers are handed account key
+ * material, which is precisely the one-shot property the code depends on.
+ *
+ *   THE CALLER MUST SERIALIZE read -> consumeSigninCode -> store, and must allow only
+ *   one handover in flight per code. Exclusion belongs to whoever owns the storage; this
+ *   file has no storage, no timers and no state, so it cannot provide it.
  */
 export function consumeSigninCode (rec, now = Date.now()) {
+  clockNow(now) // a NaN here would otherwise stamp usedAt: NaN — see signinCodeState
   if (signinCodeState(rec, now) !== SIGNIN_CODE_STATES.live) return null
   return { ...rec, usedAt: now }
 }
 
 /**
  * The rendezvous topic and the shared secret for a sign-in code, from ONE Argon2id.
- * ~70 ms — call it once and keep both halves. Throws on anything that is not a code.
+ * ~70 ms — call it once and keep both halves. Throws on anything that is not a code,
+ * and on KDF limits below INTERACTIVE (kdfLimits above).
  *
  * The topic is only a rendezvous: whoever answers there is untrusted until they prove
  * the secret (remoteProofValid below).
@@ -329,44 +430,118 @@ export function consumeSigninCode (rec, now = Date.now()) {
 export function signinKeys (code, opts = PAIRING_KDF_DEFAULT) {
   const canonical = normalizePairingCode(code)
   if (!canonical) throw new TypeError('not a sign-in code')
+  const { opslimit, memlimit } = kdfLimits(opts)
   const master = b4a.alloc(KDF_BYTES)
-  sodium.crypto_pwhash(master, b4a.from(canonical), SIGNIN_KDF_SALT, opts.opslimit, opts.memlimit, sodium.crypto_pwhash_ALG_ARGON2ID13)
-  const out = { topic: subkey(SIGNIN_TOPIC_LABEL, master), secret: subkey(SIGNIN_SECRET_LABEL, master) }
-  // The master reconstructs both halves; the caller only ever needs the halves.
-  sodium.sodium_memzero(master)
-  return out
+  try {
+    sodium.crypto_pwhash(master, b4a.from(canonical), SIGNIN_KDF_SALT, opslimit, memlimit, sodium.crypto_pwhash_ALG_ARGON2ID13)
+    return { topic: subkey(SIGNIN_TOPIC_LABEL, master), secret: subkey(SIGNIN_SECRET_LABEL, master) }
+  } finally {
+    // The master reconstructs BOTH halves, so it outranks either of them and must not
+    // outlive the call on any path. In `finally` rather than after the return so that
+    // adding a step between the pwhash and the return cannot quietly leave it behind.
+    sodium.sodium_memzero(master)
+  }
 }
 
-/** The sign-in swarm topic. A full Argon2id — prefer signinKeys() if you need both. */
+/**
+ * The sign-in swarm topic. A full Argon2id — prefer signinKeys() if you need both.
+ * The secret half is zeroed here rather than dropped: a caller that asked for the topic
+ * has said it does not want the proof key, and leaving it in a freed buffer contradicts
+ * the reason signinKeys() zeroes the master at all.
+ */
 export function signinTopic (code, opts = PAIRING_KDF_DEFAULT) {
-  return signinKeys(code, opts).topic
+  const { topic, secret } = signinKeys(code, opts)
+  sodium.sodium_memzero(secret)
+  return topic
 }
 
 /** The sign-in shared secret. A full Argon2id — prefer signinKeys() if you need both. */
 export function signinSecret (code, opts = PAIRING_KDF_DEFAULT) {
-  return signinKeys(code, opts).secret
+  const { topic, secret } = signinKeys(code, opts)
+  sodium.sodium_memzero(topic)
+  return secret
 }
 
 // --- B. account rendezvous ----------------------------------------------------------
 
 /**
- * The account's remote-control secret, from its X25519 private key (core/keybox.js).
+ * The account's remote-control secret, from its X25519 private key (core/keybox.js) and
+ * the account's current `tokenVersion`.
  *
  * One-way: the secret cannot be walked back to the private key, so it is safe to keep
  * for the lifetime of a session while the private key stays where login recovered it.
  * WP2/WP3 call this inside sdk/login.js so the private key never leaves that scope.
+ *
+ * WHY tokenVersion IS PART OF IT. The private key alone is a PERMANENT rendezvous
+ * secret. A device that signed in once and cached it keeps deriving the live topic for
+ * ever, and the operator's levers do not all take it away:
+ *
+ *   setPassword     panel/src/ops.js — mints a fresh keypair AND bumps tokenVersion, so
+ *                   it already rotated this. But a password reset is not routine.
+ *   logoutAll       panel/src/ops.js — bumps tokenVersion and clears every device
+ *                   enrollment. Without the mix-in it left the rendezvous untouched;
+ *                   with it, every device re-logs in and lands on the new secret while
+ *                   a device holding only the old material stays on the old one.
+ *   setUserStatus   'disabled' bumps tokenVersion the same way.
+ *   revokeDevice    deliberately does NOT bump tokenVersion — that is documented there
+ *                   as cooperative session hygiene, so one device can be dropped without
+ *                   logging the household out. It therefore does NOT rotate this either,
+ *                   and WP3 must not tell an operator that it does. The lever that
+ *                   rotates the rendezvous is "log out all devices" (or a password
+ *                   reset); revoking one device relies on the same cooperative client
+ *                   behaviour as the rest of the session layer.
+ *
+ * The value to pass is the account's tokenVersion as the panel reports it — the login
+ * reply carries it (panel/src/rpc.js) and it is inside the signed session token. It
+ * starts at 1 and only ever increases, so pass the panel's number verbatim; a caller
+ * that substitutes 0 or its own default silently lands the two devices on different
+ * topics and they simply never meet, which is why anything below 1 throws.
  */
-export function remoteSecret (privateKey) {
-  return subkey(ACCOUNT_SECRET_LABEL, bytes32(privateKey, 'privateKey'))
+export function remoteSecret (privateKey, tokenVersion) {
+  const message = b4a.concat([
+    bytes32(privateKey, 'privateKey'),
+    counterBytes(tokenVersion, 'tokenVersion', 1)
+  ])
+  return subkey(ACCOUNT_SECRET_LABEL, message)
 }
 
 /**
  * The swarm topic two devices on the same account meet at. Unguessable to anyone
  * without the account private key, and one-way from the secret — announcing on the
  * topic, which is public by definition, does not publish the proof key.
+ *
+ * THE OPTIONAL EPOCH, AND WHY IT IS HERE. Joining a topic announces it: the ~20 DHT
+ * nodes nearest that key learn the IP:port of every device on the account. With no
+ * epoch the key never changes, so those nodes hold a permanent public correlator —
+ * every device on one account, linked to each other across time and across networks,
+ * and a handle for opening a connection to any of them at will. An epoch bounds that
+ * window: derive one from the wall clock, e.g.
+ *
+ *   const epoch = Math.floor(Date.now() / EPOCH_MS)
+ *
+ * and the correlator only holds within a single period.
+ *
+ * CLOCK SKEW MAKES THIS A TWO-TOPIC PATTERN. Two devices near a boundary compute
+ * different epochs, so a device that joins only its own epoch can miss a peer that is
+ * minutes out or simply crossed the boundary first. Join the CURRENT and the PREVIOUS
+ * epoch, both sides:
+ *
+ *   for (const e of [epoch, epoch - 1]) swarm.join(remoteTopic(secret, e))
+ *
+ * A device at epoch N covers {N, N-1} and one at N+1 covers {N+1, N}, so they always
+ * overlap on N — one full period of tolerated skew, and never more than two topics
+ * announced at a time. Leave the old topic when the epoch rolls, or the window the
+ * epoch was supposed to bound never actually closes.
+ *
+ * WHETHER to epoch, and how coarse, is WP3's call: it is a straight trade of linkage
+ * window against how long two devices may disagree about the time and still meet.
+ * Omitting the argument keeps the permanent topic, which is why omitting it is a
+ * decision and not a default.
  */
-export function remoteTopic (secret) {
-  return subkey(ACCOUNT_TOPIC_LABEL, bytes32(secret, 'secret'))
+export function remoteTopic (secret, epoch = null) {
+  const s = bytes32(secret, 'secret')
+  if (epoch === null || epoch === undefined) return subkey(ACCOUNT_TOPIC_LABEL, s)
+  return subkey(ACCOUNT_TOPIC_LABEL, b4a.concat([s, counterBytes(epoch, 'epoch', 0)]))
 }
 
 // --- mutual proof ---------------------------------------------------------------------
@@ -414,14 +589,32 @@ const SAS_DRAW_LIMIT = Math.floor(SAS_DRAW_WIDTH / SAS_MODULUS) * SAS_MODULUS
  *
  * Role-free on purpose — the two sides are comparing, not challenging.
  *
- * What it is for. The automated check above already refuses a relay outright: a MITM
- * cannot produce a valid proof without the secret, so the connection dies before anyone
- * reads a digit. The SAS is the human-legible version of that same binding — it turns
- * "trust the code" into "confirm this is the TV in front of you", and it is what a
- * viewer can act on when something is wrong. Four digits leaves a MITM a blind 1-in-
- * 10,000 coincidence per attempt, with no way to steer toward it (the digits depend on
- * the secret it does not have) and a visibly failed sign-in for every try; the code's
- * TTL and one-shot semantics cap how many tries it gets.
+ * WHAT IT IS FOR, PRECISELY — this is narrower than it looks, and the narrow reading is
+ * the one WP2 has to design against:
+ *
+ *   - A man in the middle WITHOUT the secret is already refused, two functions up. It
+ *     cannot produce a valid proof, so remoteProofValid() kills the connection before
+ *     any digit is drawn. The SAS adds nothing at all against that attacker; quoting a
+ *     1-in-10,000 chance against it is quoting the wrong number for a case that never
+ *     reaches a screen.
+ *   - The one thing it genuinely catches is a relay that ALREADY KNOWS the code and is
+ *     relaying rather than impersonating, so as to stay hidden while both ends complete.
+ *     That relay terminates two Noise connections, so there are two handshake hashes and
+ *     two different SAS values: the two screens disagree with probability 1 - 10^-4.
+ *     The relay holds the secret, so it can compute both values and retry handshakes
+ *     hunting for a colliding pair — the 10^-4 is per attempt, and what caps the
+ *     attempts is the code's TTL plus the one-shot rule, each failed try being a
+ *     visibly failed sign-in.
+ *   - It does NOT tell the viewer which screen they read the code off. Whichever device
+ *     showed the code, both ends hold the same code, derive the same secret and share
+ *     ONE connection, so the digits agree. Nothing in this file can distinguish a code
+ *     typed from the right TV from one typed off a screen the viewer should not have
+ *     trusted. What defends that case is the code itself: 60 bits of entropy, a ~3
+ *     minute TTL and one use (see WHY 12 CHARACTERS above).
+ *
+ * How WP2 puts these digits in front of the viewer — compared across two screens, or
+ * read from one and entered on the other — is a product decision that is still open.
+ * The primitive is the same either way: four uniform digits bound to one connection.
  */
 export function remoteSas (secret, handshakeHash) {
   const key = bytes32(secret, 'secret')

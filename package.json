@@ -30,7 +30,7 @@
     "mcp": "npm --workspace mcp start",
     "viewer": "npm --workspace tools run viewer --",
     "brand": "node tools/brand.mjs",
-    "test": "npm run test:core",
+    "test": "npm run test:core && npm run test:remote-core",
     "test:core": "node core/test.mjs",
     "test:remote-core": "node core/test-remote.mjs",
     "test:rpc-hardening": "node tools/rpc-hardening-test.mjs",

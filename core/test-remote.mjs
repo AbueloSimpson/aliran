@@ -11,12 +11,19 @@
 // The load-bearing group is the KNOWN-ANSWER VECTORS. Every byte below is on the wire
 // between a phone and a TV that may be running different app versions, so a refactor
 // that "improves" a label, a hash orientation or a bit order must fail here rather than
-// ship two releases that cannot see each other.
+// ship two releases that cannot see each other. Every vector was computed from sodium
+// and b4a alone, not read back out of the implementation.
+//
+// The account vectors changed once, deliberately, before anything shipped: the account
+// secret now commits to the account's tokenVersion so that "log out all devices" rotates
+// the rendezvous (see remoteSecret). The sign-in vectors are byte-identical to the ones
+// that came before it, which is the cheap proof that the change did not disturb the
+// other half of the file.
 
 import assert from 'assert'
 import b4a from 'b4a'
 import {
-  pairingTopic, normalizePairingCode, formatPairingCode,
+  pairingTopic, normalizePairingCode, formatPairingCode, PAIRING_KDF_DEFAULT,
   newSigninCode, signinKeys, signinTopic, signinSecret,
   signinCodeState, consumeSigninCode, SIGNIN_CODE_STATES, SIGNIN_CODE_LENGTH, SIGNIN_CODE_TTL_MS,
   remoteSecret, remoteTopic,
@@ -45,11 +52,13 @@ const bytes32 = (fill) => { const b = b4a.alloc(32); b.fill(fill); return b }
 console.log('@aliran/core remote-pairing tests')
 
 // --------------------------------------------------------------- known-answer vectors
-// A fixed code, a fixed private key and a fixed handshake hash, pinned to the exact
-// bytes this construction produces today. If one of these changes, the wire changed.
+// A fixed code, a fixed private key, a fixed tokenVersion and a fixed handshake hash,
+// pinned to the exact bytes this construction produces today. If one of these changes,
+// the wire changed.
 const KAT_CODE = 'A3K7-9QF2-M4XR'
 const KAT_PRIV = (() => { const b = b4a.alloc(32); for (let i = 0; i < 32; i++) b[i] = i; return b })()
 const KAT_HH = (() => { const b = b4a.alloc(64); for (let i = 0; i < 64; i++) b[i] = 0xa0 + (i % 16); return b })()
+const KAT_TV = 1 // what panel/src/ops.js createUser stamps on a new account
 
 test('KAT: sign-in code -> topic and shared secret', () => {
   const k = signinKeys(KAT_CODE)
@@ -59,20 +68,24 @@ test('KAT: sign-in code -> topic and shared secret', () => {
   assert.strictEqual(k.secret.length, 32)
 })
 
-test('KAT: account private key -> shared secret and topic', () => {
-  const s = remoteSecret(KAT_PRIV)
-  assert.strictEqual(hex(s), '65bfaf5c7a1f8468475d792463065385a1c77fcbfae13e2b429f49ead43c4fec')
-  assert.strictEqual(hex(remoteTopic(s)), 'dffb35072b654762d24a21254de0d64e9c31d92c40a8c6183b788f9438618952')
+test('KAT: account private key + tokenVersion -> shared secret and topic', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  assert.strictEqual(hex(s), '4f71ea7ff5cac568e9e83e62dd52aae415f7c4aa7752e1c990e1cc1b2f4f2bf6')
+  assert.strictEqual(hex(remoteTopic(s)), '241676ee8aafe915f80923cd6e2e8a4b1f62b386efbebd9c2ef52bd0ad8ca4bb')
+  // The epoched form is a different topic entirely, and epoch 0 is not "no epoch".
+  assert.strictEqual(hex(remoteTopic(s, 0)), 'd19a527fc9d1ff58565a8a2714c14259bf4541c098f1f32e6ed01cd86e1e565c')
+  assert.strictEqual(hex(remoteTopic(s, 7)), '16e6aadccf58e0444b6bc14a1dd56f85ed422e16157afa42aa50844e5a16c99f')
   // Hex and raw bytes are the same key, so they must land on the same secret.
-  assert.ok(b4a.equals(remoteSecret(hex(KAT_PRIV)), s))
+  assert.ok(b4a.equals(remoteSecret(hex(KAT_PRIV), KAT_TV), s))
   assert.ok(b4a.equals(remoteTopic(hex(s)), remoteTopic(s)))
+  assert.ok(b4a.equals(remoteTopic(hex(s), 7), remoteTopic(s, 7)))
 })
 
 test('KAT: proof and SAS', () => {
-  const s = remoteSecret(KAT_PRIV)
-  assert.strictEqual(hex(remoteProof(s, KAT_HH, REMOTE_ROLES.initiator)), '69d445e021091f5bad0b6719e5fcaa7fb24076206fa64a990f8181e1d54236fd')
-  assert.strictEqual(hex(remoteProof(s, KAT_HH, REMOTE_ROLES.responder)), '4648f7b604657612988beaedce8692a931500e463146937288a3f670aac65d70')
-  assert.strictEqual(remoteSas(s, KAT_HH), '3133')
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  assert.strictEqual(hex(remoteProof(s, KAT_HH, REMOTE_ROLES.initiator)), '4bab66bc7368203ce094f7edd8abeef2d9feccfc3e58d2922f35e3f1f053eaa1')
+  assert.strictEqual(hex(remoteProof(s, KAT_HH, REMOTE_ROLES.responder)), '0b5d619bc495df5e1a2e59ffca267d087e259847eec70283170090d0f493ca00')
+  assert.strictEqual(remoteSas(s, KAT_HH), '6731')
 })
 
 // ------------------------------------------------------------------ domain separation
@@ -86,7 +99,7 @@ test('the same code never reaches the same topic through two constructions', () 
 
 test('every derivation from one input lands somewhere different', () => {
   const k = signinKeys(KAT_CODE)
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   const t = remoteTopic(s)
   // The sign-in topic and secret come from ONE Argon2id under two labels: publishing the
   // topic (which joining a swarm does) must not publish the proof key.
@@ -94,7 +107,7 @@ test('every derivation from one input lands somewhere different', () => {
   // Same rule on the account side, one hash further along.
   assert.ok(!b4a.equals(s, t))
   assert.ok(!b4a.equals(s, KAT_PRIV), 'the secret must not be the private key itself')
-  assert.ok(!b4a.equals(t, remoteSecret(s)), 'the topic label and the secret label must differ')
+  assert.ok(!b4a.equals(t, remoteSecret(s, KAT_TV)), 'the topic label and the secret label must differ')
   // And the two features never collide with each other.
   for (const a of [k.topic, k.secret]) for (const b of [s, t]) assert.ok(!b4a.equals(a, b))
 })
@@ -105,14 +118,14 @@ test('four labels over one secret land on four different values', () => {
     hex(remoteTopic(s)),
     hex(remoteProof(s, KAT_HH, REMOTE_ROLES.initiator)),
     hex(remoteProof(s, KAT_HH, REMOTE_ROLES.responder)),
-    hex(remoteSecret(s))
+    hex(remoteSecret(s, KAT_TV))
   ])
   assert.strictEqual(seen.size, 4, 'two labels produced the same bytes')
 })
 
 // ------------------------------------------------------------------------ the proof
 test('an honest pair verifies each other, in both directions', () => {
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   const h = hh(1)
   const phone = remoteProof(s, h, REMOTE_ROLES.initiator)
   const tv = remoteProof(s, h, REMOTE_ROLES.responder)
@@ -123,8 +136,8 @@ test('an honest pair verifies each other, in both directions', () => {
 
 test('a wrong or forged secret fails the proof', () => {
   const h = hh(2)
-  const real = remoteSecret(KAT_PRIV)
-  const wrong = remoteSecret(bytes32(0xff))
+  const real = remoteSecret(KAT_PRIV, KAT_TV)
+  const wrong = remoteSecret(bytes32(0xff), KAT_TV)
   const proof = remoteProof(real, h, REMOTE_ROLES.initiator)
   assert.strictEqual(remoteProofValid(wrong, h, REMOTE_ROLES.initiator, proof), false)
   // A one-bit change anywhere in the secret is enough.
@@ -138,7 +151,7 @@ test('a wrong or forged secret fails the proof', () => {
 // is a bearer token and a relay holding one connection to each device forwards each
 // side's proof to the other, sitting in the middle of both.
 test('a proof from one connection does not verify on another', () => {
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   const a = hh(10)
   const bConn = hh(11)
   assert.ok(!b4a.equals(a, bConn))
@@ -154,7 +167,7 @@ test('a proof from one connection does not verify on another', () => {
 // The reflection attack: a peer that knows nothing bounces the proof it just received
 // straight back as its own. The role field is what makes that fail.
 test('a reflected proof fails — the two roles are not interchangeable', () => {
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   const h = hh(3)
   const fromInitiator = remoteProof(s, h, REMOTE_ROLES.initiator)
   assert.ok(!b4a.equals(fromInitiator, remoteProof(s, h, REMOTE_ROLES.responder)))
@@ -168,7 +181,7 @@ test('a reflected proof fails — the two roles are not interchangeable', () => 
 // remoteProofValid runs on bytes a stranger on a public topic sent, so every malformed
 // shape has to come back false rather than throwing into a connection handler.
 test('verification refuses malformed input instead of throwing', () => {
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   const h = hh(4)
   const good = remoteProof(s, h, REMOTE_ROLES.initiator)
   for (const bad of [null, undefined, 'deadbeef', 42, {}, [], b4a.alloc(0), b4a.alloc(31), b4a.alloc(33), b4a.alloc(64)]) {
@@ -186,7 +199,7 @@ test('verification refuses malformed input instead of throwing', () => {
 // handshake finishes, where secret-stream still has it as null. Binding a proof to
 // nothing must be loud.
 test('a missing or wrong-sized handshake hash throws rather than binding to nothing', () => {
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   for (const bad of [null, undefined, '', 'a'.repeat(128), 64, {}, b4a.alloc(0), b4a.alloc(16), b4a.alloc(48), b4a.alloc(65)]) {
     assert.throws(() => remoteProof(s, bad, REMOTE_ROLES.initiator), TypeError, 'accepted ' + JSON.stringify(bad))
     assert.throws(() => remoteSas(s, bad), TypeError)
@@ -197,14 +210,89 @@ test('a missing or wrong-sized handshake hash throws rather than binding to noth
 
 test('malformed secrets and private keys are refused, not silently accepted', () => {
   for (const bad of ['', 'not-a-key', 'zz'.repeat(32), 'ab'.repeat(31), 'ab'.repeat(33), null, undefined, 42, {}, b4a.alloc(31), b4a.alloc(33)]) {
-    assert.throws(() => remoteSecret(bad), TypeError, 'remoteSecret accepted ' + JSON.stringify(bad))
+    assert.throws(() => remoteSecret(bad, KAT_TV), TypeError, 'remoteSecret accepted ' + JSON.stringify(bad))
     assert.throws(() => remoteTopic(bad), TypeError, 'remoteTopic accepted ' + JSON.stringify(bad))
   }
 })
 
+// ------------------------------------------------------- account rendezvous rotation
+// remoteSecret commits to the account's tokenVersion so that the panel's "log out all
+// devices" (panel/src/ops.js logoutAll — a tokenVersion bump plus a device wipe) moves
+// the whole account to a new rendezvous. A device holding only cached material stays on
+// the old topic and never meets the ones that logged back in.
+test('the account rendezvous moves when tokenVersion moves', () => {
+  const v1 = remoteSecret(KAT_PRIV, 1)
+  const v2 = remoteSecret(KAT_PRIV, 2)
+  assert.strictEqual(hex(v2), '2581f745e7a205e6acc44a83c0d6c98ca687601fbee4ee5583869052e6cd4972')
+  assert.ok(!b4a.equals(v1, v2), 'a tokenVersion bump must change the secret')
+  assert.ok(!b4a.equals(remoteTopic(v1), remoteTopic(v2)), 'and therefore the topic')
+  // Every version lands somewhere different — no short cycle, no collisions.
+  const seen = new Set()
+  for (let v = 1; v <= 64; v++) seen.add(hex(remoteSecret(KAT_PRIV, v)))
+  assert.strictEqual(seen.size, 64)
+  // The proof key moves with it, so a stale device cannot even authenticate itself onto
+  // a connection if it somehow reached the new topic.
+  assert.strictEqual(remoteProofValid(v2, KAT_HH, REMOTE_ROLES.initiator, remoteProof(v1, KAT_HH, REMOTE_ROLES.initiator)), false)
+})
+
+// The panel starts every account at tokenVersion 1 and only ever increments. A caller
+// that passes 0, or forgets the argument and lets it default, would silently put two
+// devices of one household on different topics — they would simply never find each
+// other, which is the hardest class of bug to diagnose in the field.
+test('tokenVersion must be a real version, not a guess', () => {
+  for (const bad of [undefined, null, 0, -1, 1.5, NaN, Infinity, -Infinity, '1', '', {}, [], true]) {
+    assert.throws(() => remoteSecret(KAT_PRIV, bad), TypeError, 'accepted tokenVersion ' + JSON.stringify(bad))
+  }
+  assert.strictEqual(remoteSecret(KAT_PRIV, 1).length, 32)
+  assert.strictEqual(remoteSecret(KAT_PRIV, Number.MAX_SAFE_INTEGER).length, 32)
+})
+
+// ----------------------------------------------------------------- the topic epoch
+// Joining a topic announces it, so a permanent account topic is a permanent public
+// correlator: the ~20 DHT nodes nearest that key see the IP:port of every device on the
+// account, across time and across networks. The optional epoch bounds that window.
+test('an epoch changes the topic, and no epoch is not epoch zero', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  const plain = remoteTopic(s)
+  assert.ok(!b4a.equals(plain, remoteTopic(s, 0)), 'an absent epoch must not alias epoch 0')
+  assert.ok(b4a.equals(plain, remoteTopic(s, null)), 'null means absent, the documented default')
+  assert.ok(b4a.equals(plain, remoteTopic(s, undefined)))
+  const seen = new Set([hex(plain)])
+  for (let e = 0; e < 64; e++) seen.add(hex(remoteTopic(s, e)))
+  assert.strictEqual(seen.size, 65, 'two epochs produced the same topic')
+  // The secret itself is untouched by the epoch — only the rendezvous moves, so an
+  // epoch roll never invalidates a proof on an already-open connection.
+  assert.ok(b4a.equals(remoteProof(s, KAT_HH, REMOTE_ROLES.initiator), remoteProof(remoteSecret(KAT_PRIV, KAT_TV), KAT_HH, REMOTE_ROLES.initiator)))
+})
+
+// The pattern the documentation prescribes for clock skew: both sides join the current
+// AND the previous epoch, so two devices that disagree by up to one full period still
+// share exactly one topic.
+test('joining {epoch, epoch-1} on both sides always overlaps across one boundary', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  const joined = (e) => [hex(remoteTopic(s, e)), hex(remoteTopic(s, e - 1))]
+  const n = 4242
+  const slow = joined(n)
+  const fast = joined(n + 1)
+  const shared = slow.filter((t) => fast.includes(t))
+  assert.strictEqual(shared.length, 1, 'devices one epoch apart must still meet')
+  assert.strictEqual(shared[0], hex(remoteTopic(s, n)))
+  // Two epochs apart is out of tolerance, and the docs say so rather than pretending.
+  assert.strictEqual(joined(n).filter((t) => joined(n + 2).includes(t)).length, 0)
+})
+
+test('an epoch must be a non-negative integer', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  for (const bad of [-1, 1.5, NaN, Infinity, -Infinity, '3', '', {}, [], true]) {
+    assert.throws(() => remoteTopic(s, bad), TypeError, 'accepted epoch ' + JSON.stringify(bad))
+  }
+  assert.strictEqual(remoteTopic(s, 0).length, 32)
+  assert.strictEqual(remoteTopic(s, Number.MAX_SAFE_INTEGER).length, 32)
+})
+
 // -------------------------------------------------------------------------------- SAS
 test('honest peers agree on the SAS; a relay does not', () => {
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   const h = hh(20)
   // Both ends of one connection see the same secret and the same transcript hash.
   assert.strictEqual(remoteSas(s, h), remoteSas(s, h))
@@ -215,7 +303,7 @@ test('honest peers agree on the SAS; a relay does not', () => {
   const legB = hh(22)
   assert.notStrictEqual(remoteSas(s, legA), remoteSas(s, legB))
   // Different accounts on the same transcript also diverge.
-  assert.notStrictEqual(remoteSas(s, h), remoteSas(remoteSecret(bytes32(0x11)), h))
+  assert.notStrictEqual(remoteSas(s, h), remoteSas(remoteSecret(bytes32(0x11), KAT_TV), h))
   // The SAS is role-free — the two sides compare, they do not challenge.
   assert.strictEqual(remoteSas(s, h), remoteSas(b4a.from(s), b4a.from(h)))
 })
@@ -226,7 +314,7 @@ test('honest peers agree on the SAS; a relay does not', () => {
 // rejection step, and `draw % 10000` gives 0000-5535 seven preimages against the rest's
 // six — a 17% excess, which is enormous for digits a viewer compares.
 test('SAS is uniform over 0000-9999 — no modulo bias', () => {
-  const s = remoteSecret(KAT_PRIV)
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
   const N = 100000
   const buckets = new Array(100).fill(0) // 100 buckets of 100 values each
   let low = 0 // the half a 16-bit modulo would over-produce
@@ -244,6 +332,35 @@ test('SAS is uniform over 0000-9999 — no modulo bias', () => {
   // Uniform puts 55.36% below 5536 (sd ~157). A 16-bit modulo puts 59.14% there — about
   // 24 sd out, which this refuses at 6.
   assert.ok(Math.abs(low - 55360) < 942, 'low half held ' + low + ' of an expected 55360 — modulo bias')
+})
+
+// The uniformity test above almost never reaches the rejection branch: a draw is
+// rejected about once in 589,000, so 100,000 samples exercise it maybe one run in six
+// and assert nothing about it either way. This fixture hits it on purpose.
+//
+// secret = 0x03 x 32, handshake hash = the 32-bit big-endian encoding of 78385 in the
+// first four bytes and zeros in the other sixty. Found by brute force over that seed
+// space and re-derived from sodium alone:
+//
+//   draw 0 = 4294960529  >= SAS_DRAW_LIMIT (4294960000)  -> rejected
+//   draw 1 =  249251776  -> 249251776 % 10000 = 1776
+//
+// Delete the `draw < SAS_DRAW_LIMIT` guard and this returns '0529' (4294960529 % 10000),
+// which is exactly the biased answer the rejection step exists to refuse — so the test
+// pins both halves: the value that must come out, and the value that must not.
+test('the SAS rejection branch is taken, and the biased answer is not returned', () => {
+  const secret = bytes32(0x03)
+  const rejecting = (() => {
+    const out = b4a.alloc(64)
+    const n = 78385
+    out[0] = (n >>> 24) & 0xff
+    out[1] = (n >>> 16) & 0xff
+    out[2] = (n >>> 8) & 0xff
+    out[3] = n & 0xff
+    return out
+  })()
+  assert.strictEqual(remoteSas(secret, rejecting), '1776')
+  assert.notStrictEqual(remoteSas(secret, rejecting), '0529', 'the rejected draw leaked through')
 })
 
 // --------------------------------------------------------------- codes and normalization
@@ -294,6 +411,26 @@ test('signinTopic and signinSecret are the halves signinKeys returns', () => {
   assert.ok(b4a.equals(signinSecret(KAT_CODE), k.secret))
 })
 
+// The whole 60-bit argument in the module header is an argument about Argon2id cost as
+// much as about code length. A caller that trims the limits to make a slow TV box feel
+// snappier collapses the precomputation barrier and nothing else in the system notices,
+// so INTERACTIVE is a floor and not merely a default.
+test('KDF limits below INTERACTIVE are refused, naming the constant', () => {
+  const { opslimit, memlimit } = PAIRING_KDF_DEFAULT
+  assert.throws(() => signinKeys(KAT_CODE, { opslimit: opslimit - 1, memlimit }), /OPSLIMIT_INTERACTIVE/)
+  assert.throws(() => signinKeys(KAT_CODE, { opslimit, memlimit: memlimit - 1 }), /MEMLIMIT_INTERACTIVE/)
+  assert.throws(() => signinTopic(KAT_CODE, { opslimit: 1, memlimit }), RangeError)
+  assert.throws(() => signinSecret(KAT_CODE, { opslimit, memlimit: 8 * 1024 * 1024 }), RangeError)
+  for (const bad of [{}, { opslimit }, { memlimit }, { opslimit: '2', memlimit }, { opslimit: 2.5, memlimit }, null]) {
+    assert.throws(() => signinKeys(KAT_CODE, bad), RangeError, 'accepted limits ' + JSON.stringify(bad))
+  }
+  // Heavier than INTERACTIVE stays allowed — the floor is a floor, not a pin. It also
+  // has to land somewhere else, or the parameter was being ignored.
+  const heavier = signinKeys(KAT_CODE, { opslimit: opslimit + 1, memlimit })
+  assert.strictEqual(heavier.topic.length, 32)
+  assert.ok(!b4a.equals(heavier.topic, signinKeys(KAT_CODE).topic))
+})
+
 // ---------------------------------------------------------------------- code lifecycle
 test('a code is live, then expired, and the caller owns the clock', () => {
   const t0 = 1700000000000
@@ -310,9 +447,51 @@ test('a code is live, then expired, and the caller owns the clock', () => {
   for (const bad of [NaN, Infinity, -Infinity]) assert.throws(() => newSigninCode({ now: bad }), TypeError)
 })
 
-// One shot means one shot, and the check and the state change are ONE call so a caller
-// cannot test liveness, await a peer, and then spend a code that expired in between.
-test('consuming a code is one-shot, atomic and pure', () => {
+// The TTL is not cosmetic: item 3 of the length analysis leans on it to bound the set of
+// codes live worldwide, which is what makes 60 bits enough. A clock that stopped being a
+// number stopped enforcing that, so every function that reads one refuses it the same
+// way newSigninCode() does — loudly, and identically, rather than reading `live` off a
+// record that expired four seconds ago.
+test('a clock that is not a finite number is refused everywhere, not just at issue', () => {
+  const t0 = 1700000000000
+  const rec = newSigninCode({ now: t0, ttlMs: 1000 })
+  for (const bad of [NaN, Infinity, -Infinity, 'x', '1700000000000', null, {}, [], true]) {
+    assert.throws(() => signinCodeState(rec, bad), TypeError, 'signinCodeState accepted clock ' + JSON.stringify(bad))
+    assert.throws(() => consumeSigninCode(rec, bad), TypeError, 'consumeSigninCode accepted clock ' + JSON.stringify(bad))
+    assert.throws(() => newSigninCode({ now: bad }), TypeError)
+  }
+  // undefined still means "ask the platform clock", the documented default.
+  assert.strictEqual(signinCodeState(rec, undefined), SIGNIN_CODE_STATES.expired)
+  // And the case that actually bit: a record four seconds past its TTL never reads live.
+  assert.strictEqual(signinCodeState(rec, t0 + 5000), SIGNIN_CODE_STATES.expired)
+})
+
+// The second-order failure a NaN clock used to cause. consumeSigninCode(rec, NaN) stamped
+// usedAt: NaN; JSON turns NaN into null; a TV that persisted the record across an app
+// restart reloaded a SPENT code as live and could hand the account over twice.
+test('a spend stamp can never be NaN, and a corrupt one never reads live', () => {
+  const t0 = 1700000000000
+  const rec = newSigninCode({ now: t0 })
+  assert.throws(() => consumeSigninCode(rec, NaN), TypeError, 'a NaN clock must not produce a record at all')
+  // Belt and braces for a record that reached disk some other way.
+  for (const bad of [NaN, Infinity, -Infinity, 'yesterday', {}, []]) {
+    const corrupt = { ...rec, usedAt: bad }
+    assert.strictEqual(signinCodeState(corrupt, t0), SIGNIN_CODE_STATES.malformed, 'accepted usedAt ' + JSON.stringify(bad))
+    assert.strictEqual(consumeSigninCode(corrupt, t0), null)
+  }
+  // The round trip that used to launder a spent code back into a live one.
+  const used = consumeSigninCode(rec, t0 + 1000)
+  const reloaded = JSON.parse(JSON.stringify(used))
+  assert.strictEqual(reloaded.usedAt, t0 + 1000, 'a real stamp must survive JSON')
+  assert.strictEqual(signinCodeState(reloaded, t0 + 2000), SIGNIN_CODE_STATES.used)
+})
+
+// One shot means one shot WITHIN one call: the liveness check and the state change
+// happen together, so a caller cannot test liveness, await a peer, and then spend a code
+// that expired in between. That is all it is. It is a pure function and it excludes
+// nothing — the assertion at the end of this test is the proof, and it is why the module
+// tells WP2 to serialize read -> consume -> store and keep one handover in flight.
+test('consuming a code is one-shot and pure — exclusion is the caller\'s job', () => {
   const t0 = 1700000000000
   const rec = newSigninCode({ now: t0 })
   const used = consumeSigninCode(rec, t0 + 1000)
@@ -325,6 +504,13 @@ test('consuming a code is one-shot, atomic and pure', () => {
   // Expiry beats liveness, and a used code stays used past its expiry.
   assert.strictEqual(consumeSigninCode(rec, rec.expiresAt), null)
   assert.strictEqual(signinCodeState(used, rec.expiresAt + 1), SIGNIN_CODE_STATES.used)
+  // NOT a lock. Two connection handlers that both read the stored record before either
+  // writes back both get a used record — and in WP2 that means two peers handed account
+  // key material off one code. The sign-in topic is public, so this is the realistic
+  // failure, not a theoretical one.
+  const first = consumeSigninCode(rec, t0 + 2000)
+  const second = consumeSigninCode(rec, t0 + 2000)
+  assert.ok(first && second, 'purity means both calls succeed — the caller must serialize')
 })
 
 test('a record that is not a code reads as malformed, never as live', () => {
