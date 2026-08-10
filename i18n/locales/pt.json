@@ -292,7 +292,7 @@
 
   "sendtv.tvStart": "Entrar com o seu telefone",
   "sendtv.tvStartHint": "Não digite uma senha aqui. Use um telefone que já entrou neste serviço.",
-  "sendtv.codeHint": "No seu telefone, abra Configurações e escolha Entrar numa TV. Depois digite este código.",
+  "sendtv.codeHint": "No seu telefone, abra Ajustes e escolha Entrar numa TV. Depois digite este código.",
   "sendtv.expiresIn": "Este código vale por {time}.",
   "sendtv.waiting": "Espere o seu telefone.",
   "sendtv.working": "Espere. A entrada continua.",

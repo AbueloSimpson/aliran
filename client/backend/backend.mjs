@@ -391,10 +391,18 @@ let connectedKey = null
 // by a Wi-Fi event.
 let basePolicy = 'reseed'
 // The operator key a TV sign-in is in the middle of ADOPTING, held between the
-// 'confirm-service' question and 'signed-in'. Without it `connectedKey` would still be
-// null after a virgin device adopted a service through the handover, and the next
-// {panelPubKey} for that same service would look like a service SWITCH — which replaces
-// the engine wholesale and would tear down the session the handover just established.
+// 'confirm-service' question and 'signed-in', and then written to `connectedKey` — which
+// is the whole point: it is how the engine RECORDS which service it is on when it was
+// put there by a handover rather than by a {panelPubKey} message.
+//
+// Without it, `connectedKey` stays null for the rest of that session: the screen a
+// handover finishes on persists the adopted service and goes straight to the menu, so
+// no {panelPubKey} ever follows to set it. The teardown guard below reads
+// `player && connectedKey && connectedKey !== msg.panelPubKey`, and null makes it FALSE
+// — so the failure is not a spurious switch, it is a MISSED one: the next genuine
+// change of operator ("Change service…", or a Connect retry against a different panel)
+// skips the teardown and calls connect() on an engine that still holds the first panel's
+// swarm, bee and every feed it cached.
 let adoptingKey = null
 
 function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform, remote) {
@@ -650,7 +658,15 @@ IPC.on('data', (data) => {
       // redirect channel) — the video player, not the engine, is what sends them.
       ensurePlayer().resolve(msg.streamId).then(({ port, url, source, type, durationSec, headers }) => send({ type: 'port', port, url, source, streamId: msg.streamId, recordType: type, durationSec, headers })).catch(fail)
     } else if (msg.panelPubKey) {
-      const boot = () => playerFor(msg).connect(msg.panelPubKey).catch(fail)
+      // GUARDED for the same reason 'signin-start' is: playerFor() constructs the engine,
+      // and the constructor VALIDATES its option fields — a host that passes
+      // remote:{sendtoTV:true} (a typo the SDK refuses rather than ignores) throws right
+      // here. Unguarded that is a dead app process at boot, and on the switch path below
+      // it is an unhandled rejection instead. Answering with {type:'error'} leaves the
+      // engine unbuilt, which is what the screens are already able to show.
+      const boot = () => {
+        try { playerFor(msg).connect(msg.panelPubKey).catch(fail) } catch (err) { fail(err) }
+      }
       if (player && connectedKey && connectedKey !== msg.panelPubKey) {
         // Service switch (S36: a Connect-screen retry after a wrong key, or "Change
         // service…"): the swarm, panel bee and every cached feed belong to the OLD

@@ -37,7 +37,7 @@ import type { SigninPairInfo } from '@aliran/react-native'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { formatDuration } from '../catalog'
-import { signinFailureText } from './signinFailure'
+import { signinFailureText, signinRefusalText } from './signinFailure'
 import { theme } from '../theme'
 
 // On phone TVFocusGuideView is just a View; on TV autoFocus restores focus memory (S7).
@@ -103,7 +103,8 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
     // A code the viewer can read within a moment: this resolves as soon as the code
     // exists, and the rendezvous announce lands just after.
     backend.startSignIn().then((res) => {
-      if (!res.ok) setStartError(signinFailureText(t, res.error, res.message))
+      // A refusal of the start, not a failed exchange — catalog only (signinFailure.ts).
+      if (!res.ok) setStartError(signinRefusalText(t, res.error))
     })
     return () => {
       off()
@@ -129,8 +130,11 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
 
   const heading = t('sendtv.tvStart').toLocaleUpperCase(getLocale())
 
-  // Everything back to the start, then a new code. The engine let go of the last one on
-  // whichever failure brought us here, so nothing has to be cancelled first.
+  // Everything back to the start, then a new code. Bumping `attempt` re-runs the effect,
+  // and its CLEANUP is what makes this safe from either failure: after an exchange the
+  // engine has already let go and the cleanup's cancel is a no-op, while after a refused
+  // START it may still be holding the handle that caused the refusal — and the cancel
+  // clears it before the new code is asked for.
   const restart = () => {
     setInfo(null); setShown(null); setSas(null); setPin('')
     setSubmitted(false); setConfirming(false); setBusy(false); setStartError(null)
@@ -139,10 +143,19 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
   }
 
   if (startError) {
+    // The same way out as a failed exchange, and for a reason: the likeliest refusal here
+    // is a cancel followed straight away by a re-open, where the engine has not let go of
+    // the last handle yet ("a sign-in code is already showing on this device"). Close and
+    // re-open was the only recovery, which is exactly the move the viewer just made. This
+    // button does it for them and does it properly: bumping `attempt` re-runs the effect,
+    // whose cleanup cancels the stale code before the new start goes out.
     return (
       <Panel heading={heading}>
         <Text style={styles.error}>{startError}</Text>
-        <Row><Button label={t('common.close')} onPress={onClose} focusFirst /></Row>
+        <Row>
+          <Button label={t('sendtv.startAgain')} onPress={restart} focusFirst />
+          <Button label={t('common.close')} onPress={onClose} />
+        </Row>
       </Panel>
     )
   }

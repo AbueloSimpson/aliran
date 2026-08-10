@@ -1,5 +1,35 @@
 // One sentence for a sign-in that ended, shared by both halves of "send to TV".
 //
+// TWO AUDIENCES, TWO FUNCTIONS, and the difference is which of `reason` and `message`
+// wins. That is a decision, not an accident:
+//
+//   signinFailureText   THE EXCHANGE ended: {state:'failed'}, on either half. MESSAGE
+//                       FIRST. The engine writes this prose for the viewer and it is
+//                       specific in ways a catalog leaf cannot be ("that account belongs
+//                       to a different service"), and SDK error prose staying English is
+//                       the standing decision (S56). Unchanged precedent.
+//
+//   signinRefusalText   THE START OR THE SEND was refused: the reply to startSignIn() /
+//                       sendSignIn(), before any exchange exists. CATALOG ONLY. The
+//                       message is deliberately not rendered.
+//
+// WHY THE SECOND ONE EXISTS. Every refusal on the start/send paths carries a message —
+// the worklet always fills one in, and the binding's own timeout answers 'the engine did
+// not answer' — so message-first meant the whole sendtv.failed.* family was unreachable
+// there and a Spanish television read English. Worse, the prose on that path is not
+// written for a viewer: the engine refuses a send on a build that never opted in with
+// "construct the player with { remote: { sendToTv: true } }", which is an instruction to
+// whoever packaged the app. None of these refusals happens mid-exchange, and none of
+// them says anything a leaf cannot: the coded ones (malformed, busy, expired, used,
+// version, flooded, timeout) have leaves that say the same thing in the viewer's
+// language, and the uncoded ones are construction-time or session-state checks whose
+// only honest viewer-facing summary IS the generic leaf.
+//
+// The cost is real and accepted: an uncoded refusal loses its detail (a build with no
+// `remote.sendToTv`, a session with no handover material). Recovering it needs codes on
+// those throws in sdk/player.js — an engine change — not a screen rendering developer
+// prose in the meantime.
+//
 // The reason is a vocabulary the engine owns (sdk/signin-pair.js SIGNIN_PAIR_ERRORS) and
 // each entry has its own next step, so it maps onto a CATALOG LEAF rather than onto copy
 // assembled at the call site — the sentence is looked up at render, so a language change
@@ -45,7 +75,19 @@ function safeText (s: string): string {
   return clean.length > MESSAGE_MAX ? clean.slice(0, MESSAGE_MAX) + '…' : clean
 }
 
+// The localized sentence for a reason. One literal prefix plus a tail, which is the
+// shape tools/i18n-test.mjs can read — so the whole sendtv.failed.* family stays covered
+// by the usage scan. An unrecognised reason, and a recognised one this app is too old to
+// have a leaf for, both land on the generic one: t() answers with the key it was given
+// when it has no entry, which is exactly the test for the second case.
+function leaf (t: (key: string) => string, reason: SigninPairReason | undefined): string {
+  const copy = t('sendtv.failed.' + (isSigninPairError(reason) ? reason : 'other'))
+  return copy.startsWith('sendtv.failed.') ? t('sendtv.failed.other') : copy
+}
+
 /**
+ * The EXCHANGE ended — {state:'failed'} on either half.
+ *
  * @param t       the caller's translator (so the sentence follows the live locale)
  * @param reason  the engine's reason, or undefined
  * @param message a viewer-facing sentence the ENGINE wrote, or undefined. Preferred when
@@ -59,8 +101,21 @@ export function signinFailureText (
 ): string {
   const written = typeof message === 'string' ? safeText(message) : ''
   if (written) return written
-  // One literal prefix plus a tail, which is the shape tools/i18n-test.mjs can read — so
-  // the whole sendtv.failed.* family stays covered by the usage scan.
-  const copy = t('sendtv.failed.' + (isSigninPairError(reason) ? reason : 'other'))
-  return copy.startsWith('sendtv.failed.') ? t('sendtv.failed.other') : copy
+  return leaf(t, reason)
+}
+
+/**
+ * The START or the SEND was refused — the reply to startSignIn() / sendSignIn(), before
+ * an exchange exists. Catalog only, by the argument at the top of this file: it takes no
+ * message, so no call site can pass the engine's packaging instructions to a viewer by
+ * habit.
+ *
+ * @param t       the caller's translator
+ * @param reason  the engine's reason, or undefined
+ */
+export function signinRefusalText (
+  t: (key: string) => string,
+  reason: SigninPairReason | undefined
+): string {
+  return leaf(t, reason)
 }

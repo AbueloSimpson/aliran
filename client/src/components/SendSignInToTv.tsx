@@ -11,7 +11,8 @@
 // connections with two transcripts and cannot make two screens agree. So "no" is the one
 // answer in the whole flow that sees it, and it is not a retry prompt: it means
 // something answered in the middle, and the next attempt does not belong on the same
-// network. The two buttons are the same size for that reason, and neither is a default.
+// network. The two buttons are the same size and the same weight for that reason: no
+// default, and no styling that leans on either of them.
 //
 // The four digits this screen then shows are a DIFFERENT check, against a different
 // attacker: a printed code or a forwarded screenshot with no real TV in the session at
@@ -25,7 +26,7 @@ import type { SigninPairInfo } from '@aliran/react-native'
 import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { PAIRING_GROUPS, PAIRING_GROUP_SIZE, cleanPairingInput } from '../config'
-import { signinFailureText } from './signinFailure'
+import { signinFailureText, signinRefusalText } from './signinFailure'
 import { theme } from '../theme'
 
 // A step from a FINISHED exchange must not paint a fresh sheet; sendSignIn() clears the
@@ -88,14 +89,15 @@ export function SendSignInToTv ({ onClose }: SendSignInToTvProps) {
     if (busy) return
     const code = groups.join('')
     if (code.length !== PAIRING_GROUPS * PAIRING_GROUP_SIZE) {
-      setSendError(t('sendtv.failed.malformed'))
+      setSendError(signinRefusalText(t, 'malformed'))
       return
     }
     setSendError(null)
     setBusy(true)
     const res = await backend.sendSignIn(code)
     setBusy(false)
-    if (!res.ok) setSendError(signinFailureText(t, res.error, res.message))
+    // A refusal of the send, not a failed exchange — catalog only (signinFailure.ts).
+    if (!res.ok) setSendError(signinRefusalText(t, res.error))
   }
 
   const state = info?.state
@@ -130,8 +132,11 @@ export function SendSignInToTv ({ onClose }: SendSignInToTvProps) {
     )
   } else if (state === 'match' && !answered) {
     // THE ANTI-RELAY CHECK. Never defaulted, never inferred from a dismissed sheet, and
-    // never answered by a "skip": only these two buttons answer it, and they are the
-    // same size because "no" has to be as easy to give as "yes".
+    // never answered by a "skip": only these two buttons answer it. They are the same
+    // size AND the same weight — neither carries `primary`, the accent border every other
+    // step's affirmative wears. This is the one step whose whole purpose is making "no"
+    // easy to give, so nothing here may point at "yes"; the TV's own confirm-service
+    // question does the same thing by starting focus on "No".
     body = (
       <>
         <Text style={styles.subheading}>{t('sendtv.phone.matchTitle')}</Text>
@@ -140,7 +145,7 @@ export function SendSignInToTv ({ onClose }: SendSignInToTvProps) {
         <Text style={styles.warn}>{t('sendtv.phone.matchWarn')}</Text>
         <Row>
           <Button label={t('sendtv.phone.matchNo')} onPress={() => { setAnswered(true); backend.confirmSignInMatch(false) }} />
-          <Button label={t('sendtv.phone.matchYes')} onPress={() => { setAnswered(true); backend.confirmSignInMatch(true) }} primary />
+          <Button label={t('sendtv.phone.matchYes')} onPress={() => { setAnswered(true); backend.confirmSignInMatch(true) }} />
         </Row>
       </>
     )
