@@ -397,8 +397,9 @@ export function normRedirectHeaders (v) {
 
 // EPG feed URL: a public https JSON of channels+schedules the CLIENT fetches (never
 // the panel), so https is required for the same Android-cleartext reason as art.
-// Empty clears.
-function normEpgUrl (v) {
+// Empty clears. EXPORTED because a source can put this field on every channel it imports
+// (sources.js): it is one catalog field, so it gets one rule, whoever writes it.
+export function normEpgUrl (v) {
   const s = String(v ?? '').trim()
   if (s === '') return null
   if (s.length > 2048) bad('epgUrl must be at most 2048 characters')

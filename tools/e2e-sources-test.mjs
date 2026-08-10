@@ -11,8 +11,10 @@
 // state → scheduler (never-synced source syncs itself) → remove with keepChannels
 // (detach) and without (purge) → M3U sources (group filter + `filtered` count, ids
 // slugged from the display names with -2 dedup, #EXTVLCOPT playback headers with
-// per-key degrade, no EPG pointers, exclude-by-slug, token rotation really appending,
-// 304 idempotency, cross-format hints keeping the last good state) → redirect playback
+// per-key degrade, exclude-by-slug, token rotation really appending, 304 idempotency,
+// cross-format hints keeping the last good state) → the m3u PROGRAM GUIDE (opt-in
+// tvg-id → epgId + header url-tvg → epgUrl, the override, and the duplicate-id guard
+// that keeps an events playlist from collapsing in the EPG service) → redirect playback
 // headers over the admin API (allowlist, no-url refusal, url-clear clearing them).
 // Exits 0 on PASS.
 import assert from 'assert'
@@ -760,6 +762,305 @@ try {
   assert.deepStrictEqual(sources.setSource(ctx, 'nfl', { titleInclude: '[NFL], [AFL]' }).titleInclude, ['[NFL]', '[AFL]'], 'the comma string form still splits into two rules')
   await api('PATCH', '/api/sources/nfl', { titleInclude: ['[NFL]'] }, token)
   log('L3: m3u name filters — include takes only matches, exclude removes and WINS, both case-insensitive, comma-string + dedupe, etag reset, one `filtered` count, an empty-name-filter prune FLAGGED, 1-char and comma-bearing rules refused, and three sources over ONE playlist make disjoint MLB/NFL/rest child rails ✓')
+
+  // ===== Test L4: m3u PROGRAM GUIDE — opt-in epgId + the duplicate-id guard =====
+  // A playlist DOES declare its guide: the #EXTM3U header carries url-tvg, and each entry's
+  // tvg-id is that guide's channel id. Taking the IDS is opt-in per source, because an
+  // EVENTS playlist shares ONE placeholder id across its whole day and the EPG service takes
+  // the FIRST match on a duplicate epgId (epg/src/guide.js) — a shared id would collapse the
+  // rail onto one guide entry. This fixture holds both shapes at once: two real, distinct
+  // ids, two entries sharing a dummy id, and one entry with no tvg-id at all.
+  //
+  // The header's url is the other half, and the rule there is the strict one: it is REPORTED
+  // to the operator (epgDeclared) and never written to a channel. That url is XMLTV, while
+  // the client's epgUrl consumer JSON.parses what it fetches, so a record carrying it would
+  // buy every viewer device a large unreadable download. Only the operator's own epgUrl —
+  // which they point at a provider-JSON guide — reaches the catalog.
+  const guideUrl = 'https://guide.example/tv.xml'
+  const guideM3U = (header) => [
+    header,
+    '#EXTINF:-1 tvg-id="Alpha.us" group-title="TV",Alpha One',
+    'https://cdn.example/g/alpha.m3u8',
+    '#EXTINF:-1 tvg-id="Beta.us" group-title="TV",Beta Two',
+    'https://cdn.example/g/beta.m3u8',
+    '#EXTINF:-1 tvg-id="Soccer.Dummy.us" group-title="TV",Match One',
+    'https://cdn.example/g/m1.m3u8',
+    '#EXTINF:-1 tvg-id="Soccer.Dummy.us" group-title="TV",Match Two',
+    'https://cdn.example/g/m2.m3u8',
+    '#EXTINF:-1 group-title="TV",No Guide Id',
+    'https://cdn.example/g/none.m3u8',
+    ''
+  ].join('\n')
+  texts['/guide.m3u'] = guideM3U(`#EXTM3U url-tvg="${guideUrl}"`); rev++
+  const guideSrcUrl = feedBase + '/guide.m3u'
+
+  // (1) DEFAULT OFF — byte-for-byte the behaviour that shipped before the guide existed.
+  r = await api('POST', '/api/sources', { name: 'tv', url: guideSrcUrl, format: 'm3u', category: 'TV', groups: ['TV'], prefix: 'tv.' }, token)
+  assert.strictEqual(r.status, 201, 'add the guide source: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.epg, false, 'epg defaults OFF — an existing source cannot change under an operator')
+  assert.strictEqual(r.body.epgUrl, null, 'and no guide-url override')
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.added, 5, 'five entries imported: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.epgSkipped, 0, 'nothing to refuse while the guide is off')
+  for (const id of ['tv.Alpha-One', 'tv.Beta-Two', 'tv.Match-One']) {
+    const c = (await db.get('catalog/' + id)).value
+    assert.strictEqual(c.epgId, null, `${id} has no epgId while epg is off`)
+    assert.strictEqual(c.epgUrl, null, `${id} has no epgUrl while epg is off`)
+  }
+  // The declared guide is REPORTED from the very first sync — that is what makes it useful:
+  // an operator learns the playlist has a guide (and which document to register in the EPG
+  // service) before deciding whether to take the ids.
+  assert.strictEqual(r.body.epgDeclared, guideUrl, 'the header url is detected and reported even with epg off: ' + JSON.stringify(r.body))
+
+  // (2) TURN IT ON — tvg-id becomes epgId. The header url stays OFF the records, and the
+  // toggle resets the ETag (identical bytes, different mapping: a 304 would skip the re-map).
+  assert.ok(sources.loadSources(dir).tv.etag, 'a synced source holds an etag')
+  r = await api('PATCH', '/api/sources/tv', { epg: true }, token)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.epg, true, 'epg round-trips through set-source')
+  assert.strictEqual(sources.loadSources(dir).tv.epg, true, 'and persists to the registry')
+  assert.strictEqual(sources.loadSources(dir).tv.etag, null, 'toggling epg resets the ETag')
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, false, 'the reset ETag really re-read the body')
+  assert.strictEqual(r.body.updated, 2, 'only the two entries that GAIN a guide are re-put: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.added + r.body.removed, 0, 'turning the guide on is not a channel change')
+  let g = (await db.get('catalog/tv.Alpha-One')).value
+  assert.strictEqual(g.epgId, 'Alpha.us', 'epgId comes from tvg-id')
+  assert.strictEqual(g.epgUrl, null, 'the playlist header url NEVER lands on a record — it is XMLTV, and the client parses JSON')
+  assert.strictEqual(r.body.epgDeclared, guideUrl, 'it is reported instead, so the operator can register it in the EPG service')
+  assert.strictEqual((await db.get('catalog/tv.Beta-Two')).value.epgId, 'Beta.us')
+  assert.strictEqual((await db.get('catalog/tv.Beta-Two')).value.epgUrl, null)
+
+  // (3) THE DUPLICATE-ID GUARD: the two matches share "Soccer.Dummy.us", so NEITHER keeps
+  // it — the id names no single channel, and in guide.js the first one would swallow the
+  // other's slot. They are counted, which is the only signal the operator gets.
+  assert.strictEqual(r.body.epgSkipped, 2, 'both entries sharing a dummy id are counted: ' + JSON.stringify(r.body))
+  for (const id of ['tv.Match-One', 'tv.Match-Two']) {
+    const c = (await db.get('catalog/' + id)).value
+    assert.strictEqual(c.epgId, null, `${id} keeps NO epgId — a shared id is not a channel id`)
+    assert.strictEqual(c.epgUrl, null, `${id} keeps no epgUrl either — a pointer with no id names nothing`)
+  }
+  // (4) An entry with no tvg-id at all: no guide, no complaint, and it is not "skipped".
+  const noId = (await db.get('catalog/tv.No-Guide-Id')).value
+  assert.strictEqual(noId.epgId, null, 'an entry with no tvg-id gets no epgId')
+  assert.strictEqual(noId.epgUrl, null)
+  assert.strictEqual(r.body.skippedCount, 0, 'none of this is an import error')
+  const tvRow = (await api('GET', '/api/sources', undefined, token)).body.find((s) => s.name === 'tv')
+  assert.strictEqual(tvRow.lastReport.epgSkipped, 2, 'the refused count reaches the dashboard report')
+  assert.strictEqual(tvRow.lastReport.epgDeclared, guideUrl, 'and so does the declared guide address')
+  // …and both are carried forward over a 304, like `filtered` — the body was not re-measured.
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, true, 'unchanged playlist revalidates to 304')
+  assert.strictEqual(r.body.epgSkipped, 2, 'a 304 carries the last measurement forward instead of blinking to zero')
+  assert.strictEqual(r.body.epgDeclared, guideUrl, 'the declared guide address survives a 304 too')
+
+  // (5) Deselection still works with a guide on. The channels dialog must report the SLUG
+  // as the feed id for an m3u — mapM3U excludes on the slug, so reading the new epgId here
+  // would hand back a key the sync ignores and the deselection would silently do nothing.
+  r = await api('GET', '/api/sources/tv/channels', undefined, token)
+  assert.ok(r.body.channels.some((c) => c.feedId === 'Alpha-One'), 'the dialog reports the slug, not the tvg-id: ' + JSON.stringify(r.body.channels.map((c) => c.feedId)))
+  await api('PATCH', '/api/sources/tv', { exclude: [{ id: 'Alpha-One', title: 'Alpha One' }] }, token)
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.removed, 1, 'a deselection on a guide-carrying m3u source still bites')
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')), null)
+  await api('PATCH', '/api/sources/tv', { exclude: [] }, token)
+  await api('POST', '/api/sources/tv/sync', undefined, token)
+
+  // (6) THE OVERRIDE is the ONLY thing that becomes a channel's epgUrl — and it too resets
+  // the ETag. An operator sets it to a guide the APPS can read (provider JSON), which is
+  // exactly why the playlist's own XMLTV address is not allowed to take this slot.
+  r = await api('PATCH', '/api/sources/tv', { epgUrl: 'https://other.example/guide.json' }, token)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.epgUrl, 'https://other.example/guide.json', 'the override round-trips')
+  assert.strictEqual(sources.loadSources(dir).tv.etag, null, 'an epgUrl change resets the ETag')
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.updated, 2, 'the two guide-carrying channels are re-pointed')
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')).value.epgUrl, 'https://other.example/guide.json', 'the operator override IS written')
+  assert.strictEqual(r.body.epgDeclared, guideUrl, 'and the playlist still declares its own, unrelated guide')
+  // It is a CATALOG field, so it takes the CATALOG's rule (normEpgUrl in ops.js): https
+  // only, with NO loopback carve-out. The feed url has that carve-out because the PANEL
+  // fetches it; this address is fetched by the VIEWER'S DEVICE, where "loopback" means the
+  // device's own engine — a plain-http value there is a live footgun, not a test aid.
+  r = await api('PATCH', '/api/sources/tv', { epgUrl: 'http://127.0.0.1:9/guide.json' }, token)
+  assert.strictEqual(r.status, 400, 'a LOOPBACK http guide url must be refused — the client fetches this, not the panel')
+  assert.match(r.body.error, /epgUrl must be an https/, 'and the catalog validator is the one that says so: ' + r.body.error)
+  assert.strictEqual(sources.loadSources(dir).tv.epgUrl, 'https://other.example/guide.json', 'the refused edit changed nothing')
+  // Clearing it leaves the channels with no pointer at all — never the header's url.
+  r = await api('PATCH', '/api/sources/tv', { epgUrl: '' }, token)
+  assert.strictEqual(r.body.epgUrl, null, 'an empty string clears the override')
+  await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')).value.epgUrl, null, 'clearing it does NOT fall back to the playlist header')
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')).value.epgId, 'Alpha.us', 'the guide id is untouched by any of this')
+  r = await api('POST', '/api/sources', { name: 'badguide', url: guideSrcUrl, format: 'm3u', category: 'X', epgUrl: 'http://insecure.example/guide.json' }, token)
+  assert.strictEqual(r.status, 400, 'a non-loopback http guide url is refused too')
+  // A guide url with the guide switched OFF reaches no channel, so it is not STORED either.
+  // The patch is still ACCEPTED, because that is exactly what the dashboard sends when an
+  // operator unticks the box with text left in the field — a refusal on the way OUT of a
+  // feature is the worst place to put one.
+  r = await api('PATCH', '/api/sources/tv', { epgUrl: 'https://other.example/guide.json' }, token)
+  assert.strictEqual(r.body.epgUrl, 'https://other.example/guide.json')
+  r = await api('PATCH', '/api/sources/tv', { epg: false, epgUrl: 'https://other.example/guide.json' }, token)
+  assert.strictEqual(r.status, 200, 'unticking the box with the url still filled in is ACCEPTED: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.epgUrl, null, 'and the inert url is dropped instead of stored')
+  await api('PATCH', '/api/sources/tv', { epg: true }, token)
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')).value.epgUrl, null, 'so switching the guide back on does not resurrect it')
+
+  // (7) THE HEADER IS INERT ON RECORDS, proved from the other side: change it, and NOTHING
+  // in the catalog moves. A playlist that declares no guide still maps its ids (the P2P path
+  // matches on epgId alone), and an unusable url-tvg is reported as "none", not as an error.
+  texts['/guide.m3u'] = guideM3U('#EXTM3U'); rev++
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.updated + r.body.added + r.body.removed, 0, 'removing the header url changes NO channel: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.epgDeclared, null, 'and the report says the playlist now declares nothing')
+  g = (await db.get('catalog/tv.Alpha-One')).value
+  assert.strictEqual(g.epgId, 'Alpha.us', 'the guide id survives a header with no url-tvg')
+  assert.strictEqual(g.epgUrl, null)
+  texts['/guide.m3u'] = guideM3U('#EXTM3U url-tvg="not a url"'); rev++
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.status, 200, 'an unusable url-tvg is not a sync failure')
+  assert.strictEqual(r.body.epgDeclared, null, 'a junk header url is not echoed into the report either')
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')).value.epgUrl, null)
+
+  // (8) THE CROSS-SOURCE HALF OF THE GUARD. mapM3U only sees one sync's own entries, but
+  // the recipe this feature ships with — several sources over ONE playlist url, split by
+  // titleInclude — puts entries of the same guide under two sources. A second source that
+  // claims an id an existing channel already holds would collapse in guide.js exactly like
+  // an in-playlist duplicate, and nothing would report it (a duplicate is MATCHED, so the
+  // service's status() never lists it as unmatched). applyFeed holds the catalog, so it
+  // catches that half: the incumbent keeps the id, the newcomer gets none, same counter.
+  texts['/guide.m3u'] = guideM3U(`#EXTM3U url-tvg="${guideUrl}"`); rev++
+  await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')).value.epgId, 'Alpha.us', 'the incumbent holds Alpha.us')
+  r = await api('POST', '/api/sources', { name: 'tv2', url: guideSrcUrl, format: 'm3u', category: 'TV2', groups: ['TV'], titleInclude: ['Alpha'], prefix: 'tv2.', epg: true }, token)
+  assert.strictEqual(r.status, 201, 'a second source over the same playlist: ' + JSON.stringify(r.body))
+  r = await api('POST', '/api/sources/tv2/sync', undefined, token)
+  assert.strictEqual(r.body.added, 1, 'it imports its one entry: ' + JSON.stringify(r.body))
+  assert.deepStrictEqual(r.body.conflicts, [], 'the prefixes keep the CHANNEL ids apart — this is a guide-id clash, not a channel one')
+  assert.strictEqual(r.body.epgSkipped, 1, 'and the guide id it wanted is already taken, so it is refused and counted')
+  assert.strictEqual((await db.get('catalog/tv2.Alpha-One')).value.epgId, null, 'the newcomer gets NO epgId')
+  assert.strictEqual((await db.get('catalog/tv2.Alpha-One')).value.epgUrl, null)
+  assert.strictEqual((await db.get('catalog/tv.Alpha-One')).value.epgId, 'Alpha.us', 'and the incumbent is untouched')
+  const tv2Row = (await api('GET', '/api/sources', undefined, token)).body.find((s) => s.name === 'tv2')
+  assert.strictEqual(tv2Row.lastReport.epgSkipped, 1, 'the cross-source refusal reaches the dashboard report')
+  await api('DELETE', '/api/sources/tv2', undefined, token)
+  // A MANUAL channel counts as an incumbent too — same catalog, same clash, and it is the
+  // shape no source-level rule could ever cover. `tv` is switched off first so it releases
+  // its ids: the point here is that a HAND-MADE channel blocks the import, and with `tv`
+  // still holding Alpha.us the count would prove nothing new.
+  await api('PATCH', '/api/sources/tv', { epg: false }, token)
+  await api('POST', '/api/sources/tv/sync', undefined, token)
+  await ops.addStream(ctx, 'guide-manual', { title: 'Manual', url: 'https://cdn.example/manual.m3u8', epgUrl: 'https://guide.example/g.json', epgId: 'Alpha.us' })
+  r = await api('POST', '/api/sources', { name: 'tv3', url: guideSrcUrl, format: 'm3u', category: 'TV3', groups: ['TV'], titleInclude: ['Alpha'], prefix: 'tv3.', epg: true }, token)
+  assert.strictEqual(r.status, 201)
+  r = await api('POST', '/api/sources/tv3/sync', undefined, token)
+  assert.strictEqual(r.body.epgSkipped, 1, 'a hand-made channel holding the id refuses the import too')
+  assert.strictEqual((await db.get('catalog/tv3.Alpha-One')).value.epgId, null)
+  assert.strictEqual((await db.get('catalog/guide-manual')).value.epgId, 'Alpha.us', 'the manual channel keeps its guide id')
+  // Once the incumbent is gone the id is free again — the guard is a live check, not a scar.
+  // The `rev++` is the honest part: freeing an id changes the CATALOG, not the playlist, so
+  // an unchanged feed still answers 304 and the sync re-maps nothing (the report carries the
+  // last measurement forward, as it does for `filtered`). The re-map arrives with the next
+  // real body — any feed change, or any source edit, which resets the ETag.
+  await ops.deleteStream(ctx, 'guide-manual')
+  rev++
+  r = await api('POST', '/api/sources/tv3/sync', undefined, token)
+  assert.strictEqual(r.body.epgSkipped, 0, 'with the incumbent removed nothing is refused')
+  assert.strictEqual((await db.get('catalog/tv3.Alpha-One')).value.epgId, 'Alpha.us', 'and the id lands on the channel that wanted it')
+  await api('DELETE', '/api/sources/tv3', undefined, token)
+  // A CONFLICT is not also a guide refusal. This manual channel sits on the very id the
+  // next source would import AND holds the guide id it would want, so both tests fire on
+  // one record — but the record is never written (it belongs to someone else), so it must
+  // be reported once, as a conflict, and not a second time as a channel that lost a guide.
+  await ops.addStream(ctx, 'tv4.Alpha-One', { title: 'Squatter', url: 'https://cdn.example/sq.m3u8', epgUrl: 'https://guide.example/g.json', epgId: 'Alpha.us' })
+  r = await api('POST', '/api/sources', { name: 'tv4', url: guideSrcUrl, format: 'm3u', category: 'TV4', groups: ['TV'], titleInclude: ['Alpha'], prefix: 'tv4.', epg: true }, token)
+  assert.strictEqual(r.status, 201)
+  r = await api('POST', '/api/sources/tv4/sync', undefined, token)
+  assert.deepStrictEqual(r.body.conflicts, ['tv4.Alpha-One'], 'the id belongs to a manual channel — reported as a conflict')
+  assert.strictEqual(r.body.added, 0, 'and nothing is imported over it')
+  assert.strictEqual(r.body.epgSkipped, 0, 'the same record is NOT counted a second time as a guide refusal')
+  assert.strictEqual((await db.get('catalog/tv4.Alpha-One')).value.epgId, 'Alpha.us', 'the manual channel is untouched, guide id included')
+  await api('DELETE', '/api/sources/tv4', undefined, token)
+  await ops.deleteStream(ctx, 'tv4.Alpha-One')
+  await api('PATCH', '/api/sources/tv', { epg: true }, token)
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.updated, 2, 'and tv takes its ids back once nothing else holds them')
+  assert.strictEqual(r.body.epgSkipped, 2, 'the in-playlist duplicate is still refused, as always')
+
+  // (9) TURNING IT BACK OFF returns every channel to null/null.
+  r = await api('PATCH', '/api/sources/tv', { epg: false }, token)
+  assert.strictEqual(sources.loadSources(dir).tv.etag, null, 'turning it off resets the ETag too')
+  r = await api('POST', '/api/sources/tv/sync', undefined, token)
+  assert.strictEqual(r.body.updated, 2, 'the guide-carrying channels are re-put without pointers')
+  assert.strictEqual(r.body.epgSkipped, 0, 'and nothing is refused any more')
+  g = (await db.get('catalog/tv.Alpha-One')).value
+  assert.strictEqual(g.epgId, null)
+  assert.strictEqual(g.epgUrl, null)
+
+  // (10) The header parser itself, checked directly: the alias spellings, a bare (unquoted)
+  // value, a multi-guide header, and a url whose query string carries a comma.
+  assert.strictEqual(sources.parseM3U('#EXTM3U url-tvg="https://a.example/g.xml"\n').tvgUrl, 'https://a.example/g.xml')
+  assert.strictEqual(sources.parseM3U('#EXTM3U x-tvg-url="https://b.example/g.xml"\n').tvgUrl, 'https://b.example/g.xml', 'the x-tvg-url alias')
+  assert.strictEqual(sources.parseM3U('#EXTM3U tvg-url=https://c.example/g.xml\n').tvgUrl, 'https://c.example/g.xml', 'the tvg-url alias, unquoted')
+  assert.strictEqual(sources.parseM3U('#EXTM3U url-tvg="https://a.example/g.xml,https://b.example/g.xml"\n').tvgUrl, 'https://a.example/g.xml', 'a multi-guide header yields the FIRST url — one pointer can name only one')
+  assert.strictEqual(sources.parseM3U('#EXTM3U url-tvg="https://a.example/g.xml?ids=1,2"\n').tvgUrl, 'https://a.example/g.xml?ids=1,2', 'a comma inside one url is NOT a separator')
+  assert.strictEqual(sources.parseM3U('#EXTM3U\n').tvgUrl, null, 'a header that declares nothing yields null')
+
+  // (11) Both guide fields are M3U-ONLY, and a json source REFUSES a meaningful one instead
+  // of storing a setting that does nothing (mapFeed reads neither). A falsy one is still
+  // accepted, because every surface posts the whole form for a json source.
+  r = await api('POST', '/api/sources', { name: 'jsonepg', url: animeUrl, category: 'X', epg: true }, token)
+  assert.strictEqual(r.status, 400, 'epg on a json source must be refused')
+  assert.match(r.body.error, /m3u sources only/, 'and the error says so: ' + r.body.error)
+  r = await api('POST', '/api/sources', { name: 'jsonepg', url: animeUrl, category: 'X', epgUrl: 'https://guide.example/g.json' }, token)
+  assert.strictEqual(r.status, 400, 'epgUrl on a json source must be refused too')
+  r = await api('POST', '/api/sources', { name: 'jsonepg', url: animeUrl, category: 'X', epg: false, epgUrl: '' }, token)
+  assert.strictEqual(r.status, 201, 'the falsy pair every dashboard form posts is still fine: ' + JSON.stringify(r.body))
+  r = await api('PATCH', '/api/sources/jsonepg', { epg: true }, token)
+  assert.strictEqual(r.status, 400, 'set-source refuses it as well — both write paths')
+  assert.strictEqual(sources.loadSources(dir).jsonepg.epg, false, 'and the refused edit changed nothing')
+  // Judged against the format the edit LEAVES BEHIND, so one patch can do both.
+  r = await api('PATCH', '/api/sources/jsonepg', { format: 'm3u', epg: true }, token)
+  assert.strictEqual(r.status, 200, 'switching to m3u and taking the guide in ONE patch is allowed: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.epg, true)
+  // …and switching back to json cannot strand the m3u-only fields.
+  r = await api('PATCH', '/api/sources/jsonepg', { format: 'json' }, token)
+  assert.strictEqual(r.body.epg, false, 'leaving m3u clears the guide flag instead of stranding it')
+  assert.strictEqual(r.body.epgUrl, null)
+  await api('DELETE', '/api/sources/jsonepg', undefined, token)
+
+  // (12) THE GUARD MUST NOT TOUCH A JSON SOURCE. A json entry's guide lives in the feed it
+  // already points at, and the app resolves it by LOOKING THE ID UP in that feed
+  // (sdk/react-native/src/epg.ts: byId.get(epgId)), so several channels holding one provider
+  // id all show the right programmes. First-match-wins is the P2P path's constraint, which
+  // is where m3u + `epg` delivers. Two json sources over ONE provider feed — the documented
+  // way to split a feed by category — therefore share EVERY id by design, and a guard that
+  // fired here would strip working guides off the second one and report it in words about a
+  // playlist and a toggle that json sources do not have.
+  r = await api('POST', '/api/sources', { name: 'ja', url: animeUrl, category: 'JA', prefix: 'ja.' }, token)
+  assert.strictEqual(r.status, 201)
+  r = await api('POST', '/api/sources/ja/sync', undefined, token)
+  assert.strictEqual(r.body.added, 3, 'the first json source imports: ' + JSON.stringify(r.body))
+  assert.strictEqual((await db.get('catalog/ja.ch0')).value.epgId, 'ch0', 'a json entry keeps the provider id as its guide id')
+  // A hand-assigned epgId on a manual channel is the same shape (the fleet has many), and
+  // must survive a source that legitimately carries the same provider id.
+  await ops.addStream(ctx, 'json-manual', { title: 'Manual', url: 'https://cdn.example/jm.m3u8', epgUrl: 'https://guide.example/g.json', epgId: 'ch1' })
+  r = await api('POST', '/api/sources', { name: 'jb', url: animeUrl, category: 'JB', prefix: 'jb.' }, token)
+  assert.strictEqual(r.status, 201)
+  r = await api('POST', '/api/sources/jb/sync', undefined, token)
+  assert.strictEqual(r.body.added, 3, 'the second json source imports the same three entries')
+  assert.strictEqual(r.body.epgSkipped, 0, 'and NOTHING is refused — a shared id is normal here: ' + JSON.stringify(r.body))
+  for (const id of ['ch0', 'ch1', 'ch2']) {
+    const c = (await db.get('catalog/jb.' + id)).value
+    assert.strictEqual(c.epgId, id, `jb.${id} keeps its guide id`)
+    assert.strictEqual(c.epgUrl, animeUrl, `jb.${id} keeps its guide url`)
+    assert.strictEqual((await db.get('catalog/ja.' + id)).value.epgId, id, `ja.${id} is untouched too`)
+  }
+  assert.strictEqual((await db.get('catalog/json-manual')).value.epgId, 'ch1', 'and the manual channel keeps the id it was given by hand')
+  await ops.deleteStream(ctx, 'json-manual')
+  await api('DELETE', '/api/sources/ja', undefined, token)
+  await api('DELETE', '/api/sources/jb', undefined, token)
+  log('L4: m3u program guide — off by default, tvg-id → epgId when on, the playlist header url is REPORTED (epgDeclared) and never written to a channel, only the operator-set epgUrl reaches one (https-only, the CATALOG rule — loopback refused — and dropped when the guide is off), a tvg-id shared inside the playlist OR already held by another source / a manual channel is refused on the newcomer and counted (epgSkipped, both counts carried over 304s), no tvg-id = no guide, deselection still keyed on the slug, etag reset on both toggles, header alias/bare/multi-url parsing, both fields refused on a json source, and the whole guard held OFF json sources — where two of them over one feed share every id legitimately ✓')
 
   // ===== Test M: redirect playback headers over the admin API (Part A) =====
   r = await api('POST', '/api/streams', { id: 'hdr-one', url: 'https://cdn.example/hdr.m3u8', headers: { Referer: 'https://provider.example/', 'USER-AGENT': ' Mozilla/5.0 ' } }, token)

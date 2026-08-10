@@ -13,7 +13,25 @@
 //     per-channel playback `headers` (hotlink-protected providers), a `groups` filter
 //     selects which group-titles this source takes, `titleInclude`/`titleExclude` select
 //     inside a group by entry NAME (one mixed "Live Events" group split into a rail per
-//     sport), and the entries carry NO EPG pointer — a playlist is not a program guide.
+//     sport), and the guide pointers are OPT-IN per source (`epg`, default off).
+//
+// The guide of an m3u source (`epg: true`): a playlist DOES declare its program guide —
+// the `#EXTM3U` header carries `url-tvg="…"` (aliases `x-tvg-url` / `tvg-url`) and each
+// entry's `tvg-id` is that guide's channel id. `epg` maps tvg-id → `epgId`, which is the
+// field that MATTERS: the EPG service ingests the guide document itself and matches
+// guide-channel → stream by that id. The header's url is READ AND REPORTED to the operator
+// (`epgDeclared` in the sync report) but never written onto a channel — it names an XMLTV
+// document, and the client-side consumer of `epgUrl` JSON.parses what it fetches, so
+// stamping it on records would cost every viewer device a large useless download. `epgUrl`
+// is written only from the per-source override, which an operator points at a
+// provider-JSON guide the client can read.
+//
+// `epg` is OFF by default and must stay a decision, because an EVENT playlist writes
+// PLACEHOLDER tvg-ids — a whole day of football under one "Soccer.Dummy.us" — and the EPG
+// service maps by epgId with FIRST MAPPING WINS (epg/src/guide.js), so a shared id would
+// collapse a hundred events onto one entry and hang filler programmes on them. mapM3U
+// therefore also refuses a tvg-id that lands on more than one imported entry of the same
+// sync, and counts those in the report as `epgSkipped`.
 //
 // Trust boundary: the feed is THIRD-PARTY DATA, never instructions. Every entry
 // passes the same validators as admin input (normRedirectUrl/normArt/checkName),
@@ -49,7 +67,7 @@ import crypto from 'hypercore-crypto'
 import { sealTo } from '@aliran/core'
 import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { loadSecrets, saveSecrets } from './store.js'
-import { OpsError, checkName, deleteStream, normArt, normRedirectUrl, normRedirectHeaders } from './ops.js'
+import { OpsError, checkName, deleteStream, normArt, normEpgUrl, normRedirectUrl, normRedirectHeaders } from './ops.js'
 import { reconcilePackages } from './packages.js'
 
 const bad = (m) => { throw new OpsError('bad-request', m) }
@@ -109,6 +127,33 @@ export function normSourceUrl (v) {
     bad('url must be https:// (plain http:// is allowed only on loopback, for local testing)')
   }
   return s
+}
+
+// The per-source GUIDE url (m3u): the address the source writes into every channel's
+// `epgUrl`. Empty clears it, and clearing means the channels carry no pointer at all —
+// never a fallback to the playlist header (see mapM3U for why that url stays off records).
+//
+// Validated with the CATALOG's rule, `normEpgUrl` from ops.js, and NOT with normSourceUrl:
+// the feed url is fetched by the PANEL, but this one is fetched by the CLIENT, so the
+// loopback carve-out that makes local feed testing possible would be actively harmful here
+// — every viewer device would call its OWN loopback (where the engine serves plain http)
+// and parse whatever answered. ops.js refuses http for exactly that reason, and this is
+// the same catalog field a manual channel writes, so it gets the same rule.
+function normEpgOverrideUrl (v) {
+  return normEpgUrl(v) // already returns null for empty/absent
+}
+
+// `epg` and `epgUrl` are M3U-ONLY: mapFeed reads neither, because a json feed's own entry
+// ids ARE its guide ids and its feed url doubles as the guide pointer. Storing them on a
+// json source would be a setting that visibly exists and silently does nothing — the exact
+// shape of a support case — so a MEANINGFUL value is refused at the door on both write
+// paths. A falsy one is not: `epg:false` / `epgUrl:''` is what every surface sends for a
+// json source (the dashboard always posts the whole form), and refusing that would break
+// them all.
+function checkEpgFormat (format, epg, epgUrl) {
+  if (format === 'm3u') return
+  if (epg != null && normBool(epg)) bad("epg applies to m3u sources only — a json feed already carries its own guide ids (set format to 'm3u')")
+  if (epgUrl != null && String(epgUrl).trim() !== '') bad("epgUrl applies to m3u sources only — a json feed's own url is already its guide pointer (set format to 'm3u')")
 }
 
 function normCategoryLabel (v) {
@@ -245,6 +290,7 @@ export function addSource (ctx, name, opts = {}) {
   checkName(name, 'source name')
   const sources = loadSources(ctx.dataDir)
   if (hasOwn(sources, name)) exists(`source "${name}" already exists (use set-source to edit)`)
+  checkEpgFormat(normFormat(opts.format), opts.epg, opts.epgUrl)
   sources[name] = {
     url: normSourceUrl(opts.url),
     format: normFormat(opts.format),
@@ -255,6 +301,11 @@ export function addSource (ctx, name, opts = {}) {
     // Source-scoped cleartext exemption (see normRedirectUrl in ops.js): OFF by default,
     // so a source imports https-only until the operator deliberately opts a provider in.
     allowCleartext: opts.allowCleartext == null ? false : normBool(opts.allowCleartext),
+    // Guide pointers for an m3u source (see the header note): OFF by default, so every
+    // source configured before this — the live-events one above all — keeps mapping
+    // epgUrl/epgId to null and nothing about its channels changes.
+    epg: opts.epg == null ? false : normBool(opts.epg),
+    epgUrl: normEpgOverrideUrl(opts.epgUrl), // the ONLY thing that becomes a channel's epgUrl
     intervalMs: normInterval(opts.intervalMs, scfg(ctx).defaultIntervalMs),
     exclude: normExclude(opts.exclude),
     groups: normGroups(opts.groups),
@@ -266,6 +317,11 @@ export function addSource (ctx, name, opts = {}) {
     lastReport: null,
     addedAt: Date.now()
   }
+  // A guide url with the guide switched off never reaches a channel, so storing it would
+  // be the same silent no-op checkEpgFormat refuses for a json source. Drop it instead of
+  // refusing it: a dashboard form posts every field, so "unticked, with text still in the
+  // box" is a shape an operator produces by accident, not an error worth an error page.
+  if (!sources[name].epg) sources[name].epgUrl = null
   saveSources(ctx.dataDir, sources)
   return { name, ...sources[name] }
 }
@@ -277,12 +333,20 @@ export function setSource (ctx, name, fields = {}) {
   const sources = loadSources(ctx.dataDir)
   const s = hasOwn(sources, name) ? sources[name] : null
   if (!s) notFound(`no such source: ${name}`)
+  // The guide fields are m3u-only, judged against the format this edit LEAVES BEHIND — the
+  // dashboard sends the whole form, so "turn the guide on" and "this is an m3u" can arrive
+  // in the same patch, and reading the stored format would refuse a request that is fine.
+  checkEpgFormat(fields.format != null ? normFormat(fields.format) : s.format || 'json', fields.epg, fields.epgUrl)
   if (fields.url != null) { const u = normSourceUrl(fields.url); if (u !== s.url) { s.url = u; s.etag = null } }
   if (fields.format != null) {
     // A format change is a different PARSE of bytes that may be byte-identical, so the
     // cached validator must not answer 304 and skip the very re-read that was asked for.
     const f = normFormat(fields.format)
     if (f !== (s.format || 'json')) s.etag = null
+    // Leaving m3u takes the m3u-only guide fields with it. They cannot be REFUSED here (the
+    // patch that switches format usually carries no guide fields at all), and leaving them
+    // set would strand exactly the silent no-op checkEpgFormat exists to prevent.
+    if (f !== 'm3u' && (s.epg || s.epgUrl)) { s.epg = false; s.epgUrl = null }
     s.format = f
   }
   if (fields.category != null) s.category = normCategoryLabel(fields.category)
@@ -298,6 +362,25 @@ export function setSource (ctx, name, fields = {}) {
     if (next !== !!s.allowCleartext) s.etag = null
     s.allowCleartext = next
   }
+  // The two guide fields, same ETag dance as format/groups/allowCleartext and for the same
+  // reason: they change how IDENTICAL bytes MAP (an entry gains or loses its epgId/epgUrl),
+  // so a cached ETag would answer 304 and skip the very re-map the operator just asked for.
+  if (fields.epg != null) {
+    const next = normBool(fields.epg)
+    if (next !== !!s.epg) s.etag = null
+    s.epg = next
+  }
+  if (fields.epgUrl !== undefined) { // `undefined` = untouched; '' CLEARS it (no epgUrl on the channels)
+    const next = normEpgOverrideUrl(fields.epgUrl)
+    if (next !== (s.epgUrl ?? null)) s.etag = null
+    s.epgUrl = next
+  }
+  // Same invariant as addSource, applied AFTER both fields so the order they arrive in
+  // cannot change the outcome: the guide off means no guide url. It is written as a state
+  // rule and not as a transition, because the dashboard unticks the box while the text is
+  // still in the field, and that patch must be accepted rather than refused (a refusal on
+  // the way OUT of a feature is the worst place to put one).
+  if (!s.epg) s.epgUrl = null
   if (fields.intervalMs != null) s.intervalMs = normInterval(fields.intervalMs, scfg(ctx).defaultIntervalMs)
   if (fields.exclude !== undefined) {
     const next = normExclude(fields.exclude)
@@ -472,7 +555,20 @@ function mapFeed (source, feed, { maxChannels }) {
   // — it is keyed by PROVIDER ids, so `exclude` names an entry exactly and a name rule would
   // only add a second, fuzzier way to say the same thing — so it reports zero and both
   // mappers hand applyFeed/doSync the same shape.
-  return { entries, skipped, truncated, excluded, filtered: 0 }
+  //
+  // `epgGuard: false` — and therefore `epgSkipped: 0` — says the duplicate-epgId guard DOES
+  // NOT APPLY to a json source, and that is a rule about the two delivery paths, not an
+  // omission. A json entry's guide lives in the SAME feed (epgUrl = the feed url, epgId =
+  // the entry id) and the app reads it by LOOKUP — sdk/react-native/src/epg.ts indexes the
+  // feed and does byId.get(epgId) — so ten channels sharing one provider id all show the
+  // right programmes. First-match-wins is a constraint of the P2P path alone, where the EPG
+  // service must pick ONE stream per guide channel; that is the world m3u + `epg` lives in.
+  // Guarding here would instead STRIP working guides: two json sources over one provider
+  // feed split by category (the recipe this file documents) share every id by design, as
+  // does a manual channel whose hand-assigned epgId matches a provider id.
+  //
+  // `epgDeclared` is a playlist-header reading, which a json feed has no equivalent of.
+  return { entries, skipped, truncated, excluded, filtered: 0, epgSkipped: 0, epgGuard: false, epgDeclared: null }
 }
 
 // ---------------------------------------------------------------- m3u
@@ -509,6 +605,31 @@ function extinfSplit (rest) {
   return -1
 }
 
+// The guide a playlist declares in its OWN header line:
+//
+//   #EXTM3U url-tvg="https://provider.example/guide.xml"
+//
+// `url-tvg` is the usual spelling; `x-tvg-url` and `tvg-url` are the same field under other
+// names, so all three are read in that order. Values are normally quoted and sometimes bare,
+// so both forms are accepted. A header may declare SEVERAL guides, comma-separated — one
+// catalog pointer can name only one, so the FIRST is taken; the cut is made only where a
+// comma is followed by another http(s) url, so a single url that carries a comma inside its
+// query string survives whole. Returns null when the header declares nothing.
+//
+// The key is matched only at a line start or after whitespace, so the `tvg-url` pattern
+// cannot bite off the tail of an `x-tvg-url` attribute and read it as a different field.
+function headerTvgUrl (line) {
+  for (const key of ['url-tvg', 'x-tvg-url', 'tvg-url']) {
+    const m = line.match(new RegExp('(?:^|\\s)' + key + '\\s*=\\s*(?:"([^"]*)"|(\\S+))', 'i'))
+    if (!m) continue
+    const raw = (m[1] ?? m[2] ?? '').trim()
+    if (!raw) continue
+    const cut = raw.search(/,\s*https?:\/\//i)
+    return (cut < 0 ? raw : raw.slice(0, cut)).trim() || null
+  }
+  return null
+}
+
 // Parse an M3U/M3U8 playlist into raw entries. Dependency-free, and deliberately PURE
 // TEXT → ARRAY: it validates NOTHING, because mapM3U runs the same validators over the
 // result that admin input gets, and the trust boundary has to live in exactly one place.
@@ -535,6 +656,10 @@ export function parseM3U (text) {
   let i = 0
   while (i < lines.length && lines[i].trim() === '') i++
   if (i >= lines.length || !lines[i].trim().startsWith('#EXTM3U')) throw new Error('feed is not an M3U playlist (missing #EXTM3U)')
+  // The header line is the ONLY place a playlist says where its program guide lives, so it
+  // is read here and handed back beside the entries. Absent = null: a playlist with no
+  // guide is the normal case, never an error.
+  const tvgUrl = headerTvgUrl(lines[i].trim())
   const entries = []
   let pending = null
   let stray = 0
@@ -580,7 +705,7 @@ export function parseM3U (text) {
     entries.push(pending)
     pending = null
   }
-  return { entries, stray }
+  return { entries, stray, tvgUrl }
 }
 
 // Turn a display name into a stream id. Event playlists have no stable ids to reuse —
@@ -606,8 +731,35 @@ function slugify (name, max) {
 // is not mine?"), the report and the dashboard already speak it, and a per-rule breakdown
 // would need the rules themselves to mean anything, which the source record already shows.
 function mapM3U (source, text, { maxChannels }) {
-  const { entries: list, stray } = parseM3U(text)
+  const { entries: list, stray, tvgUrl } = parseM3U(text)
   const entries = new Map()
+  // Guide pointers are per-source OPT-IN (see the file header). Off = the pre-existing
+  // behaviour, byte for byte: both pointers null on every entry.
+  const epgOn = source.epg === true
+  // WHY THE PLAYLIST'S OWN url-tvg NEVER REACHES A CHANNEL RECORD.
+  //
+  // `epgUrl` is a CLIENT-side pointer: the viewer's device fetches that address and
+  // JSON.parses it (sdk/react-native/src/epg.ts indexes `channels[].id`). A playlist header
+  // names an XMLTV document, which that consumer cannot read. Auto-filling it would have
+  // every viewer device pull a multi-megabyte file, fail to parse it and show no guide —
+  // real cost, zero benefit. So only an OPERATOR-SET override lands on a record: an
+  // operator points that at a provider-JSON guide the client really can parse.
+  //
+  // The header is still read, because it is worth KNOWING — it is handed back as
+  // `epgDeclared` for the sync report and written nowhere else. The load-bearing field for
+  // an m3u guide is `epgId`: the EPG SERVICE ingests the XMLTV itself (registered in its
+  // own provider list, never from the catalog), matches guide channel → stream by that id
+  // and ships the schedule to viewers over P2P. That path needs no epgUrl at all.
+  let epgUrl = null
+  if (epgOn && source.epgUrl) { try { epgUrl = normEpgOverrideUrl(source.epgUrl) } catch { epgUrl = null } }
+  // What the playlist SAYS its guide is: operator information only, so it is validated (a
+  // junk header must not be echoed into the registry's report) and reported whether or not
+  // this source takes the guide — it is exactly what an operator needs in order to decide,
+  // and to know which document to register in the EPG service. The FEED url's validator is
+  // the right one here and the catalog's is not: nothing fetches this address on a viewer's
+  // behalf, so the client's https rule does not apply to it.
+  let epgDeclared = null
+  if (tvgUrl) { try { epgDeclared = normSourceUrl(tvgUrl) } catch { epgDeclared = null } }
   const skipped = []
   const excludedIds = new Set((source.exclude || []).map((e) => e.id))
   const groups = (source.groups || []).map((g) => String(g).trim().toLowerCase())
@@ -697,14 +849,47 @@ function mapM3U (source, text, { maxChannels }) {
       headers,
       logo,
       order: Math.min(i, 9999),
-      // A playlist is not a program guide: pointing clients at source.url would have them
-      // fetch the very m3u they are already playing. Both pointers stay null, and
-      // sourceChannels falls back to "key minus prefix" — which is exactly the slug.
+      // The guide pointers. epgUrl is filled in AFTER the loop, together with the
+      // duplicate-id guard, because a colliding entry must end up with neither pointer —
+      // and it is filled in only from the operator's override (see above). Never
+      // source.url either: pointing a client at the playlist it is already playing would
+      // have it fetch a channel list where it expects a schedule.
       epgUrl: null,
-      epgId: null
+      epgId: epgOn ? String(e.tvgId || '').trim().slice(0, 128) || null : null
     })
   }
-  return { entries, skipped, truncated, excluded, filtered }
+  // THE DUPLICATE-ID GUARD — the reason `epg` is opt-in at all.
+  //
+  // The EPG service maps a guide channel onto a stream by epgId and takes the FIRST match
+  // on a duplicate (epg/src/guide.js). An EVENT playlist hands the same placeholder id to
+  // its whole day ("Soccer.Dummy.us" on a hundred matches), so stamping those ids would
+  // collapse the rail onto one entry in the guide AND hang the placeholder's filler
+  // programmes ("Soccer", every hour, no teams) on it. A repeated id is therefore not a
+  // guide id at all: any tvg-id that lands on MORE THAN ONE entry this sync is dropped
+  // from EVERY entry that carries it, and counted so the operator can see it happened.
+  // The count is what tells an operator who turned `epg` on for an events playlist why
+  // nothing has a schedule — the alternative is a rail that quietly shows the wrong one.
+  //
+  // Scope is one sync of one source: exactly the set of entries this mapper writes, because
+  // this mapper is pure and has no catalog to consult. The other half — an id already
+  // claimed by ANOTHER source or by a manual channel — is caught in applyFeed, which does
+  // hold the catalog, and folded into the same count. Nothing else would catch it: the EPG
+  // service's status() reports mapped and UNMATCHED provider ids, and a duplicate MATCHES
+  // (it is simply matched to one stream and not the other), so it never appears there.
+  let epgSkipped = 0
+  if (epgOn) {
+    const idCount = new Map()
+    for (const m of entries.values()) if (m.epgId) idCount.set(m.epgId, (idCount.get(m.epgId) || 0) + 1)
+    for (const m of entries.values()) {
+      if (!m.epgId) continue
+      if (idCount.get(m.epgId) > 1) { m.epgId = null; epgSkipped++; continue } // an id, not an identity
+      m.epgUrl = epgUrl // an epgUrl without an epgId points at nothing, so the two go together
+    }
+  }
+  // `epgGuard` tells applyFeed whether its half of the duplicate check applies at all: only
+  // an m3u source that actually took the guide ids lives on the first-match-wins P2P path
+  // (see mapFeed for why a json source must be left alone).
+  return { entries, skipped, truncated, excluded, filtered, epgSkipped, epgGuard: epgOn, epgDeclared }
 }
 
 // The channels dialog's data: every entry the source knows about — imported ones
@@ -714,10 +899,18 @@ export async function sourceChannels (ctx, name) {
   const sources = loadSources(ctx.dataDir)
   if (!hasOwn(sources, name)) notFound(`no such source: ${name}`)
   const s = sources[name]
+  // What `exclude` names, per format — and it must be the ID THE MAPPER TESTS, or the
+  // dialog would hand back a key the sync ignores and a deselection would silently do
+  // nothing. For json the feed id IS the epgId (mapFeed writes the provider id into both).
+  // For m3u it is the SLUG — key minus prefix — whatever the entry's tvg-id says, because
+  // mapM3U excludes on the slug; an m3u source with `epg` on now HAS an epgId, so reading
+  // that one here is what would break deselection on exactly those sources.
+  const isM3U = (s.format || 'json') === 'm3u'
+  const slugOf = (key) => key.slice('catalog/'.length + (s.prefix || '').length)
   const channels = []
   for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
     if (value && value.source === name) {
-      channels.push({ feedId: value.epgId || key.slice('catalog/'.length + (s.prefix || '').length), id: key.slice('catalog/'.length), title: value.title, order: value.order ?? null, excluded: false })
+      channels.push({ feedId: isM3U ? slugOf(key) : value.epgId || slugOf(key), id: key.slice('catalog/'.length), title: value.title, order: value.order ?? null, excluded: false })
     }
   }
   channels.sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9))
@@ -734,10 +927,46 @@ export async function sourceChannels (ctx, name) {
 // FIRST because deleteStream rewrites the secrets file itself — minting new
 // secrets after keeps our snapshot from resurrecting deleted ones.
 async function applyFeed (ctx, name, mapped) {
-  const report = { added: 0, updated: 0, removed: 0, unchanged: 0, conflicts: [] }
+  const report = { added: 0, updated: 0, removed: 0, unchanged: 0, conflicts: [], epgSkipped: 0 }
   const current = new Map()
   for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
     current.set(key.slice('catalog/'.length), value)
+  }
+
+  // THE DUPLICATE-ID GUARD, OTHER HALF (see mapM3U for the first). mapM3U can only compare
+  // an entry against the other entries of ITS OWN sync; a guide id already claimed by a
+  // DIFFERENT source or by a manual channel is invisible to it, and that is not a corner
+  // case — the recipe this feature ships with (several sources over ONE playlist url, split
+  // by titleInclude) is exactly how two sources come to hold entries out of one guide.
+  // Left alone it lands in epg/src/guide.js, where first-mapping-wins hands the schedule to
+  // one of them and nothing at all to the other; status() would not show it either, because
+  // a duplicate is MATCHED, never "unmatched". So the incumbent keeps the id and the
+  // newcomer gets none: deterministic (a record that exists beats one being written), stable
+  // across syncs, and counted into the same epgSkipped the operator already reads.
+  //
+  // `mapped.epgGuard` decides whether any of that applies, and it is FALSE for every json
+  // source: those channels resolve their guide by looking their id up inside the feed they
+  // point at, so sharing an id is not a clash but the normal shape of two sources over one
+  // provider feed (mapFeed carries the full argument). VICTIM, not incumbent — the gate is
+  // on the source being WRITTEN. `claimed` is still built from EVERY record, json and manual
+  // included, because any of them can be the channel that already holds an id an m3u
+  // newcomer wants.
+  const claimed = new Map() // epgId -> the stream id already holding it
+  for (const [id, cur] of current) {
+    if (cur && cur.epgId && cur.source !== name) claimed.set(String(cur.epgId), id)
+  }
+  if (mapped.epgGuard && claimed.size) {
+    for (const [id, m] of mapped.entries) {
+      if (!m.epgId || !claimed.has(String(m.epgId))) continue
+      // A record owned by someone else is a CONFLICT: the loop below skips it whole, so it
+      // is not ours to strip and not ours to count. Without this an entry could be reported
+      // twice, under two headings, for one untouched channel.
+      const cur = current.get(id)
+      if (cur && cur.source !== name) continue
+      m.epgId = null
+      m.epgUrl = null // a pointer with no id names nothing (same rule as mapM3U)
+      report.epgSkipped++
+    }
   }
 
   for (const [id, cur] of current) {
@@ -886,7 +1115,10 @@ async function doSync (ctx, name) {
       // simply unmeasured this round. `unchanged` has always said so with null; `filtered`
       // carries the last measurement forward instead, or the dashboard's "N left out by
       // your filters" line would blink off on every 304 and back on at the next real pull.
-      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, emptiedByFilter: false }
+      // `epgSkipped` rides with `filtered` for the same reason: it measures the BODY, and
+      // the body was not re-read, so the last measurement is carried forward instead of
+      // blinking to zero on every 304.
+      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, epgSkipped: source.lastReport?.epgSkipped ?? 0, epgDeclared: source.lastReport?.epgDeclared ?? null, emptiedByFilter: false }
     } else {
       // One dispatch, two mappers, one contract — everything downstream (applyFeed, the
       // report, the dashboard) is format-blind.
@@ -900,6 +1132,13 @@ async function doSync (ctx, name) {
         truncated: mapped.truncated,
         excluded: mapped.excluded,
         filtered: mapped.filtered,
+        // m3u + `epg` only: entries whose tvg-id was refused as a guide id because another
+        // entry of this sync (mapM3U) or an existing channel outside this source (applyFeed)
+        // already carries it. ONE count — the operator question is the same either way.
+        epgSkipped: mapped.epgSkipped + applied.epgSkipped,
+        // m3u only: the guide the playlist header declares. Reported, never stored on a
+        // channel — it tells the operator which document to register in the EPG service.
+        epgDeclared: mapped.epgDeclared,
         // A group-title the provider renamed, a mistyped group, or a titleInclude whose
         // wording the provider dropped ("[MLB]" → "MLB:") matches nothing, and a sync that
         // matches nothing legitimately prunes the whole rail — the feed IS
@@ -935,6 +1174,8 @@ async function doSync (ctx, name) {
         truncated: report.truncated,
         excluded: report.excluded,
         filtered: report.filtered, // m3u only: entries the group + name filters left out
+        epgSkipped: report.epgSkipped, // m3u + epg only: entries that shared a tvg-id, so it was refused
+        epgDeclared: report.epgDeclared, // m3u only: the guide url the playlist header declares (information)
         emptiedByFilter: !!report.emptiedByFilter, // the filters matched nothing and the rail was pruned
         granted: report.granted
       }

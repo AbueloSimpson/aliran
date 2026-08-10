@@ -762,7 +762,7 @@ function renderSources () {
     tr.innerHTML = `
       <td><b>${esc(s.name)}</b><br><span class="mono muted" title="${esc(s.url)}">${esc(s.url.length > 46 ? s.url.slice(0, 46) + '…' : s.url)}</span></td>
       <td><span class="chip">${esc(s.category)}</span>${(s.format || 'json') === 'm3u'
-        ? ` <span class="chip" title="M3U playlist: ids come from the channel names, #EXTVLCOPT lines import as playback headers${(s.groups || []).length ? ` — groups: ${esc(s.groups.join(', '))}` : ''}${(s.titleInclude || []).length ? ` — name has: ${esc(s.titleInclude.join(', '))}` : ''}${(s.titleExclude || []).length ? ` — name has not: ${esc(s.titleExclude.join(', '))}` : ''}">m3u</span>`
+        ? ` <span class="chip" title="M3U playlist: ids come from the channel names, #EXTVLCOPT lines import as playback headers${(s.groups || []).length ? ` — groups: ${esc(s.groups.join(', '))}` : ''}${(s.titleInclude || []).length ? ` — name has: ${esc(s.titleInclude.join(', '))}` : ''}${(s.titleExclude || []).length ? ` — name has not: ${esc(s.titleExclude.join(', '))}` : ''}${s.epg ? ` — program guide on${s.epgUrl ? `: ${esc(s.epgUrl)}` : ' (address from the playlist)'}` : ''}">m3u</span>`
         : ''}</td>
       <td>${s.channels}</td>
       <td class="muted">${fmtInterval(s.intervalMs)}</td>
@@ -1550,16 +1550,17 @@ const FEED_FORMAT_HTML = `
   </ul>
   <p class="muted footnote"><b>Format “m3u” — an M3U playlist.</b> Set <b>Format</b> to <span class="mono">m3u</span>
     for a provider playlist. The panel reads this shape:</p>
-  <pre class="codebox mono">#EXTM3U
-#EXTINF:-1 tvg-logo="https://cdn.example/art/game.png" group-title="Live Events",Team A vs Team B
+  <pre class="codebox mono">#EXTM3U url-tvg="https://provider.example/guide.xml"
+#EXTINF:-1 tvg-id="TeamA.us" tvg-logo="https://cdn.example/art/game.png" group-title="Live Events",Team A vs Team B
 #EXTVLCOPT:http-referrer=https://provider.example/
 #EXTVLCOPT:http-origin=https://provider.example
 #EXTVLCOPT:http-user-agent=Mozilla/5.0
 https://cdn.example/event/123.m3u8?token=abc</pre>
   <ul class="muted footnote spec-list">
     <li><b>The channel name makes the channel id.</b> The panel changes the name into id characters and adds the prefix.
-      A playlist <span class="mono">tvg-id</span> is usually a dummy value, so the panel does not use it. Two entries
-      with the same name get <span class="mono">-2</span> and <span class="mono">-3</span>.</li>
+      A playlist <span class="mono">tvg-id</span> is usually a dummy value, so the panel does not use it for the
+      channel id (it can use it for the program guide — see below). Two entries with the same name get
+      <span class="mono">-2</span> and <span class="mono">-3</span>.</li>
     <li><b>A new name is a new channel.</b> The panel deletes the old channel and makes a new one. This is correct for
       events, because each event is new.</li>
     <li><b>#EXTVLCOPT lines become playback headers.</b> The panel keeps
@@ -1585,7 +1586,33 @@ https://cdn.example/event/123.m3u8?token=abc</pre>
       </ul>
       The sync report counts these entries as <b>left out by your filters</b>, together with the group filter.</li>
     <li><b>tvg-logo</b> becomes the channel art. Use an <span class="mono">https://</span> address.</li>
-    <li><b>No schedule.</b> A playlist is not a program guide, so an imported channel gets no guide pointer.</li>
+    <li><b>Program guide.</b> A playlist can name its guide. The first line holds the address:
+      <span class="mono">#EXTM3U url-tvg="https://provider.example/guide.xml"</span> (the names
+      <span class="mono">x-tvg-url</span> and <span class="mono">tvg-url</span> mean the same). Each entry then gives
+      its own id in that guide: <span class="mono">tvg-id="ESPN.us"</span>. Set <b>Program guide</b> on the source to
+      keep these ids on the imported channels.
+      <ul>
+        <li><b>Off is the default.</b> A source that you do not change keeps no guide id and no guide address, as
+          before.</li>
+        <li><b>The panel keeps the ids, not the address.</b> The address in the first line points to a file in the
+          XMLTV format. The apps read a guide in a different format, so the panel never puts that address on a
+          channel. The sync report shows you the address. Add it to your EPG service: the service reads the file and
+          sends the guide to the apps, and it uses the <span class="mono">tvg-id</span> of each channel to match
+          it.</li>
+        <li><b>Each channel needs a different id.</b> A guide holds one schedule for each id. Two channels with the
+          same id are one channel for the guide: the first one takes the schedule, and the other one gets nothing.</li>
+        <li><b>Keep this setting off for a list of events.</b> A provider writes one dummy id on many entries of an
+          event list, for example <span class="mono">Soccer.Dummy.us</span> on every football match of the day. The
+          programs for that id have no real data. They give only the word “Soccer”, with no team names and no correct
+          times.</li>
+        <li><b>The panel refuses an id it finds more than once</b> in the same source, on every entry that has it,
+          and counts them in the sync report. It also refuses an id that a different source, or a channel you made
+          yourself, already uses. So a wrong choice gives you <b>no</b> guide, never a wrong one.</li>
+        <li><b>Guide address</b> on the source is a different thing. It is the address the <b>apps</b> read.
+          It must hold a guide in the app format: the same <span class="mono">{"channels":[…]}</span> file as a json
+          source, with an <span class="mono">epg</span> list for each channel. Set it only if you publish such a file.
+          Leave it empty for none.</li>
+      </ul></li>
     <li><b>One playlist, many rails.</b> Add <b>one source for each group</b>, all with the same URL. Give each source
       its own groups, its own category and its own prefix. Example: source <span class="mono">events</span> takes the
       group “Live Events” into the category “Live Events”, and source <span class="mono">sports</span> takes the group
@@ -1629,6 +1656,8 @@ async function addSourceDlg () {
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' },
     { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', placeholder: '[MLB], [NFL]' },
     { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', placeholder: '(WEBCAST), (STRMXHD)' },
+    { name: 'epg', label: 'Program guide (m3u only) — keep the guide id (tvg-id) of each entry', type: 'checkbox', value: false },
+    { name: 'epgUrl', label: 'Guide address (m3u only) — for the apps, in the app guide format; leave empty for none', placeholder: 'https://provider.example/guide.json' },
     { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: false }
   ], {
     okLabel: 'Add',
@@ -1637,6 +1666,10 @@ async function addSourceDlg () {
            <b>edit</b> on the row.</p>
            <p class="muted"><b>Allow cleartext</b> is for a provider that serves some streams over plain http, not https.
            It applies to this source only, never to manual channels. An http stream plays only where the client permits cleartext.</p>
+           <p class="muted"><b>Program guide</b> keeps the guide id of each entry, for a playlist of TV channels where
+           each entry has its own id. Your EPG service uses these ids to give the channels a guide. Keep this setting
+           off for a list of events. A provider writes one dummy id on many entries of an event list, and a shared id
+           gives every channel the same wrong guide.</p>
            <details class="footnote"><summary>What the feed must contain</summary>${FEED_FORMAT_HTML}</details>`
   })
   if (!v) return
@@ -1652,6 +1685,10 @@ async function addSourceDlg () {
       name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups,
       titleInclude: m3uOnly(v.titleInclude),
       titleExclude: m3uOnly(v.titleExclude),
+      // The guide fields are m3u-only for the same reason as the filters: mapFeed reads
+      // neither, so on a json source they would sit in the record doing nothing.
+      epg: v.format === 'm3u' ? v.epg : false,
+      epgUrl: v.format === 'm3u' ? v.epgUrl.trim() : '',
       allowCleartext: v.allowCleartext
     })
     toast(`source "${name}" added — pulling the feed…`)
@@ -1668,6 +1705,7 @@ async function syncSourceNow (name) {
       : `"${name}": +${r.added} added, ~${r.updated} updated, −${r.removed} removed, ${r.granted} grant(s) sealed` +
         (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : '') +
         (r.filtered ? ` · ${r.filtered} left out by your filters` : '') +
+        (r.epgSkipped ? ` · ${r.epgSkipped} without a guide (id used more than once)` : '') +
         (r.truncated ? ` · ${r.truncated} over the channel cap — dropped` : ''))
     await refresh()
   } catch (err) { toast(err.message, true); await refresh().catch(() => {}) }
@@ -1700,6 +1738,36 @@ function showSyncReport (s) {
       : '<p class="muted">(ids are recorded from the next sync)</p>'
   }
   if (rep.excluded) body += `<p class="muted">${rep.excluded} excluded by you (channels dialog).</p>`
+  // What the playlist says its guide is. INFORMATION, not a setting: the panel never puts
+  // this address on a channel (the apps read a guide in a different format), so the line
+  // states what the address is for and leaves the operator to register it.
+  if (rep.epgDeclared) {
+    // The last sentence is only true while this source does NOT keep the guide ids. On a
+    // source that already does — an events source above all, where the red warning right
+    // below says the opposite — it would advise switching on what is already on.
+    body += `<p class="muted">The playlist names a program guide: <span class="mono">${esc(rep.epgDeclared)}</span>.
+      The panel does not put this address on the channels, because the apps read a guide in a different format. An EPG
+      service reads an address like this one and sends the guide to the apps. It uses the guide id
+      (<span class="mono">tvg-id</span>) of each channel to match the guide to the channel.${s.epg
+        ? ''
+        : ' This source does not keep those ids. Turn <b>Program guide</b> on to keep them.'}</p>`
+  }
+  // The guide guard: a shared tvg-id is not a channel id, so the panel keeps it off every
+  // channel that carries it. This line is the only place an operator learns it happened —
+  // and it must name BOTH halves, because the cross-source half (the id is already on a
+  // channel outside this source) has a completely different fix from the in-playlist one.
+  if (rep.epgSkipped) {
+    body += `<p class="warn-text"><b>${rep.epgSkipped} channel${rep.epgSkipped === 1 ? '' : 's'} got no program guide.</b>
+      A guide holds one schedule for each guide id, so each channel needs an id of its own. The panel found these ids
+      more than once, and it does not put an id on two channels.</p>
+      <p class="muted">There are two causes, and you can see which one from the channels:</p>
+      <ul class="muted footnote spec-list">
+        <li>The <b>playlist gives the same id to more than one entry</b>. This is normal in a list of events. Use
+          <b>edit</b> and turn <b>Program guide</b> off for this source.</li>
+        <li><b>Another source, or a channel you made yourself, already uses that id.</b> The channel that has the id
+          keeps it. Give the other channel a different id, or remove the guide id from one of the two.</li>
+      </ul>`
+  }
   // Not an error and not an exclusion: entries the source's filters (group + name) left in
   // the playlist. One count for both, because the operator question is the same one.
   if (rep.filtered) body += `<p class="muted">${rep.filtered} entr${rep.filtered === 1 ? 'y is' : 'ies are'} left out by your filters. The panel did not import ${rep.filtered === 1 ? 'it' : 'them'}. Edit <b>Groups</b>, <b>Name has</b> or <b>Name has not</b> on the source to take more.</p>`
@@ -1793,6 +1861,8 @@ async function editSource (s) {
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', value: (s.groups || []).join(', '), placeholder: 'Live Events, PPV' },
     { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', value: (s.titleInclude || []).join(', '), placeholder: '[MLB], [NFL]' },
     { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', value: (s.titleExclude || []).join(', '), placeholder: '(WEBCAST), (STRMXHD)' },
+    { name: 'epg', label: 'Program guide (m3u only) — keep the guide id (tvg-id) of each entry', type: 'checkbox', value: !!s.epg },
+    { name: 'epgUrl', label: 'Guide address (m3u only) — for the apps, in the app guide format; leave empty for none', value: s.epgUrl || '', placeholder: 'https://provider.example/guide.json' },
     { name: 'prefix', label: 'Channel id prefix', value: s.prefix },
     { name: 'minutes', label: 'Sync every (minutes)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 60000), min: 1, max: 43200, step: 1 },
     { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false },
@@ -1801,7 +1871,9 @@ async function editSource (s) {
     body: `<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category — and the playback headers of an m3u) on every sync — manual edits to those don't stick on imported channels.</p>
       <p class="muted">Changing the <b>format</b>, the <b>groups</b> or a <b>name</b> filter makes the next sync read the whole feed again. A group or a name you no longer take goes out of the catalog with its channels.</p>
       <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>
-      <p class="muted"><b>Allow cleartext</b> lets this source import plain-http stream URLs, for a provider that serves some streams over http instead of https. It applies to this source only, never to manual channels, and the next sync re-reads the feed to apply it. An http stream plays only where the client permits cleartext.</p>`
+      <p class="muted"><b>Allow cleartext</b> lets this source import plain-http stream URLs, for a provider that serves some streams over http instead of https. It applies to this source only, never to manual channels, and the next sync re-reads the feed to apply it. An http stream plays only where the client permits cleartext.</p>
+      <p class="muted"><b>Program guide</b> keeps the guide id (<span class="mono">tvg-id</span>) of each entry on the imported channels. Your EPG service uses these ids to match the guide to the channels. A guide id must be different for each channel, so use this for a playlist of TV channels. A provider writes one dummy id on many entries of an event list: the panel refuses an id it finds more than once, and the sync report counts it.</p>
+      <p class="muted"><b>Guide address</b> is for the apps, which read a guide in the app format over https. The address in the playlist is <b>not</b> in that format, so the panel never uses it: the sync report shows it, and you add it to your EPG service instead. The panel clears this field when <b>Program guide</b> is off.</p>`
   })
   if (!v) return
   // Validate here, in the field's own unit — the API's error talks milliseconds.
@@ -1817,6 +1889,8 @@ async function editSource (s) {
     groups: v.format === 'm3u' ? csvField(v.groups) : [],
     titleInclude: v.format === 'm3u' ? csvField(v.titleInclude) : [],
     titleExclude: v.format === 'm3u' ? csvField(v.titleExclude) : [],
+    epg: v.format === 'm3u' ? v.epg : false,
+    epgUrl: v.format === 'm3u' ? v.epgUrl.trim() : '', // '' = the channels carry no guide address
     prefix: v.prefix.trim(),
     intervalMs: minutes * 60000,
     autoGrant: v.autoGrant,
