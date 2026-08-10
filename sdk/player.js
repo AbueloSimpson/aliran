@@ -974,7 +974,11 @@ export class AliranPlayer extends Emitter {
       this._clearTuneTimer()
       this._clearZapPrefetch() // no neighbor warming while off P2P — the gate needs an active playlist
       this._active = { streamId, feedKey: null, localUrl: null, cdnUrl: chan.url, source: 'cdn', lastSig: null, lastAdvance: 0 }
-      return { url: chan.url, source: 'cdn', localUrl: undefined, port: undefined, feedKey: null, type: isVod ? 'vod' : 'live', durationSec: isVod ? chan.durationSec ?? null : undefined }
+      // `headers` rides with the url and ONLY here: it is the provider's hotlink check
+      // (Referer/Origin/User-Agent), so it means nothing on a localhost or CDN-template
+      // URL and the other returns below stay headers-less. undefined, not null, when the
+      // record has none — hosts spread it straight into a player source.
+      return { url: chan.url, source: 'cdn', localUrl: undefined, port: undefined, feedKey: null, type: isVod ? 'vod' : 'live', durationSec: isVod ? chan.durationSec ?? null : undefined, headers: chan.headers ?? undefined }
     }
     const feedKey = chan.feedKey
     // A catalog entry can exist before any broadcaster feeds it (feedKey null) —
@@ -1295,6 +1299,15 @@ export class AliranPlayer extends Emitter {
           feedKey,
           redirect: !!(v.redirect && v.url),
           url: v.url || null,
+          // Headers follow url exactly: the live record wins with NO snapshot fallback,
+          // because they belong to the url we just read. That is what carries a source's
+          // half-hourly token rotation (fresh url + fresh headers) to a viewer on the
+          // next tune, and it also means a cleared header set really clears. Gated on the
+          // url here as well as in the panel's validators: "headers require a url" is an
+          // engine invariant too, so a record that somehow breaks it (an older panel, a
+          // hand-edited bee) degrades to no headers instead of attaching a provider's
+          // hotlink set to whatever the P2P path ends up serving.
+          headers: v.url ? (v.headers ?? null) : null,
           type: v.type ?? fallback.type ?? null, // S8a: 'vod' | 'live'
           durationSec: v.durationSec ?? fallback.durationSec ?? null
         }
@@ -1302,7 +1315,7 @@ export class AliranPlayer extends Emitter {
     } catch { /* replicated catalog momentarily unreadable — use the cached values */ } finally {
       clearTimeout(timer)
     }
-    return { feedKey: fallback.feedKey || null, redirect: !!(fallback.redirect && fallback.url), url: fallback.url || null, type: fallback.type ?? null, durationSec: fallback.durationSec ?? null }
+    return { feedKey: fallback.feedKey || null, redirect: !!(fallback.redirect && fallback.url), url: fallback.url || null, headers: fallback.url ? (fallback.headers ?? null) : null, type: fallback.type ?? null, durationSec: fallback.durationSec ?? null }
   }
 
   // feedKey-only shim for the callers that never care about the redirect class
@@ -2029,7 +2042,7 @@ export class AliranPlayer extends Emitter {
     // point /feedthumb at the previous session's feed for the rest of the session.
     this._feedKeyLive.clear()
     return streams.map((s) => {
-      this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null, type: s.type ?? null, durationSec: s.durationSec ?? null })
+      this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null, headers: s.headers ?? null, type: s.type ?? null, durationSec: s.durationSec ?? null })
       return this._display(port, s.id, s)
     })
   }

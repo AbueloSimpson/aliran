@@ -274,7 +274,9 @@ export type BackendMessage =
   // the engine's ResolveResult type/durationSec — recordType 'vod' means the url is a
   // finished VOD playlist: show seek/pause UI and expect no live self-heal events.
   // (Named recordType because `type` is this union's own discriminant.)
-  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn'; streamId?: string; recordType?: 'live' | 'vod'; durationSec?: number | null }
+  // headers: request headers the VIDEO PLAYER must send with url, for redirect channels
+  // whose provider hotlink-checks Referer/Origin/User-Agent. Present only there.
+  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn'; streamId?: string; recordType?: 'live' | 'vod'; durationSec?: number | null; headers?: Record<string, string> | null }
   | { type: 'status'; peers?: number; state?: string; message?: string }
   | { type: 'error'; message: string }
   | { type: 'fallback'; streamId: string; url: string; reason: 'timeout' | 'stall' }
@@ -379,6 +381,10 @@ export class AliranBackend {
   // them (worklet bundles older than the field never do — treat as live).
   recordType: 'live' | 'vod' | null = null
   durationSec: number | null = null
+  // Request headers the video player must send with `url` (redirect channels behind a
+  // provider hotlink check). Tracked beside url because they are only valid FOR that
+  // url: every event that replaces url with a localhost or CDN one clears this.
+  headers: Record<string, string> | null = null
   // Device-local prefs mirrored from the worklet (see client/backend/backend.mjs):
   // saved "remember me" credentials + favorite stream ids. `prefsLoaded` flips on the
   // first {type:'prefs'} reply — request with requestPrefs().
@@ -677,9 +683,15 @@ export class AliranBackend {
           if (msg.streamId) this.activeStreamId = msg.streamId
           this.recordType = msg.recordType ?? null
           this.durationSec = msg.durationSec ?? null
+          this.headers = msg.headers ?? null
         }
-        if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn' }
-        if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source }
+        // Both of these hand out a DIFFERENT url — the localhost server or the operator's
+        // CDN template — so the previous channel's provider headers must not follow it.
+        // Clearing here is defensive: they only ever fire for P2P channels, which never
+        // carry headers in the first place. ('feed-changed' keeps the same localhost url
+        // and is P2P-only for the same reason, so it leaves this alone.)
+        if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn'; this.headers = null }
+        if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source; this.headers = null }
         if (msg.type === 'feed-changed') this.url = msg.url // unchanged localhost URL; the source (p2p) is unchanged too
         this.listeners.forEach(fn => fn(msg))
       } catch { /* ignore partial/invalid */ }

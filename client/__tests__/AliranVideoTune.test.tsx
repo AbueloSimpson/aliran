@@ -37,6 +37,7 @@ function makeBackend () {
   return {
     url: URL,
     source: 'p2p',
+    headers: null as Record<string, string> | null, // provider playback headers; see the headers test
     activeStreamId: null as string | null,
     play: jest.fn(),
     reconnect: jest.fn(),
@@ -215,4 +216,46 @@ test('a stall resync starts a fresh tune (new id) and completes on the resync mo
   } finally {
     jest.useRealTimers()
   }
+})
+
+// Playback headers (redirect channels behind a provider hotlink check): the engine hands
+// them to the HOST with the url, and this component is what actually gets them onto the
+// wire — ExoPlayer reads source.headers once, when it opens the media, so a headers
+// change has to reach it as a REMOUNT, not a re-render. The fake backend mutates its
+// fields before dispatching, exactly like the real one (see sdk/react-native/src/backend.ts).
+test('a port reply with headers puts them on the player source, and a headers-only change remounts', async () => {
+  const backend = makeBackend()
+  const REMOTE = 'https://provider.example/live/e1.m3u8?token=aaa'
+  const h1 = { referer: 'https://provider.example/', 'user-agent': 'AliranTest/1.0' }
+  const h2 = { referer: 'https://provider.example/', 'user-agent': 'AliranTest/2.0' }
+  const events: TuneEvent[] = []
+  await createTree(
+    <AliranVideo backend={backend as unknown as AliranBackend} streamId="promo" controls={false} onTune={(e) => events.push(e)} />
+  )
+  backend.url = REMOTE; backend.headers = h1
+  await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', url: REMOTE, source: 'cdn', streamId: 'promo', headers: h1 }) })
+  expect(lastVideo().source.uri).toBe(REMOTE)
+  expect(lastVideo().source.headers).toEqual(h1)
+
+  // Same url, different headers (a provider that rotates only its UA — our feed-owned
+  // header writes make that a real shape). The player must be torn down and reopened
+  // with the new set, and it must go through the REMOUNT path, not the mount key alone:
+  // the key would swap the mount while the epoch stood still, and a trailing event from
+  // the dead player would then complete the new tune (the S22 stale-event regression).
+  const mountsBefore = mockVideoMounts
+  const stalePlayer = lastVideo()
+  backend.headers = h2
+  await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', url: REMOTE, source: 'cdn', streamId: 'promo', headers: h2 }) })
+  expect(mockVideoMounts).toBe(mountsBefore + 1)
+  expect(lastVideo().source.headers).toEqual(h2)
+  await ReactTestRenderer.act(async () => { stalePlayer.onBuffer({ isBuffering: false }) })
+  expect(playingEvents(events)).toHaveLength(0) // epoch moved: the torn-down mount is stale
+  await ReactTestRenderer.act(async () => { lastVideo().onBuffer({ isBuffering: false }) })
+  expect(playingEvents(events)).toHaveLength(1) // the live mount still completes it
+
+  // A hybrid fallback swaps in the operator's OWN url — the provider's headers must not
+  // follow it there.
+  await ReactTestRenderer.act(async () => { backend.emit({ type: 'fallback', streamId: 'promo', url: URL, reason: 'stall' }) })
+  expect(lastVideo().source.uri).toBe(URL)
+  expect(lastVideo().source.headers).toBeUndefined()
 })

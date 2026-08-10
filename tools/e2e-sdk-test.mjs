@@ -903,7 +903,13 @@ try {
   })
   // Query string must survive verbatim (tokenized-CDN shape); the stub ignores it.
   const promoUrl = `http://127.0.0.1:${cdnPort}/index.m3u8?src=promo`
-  await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl, isLive: true, status: 'live' })
+  // Playback headers ride WITH the url: a hotlink-protected provider serves the token
+  // URL only when the player repeats its Referer/Origin/User-Agent. The engine never
+  // sends them itself — it hands them to the host player through resolve() — so what
+  // this section proves is the carry, verbatim and redirect-only.
+  const promoHeaders = { referer: 'https://provider.example/live/', origin: 'https://provider.example', 'user-agent': 'AliranTest/1.0' }
+  const hsig = (h) => h == null ? '<none>' : Object.keys(h).sort().map((k) => k + '=' + h[k]).join('&')
+  await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl, headers: promoHeaders, isLive: true, status: 'live' })
   await db.put('catalog/void', { title: 'Void', category: ['misc'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, isLive: false, status: 'idle' })
 
   const evC = { fallback: 0, sourceChanged: 0, status: [] }
@@ -927,11 +933,15 @@ try {
   }
   const dispPromo = streamsC.find(s => s.id === 'promo')
   if (!dispPromo || dispPromo.isLive !== true) throw new Error('redirect channel missing from the display list or not live')
-  if (dispPromo.url !== undefined || dispPromo.redirect !== undefined || dispPromo.encryptionKey || dispPromo.feedKey) throw new Error('display list must stay metadata-only (leaked url/redirect/keys)')
+  // headers are engine-internal exactly like url/redirect: they are a playback secret of
+  // sorts (the provider's own hotlink check) and belong in resolve(), never in the list a
+  // host renders and logs.
+  if (dispPromo.url !== undefined || dispPromo.redirect !== undefined || dispPromo.headers !== undefined || dispPromo.encryptionKey || dispPromo.feedKey) throw new Error('display list must stay metadata-only (leaked url/redirect/headers/keys)')
 
   // (a) resolve() hands the operator URL over verbatim — no feed, no watchdogs.
   const rP = await resolveWithin(playerC, 'promo', 20000)
   if (rP.url !== promoUrl) throw new Error('redirect resolve must return the catalog url verbatim, got ' + rP.url)
+  if (hsig(rP.headers) !== hsig(promoHeaders)) throw new Error('redirect resolve must return the catalog headers verbatim, got ' + hsig(rP.headers))
   if (rP.source !== 'cdn' || rP.port !== undefined || rP.localUrl !== undefined || rP.feedKey !== null) throw new Error('redirect resolve shape wrong: ' + JSON.stringify(rP))
   if (evC.status.includes('feed:open')) throw new Error('a redirect tune must not open any feed')
   if (playerC._tuneTimer) throw new Error('a redirect tune must not arm the tune watchdog')
@@ -942,11 +952,18 @@ try {
   log('redirect: promo resolved to the operator URL verbatim (source cdn, no port, no feed, no watchdog)')
 
   // (b) admin edits the url in the catalog → the NEXT tune returns the new one (live
-  // catalog read at resolve() — no re-login, no push round-trip required).
+  // catalog read at resolve() — no re-login, no push round-trip required). The headers
+  // move with it: this pair IS the property a half-hourly source refresh depends on —
+  // rotated token URL plus whatever headers the provider now wants, reaching a
+  // logged-in viewer on the next tune.
   const promoUrl2 = `http://127.0.0.1:${cdnPort}/index.m3u8?src=promo2`
-  await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl2, isLive: true, status: 'live' })
-  await waitFor(async () => (await resolveWithin(playerC, 'promo', 20000)).url === promoUrl2, 40000, 'a re-tune returns the EDITED redirect url')
-  log('redirect: url edit reached the viewer on the next tune (no re-login)')
+  const promoHeaders2 = { referer: 'https://provider.example/live2/', 'user-agent': 'AliranTest/2.0' }
+  await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl2, headers: promoHeaders2, isLive: true, status: 'live' })
+  await waitFor(async () => {
+    const r = await resolveWithin(playerC, 'promo', 20000)
+    return r.url === promoUrl2 && hsig(r.headers) === hsig(promoHeaders2)
+  }, 40000, 'a re-tune returns the EDITED redirect url AND its edited headers')
+  log('redirect: url + headers edit reached the viewer on the next tune (no re-login)')
 
   // (c) a feedless entry WITHOUT the redirect class still fails honestly.
   let voidRejected = false
@@ -960,8 +977,17 @@ try {
   await waitFor(async () => { const r = await httpGet(rN.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 40000, 'p2p playback beside redirect channels')
   const rP2 = await resolveWithin(playerC, 'promo', 20000)
   if (rP2.url !== promoUrl2) throw new Error('zap back to the redirect must return the (edited) url')
+  if (hsig(rP2.headers) !== hsig(promoHeaders2)) throw new Error('zap back to the redirect must return the (edited) headers')
+  if (rN.headers !== undefined) throw new Error('a P2P tune must carry NO headers (they belong to a provider url, not to localhost)')
   if (playerC._tuneTimer) throw new Error('zapping p2p→redirect must clear the p2p tune watchdog')
   if (evC.fallback !== 0 || evC.sourceChanged !== 0) throw new Error('redirect playback must not touch the hybrid machinery (fallback/source-changed fired)')
+
+  // (e) the provider stops checking (or an admin clears the fields): a record with no
+  // headers resolves with none. The live record is authoritative with NO fallback to the
+  // login snapshot, so the old headers must not linger for the session.
+  await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl2, headers: null, isLive: true, status: 'live' })
+  await waitFor(async () => (await resolveWithin(playerC, 'promo', 20000)).headers === undefined, 40000, 'cleared headers resolve to undefined')
+  log('redirect: cleared headers stop reaching the viewer (no stale snapshot fallback)')
   await playerC.stop()
   const redirectProven = true
   log('redirect: zap p2p↔redirect clean — watchdog armed on news, cleared on promo; hybrid machinery untouched')

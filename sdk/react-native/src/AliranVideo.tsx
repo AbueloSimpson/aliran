@@ -83,6 +83,13 @@ const BUFFER_CONFIG = {
 // remount would yank playback back to 0:00.
 const STALL_MS = 12000
 
+// Cheap stable signature of a playback-header set (sorted k=v, '' for none). Two uses,
+// and they must agree: spotting a HEADERS-ONLY change in the 'port' handler, and keying
+// the mount so the fresh headers cannot be missed.
+function headersSig (h: Record<string, string> | null | undefined) {
+  return h ? Object.keys(h).sort().map((k) => k + '=' + h[k]).join('&') : ''
+}
+
 export type TunePhase = 'start' | 'retune' | 'reconnect' | 'playing'
 
 // Imperative surface (React ref): seek, for vod transport UI. The handle survives the
@@ -162,6 +169,18 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
   onAudioTracks, onTextTracks, stallTimeoutMs = STALL_MS, bufferConfig, videoProps
 }: AliranVideoProps, ref) {
   const [url, setUrl] = useState<string | null>(backend.url)
+  // Request headers that belong to THIS url (a redirect channel behind a provider's
+  // Referer/Origin/User-Agent hotlink check). Tracked in state beside url, seeded from
+  // the backend for a re-entry onto an already-resolved channel, and handed to the
+  // player inside the source prop — without them the provider answers 403.
+  const [headers, setHeaders] = useState<Record<string, string> | null>(backend.headers ?? null)
+  // Signature of the headers the CURRENT mount was opened with. A provider that rotates
+  // only its User-Agent leaves the url alone, so this is the only way the 'port' handler
+  // can see that the player has to be torn down — and it has to go through remount(), not
+  // the key alone: the key would swap the mount WITHOUT bumping the epoch (late events
+  // from the dead mount would then pass the staleness guard) and without re-running the
+  // [url, attempt] effect that disarms the stall ladder for a fresh mount.
+  const headersRef = useRef(headersSig(backend.headers ?? null))
   const [attempt, setAttempt] = useState(0) // remounts <Video>; trails epoch (see remount)
   // Synchronous shadow of `attempt`: bumped BEFORE the remounting setState, so event
   // callbacks still held by the outgoing mount (they captured `attempt` at its render)
@@ -224,6 +243,7 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
     const off = backend.onMessage((m: BackendMessage) => {
       if (m.type === 'port' && backend.url) {
         setUrl(backend.url)
+        setHeaders(backend.headers ?? null) // null for everything but a hotlink-checked redirect url
         if (backend.source) cb.current.onSource?.(backend.url, backend.source)
         const sid = m.streamId ?? streamId // pre-streamId worklet bundles: assume ours
         const changed = sid !== served.current
@@ -232,7 +252,14 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
           // The engine confirmed OUR stream is what the shared URL serves now. If that
           // is a switch, remount to flush the previous channel's playlist/buffer —
           // otherwise the old channel plays on until ExoPlayer stumbles into the swap.
-          if (changed) remount()
+          // A HEADERS-ONLY change (a provider rotating its User-Agent behind a stable
+          // url) is the same kind of event: the open player is still sending the old
+          // set, so it has to go too — and through remount(), which is what bumps the
+          // epoch and re-arms the per-mount stall state.
+          const sig = headersSig(backend.headers ?? null)
+          const headersChanged = sig !== headersRef.current
+          headersRef.current = sig
+          if (changed || headersChanged) remount()
           tune.current.live = true
           // Record class of the confirmed serve (absent on pre-S8a worklet bundles →
           // keep the live assumption).
@@ -241,20 +268,24 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
         // else: a stale reply from an outrun zap — recorded; ours is still on the way.
       }
       if (m.type === 'fallback' && m.streamId === streamId) {
-        setUrl(m.url); remount()
+        // A different url (the operator's CDN template) — the previous provider's
+        // headers do not belong to it. P2P-only event, so this only ever clears null.
+        setUrl(m.url); setHeaders(null); headersRef.current = ''; remount()
         served.current = streamId
         tune.current.live = true
         cb.current.onFallback?.({ url: m.url, reason: m.reason })
       }
       if (m.type === 'source-changed' && m.streamId === streamId) {
-        setUrl(m.url); remount()
+        setUrl(m.url); setHeaders(null); headersRef.current = ''; remount() // same reason as 'fallback' above
         served.current = streamId
         tune.current.live = true
         cb.current.onSourceChanged?.({ url: m.url, source: m.source })
       }
       if (m.type === 'feed-changed' && m.streamId === streamId) {
         // Same localhost URL, new feed behind it — remount to flush the old playlist/
-        // segments the player has already buffered.
+        // segments the player has already buffered. Headers are left alone on purpose:
+        // this event is P2P-only (a redirect channel opens no feed to rotate), so they
+        // are already null — clearing would be noise, carrying them would be a bug.
         setUrl(m.url); remount()
         tune.current.live = true
         cb.current.onFeedChanged?.({ feedKey: m.feedKey, url: m.url })
@@ -324,12 +355,17 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
 
   const { onProgress: hostOnProgress, ...restVideoProps } = videoProps ?? {}
   const mountEpoch = attempt // the epoch this render's callbacks belong to (see remount)
+  // Belt and braces on top of the 'port' handler's remount: the headers also key the
+  // mount, so no path can leave the open player sending a stale set (ExoPlayer reads
+  // source.headers once, when it opens the media). Both fire in the same commit, so this
+  // is still a single unmount/mount.
+  const sig = headersSig(headers)
 
   return (
     <Video
-      key={url + ':' + attempt}
+      key={url + ':' + sig + ':' + attempt}
       ref={videoRef}
-      source={{ uri: url, bufferConfig: { ...BUFFER_CONFIG, ...bufferConfig } }}
+      source={{ uri: url, headers: headers ?? undefined, bufferConfig: { ...BUFFER_CONFIG, ...bufferConfig } }}
       style={style ?? StyleSheet.absoluteFill}
       controls={controls}
       paused={paused}

@@ -63,6 +63,11 @@ export async function login (call, db, username, password, { deviceId, deviceLab
         feedKey: cat.value.feedKey,
         redirect: cat.value.redirect === true, // S23 redirect channel: viewers play `url`, no P2P feed
         url: cat.value.url ?? null,
+        // Playback headers belonging to that url (a hotlink-protected provider checks
+        // Referer/Origin/User-Agent before it serves). Redirect-only and as
+        // engine-internal as url itself: the HOST PLAYER gets them back from
+        // resolve(), never from the display list.
+        headers: cat.value.headers ?? null,
         epgUrl: cat.value.epgUrl ?? null, // S27 EPG pointers (carried into _display)
         epgId: cat.value.epgId ?? null,
         type: cat.value.type ?? null, // S8a record class: 'vod' (library title) | 'live'

@@ -182,6 +182,13 @@ export interface ResolveResult {
   type: 'live' | 'vod'
   /** Title duration in seconds (vod; null when the catalog lacks it) — undefined for live. */
   durationSec?: number | null
+  /**
+   * HTTP request headers the HOST PLAYER must send with `url`: redirect channels
+   * whose provider hotlink-checks Referer / Origin / User-Agent serve a 403 without
+   * them. Lowercase keys. Undefined everywhere else (p2p localhost serving, cdn
+   * templates) — the headers belong to the provider's url, not to playback.
+   */
+  headers?: Record<string, string>
 }
 
 export interface SourceInfo {

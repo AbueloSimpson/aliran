@@ -98,7 +98,7 @@
 //                                        it and stores no credential for it. Read at
 //                                        login, so an operator change lands on the next
 //                                        login/app start)
-//        { type:'port', port, url, source, streamId, recordType, durationSec }
+//        { type:'port', port, url, source, streamId, recordType, durationSec, headers? }
 //                                        (url = ACTIVE source under hybrid; streamId
 //                                        echoes the play() request so the client can
 //                                        tell WHICH channel the shared localhost URL
@@ -106,7 +106,14 @@
 //                                        direct-play reply. recordType/durationSec,
 //                                        S8a: the engine's ResolveResult type —
 //                                        'vod' = finished library title, show
-//                                        seek/pause UI and expect no live self-heal)
+//                                        seek/pause UI and expect no live self-heal.
+//                                        headers: request headers the VIDEO PLAYER must
+//                                        send with url — redirect channels whose
+//                                        provider hotlink-checks Referer/Origin/
+//                                        User-Agent. Absent for every other reply, and
+//                                        the later fallback/source-changed URLs are
+//                                        never the provider's, so the client clears it
+//                                        on those)
 //        { type:'status', state|peers } | { type:'login-error'|'error', message }
 //        { type:'fallback', streamId, url, reason } | { type:'source-changed', streamId, source, url }
 //        { type:'feed-changed', streamId, feedKey, url }   (active stream's feedKey rotated)
@@ -505,7 +512,9 @@ IPC.on('data', (data) => {
       // `type` from the engine rides as `recordType` (the IPC message's own `type` is
       // the envelope discriminant): 'vod' = finished library title (seek/pause UI, no
       // live self-heal events), with durationSec beside it for the transport display.
-      ensurePlayer().resolve(msg.streamId).then(({ port, url, source, type, durationSec }) => send({ type: 'port', port, url, source, streamId: msg.streamId, recordType: type, durationSec })).catch(fail)
+      // `headers` rides through untouched (undefined on everything but a hotlink-checked
+      // redirect channel) — the video player, not the engine, is what sends them.
+      ensurePlayer().resolve(msg.streamId).then(({ port, url, source, type, durationSec, headers }) => send({ type: 'port', port, url, source, streamId: msg.streamId, recordType: type, durationSec, headers })).catch(fail)
     } else if (msg.panelPubKey) {
       // The persisted "Smooth zapping" choice (if the user ever set it) wins over the
       // app's compiled zapPrefetch default; true means the SDK's adaptive defaults.
