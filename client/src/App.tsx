@@ -19,7 +19,7 @@
 // every color/string flows from the service descriptor via theme.ts).
 
 import React, { useEffect, useState } from 'react'
-import { AppState, View } from 'react-native'
+import { AppState, InteractionManager, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranBackend, EngineNotice } from '@aliran/react-native'
@@ -29,6 +29,8 @@ import { setLocale, useI18n } from '@aliran/i18n'
 // design D5). The saved override arrives below with the worklet's prefs reply.
 import { deviceLocaleTag, pickLocale, serviceDefaultLocale } from './i18n'
 import { backend } from './worklet'
+import { categoryModel, channelNumbers } from './catalog'
+import { visibleStreams } from './parental'
 import { hasBakedKey, loadServiceDescriptor } from './config'
 import { checkForUpdate, onUpdateAvailable, type AvailableUpdate } from './update'
 import { theme } from './theme'
@@ -147,6 +149,19 @@ export default function App () {
       // No saved choice (null) means "follow the device", which is what the module
       // import above already decided — recomputing it keeps ONE resolution order.
       if (m.type === 'prefs') setLocale(pickLocale(m.language, deviceLocaleTag(), serviceDefaultLocale()))
+      // Warm the catalog derivations the moment a catalog (or a parental change)
+      // lands (S22 round 8): the curation sort + category grouping over a large vod
+      // library cost seconds of JS, memoized per catalog in catalog.ts/parental.ts.
+      // Paying them here, off the interaction path, makes the FIRST guide/live open
+      // as instant as the later ones. The locale swap above happens first, so the
+      // warm computes under the locale the screens will use.
+      if (m.type === 'streams' || m.type === 'prefs') {
+        InteractionManager.runAfterInteractions(() => {
+          const v = visibleStreams(backend.streams)
+          categoryModel(v)
+          channelNumbers(v)
+        })
+      }
     })
     const offUpdate = onUpdateAvailable(setUpdate)
     const appState = AppState.addEventListener('change', (s) => {
