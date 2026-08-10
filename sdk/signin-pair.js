@@ -19,9 +19,13 @@
 //   2. Phone  same derivation from the typed code; join; connect.
 //   3. BOTH   the WP1 mutual proof, bound to the Noise handshake hash. A peer that
 //             cannot show knowledge of the code is dropped. (core/remote.js)
-//   4. BOTH   remoteSas(secret, handshakeHash) — the SAME four digits on both screens.
-//             The viewer confirms ON THE PHONE that the TV shows those digits. "No"
-//             aborts and the code is spent. CHECK ONE.
+//   4. BOTH   the compared-digits round — a COMMIT-REVEAL. In its step-3 reply the TV
+//             commits to a fresh 32-byte nonce; the phone then sends its own nonce in clear;
+//             the TV reveals its nonce and the phone checks it against the commitment; both
+//             derive remoteCommittedSas(secret, hh, nonceI, nonceR). The SAME four digits
+//             show on both screens and the viewer confirms ON THE PHONE. "No" aborts and the
+//             code is spent. CHECK ONE. The commit-reveal is what stops a code-holding relay
+//             grinding these digits — see core/remote.js and THE BIRTHDAY REFINEMENT below.
 //   5. Phone  draws four RANDOM digits and shows them. The viewer types them into the TV.
 //   6. TV     proves it learned the digits (remotePinProof, bound to the same hash).
 //   7. Phone  verifies, once. CHECK TWO. Both checks having passed, and only then, it
@@ -39,22 +43,26 @@
 //   from the code, which this attacker holds, so it recovers the four digits the viewer
 //   typed into the real TV by MACing all ten thousand candidates offline (~56 ms) and
 //   re-issues the proof bound to its own leg. That is not theory — it was built and run
-//   end to end on a local DHT testnet against the revision of this file that shipped
-//   without step 4, and it walked away with both private keys while both screens said
-//   the sign-in had worked. Two connections mean two transcripts mean two different SAS
-//   values, and there is nothing the relay can do to make ONE pair of screens agree.
+//   end to end on a local DHT testnet, and it walked away with both private keys. What the
+//   relay CANNOT do is make ONE pair of screens show the same four digits: its two legs have
+//   two transcripts, and step 4's nonces are committed on each leg before that leg learns
+//   the honest side's, so it cannot line them up.
 //
-//   THE BIRTHDAY REFINEMENT of that relay, and the connection cap it forces. Any one
-//   pair of legs collides with probability 10^-4, but the relay holds the code, so it
-//   can open MANY connections to each device, read every leg's handshake hash, work out
-//   each leg's SAS, and — proving on none of them — prove only on a pair whose four
-//   digits happen to match. That is a birthday search: ~100 connections per side, not
-//   10,000 tries. MAX_SIGNIN_CONNECTIONS prices it out by burning the code once too many
-//   connections have opened this channel, on BOTH roles. Its reach is bounded and the
-//   constant says how: the handshake hash is legible on the raw socket, so the counter
-//   sees a channel-opening flood but not a relay that harvests hashes on the side it
-//   dials without opening a channel. It raises the cost; core/remote.js remoteSas holds
-//   the honest ceiling.
+//   THE BIRTHDAY REFINEMENT of that relay, and why step 4 is a COMMIT-REVEAL. An earlier
+//   revision derived the compared digits from (secret, handshake hash) alone. The handshake
+//   hash is legible on a RAW NoiseSecretStream before any channel is opened, so a
+//   code-holding relay could read a leg's would-be SAS off the bare socket — opening
+//   nothing, so counting nothing against MAX_SIGNIN_CONNECTIONS — harvest a pile of them,
+//   drive the phone to a fixed leg-A SAS, keep dialing the TV until a raw leg-B's precomputed
+//   SAS matched, and CLAIM on exactly that socket. A birthday search over a few thousand free
+//   probes, and it took the account against a TRUTHFUL viewer. Built and run end to end; the
+//   cap counted nothing, because the harvest opened nothing. The commit-reveal closes it: a
+//   leg's SAS does not exist until a full in-channel round has run on that leg, so there is
+//   nothing to precompute off a raw socket, and each candidate now costs a channel open —
+//   which MAX_SIGNIN_CONNECTIONS counts, and burns the code past. On top of that, claim()
+//   (below) and the phone's `chosen` latch pin the DISPLAYED digits to one value per side,
+//   fixed by nonces the relay neither chose nor foresaw — a flat 10^-4. See core/remote.js
+//   remoteCommittedSas.
 //
 //   THE STATIC LURE, caught by step 5 only. A printed code, a forwarded screenshot, a
 //   page that says "enter this on your TV" — an attacker that shows a code with no real
@@ -135,7 +143,7 @@ import {
   normalizePairingCode,
   newSigninCode, signinKeys, signinCodeState, consumeSigninCode, SIGNIN_CODE_STATES,
   remoteProof, remoteProofValid, peerRole, REMOTE_ROLES, REMOTE_PROOF_BYTES,
-  remoteSas,
+  remoteNonce, remoteNonceCommit, remoteNonceCommitValid, remoteCommittedSas, REMOTE_NONCE_BYTES,
   newRemotePin, remotePinProof, remotePinProofValid, REMOTE_PIN_DIGITS
 } from '@aliran/core'
 
@@ -144,8 +152,10 @@ import {
 // swarm is borrowed (sdk/player.js replicates its corestore on every connection).
 const SIGNIN_PROTOCOL = 'aliran-signin'
 // Bumped only for a change the other end cannot parse. A phone and a TV are routinely on
-// different app versions, so both sides check it and refuse rather than guess.
-const WIRE_VERSION = 1
+// different app versions, so both sides check it and refuse rather than guess. v2 added the
+// commit-reveal SAS round (the signin-nonce message and the `commit` field on the hello
+// reply); a v1 peer cannot complete step 4 and both ends refuse it cleanly as malformed.
+const WIRE_VERSION = 2
 
 // How long the phone looks for a peer before giving up. Generous for the same reason
 // sdk/pairing.js's is: a cold DHT lookup from a phone on a slow link is the normal case,
@@ -178,24 +188,30 @@ const ABORT_MS = 3000
 // one after another across the whole TTL, so a concurrency limit alone would be no
 // limit at all.
 //
-// Eight is chosen against the compared SAS, which is four digits (core/remote.js
-// remoteSas). A relay that holds the code can open N connections to each device,
-// read each leg's handshake hash, work out what its SAS would be, and prove only on
-// a pair whose four digits happen to agree — a birthday search that expects
-// N^2 / 10^4 colliding pairs. At N = 8 that is 6.4e-3, under 1%: a grind that has to
-// complete inside one viewer's sign-in is priced out. At the ~100 per side an
-// UNBOUNDED grind uses, the same expression is a near-certainty — which is the whole
-// case for a cap over a longer SAS. Six digits would cut the per-pair odds but make
-// every honest viewer compare a longer string, and a viewer who tires of comparing
-// and taps "yes" has defeated the only check that sees a relay. The cap costs the
-// legitimate pairing nothing.
+// Eight is a BACKSTOP behind the compared SAS, which is four digits (core/remote.js
+// remoteCommittedSas). The PRIMARY bound is the latches: claim() below and the phone's
+// `chosen` each pin their device's SAS nonce to ONE peer, so the digits each screen
+// shows are a single value per side, fixed by a nonce the relay neither chose nor
+// foresaw — a flat 10^-4. The cap sits behind that: were the latches ever loosened so
+// that several channels could each run the commit-reveal and learn a candidate SAS, a
+// birthday search over N channels per side expects N^2 / 10^4 colliding pairs, and at
+// N = 8 that is 6.4e-3, still under 1%. Six digits would cut the per-pair odds but make
+// every honest viewer compare a longer string, and a viewer who tires of comparing and
+// taps "yes" has defeated the only check that sees a relay. The cap costs the legitimate
+// pairing, which opens one channel per side, nothing.
 //
-// READ core/remote.js FOR THE LIMIT before quoting the 6.4e-3 as the whole story.
-// It bounds a relay that reaches the protocol by OPENING THE CHANNEL. The handshake
-// hash is legible on the raw NoiseSecretStream before any channel exists, so a relay
-// can harvest hashes on the side it DIALS (the TV) without opening a channel this
-// counter can see. The cap raises the attacker's cost and stops a channel-level
-// flood; on the borrowed swarm it is not, by itself, the end of the birthday search.
+// WHY THIS CAP IS NOW LOAD-BEARING, where a previous revision's identical cap was not.
+// Then the SAS was a pure function of (secret, handshake hash), and the handshake hash is
+// legible on the RAW NoiseSecretStream before any channel is opened — so a relay harvested
+// candidate SAS values off bare sockets this counter never saw, drove the phone to a fixed
+// leg-A SAS, kept dialing the TV until a raw leg-B's precomputed SAS matched, and CLAIMED
+// on exactly that socket. Proven end to end on a local DHT testnet; the cap bounded nothing
+// that mattered. The commit-reveal (core/remote.js remoteCommittedSas) closes it: a leg's
+// SAS does not exist until a full in-channel round has run on that leg, and that round
+// OPENS the aliran-signin channel — precisely what 'open' counts below. Every candidate SAS
+// a relay could want now costs one counted connection, so the cap finally bounds the search
+// it used to miss. Both roles count, because a relay opens channels on whichever side it
+// attacks.
 const MAX_SIGNIN_CONNECTIONS = 8
 
 // Every message here is a small JSON object; the biggest is the payload at roughly 400
@@ -316,6 +332,16 @@ function handshakeHash (socket) {
 // This side's role on THIS connection. Taken from the Noise handshake, not from which
 // product role we are playing: hyperswarm decides who dialled, and both ends must agree.
 const myRole = (socket) => (socket.isInitiator ? REMOTE_ROLES.initiator : REMOTE_ROLES.responder)
+
+// The compared digits, feeding remoteCommittedSas the two nonces in its canonical order —
+// the INITIATOR's, then the RESPONDER's — worked out from THIS side's role. Both ends call
+// this with (myNonce, peerNonce) and land on the same four digits regardless of who drew
+// which. core/remote.js owns the derivation; this only orders the two buffers.
+function sasDigits (secret, hh, role, myNonce, peerNonce) {
+  const initiatorNonce = role === REMOTE_ROLES.initiator ? myNonce : peerNonce
+  const responderNonce = role === REMOTE_ROLES.initiator ? peerNonce : myNonce
+  return remoteCommittedSas(secret, hh, initiatorNonce, responderNonce)
+}
 
 function destroy (x) { try { if (x) x.destroy() } catch {} }
 
@@ -534,21 +560,45 @@ export async function receiveSignIn (opts = {}) {
       }
       const refused = claim()
       if (refused) return jsonBody({ v: WIRE_VERSION, error: refused })
-      peer = { socket, rpc, hh, role: me }
+      // CHECK ONE begins here, as the RESPONDER's half of a commit-reveal. Draw this side's
+      // SAS nonce and COMMIT to it in the same synchronous block that spends the code — so
+      // the one peer that wins claim() is the only peer this TV ever commits a nonce to, and
+      // the digits it will show are pinned before it has seen the phone's nonce. The nonce
+      // is revealed only in signin-nonce, and only once. That single claimed-and-committed
+      // round is what leaves a relay unable to grind the compared digits: it cannot harvest
+      // a leg's SAS off a raw socket (there is none until the round runs), and it cannot rerun
+      // the round for a fresh nonce without a fresh, counted channel. See core/remote.js
+      // remoteCommittedSas and MAX_SIGNIN_CONNECTIONS.
+      const nonceTv = remoteNonce()
+      peer = { socket, rpc, hh, role: me, nonceTv, sasShown: false }
       onClose(socket, () => { if (!settled && peer && peer.socket === socket) fail(SIGNIN_PAIR_ERRORS.timeout, 'the phone disconnected before the sign-in finished') })
       onState({ state: SIGNIN_PAIR_STATES.linked })
-      // CHECK ONE, this side's half of it: put the compared digits on the TV screen. This
-      // device has no say in the outcome and is told nothing about it — the confirmation
-      // happens on the phone, which is the device that already holds the account and is
-      // the only one of the two the viewer has a reason to trust. All the TV does is
-      // display, honestly, the SAS of the connection IT is on; a relay's other leg has a
-      // different transcript and therefore different digits, and that disagreement is the
-      // whole check. Derived, never received: nothing a peer sends can influence it.
-      onState({ state: SIGNIN_PAIR_STATES.match, sas: remoteSas(secret, hh) })
-      // One window for both human steps — comparing on the phone, then typing here.
-      // Splitting it would only let a UI count the same viewer twice.
+      // The window for both human steps opens now: comparing on the phone, then typing here.
+      // Splitting it would only let a UI count the same viewer twice. The digits themselves
+      // do not exist yet — they need the phone's nonce, which arrives in signin-nonce.
       rearm(pinMs, SIGNIN_PAIR_ERRORS.timeout, 'the sign-in was not completed in time')
-      return jsonBody({ v: WIRE_VERSION, ok: true, proof: hex(remoteProof(secret, hh, me)) })
+      return jsonBody({ v: WIRE_VERSION, ok: true, proof: hex(remoteProof(secret, hh, me)), commit: hex(remoteNonceCommit(secret, hh, nonceTv)) })
+    })
+
+    // Step 4 concluded, as the RESPONDER's reveal. The phone has sent its nonce in clear;
+    // reveal ours — ONCE. A second signin-nonce on this channel is refused (`sasShown`), and
+    // that one-round-per-channel rule is exactly what forces every SAS candidate a relay
+    // might want to cost a fresh, counted channel (core/remote.js remoteCommittedSas,
+    // MAX_SIGNIN_CONNECTIONS). Nothing the phone sends here can steer the digits: our nonce
+    // was committed at hello, before this message existed. The TV only DISPLAYS the SAS —
+    // the confirmation belongs on the phone, the device the viewer already trusts — and a
+    // relay's other leg has a different transcript AND a different nonce, so its digits
+    // disagree, which is the whole check.
+    rpc.respond('signin-nonce', (buf) => {
+      if (settled) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.cancelled })
+      if (!peer || peer.socket !== socket) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.unauthorized })
+      if (peer.sasShown) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.used })
+      const body = parseBody(buf)
+      const noncePhone = body && hexBytes(body.nonce, REMOTE_NONCE_BYTES)
+      if (!noncePhone) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.malformed })
+      peer.sasShown = true
+      onState({ state: SIGNIN_PAIR_STATES.match, sas: sasDigits(secret, peer.hh, peer.role, peer.nonceTv, noncePhone) })
+      return jsonBody({ v: WIRE_VERSION, ok: true, nonce: hex(peer.nonceTv) })
     })
 
     // Step 6. The phone asks; this answers when the viewer has pressed four buttons, so
@@ -561,6 +611,9 @@ export async function receiveSignIn (opts = {}) {
     // only device that can enforce the comparison is the one holding the payload.
     rpc.respond('signin-pin', async (buf) => {
       if (!peer || peer.socket !== socket) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.unauthorized })
+      // The compared-digits round must have run first (peer.sasShown): a peer that jumped
+      // straight to the PIN skipped the one check that sees a relay, so it is refused here.
+      if (!peer.sasShown) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.unauthorized })
       if (!parseBody(buf)) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.malformed })
       if (pinAsked) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.used })
       pinAsked = true
@@ -796,7 +849,11 @@ export async function sendSignIn (code, payload, opts = {}) {
       return
     }
     const theirs = hexBytes(hello.proof, REMOTE_PROOF_BYTES)
-    if (!theirs || !remoteProofValid(secret, hh, peerRole(me), theirs)) return
+    // The TV's COMMITMENT to its SAS nonce rides the hello reply. A peer that proves the
+    // code but omits it is not speaking v2's step 4; ignore it and keep looking, exactly as
+    // for a bad proof — do not latch onto it.
+    const commit = hexBytes(hello.commit, REMOTE_PROOF_BYTES)
+    if (!theirs || !commit || !remoteProofValid(secret, hh, peerRole(me), theirs)) return
 
     // --- the latch: no await between the test and the set ---
     if (chosen || settled) return
@@ -808,14 +865,32 @@ export async function sendSignIn (code, payload, opts = {}) {
     unlisten.push(() => { try { socket.off('close', onSocketClose) } catch {} })
     onState({ state: SIGNIN_PAIR_STATES.linked })
 
-    // ===== CHECK ONE: the compared digits =====
-    // DERIVED from the transcript of THIS connection, so a relay — which terminates two
-    // connections and holds the code, and therefore beats every MAC in this exchange —
-    // cannot make this device and the TV show the same four digits. Nothing is sent: the
-    // TV computes its own from its own transcript. The viewer answers HERE, on the device
-    // that already holds the account, because a hostile receiver would happily answer for
-    // itself. See core/remote.js remoteSas for what this does not buy.
-    onState({ state: SIGNIN_PAIR_STATES.match, sas: remoteSas(secret, hh) })
+    // ===== CHECK ONE: the compared digits, as the INITIATOR's half of a commit-reveal =====
+    // The TV committed to its nonce in `commit` BEFORE it could see ours. We send ours in the
+    // clear now and it reveals its own; because it was already committed it cannot pick a
+    // nonce to make its screen match ours, and because we only send ours after seeing its
+    // (hiding) commitment we cannot either. So a relay holding the code — which beats every
+    // MAC in this exchange — still cannot make its two legs show the same four digits, and
+    // cannot grind them cheaply: each candidate SAS costs a full in-channel round, which
+    // MAX_SIGNIN_CONNECTIONS counts. The viewer answers HERE, on the device that already
+    // holds the account. See core/remote.js remoteCommittedSas for what this does not buy.
+    const myNonce = remoteNonce()
+    const nonceRes = await ask(rpc, 'signin-nonce', { nonce: hex(myNonce) }, RPC_MS)
+    if (settled) return
+    const theirNonce = nonceRes && !nonceRes.error && hexBytes(nonceRes.nonce, REMOTE_NONCE_BYTES)
+    if (!theirNonce) {
+      // Proved the code but would not complete the comparison round — not a TV this device
+      // hands an account to. The code is spent either way.
+      await abort(rpc, SIGNIN_PAIR_ERRORS.cancelled)
+      return fail(SIGNIN_PAIR_ERRORS.refused, 'the TV did not complete the comparison step — show a new code and start again')
+    }
+    if (!remoteNonceCommitValid(secret, hh, theirNonce, commit)) {
+      // It revealed a nonce it had not committed to — an active tamper with the one round
+      // that sees a relay. Treat it exactly like a screen mismatch: something is in the way.
+      await abort(rpc, SIGNIN_PAIR_ERRORS.mismatch)
+      return fail(SIGNIN_PAIR_ERRORS.mismatch, 'the comparison round did not verify. Something may be between this phone and that TV — do not try again on this network without checking. Nothing was sent.')
+    }
+    onState({ state: SIGNIN_PAIR_STATES.match, sas: sasDigits(secret, hh, me, myNonce, theirNonce) })
     const compareTimer = setTimeout(() => {
       if (matchPending) { const r = matchPending; matchPending = null; r(null) }
     }, matchMs)

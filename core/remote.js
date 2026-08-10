@@ -28,20 +28,24 @@
 //        topic  = remoteTopic(secret)                            -> or (secret, epoch)
 //
 //   Both arrive at the same shape: a 32-byte swarm topic plus a 32-byte shared secret
-//   that the topic cannot be worked backwards to. From there both sides run one round:
+//   that the topic cannot be worked backwards to. From there both sides run one round of
+//   mutual proof:
 //
 //        mine   = remoteProof(secret, socket.handshakeHash, myRole)
 //        ok     = remoteProofValid(secret, socket.handshakeHash, peerRole(myRole), theirs)
-//        digits = remoteSas(secret, socket.handshakeHash)   -> see the SAS note below
 //
 //   The sign-in handover adds TWO human checks on top of that, because the mutual proof
 //   authenticates a CODE and not a DEVICE. They are complementary and BOTH must pass
 //   before key material moves — neither one is a substitute for the other:
 //
-//        remoteSas       both screens show the same four digits and the viewer confirms
-//                        ON THE PHONE that they match. A relay terminates two Noise
-//                        connections, so the two screens disagree; this is the check
-//                        that sees it.
+//        remoteCommittedSas  both screens show the same four digits and the viewer
+//                        confirms ON THE PHONE that they match. A relay terminates two
+//                        Noise connections, so the two screens disagree; this is the check
+//                        that sees it. The digits depend on a fresh 32-byte nonce from
+//                        EACH side, exchanged commit-then-reveal so that neither side can
+//                        choose its contribution after seeing the other's — which is what
+//                        stops a code-holding relay grinding the comparison. See the SAS
+//                        note below for the attack this replaced.
 //        remotePinProof  the phone draws four digits the TV cannot derive and the viewer
 //                        TYPES them into the TV. This is the check that a real device
 //                        with a human at it is in the session at all, which is what a
@@ -66,6 +70,14 @@
 // share, because it commits to both parties' fresh ephemeral keys. That also removes
 // the need for a challenge round-trip: the handshake hash IS a nonce both sides
 // contributed to, agreed before either of them speaks.
+//
+//   SUFFICIENT FOR THE PROOF, NOT FOR THE COMPARED SAS — the exact distinction the two
+//   earlier revisions missed. The proof's adversary is a peer WITHOUT the secret, and a
+//   bearer-token forward is all such a peer could try; binding to the handshake hash kills
+//   it. The SAS's adversary HOLDS the secret (a relay with the code), and it can read this
+//   same handshake hash off a RAW socket before any channel exists — so a value derived
+//   from (secret, handshake hash) alone is one it can precompute and grind. That is why the
+//   SAS mixes in a committed nonce from each side on top of the hash; see remoteCommittedSas.
 //
 //   VERIFIED, not assumed: @hyperswarm/secret-stream 6.9.1 (the version hyperswarm
 //   4.17.0 pins here) exposes it as the public `handshakeHash` property, set in
@@ -96,18 +108,28 @@
 //             orientation for authentication, and the one every proof below uses.
 //
 // DOMAIN SEPARATION (core/pairing.js:45-49 — no output of one construction may ever be
-// an input another would accept). Eight labels, all distinct from 'aliran-pairing-code-v1',
+// an input another would accept). Nine labels, all distinct from 'aliran-pairing-code-v1',
 // 'aliran-pair-v1' and 'aliran-wrapkey-v1', and from each other:
 //
-//   aliran-signin-code-v1     Argon2id salt: the sign-in code -> one master secret
-//   aliran-signin-topic-v1    master -> the sign-in swarm topic
-//   aliran-signin-secret-v1   master -> the sign-in shared secret
-//   aliran-remote-secret-v1   account X25519 private key + tokenVersion -> the secret
-//   aliran-remote-topic-v1    account shared secret (+ epoch) -> the account swarm topic
-//   aliran-remote-proof-v1    shared secret + handshake hash + role -> a proof
-//   aliran-remote-sas-v1      shared secret + handshake hash -> the compared digits
-//   aliran-remote-pin-v1      shared secret + role + typed digits + handshake hash ->
-//                             proof that the prover LEARNED the digits
+//   aliran-signin-code-v1          Argon2id salt: the sign-in code -> one master secret
+//   aliran-signin-topic-v1         master -> the sign-in swarm topic
+//   aliran-signin-secret-v1        master -> the sign-in shared secret
+//   aliran-remote-secret-v1        account X25519 private key + tokenVersion -> the secret
+//   aliran-remote-topic-v1         account shared secret (+ epoch) -> the account topic
+//   aliran-remote-proof-v1         shared secret + role + handshake hash -> a proof
+//   aliran-remote-nonce-commit-v1  shared secret + nonce + handshake hash -> a binding,
+//                                  hiding commitment to one side's SAS nonce
+//   aliran-remote-sas-nonce-v1     shared secret + both nonces + handshake hash -> the
+//                                  compared digits (commit-reveal; see remoteCommittedSas)
+//   aliran-remote-pin-v1           shared secret + role + typed digits + handshake hash ->
+//                                  proof that the prover LEARNED the digits
+//
+//   RETIRED, never to be reused: aliran-remote-sas-v1 keyed a compared-digits value that
+//   was a pure function of (secret, handshake hash). Because the handshake hash is legible
+//   on a RAW NoiseSecretStream before any channel exists, a relay holding the code could
+//   precompute a leg's SAS off the bare socket — opening nothing, so counting nothing — and
+//   grind a birthday collision. It is gone; the nonce-committed SAS above replaces it, and
+//   NO derivation in this file is a function of (secret, handshake hash) alone any more.
 //
 // The two labels that take a COMPOUND message (secret + tokenVersion, topic + epoch)
 // stay unambiguous by fixed widths, not by delimiters: 32 bytes of key material then
@@ -212,22 +234,31 @@ export const REMOTE_TOPIC_BYTES = 32
 export const REMOTE_SECRET_BYTES = 32
 export const REMOTE_PROOF_BYTES = 32
 
+// The per-side SAS nonce. 32 bytes is not a MAC size here but an ENTROPY floor: the
+// commitment below is a MAC the adversary can also compute (it holds the secret), so the
+// only thing keeping the committed nonce hidden until it is revealed is that the nonce is
+// too large to brute-force. A short nonce would let a code-holding relay open the
+// commitment and grind the SAS again — see remoteCommittedSas.
+export const REMOTE_NONCE_BYTES = 32
+
 // The two ends of one connection. They must differ, or a peer that knows nothing
 // reflects the proof it just received straight back as its own and passes.
 export const REMOTE_ROLES = { initiator: 'initiator', responder: 'responder' }
 
 // --- domain separation -------------------------------------------------------------
-// Eight labels, all distinct from each other and from pairing.js's two. The four that
+// Nine labels, all distinct from each other and from pairing.js's two. The four that
 // serve as BLAKE2b KEYS (the subkey() ones) are each >= crypto_generichash_KEYBYTES_MIN
-// (16 bytes) — shorten one below that and sodium throws at first use. The proof, SAS and
-// PIN labels are message prefixes, and the KDF one is hashed down to an Argon2id salt.
+// (16 bytes) — shorten one below that and sodium throws at first use. The proof, commit,
+// SAS and PIN labels are message prefixes, and the KDF one is hashed down to an Argon2id
+// salt. aliran-remote-sas-v1 is RETIRED (see the header) and deliberately absent here.
 const SIGNIN_KDF_SALT = deriveSalt('aliran-signin-code-v1')
 const SIGNIN_TOPIC_LABEL = b4a.from('aliran-signin-topic-v1')
 const SIGNIN_SECRET_LABEL = b4a.from('aliran-signin-secret-v1')
 const ACCOUNT_SECRET_LABEL = b4a.from('aliran-remote-secret-v1')
 const ACCOUNT_TOPIC_LABEL = b4a.from('aliran-remote-topic-v1')
 const PROOF_LABEL = b4a.from('aliran-remote-proof-v1')
-const SAS_LABEL = b4a.from('aliran-remote-sas-v1')
+const NONCE_COMMIT_LABEL = b4a.from('aliran-remote-nonce-commit-v1')
+const SAS_LABEL = b4a.from('aliran-remote-sas-nonce-v1')
 const PIN_LABEL = b4a.from('aliran-remote-pin-v1')
 
 const KDF_BYTES = 32 // >= crypto_pwhash_BYTES_MIN
@@ -589,7 +620,82 @@ export function remoteProofValid (secret, handshakeHash, role, proof) {
   return sodium.sodium_memcmp(expected, b4a.from(proof))
 }
 
-// --- short authenticated string -------------------------------------------------------
+// --- short authenticated string (commit-reveal) ---------------------------------------
+//
+// The four digits both screens show for the viewer to compare. Getting this right is the
+// whole difference between this file and the two revisions that shipped it broken, so the
+// reasoning is spelled out at length.
+//
+// WHY THE EARLIER SAS WAS BROKEN. It was remoteSas(secret, handshakeHash): a pure function
+// of the shared secret and the Noise transcript hash, nothing else. The threat model of
+// the sign-in handover is a relay that HOLDS the code, therefore the secret. The handshake
+// hash is legible on a raw NoiseSecretStream the instant the Noise handshake completes,
+// BEFORE any protomux channel exists. So a relay could dial the TV as a raw client over and
+// over, read each connection's handshake hash, and compute what SAS that leg would show —
+// all without opening the aliran-signin channel, which is the only thing sdk/signin-pair.js's
+// connection cap counts. It harvested (leg, SAS) pairs for free, drove the phone to a fixed
+// leg-A SAS, kept dialing until a raw leg-B's precomputed SAS matched, and CLAIMED on
+// exactly that socket. Both screens then showed the same digits, an honest viewer confirmed
+// TRUTHFULLY, and the account crossed to the relay. Built and run end to end on a local DHT
+// testnet against the revision that shipped it; the cap counted nothing, because the harvest
+// opened nothing.
+//
+// THE FIX: make the SAS depend on a fresh nonce from EACH side, committed before either is
+// revealed. Then a leg's SAS does not exist until a full in-channel round has run on that
+// leg, and there is nothing to precompute off a raw socket. The exchange (standard
+// commit-then-reveal, mapped onto this protocol in sdk/signin-pair.js — the TV is the RPC
+// server, so it is the party that can speak first without being asked):
+//
+//   responder (the TV) draws nonce_R and sends remoteNonceCommit of it in its hello reply.
+//     The commitment binds it: it cannot change nonce_R afterwards.
+//   initiator (the phone) then sends nonce_I in clear. It chose nonce_I knowing only the
+//     COMMITMENT to nonce_R — which hides it — so it could not steer the outcome; and the
+//     responder chose nonce_R before ever seeing nonce_I.
+//   responder reveals nonce_R; the initiator checks it against the commitment.
+//   both compute remoteCommittedSas(secret, handshakeHash, nonce_I, nonce_R).
+//
+// Neither side can pick its contribution after seeing the other's. A relay that terminates
+// both legs therefore cannot force leg A's digits to equal leg B's: on each leg it commits
+// (or sends) its own nonce before it learns the honest side's, and the honest nonce lands
+// uniformly. Any one pair of legs collides with probability 10^-4 — and, crucially, there is
+// no longer a cheap way to draw MANY candidate SAS values and keep only a colliding pair,
+// because every candidate now costs a full in-channel round.
+//
+// WHY THE COMMITMENT IS KEYED, AND WHY THE NONCE IS 32 BYTES. A bare hash of the nonce is
+// not enough: the adversary holds the secret, so a commitment it can also recompute is only
+// hiding if the committed value is too large to brute-force. The commitment is
+// MAC(secret, label || nonce || handshakeHash) — keyed under the shared secret, bound to
+// this connection, with its own domain-separation label — and the nonce is 256 bits. A
+// code-holding relay can therefore neither invert the commitment to learn nonce_R early (a
+// 256-bit search) nor open it to a different nonce later (a second-preimage on keyed
+// BLAKE2b, which it cannot find even holding the key). A four-digit nonce here would
+// collapse straight back to the broken version — the relay would brute-force the commitment
+// and grind as before — which is exactly why REMOTE_NONCE_BYTES is an entropy floor.
+//
+// WHAT BOUNDS A GRIND NOW, AND THE CAP'S PART IN IT. Two independent limits sit on the
+// birthday search, and BOTH are worth stating:
+//   - THE LATCHES (the primary bound). The TV commits its nonce only for the ONE peer that
+//     wins claim() — which spends the code — and the phone runs the reveal only with the
+//     ONE peer it latches as `chosen`. So the SAS each screen actually DISPLAYS is a single
+//     value per side, fixed by nonces the relay neither chose nor foresaw. That is a flat
+//     10^-4, with no birthday amplification at all (sdk/signin-pair.js).
+//   - THE CONNECTION CAP (the backstop — now load-bearing where it used to be decorative).
+//     Set the latches aside and imagine a future refactor that loosened them: producing one
+//     candidate SAS still costs a commit-reveal round, which OPENS the aliran-signin channel,
+//     which is exactly what MAX_SIGNIN_CONNECTIONS counts. At a cap of 8 per side a birthday
+//     search over the channels a code will entertain expects 8*8/10^4 = 6.4e-3 colliding
+//     pairs. Before the nonces the SAS came free off the raw handshake hash and the cap
+//     bounded nothing that mattered; now the search cannot leave the channel, so the cap
+//     bounds it. Read this with sdk/signin-pair.js MAX_SIGNIN_CONNECTIONS.
+//
+// WHAT THE COMPARISON STILL DOES NOT BUY, stated so nobody has to rediscover it. It does
+// not tell the viewer which screen they read the code off — both honest ends share one
+// connection and agree — and it does not stop a LIVE interactive pretext (a fake support
+// session that walks the viewer through both prompts). Those are unchanged: what defends
+// them is the code itself (60 bits, a ~3-minute TTL, one use — see WHY 12 CHARACTERS) and,
+// in the handover, remotePinProof below. This function's one job is to make a silent
+// relay's two screens disagree, and to make grinding that disagreement away cost a counted
+// channel per attempt.
 
 export const REMOTE_SAS_DIGITS = 4
 const SAS_MODULUS = 10 ** REMOTE_SAS_DIGITS
@@ -603,102 +709,78 @@ const SAS_MODULUS = 10 ** REMOTE_SAS_DIGITS
 const SAS_DRAW_WIDTH = 0x100000000
 const SAS_DRAW_LIMIT = Math.floor(SAS_DRAW_WIDTH / SAS_MODULUS) * SAS_MODULUS
 
+// 32 bytes, given as a raw buffer or as 64 hex characters — the same rule bytes32 applies
+// to a secret. A nonce that is any other length throws: it is one of this side's own
+// values, so a malformed one is a caller bug, not a stranger's input.
+function nonceBytes (nonce) {
+  return bytes32(nonce, 'nonce')
+}
+
 /**
- * The digits both screens show, for the viewer to compare: '0473'. Identical on two
- * honest peers of one connection, unrelated under a relay, and uniform over 0000-9999.
- *
- * Role-free on purpose — the two sides are comparing, not challenging.
- *
- * WHAT IT IS FOR, PRECISELY — this is narrower than it looks, and the narrow reading is
- * the one WP2 has to design against:
- *
- *   - A man in the middle WITHOUT the secret is already refused, two functions up. It
- *     cannot produce a valid proof, so remoteProofValid() kills the connection before
- *     any digit is drawn. The SAS adds nothing at all against that attacker; quoting a
- *     1-in-10,000 chance against it is quoting the wrong number for a case that never
- *     reaches a screen.
- *   - The one thing it genuinely catches is a relay that ALREADY KNOWS the code and is
- *     relaying rather than impersonating, so as to stay hidden while both ends complete.
- *     That relay terminates two Noise connections, so there are two handshake hashes and
- *     two different SAS values: the two screens disagree with probability 1 - 10^-4.
- *     THIS IS THE ONLY CHECK IN THIS FILE THAT SEES THAT ATTACKER — see the correction
- *     below.
- *   - It does NOT tell the viewer which screen they read the code off. Whichever device
- *     showed the code, both ends hold the same code, derive the same secret and share
- *     ONE connection, so the digits agree. Nothing in this file can distinguish a code
- *     typed from the right TV from one typed off a screen the viewer should not have
- *     trusted. What defends that case is the code itself: 60 bits of entropy, a ~3
- *     minute TTL and one use (see WHY 12 CHARACTERS above) — and, in the sign-in
- *     handover, remotePinProof below.
- *
- * THE SIGN-IN HANDOVER USES THIS, ALONGSIDE THE PIN. An earlier revision of this comment
- * said the opposite — that the typed PIN replaced the compared SAS — and reasoned that
- * the PIN's handshake-hash binding was enough to stop a relay. That reasoning was WRONG,
- * it was demonstrated wrong end to end on a local DHT testnet, and the two rounds are now
- * both mandatory (sdk/signin-pair.js). The correction, because it is the exact point a
- * future revision will be tempted to undo:
- *
- *   The PIN proof is a MAC under `secret`, and `secret` comes from the CODE. The whole
- *   threat model of this flow is an attacker who HAS the code, so that attacker holds the
- *   MAC key. Four digits are 13.3 bits. Given the real TV's answer on its own leg, a
- *   relay recovers the digits by MACing all ten thousand candidates offline (measured:
- *   ~56 ms) and re-MACs the winner for its own leg to the phone. Binding to the handshake
- *   hash stops a proof being REPLAYED verbatim across legs; it does not stop it being
- *   INVERTED and re-issued, because inversion needs only the key the relay already has.
- *   No arrangement of a low-entropy MAC under a key the adversary holds fixes this.
- *
- *   The SAS is not a MAC the adversary answers, it is a value two humans COMPARE, so
- *   holding the key does not help: the relay's two legs have two transcripts and it
- *   cannot make one screen show the other's digits.
- *
- * WHAT THE COMPARISON STILL DOES NOT BUY, stated so nobody has to rediscover it. The
- * relay holds the secret, so it can compute the SAS of any connection it terminates, and
- * a handshake is cheap. It can open MANY connections to each device — reading each leg's
- * handshake hash and working out what its SAS would be — while PROVING ON NONE, then prove
- * only on a pair whose four digits happen to agree. That is a birthday search: with N
- * connections per side the expected number of colliding pairs is about N^2 / 10^4, so
- * N ~ 100 per side is enough, not the 10,000 tries a head-on guess would need. The
- * chosen/peer latches in sdk/signin-pair.js do not touch this — they latch on the first
- * VALID proof, and the relay withholds proofs until it has picked its pair.
- *
- * THE MITIGATION IS A CONNECTION CAP, NOT A LONGER SAS. sdk/signin-pair.js caps the
- * connections one code will entertain per side (MAX_SIGNIN_CONNECTIONS = 8) and burns the
- * code past it, counting every connection that reaches the protocol whether it proves or
- * not. That collapses the SYMMETRIC search — at 8 per side the expression above is
- * 8^2 / 10^4 = 6.4e-3 — and it costs a legitimate pairing, which uses one connection per
- * side, nothing. Six digits was the tempting alternative and is the wrong one: it would
- * cut the per-pair odds to 10^-6, but it lengthens the string every honest viewer has to
- * compare across two screens, and a viewer who tires of comparing and taps "yes" has
- * defeated the one check in this whole flow that sees a relay. Entropy a viewer will not
- * check is worse than none; the cap asks the viewer for nothing.
- *
- * BE HONEST ABOUT THE CAP'S REACH — it is a real bound, not a closed door. It counts
- * connections that OPEN the aliran-signin channel (a replication peer on the borrowed
- * swarm never does, which is what makes the count safe there). But a handshake hash is
- * legible on the raw NoiseSecretStream BEFORE any channel — remoteSas needs nothing else —
- * so a relay can harvest hashes on the side it DIALS (the TV, where it is the client)
- * without opening a channel the counter can see, load the whole search onto that side, and
- * keep its phone-side legs under the cap. Run on a local DHT testnet, a grind that
- * harvested a few hundred RAW TV connections and used a single honest-looking phone leg
- * still took the account with the cap in place. The cap raises the attacker's cost from
- * ~200 connections to ~10^4 and stops a channel-level flood outright; on a swarm shared
- * with replication it does not, by itself, end the birthday search. Closing it needs a
- * signalling swarm the sign-in does not share with replication (so raw connections can be
- * counted without counting feeds), or an SAS bound to a value that only exists once a
- * channel is open — both larger than the file that holds the cap.
- *
- * This function also serves the account rendezvous (case B), where two already-signed-in
- * devices are comparing with no code in play at all.
+ * A fresh 32-byte SAS nonce from the system CSPRNG. Each side draws one per connection and
+ * the SAS commits to both. NOT derived — the whole point is that neither side can predict
+ * the other's (see the section note). Returned as raw bytes; the wire carries it as hex.
  */
-export function remoteSas (secret, handshakeHash) {
+export function remoteNonce () {
+  const out = b4a.alloc(REMOTE_NONCE_BYTES)
+  sodium.randombytes_buf(out)
+  return out
+}
+
+/**
+ * A binding, hiding commitment to one side's SAS nonce, on THIS connection:
+ * MAC(secret, label || nonce || handshakeHash).
+ *
+ * Keyed under the shared secret and bound to the handshake hash on purpose (see the section
+ * note): the adversary holds the secret, so only the 256-bit nonce keeps the commitment
+ * hiding, and the handshake-hash binding stops a commitment made on one connection from
+ * meaning anything on another. Re-splittable exactly one way — the label is a constant, the
+ * nonce is a fixed REMOTE_NONCE_BYTES, the hash is the remainder.
+ */
+export function remoteNonceCommit (secret, handshakeHash, nonce) {
+  return mac(bytes32(secret, 'secret'), NONCE_COMMIT_LABEL, nonceBytes(nonce), handshakeHashBytes(handshakeHash))
+}
+
+/**
+ * Does `commit` commit to `nonce` on THIS connection? Constant-time (sodium_memcmp), and
+ * false rather than a throw for a malformed COMMITMENT — that is the value a peer sent. A
+ * malformed nonce or handshake hash still throws: those are this side's own inputs.
+ */
+export function remoteNonceCommitValid (secret, handshakeHash, nonce, commit) {
+  if (!isBytes(commit) || commit.length !== REMOTE_PROOF_BYTES) return false
+  let expected = null
+  try { expected = remoteNonceCommit(secret, handshakeHash, nonce) } catch { return false }
+  return sodium.sodium_memcmp(expected, b4a.from(commit))
+}
+
+/**
+ * The digits both screens show, for the viewer to compare: '0473'. A function of the shared
+ * secret, THIS connection's handshake hash, and BOTH sides' nonces — identical on two honest
+ * peers of one connection (same secret, same transcript, same two nonces), and uncorrelated
+ * across a relay's two legs because neither leg's nonces can be steered to match the other's
+ * (see the section note). Uniform over 0000-9999.
+ *
+ * The two nonces enter in a fixed canonical order — the INITIATOR's, then the RESPONDER's —
+ * so both ends concatenate the same bytes regardless of which one they happened to draw.
+ * Role-free in meaning: the two sides compare, they do not challenge; the ordering is only
+ * so the two computations agree.
+ *
+ * Were the account rendezvous (case B) ever to compare digits, it would use THIS function
+ * and its own nonce exchange — there is deliberately one SAS construction in this file, not
+ * two. (Case B's secret is the account's, which no untrusted party holds, so the raw-harvest
+ * trap never applied there; the commit-reveal shape is kept anyway for that single source.)
+ */
+export function remoteCommittedSas (secret, handshakeHash, initiatorNonce, responderNonce) {
   const key = bytes32(secret, 'secret')
   const hh = handshakeHashBytes(handshakeHash)
-  // Counter-extended stream, so rejection can never run out of bytes and the result
-  // stays a pure function of (secret, handshakeHash). One block is 8 draws; all 2048
-  // rejecting has probability below 10^-11000, which is why the fall-through below is a
-  // throw rather than a fallback that would quietly reintroduce the bias.
+  const ni = nonceBytes(initiatorNonce)
+  const nr = nonceBytes(responderNonce)
+  // Counter-extended stream, so rejection can never run out of bytes and the result stays a
+  // pure function of (secret, handshakeHash, ni, nr). One block is 8 draws; all 2048
+  // rejecting has probability below 10^-11000, which is why the fall-through is a throw
+  // rather than a fallback that would quietly reintroduce the bias.
   for (let counter = 0; counter < 256; counter++) {
-    const block = mac(key, SAS_LABEL, b4a.from([counter]), hh)
+    const block = mac(key, SAS_LABEL, b4a.from([counter]), ni, nr, hh)
     for (let i = 0; i + 3 < block.length; i += 4) {
       const draw = block[i] * 0x1000000 + block[i + 1] * 0x10000 + block[i + 2] * 0x100 + block[i + 3]
       if (draw < SAS_DRAW_LIMIT) return String(draw % SAS_MODULUS).padStart(REMOTE_SAS_DIGITS, '0')
@@ -811,7 +893,7 @@ function pinBytes (pin) {
  * Re-splittable exactly one way — the label is a constant, the role is one of two
  * strings of equal length, the PIN is a fixed REMOTE_PIN_DIGITS bytes, and the hash is
  * the remainder — so no other input produces these bytes, and in particular nothing
- * remoteProof() or remoteSas() emits ever collides with it.
+ * remoteProof(), remoteNonceCommit() or remoteCommittedSas() emits ever collides with it.
  *
  * The role field is NOT load-bearing in the sign-in handover, where only one end ever
  * emits a PIN proof: it is here because it costs one field, it keeps this function the

@@ -27,6 +27,9 @@
 //     digits cannot cover, because that peer holds the code and can invert a 13.3-bit MAC
 //     offline. The two tests are a matched pair: each attacker walks through the check
 //     the other one fails.
+//   - a GRINDING relay — the refinement that beat the compared digits in two earlier
+//     revisions — gets nothing either: the commit-reveal SAS cannot be precomputed off a
+//     raw socket, so the harvest is inert and the code is spent after a single claim (2j);
 //   - a wrong PIN ends the exchange on both sides, with no retry;
 //   - two phones racing for one public topic produce exactly ONE handover;
 //   - a code expires, and a code nobody serves times out.
@@ -45,7 +48,8 @@ import b4a from 'b4a'
 import {
   evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
   userKeyPair, sealTo, authKeyPair, ARGON2_DEFAULT,
-  newSigninCode, signinKeys, remoteProof, remoteSas, remotePinProof, REMOTE_ROLES
+  newSigninCode, signinKeys, remoteProof, remotePinProof, REMOTE_ROLES,
+  remoteNonce, remoteNonceCommit, remoteNonceCommitValid, remoteCommittedSas
 } from '@aliran/core'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
@@ -361,6 +365,33 @@ try {
     return d
   }
 
+  // Wire the honest step-3 proof and step-4 COMMIT-REVEAL onto a hand-rolled peer that
+  // ANSWERS (a fake TV, or the relay's phone-facing leg): commit a fresh nonce in the hello
+  // reply, reveal it in signin-nonce. A hostile peer needs this to reach the rounds after
+  // step 4 at all — the real phone will not draw a PIN until it has been shown a SAS, and
+  // that needs the reveal. Returns { me, hh, nonce } for the peer's own bookkeeping.
+  const respondSas = (rpc, socket, secret) => {
+    const me = roleOf(socket)
+    const hh = socket.handshakeHash
+    const nonce = remoteNonce()
+    rpc.respond('signin-hello', () => body({ v: 2, ok: true, proof: hex(remoteProof(secret, hh, me)), commit: hex(remoteNonceCommit(secret, hh, nonce)) }))
+    rpc.respond('signin-nonce', (buf) => { parse(buf); return body({ v: 2, ok: true, nonce: hex(nonce) }) })
+    return { me, hh, nonce }
+  }
+  // Run step 3 + step 4 as the CLIENT (the relay's TV-facing leg): prove, then send our
+  // nonce and collect the peer's revealed one. Drives the real TV all the way to showing its
+  // SAS. Returns { me, hh, myNonce, theirNonce } or null.
+  const requestSas = async (rpc, socket, secret) => {
+    const me = roleOf(socket)
+    const hh = socket.handshakeHash
+    const hello = parse(await rpc.request('signin-hello', body({ v: 2, proof: hex(remoteProof(secret, hh, me)) }), { timeout: 15000 }))
+    if (!hello || !hello.ok || !hello.commit) return null
+    const myNonce = remoteNonce()
+    const nres = parse(await rpc.request('signin-nonce', body({ v: 2, nonce: hex(myNonce) }), { timeout: 15000 }))
+    if (!nres || !nres.nonce) return null
+    return { me, hh, myNonce, theirNonce: b4a.from(nres.nonce, 'hex') }
+  }
+
   // ---- 2a. a peer that cannot prove the code is refused, and does not burn it ----
   {
     const handle = await announcedReceiver({ swarm: newSwarm(), pinMs: 30000 })
@@ -379,7 +410,7 @@ try {
       try {
         const rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL })
         const proof = hex(remoteProof(wrongSecret, socket.handshakeHash, roleOf(socket)))
-        answer = parse(await rpc.request('signin-hello', body({ v: 1, proof }), { timeout: 10000 })) || { error: 'unparseable' }
+        answer = parse(await rpc.request('signin-hello', body({ v: 2, proof }), { timeout: 10000 })) || { error: 'unparseable' }
       } catch { answer = { error: 'threw' } }
     })
     joinLooking(impostorSwarm, topic)
@@ -407,12 +438,15 @@ try {
   // four random digits a viewer typed into a device that is actually in the session. That
   // is the typed PIN, and it is what stops this one. (2g is the mirror image.)
   for (const [what, answerPin] of [
-    ['claims success with no proof at all', () => ({ v: 1, ok: true })],
-    ['claims success with ok:true and junk', () => ({ v: 1, ok: true, proof: hex(hcrypto.randomBytes(32)) })],
-    ['guesses one of the ten thousand PINs', (secret, hh, me) => ({ v: 1, ok: true, proof: hex(remotePinProof(secret, hh, me, '0000')) })]
+    ['claims success with no proof at all', () => ({ v: 2, ok: true })],
+    ['claims success with ok:true and junk', () => ({ v: 2, ok: true, proof: hex(hcrypto.randomBytes(32)) })],
+    ['guesses one of the ten thousand PINs', (secret, hh, me) => ({ v: 2, ok: true, proof: hex(remotePinProof(secret, hh, me, '0000')) })]
   ]) {
     // The attacker mints the code itself and shows it to the viewer — the phish this
-    // round exists to price, and a stronger model than shoulder-surfing an honest one.
+    // round exists to price, and a stronger model than shoulder-surfing an honest one. It
+    // runs step 4 HONESTLY (one connection, so its committed SAS agrees with the phone's and
+    // a truthful viewer confirms) — the compared digits were never what stops it. The typed
+    // PIN is.
     const code = newSigninCode().code
     const { topic, secret } = signinKeys(code)
     const hostileSwarm = newSwarm()
@@ -421,11 +455,10 @@ try {
       socket.on('error', () => {})
       let rpc = null
       try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
-      const me = roleOf(socket)
-      rpc.respond('signin-hello', () => body({ v: 1, ok: true, proof: hex(remoteProof(secret, socket.handshakeHash, me)) }))
-      rpc.respond('signin-pin', () => body(answerPin(secret, socket.handshakeHash, me)))
-      rpc.respond('signin-payload', () => { seen.payload = true; return body({ v: 1, ok: true }) })
-      rpc.respond('signin-abort', () => body({ v: 1, ok: true }))
+      const sas = respondSas(rpc, socket, secret) // step 3 proof + step 4 commit-reveal, played straight
+      rpc.respond('signin-pin', () => body(answerPin(secret, sas.hh, sas.me)))
+      rpc.respond('signin-payload', () => { seen.payload = true; return body({ v: 2, ok: true }) })
+      rpc.respond('signin-abort', () => body({ v: 2, ok: true }))
     })
     hostileSwarm.join(topic, { server: true, client: false })
     await hostileSwarm.flush()
@@ -542,39 +575,43 @@ try {
     const { topic, secret } = signinKeys(handle.canonical)
     const relay = { pinAsked: false, payload: null, legB: null }
 
-    // Leg B: relay -> the real TV. Claim the code before the phone can, which makes the
-    // race deterministic rather than something the attacker has to win.
+    // Leg B: relay -> the real TV. Claim the code before the phone can (deterministic race)
+    // and run step 4 against it — hello, then the nonce round — so the real TV shows digits.
     const legB = newSwarm()
     legB.on('connection', async (socket) => {
       socket.on('error', () => {})
       if (relay.legB) return
       try {
         const rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL })
-        const me = roleOf(socket)
-        const res = parse(await rpc.request('signin-hello', body({ v: 1, proof: hex(remoteProof(secret, socket.handshakeHash, me)) }), { timeout: 15000 }))
-        if (res && res.ok) relay.legB = { rpc, me, hh: socket.handshakeHash }
+        const r = await requestSas(rpc, socket, secret)
+        if (r) relay.legB = { rpc, ...r }
       } catch {}
     })
     joinLooking(legB, topic)
-    await waitFor(() => relay.legB, 30000, 'the relay to claim the real TV')
+    await waitFor(() => relay.legB, 30000, 'the relay to claim the real TV and run its SAS round')
     check(handle.st.sas !== null, 'the real TV linked (to the relay) and is showing its digits')
-    // The honest caveat, asserted rather than asserted-about: holding the code, the relay
-    // can compute the digits on the TV's screen exactly. What it cannot do is make its
-    // OTHER leg produce the same ones — that leg has a different Noise transcript.
-    check(remoteSas(secret, relay.legB.hh) === handle.st.sas, 'the relay can compute the real TV\'s digits (it holds the code) — the comparison does not depend on secrecy')
+    // The honest caveat, asserted rather than asserted-about: the relay took PART in leg B's
+    // commit-reveal, so it knows both nonces and can compute the TV's screen exactly. What it
+    // cannot do is make its OTHER leg show the same digits — that leg has a different
+    // transcript AND a different pair of nonces, and it committed each before it could line
+    // them up (2j drives that point home against a grinding relay, not just this single one).
+    const legBsas = relay.legB.me === REMOTE_ROLES.initiator
+      ? remoteCommittedSas(secret, relay.legB.hh, relay.legB.myNonce, relay.legB.theirNonce)
+      : remoteCommittedSas(secret, relay.legB.hh, relay.legB.theirNonce, relay.legB.myNonce)
+    check(legBsas === handle.st.sas, 'the relay can compute the real TV\'s digits (it took part in the round) — the comparison does not depend on secrecy')
 
-    // Leg A: relay -> the real phone, announcing on the same public topic.
+    // Leg A: relay -> the real phone, announcing on the same public topic. It plays step 4
+    // straight here too, so the phone shows a well-formed SAS — it is just not the TV's,
+    // because leg A and leg B are two transcripts with two independent nonce pairs.
     const legA = newSwarm()
     legA.on('connection', (socket) => {
       socket.on('error', () => {})
       let rpc = null
       try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
-      const me = roleOf(socket)
-      const hh = socket.handshakeHash
-      rpc.respond('signin-hello', () => body({ v: 1, ok: true, proof: hex(remoteProof(secret, hh, me)) }))
+      const sas = respondSas(rpc, socket, secret)
       rpc.respond('signin-pin', async () => {
         relay.pinAsked = true
-        const ans = parse(await relay.legB.rpc.request('signin-pin', body({ v: 1 }), { timeout: 120000 }))
+        const ans = parse(await relay.legB.rpc.request('signin-pin', body({ v: 2 }), { timeout: 120000 }))
         // The offline oracle: 13.3 bits under a key this peer holds. Dead code on the
         // passing path (the comparison aborts first) and deliberately kept — if the
         // compared digits were ever removed, this is what would start succeeding again.
@@ -585,10 +622,10 @@ try {
             if (hex(remotePinProof(secret, relay.legB.hh, otherRole(relay.legB.me), cand)) === ans.proof) { recovered = cand; break }
           }
         }
-        return body(recovered ? { v: 1, ok: true, proof: hex(remotePinProof(secret, hh, me, recovered)) } : { v: 1, error: 'pin' })
+        return body(recovered ? { v: 2, ok: true, proof: hex(remotePinProof(secret, sas.hh, sas.me, recovered)) } : { v: 2, error: 'pin' })
       })
-      rpc.respond('signin-payload', (buf) => { relay.payload = parse(buf).payload; return body({ v: 1, ok: true }) })
-      rpc.respond('signin-abort', () => body({ v: 1, ok: true }))
+      rpc.respond('signin-payload', (buf) => { relay.payload = parse(buf).payload; return body({ v: 2, ok: true }) })
+      rpc.respond('signin-abort', () => body({ v: 2, ok: true }))
     })
     legA.join(topic, { server: true, client: false })
     await legA.flush()
@@ -623,18 +660,19 @@ try {
   }
 
   // ---- 2h. THE CONNECTION CAP: a code entertains only so many connections ----
-  // 2g's relay won its ONE pair of transcripts a 1-in-10,000 chance. A relay that
-  // GRINDS opens many connections and proves on NONE until it finds a colliding SAS
-  // pair (core/remote.js remoteSas), so the guard cannot wait for a valid proof: it
-  // counts every connection that OPENS the aliran-signin channel and burns the code
-  // past a small cap. Tested across SEQUENTIAL connections — a relay opens them one
+  // The cap is the BACKSTOP behind the commit-reveal SAS (2j is the primary defence). A
+  // relay that wants to grind the compared digits now has to open a channel and run a full
+  // commit-reveal for every candidate — and this counter burns the code once too many
+  // channels have opened, on either role. The guard cannot wait for a valid proof (a grind
+  // proves on none until it is ready), so it counts every connection that OPENS the
+  // aliran-signin channel. Tested across SEQUENTIAL connections — a relay opens them one
   // after another over the TTL, so a concurrency limit would be no limit at all.
   //
-  // KNOWN CEILING, asserted honestly elsewhere and not here: the cap counts channels,
-  // and a relay can read the handshake hash off the bare NoiseSecretStream without
-  // opening one (verified on a testnet, core/remote.js records it). This test is the
-  // channel-flood the cap DOES stop; it is not a claim that the birthday search is
-  // closed.
+  // What makes this bound real, where an identical cap in an earlier revision bounded
+  // nothing: the SAS used to be computable off a raw handshake hash with no channel at all,
+  // so a grind never tripped this counter. The commit-reveal (core/remote.js) ties every SAS
+  // candidate to an opened channel; 2j is the end-to-end proof that the raw harvest is now
+  // inert. This test is the channel-flood half.
   {
     const handle = await announcedReceiver({ swarm: newSwarm(), ttlMs: 120000, pinMs: 120000 })
     let burned = null
@@ -687,6 +725,63 @@ try {
     await waitFor(() => handle.submitPin(p.st.pin), 15000, 'the TV to take the digits')
     check((await p.result).username === 'alice', 'a legitimate single-connection pairing completes with the cap in place')
     check((await handle.result).priv === PRIV_HEX, 'and the TV received the account')
+  }
+
+  // ---- 2j. THE GRINDING RELAY, defeated by the commit-reveal SAS ----
+  // 2g's relay lost its ONE pair of transcripts a 1-in-10,000 chance; a GRINDING relay used
+  // to beat even a truthful viewer. Holding the code, it read each leg's SAS straight off the
+  // RAW handshake hash — no channel, nothing this feature's cap saw — harvested a pile, drove
+  // the phone to a fixed leg-A SAS, kept dialing the TV until a raw leg-B's precomputed SAS
+  // matched, and CLAIMED on exactly that socket, so both screens showed the same digits and a
+  // TRUTHFUL viewer confirmed. Built and run end to end against the pre-fix revision (the PoC
+  // lived under tools/ during development and was deleted). The commit-reveal removes the
+  // thing it harvested; this test pins that removal, which is the whole point of the change.
+  {
+    // (1) The pure (secret, handshake-hash) SAS — the function the harvest called — is gone.
+    const core = await import('@aliran/core')
+    check(core.remoteSas === undefined, 'the pure (secret, handshake-hash) SAS is gone from core — the harvest has no function left to call')
+    check(typeof core.remoteCommittedSas === 'function' && typeof core.remoteNonceCommit === 'function', 'and the nonce-committed SAS replaced it')
+
+    // (2) A relay still harvests raw TV sockets for free — but they are now INERT: a socket
+    // that opens no channel gets no nonce out of the TV, so there is no SAS to precompute.
+    const tvSw = newSwarm()
+    const handle = await announcedReceiver({ swarm: tvSw, ttlMs: 120000, pinMs: 120000 })
+    const { secret } = signinKeys(handle.canonical)
+    const tvKey = tvSw.keyPair.publicKey
+    const grindDht = new DHT({ bootstrap }); cleanups.push(() => grindDht.destroy())
+    const rawSocket = async () => {
+      const s = grindDht.connect(tvKey, { keyPair: DHT.keyPair() })
+      s.on('error', () => {})
+      await new Promise((r) => { if (s.handshakeHash) return r(); s.once('open', r); s.once('error', r) })
+      return s
+    }
+    const raw = []
+    for (let i = 0; i < 8; i++) raw.push(await rawSocket())
+    check(raw.every((s) => s.handshakeHash && s.handshakeHash.length === 64), 'the relay still reads a handshake hash off every raw socket, exactly as before the fix')
+    check(handle.st.sas === null, 'but the TV has shown NO digits — a socket that opens no channel yields no nonce, so nothing to harvest')
+
+    // (3) To learn even ONE candidate the relay must open the channel and CLAIM — which runs
+    // the commit-reveal and spends the code. It gets exactly one, and only for a counted
+    // channel.
+    const claimRpc = new ProtomuxRPC(raw[0], { protocol: SIGNIN_PROTOCOL })
+    const me0 = roleOf(raw[0])
+    const h0 = parse(await claimRpc.request('signin-hello', body({ v: 2, proof: hex(remoteProof(secret, raw[0].handshakeHash, me0)) }), { timeout: 15000 }))
+    check(h0 && h0.ok && h0.commit, 'claiming a leg costs a full in-channel round and yields the TV\'s commitment — one candidate')
+    const n0 = parse(await claimRpc.request('signin-nonce', body({ v: 2, nonce: hex(remoteNonce()) }), { timeout: 15000 }))
+    check(n0 && n0.nonce, 'and its reveal — so the relay learns this one leg\'s SAS, but only after opening a channel the cap counts')
+    await waitFor(() => handle.st.sas, 15000, 'the real TV to show its one SAS')
+
+    // (4) A SECOND claim, on another harvested socket, is refused — the code is spent. The
+    // relay cannot turn its pile of raw sockets into a pile of SAS candidates: the pool is
+    // size one, so there is no colliding pair to find and no way to beat a truthful viewer
+    // beyond the flat 1-in-10,000 that 2g already prices.
+    const rpc1 = new ProtomuxRPC(raw[1], { protocol: SIGNIN_PROTOCOL })
+    const me1 = roleOf(raw[1])
+    const h1 = parse(await rpc1.request('signin-hello', body({ v: 2, proof: hex(remoteProof(secret, raw[1].handshakeHash, me1)) }), { timeout: 15000 }))
+    check(h1 && h1.error && !h1.commit, 'a second claim is refused (' + (h1 && h1.error) + ') with NO commitment — the harvest cannot grow past one')
+    for (const s of raw) { try { s.destroy() } catch {} }
+    handle.cancel()
+    try { await handle.result } catch {}
   }
 
   log('')

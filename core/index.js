@@ -4,7 +4,8 @@
 //   Passwords   : randomSalt, deriveVerifier, verify
 //   Key wrapping: wrapKeyFrom, wrap, unwrap
 //   Pairing code: pairingCode, normalizePairingCode, pairingTopic, pairingCodeMatches
-//   Remote pair : newSigninCode, signinKeys, remoteSecret/remoteTopic, remoteProof, remoteSas
+//   Remote pair : newSigninCode, signinKeys, remoteSecret/remoteTopic, remoteProof,
+//                 remoteNonce/remoteNonceCommit/remoteCommittedSas (commit-reveal SAS)
 //
 // Enrollment (panel/admin, holds password + oprfKey):
 //   rwd      = evaluateFull(oprfKey, password)

@@ -29,7 +29,8 @@ import {
   signinCodeState, consumeSigninCode, SIGNIN_CODE_STATES, SIGNIN_CODE_LENGTH, SIGNIN_CODE_TTL_MS,
   remoteSecret, remoteTopic,
   remoteProof, remoteProofValid, peerRole, REMOTE_ROLES, REMOTE_PROOF_BYTES,
-  remoteSas, REMOTE_SAS_DIGITS,
+  remoteNonce, remoteNonceCommit, remoteNonceCommitValid, remoteCommittedSas,
+  REMOTE_SAS_DIGITS, REMOTE_NONCE_BYTES,
   newRemotePin, remotePinProof, remotePinProofValid, REMOTE_PIN_DIGITS,
   CROCKFORD_ALPHABET
 } from './index.js'
@@ -50,6 +51,9 @@ const hh = (seed) => {
   return out // injective in `seed` — every fixture is a distinct transcript
 }
 const bytes32 = (fill) => { const b = b4a.alloc(32); b.fill(fill); return b }
+const bytes64 = (fill) => { const b = b4a.alloc(64); b.fill(fill); return b }
+// A distinct 32-byte SAS nonce per seed — injective in `seed`, like hh() above.
+const nn = (seed) => { const b = b4a.alloc(32); b[0] = seed & 0xff; b[1] = (seed >>> 8) & 0xff; b[2] = (seed >>> 16) & 0xff; b[3] = (seed >>> 24) & 0xff; b[31] = 0xa7; return b }
 
 console.log('@aliran/core remote-pairing tests')
 
@@ -61,6 +65,9 @@ const KAT_CODE = 'A3K7-9QF2-M4XR'
 const KAT_PRIV = (() => { const b = b4a.alloc(32); for (let i = 0; i < 32; i++) b[i] = i; return b })()
 const KAT_HH = (() => { const b = b4a.alloc(64); for (let i = 0; i < 64; i++) b[i] = 0xa0 + (i % 16); return b })()
 const KAT_TV = 1 // what panel/src/ops.js createUser stamps on a new account
+// Two fixed, distinct SAS nonces — the initiator's and the responder's.
+const KAT_NONCE_I = (() => { const b = b4a.alloc(32); for (let i = 0; i < 32; i++) b[i] = (i * 7 + 1) & 0xff; return b })()
+const KAT_NONCE_R = (() => { const b = b4a.alloc(32); for (let i = 0; i < 32; i++) b[i] = (0xf0 - i * 3) & 0xff; return b })()
 
 test('KAT: sign-in code -> topic and shared secret', () => {
   const k = signinKeys(KAT_CODE)
@@ -83,11 +90,17 @@ test('KAT: account private key + tokenVersion -> shared secret and topic', () =>
   assert.ok(b4a.equals(remoteTopic(hex(s), 7), remoteTopic(s, 7)))
 })
 
-test('KAT: proof and SAS', () => {
+test('KAT: proof, nonce commitment and committed SAS', () => {
   const s = remoteSecret(KAT_PRIV, KAT_TV)
   assert.strictEqual(hex(remoteProof(s, KAT_HH, REMOTE_ROLES.initiator)), '4bab66bc7368203ce094f7edd8abeef2d9feccfc3e58d2922f35e3f1f053eaa1')
   assert.strictEqual(hex(remoteProof(s, KAT_HH, REMOTE_ROLES.responder)), '0b5d619bc495df5e1a2e59ffca267d087e259847eec70283170090d0f493ca00')
-  assert.strictEqual(remoteSas(s, KAT_HH), '6731')
+  // The commitment to the responder's nonce, and the four digits both screens compute from
+  // BOTH nonces. On the wire between a phone and a TV that may differ in app version, so a
+  // change to a label, a byte order or the nonce ORDERING has to fail here.
+  assert.strictEqual(hex(remoteNonceCommit(s, KAT_HH, KAT_NONCE_R)), 'a3d0234c269c014b6977e0a2970f8dbf8b5689c6b0ca903a3579580dbd201891')
+  assert.strictEqual(remoteCommittedSas(s, KAT_HH, KAT_NONCE_I, KAT_NONCE_R), '0132')
+  // Canonical order is (initiator, responder); swapping the nonces is a different SAS.
+  assert.strictEqual(remoteCommittedSas(s, KAT_HH, KAT_NONCE_R, KAT_NONCE_I), '8567')
 })
 
 // The PIN proof is the one message on this wire whose absence would let a hostile TV
@@ -130,16 +143,19 @@ test('every derivation from one input lands somewhere different', () => {
   for (const a of [k.topic, k.secret]) for (const b of [s, t]) assert.ok(!b4a.equals(a, b))
 })
 
-test('five labels over one secret land on five different values', () => {
+test('six labels over one secret land on six different values', () => {
   const s = bytes32(0x5a)
   const seen = new Set([
     hex(remoteTopic(s)),
     hex(remoteProof(s, KAT_HH, REMOTE_ROLES.initiator)),
     hex(remoteProof(s, KAT_HH, REMOTE_ROLES.responder)),
     hex(remoteSecret(s, KAT_TV)),
+    hex(remoteNonceCommit(s, KAT_HH, KAT_NONCE_R)),
     hex(remotePinProof(s, KAT_HH, REMOTE_ROLES.initiator, '0473'))
   ])
-  assert.strictEqual(seen.size, 5, 'two labels produced the same bytes')
+  assert.strictEqual(seen.size, 6, 'two labels produced the same bytes')
+  // The committed SAS shares the secret and the transcript with all of the above but is a
+  // reduced 4-digit value, not a 32-byte MAC, so it cannot be presented as any of them.
 })
 
 // The PIN proof and the mutual proof travel over the same connection under the same
@@ -240,7 +256,8 @@ test('a missing or wrong-sized handshake hash throws rather than binding to noth
   const s = remoteSecret(KAT_PRIV, KAT_TV)
   for (const bad of [null, undefined, '', 'a'.repeat(128), 64, {}, b4a.alloc(0), b4a.alloc(16), b4a.alloc(48), b4a.alloc(65)]) {
     assert.throws(() => remoteProof(s, bad, REMOTE_ROLES.initiator), TypeError, 'accepted ' + JSON.stringify(bad))
-    assert.throws(() => remoteSas(s, bad), TypeError)
+    assert.throws(() => remoteCommittedSas(s, bad, KAT_NONCE_I, KAT_NONCE_R), TypeError)
+    assert.throws(() => remoteNonceCommit(s, bad, KAT_NONCE_R), TypeError)
   }
   // 32 bytes is accepted so a future BLAKE2b-256 transcript needs no core release.
   assert.strictEqual(remoteProof(s, b4a.alloc(32), REMOTE_ROLES.initiator).length, REMOTE_PROOF_BYTES)
@@ -328,36 +345,109 @@ test('an epoch must be a non-negative integer', () => {
   assert.strictEqual(remoteTopic(s, Number.MAX_SAFE_INTEGER).length, 32)
 })
 
-// -------------------------------------------------------------------------------- SAS
-test('honest peers agree on the SAS; a relay does not', () => {
+// ---------------------------------------------------------------- SAS (commit-reveal)
+// The compared digits are now a commit-reveal value: each side draws a 32-byte nonce, the
+// responder commits to its nonce before the initiator sends its own in clear, and the SAS
+// commits to BOTH. That is what stops a code-holding relay precomputing a leg's SAS off a
+// raw handshake hash and grinding a birthday collision — the attack that defeated the two
+// earlier revisions (core/remote.js; the e2e proof is tools/e2e-signin-pair-test.mjs 2j).
+test('honest peers agree on the committed SAS; a relay\'s two legs do not', () => {
   const s = remoteSecret(KAT_PRIV, KAT_TV)
   const h = hh(20)
-  // Both ends of one connection see the same secret and the same transcript hash.
-  assert.strictEqual(remoteSas(s, h), remoteSas(s, h))
-  assert.ok(/^[0-9]{4}$/.test(remoteSas(s, h)))
-  assert.strictEqual(remoteSas(s, h).length, REMOTE_SAS_DIGITS)
-  // A relay terminates two DIFFERENT Noise connections, so the two screens disagree.
-  const legA = hh(21)
-  const legB = hh(22)
-  assert.notStrictEqual(remoteSas(s, legA), remoteSas(s, legB))
-  // Different accounts on the same transcript also diverge.
-  assert.notStrictEqual(remoteSas(s, h), remoteSas(remoteSecret(bytes32(0x11), KAT_TV), h))
-  // The SAS is role-free — the two sides compare, they do not challenge.
-  assert.strictEqual(remoteSas(s, h), remoteSas(b4a.from(s), b4a.from(h)))
+  const ni = nn(1)
+  const nr = nn(2)
+  // Both ends of one connection share the secret, the transcript hash and the two nonces.
+  assert.strictEqual(remoteCommittedSas(s, h, ni, nr), remoteCommittedSas(s, h, ni, nr))
+  assert.ok(/^[0-9]{4}$/.test(remoteCommittedSas(s, h, ni, nr)))
+  assert.strictEqual(remoteCommittedSas(s, h, ni, nr).length, REMOTE_SAS_DIGITS)
+  // A relay terminates two DIFFERENT Noise connections, so the two legs' hashes differ and
+  // the digits are uncorrelated.
+  assert.notStrictEqual(remoteCommittedSas(s, hh(21), ni, nr), remoteCommittedSas(s, hh(22), ni, nr))
+  // Changing EITHER nonce changes the digits — the SAS is a function of both, which is the
+  // whole point: a relay that commits its nonce blind cannot steer the result.
+  assert.notStrictEqual(remoteCommittedSas(s, h, nn(3), nr), remoteCommittedSas(s, h, nn(4), nr))
+  assert.notStrictEqual(remoteCommittedSas(s, h, ni, nn(5)), remoteCommittedSas(s, h, ni, nn(6)))
+  // Different accounts on the same transcript and nonces also diverge.
+  assert.notStrictEqual(remoteCommittedSas(s, h, ni, nr), remoteCommittedSas(remoteSecret(bytes32(0x11), KAT_TV), h, ni, nr))
+  // Hex and raw bytes are the same inputs; the value is role-free (the sides compare).
+  assert.strictEqual(remoteCommittedSas(s, h, ni, nr), remoteCommittedSas(b4a.from(s), b4a.from(h), b4a.from(ni), b4a.from(nr)))
 })
 
-// Two checks, both deterministic — the same 100,000 transcript hashes every run, so a
-// pass is a pass and not a lucky sample. The first is the general shape. The second is
-// aimed at the specific regression worth naming: narrow the draw to 16 bits and drop the
-// rejection step, and `draw % 10000` gives 0000-5535 seven preimages against the rest's
-// six — a 17% excess, which is enormous for digits a viewer compares.
-test('SAS is uniform over 0000-9999 — no modulo bias', () => {
+// The heart of the fix, as a test: the SAS is NOT a function of (secret, handshake hash)
+// alone. That pure-function form WAS the whole vulnerability — a handshake hash is readable
+// off a raw socket, so a code-holding relay precomputed it for free. Hold the transcript
+// fixed, vary only the nonces, and the digits move, so there is nothing to precompute.
+test('the committed SAS is not determined by the transcript alone', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  const h = hh(30)
+  const seen = new Set()
+  for (let i = 0; i < 64; i++) seen.add(remoteCommittedSas(s, h, nn(1000 + i), nn(7)))
+  assert.ok(seen.size > 40, 'one transcript produced only ' + seen.size + ' SAS values across 64 nonces — too few to be nonce-dependent')
+})
+
+// The nonce commitment: it opens to exactly one nonce (binding), on this connection and
+// under this secret only, and it is hiding by the only measure that counts against an
+// adversary who HOLDS the secret — the nonce is 256 bits, so the commitment cannot be
+// opened to, or brute-forced for, any other value.
+test('a nonce commitment opens to exactly its nonce, on this connection, under this secret', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  const h = hh(40)
+  const nonce = nn(11)
+  const commit = remoteNonceCommit(s, h, nonce)
+  assert.strictEqual(commit.length, REMOTE_PROOF_BYTES)
+  assert.ok(remoteNonceCommitValid(s, h, nonce, commit), 'the real nonce must open it')
+  // No other nonce opens it (binding), so a relay cannot reveal a nonce it did not commit.
+  for (let i = 0; i < 64; i++) assert.strictEqual(remoteNonceCommitValid(s, h, nn(2000 + i), commit), false)
+  // Bound to the handshake hash: a commitment made on one leg means nothing on another —
+  // this is what stops a relay carrying a commitment between its two legs.
+  assert.strictEqual(remoteNonceCommitValid(s, hh(41), nonce, commit), false)
+  // Bound to the secret.
+  assert.strictEqual(remoteNonceCommitValid(remoteSecret(bytes32(0x22), KAT_TV), h, nonce, commit), false)
+  // A one-bit change in the commitment is refused.
+  const nudged = b4a.from(commit); nudged[0] ^= 1
+  assert.strictEqual(remoteNonceCommitValid(s, h, nonce, nudged), false)
+  // A commitment is not a mutual proof and not a PIN proof, whatever else is equal.
+  assert.ok(!b4a.equals(commit, remoteProof(s, h, REMOTE_ROLES.responder)))
+  assert.ok(!b4a.equals(commit, remotePinProof(s, h, REMOTE_ROLES.responder, '0473')))
+})
+
+// remoteNonceCommitValid runs on a COMMITMENT a peer sent, so a malformed one is false, not
+// a throw. The nonce and hash are this side's own values, so the PRODUCER still throws.
+test('commitment verification refuses a malformed commitment instead of throwing', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  const h = hh(42)
+  const nonce = nn(12)
+  const good = remoteNonceCommit(s, h, nonce)
+  for (const bad of [null, undefined, 'deadbeef', 42, {}, [], b4a.alloc(0), b4a.alloc(31), b4a.alloc(33), b4a.alloc(64)]) {
+    assert.strictEqual(remoteNonceCommitValid(s, h, nonce, bad), false, 'accepted commitment ' + JSON.stringify(bad))
+  }
+  // A malformed secret is a caller bug caught by the guarded try -> false, never a throw.
+  assert.strictEqual(remoteNonceCommitValid('nope', h, nonce, good), false)
+  // A malformed nonce or hash into the producer throws (this side's own inputs).
+  for (const bad of [null, b4a.alloc(0), b4a.alloc(31), b4a.alloc(33), 'zz']) {
+    assert.throws(() => remoteNonceCommit(s, h, bad), TypeError, 'commit accepted nonce ' + JSON.stringify(bad))
+  }
+  for (const bad of [null, b4a.alloc(0), b4a.alloc(16), b4a.alloc(65)]) {
+    assert.throws(() => remoteNonceCommit(s, bad, nonce), TypeError)
+    assert.throws(() => remoteCommittedSas(s, bad, nonce, nonce), TypeError)
+  }
+})
+
+test('a fresh nonce is 32 bytes and not a constant', () => {
+  const seen = new Set()
+  for (let i = 0; i < 64; i++) { const n = remoteNonce(); assert.strictEqual(n.length, REMOTE_NONCE_BYTES); seen.add(hex(n)) }
+  assert.strictEqual(seen.size, 64, 'nonces collided — not random')
+})
+
+// Uniformity, the same 100,000-sample determinism the account SAS had. Two moving inputs
+// (both nonces) rather than one, so the sample space is if anything larger.
+test('committed SAS is uniform over 0000-9999 — no modulo bias', () => {
   const s = remoteSecret(KAT_PRIV, KAT_TV)
   const N = 100000
   const buckets = new Array(100).fill(0) // 100 buckets of 100 values each
   let low = 0 // the half a 16-bit modulo would over-produce
   for (let i = 0; i < N; i++) {
-    const digits = remoteSas(s, hh(i))
+    const digits = remoteCommittedSas(s, hh(i), nn(i), nn(i ^ 0x5a5a))
     assert.ok(/^[0-9]{4}$/.test(digits), 'malformed SAS ' + digits)
     const v = Number(digits)
     buckets[Math.floor(v / 100)]++
@@ -367,38 +457,27 @@ test('SAS is uniform over 0000-9999 — no modulo bias', () => {
   for (let i = 0; i < buckets.length; i++) {
     assert.ok(Math.abs(buckets[i] - 1000) < 189, 'bucket ' + i + ' held ' + buckets[i] + ' of an expected 1000')
   }
-  // Uniform puts 55.36% below 5536 (sd ~157). A 16-bit modulo puts 59.14% there — about
-  // 24 sd out, which this refuses at 6.
+  // Uniform puts 55.36% below 5536 (sd ~157). A 16-bit modulo puts 59.14% there.
   assert.ok(Math.abs(low - 55360) < 942, 'low half held ' + low + ' of an expected 55360 — modulo bias')
 })
 
-// The uniformity test above almost never reaches the rejection branch: a draw is
-// rejected about once in 589,000, so 100,000 samples exercise it maybe one run in six
-// and assert nothing about it either way. This fixture hits it on purpose.
+// The rejection branch, hit on purpose. secret = 0x03 x 32, handshake hash = 0x22 x 64,
+// initiator nonce = 0x00 x 32, responder nonce = the 32-bit big-endian encoding of 769166
+// in its first four bytes and zeros after. Found by brute force and re-derived from sodium
+// alone:
 //
-// secret = 0x03 x 32, handshake hash = the 32-bit big-endian encoding of 78385 in the
-// first four bytes and zeros in the other sixty. Found by brute force over that seed
-// space and re-derived from sodium alone:
+//   draw 0 = 4294960825  >= SAS_DRAW_LIMIT (4294960000)  -> rejected
+//   next accepted draw   -> '6012'
 //
-//   draw 0 = 4294960529  >= SAS_DRAW_LIMIT (4294960000)  -> rejected
-//   draw 1 =  249251776  -> 249251776 % 10000 = 1776
-//
-// Delete the `draw < SAS_DRAW_LIMIT` guard and this returns '0529' (4294960529 % 10000),
-// which is exactly the biased answer the rejection step exists to refuse — so the test
-// pins both halves: the value that must come out, and the value that must not.
-test('the SAS rejection branch is taken, and the biased answer is not returned', () => {
+// Delete the `draw < SAS_DRAW_LIMIT` guard and this returns '0825' (4294960825 % 10000),
+// the biased answer the rejection step exists to refuse — so the test pins both halves.
+test('the committed-SAS rejection branch is taken, and the biased answer is not returned', () => {
   const secret = bytes32(0x03)
-  const rejecting = (() => {
-    const out = b4a.alloc(64)
-    const n = 78385
-    out[0] = (n >>> 24) & 0xff
-    out[1] = (n >>> 16) & 0xff
-    out[2] = (n >>> 8) & 0xff
-    out[3] = n & 0xff
-    return out
-  })()
-  assert.strictEqual(remoteSas(secret, rejecting), '1776')
-  assert.notStrictEqual(remoteSas(secret, rejecting), '0529', 'the rejected draw leaked through')
+  const rhh = bytes64(0x22)
+  const rni = bytes32(0x00)
+  const rnr = (() => { const b = b4a.alloc(32); const n = 769166; b[0] = (n >>> 24) & 0xff; b[1] = (n >>> 16) & 0xff; b[2] = (n >>> 8) & 0xff; b[3] = n & 0xff; return b })()
+  assert.strictEqual(remoteCommittedSas(secret, rhh, rni, rnr), '6012')
+  assert.notStrictEqual(remoteCommittedSas(secret, rhh, rni, rnr), '0825', 'the rejected draw leaked through')
 })
 
 // ------------------------------------------------------------------------- the entry PIN
