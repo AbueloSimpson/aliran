@@ -57,9 +57,11 @@
 // is symmetric with admission, so a P2P grant survives the panel's two-put
 // revoke->reconcile. tools/e2e-live-entitlement-test.mjs covers the same ground on a
 // LOCAL testnet (deterministic) — keep the two in step.
-// Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
+// Runs on a LOCAL DHT testnet (never the public DHT), like every other e2e lane here.
+// Requires ffmpeg/ffprobe on PATH. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
+import createTestnet from 'hyperdht/testnet.js'
 import Hyperdrive from 'hyperdrive'
 import hcrypto from 'hypercore-crypto'
 import http from 'http'
@@ -117,11 +119,20 @@ const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
 try {
+  // ===== Local DHT testnet =====
+  // Every swarm and player below is pinned to it. This lane used to ride the PUBLIC DHT
+  // — alone among the e2e lanes — which made it flaky to the point of uselessness: five
+  // consecutive runs failed at five DIFFERENT sections, and a run on unmodified main
+  // failed earliest of all, at the first login. Nothing here needs the real DHT: the
+  // tune self-heal exercises re-LOOKUPS, which a testnet performs just as well.
+  const testnet = await createTestnet(3); cleanups.push(() => testnet.destroy())
+  const bootstrap = testnet.bootstrap
+
   // ===== Broadcaster: encrypted feed =====
   const encKey = hcrypto.randomBytes(32)
   const feedStore = new Corestore(dirs.feed); await feedStore.ready(); cleanups.push(() => feedStore.close())
   const feed = new Hyperdrive(feedStore.namespace('feed'), { encryptionKey: encKey }); await feed.ready()
-  const feedSwarm = new Hyperswarm(); cleanups.push(() => feedSwarm.destroy())
+  const feedSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm.destroy())
   feedSwarm.on('connection', s => feed.replicate(s))
   feedSwarm.join(feed.discoveryKey, { server: true, client: false }); await feedSwarm.flush()
   const ff = startFfmpeg({ input: 'test', hls: { time: 2, listSize: 6 } }, dirs.out); cleanups.push(() => ff.kill())
@@ -144,7 +155,7 @@ try {
   const encKey4 = hcrypto.randomBytes(32)
   const feedStore4 = new Corestore(dirs.feed4); await feedStore4.ready(); cleanups.push(() => feedStore4.close())
   const feed4 = new Hyperdrive(feedStore4.namespace('feed'), { encryptionKey: encKey4 }); await feed4.ready()
-  const feedSwarm4 = new Hyperswarm(); cleanups.push(() => feedSwarm4.destroy())
+  const feedSwarm4 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm4.destroy())
   feedSwarm4.on('connection', s => feed4.replicate(s))
   feedSwarm4.join(feed4.discoveryKey, { server: true, client: false }); await feedSwarm4.flush()
   const stopMirror4 = mirrorDirToDrive(dirs.out, feed4, { interval: 400 }); cleanups.push(() => stopMirror4())
@@ -190,14 +201,14 @@ try {
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
-  const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
+  const panelSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => panelSwarm.destroy())
   panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: DIFFICULTY, throttle, db, sessionTtlMs: 3600000 }) })
   panelSwarm.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false }); await panelSwarm.flush()
   log('panel: serving login RPC; pubkey', panelPubKey.slice(0, 16) + '…')
 
   // ===== SDK: the whole client side, headless =====
   const events = { ready: 0, streams: 0, lastStreams: null, status: [], peers: [], feedChanged: [] }
-  const player = createPlayer({ panelPubKey, storeDir: dirs.cli })
+  const player = createPlayer({ panelPubKey, storeDir: dirs.cli, swarm: { bootstrap } })
   player.on('ready', () => { events.ready++ })
   player.on('streams', (s) => { events.streams++; events.lastStreams = s })
   player.on('status', (s) => { events.status.push(s.state) })
@@ -334,7 +345,7 @@ try {
   const feedRot = new Hyperdrive(rotStore.namespace('feed'), { encryptionKey: encKey }); await feedRot.ready() // SAME encKey → fresh feedKey
   const rotKeyHex = b4a.toString(feedRot.key, 'hex')
   if (rotKeyHex === b4a.toString(feed.key, 'hex')) throw new Error('rotated feed must carry a fresh key')
-  const rotSwarm = new Hyperswarm(); cleanups.push(() => rotSwarm.destroy())
+  const rotSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => rotSwarm.destroy())
   rotSwarm.on('connection', s => feedRot.replicate(s))
   rotSwarm.join(feedRot.discoveryKey, { server: true, client: false }); await rotSwarm.flush()
   const stopMirrorRot = mirrorDirToDrive(dirs.out, feedRot, { interval: 400 }); cleanups.push(() => stopMirrorRot())
@@ -372,6 +383,7 @@ try {
   const player2 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli2,
+    swarm: { bootstrap },
     prewarm: true, // open entitled feeds at login so the FIRST zap is warm
     hybrid: { mode: 'hybrid', cdnUrl: () => cdnUrl, readyTimeoutMs: 2000, probeIntervalMs: 700, rebufferMsToFallback: 5000 }
   })
@@ -411,7 +423,7 @@ try {
   log('hybrid: fell back to CDN (reason timeout); CDN playlist serves')
 
   // "Start the broadcaster" for movies: seed feed2 with the same live HLS dir.
-  const feedSwarm2 = new Hyperswarm(); cleanups.push(() => feedSwarm2.destroy())
+  const feedSwarm2 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm2.destroy())
   feedSwarm2.on('connection', s => feed2.replicate(s))
   feedSwarm2.join(feed2.discoveryKey, { server: true, client: false }); await feedSwarm2.flush()
   const stopMirror2 = mirrorDirToDrive(dirs.out, feed2, { interval: 400 }); cleanups.push(() => stopMirror2())
@@ -442,6 +454,7 @@ try {
   const player3 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli3,
+    swarm: { bootstrap },
     tune: { timeoutMs: 4000, relookupMinMs: 1000, relookupMaxMs: 4000 }
   })
   player3.on('status', (s) => ev3.status.push(s.state))
@@ -483,7 +496,7 @@ try {
   // plain re-zap: it must do a FRESH open (no app restart) and play. Emulate the
   // viewer: if another tune window expires before the public-DHT lookup + replication
   // catch up, re-zap again — each attempt must be a fresh open, never the dead one.
-  const feedSwarm3 = new Hyperswarm(); cleanups.push(() => feedSwarm3.destroy())
+  const feedSwarm3 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm3.destroy())
   feedSwarm3.on('connection', s => feed3.replicate(s))
   feedSwarm3.join(feed3.discoveryKey, { server: true, client: false }); await feedSwarm3.flush()
   const stopMirror3 = mirrorDirToDrive(dirs.out, feed3, { interval: 400 }); cleanups.push(() => stopMirror3())
@@ -517,6 +530,7 @@ try {
   const player4 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli4,
+    swarm: { bootstrap },
     tune: { timeoutMs: 9000, relookupMinMs: 1000, relookupMaxMs: 9000 }
   })
   player4.on('status', (s) => ev4.status.push(s.state))
@@ -583,7 +597,7 @@ try {
   // The viewer must now KEEP the watchdog armed (content probe fails), walk the ladder
   // ('feed:retune', then 'feed:reconnect' — a peer IS attached), and surface the
   // friendly error instead of spinning silently forever.
-  const feedSwarm5 = new Hyperswarm(); cleanups.push(() => feedSwarm5.destroy())
+  const feedSwarm5 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm5.destroy())
   feedSwarm5.on('connection', s => feed5.replicate(s))
   feedSwarm5.join(feed5.discoveryKey, { server: true, client: false }); await feedSwarm5.flush()
   const blobs5 = await feed5.getBlobs()
@@ -606,6 +620,7 @@ try {
   const player5 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli5,
+    swarm: { bootstrap },
     tune: { timeoutMs: 4000, relookupMinMs: 1000, relookupMaxMs: 4000 }
   })
   player5.on('status', (s) => ev5.status.push(s.state))
@@ -649,7 +664,7 @@ try {
   // now gate "healthy" on servable content: starting on P2P against the pathological
   // feed must produce 'fallback' (reason 'stall'), and while the feed stays
   // unservable the viewer must STAY on CDN — no 'source-changed' back to p2p.
-  const feedSwarm6 = new Hyperswarm(); cleanups.push(() => feedSwarm6.destroy())
+  const feedSwarm6 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm6.destroy())
   feedSwarm6.on('connection', s => feed6.replicate(s))
   feedSwarm6.join(feed6.discoveryKey, { server: true, client: false }); await feedSwarm6.flush()
   const blobs6 = await feed6.getBlobs()
@@ -672,6 +687,7 @@ try {
   const player6 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli6,
+    swarm: { bootstrap },
     prewarm: true, // warm 'talk' at login so the P2P start below is deterministic
     hybrid: { mode: 'hybrid', cdnUrl: () => cdnUrl, readyTimeoutMs: 4000, probeIntervalMs: 700, rebufferMsToFallback: 4000 }
   })
@@ -727,7 +743,7 @@ try {
   // Curated order here is [movies(order 1), news(order 5), shopping, sports], so playing
   // 'movies' must warm 'news' — which by now lives on the ROTATED feed (rotKeyHex),
   // proving the prefetch also follows the catalog's current feedKey.
-  const playerZ = createPlayer({ panelPubKey, storeDir: dirs.cliZ, zapPrefetch: { neighbors: 1, intervalMs: 700 } })
+  const playerZ = createPlayer({ panelPubKey, storeDir: dirs.cliZ, swarm: { bootstrap }, zapPrefetch: { neighbors: 1, intervalMs: 700 } })
   cleanups.push(() => playerZ.stop())
   await playerZ.connect()
   let streamsZ = null
@@ -821,7 +837,7 @@ try {
   // server:false is the hyperswarm mechanism behind "serves nothing to other viewers":
   // an unannounced peer is not discoverable on the topic, so a probing viewer can never
   // dial it — practically zero viewer-to-viewer upload by construction.
-  const playerU = createPlayer({ panelPubKey, storeDir: dirs.cliU, uploadPolicy: 'client-only' })
+  const playerU = createPlayer({ panelPubKey, storeDir: dirs.cliU, swarm: { bootstrap }, uploadPolicy: 'client-only' })
   cleanups.push(() => playerU.stop())
   await playerU.connect()
   let streamsU = null
@@ -929,7 +945,7 @@ try {
   await db.put('catalog/void', { title: 'Void', category: ['misc'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, isLive: false, status: 'idle' })
 
   const evC = { fallback: 0, sourceChanged: 0, status: [], lastStreams: null }
-  const playerC = createPlayer({ panelPubKey, storeDir: dirs.cliC }) // default p2p-only — NO hybrid config anywhere
+  const playerC = createPlayer({ panelPubKey, storeDir: dirs.cliC, swarm: { bootstrap } }) // default p2p-only — NO hybrid config anywhere
   playerC.on('fallback', () => { evC.fallback++ })
   playerC.on('source-changed', () => { evC.sourceChanged++ })
   playerC.on('status', (s) => evC.status.push(s.state))
