@@ -99,6 +99,33 @@ export function contentType (p) {
 // would read as "thumbnails are just slow" and be near-impossible to attribute.
 export const THUMB_PATH = '/thumb.jpg'
 
+// CORS headers for the LAN-scoped cast server (sdk/player.js startCast). OPT-IN — the
+// loopback server leaves `cors` unset and its responses stay byte-identical to before.
+//
+// Measured, not assumed (WP0 cast trial against a TCL Terraza, CrKey/1.56.500000
+// DeviceType/AndroidTV, on the stock Default Media Receiver CC1AD845): an http:// LAN URL
+// plays with no mixed-content block, but WITHOUT Access-Control-Allow-Origin the receiver
+// fetched the playlist four times, fetched ZERO segments and went IDLE/ERROR. The receiver
+// page's origin is https://www.gstatic.com, so every media fetch is cross-origin: ACAO is
+// not a nicety here, it is the difference between playback and a silent failure.
+//
+// That firmware sent NO OPTIONS preflight and used NO Range header. Both are answered
+// anyway. Range is not a CORS-safelisted request header, so any receiver that does seek
+// WILL preflight — and a preflight answered without Allow-Methods fails closed, which
+// would look exactly like the no-ACAO failure above. Expose-Headers is what lets a
+// receiver read Content-Range/Content-Length off a 206 at all.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Range',
+  'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type'
+}
+const CORS_PREFLIGHT = {
+  ...CORS_HEADERS,
+  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+  'Access-Control-Max-Age': '86400'
+}
+const NO_CORS = {}
+
 // Defaults: waitMs under ExoPlayer's 8 s read timeout; pollMs ≈ one segment write;
 // readAhead covers the 2–3 segments a player fetches before first frame — hosts widen
 // LIVE playlists to the whole window via liveReadAhead (the player passes Infinity,
@@ -322,7 +349,7 @@ function pump (rs, res, wanted, idleMs = 0) {
 
 // Build an async (req, res) handler.
 //
-//   resolveTarget(pathname) -> { drive, path, media, idle?, etag? } | null
+//   resolveTarget(pathname) -> { drive, path, media, idle?, etag?, reclaim? } | null
 //     media: true  = feed content — availability wait + read-ahead apply
 //            false = ancillary (posters/art, guide files) — miss 404s immediately
 //     idle:  opt IN to the STALLED-READ ABORT on a non-media target. media:true carries
@@ -338,27 +365,49 @@ function pump (rs, res, wanted, idleMs = 0) {
 //            drive's version). Sent as a strong ETag; a matching If-None-Match
 //            answers 304 with no body, so a poll of an unchanged guide costs
 //            nothing — the same economy the https EPG path gets from its 304s.
+//     reclaim: false opts THIS target's drive OUT of the handler's expired-block reclaim
+//            (no effect when the handler never had `reclaim` on). Per TARGET, not per
+//            handler, because the decision belongs to the drive being served and can
+//            change at runtime: while a cast session pins a feed for a TV receiver
+//            (sdk/player.js startCast), the loopback handler must not free that feed's
+//            below-window blocks — the receiver buffers deeper than the phone and those
+//            blocks are already unfetchable swarm-wide, so the local copy is the only
+//            one left. Deciding it here (where the exact drive is in hand) rather than
+//            through the handler-wide `reclaim` function is what makes it race-free: the
+//            handler awaits between resolveTarget and the reclaim call, and the served
+//            drive can be swapped by a zap in that window.
 //
-// opts: { waitMs, pollMs, readAhead, liveReadAhead, reclaim, reclaimIntervalMs } —
-// see DEFAULTS; liveReadAhead (number or function -> number, default = readAhead)
+// opts: { waitMs, pollMs, readAhead, liveReadAhead, reclaim, reclaimIntervalMs,
+// readIdleMs, cors } — see DEFAULTS; liveReadAhead (number or function -> number, default = readAhead)
 // widens the live-playlist read-ahead — Infinity replicates the whole live window
 // on-device (churn headroom); a function is re-evaluated per playlist serve so the
 // host can narrow it at runtime (metered network). reclaim (true, or a function ->
 // boolean re-evaluated per serve; default off) clears blob blocks below the live
 // window after a LIVE playlist serves for a media target — see Reclaim above; VOD
-// and non-media targets are never reclaimed. onError(err) is called for
+// and non-media targets are never reclaimed. readIdleMs overrides the stalled-read abort
+// window per handler (the default is tuned to ExoPlayer; a cast receiver's read timeout is
+// a different, longer number — see CAST_READ_IDLE_MS in sdk/player.js). cors (default OFF)
+// adds the CORS headers above to every response and answers OPTIONS 204 BEFORE any drive
+// read — only the LAN-scoped cast server turns it on. onError(err) is called for
 // unexpected failures (the SDK routes corruption errors into store recovery).
 export function createDriveHandler (resolveTarget, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts }
   const readAhead = cfg.readAhead > 0 ? new ReadAhead(cfg.readAhead, cfg.liveReadAhead) : null
   const reclaim = cfg.reclaim ? new Reclaim(cfg.reclaim, cfg.reclaimIntervalMs) : null
+  const cors = cfg.cors ? CORS_HEADERS : NO_CORS
   return async function handler (req, res) {
     try {
+      // Preflight: answered before resolveTarget, so it never touches a drive and never
+      // depends on the cast token being right. Gating it on the token would only turn a
+      // plain 404 into an opaque CORS error in the receiver's console — no more private
+      // (the GET that follows still 404s) and much harder to diagnose from a TV.
+      if (cfg.cors && req.method === 'OPTIONS') { res.writeHead(204, CORS_PREFLIGHT); return res.end() }
+
       let urlPath = decodeURIComponent((req.url || '/').split('?')[0])
       if (urlPath === '/') urlPath = '/index.m3u8'
 
       const target = resolveTarget(urlPath)
-      if (!target || !target.drive) { res.writeHead(404); return res.end('not found') }
+      if (!target || !target.drive) { res.writeHead(404, cors); return res.end('not found') }
       const { drive, path: p, media, idle, etag } = target
       // Stalled-read abort: implicit for media, opt-in for a rolling ancillary blob.
       const idleMs = (media || idle) ? cfg.readIdleMs : 0
@@ -367,15 +416,16 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       // must not touch blocks at all.
       const etagValue = etag ? `"${etag}"` : null
       if (etagValue && req.headers['if-none-match'] === etagValue) {
-        res.writeHead(304, { ETag: etagValue }); return res.end()
+        res.writeHead(304, { ...cors, ETag: etagValue }); return res.end()
       }
 
       let entry = await waitEntry(drive, p, media ? cfg.waitMs : 0, cfg.pollMs)
-      if (!entry) { res.writeHead(404); return res.end('not found') }
+      if (!entry) { res.writeHead(404, cors); return res.end('not found') }
 
       const size = entry.value.blob.byteLength
       const range = req.headers.range
       const headers = {
+        ...cors,
         'Content-Type': contentType(p),
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'no-cache',
@@ -385,11 +435,14 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       // Read-ahead (and reclaim) ride the playlist request: by the time the player
       // asks for the newest segments their blocks are (being) pulled already, and
       // blocks that rotated OUT of a live window get freed. Fire-and-forget.
-      const prefetchAfter = (readAhead || reclaim) && media && p.endsWith('.m3u8')
+      // target.reclaim === false opts THIS drive out (a cast-pinned feed — see the
+      // resolveTarget contract above); the read-ahead is unaffected either way.
+      const mayReclaim = reclaim && target.reclaim !== false
+      const prefetchAfter = (readAhead || mayReclaim) && media && p.endsWith('.m3u8')
         ? (text) => {
             if (readAhead) { try { readAhead.update(drive, text) } catch {} }
             // LIVE playlists only — the ENDLIST (VOD) branch must never reclaim.
-            if (reclaim && !/#EXT-X-ENDLIST/m.test(String(text))) { try { reclaim.update(drive, text) } catch {} }
+            if (mayReclaim && !/#EXT-X-ENDLIST/m.test(String(text))) { try { reclaim.update(drive, text) } catch {} }
           }
         : null
 
@@ -398,7 +451,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
         const start = m && m[1] ? parseInt(m[1], 10) : 0
         const end = m && m[2] ? parseInt(m[2], 10) : size - 1
         if (isNaN(start) || isNaN(end) || start > end || end >= size) {
-          res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end()
+          res.writeHead(416, { ...cors, 'Content-Range': `bytes */${size}` }); return res.end()
         }
         const wanted = end - start + 1
         res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
@@ -425,7 +478,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       }
     } catch (err) {
       if (opts.onError) { try { opts.onError(err) } catch {} }
-      try { res.writeHead(500); res.end('server error: ' + (err && err.message)) } catch {}
+      try { res.writeHead(500, cors); res.end('server error: ' + (err && err.message)) } catch {}
     }
   }
 }

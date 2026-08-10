@@ -75,6 +75,7 @@
     "test:updates": "node tools/e2e-updates-test.mjs",
     "test:epg-xmltv": "node tools/epg-xmltv-test.mjs",
     "test:thumbs": "node tools/e2e-thumbs-test.mjs",
+    "test:cast": "node tools/e2e-cast-test.mjs",
     "test:i18n": "node tools/i18n-test.mjs"
   },
   "keywords": [

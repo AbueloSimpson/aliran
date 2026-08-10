@@ -1,9 +1,11 @@
-// @aliran/player-sdk — Node entry: wires node:http/node:fs into the runtime-agnostic
-// core. Bare hosts (the app's worklet) import './player.js' directly and inject
-// bare-http1/bare-fs instead — this file must never enter a Bare bundle graph.
+// @aliran/player-sdk — Node entry: wires node:http/node:fs/node:os into the
+// runtime-agnostic core. Bare hosts (the app's worklet) import './player.js' directly and
+// inject bare-http1/bare-fs/bare-os instead — this file must never enter a Bare bundle
+// graph.
 
 import http from 'http'
 import fs from 'fs'
+import os from 'os'
 import { AliranPlayer } from './player.js'
 
 export { AliranPlayer }
@@ -15,5 +17,6 @@ export { resolvePairingCode, PairingError, PAIRING_ERRORS } from './pairing.js'
 export { REPORT_CATEGORIES, REPORT_CATEGORY_LABELS, REPORT_CONSENT, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DETAIL_MAX, REPORT_COOLDOWN_MS, isReportCategory, reportCategoryLabel } from './report.js'
 
 export function createPlayer (opts = {}) {
-  return new AliranPlayer({ http, fs, ...opts })
+  // os is only read by startCast() (this device's LAN address) — see AliranPlayer.
+  return new AliranPlayer({ http, fs, os, ...opts })
 }

@@ -152,6 +152,10 @@
 import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for the Bare worklet
 import http from 'bare-http1'
 import fs from 'bare-fs'
+// The engine reads os.networkInterfaces() only for startCast() — the LAN address a TV
+// receiver must dial. bare-os is an ADDON (prebuilds), unlike the pure-JS shims above, so
+// it is declared in backend/package.json rather than left to hoisting luck.
+import os from 'bare-os'
 import b4a from 'b4a'
 import hcrypto from 'hypercore-crypto'
 import { AliranPlayer } from '@aliran/player-sdk/player.js'
@@ -349,7 +353,7 @@ let basePolicy = 'reseed'
 function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform) {
   if (player) return player
   if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, deviceId: ensureDeviceId(), appVersion, platform })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, deviceId: ensureDeviceId(), appVersion, platform })
   player.on('ready', () => send({ type: 'ready' }))
   // `vod` (S53) rides the streams message only when the panel enabled a provider —
   // the field is absent otherwise, so the UI's "no VOD section" is the default.

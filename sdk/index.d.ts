@@ -161,6 +161,12 @@ export interface AliranPlayerOptions extends PlayerOptions {
   http: unknown
   /** node:fs (Node) or bare-fs (Bare). createPlayer() wires this for you. */
   fs: unknown
+  /**
+   * node:os (Node) or bare-os (Bare). createPlayer() wires this for you. OPTIONAL:
+   * only startCast() reads it (this device's LAN address), and only when no
+   * `advertiseHost` is given.
+   */
+  os?: unknown
 }
 
 export interface ResolveResult {
@@ -195,6 +201,48 @@ export interface SourceInfo {
   streamId: string
   source: 'p2p' | 'cdn' | null
   url: string | null
+}
+
+// --- cast to a TV (startCast) ---
+
+export interface CastOptions {
+  /**
+   * Override the auto-detected LAN IPv4 (multi-homed hosts, a VPN interface winning the
+   * pick, an operator-known hostname). Required when no `os` module was injected.
+   */
+  advertiseHost?: string
+  /**
+   * Stalled-read abort window for this session, in ms (default 12000 — twice the
+   * loopback default, which is calibrated to ExoPlayer rather than to a receiver).
+   * 0 disables the abort.
+   */
+  readIdleMs?: number
+  /**
+   * Opt the cast handler INTO expired-block reclaim. OFF by default: a receiver that
+   * falls below the live window can only be served from this device's replica, because
+   * those blocks are already unfetchable swarm-wide.
+   */
+  reclaim?: boolean
+}
+
+export interface CastSession {
+  /** Give this to the receiver. LAN http:// URL (p2p) or the remote URL (redirect channel). */
+  url: string
+  /** The channel being cast. */
+  streamId: string
+  /** 'p2p' = served off this device's LAN server; 'cdn' = a redirect channel's remote URL. */
+  source: 'p2p' | 'cdn'
+  /** LAN address the URL advertises — undefined for redirect channels (no local server). */
+  host?: string
+  /** LAN server port — undefined for redirect channels. */
+  port?: number
+  /** Per-session path token (hex). Undefined for redirect channels. */
+  token?: string
+  /** Feed key being served — null for redirect channels. */
+  feedKey: string | null
+  type: 'live' | 'vod'
+  /** Redirect channels only: request headers the receiver must send (provider hotlink checks). */
+  headers?: Record<string, string>
 }
 
 // --- OTA app updates (the panel's updates drive, meta/updatesKey) ---
@@ -283,6 +331,21 @@ export class AliranPlayer {
   resolve(streamId: string): Promise<ResolveResult>
   /** Active source of the last resolve(), or null. */
   source(): SourceInfo | null
+  /**
+   * Serve an entitled stream to a TV on this device's LAN, on a SECOND server (0.0.0.0,
+   * ephemeral port) that exists only while the session does. Every path is behind a
+   * fresh 32-byte token: `http://<lan-ip>:<port>/cast/<token>/index.m3u8`. The feed is
+   * pinned for the session, so the receiver's URL does not follow the phone's zapping.
+   * The loopback server of resolve() is unchanged and still refuses /cast/*.
+   *
+   * Redirect channels resolve to the operator's remote URL with source 'cdn' and no
+   * local server at all.
+   */
+  startCast(streamId: string, opts?: CastOptions): Promise<CastSession>
+  /** End the cast session (sockets hung up, server closed, token forgotten, feed unpinned). */
+  stopCast(): Promise<boolean>
+  /** The live cast session, or null. */
+  castSession(): CastSession | null
   /** Low-level direct-play by raw keys (no login). Resolves to the localhost port. */
   serveFeed(feedKeyHex: string, encKeyHex: string): Promise<number>
   /** Catalog art path -> localhost URL (absolute http(s) URLs pass through). */
