@@ -207,10 +207,35 @@ export interface SourceInfo {
 
 export interface CastOptions {
   /**
-   * Override the auto-detected LAN IPv4 (multi-homed hosts, a VPN interface winning the
-   * pick, an operator-known hostname). Required when no `os` module was injected.
+   * Override the auto-detected LAN IPv4 — a virtual adapter winning the pick, an
+   * operator-known hostname, or a device with no RFC1918 address at all (startCast()
+   * refuses to advertise a public one). Required when no `os` module was injected.
+   *
+   * Validated as a bare authority: an IPv4 literal, a bracketed IPv6 literal or a DNS
+   * hostname. It becomes the host of a URL that carries the session token, so anything
+   * with a path, query or userinfo in it is rejected rather than parsed.
+   *
+   * An IPv4 literal this device actually owns is ALSO what the server binds to. Anything
+   * else (a hostname, a NAT address) falls back to a 0.0.0.0 bind.
    */
   advertiseHost?: string
+  /**
+   * Serve ONLY this peer (an IP address, or an array of them). Off by default.
+   *
+   * The session token is not a secret the network keeps: a Cast receiver reads the full
+   * media URL back to any unauthenticated peer that joins its session — measured on a TCL
+   * Google TV running the stock Default Media Receiver, where a process that had never seen
+   * the URL recovered it in full. Pinning makes the receiver's ADDRESS part of the boundary
+   * too, so recovering the URL is no longer enough on its own. A non-matching peer gets the
+   * same 404 as a wrong token (never a 403 — a refusal must not confirm the path exists).
+   *
+   * The SDK cannot discover this address: it does not speak the Cast protocol. Pass it once
+   * you know which device you launched on.
+   *
+   * ⚠ A multi-room GROUP fetches media from each member, not through the device the sender
+   * launched on. Pass every member's address, or leave the pin off for groups.
+   */
+  receiverHost?: string | string[]
   /**
    * Stalled-read abort window for this session, in ms (default 12000 — twice the
    * loopback default, which is calibrated to ExoPlayer rather than to a receiver).
@@ -226,23 +251,42 @@ export interface CastOptions {
 }
 
 export interface CastSession {
-  /** Give this to the receiver. LAN http:// URL (p2p) or the remote URL (redirect channel). */
+  /**
+   * Give this to the receiver. LAN http:// URL (p2p), or a remote URL (a redirect
+   * channel's operator-set URL, or the host's own cdnUrl under hybrid.mode 'cdn-only').
+   * Never null: startCast() publishes the session only after the bind succeeds.
+   */
   url: string
   /** The channel being cast. */
   streamId: string
-  /** 'p2p' = served off this device's LAN server; 'cdn' = a redirect channel's remote URL. */
+  /** 'p2p' = served off this device's LAN server; 'cdn' = a remote URL, no local server. */
   source: 'p2p' | 'cdn'
-  /** LAN address the URL advertises — undefined for redirect channels (no local server). */
+  /** LAN address the URL advertises AND the server is bound to — undefined for 'cdn'. */
   host?: string
-  /** LAN server port — undefined for redirect channels. */
+  /** LAN server port — undefined for 'cdn'. */
   port?: number
-  /** Per-session path token (hex). Undefined for redirect channels. */
+  /**
+   * Per-session path token (hex). Undefined for 'cdn'.
+   *
+   * ⚠ A session SCOPE, not a secret the LAN keeps — a receiver hands the whole URL to any
+   * unauthenticated peer that joins its session. See CastOptions.receiverHost.
+   */
   token?: string
-  /** Feed key being served — null for redirect channels. */
+  /** The addresses this session is pinned to, normalised — undefined when unpinned. */
+  receiverHost?: string[]
+  /** Feed key being served — null for a redirect channel. */
   feedKey: string | null
   type: 'live' | 'vod'
   /** Redirect channels only: request headers the receiver must send (provider hotlink checks). */
   headers?: Record<string, string>
+  /**
+   * Every private IPv4 this device offered, in pick order — `host` is candidates[0].
+   * os.networkInterfaces() cannot tell Wi-Fi from a Hyper-V/WSL/Docker bridge or from
+   * carrier CGNAT (all RFC1918), so the pick is a guess. Offer these when a receiver
+   * cannot reach the advertised one, and re-start with { advertiseHost }. Undefined when
+   * the caller passed advertiseHost, and for 'cdn' sessions.
+   */
+  candidates?: string[]
 }
 
 // --- OTA app updates (the panel's updates drive, meta/updatesKey) ---
@@ -293,6 +337,13 @@ export interface PlayerEvents {
   'source-changed': [info: { streamId: string; source: 'p2p' | 'cdn'; url: string }]
   /** Watched stream's feedKey rotated; served feed swapped behind the SAME url — reload the player. */
   'feed-changed': [info: { streamId: string; feedKey: string; url: string }]
+  /**
+   * The cast session ended ON ITS OWN — the pinned feed was purged by the tune ladder
+   * ('feed-evicted') or closed by a retune a zap abandoned ('retune-abandoned'). The
+   * server is closed and the token is dead; stop showing "Casting". stopCast() does NOT
+   * emit this — the caller that asked for the stop already knows.
+   */
+  cast: [info: { state: 'ended'; streamId: string; reason: 'feed-evicted' | 'retune-abandoned' }]
   /** Smooth-zapping lifecycle: {enabled} echoes a toggle; {state,reason} the adaptive gate. */
   'zap-prefetch': [info: { enabled?: boolean; state?: 'suspended' | 'resumed'; reason?: 'metered' | 'stall' | 'thin' }]
   /** setUploadPolicy() applied: how many topic joins were flipped live. */
@@ -332,17 +383,31 @@ export class AliranPlayer {
   /** Active source of the last resolve(), or null. */
   source(): SourceInfo | null
   /**
-   * Serve an entitled stream to a TV on this device's LAN, on a SECOND server (0.0.0.0,
-   * ephemeral port) that exists only while the session does. Every path is behind a
-   * fresh 32-byte token: `http://<lan-ip>:<port>/cast/<token>/index.m3u8`. The feed is
-   * pinned for the session, so the receiver's URL does not follow the phone's zapping.
-   * The loopback server of resolve() is unchanged and still refuses /cast/*.
+   * Serve an entitled stream to a TV on this device's LAN, on a SECOND server bound to
+   * ONE private (RFC1918) address on an ephemeral port, which exists only while the
+   * session does. Every path is behind a fresh 32-byte token:
+   * `http://<lan-ip>:<port>/cast/<token>/index.m3u8`. The feed is pinned for the session,
+   * so the receiver's URL does not follow the phone's zapping. The loopback server of
+   * resolve() is unchanged and still refuses /cast/*.
    *
-   * Redirect channels resolve to the operator's remote URL with source 'cdn' and no
-   * local server at all.
+   * ⚠ The token scopes the session; it is not an access boundary on a shared network,
+   * because a receiver reads the whole URL back to any peer that joins its session. Pass
+   * { receiverHost } when you know the device's address.
+   *
+   * Rejects when this device has no private IPv4 (pass { advertiseHost } to override —
+   * advertising a public address would publish entitled content beyond the LAN).
+   *
+   * Redirect channels — and every channel when hybrid.mode is 'cdn-only' — resolve to a
+   * remote URL with source 'cdn' and no local server at all.
+   *
+   * A session can also end on its own; listen for the 'cast' event.
    */
   startCast(streamId: string, opts?: CastOptions): Promise<CastSession>
-  /** End the cast session (sockets hung up, server closed, token forgotten, feed unpinned). */
+  /**
+   * End the cast session: sockets hung up, server closed, token forgotten, feed unpinned
+   * and given ONE expired-block reclaim pass (it ran with reclaim off for the session).
+   * Does not emit 'cast'.
+   */
   stopCast(): Promise<boolean>
   /** The live cast session, or null. */
   castSession(): CastSession | null
