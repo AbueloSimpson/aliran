@@ -125,6 +125,20 @@ test('guide tile: present by default (after Live TV); phone opens Live with the 
   expect(navigation.navigate).toHaveBeenCalledWith('Live', { guide: true })
 })
 
+// --- Search section tile ---
+
+test('search tile: phone opens Live with the in-player search overlay', async () => {
+  backend.streams = [heroStream()]
+  const tree = await mount(<MenuScreen navigation={navigation} route={{} as any} />)
+  const search = tree.root.findAll(n => typeof n.props?.onPress === 'function' &&
+    n.findAllByType(Text).some(t => [t.props.children].flat().join('') === 'SEARCH'))[0]!
+  await ReactTestRenderer.act(async () => { search.props.onPress() })
+  // Jest runs the phone branch: search is the in-player overlay over the live video
+  // (WS15), so the tile opens Live in search mode. The TV branch keeps navigating
+  // to the standalone Search screen.
+  expect(navigation.navigate).toHaveBeenCalledWith('Live', { search: true })
+})
+
 // --- phone left rail (the S22 redesign: sections run vertically down the left edge) ---
 
 test('rail: every section is a button, in tile order down the rail', async () => {

@@ -114,7 +114,9 @@ export function MenuScreen ({ navigation }: Props) {
     if (s.guide !== false) list.push({ key: 'guide', label: t('menu.guide'), glyph: '🗓️', go: () => (theme.isTV ? navigation.navigate('Guide') : navigation.navigate('Live', { guide: true })) })
     if (vodEnabled && s.vod !== false) list.push({ key: 'vod', label: t('menu.vod'), glyph: '🎬', go: () => navigation.navigate('Vod') })
     if (s.favorites !== false) list.push({ key: 'favorites', label: t('menu.favorites'), glyph: '⭐', go: () => navigation.navigate('Favorites') })
-    if (s.search !== false) list.push({ key: 'search', label: t('menu.search'), glyph: '🔍', go: () => navigation.navigate('Search') })
+    // Same split for search: TV keeps the standalone Search screen; phone raises the
+    // in-player search overlay over the live video (WS15).
+    if (s.search !== false) list.push({ key: 'search', label: t('menu.search'), glyph: '🔍', go: () => (theme.isTV ? navigation.navigate('Search') : navigation.navigate('Live', { search: true })) })
     if (s.settings !== false) list.push({ key: 'settings', label: t('menu.settings'), glyph: '⚙️', go: () => navigation.navigate('Settings') })
     if (s.exit ?? Platform.isTV) list.push({ key: 'exit', label: t('menu.exit'), glyph: '🚪', go: () => BackHandler.exitApp() })
     return list

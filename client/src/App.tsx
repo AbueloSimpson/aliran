@@ -59,7 +59,9 @@ export type RootStackParamList = {
   // guide (phone only): open with the guide MODE up — the time-grid around the ONE
   // playing video surface (portrait: 16:9 strip above the grid). The Menu's GUIDE
   // tile uses this on phone; on TV it keeps navigating to the Guide screen.
-  Live: { streamId?: string; tuneKey?: number; guide?: boolean } | undefined
+  // search (phone only): open with the in-player search overlay up (WS15) — same
+  // split: the Menu's SEARCH tile uses this on phone; TV keeps the Search screen.
+  Live: { streamId?: string; tuneKey?: number; guide?: boolean; search?: boolean } | undefined
   // The full EPG guide (WS3). streamId = the channel Live was playing when it opened
   // the guide — the row the grid mounts at and the NOW pill's jump target. Absent
   // when entered from the Menu tile.

@@ -147,6 +147,9 @@ export function LiveScreen ({ route, navigation }: Props) {
     // The Menu's GUIDE tile (phone): open straight into the guide mode around the
     // resumed/hero channel. TV never sets it — the Guide route stays its surface.
     if (route.params?.guide && !theme.isTV) return 'guide'
+    // The Menu's SEARCH tile (phone): open with the in-player search overlay up
+    // (WS15). TV never sets it — the standalone Search screen stays its surface.
+    if (route.params?.search && !theme.isTV) return 'search'
     if (!(route.params?.streamId || lastStreamId)) return 'list'
     // Phone PORTRAIT mounts with a resume/tuned channel start in the guide, not
     // fullscreen (S22 round 4: fullscreen is ALWAYS landscape, so portrait
@@ -300,6 +303,13 @@ export function LiveScreen ({ route, navigation }: Props) {
     // cover the error text (the grid is a retry surface, but the message comes first).
     if (route.params?.guide && !theme.isTV && !errorRef.current) setOverlay('guide')
   }, [route.params?.guide])
+
+  // navigate('Live', { search: true }) against an ALREADY-MOUNTED Live: raise the
+  // search overlay like the mount-time path above did. Error-gated like every
+  // guide/search entry: the panel's bed must never cover the error text.
+  useEffect(() => {
+    if (route.params?.search && !theme.isTV && !errorRef.current) setOverlay('search')
+  }, [route.params?.search])
 
   // Orientation state machine (phone, S22 round 3): each orientation has a DEFAULT
   // browse surface — portrait = the guide (video strip + grid), landscape = clean
