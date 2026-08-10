@@ -214,6 +214,14 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
   // The player mount: one hls.js instance (or a native src for non-HLS redirect URLs)
   // per [url, attempt]. Every remount disarms the stall watchdog until the fresh
   // mount plays again.
+  //
+  // No provider-header code lives here on purpose. A redirect channel whose upstream
+  // hotlink-checks Referer/Origin/User-Agent needs those on the manifest+segment GETs,
+  // but hls.js (and the native <video> path) CANNOT set them — they are forbidden
+  // request headers the browser owns. The MAIN process injects them per-origin via
+  // Electron webRequest, armed from the same 'port' reply that hands us `url` (see
+  // desktop/main/redirect-headers.js and its wiring in desktop/main/index.js). So this
+  // component just loads the url; the headers ride underneath, invisibly to the renderer.
   useEffect(() => {
     progress.current = { time: -1, at: Date.now(), played: false }
     const video = videoRef.current

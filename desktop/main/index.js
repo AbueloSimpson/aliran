@@ -16,12 +16,13 @@
 //     descriptor persists in userData ('set-service'). "Change service" clears it
 //     ('service-clear') and relaunches clean.
 
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolvePairingCode } from '@aliran/player-sdk/pairing.js'
 import { EngineHost } from './engine.js'
+import { installRedirectHeaderRules } from './redirect-headers.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -46,6 +47,14 @@ function main () {
 
   app.whenReady().then(() => {
     const { descriptor, source } = loadDescriptor()
+
+    // Part C: arm the main-process redirect-channel header injection ONCE on the
+    // default session (the BrowserWindow below uses no custom partition, so
+    // defaultSession is the one that carries its hls.js requests). The returned
+    // controls are driven off the engine's 'port' messages just below — a redirect
+    // serve carries provider headers to inject, every other tune clears the rule.
+    const redirectRules = installRedirectHeaderRules(session.defaultSession)
+
     engine = new EngineHost({
       descriptor,
       descriptorSource: source,
@@ -54,7 +63,20 @@ function main () {
       // Provenance for problem reports (S50c) — which build, on which OS.
       appVersion: app.getVersion(),
       platform: process.platform,
-      onMessage: (msg) => { if (win && !win.isDestroyed()) win.webContents.send('aliran:event', msg) }
+      // The engine's out-message sink. It runs SYNCHRONOUSLY and ordered BEFORE the
+      // renderer receives the message: on a 'port' reply we update/clear the webRequest
+      // rule here first, so the injection is live before hls.js (which only starts once
+      // the renderer sees the same 'port') issues its first manifest GET. A 'port' with
+      // both a url and provider headers arms the rule; anything else (a P2P/localhost
+      // tune, a headerless redirect) clears it — a stale provider rule must never
+      // outlive the channel it belonged to.
+      onMessage: (msg) => {
+        if (msg && msg.type === 'port') {
+          if (msg.url && msg.headers) redirectRules.update(msg.url, msg.headers)
+          else redirectRules.clear()
+        }
+        if (win && !win.isDestroyed()) win.webContents.send('aliran:event', msg)
+      }
     })
 
     ipcMain.on('aliran:msg', (_e, msg) => {

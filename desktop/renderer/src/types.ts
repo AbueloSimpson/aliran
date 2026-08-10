@@ -225,7 +225,11 @@ export type BackendMessage =
   // to tell "the served channel just CHANGED under the shared localhost URL" (remount)
   // from a re-resolve of the channel already playing. recordType/durationSec mirror
   // the engine's ResolveResult (S8a): 'vod' = finished library title.
-  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn'; streamId?: string; recordType?: 'live' | 'vod'; durationSec?: number | null }
+  // headers: the redirect channel's provider hotlink set (Referer/Origin/User-Agent),
+  // present ONLY on redirect serves. The renderer never applies these itself — hls.js
+  // cannot set forbidden headers — the main process injects them via webRequest
+  // (main/redirect-headers.js). The bridge still tracks it beside url for parity.
+  | { type: 'port'; port?: number; url?: string; source?: 'p2p' | 'cdn'; streamId?: string; recordType?: 'live' | 'vod'; durationSec?: number | null; headers?: Record<string, string> | null }
   | { type: 'status'; peers?: number; state?: string; message?: string }
   | { type: 'error'; message: string }
   | { type: 'fallback'; streamId: string; url: string; reason: 'timeout' | 'stall' }
@@ -337,6 +341,9 @@ export interface EngineState {
   streamId: string | null
   recordType: 'live' | 'vod' | null
   durationSec: number | null
+  /** Redirect-channel provider headers for the last serve (null for P2P/CDN). Mirrored
+   *  so a late-mounting player has parity with the 'port' message; injection is main-side. */
+  headers: Record<string, string> | null
   creds: SavedIdentity | null
   favorites: string[]
   smoothZapping: boolean | null

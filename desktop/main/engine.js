@@ -153,8 +153,12 @@ export class EngineHost {
     this.player = null
     this.ready = false
     // The engine's last confirmed serve — mirrored into the renderer bridge's cache
-    // for late-mounting screens (same fields AliranBackend keeps).
-    this.last = { port: null, url: null, source: null, streamId: null, recordType: null, durationSec: null }
+    // for late-mounting screens (same fields AliranBackend keeps). `headers` is the
+    // redirect-channel provider hotlink set (Referer/Origin/User-Agent), carried here
+    // so state() hands it to a late-mounting player AND so index.js can arm the
+    // main-process webRequest injection (Part C) off the same 'port' send — the
+    // renderer's hls.js cannot set those forbidden headers itself.
+    this.last = { port: null, url: null, source: null, streamId: null, recordType: null, durationSec: null, headers: null }
     // The operator/user's CONFIGURED upload policy. The network gate (S25) flips the
     // live policy to 'client-only' on metered links and restores THIS on the way back.
     this.basePolicy = 'reseed'
@@ -516,9 +520,14 @@ export class EngineHost {
       // The engine's ResolveResult `type` rides as `recordType` (the message's own
       // `type` is the envelope discriminant): 'vod' = finished library title.
       this.player.resolve(msg.streamId)
-        .then(({ port, url, source, type, durationSec }) => {
-          this.last = { port: port ?? null, url, source, streamId: msg.streamId, recordType: type ?? null, durationSec: durationSec ?? null }
-          this.send({ type: 'port', port, url, source, streamId: msg.streamId, recordType: type, durationSec })
+        .then(({ port, url, source, type, durationSec, headers }) => {
+          // `headers` is redirect-only (undefined for P2P/localhost/CDN serves —
+          // sdk/player.js resolve() attaches it on the redirect branch alone). Kept
+          // beside `url` here and forwarded on the 'port' send: the renderer bridge
+          // mirrors it for <HlsVideo>, but the actual injection is main-side
+          // (redirect-headers.js), armed from this same message in index.js.
+          this.last = { port: port ?? null, url, source, streamId: msg.streamId, recordType: type ?? null, durationSec: durationSec ?? null, headers: headers ?? null }
+          this.send({ type: 'port', port, url, source, streamId: msg.streamId, recordType: type, durationSec, headers })
         })
         .catch(fail)
     }

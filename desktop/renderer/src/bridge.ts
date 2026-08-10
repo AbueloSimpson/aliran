@@ -34,6 +34,12 @@ class DesktopBackend {
   activeStreamId: string | null = null
   recordType: 'live' | 'vod' | null = null
   durationSec: number | null = null
+  // Redirect-channel provider headers (Referer/Origin/User-Agent) for the active
+  // serve, mirrored from the 'port' reply — kept beside url because they are only
+  // valid FOR that url. The renderer never applies them (hls.js cannot set forbidden
+  // headers); the MAIN process injects them via webRequest. Every event that swaps url
+  // for a localhost or CDN one clears this, matching the RN backend.
+  headers: Record<string, string> | null = null
   creds: SavedIdentity | null = null
   favorites: string[] = []
   smoothZapping: boolean | null = null
@@ -63,6 +69,7 @@ class DesktopBackend {
     this.activeStreamId = s.streamId
     this.recordType = s.recordType
     this.durationSec = s.durationSec
+    this.headers = s.headers ?? null
     this.creds = s.creds
     this.favorites = s.favorites ?? []
     this.smoothZapping = s.smoothZapping
@@ -217,9 +224,14 @@ class DesktopBackend {
       if (msg.streamId) this.activeStreamId = msg.streamId
       this.recordType = msg.recordType ?? null
       this.durationSec = msg.durationSec ?? null
+      this.headers = msg.headers ?? null
     }
-    if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn' }
-    if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source }
+    // Both hand out a DIFFERENT url — the localhost server or the operator's CDN
+    // template — so the previous channel's provider headers must not follow it.
+    // Defensive: they only ever fire for P2P channels, which never carry headers.
+    // ('feed-changed' keeps the same localhost url and is P2P-only, so it leaves this.)
+    if (msg.type === 'fallback') { this.url = msg.url; this.source = 'cdn'; this.headers = null }
+    if (msg.type === 'source-changed') { this.url = msg.url; this.source = msg.source; this.headers = null }
     if (msg.type === 'feed-changed') this.url = msg.url // same localhost URL, new feed behind it
     this.listeners.forEach((fn) => { try { fn(msg) } catch {} })
   }
