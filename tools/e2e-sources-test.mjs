@@ -543,6 +543,48 @@ try {
   assert.strictEqual(decapitated.stray, 2, 'urls with no #EXTINF are COUNTED — "0 added, 0 skipped" must be impossible on a broken playlist')
   log('L: m3u — group filter + filtered count, slug ids with -2 dedup, EXTVLCOPT headers (per-key degrade), null EPG, exclude-by-slug, token rotation appends, 304 idempotency, empty-filter prune flagged, format hints keep last good state, title/stray parser traps ✓')
 
+  // ===== Test L2: source-scoped cleartext (http) exemption =====
+  // A provider that serves some events over plain http on an IP host. https-only is the
+  // default, so those entries drop; the operator opts THIS source in with allowCleartext.
+  // The exemption must be source-scoped: it never reaches a manual channel.
+  texts['/cleartext.m3u'] = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="Live Events",Cleartext Event',
+    'http://193.47.62.40/event/1.m3u8', // non-loopback http — dropped by default, imported once allowed
+    ''
+  ].join('\n'); rev++
+  const cleartextUrl = feedBase + '/cleartext.m3u'
+  r = await api('POST', '/api/sources', { name: 'ct', url: cleartextUrl, format: 'm3u', category: 'CT', prefix: 'ct.' }, token)
+  assert.strictEqual(r.status, 201, 'add cleartext source: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.allowCleartext, false, 'allowCleartext defaults OFF')
+  r = await api('POST', '/api/sources/ct/sync', undefined, token)
+  assert.strictEqual(r.body.added, 0, 'by default the http entry is dropped (bad url)')
+  assert.strictEqual(r.body.skippedCount, 1, 'and counted as a skip, not silently lost')
+  assert.strictEqual((await db.get('catalog/ct.Cleartext-Event')), null, 'nothing imported while https-only')
+  // Flip the flag on — it round-trips through set-source and resets the ETag so the next
+  // sync re-reads and re-maps (the operator flips this on an already-synced source).
+  r = await api('PATCH', '/api/sources/ct', { allowCleartext: true }, token)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(r.body.allowCleartext, true, 'allowCleartext round-trips through set-source')
+  assert.strictEqual(sources.loadSources(dir).ct.allowCleartext, true, 'and persists to the registry')
+  assert.strictEqual(sources.loadSources(dir).ct.etag, null, 'toggling the exemption resets the ETag')
+  r = await api('POST', '/api/sources/ct/sync', undefined, token)
+  assert.strictEqual(r.body.added, 1, 'with the exemption ON the http entry imports')
+  assert.strictEqual(r.body.skippedCount, 0, 'and is no longer a skip')
+  const ctEv = (await db.get('catalog/ct.Cleartext-Event')).value
+  assert.strictEqual(ctEv.url, 'http://193.47.62.40/event/1.m3u8', 'the http url is stored verbatim')
+  assert.strictEqual(ctEv.redirect, true, 'imported as a redirect channel')
+  // The exemption is SOURCE-SCOPED: a MANUAL redirect channel with the same http url is
+  // STILL rejected — normRedirectUrl defaults to https-or-loopback-only for addStream/setMeta.
+  r = await api('POST', '/api/streams', { id: 'ct-manual', url: 'http://193.47.62.40/event/1.m3u8' }, token)
+  assert.strictEqual(r.status, 400, 'a manual http redirect channel is STILL rejected — the source exemption never leaks to manual channels')
+  // Turning it back off drops the http entry again on the next sync.
+  await api('PATCH', '/api/sources/ct', { allowCleartext: false }, token)
+  r = await api('POST', '/api/sources/ct/sync', undefined, token)
+  assert.strictEqual(r.body.removed, 1, 'turning the exemption off prunes the http channel')
+  assert.strictEqual((await db.get('catalog/ct.Cleartext-Event')), null)
+  log('L2: source-scoped http exemption — default drops http, allowCleartext imports it, round-trips + resets etag, manual channels stay https-only ✓')
+
   // ===== Test M: redirect playback headers over the admin API (Part A) =====
   r = await api('POST', '/api/streams', { id: 'hdr-one', url: 'https://cdn.example/hdr.m3u8', headers: { Referer: 'https://provider.example/', 'USER-AGENT': ' Mozilla/5.0 ' } }, token)
   assert.strictEqual(r.status, 201, 'create a redirect channel with headers: ' + JSON.stringify(r.body))

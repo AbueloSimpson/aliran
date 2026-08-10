@@ -1590,12 +1590,15 @@ async function addSourceDlg () {
     { name: 'url', label: 'Feed URL (https://)', placeholder: 'https://provider.example/channels.json' },
     { name: 'format', label: 'Format — json = a provider feed, m3u = a playlist', type: 'select', options: ['json', 'm3u'], value: 'json' },
     { name: 'category', label: 'Category label (the rail viewers see)', placeholder: 'Anime' },
-    { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' }
+    { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' },
+    { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: false }
   ], {
     okLabel: 'Add',
     body: `<p class="muted">The panel pulls the feed immediately. It then makes a category of <b>redirect channels</b> from it.</p>
            <p class="muted">The sync interval, the channel id prefix and auto-grant keep their defaults. Change them with
            <b>edit</b> on the row.</p>
+           <p class="muted"><b>Allow cleartext</b> is for a provider that serves some streams over plain http, not https.
+           It applies to this source only, never to manual channels. An http stream plays only where the client permits cleartext.</p>
            <details class="footnote"><summary>What the feed must contain</summary>${FEED_FORMAT_HTML}</details>`
   })
   if (!v) return
@@ -1605,7 +1608,7 @@ async function addSourceDlg () {
   // it would sit in the record inviting a "why is my filter ignored?" later.
   const groups = v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : []
   try {
-    await api('POST', '/api/sources', { name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups })
+    await api('POST', '/api/sources', { name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups, allowCleartext: v.allowCleartext })
     toast(`source "${name}" added — pulling the feed…`)
     await syncSourceNow(name)
   } catch (err) { toast(err.message, true) }
@@ -1743,11 +1746,13 @@ async function editSource (s) {
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', value: (s.groups || []).join(', '), placeholder: 'Live Events, PPV' },
     { name: 'prefix', label: 'Channel id prefix', value: s.prefix },
     { name: 'minutes', label: 'Sync every (minutes)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 60000), min: 1, max: 43200, step: 1 },
-    { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false }
+    { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false },
+    { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: !!s.allowCleartext }
   ], {
     body: `<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category — and the playback headers of an m3u) on every sync — manual edits to those don't stick on imported channels.</p>
       <p class="muted">Changing the <b>format</b> or the <b>groups</b> makes the next sync read the whole feed again. A group you remove takes its channels with it.</p>
-      <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>`
+      <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>
+      <p class="muted"><b>Allow cleartext</b> lets this source import plain-http stream URLs, for a provider that serves some streams over http instead of https. It applies to this source only, never to manual channels, and the next sync re-reads the feed to apply it. An http stream plays only where the client permits cleartext.</p>`
   })
   if (!v) return
   // Validate here, in the field's own unit — the API's error talks milliseconds.
@@ -1763,7 +1768,8 @@ async function editSource (s) {
     groups: v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : [],
     prefix: v.prefix.trim(),
     intervalMs: minutes * 60000,
-    autoGrant: v.autoGrant
+    autoGrant: v.autoGrant,
+    allowCleartext: v.allowCleartext
   }), `source "${s.name}" updated — applies on its next sync`)
 }
 

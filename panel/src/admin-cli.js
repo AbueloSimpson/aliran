@@ -299,6 +299,7 @@ async function main () {
       groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined, // comma group-titles (m3u)
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
+      allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // let this source import http:// stream urls
       enabled: opts.disabled === true ? false : undefined
     })
     console.log(`Added ${s.format} source "${name}" → category "${s.category}" (prefix "${s.prefix}", every ${Math.round(s.intervalMs / 3600000 * 10) / 10}h, autoGrant ${s.autoGrant}` +
@@ -327,6 +328,7 @@ async function main () {
       prefix: str(opts.prefix),
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
+      allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // flip the http:// exemption for this source
       enabled: opts.enabled != null ? opts.enabled : undefined,
       exclude: opts.exclude != null && opts.exclude !== true ? String(opts.exclude) : undefined, // comma feed-ids; '' clears
       groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined // comma group-titles; '' takes every group
@@ -790,17 +792,21 @@ function usage () {
   set-publisher-status <name> <active|revoked>   Revoke/re-activate a publisher's key
   remove-publisher <name>               Hard-delete a publisher (revoke keeps the audit trail)
   add-source <name> <url> --category <label> [--format json|m3u] [--groups "Live Events,PPV"]
-                          [--prefix p.] [--interval-hours N] [--auto-grant false] [--disabled]
+                          [--prefix p.] [--interval-hours N] [--auto-grant false] [--allow-cleartext] [--disabled]
                                         Register a remote channel feed as a category. --format m3u reads an M3U
                                         playlist: ids come from the channel names, #EXTVLCOPT lines import as
                                         playback headers, and --groups picks the group-titles to take (blank = all).
                                         Point several sources at ONE playlist, each with its own groups, category
                                         and prefix, to split a mixed list into the right rails.
+                                        --allow-cleartext lets THIS source import http:// (non-TLS) stream urls;
+                                        off by default, and manual channels are never affected. http only plays
+                                        where the client permits cleartext.
   list-sources                          List channel sources + last sync state
-  set-source <name> [--url --format --category --prefix --interval-hours --auto-grant --enabled true|false
-                     --exclude "feedId1,feedId2" --groups "Live Events"]
+  set-source <name> [--url --format --category --prefix --interval-hours --auto-grant --allow-cleartext true|false
+                     --enabled true|false --exclude "feedId1,feedId2" --groups "Live Events"]
                                         (--exclude DESELECTS feed entries: removed + skipped every sync; "" re-includes all)
                                         (--groups filters an m3u by group-title; "" takes every group)
+                                        (--allow-cleartext true lets this source import http:// stream urls; source-scoped)
   list-categories                       Category vocabulary in use + per-category channel counts
   rename-category <from> <to>           Rename a rail; children of a parent move with it
   merge-categories <a> <b> … --into <c> Retag several categories onto one

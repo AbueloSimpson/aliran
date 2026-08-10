@@ -203,6 +203,9 @@ export function addSource (ctx, name, opts = {}) {
     prefix: normPrefix(opts.prefix, name),
     autoGrant: opts.autoGrant == null ? true : normBool(opts.autoGrant),
     enabled: opts.enabled == null ? true : normBool(opts.enabled),
+    // Source-scoped cleartext exemption (see normRedirectUrl in ops.js): OFF by default,
+    // so a source imports https-only until the operator deliberately opts a provider in.
+    allowCleartext: opts.allowCleartext == null ? false : normBool(opts.allowCleartext),
     intervalMs: normInterval(opts.intervalMs, scfg(ctx).defaultIntervalMs),
     exclude: normExclude(opts.exclude),
     groups: normGroups(opts.groups),
@@ -235,6 +238,15 @@ export function setSource (ctx, name, fields = {}) {
   if (fields.prefix != null) s.prefix = normPrefix(fields.prefix, name)
   if (fields.autoGrant != null) s.autoGrant = normBool(fields.autoGrant)
   if (fields.enabled != null) s.enabled = normBool(fields.enabled)
+  if (fields.allowCleartext != null) {
+    // Like format/groups/exclude, this changes how the SAME feed bytes MAP: an http entry
+    // that was skipped as a bad url now imports (or, turned off, is dropped again). A cached
+    // ETag would let the next sync answer 304 and skip the very re-map the operator just
+    // asked for — the events source flips this ON while already synced — so reset it.
+    const next = normBool(fields.allowCleartext)
+    if (next !== !!s.allowCleartext) s.etag = null
+    s.allowCleartext = next
+  }
   if (fields.intervalMs != null) s.intervalMs = normInterval(fields.intervalMs, scfg(ctx).defaultIntervalMs)
   if (fields.exclude !== undefined) {
     const next = normExclude(fields.exclude)
@@ -377,7 +389,7 @@ function mapFeed (source, feed, { maxChannels }) {
     try { checkName(id, 'stream id') } catch { skip('invalid id'); continue }
     if (entries.has(id)) { skip('duplicate id'); continue }
     let url
-    try { url = normRedirectUrl(ch.url) } catch { skip('invalid url'); continue }
+    try { url = normRedirectUrl(ch.url, { allowCleartext: source.allowCleartext }) } catch { skip('invalid url'); continue }
     if (!url) { skip('missing url'); continue }
     let logo = null
     if (ch.logo != null) { try { logo = normArt(ch.logo, 'logo') } catch { logo = null } }
@@ -579,7 +591,7 @@ function mapM3U (source, text, { maxChannels }) {
     try { checkName(id, 'stream id') } catch { skip('invalid id'); continue }
     if (entries.has(id)) { skip('duplicate id'); continue }
     let url
-    try { url = normRedirectUrl(e.url) } catch { skip('invalid url'); continue }
+    try { url = normRedirectUrl(e.url, { allowCleartext: source.allowCleartext }) } catch { skip('invalid url'); continue }
     if (!url) { skip('missing url'); continue }
     // Headers degrade PER KEY, like art: the url is the channel, and one malformed
     // #EXTVLCOPT line must not cost the operator the event it was attached to.

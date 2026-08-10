@@ -74,9 +74,10 @@
 //   POST   /api/publishers/:name/status      {status:'active'|'revoked'}
 //   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
 //   GET    /api/sources                      remote channel sources (S27) + owned-channel counts
-//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?,format?,groups?}
+//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?,format?,groups?,allowCleartext?}
 //                                            format 'json' (default) | 'm3u'; groups = the m3u group-titles to import
-//                                            (case-insensitive exact match; absent/[] = every entry)
+//                                            (case-insensitive exact match; absent/[] = every entry);
+//                                            allowCleartext lets this source import http:// (non-loopback) stream urls
 //   PATCH  /api/sources/:name                edit any field (incl. exclude:[{id,title}] — deselected feed ids)
 //                                            a format or groups change resets the ETag, so the next sync re-reads the body
 //   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
