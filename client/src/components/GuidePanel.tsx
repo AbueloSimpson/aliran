@@ -38,7 +38,7 @@ import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, categoryModel, splitCategory, subLabel, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
-import { useEpg, useEpgPrograms, useChannelThumb, type EpgProgram } from '@aliran/react-native'
+import { useEpg, useEpgProgramsState, useChannelThumb, type EpgProgram } from '@aliran/react-native'
 import { ProgressHairline } from './ProgressHairline'
 import { SectionLoading } from './SectionLoading'
 import {
@@ -52,13 +52,15 @@ import { theme } from '../theme'
 export const CELL_GAP = 2
 
 // Compact phone channel column: number over a small 16:9 station-logo box.
-const PH_COL_W = 72
-const PH_LOGO_W = 56
-const PH_LOGO_H = 32
+// Exported (with the row heights) so GuideSkeleton echoes the real geometry
+// instead of duplicating it (WS17).
+export const PH_COL_W = 72
+export const PH_LOGO_W = 56
+export const PH_LOGO_H = 32
 // Dense "zoomed-out" rows (the getItemLayout exact-height discipline): ~52px puts
 // 8-12 channels on a phone screen beside the 2 h window.
-const PH_ROW_INNER_H = 50
-const PH_ROW_MB = 2
+export const PH_ROW_INNER_H = 50
+export const PH_ROW_MB = 2
 export const PH_ROW_H = PH_ROW_INNER_H + PH_ROW_MB
 
 // A sideways move must clearly dominate before the pager claims the touch — smaller
@@ -272,7 +274,11 @@ function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW
   onPress: () => void
 }) {
   const { t } = useI18n()
-  const programs = useEpgPrograms(stream.epgUrl, stream.epgId, stream.guideBase)
+  // Loading truth (WS17): `ready` separates "first fetch still running" (skeleton
+  // cells — never the honest no-guide answer while the answer isn't known yet)
+  // from "genuinely no guide" (the D2 placeholder below). TV rows keep the plain
+  // useEpgPrograms — this is the phone grid only.
+  const { programs, ready } = useEpgProgramsState(stream.epgUrl, stream.epgId, stream.guideBase)
   const visible = visiblePrograms(programs, windowStart, windowStart + GUIDE_WINDOW_MS)
 
   return (
@@ -290,7 +296,9 @@ function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW
           : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
-        {visible.length === 0
+        {!ready
+          ? <SkeletonCells stripW={stripW} seed={stream.id.length} />
+          : visible.length === 0
           ? (
             <View style={[styles.cell, styles.cellAtStart, { width: stripW }]}>
               <Text style={[styles.cellTitle, styles.cellEmpty]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
@@ -369,6 +377,35 @@ export function GuidePreviewCard ({ stream, number, playing, program, hint }: {
         {hint ? <Text style={styles.previewHint} numberOfLines={1}>{hint}</Text> : null}
       </View>
     </View>
+  )
+}
+
+// Skeleton program cells (WS17) — the loading silhouette of one row's strip: 3
+// surface-color rounded rects at the real cell geometry (same height/radius/gap),
+// STATIC (no animation — a shimmering guide janks the very transition this frame
+// exists to smooth). Deterministic widths from a small pattern table (`seed` picks
+// the row's pattern) so stacked rows read as a varied schedule, not banding.
+// Shared by GuideRowPhone (while its first EPG fetch runs) and GuideSkeleton (the
+// whole-panel placeholder LiveScreen mounts before the deferred grid).
+const SKELETON_PATTERNS: number[][] = [
+  [0.34, 0.42, 0.24],
+  [0.48, 0.28, 0.24],
+  [0.26, 0.38, 0.36],
+  [0.40, 0.24, 0.36]
+]
+
+export function SkeletonCells ({ stripW, seed = 0 }: { stripW: number; seed?: number }) {
+  const pattern = SKELETON_PATTERNS[seed % SKELETON_PATTERNS.length]
+  let x = 0
+  return (
+    <>
+      {pattern.map((f, i) => {
+        const left = x
+        const w = Math.max(0, Math.round(stripW * f) - CELL_GAP)
+        x += Math.round(stripW * f)
+        return <View key={i} style={[styles.cell, { left, width: w }]} />
+      })}
+    </>
   )
 }
 

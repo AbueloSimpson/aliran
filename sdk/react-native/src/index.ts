@@ -12,7 +12,7 @@ export type { EngineNoticeProps, EngineNoticeColors } from './EngineNotice'
 // apps render their own visuals from this. See src/epg.ts.
 export { EpgService, epg, programProgress } from './epg'
 export type { EpgProgram, NowNext, EpgServiceOpts } from './epg'
-export { useEpg, useEpgPrograms } from './useEpg'
+export { useEpg, useEpgPrograms, useEpgProgramsState } from './useEpg'
 // Live-thumbnail hook (WS0): thumb-first channel art off the engine's thumbBase, with
 // the rolling ?t= stamp and 404→logo fallback semantics. See src/thumbs.ts.
 export { useChannelThumb } from './thumbs'

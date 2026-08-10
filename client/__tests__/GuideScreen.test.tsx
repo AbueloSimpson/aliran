@@ -86,6 +86,21 @@ test('phone grid: airing + upcoming cells on guided rows, the honest placeholder
   expect(t).toContain('NOW') // the floating jump-back pill
 })
 
+test('phone rows: skeleton cells while the first fetch runs — the honest placeholder only once ready (WS17)', async () => {
+  // A deferred fetch: the guided row's answer stays in flight until WE resolve it.
+  let resolve!: (p: any[]) => void
+  jest.spyOn(epg, 'getPrograms').mockReturnValue(new Promise((r) => { resolve = r }))
+  ;(backend as any).streams = [guided, guideless]
+  const tree = await createTree(<GuidePanel playingId={null} onTune={jest.fn()} />)
+  const placeholders = () => texts(tree).split('No program information').length - 1
+  // Guide-less row: nothing will ever be fetched → its honest answer shows at once.
+  // Guided row: the fetch is IN FLIGHT → skeleton cells, never the wrong message.
+  expect(placeholders()).toBe(1)
+  await ReactTestRenderer.act(async () => { resolve([]) })
+  // Resolved empty → now the guided row's honest answer joins the guide-less one.
+  expect(placeholders()).toBe(2)
+})
+
 test('tapping a row tunes it (navigates to Live with that channel)', async () => {
   jest.spyOn(epg, 'getPrograms').mockResolvedValue([])
   ;(backend as any).streams = [guided, guideless]

@@ -82,6 +82,7 @@ import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
 import { GuidePanel } from '../components/GuidePanel'
+import { GuideSkeleton } from '../components/GuideSkeleton'
 import { SearchPanel } from '../components/SearchPanel'
 import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/ChannelChangeIndicator'
 import { NowPlayingBar } from '../components/NowPlayingBar'
@@ -716,7 +717,10 @@ export function LiveScreen ({ route, navigation }: Props) {
         <View style={portrait ? [styles.guidePortrait, { top: stripH }] : styles.guideLandscape}>
           {/* Deferred mount (S22 round 6): the grid's first commit is heavy — gating
               it lets the screen/overlay transition paint immediately; the grid pops
-              in one interaction later. The bed + strip above show at once. */}
+              in one interaction later. The bed + strip above show at once — and the
+              gap holds the guide's SKELETON FRAME (WS17, S22 round 7): the same
+              chrome geometry with real times, so the tap "opens the guide" at once
+              and only the content pops in. */}
           {mountReady ? (
             <GuidePanel
               playingId={playingId}
@@ -726,7 +730,7 @@ export function LiveScreen ({ route, navigation }: Props) {
               // fullscreen — this chip is the portrait route into the in-player search.
               onSearch={() => setOverlay('search')}
             />
-          ) : <SectionLoading section={t('menu.guide')} />}
+          ) : <GuideSkeleton />}
         </View>
       )}
 
