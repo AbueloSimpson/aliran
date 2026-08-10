@@ -34,10 +34,22 @@
 //        ok     = remoteProofValid(secret, socket.handshakeHash, peerRole(myRole), theirs)
 //        digits = remoteSas(secret, socket.handshakeHash)   -> see the SAS note below
 //
-//   The sign-in handover adds ONE more round on top of that, because the mutual proof
-//   authenticates a CODE and not a DEVICE (remotePinProof below): the phone draws four
-//   random digits the TV cannot derive, the viewer types them into the TV with the
-//   remote, and the TV proves it learned them before any key material is released.
+//   The sign-in handover adds TWO human checks on top of that, because the mutual proof
+//   authenticates a CODE and not a DEVICE. They are complementary and BOTH must pass
+//   before key material moves — neither one is a substitute for the other:
+//
+//        remoteSas       both screens show the same four digits and the viewer confirms
+//                        ON THE PHONE that they match. A relay terminates two Noise
+//                        connections, so the two screens disagree; this is the check
+//                        that sees it.
+//        remotePinProof  the phone draws four digits the TV cannot derive and the viewer
+//                        TYPES them into the TV. This is the check that a real device
+//                        with a human at it is in the session at all, which is what a
+//                        static lure ("enter this code on your TV") does not have.
+//
+//   Read the two notes below for exactly what each one does and does not buy. The short
+//   version: the SAS catches the relay and the PIN does not; the PIN catches the static
+//   lure and the SAS does not.
 //
 // WHY A PROOF AT ALL. A topic is a public rendezvous and anyone may answer on it —
 // sdk/pairing.js:13-19 spells out the same hazard for the service pairing code.
@@ -609,24 +621,50 @@ const SAS_DRAW_LIMIT = Math.floor(SAS_DRAW_WIDTH / SAS_MODULUS) * SAS_MODULUS
  *     relaying rather than impersonating, so as to stay hidden while both ends complete.
  *     That relay terminates two Noise connections, so there are two handshake hashes and
  *     two different SAS values: the two screens disagree with probability 1 - 10^-4.
- *     The relay holds the secret, so it can compute both values and retry handshakes
- *     hunting for a colliding pair — the 10^-4 is per attempt, and what caps the
- *     attempts is the code's TTL plus the one-shot rule, each failed try being a
- *     visibly failed sign-in.
+ *     THIS IS THE ONLY CHECK IN THIS FILE THAT SEES THAT ATTACKER — see the correction
+ *     below.
  *   - It does NOT tell the viewer which screen they read the code off. Whichever device
  *     showed the code, both ends hold the same code, derive the same secret and share
  *     ONE connection, so the digits agree. Nothing in this file can distinguish a code
  *     typed from the right TV from one typed off a screen the viewer should not have
  *     trusted. What defends that case is the code itself: 60 bits of entropy, a ~3
- *     minute TTL and one use (see WHY 12 CHARACTERS above).
+ *     minute TTL and one use (see WHY 12 CHARACTERS above) — and, in the sign-in
+ *     handover, remotePinProof below.
  *
- * NOT WHAT THE SIGN-IN HANDOVER USES. That product decision is now made, and it went
- * the other way: the viewer TYPES digits into the TV rather than comparing two screens.
- * These digits cannot serve that, because BOTH ends of one connection derive them
- * independently — a hostile TV would simply assert "the viewer typed it correctly" and
- * the phone could not tell the difference. Entry needs a value the receiving device
- * cannot derive; see remotePinProof below. This function stays for the account
- * rendezvous (case B), where two already-signed-in devices really are comparing.
+ * THE SIGN-IN HANDOVER USES THIS, ALONGSIDE THE PIN. An earlier revision of this comment
+ * said the opposite — that the typed PIN replaced the compared SAS — and reasoned that
+ * the PIN's handshake-hash binding was enough to stop a relay. That reasoning was WRONG,
+ * it was demonstrated wrong end to end on a local DHT testnet, and the two rounds are now
+ * both mandatory (sdk/signin-pair.js). The correction, because it is the exact point a
+ * future revision will be tempted to undo:
+ *
+ *   The PIN proof is a MAC under `secret`, and `secret` comes from the CODE. The whole
+ *   threat model of this flow is an attacker who HAS the code, so that attacker holds the
+ *   MAC key. Four digits are 13.3 bits. Given the real TV's answer on its own leg, a
+ *   relay recovers the digits by MACing all ten thousand candidates offline (measured:
+ *   ~56 ms) and re-MACs the winner for its own leg to the phone. Binding to the handshake
+ *   hash stops a proof being REPLAYED verbatim across legs; it does not stop it being
+ *   INVERTED and re-issued, because inversion needs only the key the relay already has.
+ *   No arrangement of a low-entropy MAC under a key the adversary holds fixes this.
+ *
+ *   The SAS is not a MAC the adversary answers, it is a value two humans COMPARE, so
+ *   holding the key does not help: the relay's two legs have two transcripts and it
+ *   cannot make one screen show the other's digits.
+ *
+ * WHAT THE COMPARISON STILL DOES NOT BUY, stated so nobody has to rediscover it. The
+ * relay holds the secret, so it can compute the SAS of any connection it terminates, and
+ * a handshake is cheap. It can hold many simultaneous connections to the TV and present
+ * itself under many identities to the phone, compute the SAS of each, and look for a pair
+ * that AGREES before committing to one of each — a birthday search, so roughly 100 live
+ * connections on each side rather than 10,000 tries. What caps it is the code's ~3 minute
+ * TTL, the one-shot rule, and the fact that all of that has to happen inside one viewer's
+ * sign-in without either device noticing. That is a large step up from the relay this
+ * check was added to kill, which needed no grinding at all and won deterministically —
+ * but it is a bound, not an impossibility, and four digits is where it sits. An argument
+ * for six digits starts here.
+ *
+ * This function also serves the account rendezvous (case B), where two already-signed-in
+ * devices are comparing with no code in play at all.
  */
 export function remoteSas (secret, handshakeHash) {
   const key = bytes32(secret, 'secret')
@@ -654,19 +692,32 @@ export function remoteSas (secret, handshakeHash) {
 // into reading it out — knows it too. The PIN closes the gap in the one direction that a
 // derivation can: the digits are drawn at RANDOM by the phone and TYPED INTO the target
 // device, so a device that can prove it holds them is a device someone with a remote
-// control in their hand is standing at.
+// control in their hand is standing at. That is what defeats the STATIC LURE — a printed
+// code, a forwarded screenshot, a page that says "enter this on your TV" — where there is
+// no real receiving device in the session for a human to type into.
+//
+// IT DOES NOT DEFEAT A RELAY, AND IT NEVER DID. A relay holds the code, therefore it
+// holds `secret`, therefore it holds the MAC key below. Four digits are 13.3 bits, so
+// given the real TV's answer it recovers them offline in ten thousand MACs (~56 ms) and
+// re-issues the proof under its own leg's transcript. Binding to the handshake hash
+// prevents a proof being REPLAYED across legs; it does not prevent one being INVERTED and
+// re-MACed, and inversion needs nothing the relay does not already have. What sees the
+// relay is the compared SAS above, which is why sdk/signin-pair.js runs BOTH rounds and
+// why removing either one is a security change and not a UX simplification.
 //
 // BE PRECISE ABOUT WHAT THAT BUYS. It does not close the wrong-screen case
-// unconditionally. An attacker running a LIVE interactive pretext — a fake support
-// session, a screen-shared "setup wizard" — can still ask the viewer to read the digits
-// out or type them into the attacker's own UI, and the viewer who was willing to type a
-// sign-in code into a stranger's page will be willing to type four more digits. What it
-// removes is the CHEAP version of that attack: a static lure (a printed code, a
-// forwarded screenshot, a page that says "enter this on your TV") no longer works,
-// because the attacker must now be present, in real time, for the whole exchange, and
-// must keep the viewer engaged through a second step that has an obvious right answer
-// on a screen the viewer is holding. That is a real reduction in attack surface and it
-// is the whole of the claim. Do not let it be written up as "phishing-proof".
+// unconditionally, and neither does adding the SAS comparison beside it. An attacker
+// running a LIVE interactive pretext — a fake support session, a screen-shared "setup
+// wizard" — can still walk the viewer through BOTH steps: read these digits out, now
+// confirm the ones on this page match. The viewer who was willing to type a sign-in code
+// into a stranger's page will be willing to answer two more prompts from the same page.
+// That pretext remains open BY DESIGN; no protocol round closes it, because the viewer is
+// the one being convinced. What the two rounds remove is the cheap and the invisible
+// versions: the static lure, which has no device for the digits to be typed into, and the
+// silent relay, which has two transcripts and cannot make two screens agree. The attacker
+// must now be present, in real time, for the whole exchange. That is a real reduction in
+// attack surface and it is the whole of the claim. Do not let it be written up as
+// "phishing-proof".
 //
 // WHY A MAC AND NOT AN ENCRYPTED PAYLOAD. The obvious alternative is to encrypt the
 // handover under a key derived from the digits, so a TV that does not know them cannot
@@ -674,12 +725,14 @@ export function remoteSas (secret, handshakeHash) {
 // captures the ciphertext recovers the payload offline in ten thousand guesses at zero
 // cost. A MAC keeps the guess ONLINE, where the sender counts the attempts — and the
 // sender must allow exactly ONE (a mismatch aborts and burns the code, sdk/signin-pair.js).
-// One attempt is what makes 1-in-10,000 the real number instead of a warm-up.
+// One attempt is what makes 1-in-10,000 the real number instead of a warm-up. (Note that
+// the sender's one-attempt budget is what bounds a GUESSING device — the lure with nobody
+// standing at a real TV. It does nothing against a relay, which does not have to guess.)
 //
 // The proof is bound to the handshake hash for the same reason every other proof in this
-// file is: without it, a relay that already holds the code could take the PIN proof the
-// viewer produced on the leg to the real TV and present it on its own leg to the phone.
-// With it, the two legs have different transcripts and the proof does not carry across.
+// file is: so that a proof produced on one connection is not valid on another. Read the
+// paragraph above before quoting that as anti-relay protection — a peer that holds the
+// key does not need to move a proof between transcripts, it just makes a new one.
 
 export const REMOTE_PIN_DIGITS = 4
 const PIN_MODULUS = 10 ** REMOTE_PIN_DIGITS

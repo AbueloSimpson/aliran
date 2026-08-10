@@ -28,7 +28,7 @@ export function panelClient (socket) {
   return { rpc, call }
 }
 
-export async function login (call, db, username, password, { deviceId, deviceLabel, handover } = {}) {
+export async function login (call, db, username, password, { deviceId, deviceLabel, handover, remoteSecret } = {}) {
   // 1. proof-of-work challenge from the panel
   const hello = await call('hello')
   const nonce = powSolve(b4a.from(hello.challenge, 'hex'), hello.difficulty)
@@ -52,7 +52,7 @@ export async function login (call, db, username, password, { deviceId, deviceLab
   const priv = unwrap(wk, user.encPriv)
   if (!priv) throw new Error('key recovery failed')
   const authPriv = user.authPrivEnc ? unwrap(wk, user.authPrivEnc) : null
-  return openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover })
+  return openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret })
 }
 
 /**
@@ -78,7 +78,7 @@ export async function login (call, db, username, password, { deviceId, deviceLab
  * @param {object} keys  { priv, authPriv } — hex or buffers, as sdk/signin-pair.js
  *                       delivers them: X25519 secret (32 bytes) + Ed25519 secret (64).
  */
-export async function loginWithKeys (call, db, username, keys, { deviceId, deviceLabel, handover } = {}) {
+export async function loginWithKeys (call, db, username, keys, { deviceId, deviceLabel, handover, remoteSecret } = {}) {
   const priv = secretKeyBytes(keys && keys.priv, 'priv', 32) // crypto_box_SECRETKEYBYTES
   const authPriv = secretKeyBytes(keys && keys.authPriv, 'authPriv', 64) // crypto_sign_SECRETKEYBYTES
 
@@ -106,7 +106,7 @@ export async function loginWithKeys (call, db, username, keys, { deviceId, devic
   const opened = user.pub ? sealOpen(b4a.from(user.pub, 'hex'), priv, sealTo(b4a.from(user.pub, 'hex'), probe)) : null
   if (!opened || !b4a.equals(opened, probe)) throw new Error('key handover does not match this account')
 
-  const out = await openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover })
+  const out = await openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret })
   // Unlike the password path, a missing token here is fatal rather than degraded: the
   // ONLY reason to run this is to enrol a device and be issued one.
   if (!out.token) throw new Error('the panel issued no session token — the key handover did not sign this device in')
@@ -133,7 +133,7 @@ function secretKeyBytes (value, what, len) {
 // path and the key-handover path: open the granted stream keys, read the VOD config,
 // register this device and take a panel-signed token. Both callers reach the same
 // result shape, so a caller cannot tell (and must not care) which door was used.
-async function openSession (call, db, username, user, priv, authPriv, sessionChallenge, { deviceId, deviceLabel, handover } = {}) {
+async function openSession (call, db, username, user, priv, authPriv, sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret: wantRemoteSecret } = {}) {
   const streams = []
   for (const id of Object.keys(user.wrapped || {})) {
     const enc = sealOpen(b4a.from(user.pub, 'hex'), priv, user.wrapped[id])
@@ -205,6 +205,16 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
   //    secret is one-way, and it authenticates a peer on the account topic without
   //    being able to sign a session or open a stream.
   //
+  //    OPT-IN (`remoteSecret: true`), for the same reason `handover` below is, and it is
+  //    worth being exact about why a NON-key needs a gate. It cannot sign a session or
+  //    open a stream, so losing it is not losing the account. But it authenticates this
+  //    device to every other device on the account, and it is stable until the operator's
+  //    "log out all devices" — so it is both a live authenticator and a permanent
+  //    correlator for the account, and a build with no rendezvous feature has no business
+  //    holding one for the length of a session. An earlier revision of this function
+  //    reasoned exactly that about `handover` twelve lines below, then added this field
+  //    to every login result unconditionally.
+  //
   //    Null, never a guessed default, when the record carries no usable tokenVersion.
   //    remoteSecret() commits to it so that "log out all devices" moves the whole
   //    account to a new rendezvous, and substituting 0 or 1 for a missing value would
@@ -213,7 +223,7 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
   //    pre-tokenVersion record therefore has no remote rendezvous, and the feature that
   //    needs one says so rather than half-working.
   const tokenVersion = user.tokenVersion
-  const rs = Number.isSafeInteger(tokenVersion) && tokenVersion >= 1
+  const rs = wantRemoteSecret === true && Number.isSafeInteger(tokenVersion) && tokenVersion >= 1
     ? b4a.toString(remoteSecret(priv, tokenVersion), 'hex')
     : null
 
@@ -224,7 +234,7 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
     expiresAt,
     deviceId: did,
     tokenVersion,
-    remoteSecret: rs,
+    ...(wantRemoteSecret === true ? { remoteSecret: rs } : {}),
     // OPT-IN, and off by default, because this field IS the account. Every existing
     // caller's result shape is unchanged, so nothing that logs or serializes a login
     // result today can start leaking key material by accident; only a caller that asked

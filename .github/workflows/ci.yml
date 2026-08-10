@@ -43,13 +43,25 @@ jobs:
       - name: Remote-pairing primitives (test:remote-core)
         run: npm run test:remote-core
       # "Send to TV" end to end (WP2a): a phone that is signed in signs a virgin TV in
-      # over a LOCAL DHT testnet — mutual proof, the four typed digits, the key handover,
-      # and the TV taking its OWN panel-signed token as a separate device. The load-
-      # bearing half is the refusals: a peer that cannot prove the code (and cannot burn
-      # it), a hostile TV that merely ASSERTS the viewer entered the digits, a wrong PIN
-      # that ends the exchange with no retry, two phones on one public topic producing
-      # exactly one handover, and the NEGATIVE SCAN that no private key reaches anything
-      # emitted, returned or printed. Loopback UDP only — deterministic.
+      # over a LOCAL DHT testnet — mutual proof, the COMPARED digits, the four TYPED
+      # digits, the key handover, the viewer's approval of the operator key, and the TV
+      # taking its OWN panel-signed token as a separate device. The load-bearing half is
+      # the refusals, and two of them are a matched pair that each cover what the other
+      # cannot: a hostile TV that merely ASSERTS the viewer entered the digits (the
+      # compared digits cannot catch that one — it terminates a single connection, so its
+      # SAS agrees) and a RELAY between the real phone and the real TV (the typed digits
+      # cannot catch that one — it holds the code, so it inverts that 13.3-bit MAC
+      # offline). Plus: a peer that cannot prove the code and cannot burn it, a wrong PIN
+      # with no retry, two phones RACING one public topic producing exactly one handover,
+      # a virgin TV that is told "no" adopting nothing, and the NEGATIVE SCAN that no
+      # private key reaches anything emitted, returned or printed — with console.* hooked
+      # for the whole run, so that scan covers the SDK and not just the test's own output.
+      #
+      # Loopback UDP only, so no network flake. NOT deterministic in its check COUNT,
+      # though: two four-digit draws are each compared against a target, so roughly one
+      # run in 5,000 takes a documented 1-in-10,000 branch and reports a few checks fewer.
+      # Those branches assert the stated security bounds rather than failing, and the lane
+      # still exits 0 — a changed total is not by itself a regression.
       - name: Send-to-TV sign-in handover (test:signin-pair)
         timeout-minutes: 10
         run: npm run test:signin-pair

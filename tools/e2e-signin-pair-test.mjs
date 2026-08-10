@@ -6,23 +6,32 @@
 // OWN panel-signed token, without a password being typed on it or sent anywhere.
 //
 // Part 1 drives two real SDK engines against a real panel:
-//   - the TV shows a code, the phone (already signed in) sends, four digits go the other
-//     way, and the TV completes its own `session` RPC;
+//   - the TV shows a code, the phone (already signed in) sends, the two screens show the
+//     same compared digits and the viewer confirms on the phone, four typed digits go the
+//     other way, the TV asks whether to join that service, and only then does it complete
+//     its own `session` RPC;
 //   - the TV enrols as a SEPARATE device — so maxDevices, the device list and per-device
 //     revocation are untouched by this feature;
 //   - the TV really recovered the sealed per-stream keys (not just a display list);
 //   - and the NEGATIVE SCAN: neither private key may appear in any event either engine
-//     emitted, in any display list, or in anything printed. That scan is what makes the
-//     rest of this file safe to trust.
+//     emitted, in any display list, or in anything either engine printed — the console is
+//     hooked for the whole run, so that scan covers the SDK and not just this file.
 //
 // Part 2 drives sdk/signin-pair.js directly, with hand-rolled hostile peers, because the
 // interesting cases are the refusals:
 //   - a peer that cannot prove it holds the code is refused AND does not burn it;
 //   - a hostile TV that holds the code and simply ASSERTS the viewer entered the digits
-//     gets nothing (this is the case the SAS could not have covered — see core/remote.js);
+//     gets nothing — the case the compared digits CANNOT cover, because that peer
+//     terminates one connection and its SAS therefore agrees;
+//   - A RELAY between the real phone and the real TV gets nothing — the case the typed
+//     digits cannot cover, because that peer holds the code and can invert a 13.3-bit MAC
+//     offline. The two tests are a matched pair: each attacker walks through the check
+//     the other one fails.
 //   - a wrong PIN ends the exchange on both sides, with no retry;
-//   - two phones answering one public topic produce exactly ONE handover;
+//   - two phones racing for one public topic produce exactly ONE handover;
 //   - a code expires, and a code nobody serves times out.
+//
+// Part 3 is the operator-key gate: a virgin TV that is told "no" adopts nothing.
 //
 // Requires loopback UDP only. Exits 0 on PASS.
 // Run: npm run test:signin-pair
@@ -35,7 +44,7 @@ import b4a from 'b4a'
 import {
   evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
   userKeyPair, sealTo, authKeyPair, ARGON2_DEFAULT,
-  newSigninCode, signinKeys, remoteProof, remotePinProof, REMOTE_ROLES
+  newSigninCode, signinKeys, remoteProof, remoteSas, remotePinProof, REMOTE_ROLES
 } from '@aliran/core'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
@@ -43,10 +52,19 @@ import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { createPlayer } from '../sdk/index.js'
 import { receiveSignIn, sendSignIn, SIGNIN_PAIR_ERRORS } from '../sdk/signin-pair.js'
 
-// Everything printed goes through here so the negative scan can see it. Nothing in this
-// file ever prints a key, a code or a PIN — the scan proves the SDK does not either.
+// EVERYTHING printed during this run, whoever printed it. The three console methods are
+// hooked for the whole test so the negative scan below covers the SDK and its
+// dependencies — not merely this file's own log(), which could only ever prove that the
+// TEST does not print keys. (The claim happens to hold either way: the SDK runtime has no
+// console.* at all. The point is that the scan now establishes it.)
 const printed = []
-const log = (...a) => { printed.push(a.map(String).join(' ')); console.log(...a) }
+const realConsole = { log: console.log, warn: console.warn, error: console.error }
+const show = (v) => { try { return typeof v === 'string' ? v : JSON.stringify(v) ?? String(v) } catch { return String(v) } }
+for (const k of Object.keys(realConsole)) {
+  console[k] = (...a) => { try { printed.push(a.map(show).join(' ')) } catch {} realConsole[k](...a) }
+}
+const unhookConsole = () => { for (const k of Object.keys(realConsole)) console[k] = realConsole[k] }
+const log = (...a) => console.log(...a)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 async function waitFor (fn, ms, label) {
   const t = Date.now()
@@ -57,12 +75,15 @@ async function waitFor (fn, ms, label) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const SIGNIN_PROTOCOL = 'aliran-signin' // must match sdk/signin-pair.js
+const SAS_RE = /^[0-9]{4}$/
+const CODE_RE = /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), phone: tmp('e2es-phone-'), tv: tmp('e2es-tv-') }
+const dirs = { panel: tmp('e2es-panel-'), phone: tmp('e2es-phone-'), tv: tmp('e2es-tv-'), tv2: tmp('e2es-tv2-') }
 const cleanups = []
 async function cleanup () {
   for (const fn of cleanups.reverse()) { try { await fn() } catch {} }
   for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
+  unhookConsole()
 }
 
 let passed = 0
@@ -71,6 +92,7 @@ const hex = (b) => b4a.toString(b, 'hex')
 const body = (o) => b4a.from(JSON.stringify(o))
 const parse = (buf) => { try { return JSON.parse(b4a.toString(buf)) } catch { return null } }
 const roleOf = (socket) => (socket.isInitiator ? REMOTE_ROLES.initiator : REMOTE_ROLES.responder)
+const otherRole = (r) => (r === REMOTE_ROLES.initiator ? REMOTE_ROLES.responder : REMOTE_ROLES.initiator)
 
 // Every event either engine emits, flattened, for the negative identity scan.
 const emitted = []
@@ -82,8 +104,22 @@ function watchEmits (player, who) {
   }
 }
 
+// Collect a role's 'signin-pair' events off an engine, so a test can both wait on a state
+// and read the fields that came with it.
+function watchSignin (player, role) {
+  const seen = []
+  const fn = (s) => { if (s.role === role) seen.push(s) }
+  player.on('signin-pair', fn)
+  return {
+    seen,
+    off: () => player.off('signin-pair', fn),
+    states: () => seen.map((s) => s.state),
+    at: (state) => seen.find((s) => s.state === state) || null
+  }
+}
+
 try {
-  // ===== A local DHT testnet — deterministic, no public DHT =====
+  // ===== A local DHT testnet — no public DHT =====
   const testnet = await createTestnet(3); cleanups.push(() => testnet.destroy())
   const bootstrap = testnet.bootstrap
 
@@ -129,7 +165,10 @@ try {
   // PART 1 — two real engines: a signed-in phone signs a virgin TV in
   // ============================================================================
 
-  const phone = createPlayer({ panelPubKey, storeDir: path.join(dirs.phone, 'store'), deviceId: 'phone-1', deviceLabel: 'Phone', swarm: { bootstrap } })
+  // `remote` is a BUILD switch and it is off by default (sdk/player.js normalizeRemote):
+  // a login on a player without it keeps no account key material and no rendezvous
+  // secret at all. Both halves of this feature need it, so both engines opt in.
+  const phone = createPlayer({ panelPubKey, storeDir: path.join(dirs.phone, 'store'), deviceId: 'phone-1', deviceLabel: 'Phone', swarm: { bootstrap }, remote: { sendToTv: true, control: true } })
   cleanups.push(() => phone.stop())
   watchEmits(phone, 'phone')
   await phone.connect()
@@ -137,40 +176,79 @@ try {
   const phoneStreams = await waitFor(() => phone.login('alice', PASSWORD).catch(() => null), 30000, 'phone login')
   check(phoneStreams.length === 1 && phoneStreams[0].id === 'news', 'phone signed in the ordinary way (password)')
 
+  // The default is the interesting half of that switch: a build that never sends must not
+  // be holding the account's private keys for the length of a session.
+  {
+    const plain = createPlayer({ panelPubKey, storeDir: path.join(dirs.phone, 'store-plain'), deviceId: 'phone-plain', swarm: { bootstrap } })
+    cleanups.push(() => plain.stop())
+    await plain.connect()
+    await waitFor(() => plain.login('alice', PASSWORD).catch(() => null), 30000, 'plain login')
+    check(!plain._session.handover, 'a player built WITHOUT remote.sendToTv holds no key material after login')
+    check(plain._session.remoteSecret == null, 'and no account rendezvous secret either')
+    check(!!plain._session.token, '…while still holding an ordinary session (the gate costs nothing else)')
+    let gated = null
+    try { await plain.sendSignIn('A3K7-9QF2-M4XR') } catch (e) { gated = e }
+    check(gated && /remote.*sendToTv/.test(gated.message), 'and sendSignIn() on such a build refuses by name instead of failing obscurely')
+    await plain.stop()
+  }
+
   // The TV is constructed with NO panelPubKey at all: it has never been paired with an
   // operator, which is the real starting state for a box out of the box. The handover
-  // carries the operator key, so this is also the test that a TV learns the SERVICE.
-  const tv = createPlayer({ storeDir: path.join(dirs.tv, 'store'), deviceId: 'tv-1', deviceLabel: 'Living room TV', swarm: { bootstrap } })
+  // carries the operator key, so this is also the test that a TV learns the SERVICE —
+  // and, since WP2a, that it ASKS before it does.
+  const tv = createPlayer({ storeDir: path.join(dirs.tv, 'store'), deviceId: 'tv-1', deviceLabel: 'Living room TV', swarm: { bootstrap }, remote: { sendToTv: true, control: true } })
   cleanups.push(() => tv.stop())
   watchEmits(tv, 'tv')
 
-  const tvStates = []
-  tv.on('signin-pair', (s) => tvStates.push(s.state))
+  const tvSeen = watchSignin(tv, 'tv')
   const started = await tv.startSignInPairing()
-  check(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/.test(started.code), 'TV showed a 12-character sign-in code')
+  check(CODE_RE.test(started.code), 'TV showed a 12-character sign-in code')
   check(started.expiresAt > Date.now(), 'the code carries an expiry for the screen to count down')
+
+  // A second D-pad press while the first code is still being minted must not produce a
+  // second, invisible handover. The guard is synchronous, so this holds even though the
+  // two calls are ~70 ms of Argon2id apart.
+  let doubled = null
+  try { await tv.startSignInPairing() } catch (e) { doubled = e }
+  check(doubled && /already showing/.test(doubled.message), 'a second startSignInPairing() is refused, not silently orphaned')
 
   // The viewer reads the code across the room and types it on the phone — lowercase,
   // spaces for dashes, exactly as a person types.
   const typed = started.code.toLowerCase().replace(/-/g, ' ')
-  let shownPin = null
-  const onPhonePin = (s) => { if (s.role === 'phone' && s.state === 'pin') shownPin = s.pin }
-  phone.on('signin-pair', onPhonePin)
-  const sending = phone.sendSignIn(typed, { timeoutMs: 30000 })
+  const phoneSeen = watchSignin(phone, 'phone')
+  const sending = await phone.sendSignIn(typed, { timeoutMs: 30000 })
 
-  // …then walks to the TV and types the four digits the phone is showing.
-  await waitFor(() => shownPin, 30000, 'the phone to show the digits')
-  check(/^[0-9]{4}$/.test(shownPin), 'the phone drew four digits for the viewer to carry')
-  await waitFor(() => tvStates.includes('pin-entry'), 15000, 'the TV to ask for the digits')
+  // ---- CHECK ONE: the viewer compares the two screens ----
+  const phoneMatch = await waitFor(() => phoneSeen.at('match'), 30000, 'the phone to show the compared digits')
+  const tvMatch = await waitFor(() => tvSeen.at('match'), 15000, 'the TV to show the compared digits')
+  check(SAS_RE.test(phoneMatch.sas), 'the phone showed four digits to compare')
+  check(tvMatch.sas === phoneMatch.sas, 'both devices derived the SAME digits — one connection, one transcript')
+  check(phoneSeen.at('pin') === null, 'and NOTHING moved on before the viewer answered')
+  check(phone.confirmSignInMatch(true) === true, 'the viewer confirmed the match on the phone')
+
+  // ---- CHECK TWO: the viewer walks over and types the phone's digits ----
+  const phonePin = await waitFor(() => phoneSeen.at('pin'), 30000, 'the phone to show the digits to type')
+  check(SAS_RE.test(phonePin.pin), 'the phone drew four digits for the viewer to carry')
+  await waitFor(() => tvSeen.at('pin-entry'), 15000, 'the TV to ask for the digits')
   check(tv.submitSignInPin('12') === false, 'a half-typed PIN is refused locally and costs nothing')
-  check(tv.submitSignInPin(shownPin) === true, 'the TV accepted the four digits from the remote')
+  check(tv.submitSignInPin(phonePin.pin) === true, 'the TV accepted the four digits from the remote')
 
-  const sent = await sending
-  check(sent.username === 'alice', 'the phone released the account only after the digits checked out')
+  const sent = await sending.done
+  check(sent.username === 'alice', 'the phone released the account only after BOTH checks passed')
+
+  // ---- THE OPERATOR-KEY GATE: a virgin TV asks before it adopts ----
+  const ask = await waitFor(() => tvSeen.at('confirm-service'), 15000, 'the TV to ask about the service')
+  check(ask.adopting === true, 'a never-paired TV reports that it is ADOPTING an operator key')
+  check(ask.panelPubKey === panelPubKey, 'the question names the exact key it is about to trust')
+  check(CODE_RE.test(ask.pairingCode), 'and names it as the operator\'s printed pairing code, which a viewer can actually check')
+  check(ask.username === 'alice', 'and names the account being signed in')
+  check(tv._panelKey === null, 'NOTHING has been adopted while the question is open')
+  check(tv.confirmSignInService(true) === true, 'the viewer approved the service')
+
   const tvStreams = await started.done
   check(tvStreams.length === 1 && tvStreams[0].id === 'news', 'the TV is signed in and holds the same lineup')
   check(tv.listStreams().length === 1, 'listStreams() on the TV reports the handed-over session')
-  check(tvStates.includes('signed-in'), "the TV emitted 'signed-in'")
+  check(tvSeen.states().includes('signed-in'), "the TV emitted 'signed-in'")
 
   // The point of the handover: real stream keys, not a display list. `_entitled` is the
   // one private field this test reads, because the display list DELIBERATELY never
@@ -182,18 +260,30 @@ try {
   // session token.
   const rec = (await db.get('user/alice')).value
   const ids = rec.devices.map((d) => d.deviceId).sort()
-  check(ids.length === 2 && ids[0] === 'phone-1' && ids[1] === 'tv-1', 'the panel enrolled the TV as its OWN device beside the phone')
+  check(ids.includes('phone-1') && ids.includes('tv-1'), 'the panel enrolled the TV as its OWN device beside the phone')
   check(rec.devices.find((d) => d.deviceId === 'tv-1').label === 'Living room TV', 'the TV registered under its own label — an operator can revoke it alone')
   check(tv._session.token && tv._session.token !== phone._session.token, 'the TV holds its OWN panel-signed session token')
   check(tv._session.deviceId === 'tv-1', 'the token was issued against the TV\'s deviceId')
 
+  // A TV that already belongs to an operator refuses another one OUTRIGHT — before the
+  // question is even asked, because there is nothing for a viewer to weigh up: adopting a
+  // second operator mid-engine would leave every open replica pointing at the first.
+  {
+    let cross = null
+    try { await tv._applySignIn({ username: 'alice', priv: PRIV_HEX, authPriv: AUTH_PRIV_HEX, panelPubKey: hex(hcrypto.randomBytes(32)) }) } catch (e) { cross = e }
+    check(cross && /different service/.test(cross.message), 'a configured TV refuses an account from another service')
+    check(tvSeen.seen.filter((s) => s.state === 'confirm-service').length === 1, '…without even asking — the refusal is not a decision the viewer gets wrong')
+    check(String(tv._panelKey).toLowerCase() === panelPubKey, 'and its operator key is unchanged')
+  }
+
   // WP3's deliverable, established here: one-way from the private key, and not the key.
-  check(/^[0-9a-f]{64}$/.test(phone._session.remoteSecret), 'login() returned the account rendezvous secret')
+  check(/^[0-9a-f]{64}$/.test(phone._session.remoteSecret), 'login() returned the account rendezvous secret (remote.control)')
   check(phone._session.remoteSecret !== PRIV_HEX, 'the rendezvous secret is not the private key')
   check(tv._session.remoteSecret === phone._session.remoteSecret, 'both devices of one account derive the SAME rendezvous secret')
 
   // ===== The negative scan =====
-  // Everything both engines emitted, everything they hand a host, and everything printed.
+  // Everything both engines emitted, everything they hand a host, and everything ANY of
+  // them printed to the console (hooked at the top of this file).
   const surface = [
     emitted.join('\n'),
     JSON.stringify(phone.listStreams()),
@@ -205,12 +295,18 @@ try {
   check(!surface.includes(PRIV_HEX), 'the account private key appears in NOTHING emitted, returned or printed')
   check(!surface.includes(AUTH_PRIV_HEX), 'the account auth key appears in NOTHING emitted, returned or printed')
   check(!surface.includes(PASSWORD + '"') && !surface.includes('"' + PASSWORD), 'the password appears nowhere either')
-  check(surface.includes(shownPin) || true, 'the PIN reaches the UI by design (it is shown, never logged by the SDK)')
+  // The PIN and the SAS are the deliberate exception: they exist to be put on a screen,
+  // so they DO reach the host through 'signin-pair'. Assert that positively rather than
+  // pretending it is a leak — an SDK that stopped emitting them would be broken, and a
+  // check that cannot fail would not notice either way.
+  check(surface.includes(phonePin.pin), 'the typed digits DO reach the host (that is what they are for)')
+  check(surface.includes(phoneMatch.sas), 'and so do the compared digits')
+  check(!printed.join('\n').includes(started.code), 'but neither engine PRINTED the sign-in code')
   // And the keys ARE where they are supposed to be, so the scan above is not vacuous.
   check(phone._session.handover.priv === PRIV_HEX, 'the phone does hold the key material — in _session only (the scan is not vacuous)')
   check(tv._session.handover.priv === PRIV_HEX, 'and so does the TV, having received it')
 
-  phone.off('signin-pair', onPhonePin)
+  phoneSeen.off(); tvSeen.off()
   log('')
 
   // ============================================================================
@@ -222,14 +318,36 @@ try {
   const payload = { username: 'alice', priv: PRIV_HEX, authPriv: AUTH_PRIV_HEX, panelPubKey }
   const newSwarm = () => { const s = new Hyperswarm({ bootstrap }); cleanups.push(() => s.destroy()); return s }
 
-  // A receiver whose announce has actually landed on the DHT. sendSignIn() does not need
-  // this — it re-looks-up on a backoff, exactly because one lookup round legitimately
-  // comes back empty (sdk/pairing.js documents the same hazard) — but the hand-rolled
-  // peers below do a single lookup and would otherwise race the announce.
+  // A receiver whose announce has actually landed on the DHT, with its states captured.
+  // sendSignIn() does not need the announce — it re-looks-up on a backoff, exactly
+  // because one lookup round legitimately comes back empty (sdk/pairing.js documents the
+  // same hazard) — but the hand-rolled peers below do a single lookup and would otherwise
+  // race it.
   const announcedReceiver = async (opts) => {
-    let announced = false
-    const handle = await receiveSignIn({ ...opts, onState: (s) => { if (s.state === 'announced') announced = true } })
-    await waitFor(() => announced, 30000, 'the TV to announce its rendezvous')
+    const st = { announced: false, sas: null, pinEntry: false }
+    const handle = await receiveSignIn({
+      ...opts,
+      onState: (s) => {
+        if (s.state === 'announced') st.announced = true
+        if (s.state === 'match') st.sas = s.sas
+        if (s.state === 'pin-entry') st.pinEntry = true
+      }
+    })
+    await waitFor(() => st.announced, 30000, 'the TV to announce its rendezvous')
+    handle.st = st
+    return handle
+  }
+  // A phone whose states are captured the same way.
+  const phoneSender = async (code, opts) => {
+    const st = { sas: null, pin: null }
+    const handle = await sendSignIn(code, payload, {
+      ...opts,
+      onState: (s) => {
+        if (s.state === 'match') st.sas = s.sas
+        if (s.state === 'pin') st.pin = s.pin
+      }
+    })
+    handle.st = st
     return handle
   }
   // A client-side join that keeps looking, the way sendSignIn() does internally.
@@ -267,26 +385,26 @@ try {
     await waitFor(() => answer, 30000, 'the TV to answer the impostor')
     check(answer.error === SIGNIN_PAIR_ERRORS.unauthorized, 'a peer that cannot prove the code is refused')
     check(!answer.proof, 'and is never given the TV\'s own proof to work with')
+    check(handle.st.sas === null, 'and never got the TV as far as showing digits to compare')
 
     // The code must still be good: a stranger on a public topic must not be able to burn
     // a viewer's sign-in by connecting to it.
-    const phoneSwarm = newSwarm()
-    let pin = null
-    const run = sendSignIn(handle.code, payload, {
-      swarm: phoneSwarm,
-      timeoutMs: 30000,
-      onState: (s) => { if (s.state === 'pin') pin = s.pin }
-    })
-    await waitFor(() => pin, 30000, 'the real phone to link')
-    await waitFor(() => handle.submitPin(pin), 15000, 'the TV to be ready for the digits')
-    check((await run).username === 'alice', 'the code survived the impostor and the real phone still used it')
+    const p = await phoneSender(handle.code, { swarm: newSwarm(), timeoutMs: 30000 })
+    await waitFor(() => p.st.sas, 30000, 'the real phone to link')
+    check(p.st.sas === handle.st.sas, 'the real phone and the real TV agree on the compared digits')
+    check(p.confirmMatch(true) === true, 'the viewer confirms')
+    await waitFor(() => p.st.pin, 20000, 'the phone to draw the digits')
+    await waitFor(() => handle.submitPin(p.st.pin), 15000, 'the TV to be ready for the digits')
+    check((await p.result).username === 'alice', 'the code survived the impostor and the real phone still used it')
     check((await handle.result).priv === PRIV_HEX, 'and the TV received the payload')
   }
 
   // ---- 2b. a hostile TV that ASSERTS the digits were entered ----
-  // The case remoteSas explicitly cannot cover: this peer holds the code (it read it off
-  // a screen, or phished it), so it passes the mutual proof honestly. What it does not
-  // have is four random digits a viewer typed into the REAL device.
+  // The case the COMPARED digits cannot cover: this peer holds the code (it read it off a
+  // screen, or phished it) and terminates a single connection, so its SAS agrees with the
+  // phone's and an honest viewer confirms the match truthfully. What it does not have is
+  // four random digits a viewer typed into a device that is actually in the session. That
+  // is the typed PIN, and it is what stops this one. (2g is the mirror image.)
   for (const [what, answerPin] of [
     ['claims success with no proof at all', () => ({ v: 1, ok: true })],
     ['claims success with ok:true and junk', () => ({ v: 1, ok: true, proof: hex(hcrypto.randomBytes(32)) })],
@@ -311,12 +429,16 @@ try {
     hostileSwarm.join(topic, { server: true, client: false })
     await hostileSwarm.flush()
 
-    let pin = null
+    const p = await phoneSender(code, { swarm: newSwarm(), timeoutMs: 30000 })
+    await waitFor(() => p.st.sas, 30000, 'the phone to link to the hostile peer')
+    check(SAS_RE.test(p.st.sas), 'the phone still shows digits to compare against the attacker\'s own screen')
+    // …and the attacker simply displays those digits, because there is one connection and
+    // it can compute the SAS as easily as the phone can. So the honest viewer confirms
+    // truthfully, the comparison passes, and everything below is what actually stops it.
+    p.confirmMatch(true)
     let err = null
-    try {
-      await sendSignIn(code, payload, { swarm: newSwarm(), timeoutMs: 30000, onState: (s) => { if (s.state === 'pin') pin = s.pin } })
-    } catch (e) { err = e }
-    if (pin === '0000' && what.startsWith('guesses')) {
+    try { await p.result } catch (e) { err = e }
+    if (p.st.pin === '0000' && what.startsWith('guesses')) {
       // The designed 1-in-10,000. Not a failure — it is the number the one-attempt rule
       // exists to hold at, and pretending otherwise would be the dishonest test.
       check(!err, 'the 1-in-10,000 guess landed this run — which is exactly the stated bound')
@@ -329,15 +451,15 @@ try {
   // ---- 2c. a wrong PIN ends it on both sides, with no retry ----
   {
     const handle = await announcedReceiver({ swarm: newSwarm(), pinMs: 30000 })
-    let pin = null
+    const p = await phoneSender(handle.code, { swarm: newSwarm(), timeoutMs: 30000 })
     let err = null
-    const run = sendSignIn(handle.code, payload, {
-      swarm: newSwarm(), timeoutMs: 30000, onState: (s) => { if (s.state === 'pin') pin = s.pin }
-    }).catch((e) => { err = e })
-    await waitFor(() => pin, 30000, 'the phone to show the digits')
-    const wrong = String((Number(pin) + 1) % 10000).padStart(4, '0')
+    const run = p.result.catch((e) => { err = e })
+    await waitFor(() => p.st.sas, 30000, 'the phone to show the compared digits')
+    p.confirmMatch(true)
+    await waitFor(() => p.st.pin, 20000, 'the phone to show the digits')
+    const wrong = String((Number(p.st.pin) + 1) % 10000).padStart(4, '0')
     await waitFor(() => handle.submitPin(wrong), 15000, 'the TV to take the (wrong) digits')
-    check(handle.submitPin(pin) === false, 'the TV cannot try again — one submission is the whole budget')
+    check(handle.submitPin(p.st.pin) === false, 'the TV cannot try again — one submission is the whole budget')
     await run
     check(err && err.code === SIGNIN_PAIR_ERRORS.pin, 'the phone refused to release the account on a wrong PIN')
     let tvErr = null
@@ -346,36 +468,36 @@ try {
 
     // The code is spent: nothing answers it any more.
     let again = null
-    try { await sendSignIn(handle.code, payload, { swarm: newSwarm(), timeoutMs: 6000 }) } catch (e) { again = e }
+    const retry = await sendSignIn(handle.code, payload, { swarm: newSwarm(), timeoutMs: 6000 })
+    try { await retry.result } catch (e) { again = e }
     check(again && again.code === SIGNIN_PAIR_ERRORS.timeout, 'the burnt code cannot be retried — a new one is the only way on')
   }
 
-  // ---- 2d. two phones on one public topic, exactly one handover ----
+  // ---- 2d. two phones RACING for one public topic, exactly one handover ----
   // consumeSigninCode() is pure and excludes nothing (core/remote.js says so); this is
-  // the test that sdk/signin-pair.js supplies the exclusion it cannot.
+  // the test that sdk/signin-pair.js supplies the exclusion it cannot. Both senders are
+  // started and joined BEFORE either has linked, so the TV's read -> consumeSigninCode ->
+  // store really does have to be the thing that separates them — an earlier version of
+  // this test awaited the first phone's PIN before starting the second, which only ever
+  // exercised claim()'s `if (peer) return busy` line.
   {
     const handle = await announcedReceiver({ swarm: newSwarm(), pinMs: 60000 })
-    let pinA = null
-    const a = sendSignIn(handle.code, payload, {
-      swarm: newSwarm(), timeoutMs: 30000, onState: (s) => { if (s.state === 'pin') pinA = s.pin }
-    })
-    await waitFor(() => pinA, 30000, 'the first phone to claim the code')
+    const a = await phoneSender(handle.code, { swarm: newSwarm(), timeoutMs: 20000 })
+    const b = await phoneSender(handle.code, { swarm: newSwarm(), timeoutMs: 20000 })
+    check(a.st.sas === null && b.st.sas === null, 'both phones are joined and neither has linked yet')
+    const errs = new Map()
+    const settled = [a, b].map((h) => h.result.then((v) => v, (e) => { errs.set(h, e); return null }))
 
-    // A second phone that also holds the code — the shoulder-surfer, or a viewer who
-    // typed it twice — arriving while the first handover is open. Resolved BEFORE the
-    // first one finishes, because a TV that has completed has already left the topic and
-    // the refusal would degrade into an ordinary timeout, testing nothing.
-    let pinB = null
-    let errB = null
-    const b = sendSignIn(handle.code, payload, {
-      swarm: newSwarm(), timeoutMs: 10000, onState: (s) => { if (s.state === 'pin') pinB = s.pin }
-    }).catch((e) => { errB = e })
-    await b
-
-    await waitFor(() => handle.submitPin(pinA), 15000, 'the TV to take the digits')
-    check((await a).username === 'alice', 'the first phone completed the handover')
-    check(errB && [SIGNIN_PAIR_ERRORS.busy, SIGNIN_PAIR_ERRORS.used].includes(errB.code), 'the second phone was refused (' + (errB && errB.code) + ') — one code, one handover')
-    check(pinB === null, 'the second phone never even drew digits, so no viewer could be talked into typing them')
+    const winner = await waitFor(() => (a.st.sas ? a : (b.st.sas ? b : null)), 30000, 'one of the two phones to claim the code')
+    const loser = winner === a ? b : a
+    check(winner.confirmMatch(true) === true, 'the winning phone gets the viewer\'s confirmation')
+    await waitFor(() => winner.st.pin, 20000, 'the winning phone to draw digits')
+    await waitFor(() => handle.submitPin(winner.st.pin), 15000, 'the TV to take the digits')
+    const [ra, rb] = await Promise.all(settled)
+    const won = winner === a ? ra : rb
+    check(won && won.username === 'alice', 'exactly one phone completed the handover')
+    check(errs.get(loser) && [SIGNIN_PAIR_ERRORS.busy, SIGNIN_PAIR_ERRORS.used].includes(errs.get(loser).code), 'the other was refused (' + (errs.get(loser) && errs.get(loser).code) + ') — one code, one handover')
+    check(loser.st.sas === null && loser.st.pin === null, 'the losing phone never drew digits, so no viewer could be talked into typing them')
     check((await handle.result).username === 'alice', 'the TV received exactly one payload')
   }
 
@@ -393,9 +515,12 @@ try {
   // ---- 2f. a code nobody serves, and one that is not a code ----
   {
     let err = null
-    try { await sendSignIn('A3K7-9QF2-M4XR', payload, { swarm: newSwarm(), timeoutMs: 6000 }) } catch (e) { err = e }
+    const nobody = await sendSignIn('A3K7-9QF2-M4XR', payload, { swarm: newSwarm(), timeoutMs: 6000 })
+    try { await nobody.result } catch (e) { err = e }
     check(err && err.code === SIGNIN_PAIR_ERRORS.timeout, 'a code nobody is showing times out')
     err = null
+    // These two THROW rather than rejecting a handle: nothing was joined, so there is no
+    // handle to reject.
     try { await sendSignIn('not-a-code', payload, { swarm: newSwarm(), timeoutMs: 6000 }) } catch (e) { err = e }
     check(err && err.code === SIGNIN_PAIR_ERRORS.malformed, 'a malformed code fails before anything is joined')
     err = null
@@ -403,7 +528,133 @@ try {
     check(err && err.code === SIGNIN_PAIR_ERRORS.malformed, 'a malformed payload never reaches the network')
   }
 
-  log(`\nRESULT: PASS ✅  (${passed} checks — code → mutual proof → typed PIN → key handover → the TV\'s own session)`)
+  // ---- 2g. A RELAY between the real phone and the real TV ----
+  // The mirror image of 2b, and the reason the compared digits exist. This peer read the
+  // code off the TV screen, so it satisfies every MAC in the exchange: it claims the real
+  // TV honestly, announces on the same public topic, and relays. The typed PIN does NOT
+  // stop it — the PIN proof is a MAC under a key derived from the code, which this peer
+  // holds, so it recovers the four digits the viewer typed into the real TV by trying all
+  // ten thousand offline. What stops it is that it terminates TWO Noise connections, so
+  // the two screens show different digits and the viewer says no.
+  {
+    const handle = await announcedReceiver({ swarm: newSwarm(), pinMs: 60000 })
+    const { topic, secret } = signinKeys(handle.canonical)
+    const relay = { pinAsked: false, payload: null, legB: null }
+
+    // Leg B: relay -> the real TV. Claim the code before the phone can, which makes the
+    // race deterministic rather than something the attacker has to win.
+    const legB = newSwarm()
+    legB.on('connection', async (socket) => {
+      socket.on('error', () => {})
+      if (relay.legB) return
+      try {
+        const rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL })
+        const me = roleOf(socket)
+        const res = parse(await rpc.request('signin-hello', body({ v: 1, proof: hex(remoteProof(secret, socket.handshakeHash, me)) }), { timeout: 15000 }))
+        if (res && res.ok) relay.legB = { rpc, me, hh: socket.handshakeHash }
+      } catch {}
+    })
+    joinLooking(legB, topic)
+    await waitFor(() => relay.legB, 30000, 'the relay to claim the real TV')
+    check(handle.st.sas !== null, 'the real TV linked (to the relay) and is showing its digits')
+    // The honest caveat, asserted rather than asserted-about: holding the code, the relay
+    // can compute the digits on the TV's screen exactly. What it cannot do is make its
+    // OTHER leg produce the same ones — that leg has a different Noise transcript.
+    check(remoteSas(secret, relay.legB.hh) === handle.st.sas, 'the relay can compute the real TV\'s digits (it holds the code) — the comparison does not depend on secrecy')
+
+    // Leg A: relay -> the real phone, announcing on the same public topic.
+    const legA = newSwarm()
+    legA.on('connection', (socket) => {
+      socket.on('error', () => {})
+      let rpc = null
+      try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
+      const me = roleOf(socket)
+      const hh = socket.handshakeHash
+      rpc.respond('signin-hello', () => body({ v: 1, ok: true, proof: hex(remoteProof(secret, hh, me)) }))
+      rpc.respond('signin-pin', async () => {
+        relay.pinAsked = true
+        const ans = parse(await relay.legB.rpc.request('signin-pin', body({ v: 1 }), { timeout: 120000 }))
+        // The offline oracle: 13.3 bits under a key this peer holds. Dead code on the
+        // passing path (the comparison aborts first) and deliberately kept — if the
+        // compared digits were ever removed, this is what would start succeeding again.
+        let recovered = null
+        if (ans && ans.proof) {
+          for (let i = 0; i < 10000; i++) {
+            const cand = String(i).padStart(4, '0')
+            if (hex(remotePinProof(secret, relay.legB.hh, otherRole(relay.legB.me), cand)) === ans.proof) { recovered = cand; break }
+          }
+        }
+        return body(recovered ? { v: 1, ok: true, proof: hex(remotePinProof(secret, hh, me, recovered)) } : { v: 1, error: 'pin' })
+      })
+      rpc.respond('signin-payload', (buf) => { relay.payload = parse(buf).payload; return body({ v: 1, ok: true }) })
+      rpc.respond('signin-abort', () => body({ v: 1, ok: true }))
+    })
+    legA.join(topic, { server: true, client: false })
+    await legA.flush()
+
+    const p = await phoneSender(handle.code, { swarm: newSwarm(), timeoutMs: 30000 })
+    await waitFor(() => p.st.sas, 30000, 'the phone to link (to the relay)')
+    check(p.st.sas !== null && handle.st.sas !== null, 'both screens are showing digits')
+
+    if (p.st.sas === handle.st.sas) {
+      // 1 in 10,000: the relay's two transcripts happened to hash to the same four
+      // digits. Stated rather than papered over — it is the bound this check carries,
+      // and core/remote.js records it.
+      check(true, 'the 1-in-10,000 SAS collision landed this run — which is exactly the stated bound')
+    } else {
+      // The viewer does the one thing this check asks of them.
+      check(p.confirmMatch(false) === true, 'the two screens DISAGREE and the viewer says so on the phone')
+      let err = null
+      try { await p.result } catch (e) { err = e }
+      check(err && err.code === SIGNIN_PAIR_ERRORS.mismatch, "the phone aborts with 'mismatch' — not a generic timeout a UI would tell the viewer to retry")
+      check(relay.payload === null, 'THE RELAY NEVER RECEIVES A BYTE OF THE ACCOUNT')
+      check(relay.pinAsked === false, 'and never even reaches the PIN round it could have inverted')
+      check(handle.st.pinEntry === false, 'the real TV was never asked for digits, so no viewer typed any')
+      // The abort goes to the RELAY, which is under no obligation to pass it on — so the
+      // real TV learns nothing here and would sit out its own pinMs. That is correct and
+      // unavoidable: a relay controls what each leg hears. The viewer, who is holding the
+      // phone that just said "these do not match", is the one being told.
+      handle.cancel()
+      let tvErr = null
+      try { await handle.result } catch (e) { tvErr = e }
+      check(tvErr && tvErr.code === SIGNIN_PAIR_ERRORS.cancelled, 'and the real TV\'s code is spent either way — one shot, whatever happened')
+    }
+  }
+
+  log('')
+
+  // ============================================================================
+  // PART 3 — the operator-key gate: "no" adopts nothing
+  // ============================================================================
+  {
+    const tv2 = createPlayer({ storeDir: path.join(dirs.tv2, 'store'), deviceId: 'tv-2', deviceLabel: 'Bedroom TV', swarm: { bootstrap } })
+    cleanups.push(() => tv2.stop())
+    const seen = watchSignin(tv2, 'tv')
+    const phone2 = watchSignin(phone, 'phone')
+    const start2 = await tv2.startSignInPairing()
+    const sender = await phone.sendSignIn(start2.code, { timeoutMs: 30000 })
+    await waitFor(() => phone2.at('match') && seen.at('match'), 30000, 'the two devices to link')
+    check(phone2.at('match').sas === seen.at('match').sas, 'the second TV and the phone agree on the compared digits')
+    check(phone.confirmSignInMatch(true) === true, 'the viewer confirms on the phone')
+    const pin2 = await waitFor(() => phone2.at('pin'), 30000, 'the phone to draw digits')
+    await waitFor(() => tv2.submitSignInPin(pin2.pin), 20000, 'the second TV to take the digits')
+    await sender.done
+
+    const ask2 = await waitFor(() => seen.at('confirm-service'), 20000, 'the second TV to ask about the service')
+    check(ask2.adopting === true, 'the second TV is also a virgin device')
+    check(tv2.confirmSignInService(false) === true, 'the viewer says NO')
+    let refused = null
+    try { await start2.done } catch (e) { refused = e }
+    check(!!refused, 'the sign-in fails')
+    check(tv2._panelKey === null, 'and the TV adopted NO operator key — four digits alone can never do that')
+    check(tv2._session === null, 'no session was opened')
+    check(seen.states().includes('failed'), "the host was told, through a 'failed' state")
+    check(!/session failed|unknown user|key recovery/.test(seen.at('failed').message || ''), 'and the message is viewer-facing, not a forwarded internal')
+    phone2.off()
+    await tv2.stop()
+  }
+
+  log(`\nRESULT: PASS ✅  (${passed} checks — code → mutual proof → compared digits → typed PIN → key handover → the TV's own session)`)
   await cleanup(); process.exit(0)
 } catch (err) {
   log('\nRESULT: FAIL ❌')
