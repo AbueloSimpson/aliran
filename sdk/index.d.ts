@@ -571,11 +571,14 @@ export interface SigninPayload {
  * prove it holds the code; 'mismatch' — the viewer said the two screens showed different
  * digits, which is what a relay looks like from here and must NOT be worded as an
  * ordinary retry; 'pin' — the peer could not prove it learned the typed digits;
- * 'cancelled'; 'refused' — the peer answered but declined the step.
+ * 'cancelled'; 'refused' — the peer answered but declined the step; 'flooded' — too many
+ * devices opened this code's channel and it was burned unspent, which is what a grind for
+ * a colliding SAS looks like: like 'mismatch', not an ordinary retry — the code is gone
+ * and the viewer starts a fresh one on the TV.
  */
 export type SigninPairErrorCode =
   | 'malformed' | 'timeout' | 'expired' | 'used' | 'busy'
-  | 'unauthorized' | 'mismatch' | 'pin' | 'cancelled' | 'refused'
+  | 'unauthorized' | 'mismatch' | 'pin' | 'cancelled' | 'refused' | 'flooded'
 
 export type SigninPairState =
   | 'code' | 'announced' | 'searching' | 'linked' | 'match' | 'pin' | 'pin-entry'

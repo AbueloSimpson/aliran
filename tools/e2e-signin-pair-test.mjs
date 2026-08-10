@@ -37,6 +37,7 @@
 // Run: npm run test:signin-pair
 import Hyperswarm from 'hyperswarm'
 import ProtomuxRPC from 'protomux-rpc'
+import DHT from 'hyperdht'
 import hcrypto from 'hypercore-crypto'
 import createTestnet from 'hyperdht/testnet.js'
 import os from 'os'; import fs from 'fs'; import path from 'path'
@@ -619,6 +620,73 @@ try {
       try { await handle.result } catch (e) { tvErr = e }
       check(tvErr && tvErr.code === SIGNIN_PAIR_ERRORS.cancelled, 'and the real TV\'s code is spent either way — one shot, whatever happened')
     }
+  }
+
+  // ---- 2h. THE CONNECTION CAP: a code entertains only so many connections ----
+  // 2g's relay won its ONE pair of transcripts a 1-in-10,000 chance. A relay that
+  // GRINDS opens many connections and proves on NONE until it finds a colliding SAS
+  // pair (core/remote.js remoteSas), so the guard cannot wait for a valid proof: it
+  // counts every connection that OPENS the aliran-signin channel and burns the code
+  // past a small cap. Tested across SEQUENTIAL connections — a relay opens them one
+  // after another over the TTL, so a concurrency limit would be no limit at all.
+  //
+  // KNOWN CEILING, asserted honestly elsewhere and not here: the cap counts channels,
+  // and a relay can read the handshake hash off the bare NoiseSecretStream without
+  // opening one (verified on a testnet, core/remote.js records it). This test is the
+  // channel-flood the cap DOES stop; it is not a claim that the birthday search is
+  // closed.
+  {
+    const handle = await announcedReceiver({ swarm: newSwarm(), ttlMs: 120000, pinMs: 120000 })
+    let burned = null
+    handle.result.then(() => {}, (e) => { burned = e.code })
+    const { topic } = signinKeys(handle.canonical)
+    const capDht = new DHT({ bootstrap }); cleanups.push(() => capDht.destroy())
+    const found = new Set()
+    for await (const r of capDht.lookup(topic)) for (const p of r.peers) found.add(hex(p.publicKey))
+    const tvKey = b4a.from([...found][0], 'hex')
+
+    // One channel-opening connection at a time. Each PROVES NOTHING — it just opens the
+    // channel — which is exactly the connection a grind uses and a proof-counter misses.
+    const held = []
+    const openOne = async () => {
+      const s = capDht.connect(tvKey, { keyPair: DHT.keyPair() })
+      s.on('error', () => {})
+      await new Promise((r) => { if (s.handshakeHash) return r(); s.once('open', r); s.once('error', r) })
+      const rpc = new ProtomuxRPC(s, { protocol: SIGNIN_PROTOCOL })
+      try { await rpc.fullyOpened() } catch {}
+      await sleep(150) // let the TV process the open before the next
+      held.push(s)
+    }
+
+    await openOne()
+    check(burned === null, 'a single channel-opening connection leaves the code live — the legit flow uses one')
+    let n = 1
+    while (n < 16 && !burned) { await openOne(); n++ }
+    check(burned === SIGNIN_PAIR_ERRORS.flooded, 'enough SEQUENTIAL channel-opening connections burn the code (flooded)')
+    check(n > 1, 'and only after real headroom above the one connection a legitimate pairing needs (burned at n=' + n + ')')
+    for (const s of held) { try { s.destroy() } catch {} }
+
+    // The burned code is dead to an honest sender too — a fresh code is the only way on.
+    const late = await sendSignIn(handle.code, payload, { swarm: newSwarm(), timeoutMs: 6000 })
+    let lateErr = null
+    try { await late.result } catch (e) { lateErr = e }
+    check(lateErr && lateErr.code === SIGNIN_PAIR_ERRORS.timeout, 'the burned code times out a fresh honest sign-in')
+  }
+
+  // ---- 2i. the cap does NOT touch a legitimate single-connection pairing ----
+  // The other half of a cap: it must be invisible to the one connection per side the
+  // real flow uses. (Part 1 proves this end to end through two engines; this asserts it
+  // directly against sdk/signin-pair.js, beside the flood it refuses.)
+  {
+    const handle = await announcedReceiver({ swarm: newSwarm(), pinMs: 30000 })
+    const p = await phoneSender(handle.code, { swarm: newSwarm(), timeoutMs: 30000 })
+    await waitFor(() => p.st.sas, 30000, 'the honest phone to link under the cap')
+    check(p.st.sas === handle.st.sas, 'one connection each way, one transcript — the digits agree')
+    check(p.confirmMatch(true) === true, 'the viewer confirms')
+    await waitFor(() => p.st.pin, 20000, 'the phone to draw the digits')
+    await waitFor(() => handle.submitPin(p.st.pin), 15000, 'the TV to take the digits')
+    check((await p.result).username === 'alice', 'a legitimate single-connection pairing completes with the cap in place')
+    check((await handle.result).priv === PRIV_HEX, 'and the TV received the account')
   }
 
   log('')

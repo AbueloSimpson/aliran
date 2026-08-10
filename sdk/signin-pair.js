@@ -42,7 +42,19 @@
 //   end to end on a local DHT testnet against the revision of this file that shipped
 //   without step 4, and it walked away with both private keys while both screens said
 //   the sign-in had worked. Two connections mean two transcripts mean two different SAS
-//   values, and there is nothing the relay can do to make the two screens agree.
+//   values, and there is nothing the relay can do to make ONE pair of screens agree.
+//
+//   THE BIRTHDAY REFINEMENT of that relay, and the connection cap it forces. Any one
+//   pair of legs collides with probability 10^-4, but the relay holds the code, so it
+//   can open MANY connections to each device, read every leg's handshake hash, work out
+//   each leg's SAS, and — proving on none of them — prove only on a pair whose four
+//   digits happen to match. That is a birthday search: ~100 connections per side, not
+//   10,000 tries. MAX_SIGNIN_CONNECTIONS prices it out by burning the code once too many
+//   connections have opened this channel, on BOTH roles. Its reach is bounded and the
+//   constant says how: the handshake hash is legible on the raw socket, so the counter
+//   sees a channel-opening flood but not a relay that harvests hashes on the side it
+//   dials without opening a channel. It raises the cost; core/remote.js remoteSas holds
+//   the honest ceiling.
 //
 //   THE STATIC LURE, caught by step 5 only. A printed code, a forwarded screenshot, a
 //   page that says "enter this on your TV" — an attacker that shows a code with no real
@@ -155,6 +167,37 @@ const RPC_MS = 15000
 // The goodbye. Short: nothing waits on it but the wording of the TV's screen.
 const ABORT_MS = 3000
 
+// THE CONNECTION CAP. One sign-in code entertains at most this many connections
+// that OPEN the aliran-signin channel, per role, TOTAL over the code's life — then
+// it burns the code and fails closed. The legitimate flow uses exactly ONE
+// connection per side; the other seven are headroom for the ordinary ways a second
+// one appears with no attacker present: a NAT rebind mid-lookup that makes
+// hyperswarm redial under a fresh session, a TV that dropped and reconnected inside
+// the TTL, a viewer's second phone (or a double-press) answering the same code by
+// accident. TOTAL rather than concurrent, because a relay can open its connections
+// one after another across the whole TTL, so a concurrency limit alone would be no
+// limit at all.
+//
+// Eight is chosen against the compared SAS, which is four digits (core/remote.js
+// remoteSas). A relay that holds the code can open N connections to each device,
+// read each leg's handshake hash, work out what its SAS would be, and prove only on
+// a pair whose four digits happen to agree — a birthday search that expects
+// N^2 / 10^4 colliding pairs. At N = 8 that is 6.4e-3, under 1%: a grind that has to
+// complete inside one viewer's sign-in is priced out. At the ~100 per side an
+// UNBOUNDED grind uses, the same expression is a near-certainty — which is the whole
+// case for a cap over a longer SAS. Six digits would cut the per-pair odds but make
+// every honest viewer compare a longer string, and a viewer who tires of comparing
+// and taps "yes" has defeated the only check that sees a relay. The cap costs the
+// legitimate pairing nothing.
+//
+// READ core/remote.js FOR THE LIMIT before quoting the 6.4e-3 as the whole story.
+// It bounds a relay that reaches the protocol by OPENING THE CHANNEL. The handshake
+// hash is legible on the raw NoiseSecretStream before any channel exists, so a relay
+// can harvest hashes on the side it DIALS (the TV) without opening a channel this
+// counter can see. The cap raises the attacker's cost and stops a channel-level
+// flood; on the borrowed swarm it is not, by itself, the end of the birthday search.
+const MAX_SIGNIN_CONNECTIONS = 8
+
 // Every message here is a small JSON object; the biggest is the payload at roughly 400
 // bytes of hex. Anything larger is not one of ours.
 const MAX_BODY_BYTES = 4096
@@ -171,7 +214,7 @@ export class SigninPairError extends Error {
   constructor (code, message) { super(message); this.name = 'SigninPairError'; this.code = code }
 }
 
-// The reasons a caller (and a UI) needs to tell apart. Two are worth reading twice:
+// The reasons a caller (and a UI) needs to tell apart. Three are worth reading twice:
 //
 //   pin       the peer answered, held the code, and could not show the digits — that is
 //             either a mistyped PIN or a device that never had them, and the two are
@@ -181,6 +224,10 @@ export class SigninPairError extends Error {
 //             this connection", so a UI must not fold it into a generic "try again":
 //             the right next step is a new code on a network the viewer trusts, and the
 //             wording should say so.
+//   flooded   too many devices opened this code's channel and it was burned unspent (see
+//             MAX_SIGNIN_CONNECTIONS). One code answered by many is what a grind for a
+//             colliding SAS looks like from here, so — like mismatch — this is NOT a bare
+//             "try again": the code is gone, and the viewer starts a fresh one on the TV.
 export const SIGNIN_PAIR_ERRORS = {
   malformed: 'malformed', // not a sign-in code, or a payload that is not one — nothing was sent
   timeout: 'timeout', // nobody answered, or a step ran out of time
@@ -191,7 +238,8 @@ export const SIGNIN_PAIR_ERRORS = {
   mismatch: 'mismatch', // the compared digits differed — see above
   pin: 'pin', // the peer could not prove it learned the digits
   cancelled: 'cancelled', // this side gave up
-  refused: 'refused' // the peer answered, but refused the step
+  refused: 'refused', // the peer answered, but refused the step
+  flooded: 'flooded' // too many devices opened this code's channel — burned as a possible grind
 }
 
 /** The states reported through `onState`, in the order each role passes through them. */
@@ -365,6 +413,7 @@ export async function receiveSignIn (opts = {}) {
   let settled = false
   let finish = null // set below; the single exit
   let peer = null // the ONE claimed socket: { socket, rpc, hh, role }
+  let signinConns = 0 // channels a peer has opened on this code — the cap counts these
   let pinAsked = false // the phone has asked for the digits (once per handover)
   let pinSent = false // …and we have answered (once, whatever the answer)
   let submitted = null // resolve() of the pending digits, while the phone is waiting
@@ -453,6 +502,18 @@ export async function receiveSignIn (opts = {}) {
     try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
     rpcs.add(rpc)
     onClose(socket, () => { rpcs.delete(rpc) })
+
+    // THE CONNECTION CAP (see MAX_SIGNIN_CONNECTIONS). Count every peer that actually
+    // OPENS the aliran-signin channel, proven or not — the grind's connections are
+    // unproven by construction, so a counter that waited for a valid proof would count
+    // nothing. 'open' fires only when the PEER opens its half of this channel, which is
+    // exactly the discriminator the borrowed swarm needs: a replication peer opens
+    // corestore channels and never this one, so it is never counted. Over the cap, the
+    // code is burned unspent and every later peer is refused.
+    rpc.once('open', () => {
+      if (settled) return
+      if (++signinConns > MAX_SIGNIN_CONNECTIONS) fail(SIGNIN_PAIR_ERRORS.flooded, 'too many devices answered this code — start again on the TV')
+    })
 
     // Step 3, as a SYNCHRONOUS responder. The claim below must not be able to interleave
     // with another connection's, and the surest way to guarantee that is to leave no
@@ -647,6 +708,7 @@ export async function sendSignIn (code, payload, opts = {}) {
   // verifies; every other peer on the topic is ignored from then on, whatever it says.
   let chosen = null
   let settled = false
+  let signinConns = 0 // channels a peer has opened on this code — the cap counts these
   let finish = null // set below; the single exit
   let onConnection = null // assigned once `attempt` exists; finish() may run before that
   let discovery = null
@@ -712,6 +774,16 @@ export async function sendSignIn (code, payload, opts = {}) {
     let rpc = null
     try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
     rpcs.add(rpc)
+    // THE CONNECTION CAP (see MAX_SIGNIN_CONNECTIONS), this side's half. Same rule as the
+    // TV: count peers that OPEN this channel, and burn the code past the cap. 'open' fires
+    // when the peer (a real TV, or a flooder impersonating one) opens its half; a
+    // replication peer this borrowed swarm hands over never opens this channel, so it is
+    // never counted. Guarded by `chosen`: once a peer is committed to, late opens on the
+    // others are moot and must not burn a handover that has already picked its TV.
+    rpc.once('open', () => {
+      if (settled || chosen) return
+      if (++signinConns > MAX_SIGNIN_CONNECTIONS) fail(SIGNIN_PAIR_ERRORS.flooded, 'too many devices answered this code — start again on the TV')
+    })
     const me = myRole(socket)
 
     const hello = await ask(rpc, 'signin-hello', { proof: hex(remoteProof(secret, hh, me)) }, RPC_MS)

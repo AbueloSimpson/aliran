@@ -653,15 +653,39 @@ const SAS_DRAW_LIMIT = Math.floor(SAS_DRAW_WIDTH / SAS_MODULUS) * SAS_MODULUS
  *
  * WHAT THE COMPARISON STILL DOES NOT BUY, stated so nobody has to rediscover it. The
  * relay holds the secret, so it can compute the SAS of any connection it terminates, and
- * a handshake is cheap. It can hold many simultaneous connections to the TV and present
- * itself under many identities to the phone, compute the SAS of each, and look for a pair
- * that AGREES before committing to one of each — a birthday search, so roughly 100 live
- * connections on each side rather than 10,000 tries. What caps it is the code's ~3 minute
- * TTL, the one-shot rule, and the fact that all of that has to happen inside one viewer's
- * sign-in without either device noticing. That is a large step up from the relay this
- * check was added to kill, which needed no grinding at all and won deterministically —
- * but it is a bound, not an impossibility, and four digits is where it sits. An argument
- * for six digits starts here.
+ * a handshake is cheap. It can open MANY connections to each device — reading each leg's
+ * handshake hash and working out what its SAS would be — while PROVING ON NONE, then prove
+ * only on a pair whose four digits happen to agree. That is a birthday search: with N
+ * connections per side the expected number of colliding pairs is about N^2 / 10^4, so
+ * N ~ 100 per side is enough, not the 10,000 tries a head-on guess would need. The
+ * chosen/peer latches in sdk/signin-pair.js do not touch this — they latch on the first
+ * VALID proof, and the relay withholds proofs until it has picked its pair.
+ *
+ * THE MITIGATION IS A CONNECTION CAP, NOT A LONGER SAS. sdk/signin-pair.js caps the
+ * connections one code will entertain per side (MAX_SIGNIN_CONNECTIONS = 8) and burns the
+ * code past it, counting every connection that reaches the protocol whether it proves or
+ * not. That collapses the SYMMETRIC search — at 8 per side the expression above is
+ * 8^2 / 10^4 = 6.4e-3 — and it costs a legitimate pairing, which uses one connection per
+ * side, nothing. Six digits was the tempting alternative and is the wrong one: it would
+ * cut the per-pair odds to 10^-6, but it lengthens the string every honest viewer has to
+ * compare across two screens, and a viewer who tires of comparing and taps "yes" has
+ * defeated the one check in this whole flow that sees a relay. Entropy a viewer will not
+ * check is worse than none; the cap asks the viewer for nothing.
+ *
+ * BE HONEST ABOUT THE CAP'S REACH — it is a real bound, not a closed door. It counts
+ * connections that OPEN the aliran-signin channel (a replication peer on the borrowed
+ * swarm never does, which is what makes the count safe there). But a handshake hash is
+ * legible on the raw NoiseSecretStream BEFORE any channel — remoteSas needs nothing else —
+ * so a relay can harvest hashes on the side it DIALS (the TV, where it is the client)
+ * without opening a channel the counter can see, load the whole search onto that side, and
+ * keep its phone-side legs under the cap. Run on a local DHT testnet, a grind that
+ * harvested a few hundred RAW TV connections and used a single honest-looking phone leg
+ * still took the account with the cap in place. The cap raises the attacker's cost from
+ * ~200 connections to ~10^4 and stops a channel-level flood outright; on a swarm shared
+ * with replication it does not, by itself, end the birthday search. Closing it needs a
+ * signalling swarm the sign-in does not share with replication (so raw connections can be
+ * counted without counting feeds), or an SAS bound to a value that only exists once a
+ * channel is open — both larger than the file that holds the cap.
  *
  * This function also serves the account rendezvous (case B), where two already-signed-in
  * devices are comparing with no code in play at all.
