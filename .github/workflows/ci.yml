@@ -65,6 +65,19 @@ jobs:
       - name: Send-to-TV sign-in handover (test:signin-pair)
         timeout-minutes: 10
         run: npm run test:signin-pair
+      # "Play on my TV" (WP3): two devices ALREADY signed in to one account find each other
+      # on the account rendezvous with no code and no viewer interaction, prove themselves to
+      # each other against the Noise handshake hash, and one changes the other's channel —
+      # over a LOCAL DHT testnet. The load-bearing halves are the refusals and the gates: a
+      # peer that knows the TOPIC but forges the SECRET is turned away and cannot talk its way
+      # past the latch; a channel the TELEVISION is not entitled to is refused against its own
+      # catalogue; the take-over switch refuses play AND stop; a parental-gated channel is
+      # accepted but NOT tuned by the engine, because that decision belongs behind the host's
+      # PIN; a build without `remote: { control: true }` never joins a topic at all; and the
+      # epoched topic really is left behind on a roll and on teardown. Loopback UDP only.
+      - name: Play-on-my-TV remote control (test:remote-control)
+        timeout-minutes: 10
+        run: npm run test:remote-control
       # Login-RPC hardening (S42): malformed payloads fail closed instead of crashing
       # the panel, a captured register cannot be replayed, the throttle map stays
       # bounded. Loopback SecretStream pair, no DHT — deterministic.

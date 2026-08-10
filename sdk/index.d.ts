@@ -277,6 +277,36 @@ export interface PlayerEvents {
   'update-ready': [info: { path: string; entry: UpdateEntry }]
   /** OTA download/verify failure — downloadUpdate() also rejects with the same error. */
   'update-error': [info: { message: string }]
+  /** The account's own other devices on the remote rendezvous; re-emitted on every change. */
+  remotes: [peers: RemotePeer[]]
+  /**
+   * "Play on my TV". role 'tv' carries the COMMANDS this device was given; role
+   * 'controller' carries what a television it is pointed at is showing.
+   *
+   * {state:'play'} is a command, not a notification: the engine has checked the channel
+   * against this device's own entitlements and it is the HOST that tunes it — and a
+   * `restricted` channel MUST go through the same parental-PIN gate a local zap goes
+   * through. The engine deliberately does not tune it for you, which is what keeps that
+   * gate in front of it.
+   */
+  remote: [
+    info: {
+      role: 'tv' | 'controller'
+      state: 'play' | 'stop' | 'refused' | 'status'
+      /** states 'play' and 'refused' (when the refused command was a play). */
+      streamId?: string
+      /** state 'play': this channel is parental-gated — challenge before tuning it. */
+      restricted?: boolean
+      title?: string
+      /** state 'refused': which command was turned away. */
+      command?: 'play' | 'stop'
+      reason?: RemoteControlErrorCode
+      /** Which device sent it (its own claim — a picker handle, not a credential). */
+      from?: RemotePeer
+      /** role 'controller', state 'status': what that television is showing. */
+      status?: { streamId: string | null; state: RemoteStatusState; position: number | null }
+    }
+  ]
   /**
    * Phone -> TV sign-in handover. `code`, `sas` and `pin` are all for a SCREEN and are
    * all live secrets for the length of the exchange — never log any of them.
@@ -425,6 +455,45 @@ export class AliranPlayer {
   confirmSignInMatch(ok: boolean): boolean
   /** Phone role. Abandon an in-flight send (the TV's code is spent either way). */
   cancelSendSignIn(): void
+  /**
+   * "Play on my TV": join the rendezvous the account's own devices meet on and run the
+   * control channel over it. Needs a live session AND `remote: { control: true }` at
+   * construction; with the flag off no topic is ever joined.
+   *
+   * 'tv' announces and accepts commands; 'controller' looks up, never announces, and sends
+   * them. Peers arrive as `remotes`; commands and status arrive as `remote`.
+   */
+  startRemote(opts?: {
+    role?: RemoteControlRole
+    label?: string
+    /** TV: accept play/stop at all (default true) — setRemoteAccept() flips it at runtime. */
+    acceptPlay?: boolean
+  }): Promise<{
+    role: RemoteControlRole
+    topics: string[]
+    /** Await it to know the rendezvous is live (a TV's announce has landed). */
+    flushed(): Promise<boolean>
+  }>
+  /** Devices of this account that have PROVED themselves on the rendezvous. */
+  listRemotes(): RemotePeer[]
+  /**
+   * Controller role. Ask a device to play a channel. Resolves on ACCEPTANCE (it checked its
+   * own entitlements and told its host to tune) — what happened arrives as a status push.
+   * Rejects with a RemoteControlError; 'timeout' never means the device declined.
+   */
+  remotePlay(deviceId: string, streamId: string): Promise<{ ok: true }>
+  /** Controller role. Ask that device to stop. */
+  remoteStop(deviceId: string): Promise<{ ok: true }>
+  /** TV role. The take-over switch; off refuses play AND stop. */
+  setRemoteAccept(ok: boolean): void
+  /**
+   * TV role. Refine what controllers are told. The engine already publishes the channel and
+   * whether it is playing (it learns that from resolve()); this is for the two things only a
+   * host knows. A `position` on its own never sends a message — see the guide.
+   */
+  updateRemoteStatus(status: { state?: RemoteStatusState; position?: number }): void
+  /** Leave the rendezvous. Idempotent. */
+  stopRemote(): Promise<void>
   /** Full teardown. */
   stop(): Promise<void>
 }
@@ -698,6 +767,107 @@ export function sendSignIn(
 
 /** Shape-check a handover payload. Returns the normalized object, or null. */
 export function normalizeSigninPayload(p: unknown): SigninPayload | null
+
+// --- remote-control.js ("play on my TV": the account rendezvous + control channel) ---
+
+/** 'tv' announces and accepts commands; 'controller' looks up, never announces, and sends. */
+export type RemoteControlRole = 'tv' | 'controller'
+
+/** What a status push may say. 'paused' only ever comes from updateRemoteStatus(). */
+export type RemoteStatusState = 'playing' | 'paused' | 'stopped'
+
+/**
+ * 'refused' = remote control is switched off on that device. 'unentitled' = its account
+ * cannot show that channel. 'timeout' = nothing came back, and NEVER means it declined.
+ */
+export type RemoteControlErrorCode =
+  | 'malformed'
+  | 'timeout'
+  | 'version'
+  | 'unauthorized'
+  | 'refused'
+  | 'unentitled'
+  | 'unavailable'
+  | 'unknown'
+  | 'offline'
+
+export class RemoteControlError extends Error {
+  code: RemoteControlErrorCode
+}
+
+export const REMOTE_CONTROL_ERRORS: Record<RemoteControlErrorCode, RemoteControlErrorCode>
+export const REMOTE_CONTROL_ROLES: Record<RemoteControlRole, RemoteControlRole>
+export const REMOTE_STATUS_STATES: Record<RemoteStatusState, RemoteStatusState>
+/** How long one rendezvous key names an account (one day) — the linkage window it bounds. */
+export const REMOTE_EPOCH_MS: number
+/** The protomux protocol name this channel runs under. */
+export const REMOTE_PROTOCOL: string
+
+/**
+ * How a device describes itself. `deviceId` is a handle for a picker, not a credential: it
+ * is authenticated only as far as "some device of this account", and two installs a host
+ * gave the same id will both answer to it.
+ */
+export interface RemoteIdentity {
+  deviceId: string
+  label: string | null
+  platform: string | null
+  appVersion: string | null
+}
+
+/** …plus which end of this feature it is running, once its hello has been read. */
+export interface RemotePeer extends RemoteIdentity {
+  role: RemoteControlRole | null
+}
+
+export interface RemoteControlHandle {
+  role: RemoteControlRole
+  /** The topics this device is on right now (hex) — the window the epoch bounds. */
+  topics(): string[]
+  /** The epochs behind those topics. */
+  epochs(): number[]
+  /** The rendezvous is live on the DHT. False rather than a throw on a failed lookup. */
+  flushed(): Promise<boolean>
+  peers(): RemotePeer[]
+  /** Controller: resolves on ACCEPTANCE, not on playback. */
+  play(deviceId: string, streamId: string): Promise<{ ok: true }>
+  stop(deviceId: string): Promise<{ ok: true }>
+  /** TV: push what is on. Sends only when the CHANNEL or the STATE changed. */
+  publishStatus(status: { streamId?: string | null; state?: RemoteStatusState; position?: number | null }): void
+  /** TV: the take-over switch. Off refuses play AND stop. */
+  setAcceptPlay(ok: boolean): void
+  acceptsPlay(): boolean
+  /** Leave the rendezvous; destroys channels, never the sockets under them. */
+  destroy(): Promise<void>
+}
+
+/**
+ * Join the account rendezvous (core/remote.js remoteTopic, epoched at one day, current and
+ * previous joined) and run the control channel on it. Both peers prove knowledge of the
+ * account secret against the Noise handshake hash; one that cannot is dropped.
+ *
+ * `secret` is the value sdk/login.js returns as `remoteSecret` — one-way from the account
+ * private key, and rotated by "log out all devices" but NOT by revoking a single device.
+ */
+export function startRemoteControl(opts: {
+  secret: string | Uint8Array
+  role: RemoteControlRole
+  identity: { deviceId: string; label?: string | null; platform?: string | null; appVersion?: string | null }
+  swarm?: unknown
+  bootstrap?: string[]
+  epochMs?: number
+  now?: () => number
+  acceptPlay?: boolean
+  onPlay?: (cmd: { streamId: string; from: RemotePeer }) => Promise<void> | void
+  onStop?: (cmd: { from: RemotePeer }) => Promise<void> | void
+  onRefused?: (info: { type: 'play' | 'stop'; streamId?: string; from: RemotePeer; reason: RemoteControlErrorCode }) => void
+  onStatus?: (s: { from: RemotePeer; streamId: string | null; state: RemoteStatusState; position: number | null }) => void
+  onPeers?: (peers: RemotePeer[]) => void
+  onError?: (err: Error) => void
+}): RemoteControlHandle
+
+/** Shape-check a device identity. Returns the normalized object, or null (no deviceId). */
+export function normalizeRemoteIdentity(p: unknown): RemoteIdentity | null
 
 // --- recover.js (store-corruption recovery) ---
 

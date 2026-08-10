@@ -49,6 +49,21 @@
 //                        breadcrumb ring (see _recordEmit): a code, a SAS or a PIN must
 //                        never ride along on a report — and for the same reason none of
 //                        the three may reach a log on the host side either.
+//   'remotes' (list)     the account's OWN other devices on the remote rendezvous
+//                        (sdk/remote-control.js), re-emitted whenever the list changes.
+//                        Only ever fires while startRemote() is running, which needs a
+//                        build with { remote: { control: true } }.
+//   'remote'  ({role,state,...})  "play on my TV". role 'tv': {state:'play',streamId,
+//                        restricted,from} is a COMMAND — the host tunes it, and MUST put a
+//                        `restricted` channel through the same parental-PIN gate a local
+//                        zap goes through (the engine deliberately does not tune it for
+//                        you, which is what keeps that gate in front of it); {state:'stop'}
+//                        and {state:'refused',reason} are the other two. role 'controller':
+//                        {state:'status',from,status:{streamId,state,position}} — what that
+//                        television is showing, pushed when it changes. Like 'signin-pair',
+//                        deliberately NOT in the problem-report breadcrumb ring (_recordEmit):
+//                        these carry another household device's LABEL, and a report is
+//                        pseudonymous on purpose.
 //   'update-progress' ({received,total})  OTA app-update download progress (throttled)
 //   'update-ready' ({path,entry})   OTA artifact downloaded, sha256-verified, on disk
 //   'update-error' ({message})      OTA download/verify failure (downloadUpdate() also
@@ -122,6 +137,9 @@ import sodium from 'sodium-native'
 import b4a from 'b4a'
 import { panelClient, login as oprfLogin, loginWithKeys } from './login.js'
 import { receiveSignIn, sendSignIn as sendSignInHandover, SigninPairError, SIGNIN_PAIR_ERRORS } from './signin-pair.js'
+import {
+  startRemoteControl, RemoteControlError, REMOTE_CONTROL_ERRORS, REMOTE_CONTROL_ROLES, REMOTE_STATUS_STATES
+} from './remote-control.js'
 // The operator's 12-character alias, derived from the panel key alone (core/pairing.js).
 // It is what makes "which service is this device about to join?" answerable on a screen:
 // 64 hex characters are not something a viewer checks against an operator's card.
@@ -290,24 +308,39 @@ function normalizeUploadPolicy (v) {
 //             until the operator's "log out all devices" — so it is both an authenticator
 //             and a permanent correlator for the account, and a build with no use for it
 //             should not be holding one. WP3 turns this on.
+//   keepSignIn  the RECEIVING side of "send to TV", and the only one of the three that is
+//             about DISK rather than memory. On, a completed handover emits the material
+//             it was given ONCE, as 'signin-keys', so a host can put it somewhere the
+//             device can read after a restart — the difference between a television that
+//             is signed in and one that is signed in until Android reclaims the process.
+//             Off (the default) the material is a local inside _applySignIn and is gone
+//             the moment that method returns, which is where it was before this flag.
+//
+//             IT IS NOT `sendToTv`, AND THE TWO MUST NOT BE READ AS ONE SWITCH. sendToTv
+//             is the SENDING role and is deliberately off on televisions, so that a set
+//             in a living room never holds an account it could hand onward. keepSignIn is
+//             the RECEIVING role and is the flag a television wants. A build that turns it
+//             on undertakes to protect what it is handed (docs/security-model.md, "Account
+//             keys at rest"); a build with nowhere safe to put it leaves this off and asks
+//             for a new handover after every restart.
 //
 // A RUNTIME switch would be worse than useless here: by the time a host could flip one
 // the login has already happened, so the material is either retained or unrecoverable.
 // Hence the constructor, which is also the only place a packager can see it.
 //
-//   remote: true                       both on (a build that is both phone and TV)
+//   remote: true                       all on (a build that is both phone and TV)
 //   remote: { sendToTv: true }         one on, the rest off
 //   omitted / false                    everything off
 function normalizeRemote (v) {
-  const out = { sendToTv: false, control: false }
+  const out = { sendToTv: false, control: false, keepSignIn: false }
   if (v == null || v === false) return out
-  if (v === true) return { sendToTv: true, control: true }
+  if (v === true) return { sendToTv: true, control: true, keepSignIn: true }
   if (typeof v !== 'object' || Array.isArray(v)) throw new Error('remote must be a boolean or an object of feature flags')
   for (const k of Object.keys(v)) {
     // Unknown keys throw rather than being ignored: a typo'd `sendtoTV: true` that
     // silently left the feature off would present as "sendSignIn says this build cannot",
     // which is a long way from its cause.
-    if (!Object.prototype.hasOwnProperty.call(out, k)) throw new Error('unknown remote feature: ' + k + " (expected 'sendToTv' or 'control')")
+    if (!Object.prototype.hasOwnProperty.call(out, k)) throw new Error('unknown remote feature: ' + k + " (expected 'sendToTv', 'control' or 'keepSignIn')")
     if (typeof v[k] !== 'boolean') throw new Error('remote.' + k + ' must be a boolean')
     out[k] = v[k]
   }
@@ -523,6 +556,16 @@ export class AliranPlayer extends Emitter {
     // resolve() of the pending "is this the right service / account?" answer on the TV,
     // while _applySignIn waits for it. See confirmSignInService().
     this._signinConfirm = null
+    // --- "play on my TV" (sdk/remote-control.js) ---
+    // The running account-rendezvous session, or null. One at a time and one role at a
+    // time: two would want the same protomux protocol on the same sockets, and a device is
+    // either the television or the thing pointed at it.
+    this._remoteCtl = null
+    // …and the marker for the window BEFORE the handle exists, for the same reason
+    // _signinStarting has one: startRemote() awaits a store open first. Set synchronously.
+    this._remoteCtlStarting = null
+    // Last peer list, so listRemotes() answers the same thing the 'remotes' event carried.
+    this._remotes = []
     // Rolling breadcrumb ring (newest last, REPORT_EVENT_LIMIT entries) fed from
     // emit() — what the engine was complaining about just before the viewer reported.
     // NOT `_events`: that name is the Emitter's listener map (see the class above), and
@@ -1053,6 +1096,198 @@ export class AliranPlayer extends Emitter {
     }
   }
 
+  // --- "play on my TV" (sdk/remote-control.js) ---
+  //
+  // The rendezvous, the mutual proof, the epoch roll and the wire all live in
+  // remote-control.js; what is here is the engine plumbing — borrowing the swarm, turning
+  // the module's callbacks into 'remote'/'remotes' events, and answering an incoming `play`
+  // out of THIS device's own entitlements.
+  //
+  // WHY THE ENGINE DOES NOT TUNE THE CHANNEL ITSELF, which is the thing to read before
+  // "improving" this. It would be one line to call resolve() on an accepted `play`, and it
+  // would walk straight around the parental gate: `restricted` channels are PIN-gated by the
+  // HOST (the flag rides the display list and every player in this repo hides or challenges
+  // on it — see _display), and an engine that tuned one because a phone asked would make
+  // "send to TV" the way past a parental PIN. So an accepted `play` is a COMMAND to the host
+  // and nothing more: entitlement is checked here, the event carries `restricted`, and what
+  // happens next is the host's decision — the same decision it makes for a local zap.
+  //
+  // NOTHING HERE ROTATES WITH A REVOKED DEVICE. remoteSecret() mixes tokenVersion, so "log
+  // out all devices", a password reset and disabling an account all move the whole account
+  // to a new rendezvous. panel/src/ops.js revokeDevice() deliberately does NOT bump
+  // tokenVersion, so a device revoked one at a time keeps deriving this secret and keeps
+  // meeting the household's other devices. That is documented in core/remote.js and it must
+  // not be written up as anything else.
+
+  /**
+   * Join the account's own rendezvous and run the control channel on it.
+   *
+   * @param {object} [opts]
+   * @param {string} [opts.role]        'tv' (default — announce and accept commands) or
+   *                                    'controller' (look up, never announce, send them)
+   * @param {string} [opts.label]       what the other devices show for this one
+   * @param {boolean} [opts.acceptPlay] TV: accept play/stop at all (default true). The
+   *                                    opt-out seam — setRemoteAccept() flips it at runtime.
+   * @returns {Promise<{role, topics: string[], flushed: () => Promise<boolean>}>}
+   */
+  async startRemote (opts = {}) {
+    if (!this._remote.control) throw new Error('this build cannot use the account rendezvous — construct the player with { remote: { control: true } }')
+    if (this._remoteCtl || this._remoteCtlStarting) throw new Error('a remote session is already running on this device')
+    const role = opts.role === REMOTE_CONTROL_ROLES.controller ? REMOTE_CONTROL_ROLES.controller : REMOTE_CONTROL_ROLES.tv
+    if (!this._session) throw new Error('sign in on this device before joining the account rendezvous')
+    // Null rather than a guess when the account record predates tokenVersion (sdk/login.js
+    // says why): two devices that substituted different defaults would land on different
+    // topics and simply never meet, which is the hardest failure in this area to diagnose.
+    if (!this._session.remoteSecret) throw new Error('this account has no remote rendezvous — its panel record predates tokenVersion')
+    // The synchronous marker startSignInPairing() uses, for the same reason: _ensureStore()
+    // is an await, and a second press inside it used to produce a second live session.
+    const inflight = { cancelled: false }
+    this._remoteCtlStarting = inflight
+    let handle = null
+    try {
+      await this._ensureStore()
+      // A stop() that interleaved with that await has nulled the swarm, and passing null to
+      // startRemoteControl() does not fail — it QUIETLY BUILDS ITS OWN on the public DHT,
+      // announcing an account rendezvous where a caller on a private testnet never asked.
+      if (!this._swarm) throw new Error('the engine was stopped before the remote session could start')
+      handle = startRemoteControl({
+        secret: this._session.remoteSecret,
+        role,
+        swarm: this._swarm,
+        acceptPlay: opts.acceptPlay,
+        identity: {
+          // The host's per-install id when it gave one. Falling back to the login result is
+          // deliberate but weak: sdk/login.js derives that fallback from the ACCOUNT key, so
+          // every install of one account collapses onto it and two devices become
+          // indistinguishable in the picker. Hosts should pass `deviceId` at construction.
+          deviceId: this._deviceId || (this._session && this._session.deviceId) || null,
+          label: opts.label || this._deviceLabel || null,
+          platform: this._platform || null,
+          appVersion: this._appVersion || null
+        },
+        onPeers: (list) => { this._remotes = list; this.emit('remotes', list) },
+        onPlay: async ({ streamId, from }) => {
+          // THE ENTITLEMENT CHECK, against this device's OWN login snapshot. The peer sent a
+          // name; everything that could turn a name into bytes — the feed key, the sealed
+          // stream key — comes from here and never from the wire.
+          if (!this._entitled.has(streamId)) {
+            throw new RemoteControlError(REMOTE_CONTROL_ERRORS.unentitled, 'this device is not entitled to ' + streamId)
+          }
+          const s = this._streams.find((x) => x.id === streamId) || null
+          this.emit('remote', {
+            role: 'tv',
+            state: 'play',
+            streamId,
+            // The host must gate this exactly as it gates a local zap — see the note above.
+            restricted: !!(s && s.restricted),
+            title: s ? s.title : undefined,
+            from
+          })
+        },
+        onStop: async ({ from }) => {
+          this.emit('remote', { role: 'tv', state: 'stop', from })
+          // Said now rather than when the host confirms, because the command was accepted
+          // and the host is expected to honour it; a host that does something else corrects
+          // this with updateRemoteStatus().
+          if (handle) handle.publishStatus({ state: REMOTE_STATUS_STATES.stopped })
+        },
+        onRefused: ({ type, streamId, from, reason }) => {
+          this.emit('remote', { role: 'tv', state: 'refused', command: type, streamId, from, reason })
+        },
+        onStatus: (s) => {
+          this.emit('remote', { role: 'controller', state: 'status', from: s.from, status: { streamId: s.streamId, state: s.state, position: s.position } })
+        },
+        onError: (err) => this.emit('error', err)
+      })
+    } finally {
+      if (this._remoteCtlStarting === inflight) this._remoteCtlStarting = null
+    }
+    // Stopped (or cancelled) while we were starting. The session is already announcing, so
+    // it has to be torn down rather than dropped.
+    if (inflight.cancelled) {
+      try { await handle.destroy() } catch {}
+      throw new Error('the remote session was stopped before it started')
+    }
+    this._remoteCtl = handle
+    // A television that is already playing says so from the first peer that arrives.
+    if (role === REMOTE_CONTROL_ROLES.tv) this._noteRemoteStatus()
+    // `flushed()` is not awaited here — a controller should start looking immediately, and a
+    // television's announce lands a moment later. Hosts that want to show "ready" (and tests
+    // that want to order two devices) await it themselves.
+    return { role, topics: handle.topics(), flushed: () => handle.flushed() }
+  }
+
+  /**
+   * The account's other devices on the rendezvous, each having PROVED it holds the account
+   * secret: { deviceId, label, platform, appVersion, role }. Empty when no session is
+   * running. `deviceId` is the peer's own claim — a handle for a picker, not a credential.
+   */
+  listRemotes () {
+    return this._remoteCtl ? this._remoteCtl.peers() : []
+  }
+
+  /**
+   * Controller role. Ask one of those devices to play a channel. Resolves once it has
+   * ACCEPTED — it checked the channel against its own entitlements and told its host to tune
+   * — which is not the same as playing: what happened arrives as a `status` push. Rejects
+   * with a RemoteControlError whose `.code` is one of REMOTE_CONTROL_ERRORS ('refused' =
+   * remote control is switched off there, 'unentitled' = that account cannot show it,
+   * 'timeout' = it did not answer, and note that 'timeout' never means it declined).
+   */
+  async remotePlay (deviceId, streamId) {
+    if (!this._remoteCtl) throw new Error('start a remote session first (startRemote)')
+    return this._remoteCtl.play(deviceId, streamId)
+  }
+
+  /** Controller role. Ask that device to stop. Same error vocabulary as remotePlay(). */
+  async remoteStop (deviceId) {
+    if (!this._remoteCtl) throw new Error('start a remote session first (startRemote)')
+    return this._remoteCtl.stop(deviceId)
+  }
+
+  /**
+   * TV role. The take-over switch a Settings screen turns off ("let my phone change this
+   * television"). Off refuses play AND stop — "may not change my channel" cannot mean
+   * "…but may switch it off" — and the attempt still surfaces as
+   * {state:'refused',reason:'refused'} so a host can say why nothing happened.
+   */
+  setRemoteAccept (ok) {
+    if (this._remoteCtl) this._remoteCtl.setAcceptPlay(ok !== false)
+  }
+
+  /**
+   * TV role. Refine what the controllers are told. The engine already publishes the CHANNEL
+   * and whether it is playing — it learns that from resolve() — so this is for the two
+   * things only the host knows: a pause, and a playhead.
+   *
+   * A `position` on its own never sends anything (see remote-control.js publishStatus): it
+   * is stored and rides the next push some real change caused. That is deliberate, and it is
+   * why there is no scrubber on the phone.
+   */
+  updateRemoteStatus ({ state, position } = {}) {
+    if (this._remoteCtl) this._remoteCtl.publishStatus({ state, position })
+  }
+
+  /** Leave the rendezvous. Idempotent. */
+  async stopRemote () {
+    if (this._remoteCtlStarting) this._remoteCtlStarting.cancelled = true
+    const handle = this._remoteCtl
+    this._remoteCtl = null
+    this._remotes = []
+    if (handle) { try { await handle.destroy() } catch {} }
+  }
+
+  // What is on, from the ENGINE's own view of it — so a viewer who changes channel with the
+  // television's own remote updates the phone too, and not only a channel the phone asked
+  // for. Called after every resolve(); a no-op with no TV-role session running.
+  _noteRemoteStatus () {
+    if (!this._remoteCtl || this._remoteCtl.role !== REMOTE_CONTROL_ROLES.tv) return
+    const a = this._active
+    this._remoteCtl.publishStatus(a
+      ? { streamId: a.streamId, state: REMOTE_STATUS_STATES.playing }
+      : { streamId: null, state: REMOTE_STATUS_STATES.stopped })
+  }
+
   // --- adjacent-channel prefetch (zapPrefetch option; OFF by default) ---
 
   _clearZapPrefetch () {
@@ -1380,6 +1615,16 @@ export class AliranPlayer extends Emitter {
   // Redirect channels (S23) return their operator-set https URL with source 'cdn'
   // and no localhost involvement at all.
   async resolve (streamId) {
+    const out = await this._resolveStream(streamId)
+    // "What's on" follows the ENGINE and not the command that caused it, so a viewer
+    // zapping with the television's own remote updates a watching phone exactly as a
+    // remote `play` does. One line, one place, and it cannot be forgotten by a future
+    // return path added inside _resolveStream. See _noteRemoteStatus().
+    this._noteRemoteStatus()
+    return out
+  }
+
+  async _resolveStream (streamId) {
     const keys = this._entitled.get(streamId)
     if (!keys) throw new Error('not entitled to ' + streamId)
     // Live feeds are SESSION cores under the broadcaster's ephemeral buffer: a
@@ -1780,6 +2025,12 @@ export class AliranPlayer extends Emitter {
     if (this._signinConfirm) { const r = this._signinConfirm; this._signinConfirm = null; r(false) }
     if (this._signin) { const s = this._signin; this._signin = null; try { s.cancel() } catch {} }
     if (this._sending) { const s = this._sending; this._sending = null; try { s.cancel() } catch {} }
+    // Same reasoning for the account rendezvous, and the same two windows: a session left
+    // running would keep a topic announced on a swarm that is about to be destroyed, and one
+    // started after this line would announce onto a destroyed one. Awaited, unlike the
+    // sign-in cancels, because leaving the topic is a network round-trip and this is the
+    // only place that waits for teardown.
+    await this.stopRemote()
     this._active = null
     this._zapDir = 0
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
