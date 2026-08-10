@@ -585,6 +585,182 @@ try {
   assert.strictEqual((await db.get('catalog/ct.Cleartext-Event')), null)
   log('L2: source-scoped http exemption — default drops http, allowCleartext imports it, round-trips + resets etag, manual channels stay https-only ✓')
 
+  // ===== Test L3: m3u NAME filters — one mixed group split into a rail per sport =====
+  // The operator's real shape: ONE group-title carries the whole day, and the sport is
+  // written into the NAME. The group filter cannot reach that, so titleInclude/titleExclude
+  // select on the display name and several sources over the SAME url become child rails
+  // ('Live Events/MLB' — a two-level category needs no client change).
+  texts['/mixed.m3u'] = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="Live Events",[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed (XYZ)',
+    'https://cdn.example/x/mlb1.m3u8',
+    '#EXTINF:-1 group-title="Live Events",[NFL] Chicago Bears at Green Bay Packers',
+    'https://cdn.example/x/nfl1.m3u8',
+    '#EXTINF:-1 group-title="Live Events",[Cricket] India vs Australia',
+    'https://cdn.example/x/cri1.m3u8',
+    '#EXTINF:-1 group-title="Live Events",[mlb] New York Mets at Atlanta Braves (WEBCAST)', // lower case + a dead provider tag
+    'https://cdn.example/x/mlb2.m3u8',
+    '#EXTINF:-1 group-title="Other",[MLB] Out Of Group Game', // the GROUP filter must still bite first
+    'https://cdn.example/x/mlb3.m3u8',
+    ''
+  ].join('\n'); rev++
+  const mixedUrl = feedBase + '/mixed.m3u'
+  // Titles, not slugs: the ids are derived and long, and the title is what the operator reads.
+  const ownedTitles = async (src) => {
+    const out = []
+    for await (const { value } of db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) if (value.source === src) out.push(value.title)
+    return out.sort()
+  }
+  const ownedKeys = async (src) => {
+    const out = []
+    for await (const { key, value } of db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) if (value.source === src) out.push(key.slice('catalog/'.length))
+    return out.sort()
+  }
+
+  // (1) NO name filters = the behaviour that shipped before them: the group filter alone.
+  r = await api('POST', '/api/sources', { name: 'rest', url: mixedUrl, format: 'm3u', category: 'Live Events', groups: ['Live Events'], prefix: 'ev2.' }, token)
+  assert.strictEqual(r.status, 201, 'add the catch-all source: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.titleInclude, null, 'titleInclude defaults to null')
+  assert.strictEqual(r.body.titleExclude, null, 'titleExclude defaults to null')
+  r = await api('POST', '/api/sources/rest/sync', undefined, token)
+  assert.strictEqual(r.body.added, 4, 'with no name filter the group alone decides: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.filtered, 1, 'only the "Other" group entry is left out')
+
+  // (2) titleExclude REMOVES — and a filter change must reset the ETag, or the next sync
+  // answers 304 and the operator's edit never lands.
+  assert.ok(sources.loadSources(dir).rest.etag, 'a synced source holds an etag')
+  r = await api('PATCH', '/api/sources/rest', { titleExclude: ['[MLB]', '[NFL]'] }, token)
+  assert.strictEqual(r.status, 200)
+  assert.deepStrictEqual(r.body.titleExclude, ['[MLB]', '[NFL]'], 'titleExclude round-trips through set-source')
+  assert.strictEqual(sources.loadSources(dir).rest.etag, null, 'a titleExclude change resets the etag')
+  r = await api('POST', '/api/sources/rest/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, false, 'the reset etag really re-read the body')
+  assert.strictEqual(r.body.removed, 3, 'the two MLB games and the NFL game leave the catch-all')
+  assert.strictEqual(r.body.filtered, 4, 'group + name exclusions land in ONE filtered count')
+  assert.deepStrictEqual(await ownedTitles('rest'), ['[Cricket] India vs Australia'], 'the catch-all keeps what neither sport claimed')
+  // Case-insensitivity of the EXCLUDE side: '[MLB]' dropped the lower-case '[mlb]' entry.
+  assert.strictEqual((await ownedTitles('rest')).some((t) => /mets/i.test(t)), false, 'the lower-case [mlb] entry was excluded too — the match ignores case')
+  // The prune path is the ordinary one: catalog, per-stream key and every grant go together.
+  const restIds = await ownedKeys('rest')
+  assert.strictEqual(restIds.length, 1)
+  const bobW = (await db.get('user/bob')).value.wrapped
+  assert.strictEqual(Object.keys(bobW).filter((id) => id.startsWith('ev2.')).length, 1, 'grants for newly-filtered-out channels are revoked with them')
+
+  // (3) titleInclude IMPORTS ONLY MATCHES — and matches case-insensitively.
+  r = await api('POST', '/api/sources', { name: 'mlb', url: mixedUrl, format: 'm3u', category: 'Live Events/MLB', groups: ['Live Events'], titleInclude: ['[MLB]'], prefix: 'mlb.' }, token)
+  assert.strictEqual(r.status, 201, 'add the MLB child-rail source: ' + JSON.stringify(r.body))
+  assert.deepStrictEqual(r.body.titleInclude, ['[MLB]'])
+  r = await api('POST', '/api/sources/mlb/sync', undefined, token)
+  assert.strictEqual(r.body.added, 2, 'both MLB games import, whatever the case of the tag: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.filtered, 3, 'NFL + Cricket by name, the "Other" game by group')
+  assert.deepStrictEqual(r.body.conflicts, [], 'a second source over the same playlist conflicts with nothing')
+  assert.deepStrictEqual(await ownedTitles('mlb'), [
+    '[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed (XYZ)',
+    '[mlb] New York Mets at Atlanta Braves (WEBCAST)'
+  ], 'titleInclude took exactly the two MLB names')
+
+  // (4) EXCLUDE WINS OVER INCLUDE: the Mets game matches titleInclude AND titleExclude.
+  r = await api('PATCH', '/api/sources/mlb', { titleExclude: ['(WEBCAST)'] }, token)
+  assert.strictEqual(r.status, 200)
+  assert.strictEqual(sources.loadSources(dir).mlb.etag, null, 'a titleInclude/Exclude change resets the etag')
+  r = await api('POST', '/api/sources/mlb/sync', undefined, token)
+  assert.strictEqual(r.body.removed, 1, 'the dead (WEBCAST) feed leaves even though its name still matches titleInclude')
+  assert.strictEqual(r.body.filtered, 4)
+  assert.deepStrictEqual(await ownedTitles('mlb'), ['[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed (XYZ)'], 'titleExclude wins over titleInclude')
+
+  // (5) The second child rail.
+  r = await api('POST', '/api/sources', { name: 'nfl', url: mixedUrl, format: 'm3u', category: 'Live Events/NFL', groups: ['Live Events'], titleInclude: ['[NFL]'], prefix: 'nfl.' }, token)
+  assert.strictEqual(r.status, 201)
+  r = await api('POST', '/api/sources/nfl/sync', undefined, token)
+  assert.strictEqual(r.body.added, 1)
+  assert.strictEqual(r.body.filtered, 4)
+  assert.deepStrictEqual(r.body.conflicts, [])
+
+  // (6) THE OPERATOR RECIPE, asserted for real: three sources, ONE playlist url, disjoint
+  // name filters, distinct prefixes and categories → disjoint channel sets, no conflicts,
+  // and each channel on its own rail. This is what makes 'Live Events' a parent of MLB/NFL.
+  const setMlb = await ownedKeys('mlb')
+  const setNfl = await ownedKeys('nfl')
+  const setRest = await ownedKeys('rest')
+  const union = [...setMlb, ...setNfl, ...setRest]
+  assert.strictEqual(new Set(union).size, union.length, 'the three sources own DISJOINT channel ids')
+  assert.deepStrictEqual([setMlb.length, setNfl.length, setRest.length], [1, 1, 1], 'one game each after the filters: ' + JSON.stringify({ setMlb, setNfl, setRest }))
+  for (const [src, cat] of [['mlb', 'Live Events/MLB'], ['nfl', 'Live Events/NFL'], ['rest', 'Live Events']]) {
+    for (const id of await ownedKeys(src)) {
+      const c = (await db.get('catalog/' + id)).value
+      assert.deepStrictEqual(c.category, [cat], `${id} sits on the ${cat} rail`)
+      assert.strictEqual(c.source, src, `${id} is stamped with its own source`)
+      assert.ok((await db.get('user/bob')).value.wrapped[id], 'each child rail auto-grants its channels')
+    }
+  }
+  // Re-syncing them all changes nothing: a name filter cannot make two sources fight over
+  // one channel, because the prefix (not the name) namespaces the id.
+  for (const src of ['mlb', 'nfl', 'rest']) {
+    r = await api('POST', `/api/sources/${src}/sync`, undefined, token)
+    assert.deepStrictEqual(r.body.conflicts, [], `re-sync of ${src} still conflicts with nothing`)
+    assert.strictEqual(r.body.removed, 0, `re-sync of ${src} removes nothing`)
+  }
+  const mlbRow = (await api('GET', '/api/sources', undefined, token)).body.find((s) => s.name === 'mlb')
+  assert.strictEqual(mlbRow.lastReport.filtered, 4, 'the filtered count reaches the dashboard report')
+
+  // (7) CLI parity: a comma STRING is accepted, entries are trimmed, and two casings of one
+  // rule are one rule (the match ignores case, so keeping both would be a lie).
+  let cliSrc = sources.setSource(ctx, 'nfl', { titleInclude: ' [NFL] , [nfl] ,[AFL]' })
+  assert.deepStrictEqual(cliSrc.titleInclude, ['[NFL]', '[AFL]'], 'comma string parsed, trimmed and de-duplicated case-insensitively')
+  cliSrc = sources.setSource(ctx, 'nfl', { titleInclude: '' })
+  assert.strictEqual(cliSrc.titleInclude, null, 'an empty string clears the filter')
+  assert.strictEqual(sources.loadSources(dir).nfl.etag, null, 'clearing it resets the etag too')
+  r = await api('POST', '/api/sources/nfl/sync', undefined, token)
+  assert.strictEqual(r.body.added, 3, 'with the include cleared the NFL source takes the whole group')
+  assert.strictEqual(r.body.filtered, 1, 'and only the "Other" group entry stays out')
+  await api('PATCH', '/api/sources/nfl', { titleInclude: ['[NFL]'] }, token)
+  r = await api('POST', '/api/sources/nfl/sync', undefined, token)
+  assert.strictEqual(r.body.removed, 3, 'restoring the include narrows the rail again')
+
+  // (8) A name filter that matches NOTHING prunes the whole rail — correct (the feed IS the
+  // membership), but it is the destructive shape, and emptiedByFilter is the ONLY warning on
+  // it. Asserted here for a NAME filter, not just for a group one.
+  r = await api('PATCH', '/api/sources/nfl', { titleInclude: ['[NOSUCHSPORT]'] }, token)
+  assert.strictEqual(r.status, 200)
+  r = await api('POST', '/api/sources/nfl/sync', undefined, token)
+  assert.strictEqual(r.body.removed, 1, 'a name filter that matches nothing prunes the rail')
+  assert.strictEqual(r.body.added + r.body.updated, 0, 'and imports nothing')
+  assert.strictEqual(r.body.emptiedByFilter, true, 'the report FLAGS a name-filter prune — it is the only warning on this path')
+  assert.deepStrictEqual(await ownedKeys('nfl'), [], 'the rail really is empty')
+  await api('PATCH', '/api/sources/nfl', { titleInclude: ['[NFL]'] }, token)
+  r = await api('POST', '/api/sources/nfl/sync', undefined, token)
+  assert.strictEqual(r.body.added, 1, 'fixing the wording brings the rail back')
+  assert.strictEqual(r.body.emptiedByFilter, false, 'and the flag clears')
+
+  // (9) Validation, mirroring the group rules — plus the two guards that keep a filter edit
+  // off a surprise deleteStream.
+  r = await api('POST', '/api/sources', { name: 'toolong', url: mixedUrl, format: 'm3u', category: 'X', titleInclude: ['x'.repeat(65)] }, token)
+  assert.strictEqual(r.status, 400, 'an over-long name filter must be rejected')
+  r = await api('POST', '/api/sources', { name: 'toomany', url: mixedUrl, format: 'm3u', category: 'X', titleExclude: Array.from({ length: 51 }, (_, i) => 't' + i) }, token)
+  assert.strictEqual(r.status, 400, 'more than 50 name filters must be rejected')
+  r = await api('POST', '/api/sources', { name: 'crlf', url: mixedUrl, format: 'm3u', category: 'X', titleInclude: ['a\nb'] }, token)
+  assert.strictEqual(r.status, 400, 'a line break in a name filter must be rejected')
+  // A one-character rule sits inside almost every event name. It would prune almost the whole
+  // rail — and because "almost" is not "all", emptiedByFilter would NOT fire and nothing would
+  // warn. Refuse it at the door instead.
+  r = await api('POST', '/api/sources', { name: 'tooshort', url: mixedUrl, format: 'm3u', category: 'X', titleExclude: ['a'] }, token)
+  assert.strictEqual(r.status, 400, 'a one-character name filter must be rejected')
+  assert.match(r.body.error, /at least 2 characters/, 'and the error says why: ' + r.body.error)
+  // ARRAY form and COMMA-STRING form must mean the SAME thing. An array entry carrying a comma
+  // is ONE literal substring here, but every field that renders the list joins it with commas,
+  // so the next save would re-split it into two far broader rules — and on titleExclude a wider
+  // rule is a deleteStream on channels nobody meant to prune.
+  r = await api('POST', '/api/sources', { name: 'comma', url: mixedUrl, format: 'm3u', category: 'X', titleExclude: ['Team A, Team B'] }, token)
+  assert.strictEqual(r.status, 400, 'an ARRAY-form name filter containing a comma must be rejected')
+  assert.match(r.body.error, /must not contain a comma/, 'and the error names the separator: ' + r.body.error)
+  r = await api('PATCH', '/api/sources/nfl', { titleInclude: ['[NFL], [AFL]'] }, token)
+  assert.strictEqual(r.status, 400, 'set-source refuses it too — both write paths, not just create')
+  assert.deepStrictEqual(sources.loadSources(dir).nfl.titleInclude, ['[NFL]'], 'and the refused edit changed nothing')
+  // The comma-STRING form of the same intent is of course fine, and lands as two rules.
+  assert.deepStrictEqual(sources.setSource(ctx, 'nfl', { titleInclude: '[NFL], [AFL]' }).titleInclude, ['[NFL]', '[AFL]'], 'the comma string form still splits into two rules')
+  await api('PATCH', '/api/sources/nfl', { titleInclude: ['[NFL]'] }, token)
+  log('L3: m3u name filters — include takes only matches, exclude removes and WINS, both case-insensitive, comma-string + dedupe, etag reset, one `filtered` count, an empty-name-filter prune FLAGGED, 1-char and comma-bearing rules refused, and three sources over ONE playlist make disjoint MLB/NFL/rest child rails ✓')
+
   // ===== Test M: redirect playback headers over the admin API (Part A) =====
   r = await api('POST', '/api/streams', { id: 'hdr-one', url: 'https://cdn.example/hdr.m3u8', headers: { Referer: 'https://provider.example/', 'USER-AGENT': ' Mozilla/5.0 ' } }, token)
   assert.strictEqual(r.status, 201, 'create a redirect channel with headers: ' + JSON.stringify(r.body))

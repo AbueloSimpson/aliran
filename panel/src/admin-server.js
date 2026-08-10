@@ -74,12 +74,22 @@
 //   POST   /api/publishers/:name/status      {status:'active'|'revoked'}
 //   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
 //   GET    /api/sources                      remote channel sources (S27) + owned-channel counts
-//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?,format?,groups?,allowCleartext?}
+//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?,format?,groups?,
+//                                             titleInclude?,titleExclude?,allowCleartext?}
 //                                            format 'json' (default) | 'm3u'; groups = the m3u group-titles to import
 //                                            (case-insensitive exact match; absent/[] = every entry);
+//                                            titleInclude/titleExclude = m3u name filters — case-insensitive
+//                                            SUBSTRINGS of the entry name; include takes only matching entries,
+//                                            exclude drops matching ones and WINS over include; absent/[] = no name
+//                                            filtering. Each entry is 2-64 chars and may NOT contain a comma — the
+//                                            comma separates entries, so array and comma-string form stay identical
+//                                            through every surface. Several sources over ONE playlist url with disjoint
+//                                            titleInclude, each with its own two-level category ('Live Events/MLB')
+//                                            and prefix, is how one mixed group becomes a rail per sport;
 //                                            allowCleartext lets this source import http:// (non-loopback) stream urls
 //   PATCH  /api/sources/:name                edit any field (incl. exclude:[{id,title}] — deselected feed ids)
-//                                            a format or groups change resets the ETag, so the next sync re-reads the body
+//                                            a format, groups or title-filter change resets the ETag, so the next
+//                                            sync re-reads the body
 //   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
 //   GET    /api/sources/:name/channels       imported + excluded entries (the channels-dialog data)
 //   GET    /api/categories                   category vocabulary + per-category channel counts

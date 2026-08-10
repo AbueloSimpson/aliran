@@ -762,7 +762,7 @@ function renderSources () {
     tr.innerHTML = `
       <td><b>${esc(s.name)}</b><br><span class="mono muted" title="${esc(s.url)}">${esc(s.url.length > 46 ? s.url.slice(0, 46) + '…' : s.url)}</span></td>
       <td><span class="chip">${esc(s.category)}</span>${(s.format || 'json') === 'm3u'
-        ? ` <span class="chip" title="M3U playlist: ids come from the channel names, #EXTVLCOPT lines import as playback headers${(s.groups || []).length ? ` — groups: ${esc(s.groups.join(', '))}` : ''}">m3u</span>`
+        ? ` <span class="chip" title="M3U playlist: ids come from the channel names, #EXTVLCOPT lines import as playback headers${(s.groups || []).length ? ` — groups: ${esc(s.groups.join(', '))}` : ''}${(s.titleInclude || []).length ? ` — name has: ${esc(s.titleInclude.join(', '))}` : ''}${(s.titleExclude || []).length ? ` — name has not: ${esc(s.titleExclude.join(', '))}` : ''}">m3u</span>`
         : ''}</td>
       <td>${s.channels}</td>
       <td class="muted">${fmtInterval(s.intervalMs)}</td>
@@ -1569,7 +1569,21 @@ https://cdn.example/event/123.m3u8?token=abc</pre>
       channel.</li>
     <li><b>Groups.</b> Set <b>Groups</b> on the source to select the <span class="mono">group-title</span> values you
       want. The panel compares the full value and ignores upper and lower case. Leave the field empty to take every
-      entry. The sync report counts the other entries as <b>outside your groups</b>.</li>
+      entry. The sync report counts the other entries as <b>left out by your filters</b>.</li>
+    <li><b>Name has / Name has not.</b> These two fields select by the channel <b>name</b>, one level below the group.
+      Write pieces of text, separated by commas. The panel looks for each piece <b>inside</b> the name and ignores
+      upper and lower case. These are not regular expressions.
+      <ul>
+        <li><b>Name has</b> — the panel takes an entry only when its name contains at least one of your pieces. An
+          empty field takes every name.</li>
+        <li><b>Name has not</b> — the panel drops an entry when its name contains one of your pieces. Use it for a
+          provider tag that never plays, for example <span class="mono">(WEBCAST)</span>.</li>
+        <li><b>Name has not wins.</b> A name that matches both fields stays out.</li>
+        <li>Write <b>2 characters or more</b> for each piece. One character is inside almost every name, and it
+          removes almost the full rail with no warning.</li>
+        <li>A comma always starts the next piece, so a piece cannot contain a comma. The panel refuses one.</li>
+      </ul>
+      The sync report counts these entries as <b>left out by your filters</b>, together with the group filter.</li>
     <li><b>tvg-logo</b> becomes the channel art. Use an <span class="mono">https://</span> address.</li>
     <li><b>No schedule.</b> A playlist is not a program guide, so an imported channel gets no guide pointer.</li>
     <li><b>One playlist, many rails.</b> Add <b>one source for each group</b>, all with the same URL. Give each source
@@ -1577,9 +1591,31 @@ https://cdn.example/event/123.m3u8?token=abc</pre>
       group “Live Events” into the category “Live Events”, and source <span class="mono">sports</span> takes the group
       “Sports” into the category “Sports”. The channel ids stay separate, because the prefixes are different. Each
       source syncs and cleans up on its own, and the <span class="mono">ETag</span> keeps the extra pulls cheap.</li>
+    <li><b>One group, one rail for each sport.</b> Many providers put the whole day into one group, for example
+      “Live Events”, and write the sport into the name:
+      <span class="mono">[MLB] Boston Red Sox at Toronto Blue Jays</span>. Use <b>Name has</b> to split it. Add one
+      source for each sport, all with the same URL and the same group, and give each one a different piece of text, a
+      different category and a different prefix:
+      <ul>
+        <li><span class="mono">mlb</span> — Name has <span class="mono">[MLB]</span>, category
+          <span class="mono">Live Events/MLB</span>, prefix <span class="mono">mlb.</span></li>
+        <li><span class="mono">nfl</span> — Name has <span class="mono">[NFL]</span>, category
+          <span class="mono">Live Events/NFL</span>, prefix <span class="mono">nfl.</span></li>
+        <li><span class="mono">events</span> — the rest: Name has <b>not</b>
+          <span class="mono">[MLB], [NFL]</span>, category <span class="mono">Live Events</span>, prefix
+          <span class="mono">ev.</span></li>
+      </ul>
+      A category written as <b>Parent/Child</b> is a child rail in the apps, so “Live Events” now holds an <b>MLB</b>
+      rail and an <b>NFL</b> rail. Keep the pieces of text <b>separate</b>: an entry that two sources take gets two
+      channels. The prefixes keep the ids apart, so the two sources never fight over one channel.</li>
     <li><b>Event addresses expire.</b> Set a short interval, for example 30 minutes. The panel then pulls the new
       addresses and sends them to viewers. A viewer gets them at the next channel start, with no new login.</li>
   </ul>`
+
+// The comma-separated source filter fields (groups, name has, name has not) all read the
+// same way: split, trim, drop the empties — so an operator can space them out, and an empty
+// field means "no filter" rather than one blank rule.
+const csvField = (s) => String(s ?? '').split(',').map((t) => t.trim()).filter(Boolean)
 
 $('#source-add-btn').addEventListener('click', () => addSourceDlg())
 $('#source-format-btn').addEventListener('click', () => dialog('Source feed format', [], { okLabel: 'Close', body: FEED_FORMAT_HTML }))
@@ -1591,6 +1627,8 @@ async function addSourceDlg () {
     { name: 'format', label: 'Format — json = a provider feed, m3u = a playlist', type: 'select', options: ['json', 'm3u'], value: 'json' },
     { name: 'category', label: 'Category label (the rail viewers see)', placeholder: 'Anime' },
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' },
+    { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', placeholder: '[MLB], [NFL]' },
+    { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', placeholder: '(WEBCAST), (STRMXHD)' },
     { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: false }
   ], {
     okLabel: 'Add',
@@ -1604,11 +1642,18 @@ async function addSourceDlg () {
   if (!v) return
   const name = v.name.trim()
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return toast('name must start alphanumeric and use only letters, digits, . _ -', true)
-  // Groups are meaningless on a json feed, so an m3u-only field must not travel with one —
-  // it would sit in the record inviting a "why is my filter ignored?" later.
-  const groups = v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : []
+  // Groups and the name filters are meaningless on a json feed, so an m3u-only field must
+  // not travel with one — it would sit in the record inviting a "why is my filter ignored?"
+  // later. (mapFeed reads none of them; only mapM3U does.)
+  const m3uOnly = (s) => (v.format === 'm3u' ? csvField(s) : [])
+  const groups = m3uOnly(v.groups)
   try {
-    await api('POST', '/api/sources', { name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups, allowCleartext: v.allowCleartext })
+    await api('POST', '/api/sources', {
+      name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups,
+      titleInclude: m3uOnly(v.titleInclude),
+      titleExclude: m3uOnly(v.titleExclude),
+      allowCleartext: v.allowCleartext
+    })
     toast(`source "${name}" added — pulling the feed…`)
     await syncSourceNow(name)
   } catch (err) { toast(err.message, true) }
@@ -1622,7 +1667,7 @@ async function syncSourceNow (name) {
       ? `"${name}": feed not modified · ${r.granted} grant(s) sealed`
       : `"${name}": +${r.added} added, ~${r.updated} updated, −${r.removed} removed, ${r.granted} grant(s) sealed` +
         (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : '') +
-        (r.filtered ? ` · ${r.filtered} outside your groups` : '') +
+        (r.filtered ? ` · ${r.filtered} left out by your filters` : '') +
         (r.truncated ? ` · ${r.truncated} over the channel cap — dropped` : ''))
     await refresh()
   } catch (err) { toast(err.message, true); await refresh().catch(() => {}) }
@@ -1655,13 +1700,15 @@ function showSyncReport (s) {
       : '<p class="muted">(ids are recorded from the next sync)</p>'
   }
   if (rep.excluded) body += `<p class="muted">${rep.excluded} excluded by you (channels dialog).</p>`
-  // Not an error and not an exclusion: entries the group filter left in the playlist.
-  if (rep.filtered) body += `<p class="muted">${rep.filtered} entr${rep.filtered === 1 ? 'y is' : 'ies are'} outside your groups. The panel did not import ${rep.filtered === 1 ? 'it' : 'them'}. Edit <b>Groups</b> on the source to take more.</p>`
-  // The one shape where a correct prune and a mistyped group name look the same from
-  // outside: the sync removed every channel, and the filter matched nothing.
+  // Not an error and not an exclusion: entries the source's filters (group + name) left in
+  // the playlist. One count for both, because the operator question is the same one.
+  if (rep.filtered) body += `<p class="muted">${rep.filtered} entr${rep.filtered === 1 ? 'y is' : 'ies are'} left out by your filters. The panel did not import ${rep.filtered === 1 ? 'it' : 'them'}. Edit <b>Groups</b>, <b>Name has</b> or <b>Name has not</b> on the source to take more.</p>`
+  // The one shape where a correct prune and a mistyped filter look the same from
+  // outside: the sync removed every channel, and the filters matched nothing.
   if (rep.emptiedByFilter) {
-    body += `<p class="warn-text"><b>The group filter matched no entries. All channels of this source were removed.</b>
-      The provider can have changed a group name. Use <b>edit</b> on the source and compare <b>Groups</b> with the group names in the playlist.</p>`
+    body += `<p class="warn-text"><b>Your filters matched no entries. All channels of this source were removed.</b>
+      The provider can have changed a group name, or the words it writes in the channel names. Use <b>edit</b> on the
+      source and compare <b>Groups</b> and <b>Name has</b> with the playlist.</p>`
   }
   dialog(`Last sync — ${s.name}`, [], { okLabel: 'Close', body })
 }
@@ -1744,13 +1791,15 @@ async function editSource (s) {
     { name: 'format', label: 'Format — json = a provider feed, m3u = a playlist', type: 'select', options: ['json', 'm3u'], value: s.format || 'json' },
     { name: 'category', label: 'Category label (the rail viewers see)', value: s.category },
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', value: (s.groups || []).join(', '), placeholder: 'Live Events, PPV' },
+    { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', value: (s.titleInclude || []).join(', '), placeholder: '[MLB], [NFL]' },
+    { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', value: (s.titleExclude || []).join(', '), placeholder: '(WEBCAST), (STRMXHD)' },
     { name: 'prefix', label: 'Channel id prefix', value: s.prefix },
     { name: 'minutes', label: 'Sync every (minutes)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 60000), min: 1, max: 43200, step: 1 },
     { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false },
     { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: !!s.allowCleartext }
   ], {
     body: `<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category — and the playback headers of an m3u) on every sync — manual edits to those don't stick on imported channels.</p>
-      <p class="muted">Changing the <b>format</b> or the <b>groups</b> makes the next sync read the whole feed again. A group you remove takes its channels with it.</p>
+      <p class="muted">Changing the <b>format</b>, the <b>groups</b> or a <b>name</b> filter makes the next sync read the whole feed again. A group or a name you no longer take goes out of the catalog with its channels.</p>
       <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>
       <p class="muted"><b>Allow cleartext</b> lets this source import plain-http stream URLs, for a provider that serves some streams over http instead of https. It applies to this source only, never to manual channels, and the next sync re-reads the feed to apply it. An http stream plays only where the client permits cleartext.</p>`
   })
@@ -1763,9 +1812,11 @@ async function editSource (s) {
     url: v.url.trim(),
     format: v.format,
     category: v.category.trim(),
-    // Always sent, so emptying the field really clears the filter. A json source keeps
-    // no groups at all — the field does not apply to it.
-    groups: v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : [],
+    // Always sent, so emptying a field really clears that filter. A json source keeps
+    // no groups and no name filters at all — they do not apply to it.
+    groups: v.format === 'm3u' ? csvField(v.groups) : [],
+    titleInclude: v.format === 'm3u' ? csvField(v.titleInclude) : [],
+    titleExclude: v.format === 'm3u' ? csvField(v.titleExclude) : [],
     prefix: v.prefix.trim(),
     intervalMs: minutes * 60000,
     autoGrant: v.autoGrant,

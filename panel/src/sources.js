@@ -11,8 +11,9 @@
 //   - 'm3u': a plain playlist (parseM3U + mapM3U). Ids are SLUGGED FROM THE NAME
 //     because playlist tvg-ids are routinely dummies, `#EXTVLCOPT` lines import as
 //     per-channel playback `headers` (hotlink-protected providers), a `groups` filter
-//     selects which group-titles this source takes, and the entries carry NO EPG
-//     pointer — a playlist is not a program guide.
+//     selects which group-titles this source takes, `titleInclude`/`titleExclude` select
+//     inside a group by entry NAME (one mixed "Live Events" group split into a rail per
+//     sport), and the entries carry NO EPG pointer — a playlist is not a program guide.
 //
 // Trust boundary: the feed is THIRD-PARTY DATA, never instructions. Every entry
 // passes the same validators as admin input (normRedirectUrl/normArt/checkName),
@@ -62,6 +63,8 @@ const SKIP_REPORT_MAX = 20
 const EXCLUDE_MAX = 1000
 const GROUP_MAX = 64
 const GROUPS_MAX = 50
+const TITLE_FILTER_MAX = 64
+const TITLE_FILTERS_MAX = 50
 const ID_MAX = 64 // NAME_RE's ceiling (ops.js) — prefix + slug must fit inside it
 
 // ---------------------------------------------------------------- registry
@@ -185,6 +188,52 @@ function normGroups (v) {
   return out.length ? out : null
 }
 
+// M3U title filters: the group filter's sibling, one level down. A provider list often
+// carries every sport of the day inside ONE group-title ("Live Events"), with the sport
+// written into the entry NAME — "[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed".
+// The group filter cannot reach that, so `titleInclude` / `titleExclude` select on the
+// display name and let one playlist feed a rail PER SPORT ('Live Events/MLB' — a category
+// is already two-level, see normSlug in ops.js — with its own prefix and its own source).
+// `titleExclude` also drops the dead provider tags an operator learns by name ("(WEBCAST)").
+//
+// Deliberately SUBSTRING and case-insensitive, never a regular expression: an operator can
+// check a substring rule by eye against the playlist, it cannot be made to backtrack for
+// seconds on a hostile name, and it is the same kind of rule `groups` already is. The names
+// these match are event titles the provider writes freely, so an exact match (the group
+// rule) would be useless here and a regex would be a footgun.
+// Accepts an array or a comma string (CLI parity with normGroups/normExclude), and the two
+// forms are held PROVABLY IDENTICAL: no comma can survive into a stored rule, so a rule means
+// the same thing however it arrived and whatever surface round-trips it.
+function normTitleFilter (v, what) {
+  if (v == null || v === '') return null
+  const list = Array.isArray(v) ? v : String(v).split(',')
+  const out = []
+  const seen = new Set()
+  for (const raw of list) {
+    const t = String(raw ?? '').trim()
+    if (!t) continue
+    if (t.length > TITLE_FILTER_MAX) bad(`${what} entry must be at most ${TITLE_FILTER_MAX} characters`)
+    // A one-character rule is a substring of nearly every event name, and the damage would be
+    // SILENT: it prunes almost the whole rail, but almost is not zero, so emptiedByFilter does
+    // NOT fire and nothing warns. Two characters is the cheapest guard that keeps a slip of the
+    // keyboard off a deleteStream path. (Real rules read "[MLB]", "(WEBCAST)".)
+    if (t.length < 2) bad(`${what} entry must be at least 2 characters — one character matches almost every name`)
+    // Only reachable from the ARRAY form; the string form already split on commas. Rejecting it
+    // is what keeps the two forms interchangeable: ["Team A, Team B"] is ONE literal substring
+    // here, but every text field that shows the list joins it with commas, so re-saving that
+    // field would split it into two far broader rules. On titleExclude a widened rule is a
+    // deleteStream on channels the operator never meant to prune, so say no at the door.
+    if (t.includes(',')) bad(`${what} entry must not contain a comma — the comma separates one rule from the next`)
+    if (/[\r\n]/.test(t)) bad(`${what} entry must not contain line breaks`)
+    const k = t.toLowerCase()
+    if (seen.has(k)) continue // the match is case-insensitive, so two casings are one rule
+    seen.add(k)
+    out.push(t)
+  }
+  if (out.length > TITLE_FILTERS_MAX) bad(`at most ${TITLE_FILTERS_MAX} ${what} entries per source`)
+  return out.length ? out : null
+}
+
 function normInterval (v, dflt) {
   if (v == null || v === '') return dflt
   const n = typeof v === 'number' ? v : parseInt(v, 10)
@@ -209,6 +258,8 @@ export function addSource (ctx, name, opts = {}) {
     intervalMs: normInterval(opts.intervalMs, scfg(ctx).defaultIntervalMs),
     exclude: normExclude(opts.exclude),
     groups: normGroups(opts.groups),
+    titleInclude: normTitleFilter(opts.titleInclude, 'titleInclude'),
+    titleExclude: normTitleFilter(opts.titleExclude, 'titleExclude'),
     etag: null,
     lastSync: null,
     lastError: null,
@@ -260,6 +311,14 @@ export function setSource (ctx, name, fields = {}) {
     // Same reason as exclude: the next sync needs the full body to apply a filter change.
     if (JSON.stringify(next) !== JSON.stringify(s.groups ?? null)) s.etag = null
     s.groups = next
+  }
+  // The two name filters, same dance again: they change how the SAME bytes map, so a
+  // cached ETag would answer 304 and skip the re-map the operator just asked for.
+  for (const f of ['titleInclude', 'titleExclude']) {
+    if (fields[f] === undefined) continue
+    const next = normTitleFilter(fields[f], f)
+    if (JSON.stringify(next) !== JSON.stringify(s[f] ?? null)) s.etag = null
+    s[f] = next
   }
   saveSources(ctx.dataDir, sources)
   return { name, ...s }
@@ -409,8 +468,10 @@ function mapFeed (source, feed, { maxChannels }) {
       epgId: rawId
     })
   }
-  // `filtered` is the m3u group filter's count; a json feed has no group concept, so it
-  // reports zero and both mappers hand applyFeed/doSync the same shape.
+  // `filtered` counts what the m3u filters (group + name) left out; a json feed has neither
+  // — it is keyed by PROVIDER ids, so `exclude` names an entry exactly and a name rule would
+  // only add a second, fuzzier way to say the same thing — so it reports zero and both
+  // mappers hand applyFeed/doSync the same shape.
   return { entries, skipped, truncated, excluded, filtered: 0 }
 }
 
@@ -538,8 +599,12 @@ function slugify (name, max) {
 
 // Map a parsed playlist to catalog-entry fields — the mapFeed contract (same return
 // shape, same skip-don't-throw discipline, same degrade-art-not-channel rule) plus one
-// extra count, `filtered`, for entries left out by the group filter. Filtered entries
-// are NOT skips: nothing is wrong with them, the operator asked for other groups.
+// extra count, `filtered`, for entries left out by this source's FILTERS (the group
+// filter and the two name filters together). Filtered entries are NOT skips: nothing is
+// wrong with them, the operator asked for other entries. The two live in one counter on
+// purpose — the operator question they answer is the same one ("how much of this playlist
+// is not mine?"), the report and the dashboard already speak it, and a per-rule breakdown
+// would need the rules themselves to mean anything, which the source record already shows.
 function mapM3U (source, text, { maxChannels }) {
   const { entries: list, stray } = parseM3U(text)
   const entries = new Map()
@@ -547,6 +612,23 @@ function mapM3U (source, text, { maxChannels }) {
   const excludedIds = new Set((source.exclude || []).map((e) => e.id))
   const groups = (source.groups || []).map((g) => String(g).trim().toLowerCase())
   const inGroups = (e) => !groups.length || groups.includes(String(e.group || '').trim().toLowerCase())
+  // Name filters (see normTitleFilter): substring, case-insensitive, matched against the
+  // DISPLAY NAME — the same string the id is slugged from and the title is taken from, so
+  // what the operator reads in the playlist is exactly what the rule is tested against.
+  // EXCLUDE WINS: a name that matches both is out. That order is the one an operator can
+  // reason about ("take the MLB games, but never the dead WEBCAST feeds") and it makes the
+  // two fields composable — a widening include can never drag back something explicitly
+  // banned. Both empty = no name filtering at all, so every source configured before this
+  // existed maps byte-identically.
+  const titleIn = (source.titleInclude || []).map((t) => String(t).trim().toLowerCase()).filter(Boolean)
+  const titleOut = (source.titleExclude || []).map((t) => String(t).trim().toLowerCase()).filter(Boolean)
+  const titleOk = (e) => {
+    if (!titleIn.length && !titleOut.length) return true
+    const n = String(e.name || e.tvgName || '').toLowerCase()
+    if (titleOut.some((t) => n.includes(t))) return false
+    return !titleIn.length || titleIn.some((t) => n.includes(t))
+  }
+  const wanted = (e) => inGroups(e) && titleOk(e)
   const budget = ID_MAX - String(source.prefix || '').length // room left for the slug
   const used = new Set()
   let excluded = 0
@@ -558,18 +640,22 @@ function mapM3U (source, text, { maxChannels }) {
   for (let i = 0; i < list.length; i++) {
     if (entries.size >= maxChannels) {
       // Only entries this source would actually IMPORT are "over the cap". Counting the
-      // raw tail would blame the cap for every entry the group filter was going to drop
+      // raw tail would blame the cap for every entry the filters were going to drop
       // anyway — on a playlist where one group is a tenth of the file, that number is
       // almost entirely fiction.
-      for (let j = i; j < list.length; j++) if (inGroups(list[j])) truncated++
+      for (let j = i; j < list.length; j++) if (wanted(list[j])) truncated++
       break
     }
     const e = list[i]
     const label = (e.name || e.tvgName || e.tvgId || '(unnamed)').slice(0, 128)
     const skip = (reason) => skipped.push({ id: label, reason })
-    // Group filter FIRST — cheapest test, and it decides whether this entry is even
-    // this source's business (one playlist commonly feeds several sources).
+    // Filters FIRST — cheapest tests, and they decide whether this entry is even this
+    // source's business (one playlist commonly feeds several sources). Running them
+    // before the slug also keeps the ids of a narrow source independent of the entries
+    // it does not take: a name collision that would earn a `-2` is only a collision
+    // among the entries THIS source imports.
     if (!inGroups(e)) { filtered++; continue }
+    if (!titleOk(e)) { filtered++; continue }
     let slug = slugify(e.name || e.tvgName, budget)
     if (!slug) { skip('unusable name'); continue }
     if (used.has(slug)) {
@@ -798,8 +884,8 @@ async function doSync (ctx, name) {
     if (fetched.notModified) {
       // Nothing was re-read, so the counts that describe the BODY are not zero — they are
       // simply unmeasured this round. `unchanged` has always said so with null; `filtered`
-      // carries the last measurement forward instead, or the dashboard's "N outside your
-      // groups" line would blink off on every 304 and back on at the next real pull.
+      // carries the last measurement forward instead, or the dashboard's "N left out by
+      // your filters" line would blink off on every 304 and back on at the next real pull.
       report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, emptiedByFilter: false }
     } else {
       // One dispatch, two mappers, one contract — everything downstream (applyFeed, the
@@ -814,8 +900,9 @@ async function doSync (ctx, name) {
         truncated: mapped.truncated,
         excluded: mapped.excluded,
         filtered: mapped.filtered,
-        // A group-title the provider renamed (or the operator mistyped) matches nothing,
-        // and a sync that matches nothing legitimately prunes the whole rail — the feed IS
+        // A group-title the provider renamed, a mistyped group, or a titleInclude whose
+        // wording the provider dropped ("[MLB]" → "MLB:") matches nothing, and a sync that
+        // matches nothing legitimately prunes the whole rail — the feed IS
         // the membership. That is correct and must keep working, but it must not be
         // SILENT: this is the one shape where "everything gone" and "filter is wrong" look
         // identical from the outside, so flag it and let the dashboard say it out loud.
@@ -847,8 +934,8 @@ async function doSync (ctx, name) {
         skippedDetail: report.skipped, // already capped at SKIP_REPORT_MAX
         truncated: report.truncated,
         excluded: report.excluded,
-        filtered: report.filtered, // m3u only: entries outside the source's groups
-        emptiedByFilter: !!report.emptiedByFilter, // the filter matched nothing and the rail was pruned
+        filtered: report.filtered, // m3u only: entries the group + name filters left out
+        emptiedByFilter: !!report.emptiedByFilter, // the filters matched nothing and the rail was pruned
         granted: report.granted
       }
       saveSources(ctx.dataDir, fresh)

@@ -55,6 +55,12 @@ function requireKeys () {
 
 const str = (v) => (v != null && v !== true ? String(v) : undefined)
 
+// A comma-list flag that can also be CLEARED. `str` is wrong for these: parseArgs turns a
+// bare `--flag` AND `--flag ""` into `true` alike, and str drops both — so the `""` every
+// usage line documents as "clears this filter" quietly did nothing. Here `true` means the
+// empty list, which is what the validators read as "no filter".
+const clearable = (v) => (v == null ? undefined : v === true ? '' : String(v))
+
 // "hm=1,hs=2" -> { hm: '1', hs: '2' }; "" -> {}. Values may contain '=' (split once).
 function parseKeyVals (s) {
   const out = {}
@@ -297,13 +303,19 @@ async function main () {
       category: str(opts.category),
       prefix: str(opts.prefix),
       groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined, // comma group-titles (m3u)
+      // Name filters (m3u): comma substrings tested against the entry name — the way one
+      // mixed "Live Events" group is split into a rail per sport.
+      titleInclude: opts['title-include'] != null && opts['title-include'] !== true ? String(opts['title-include']) : undefined,
+      titleExclude: opts['title-exclude'] != null && opts['title-exclude'] !== true ? String(opts['title-exclude']) : undefined,
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
       allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // let this source import http:// stream urls
       enabled: opts.disabled === true ? false : undefined
     })
     console.log(`Added ${s.format} source "${name}" → category "${s.category}" (prefix "${s.prefix}", every ${Math.round(s.intervalMs / 3600000 * 10) / 10}h, autoGrant ${s.autoGrant}` +
-      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') + ').')
+      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') +
+      ((s.titleInclude || []).length ? `, name has: ${s.titleInclude.join(' | ')}` : '') +
+      ((s.titleExclude || []).length ? `, name has not: ${s.titleExclude.join(' | ')}` : '') + ').')
     console.log('The running panel syncs it on its next tick; for an immediate pull use the dashboard "Sync now" or sync-source (panel stopped).')
     return
   }
@@ -313,6 +325,7 @@ async function main () {
     for (const [name, s] of Object.entries(all)) {
       console.log(name, '->', JSON.stringify({
         url: s.url, format: s.format || 'json', category: s.category, prefix: s.prefix, groups: s.groups || null,
+        titleInclude: s.titleInclude || null, titleExclude: s.titleExclude || null,
         enabled: s.enabled !== false, autoGrant: s.autoGrant !== false,
         lastSync: s.lastSync ? new Date(s.lastSync).toISOString() : null, lastError: s.lastError || null, lastReport: s.lastReport || null
       }))
@@ -330,12 +343,22 @@ async function main () {
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
       allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // flip the http:// exemption for this source
       enabled: opts.enabled != null ? opts.enabled : undefined,
-      exclude: opts.exclude != null && opts.exclude !== true ? String(opts.exclude) : undefined, // comma feed-ids; '' clears
-      groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined // comma group-titles; '' takes every group
+      // All four list filters clear with `""`, as the usage text has always said. parseArgs
+      // collapses `--groups ""` to `true` (an empty next argument reads as "no value"), so
+      // `true` IS what an operator clearing a filter sends — map it to '' rather than dropping
+      // it. Dropping it made the documented clear a silent no-op for --exclude and --groups:
+      // a filter set from the shell could never be unset from the shell. Every clear here
+      // WIDENS what the source takes, so this is the safe direction to be wrong in.
+      exclude: clearable(opts.exclude), // comma feed-ids; '' re-includes all
+      groups: clearable(opts.groups), // comma group-titles; '' takes every group
+      titleInclude: clearable(opts['title-include']), // comma name substrings; '' takes every name
+      titleExclude: clearable(opts['title-exclude'])
     })
     console.log(`Updated ${s.format || 'json'} source "${name}" (category "${s.category}", enabled ${s.enabled !== false}` +
       ((s.exclude || []).length ? `, ${s.exclude.length} excluded` : '') +
-      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') + '). Changes apply on its next sync.')
+      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') +
+      ((s.titleInclude || []).length ? `, name has: ${s.titleInclude.join(' | ')}` : '') +
+      ((s.titleExclude || []).length ? `, name has not: ${s.titleExclude.join(' | ')}` : '') + '). Changes apply on its next sync.')
     return
   }
 
@@ -792,20 +815,34 @@ function usage () {
   set-publisher-status <name> <active|revoked>   Revoke/re-activate a publisher's key
   remove-publisher <name>               Hard-delete a publisher (revoke keeps the audit trail)
   add-source <name> <url> --category <label> [--format json|m3u] [--groups "Live Events,PPV"]
+                          [--title-include "[MLB],[NFL]"] [--title-exclude "(WEBCAST),(STRMXHD)"]
                           [--prefix p.] [--interval-hours N] [--auto-grant false] [--allow-cleartext] [--disabled]
                                         Register a remote channel feed as a category. --format m3u reads an M3U
                                         playlist: ids come from the channel names, #EXTVLCOPT lines import as
                                         playback headers, and --groups picks the group-titles to take (blank = all).
+                                        --title-include/--title-exclude then select INSIDE a group by the entry
+                                        name: comma-separated pieces of text, upper and lower case ignored, each at
+                                        least 2 characters (one character matches almost every name).
+                                        With --title-include the panel takes an entry only when its name contains
+                                        one of them; --title-exclude drops an entry that contains one of them, and
+                                        wins over --title-include.
                                         Point several sources at ONE playlist, each with its own groups, category
-                                        and prefix, to split a mixed list into the right rails.
+                                        and prefix, to split a mixed list into the right rails. One group that
+                                        mixes sports splits the same way with --title-include and a two-level
+                                        category: --title-include "[MLB]" --category "Live Events/MLB" --prefix mlb.
+                                        for one source, "[NFL]" / "Live Events/NFL" / nfl. for the next, and a
+                                        catch-all source with --title-exclude "[MLB],[NFL]" for the rest.
                                         --allow-cleartext lets THIS source import http:// (non-TLS) stream urls;
                                         off by default, and manual channels are never affected. http only plays
                                         where the client permits cleartext.
   list-sources                          List channel sources + last sync state
   set-source <name> [--url --format --category --prefix --interval-hours --auto-grant --allow-cleartext true|false
-                     --enabled true|false --exclude "feedId1,feedId2" --groups "Live Events"]
+                     --enabled true|false --exclude "feedId1,feedId2" --groups "Live Events"
+                     --title-include "[MLB]" --title-exclude "(WEBCAST)"]
                                         (--exclude DESELECTS feed entries: removed + skipped every sync; "" re-includes all)
                                         (--groups filters an m3u by group-title; "" takes every group)
+                                        (--title-include/--title-exclude filter an m3u by entry name, upper and
+                                         lower case ignored; exclude wins; "" takes every name again)
                                         (--allow-cleartext true lets this source import http:// stream urls; source-scoped)
   list-categories                       Category vocabulary in use + per-category channel counts
   rename-category <from> <to>           Rename a rail; children of a parent move with it
