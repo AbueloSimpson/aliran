@@ -34,6 +34,11 @@
 //        ok     = remoteProofValid(secret, socket.handshakeHash, peerRole(myRole), theirs)
 //        digits = remoteSas(secret, socket.handshakeHash)   -> see the SAS note below
 //
+//   The sign-in handover adds ONE more round on top of that, because the mutual proof
+//   authenticates a CODE and not a DEVICE (remotePinProof below): the phone draws four
+//   random digits the TV cannot derive, the viewer types them into the TV with the
+//   remote, and the TV proves it learned them before any key material is released.
+//
 // WHY A PROOF AT ALL. A topic is a public rendezvous and anyone may answer on it —
 // sdk/pairing.js:13-19 spells out the same hazard for the service pairing code.
 // Hyperswarm's Noise handshake authenticates the peer KEYPAIR, which tells us nothing
@@ -79,7 +84,7 @@
 //             orientation for authentication, and the one every proof below uses.
 //
 // DOMAIN SEPARATION (core/pairing.js:45-49 — no output of one construction may ever be
-// an input another would accept). Seven labels, all distinct from 'aliran-pairing-code-v1',
+// an input another would accept). Eight labels, all distinct from 'aliran-pairing-code-v1',
 // 'aliran-pair-v1' and 'aliran-wrapkey-v1', and from each other:
 //
 //   aliran-signin-code-v1     Argon2id salt: the sign-in code -> one master secret
@@ -89,6 +94,8 @@
 //   aliran-remote-topic-v1    account shared secret (+ epoch) -> the account swarm topic
 //   aliran-remote-proof-v1    shared secret + handshake hash + role -> a proof
 //   aliran-remote-sas-v1      shared secret + handshake hash -> the compared digits
+//   aliran-remote-pin-v1      shared secret + role + typed digits + handshake hash ->
+//                             proof that the prover LEARNED the digits
 //
 // The two labels that take a COMPOUND message (secret + tokenVersion, topic + epoch)
 // stay unambiguous by fixed widths, not by delimiters: 32 bytes of key material then
@@ -198,10 +205,10 @@ export const REMOTE_PROOF_BYTES = 32
 export const REMOTE_ROLES = { initiator: 'initiator', responder: 'responder' }
 
 // --- domain separation -------------------------------------------------------------
-// Seven labels, all distinct from each other and from pairing.js's two. The four that
+// Eight labels, all distinct from each other and from pairing.js's two. The four that
 // serve as BLAKE2b KEYS (the subkey() ones) are each >= crypto_generichash_KEYBYTES_MIN
-// (16 bytes) — shorten one below that and sodium throws at first use. The proof and SAS
-// labels are message prefixes, and the KDF one is hashed down to an Argon2id salt.
+// (16 bytes) — shorten one below that and sodium throws at first use. The proof, SAS and
+// PIN labels are message prefixes, and the KDF one is hashed down to an Argon2id salt.
 const SIGNIN_KDF_SALT = deriveSalt('aliran-signin-code-v1')
 const SIGNIN_TOPIC_LABEL = b4a.from('aliran-signin-topic-v1')
 const SIGNIN_SECRET_LABEL = b4a.from('aliran-signin-secret-v1')
@@ -209,6 +216,7 @@ const ACCOUNT_SECRET_LABEL = b4a.from('aliran-remote-secret-v1')
 const ACCOUNT_TOPIC_LABEL = b4a.from('aliran-remote-topic-v1')
 const PROOF_LABEL = b4a.from('aliran-remote-proof-v1')
 const SAS_LABEL = b4a.from('aliran-remote-sas-v1')
+const PIN_LABEL = b4a.from('aliran-remote-pin-v1')
 
 const KDF_BYTES = 32 // >= crypto_pwhash_BYTES_MIN
 const COUNTER_BYTES = 8 // the fixed width every compound message ends with
@@ -612,9 +620,13 @@ const SAS_DRAW_LIMIT = Math.floor(SAS_DRAW_WIDTH / SAS_MODULUS) * SAS_MODULUS
  *     trusted. What defends that case is the code itself: 60 bits of entropy, a ~3
  *     minute TTL and one use (see WHY 12 CHARACTERS above).
  *
- * How WP2 puts these digits in front of the viewer — compared across two screens, or
- * read from one and entered on the other — is a product decision that is still open.
- * The primitive is the same either way: four uniform digits bound to one connection.
+ * NOT WHAT THE SIGN-IN HANDOVER USES. That product decision is now made, and it went
+ * the other way: the viewer TYPES digits into the TV rather than comparing two screens.
+ * These digits cannot serve that, because BOTH ends of one connection derive them
+ * independently — a hostile TV would simply assert "the viewer typed it correctly" and
+ * the phone could not tell the difference. Entry needs a value the receiving device
+ * cannot derive; see remotePinProof below. This function stays for the account
+ * rendezvous (case B), where two already-signed-in devices really are comparing.
  */
 export function remoteSas (secret, handshakeHash) {
   const key = bytes32(secret, 'secret')
@@ -631,4 +643,121 @@ export function remoteSas (secret, handshakeHash) {
     }
   }
   throw new Error('SAS derivation exhausted') // unreachable
+}
+
+// --- the entry PIN --------------------------------------------------------------------
+//
+// WHAT THIS ROUND IS FOR, AND WHAT IT IS NOT FOR. The mutual proof above authenticates a
+// CODE: it says "the peer on this connection knows the twelve characters". It cannot say
+// "the peer on this connection is the box in front of the viewer", because the code is
+// read off a screen and anything that can read that screen — or that talked the viewer
+// into reading it out — knows it too. The PIN closes the gap in the one direction that a
+// derivation can: the digits are drawn at RANDOM by the phone and TYPED INTO the target
+// device, so a device that can prove it holds them is a device someone with a remote
+// control in their hand is standing at.
+//
+// BE PRECISE ABOUT WHAT THAT BUYS. It does not close the wrong-screen case
+// unconditionally. An attacker running a LIVE interactive pretext — a fake support
+// session, a screen-shared "setup wizard" — can still ask the viewer to read the digits
+// out or type them into the attacker's own UI, and the viewer who was willing to type a
+// sign-in code into a stranger's page will be willing to type four more digits. What it
+// removes is the CHEAP version of that attack: a static lure (a printed code, a
+// forwarded screenshot, a page that says "enter this on your TV") no longer works,
+// because the attacker must now be present, in real time, for the whole exchange, and
+// must keep the viewer engaged through a second step that has an obvious right answer
+// on a screen the viewer is holding. That is a real reduction in attack surface and it
+// is the whole of the claim. Do not let it be written up as "phishing-proof".
+//
+// WHY A MAC AND NOT AN ENCRYPTED PAYLOAD. The obvious alternative is to encrypt the
+// handover under a key derived from the digits, so a TV that does not know them cannot
+// read it. That is strictly WORSE: four digits are 13.3 bits, so an attacker who
+// captures the ciphertext recovers the payload offline in ten thousand guesses at zero
+// cost. A MAC keeps the guess ONLINE, where the sender counts the attempts — and the
+// sender must allow exactly ONE (a mismatch aborts and burns the code, sdk/signin-pair.js).
+// One attempt is what makes 1-in-10,000 the real number instead of a warm-up.
+//
+// The proof is bound to the handshake hash for the same reason every other proof in this
+// file is: without it, a relay that already holds the code could take the PIN proof the
+// viewer produced on the leg to the real TV and present it on its own leg to the phone.
+// With it, the two legs have different transcripts and the proof does not carry across.
+
+export const REMOTE_PIN_DIGITS = 4
+const PIN_MODULUS = 10 ** REMOTE_PIN_DIGITS
+// Rejection sampling, with the same argument as the SAS above but on its OWN constants.
+// The two counts are equal today and must stay free to move apart: they answer different
+// questions (how many digits a viewer COMPARES across two screens, against how many a
+// viewer TYPES on a D-pad), and a shared constant would silently couple a UX change on
+// one to a security-relevant change on the other. Take a 32-bit draw, discard the ragged
+// tail above the last whole multiple of 10,000, reduce what is left: exactly uniform
+// rather than nearly, with a draw rejected about once in 589,000.
+const PIN_DRAW_WIDTH = 0x100000000
+const PIN_DRAW_LIMIT = Math.floor(PIN_DRAW_WIDTH / PIN_MODULUS) * PIN_MODULUS
+const PIN_RE = new RegExp('^[0-9]{' + REMOTE_PIN_DIGITS + '}$')
+
+/**
+ * Four uniform digits for the viewer to carry to the TV: '0473'. Drawn from the system
+ * CSPRNG, NOT derived — that is the entire point (see the section note above): the
+ * receiving device must not be able to compute this from anything it holds.
+ *
+ * A string with its leading zeros, never a number: '0473' and 473 are different PINs to
+ * everything downstream, and a caller that lets one become the other would produce
+ * proofs the other side cannot reproduce.
+ */
+export function newRemotePin () {
+  const buf = b4a.alloc(4)
+  for (let i = 0; i < 256; i++) {
+    sodium.randombytes_buf(buf)
+    const draw = buf[0] * 0x1000000 + buf[1] * 0x10000 + buf[2] * 0x100 + buf[3]
+    if (draw < PIN_DRAW_LIMIT) return String(draw % PIN_MODULUS).padStart(REMOTE_PIN_DIGITS, '0')
+  }
+  // 256 consecutive rejections has probability below 10^-1300. A fallback here would
+  // quietly reintroduce the bias the rejection step exists to remove, so: throw.
+  throw new Error('PIN derivation exhausted') // unreachable
+}
+
+// Exactly REMOTE_PIN_DIGITS ASCII digits, as a string. Fixed width, so it can sit in the
+// middle of a proof message without a delimiter. A number, a short string or a padded
+// one throws rather than being coerced: silently accepting 473 for '0473' would make one
+// device's proof unreproducible on the other, which presents as "the PIN is wrong" for
+// every viewer who happens to draw a leading zero — one pairing in ten.
+function pinBytes (pin) {
+  if (typeof pin !== 'string' || !PIN_RE.test(pin)) {
+    throw new TypeError('pin must be exactly ' + REMOTE_PIN_DIGITS + ' ASCII digits, leading zeros included')
+  }
+  return b4a.from(pin)
+}
+
+/**
+ * Proof that this side LEARNED the digits, on THIS connection, in THAT role:
+ * MAC(secret, label || role || pin || handshakeHash).
+ *
+ * Re-splittable exactly one way — the label is a constant, the role is one of two
+ * strings of equal length, the PIN is a fixed REMOTE_PIN_DIGITS bytes, and the hash is
+ * the remainder — so no other input produces these bytes, and in particular nothing
+ * remoteProof() or remoteSas() emits ever collides with it.
+ *
+ * The role field is NOT load-bearing in the sign-in handover, where only one end ever
+ * emits a PIN proof: it is here because it costs one field, it keeps this function the
+ * same shape as remoteProof(), and it makes the primitive safe for any later flow where
+ * both ends prove digits to each other — which without a role would be a straight
+ * reflection.
+ */
+export function remotePinProof (secret, handshakeHash, role, pin) {
+  return mac(bytes32(secret, 'secret'), PIN_LABEL, roleBytes(role), pinBytes(pin), handshakeHashBytes(handshakeHash))
+}
+
+/**
+ * Does `proof` show the peer learned `pin`, on THIS connection, in THAT role?
+ * Constant-time (sodium_memcmp), and false rather than a throw for every malformed
+ * input — this runs on bytes a stranger on a public topic sent.
+ *
+ * ONE CALL PER PIN. The security of the digits is entirely the caller's attempt budget:
+ * this function is happy to be asked ten thousand times. See sdk/signin-pair.js, where a
+ * single mismatch ends the exchange and spends the sign-in code.
+ */
+export function remotePinProofValid (secret, handshakeHash, role, pin, proof) {
+  if (!isBytes(proof) || proof.length !== REMOTE_PROOF_BYTES) return false
+  let expected = null
+  try { expected = remotePinProof(secret, handshakeHash, role, pin) } catch { return false }
+  return sodium.sodium_memcmp(expected, b4a.from(proof))
 }

@@ -42,6 +42,17 @@ jobs:
       # reflection, and the SAS uniformity check. Pure crypto, no swarm — deterministic.
       - name: Remote-pairing primitives (test:remote-core)
         run: npm run test:remote-core
+      # "Send to TV" end to end (WP2a): a phone that is signed in signs a virgin TV in
+      # over a LOCAL DHT testnet — mutual proof, the four typed digits, the key handover,
+      # and the TV taking its OWN panel-signed token as a separate device. The load-
+      # bearing half is the refusals: a peer that cannot prove the code (and cannot burn
+      # it), a hostile TV that merely ASSERTS the viewer entered the digits, a wrong PIN
+      # that ends the exchange with no retry, two phones on one public topic producing
+      # exactly one handover, and the NEGATIVE SCAN that no private key reaches anything
+      # emitted, returned or printed. Loopback UDP only — deterministic.
+      - name: Send-to-TV sign-in handover (test:signin-pair)
+        timeout-minutes: 10
+        run: npm run test:signin-pair
       # Login-RPC hardening (S42): malformed payloads fail closed instead of crashing
       # the panel, a captured register cannot be replayed, the throttle map stays
       # bounded. Loopback SecretStream pair, no DHT — deterministic.

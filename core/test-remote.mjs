@@ -18,7 +18,8 @@
 // secret now commits to the account's tokenVersion so that "log out all devices" rotates
 // the rendezvous (see remoteSecret). The sign-in vectors are byte-identical to the ones
 // that came before it, which is the cheap proof that the change did not disturb the
-// other half of the file.
+// other half of the file. The PIN vectors (WP2a) were added the same way and are held to
+// the same rule.
 
 import assert from 'assert'
 import b4a from 'b4a'
@@ -29,6 +30,7 @@ import {
   remoteSecret, remoteTopic,
   remoteProof, remoteProofValid, peerRole, REMOTE_ROLES, REMOTE_PROOF_BYTES,
   remoteSas, REMOTE_SAS_DIGITS,
+  newRemotePin, remotePinProof, remotePinProofValid, REMOTE_PIN_DIGITS,
   CROCKFORD_ALPHABET
 } from './index.js'
 
@@ -88,6 +90,22 @@ test('KAT: proof and SAS', () => {
   assert.strictEqual(remoteSas(s, KAT_HH), '6731')
 })
 
+// The PIN proof is the one message on this wire whose absence would let a hostile TV
+// assert "the viewer typed it" — so its bytes are pinned as hard as the rest. The
+// sign-in-code variant is included because that, not the account secret, is the secret
+// the handover actually runs under (sdk/signin-pair.js).
+const KAT_PIN = '0473'
+test('KAT: PIN proof', () => {
+  const s = remoteSecret(KAT_PRIV, KAT_TV)
+  assert.strictEqual(hex(remotePinProof(s, KAT_HH, REMOTE_ROLES.initiator, KAT_PIN)), '7a1e464b6f21bd54b462b5b73b79cc8e5034eccb276aea3ed93dde4d13218729')
+  assert.strictEqual(hex(remotePinProof(s, KAT_HH, REMOTE_ROLES.responder, KAT_PIN)), '2b2ce67be5387e818c99b4b4cc202d9dde6a72a244da08f5eb87d86ab2dafb67')
+  // A different PIN, everything else equal — the digits really do reach the MAC.
+  assert.strictEqual(hex(remotePinProof(s, KAT_HH, REMOTE_ROLES.initiator, '0000')), 'ad8d50d06c627fe0a823df46e19bbf34fe93f7d0dedb15bbab9779b470a0f766')
+  // Under the sign-in code's secret, which is what a phone and a TV actually share.
+  assert.strictEqual(hex(remotePinProof(signinKeys(KAT_CODE).secret, KAT_HH, REMOTE_ROLES.responder, KAT_PIN)), '9cd8aa3ab430af7daf65fee02530fb9e1456a2bdfb534f8580212945d46be244')
+  assert.strictEqual(remotePinProof(s, KAT_HH, REMOTE_ROLES.initiator, KAT_PIN).length, REMOTE_PROOF_BYTES)
+})
+
 // ------------------------------------------------------------------ domain separation
 // core/pairing.js:45-49 — no output of one construction may ever be an input another
 // would accept. A sign-in code and a service pairing code share a string space on
@@ -112,15 +130,35 @@ test('every derivation from one input lands somewhere different', () => {
   for (const a of [k.topic, k.secret]) for (const b of [s, t]) assert.ok(!b4a.equals(a, b))
 })
 
-test('four labels over one secret land on four different values', () => {
+test('five labels over one secret land on five different values', () => {
   const s = bytes32(0x5a)
   const seen = new Set([
     hex(remoteTopic(s)),
     hex(remoteProof(s, KAT_HH, REMOTE_ROLES.initiator)),
     hex(remoteProof(s, KAT_HH, REMOTE_ROLES.responder)),
-    hex(remoteSecret(s, KAT_TV))
+    hex(remoteSecret(s, KAT_TV)),
+    hex(remotePinProof(s, KAT_HH, REMOTE_ROLES.initiator, '0473'))
   ])
-  assert.strictEqual(seen.size, 4, 'two labels produced the same bytes')
+  assert.strictEqual(seen.size, 5, 'two labels produced the same bytes')
+})
+
+// The PIN proof and the mutual proof travel over the same connection under the same
+// secret. If one could ever be presented as the other, a peer that passed the first
+// round would be handed the second for free — which is the entire round removed.
+test('a PIN proof is never a mutual proof, whatever the PIN', () => {
+  const s = signinKeys(KAT_CODE).secret
+  const h = hh(40)
+  const mutual = new Set([
+    hex(remoteProof(s, h, REMOTE_ROLES.initiator)),
+    hex(remoteProof(s, h, REMOTE_ROLES.responder))
+  ])
+  for (let n = 0; n < 10000; n++) {
+    const pin = String(n).padStart(REMOTE_PIN_DIGITS, '0')
+    assert.ok(!mutual.has(hex(remotePinProof(s, h, REMOTE_ROLES.initiator, pin))), 'PIN ' + pin + ' collided with a mutual proof')
+    // And no PIN proof is ever accepted BY the mutual verifier, or the other way round.
+    assert.strictEqual(remoteProofValid(s, h, REMOTE_ROLES.initiator, remotePinProof(s, h, REMOTE_ROLES.initiator, pin)), false)
+  }
+  assert.strictEqual(remotePinProofValid(s, h, REMOTE_ROLES.initiator, '0473', remoteProof(s, h, REMOTE_ROLES.initiator)), false)
 })
 
 // ------------------------------------------------------------------------ the proof
@@ -361,6 +399,130 @@ test('the SAS rejection branch is taken, and the biased answer is not returned',
   })()
   assert.strictEqual(remoteSas(secret, rejecting), '1776')
   assert.notStrictEqual(remoteSas(secret, rejecting), '0529', 'the rejected draw leaked through')
+})
+
+// ------------------------------------------------------------------------- the entry PIN
+// The round the SAS explicitly cannot serve: the viewer TYPES these digits into the TV,
+// so they must be a value the TV cannot derive. Everything below is about the two ways
+// that could quietly stop being true — the digits becoming guessable (bias), or the
+// proof becoming producible without them (binding).
+
+test('the honest pair agrees on the PIN proof, in both directions', () => {
+  const s = signinKeys(KAT_CODE).secret
+  const h = hh(50)
+  for (const role of [REMOTE_ROLES.initiator, REMOTE_ROLES.responder]) {
+    const proof = remotePinProof(s, h, role, '0473')
+    assert.strictEqual(remotePinProofValid(s, h, role, '0473', proof), true)
+    // The verifier is the peer, so it checks the PROVER's role — peerRole() of its own.
+    assert.strictEqual(remotePinProofValid(s, h, peerRole(role), '0473', proof), false)
+  }
+})
+
+// The whole security claim of the round, stated as a test: of the ten thousand possible
+// PINs, exactly one verifies. A device that did not learn the digits is left with a
+// 1-in-10,000 guess, and sdk/signin-pair.js allows it exactly one.
+test('exactly one of the ten thousand PINs verifies — the other 9999 do not', () => {
+  const s = signinKeys(KAT_CODE).secret
+  const h = hh(51)
+  const real = '4207'
+  const proof = remotePinProof(s, h, REMOTE_ROLES.responder, real)
+  let accepted = 0
+  for (let n = 0; n < 10000; n++) {
+    const pin = String(n).padStart(REMOTE_PIN_DIGITS, '0')
+    if (remotePinProofValid(s, h, REMOTE_ROLES.responder, pin, proof)) accepted++
+  }
+  assert.strictEqual(accepted, 1, 'a PIN proof verified under ' + accepted + ' different PINs')
+  assert.strictEqual(remotePinProofValid(s, h, REMOTE_ROLES.responder, real, proof), true)
+})
+
+// Without the handshake binding, a relay that already holds the sign-in code could take
+// the proof the viewer produced on its leg to the real TV and present it on its leg to
+// the phone. With it, the two legs are two transcripts and the proof does not carry.
+test('a PIN proof from one connection does not verify on another', () => {
+  const s = signinKeys(KAT_CODE).secret
+  const legA = hh(52)
+  const legB = hh(53)
+  const proof = remotePinProof(s, legA, REMOTE_ROLES.responder, '0473')
+  assert.strictEqual(remotePinProofValid(s, legA, REMOTE_ROLES.responder, '0473', proof), true)
+  assert.strictEqual(remotePinProofValid(s, legB, REMOTE_ROLES.responder, '0473', proof), false)
+  // One PIN, one secret, one role — and still a different proof on every connection.
+  const seen = new Set()
+  for (let i = 0; i < 32; i++) seen.add(hex(remotePinProof(s, hh(100 + i), REMOTE_ROLES.responder, '0473')))
+  assert.strictEqual(seen.size, 32)
+  // A stranger's secret gets a stranger nowhere, even holding the right digits.
+  assert.strictEqual(remotePinProofValid(bytes32(0x77), legA, REMOTE_ROLES.responder, '0473', proof), false)
+})
+
+// Leading zeros are the field bug this construction is most likely to meet: one pairing
+// in ten draws a PIN below 1000, and a caller that let '0473' become 473 (or 473 become
+// '473') would produce a proof the other side cannot reproduce — presenting to the
+// viewer as "the TV says the PIN is wrong" on a PIN they typed correctly.
+test('a PIN is four ASCII digits, leading zeros and all — nothing is coerced', () => {
+  const s = signinKeys(KAT_CODE).secret
+  const h = hh(54)
+  assert.notStrictEqual(hex(remotePinProof(s, h, REMOTE_ROLES.responder, '0473')), hex(remotePinProof(s, h, REMOTE_ROLES.responder, '4730')))
+  for (const bad of ['473', '04730', '', '047', 473, 4730, null, undefined, {}, [], '047a', ' 473', '473 ', '0.47', '-473', '٠٤٧٣']) {
+    assert.throws(() => remotePinProof(s, h, REMOTE_ROLES.responder, bad), TypeError, 'accepted PIN ' + JSON.stringify(bad))
+    // The verifier never throws — it runs on a connection handler's hot path.
+    assert.strictEqual(remotePinProofValid(s, h, REMOTE_ROLES.responder, bad, remotePinProof(s, h, REMOTE_ROLES.responder, '0473')), false)
+  }
+  // All ten thousand well-formed PINs are accepted as INPUT, including every zero-padded one.
+  for (let n = 0; n < 10000; n++) assert.strictEqual(remotePinProof(s, h, REMOTE_ROLES.responder, String(n).padStart(4, '0')).length, REMOTE_PROOF_BYTES)
+})
+
+test('PIN verification refuses malformed input instead of throwing', () => {
+  const s = signinKeys(KAT_CODE).secret
+  const h = hh(55)
+  const good = remotePinProof(s, h, REMOTE_ROLES.responder, '0473')
+  for (const bad of [null, undefined, 'deadbeef', 42, {}, [], b4a.alloc(0), b4a.alloc(31), b4a.alloc(33), b4a.alloc(64)]) {
+    assert.strictEqual(remotePinProofValid(s, h, REMOTE_ROLES.responder, '0473', bad), false, 'accepted ' + JSON.stringify(bad))
+  }
+  for (const bad of [null, undefined, 'nope', b4a.alloc(31)]) {
+    assert.strictEqual(remotePinProofValid(bad, h, REMOTE_ROLES.responder, '0473', good), false)
+    assert.strictEqual(remotePinProofValid(s, bad, REMOTE_ROLES.responder, '0473', good), false)
+    assert.strictEqual(remotePinProofValid(s, h, bad, '0473', good), false)
+  }
+  assert.strictEqual(remotePinProofValid(s, h, REMOTE_ROLES.responder, '0473', b4a.alloc(REMOTE_PROOF_BYTES)), false)
+  // The same null-handshake-hash trap the mutual proof has: binding to nothing is loud.
+  for (const bad of [null, b4a.alloc(0), b4a.alloc(16), b4a.alloc(65)]) {
+    assert.throws(() => remotePinProof(s, bad, REMOTE_ROLES.responder, '0473'), TypeError)
+  }
+  for (const bad of ['', 'INITIATOR', 'client', null, 0, {}]) {
+    assert.throws(() => remotePinProof(s, h, bad, '0473'), TypeError)
+  }
+})
+
+test('a fresh PIN is four digits and is not a sequence', () => {
+  const seen = new Set()
+  for (let i = 0; i < 256; i++) {
+    const pin = newRemotePin()
+    assert.strictEqual(typeof pin, 'string')
+    assert.strictEqual(pin.length, REMOTE_PIN_DIGITS)
+    assert.ok(/^[0-9]{4}$/.test(pin), 'malformed PIN ' + pin)
+    seen.add(pin)
+  }
+  // 256 draws from 10,000 values: a collision or two is ordinary, a small set is not.
+  assert.ok(seen.size > 230, 'only ' + seen.size + ' distinct PINs in 256 draws')
+})
+
+// The PIN is drawn from the CSPRNG rather than derived, so this is the SAS uniformity
+// argument transplanted: reduce a 16-bit draw modulo 10,000 and 0000-5535 get seven
+// preimages against the rest's six — a 17% excess on digits whose whole job is to be
+// unguessable. Thresholds are 6 sd, so a false failure is a 1-in-500-million event even
+// though the sample is genuinely random each run.
+test('a fresh PIN is uniform over 0000-9999 — no modulo bias', () => {
+  const N = 100000
+  const buckets = new Array(100).fill(0)
+  let low = 0
+  for (let i = 0; i < N; i++) {
+    const v = Number(newRemotePin())
+    buckets[Math.floor(v / 100)]++
+    if (v < 5536) low++
+  }
+  for (let i = 0; i < buckets.length; i++) {
+    assert.ok(Math.abs(buckets[i] - 1000) < 189, 'bucket ' + i + ' held ' + buckets[i] + ' of an expected 1000')
+  }
+  assert.ok(Math.abs(low - 55360) < 942, 'low half held ' + low + ' of an expected 55360 — modulo bias')
 })
 
 // --------------------------------------------------------------- codes and normalization

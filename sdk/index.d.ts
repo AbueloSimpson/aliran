@@ -255,6 +255,26 @@ export interface PlayerEvents {
   'update-ready': [info: { path: string; entry: UpdateEntry }]
   /** OTA download/verify failure — downloadUpdate() also rejects with the same error. */
   'update-error': [info: { message: string }]
+  /**
+   * Phone -> TV sign-in handover. The `pin` on {role:'phone', state:'pin'} is for a
+   * SCREEN — the viewer types it into the TV. Never log it, and never log `code`.
+   */
+  'signin-pair': [
+    info: {
+      role: 'tv' | 'phone'
+      state: SigninPairState
+      /** role 'tv', state 'code': the 12 characters to display. */
+      code?: string
+      expiresAt?: number
+      /** role 'phone', state 'pin': the four digits to display. */
+      pin?: string
+      /** role 'tv', state 'signed-in'. */
+      username?: string
+      /** state 'failed'. */
+      reason?: SigninPairErrorCode
+      message?: string
+    }
+  ]
 }
 
 /**
@@ -320,6 +340,31 @@ export class AliranPlayer {
    * emits 'update-error' AND rejects. Single-flight while a download runs.
    */
   downloadUpdate(): Promise<{ path: string; entry: UpdateEntry }>
+  /**
+   * TV role of the phone -> TV sign-in handover. Mints a code, announces its rendezvous
+   * and resolves at once with the code to display; the rest arrives as 'signin-pair'
+   * events (and on `done`, which is pre-caught so ignoring it is safe). The device does
+   * not have to be connected to a panel first — the handover carries the operator key.
+   */
+  startSignInPairing(opts?: {
+    ttlMs?: number
+    pinMs?: number
+    payloadMs?: number
+  }): Promise<{ code: string; expiresAt: number; done: Promise<Stream[]> }>
+  /**
+   * TV role. The four digits the viewer typed on the remote. False for a malformed entry
+   * or when nothing is waiting for one. A well-formed submission is FINAL — one attempt,
+   * and a wrong one ends the sign-in with the code already spent.
+   */
+  submitSignInPin(pin: string): boolean
+  /** TV role. Abandon the code on screen (it is spent either way). */
+  cancelSignInPairing(): void
+  /**
+   * Phone role. Sign a TV in with the code it is showing. Emits {role:'phone',
+   * state:'pin', pin} with the digits to SHOW the viewer. Requires a live session on
+   * this device.
+   */
+  sendSignIn(code: string, opts?: { timeoutMs?: number; pinMs?: number }): Promise<{ username: string }>
   /** Full teardown. */
   stop(): Promise<void>
 }
@@ -335,6 +380,20 @@ export interface LoginResult {
   expiresAt: number
   deviceId: string
   tokenVersion: number
+  /**
+   * The account's remote-control rendezvous secret (hex), one-way from the private key
+   * and rotated by the panel's "log out all devices". Null when the account record
+   * carries no usable tokenVersion — never a guessed default, because two devices that
+   * guess differently simply never meet.
+   */
+  remoteSecret: string | null
+  /**
+   * OPT-IN (`handover: true`) and absent otherwise. THIS IS THE ACCOUNT: the two private
+   * keys a login recovers. It exists so a signed-in phone can sign a TV in
+   * (sdk/signin-pair.js). Keep it in memory, hand it to nothing else, never log or
+   * serialize it.
+   */
+  handover?: { username: string; priv: string; authPriv: string | null }
 }
 
 export interface SessionPayload {
@@ -354,7 +413,21 @@ export function login(
   db: unknown,
   username: string,
   password: string,
-  opts?: { deviceId?: string; deviceLabel?: string }
+  opts?: { deviceId?: string; deviceLabel?: string; handover?: boolean }
+): Promise<LoginResult>
+
+/**
+ * The same session entered with the ACCOUNT KEYS instead of the password — the TV half
+ * of "send to TV". Registers THIS device's own deviceId and takes its own panel-signed
+ * token, so device limits and per-device revocation are unaffected. Works against an
+ * unmodified panel.
+ */
+export function loginWithKeys(
+  call: unknown,
+  db: unknown,
+  username: string,
+  keys: { priv: string | Uint8Array; authPriv: string | Uint8Array },
+  opts?: { deviceId?: string; deviceLabel?: string; handover?: boolean }
 ): Promise<LoginResult>
 
 /** Offline check: valid panel signature + not expired. Returns the payload or null. */
@@ -412,6 +485,94 @@ export function resolvePairingCode(
   code: string,
   opts?: { swarm?: unknown; bootstrap?: string[]; timeoutMs?: number }
 ): Promise<PairedService>
+
+// --- signin-pair.js (phone -> TV sign-in handover) ---
+
+/**
+ * What a signed-in device hands a TV. THIS IS THE ACCOUNT — it only ever travels over a
+ * connection that has passed both the mutual proof and the entry-PIN proof.
+ */
+export interface SigninPayload {
+  username: string
+  /** X25519 secret (32 bytes, hex) — opens the sealed per-stream keys. */
+  priv: string
+  /** Ed25519 secret (64 bytes, hex) — signs the panel's session challenge. */
+  authPriv: string
+  /** Which operator this account belongs to (32 bytes, hex). */
+  panelPubKey: string
+}
+
+/**
+ * 'malformed' — not a code/payload, nothing was sent; 'timeout' — nobody answered or a
+ * step ran out; 'expired'/'used' — the code's TTL ran out / it was already spent;
+ * 'busy' — a handover is already in flight for it; 'unauthorized' — the peer could not
+ * prove it holds the code; 'pin' — the peer could not prove it learned the digits;
+ * 'cancelled'; 'refused' — the peer answered but declined the step.
+ */
+export type SigninPairErrorCode =
+  | 'malformed' | 'timeout' | 'expired' | 'used' | 'busy'
+  | 'unauthorized' | 'pin' | 'cancelled' | 'refused'
+
+export type SigninPairState =
+  | 'code' | 'announced' | 'searching' | 'linked' | 'pin' | 'pin-entry'
+  | 'received' | 'sent' | 'signed-in' | 'failed'
+
+export class SigninPairError extends Error {
+  code: SigninPairErrorCode
+}
+
+export const SIGNIN_PAIR_ERRORS: Record<SigninPairErrorCode, SigninPairErrorCode>
+export const SIGNIN_PAIR_STATES: Record<string, SigninPairState>
+
+export interface SigninPairHandle {
+  /** Display form of the code, e.g. 'A3K7-9QF2-M4XR'. */
+  code: string
+  canonical: string
+  expiresAt: number
+  /** The digits the viewer typed. False for a malformed entry or nothing pending. */
+  submitPin(pin: string): boolean
+  cancel(): void
+  /** The received payload, or a SigninPairError. */
+  result: Promise<SigninPayload>
+}
+
+/**
+ * Receiving (TV) role: mint a code, announce its rendezvous, run the mutual proof, prove
+ * the typed digits, and hand back the payload. Resolves as soon as the code exists.
+ * The code is ONE-SHOT: the first peer that proves it holds it spends it, and every
+ * failure path leaves it spent.
+ */
+export function receiveSignIn(opts?: {
+  swarm?: unknown
+  bootstrap?: string[]
+  ttlMs?: number
+  pinMs?: number
+  payloadMs?: number
+  kdf?: { opslimit: number; memlimit: number }
+  onState?: (s: { state: SigninPairState; code?: string; expiresAt?: number; reason?: SigninPairErrorCode }) => void
+}): Promise<SigninPairHandle>
+
+/**
+ * Sending (phone) role: join the code's rendezvous, run the mutual proof, draw and
+ * display four digits, verify ONCE that the TV learned them, then release the payload.
+ * Exactly one peer is ever spoken to past the mutual proof.
+ */
+export function sendSignIn(
+  code: string,
+  payload: SigninPayload,
+  opts?: {
+    swarm?: unknown
+    bootstrap?: string[]
+    timeoutMs?: number
+    pinMs?: number
+    payloadMs?: number
+    kdf?: { opslimit: number; memlimit: number }
+    onState?: (s: { state: SigninPairState; pin?: string; reason?: SigninPairErrorCode }) => void
+  }
+): Promise<{ username: string }>
+
+/** Shape-check a handover payload. Returns the normalized object, or null. */
+export function normalizeSigninPayload(p: unknown): SigninPayload | null
 
 // --- recover.js (store-corruption recovery) ---
 

@@ -37,6 +37,13 @@
 //                        echoes setZapPrefetch(); {state:'suspended',reason} /
 //                        {state:'resumed'} when the adaptive gate pauses/resumes the
 //                        neighbor warm loop (reason 'metered'|'stall'|'thin').
+//   'signin-pair' ({role,state,...})  phone->TV sign-in handover (sdk/signin-pair.js).
+//                        role 'tv' walks code -> announced -> linked -> pin-entry ->
+//                        received -> signed-in; role 'phone' walks searching -> linked ->
+//                        pin (CARRIES THE DIGITS, for a screen — never a log) -> sent.
+//                        Either ends at {state:'failed',reason}. Deliberately NOT in the
+//                        problem-report breadcrumb ring (see _recordEmit): a code or a
+//                        PIN must never ride along on a report.
 //   'update-progress' ({received,total})  OTA app-update download progress (throttled)
 //   'update-ready' ({path,entry})   OTA artifact downloaded, sha256-verified, on disk
 //   'update-error' ({message})      OTA download/verify failure (downloadUpdate() also
@@ -108,7 +115,8 @@ import Hyperdrive from 'hyperdrive'
 import hcrypto from 'hypercore-crypto'
 import sodium from 'sodium-native'
 import b4a from 'b4a'
-import { panelClient, login as oprfLogin } from './login.js'
+import { panelClient, login as oprfLogin, loginWithKeys } from './login.js'
+import { receiveSignIn, sendSignIn as sendSignInHandover } from './signin-pair.js'
 import { isCorruptionError, withRecovery } from './recover.js'
 import { createDriveHandler, playlistUris, THUMB_PATH } from './serve.js'
 import { REPORT_CATEGORIES, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DETAIL_MAX, REPORT_COOLDOWN_MS } from './report.js'
@@ -409,9 +417,21 @@ export class AliranPlayer extends Emitter {
     this._appVersion = shortLabel(appVersion)
     this._platform = shortLabel(platform)
     // The live session: kept so report() can prove entitlement without a re-login.
-    // { username, token, expiresAt, deviceId } — the token is a panel-signed bearer
-    // credential, so it lives in memory only and dies with stop().
+    // { username, token, expiresAt, deviceId, remoteSecret, handover } — a panel-signed
+    // bearer credential plus, since the send-to-TV work, the account key material a
+    // handover needs. It lives in memory only and dies with stop().
+    //
+    // `handover` IS THE ACCOUNT — the X25519 and Ed25519 private keys a login recovers
+    // (sdk/login.js, opt-in). It is the most sensitive thing this engine holds: never
+    // written to disk, never emitted, never handed to a host, and read by exactly one
+    // caller, sendSignIn(). Everything else on this object is already scoped that way;
+    // this one is called out because a future "let hosts read the session" convenience
+    // would quietly publish it.
     this._session = null
+    // The running phone->TV sign-in handover on THIS device (TV role), or null. One at a
+    // time: two live codes on one screen is not a product, and two would race for the
+    // same swarm topic handler.
+    this._signin = null
     // Rolling breadcrumb ring (newest last, REPORT_EVENT_LIMIT entries) fed from
     // emit() — what the engine was complaining about just before the viewer reported.
     // NOT `_events`: that name is the Emitter's listener map (see the class above), and
@@ -475,7 +495,13 @@ export class AliranPlayer extends Emitter {
   // stream keys stay inside the engine. Throws on failure ('not connected to panel'
   // is the transient one while the swarm dials).
   async login (username, password) {
-    const streams = await this._recover(() => this._doLogin(username, password))
+    return this._publishLogin(await this._recover(() => this._doLogin(username, password)))
+  }
+
+  // What every way into a session does once the display list exists — the password
+  // login above and the key handover a TV completes (_applySignIn). Shared so a second
+  // door cannot quietly skip the prewarm or the orphan sweep.
+  _publishLogin (streams) {
     this._streams = streams
     // Second argument (S53): the panel-delivered VOD provider config, or undefined.
     // Additive — every existing listener takes one argument and is untouched.
@@ -620,6 +646,137 @@ export class AliranPlayer extends Emitter {
     while (this._reportCooldown.size > CAP) {
       const oldest = this._reportCooldown.keys().next().value
       this._reportCooldown.delete(oldest)
+    }
+  }
+
+  // --- phone -> TV sign-in handover (sdk/signin-pair.js) ---
+  //
+  // Two halves of one feature, on one engine because the phone app and the TV app are
+  // the same codebase. The protocol, the proofs and the one-shot rules all live in
+  // signin-pair.js; what is here is the engine plumbing — borrowing the swarm, turning
+  // the module's state callbacks into 'signin-pair' events, and turning a received
+  // payload into an actual session.
+  //
+  // WP2b wires the worklet IPC and the screens on top of these four methods.
+
+  /**
+   * TV role. Mint a sign-in code, announce its rendezvous and wait for a phone. Resolves
+   * as soon as the code exists — the viewer is looking at the screen — with the rest
+   * reported through 'signin-pair' events:
+   *
+   *   {role:'tv', state:'code', code, expiresAt}   put this on the screen
+   *   {role:'tv', state:'linked'}                  a phone proved it holds the code
+   *   {role:'tv', state:'pin-entry'}               ask for the digits; feed them to
+   *                                                submitSignInPin()
+   *   {role:'tv', state:'signed-in', username}     done — 'streams' has already fired
+   *   {role:'tv', state:'failed', reason}          over; a new code is the only way on
+   *
+   * `done` is the same outcome as a promise (the display list, or a rejection) for hosts
+   * that would rather await than listen. It is pre-caught, so ignoring it is safe.
+   *
+   * This device does NOT need to be connected to a panel first: the payload carries the
+   * operator's key, so a TV straight out of the box can be signed in without also being
+   * paired. If it IS already connected, the incoming account must belong to the same
+   * service — adopting another operator mid-engine would leave every open replica and
+   * the served catalog pointing at the previous one.
+   */
+  async startSignInPairing (opts = {}) {
+    if (this._signin) throw new Error('a sign-in code is already showing on this device')
+    await this._ensureStore() // the swarm, and only the swarm — no panel needed yet
+    const handle = await receiveSignIn({
+      swarm: this._swarm,
+      ttlMs: opts.ttlMs,
+      pinMs: opts.pinMs,
+      payloadMs: opts.payloadMs,
+      onState: (s) => this.emit('signin-pair', { role: 'tv', ...s })
+    })
+    this._signin = handle
+    const done = handle.result
+      .then((payload) => this._applySignIn(payload))
+      .catch((err) => {
+        // A failure that came from the protocol has already emitted its own 'failed'
+        // state; one from applying the payload has not.
+        if (!err || !err.code) this.emit('signin-pair', { role: 'tv', state: 'failed', reason: 'refused', message: String((err && err.message) || err) })
+        throw err
+      })
+      .finally(() => { if (this._signin === handle) this._signin = null })
+    done.catch(() => {}) // a host may only be listening to events
+    return { code: handle.code, expiresAt: handle.expiresAt, done }
+  }
+
+  /**
+   * TV role. The digits the viewer typed on the remote. Returns false for anything that
+   * is not four digits, or when nothing is waiting for them — so a UI can validate as it
+   * goes. A well-formed submission is FINAL: right or wrong, it is the only answer this
+   * handover sends, and a wrong one ends the sign-in with the code already spent. That
+   * is the whole security of the digits (core/remote.js remotePinProof): one attempt is
+   * what makes a blind guess one in ten thousand instead of a warm-up.
+   */
+  submitSignInPin (pin) {
+    return this._signin ? this._signin.submitPin(pin) : false
+  }
+
+  /** TV role. Abandon the code on screen. It is spent either way — mint a new one. */
+  cancelSignInPairing () {
+    if (this._signin) this._signin.cancel()
+  }
+
+  /**
+   * Phone role. Sign a TV in with the code it is showing. Emits {role:'phone', …}, and
+   * in particular {state:'pin', pin} — the four digits to SHOW the viewer, who types
+   * them into the TV. Resolves { username } once the TV has taken the handover.
+   *
+   * Requires a live session on this device: the payload is the account key material
+   * login() recovered, which cannot be reconstructed without the password.
+   */
+  async sendSignIn (code, opts = {}) {
+    const h = this._session && this._session.handover
+    if (!h) throw new Error('sign in on this device before sending a sign-in to a TV')
+    if (!h.authPriv) throw new Error('this account has no auth key — it cannot sign a TV in')
+    if (!this._panelKey) throw new Error('no panelPubKey configured')
+    await this._ensureStore()
+    return sendSignInHandover(code, {
+      username: h.username,
+      priv: h.priv,
+      authPriv: h.authPriv,
+      panelPubKey: this._panelKey
+    }, {
+      swarm: this._swarm,
+      timeoutMs: opts.timeoutMs,
+      pinMs: opts.pinMs,
+      onState: (s) => this.emit('signin-pair', { role: 'phone', ...s })
+    })
+  }
+
+  // Turn a received handover into a session. The panel key comes from the PAYLOAD, so
+  // this is also where a never-paired TV learns which operator it belongs to.
+  async _applySignIn (payload) {
+    if (!this._panelKey) await this.connect(payload.panelPubKey)
+    else if (String(this._panelKey).toLowerCase() !== payload.panelPubKey) {
+      throw new Error('that account belongs to a different service — this device is already connected to another one')
+    }
+    // The swarm has to find the panel and the account record has to replicate before a
+    // login can be attempted. Both are ordinary cold-start waits, and both are bounded:
+    // a TV that cannot reach the operator must say so, not spin.
+    if (!await this._waitUntil(() => this._call, 30000)) throw new Error('could not reach the service — check this device\'s connection')
+    if (!await this._waitUntil(() => this._panelBee.get('user/' + payload.username).catch(() => null), 30000)) {
+      throw new Error('the service has no record of that account yet — try again in a moment')
+    }
+    const streams = await this._recover(() => this._doLoginWithKeys(payload.username, payload))
+    this._publishLogin(streams)
+    this.emit('signin-pair', { role: 'tv', state: 'signed-in', username: payload.username })
+    return streams
+  }
+
+  // Poll a predicate to a deadline. Deliberately a poll and not an event: the two things
+  // it waits for (a validated panel RPC socket, a replicated bee record) are settled in
+  // different layers and neither raises a signal this class can subscribe to.
+  async _waitUntil (fn, ms, stepMs = 250) {
+    const until = Date.now() + ms
+    for (;;) {
+      try { const v = await fn(); if (v) return v } catch {}
+      if (Date.now() >= until) return null
+      await new Promise((resolve) => { const t = setTimeout(resolve, stepMs); if (typeof t.unref === 'function') t.unref() })
     }
   }
 
@@ -1340,6 +1497,9 @@ export class AliranPlayer extends Emitter {
     this._clearHybridTimers()
     this._clearTuneTimer()
     this._clearZapPrefetch()
+    // A sign-in code outliving the engine that minted it would leave a topic announced
+    // on a swarm that is about to be destroyed, and a code on a screen nobody answers.
+    if (this._signin) { const s = this._signin; this._signin = null; try { s.cancel() } catch {} }
     this._active = null
     this._zapDir = 0
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
@@ -1363,9 +1523,10 @@ export class AliranPlayer extends Emitter {
     this._call = null
     this._panelPeerKey = null
     this._panelDiscovery = null
-    // Full teardown is the ONE place the session token dies (a purge and a socket drop
-    // both keep it — see _doLogin). A service switch replaces the engine wholesale, so
-    // this is also what stops a token following a viewer to another operator's panel.
+    // Full teardown is the ONE place the session dies (a purge and a socket drop both
+    // keep it — see _applyLoginResult). A service switch replaces the engine wholesale,
+    // so this is also what stops a token — and the account key material behind
+    // sendSignIn() — following a viewer to another operator's panel.
     this._session = null
     this._eventRing = []
     this._feedKeyLive.clear() // the catalog view dies with the session (see _doLogin)
@@ -2017,7 +2178,23 @@ export class AliranPlayer extends Emitter {
 
   async _doLogin (username, password) {
     if (!this._call) throw new Error('not connected to panel')
-    const res = await oprfLogin(this._call, this._panelBee, username, password, { deviceId: this._deviceId || undefined, deviceLabel: this._deviceLabel || undefined })
+    // handover: true — sdk/login.js only materializes the account key material when it
+    // is asked for, and this engine asks because sendSignIn() cannot recover it later
+    // (that would need the password again). See the _session note in the constructor.
+    const res = await oprfLogin(this._call, this._panelBee, username, password, { deviceId: this._deviceId || undefined, deviceLabel: this._deviceLabel || undefined, handover: true })
+    return this._applyLoginResult(username, res)
+  }
+
+  // The key-handover door into the same session: no password, the two private keys a
+  // phone sent instead. Everything after this point is identical to a typed login,
+  // including this device registering its OWN deviceId (sdk/login.js loginWithKeys).
+  async _doLoginWithKeys (username, keys) {
+    if (!this._call) throw new Error('not connected to panel')
+    const res = await loginWithKeys(this._call, this._panelBee, username, keys, { deviceId: this._deviceId || undefined, deviceLabel: this._deviceLabel || undefined, handover: true })
+    return this._applyLoginResult(username, res)
+  }
+
+  async _applyLoginResult (username, res) {
     const { streams, vod } = res
     // S53: present ONLY when the operator configured a provider AND enabled it — the
     // login result carries no `vod` field otherwise, so absent and disabled collapse
@@ -2031,7 +2208,20 @@ export class AliranPlayer extends Emitter {
     // invalidates the token, the purge path already keeps the equivalent in-memory
     // session (entitled stream keys) alive on purpose, and dropping it there would
     // silently disable reporting exactly when things are going wrong.
-    this._session = res.token ? { username, token: res.token, expiresAt: res.expiresAt ?? null, deviceId: res.deviceId ?? null } : null
+    this._session = res.token
+      ? {
+          username,
+          token: res.token,
+          expiresAt: res.expiresAt ?? null,
+          deviceId: res.deviceId ?? null,
+          // One-way from the private key (core/remote.js remoteSecret) and rotated by
+          // the panel's "log out all devices" — safe to hold for the session. Null when
+          // the account record predates tokenVersion, in which case the account
+          // rendezvous simply does not exist rather than being guessed at.
+          remoteSecret: res.remoteSecret ?? null,
+          handover: res.handover || null
+        }
+      : null
     await this._openAssets()
     this._openEpg().catch(() => {}) // the guide is never allowed to delay (or fail) a login
     const port = await this._ensureServer() // posters must be loadable before anything plays
