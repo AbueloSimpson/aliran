@@ -176,7 +176,7 @@ export async function buildTemplate (ctx, { note = '' } = {}) {
 
 const STREAM_FIELDS = [
   'title', 'description', 'category', 'feedKey', 'poster', 'backdrop', 'logo',
-  'order', 'featured', 'restricted', 'epgUrl', 'epgId', 'url'
+  'order', 'featured', 'restricted', 'epgUrl', 'epgId', 'url', 'headers'
 ]
 
 function streamDiff (desired, current) {
@@ -196,7 +196,24 @@ function streamDiff (desired, current) {
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const catShape = (c) => [c.label, c.order ?? null, !!c.hidden]
 const pkgShape = (p) => [p.label, p.members, !!p.default]
-const srcShape = (s) => [s.url, s.category, s.prefix, s.autoGrant, s.enabled, s.intervalMs, s.exclude ?? []]
+
+const SOURCE_FIELDS = ['url', 'category', 'prefix', 'autoGrant', 'enabled', 'intervalMs', 'exclude', 'format', 'groups']
+
+// Sources diff PER FIELD, exactly like streamDiff and for the same reason: an artifact
+// written before a field existed does not MENTION that field, and "not mentioned" has to
+// mean "leave it alone" — never "reset it to the default". A whole-shape comparison
+// cannot tell those apart, so a pre-M3U snapshot restored over an m3u source would report
+// a phantom change and then really apply it, turning a working playlist source into a
+// json one that fails its next sync. Returning the diff (not a boolean) is also what
+// keeps plan and apply honest: apply writes exactly the fields the plan counted.
+function sourceDiff (desired, current) {
+  const out = {}
+  for (const f of SOURCE_FIELDS) {
+    if (!(f in desired)) continue
+    if (JSON.stringify(desired[f] ?? null) !== JSON.stringify(current[f] ?? null)) out[f] = desired[f]
+  }
+  return out
+}
 
 export async function plan (ctx, env, opts = {}) {
   const { removeExtra = false, sections: only = null } = opts
@@ -256,7 +273,7 @@ export async function plan (ctx, env, opts = {}) {
     for (const [name, s] of Object.entries(env.sections.sources)) {
       const cur = liveSources[name]
       if (!cur) p.sources.add.push(name)
-      else if (!same(srcShape(s), srcShape(cur))) p.sources.update.push(name)
+      else if (Object.keys(sourceDiff(s, cur)).length) p.sources.update.push(name)
     }
     for (const name of Object.keys(liveSources)) if (!(name in env.sections.sources)) p.sources.extra.push({ name, willRemove: removeExtra })
   }
@@ -363,11 +380,19 @@ export async function apply (ctx, env, opts = {}) {
   if (want('sources')) {
     const liveSources = sources.loadSources(ctx.dataDir)
     for (const [name, s] of Object.entries(env.sections.sources)) {
-      if (liveSources[name] && same(srcShape(s), srcShape(liveSources[name]))) continue
+      const cur = liveSources[name]
+      // A CREATE takes every field the artifact carries (addSource needs url + category,
+      // and defaults whatever the artifact predates). An UPDATE writes only the diff the
+      // plan just counted — same discipline as streams, and the reason a pre-M3U artifact
+      // cannot silently downgrade an m3u source it never knew about.
+      const d = cur ? sourceDiff(s, cur) : null
+      if (d && !Object.keys(d).length) continue
       try {
-        const fields = { url: s.url, category: s.category, prefix: s.prefix, autoGrant: s.autoGrant, enabled: s.enabled, intervalMs: s.intervalMs, exclude: s.exclude }
-        if (!liveSources[name]) sources.addSource(ctx, name, fields)
-        else sources.setSource(ctx, name, fields)
+        if (!cur) {
+          sources.addSource(ctx, name, { url: s.url, category: s.category, prefix: s.prefix, autoGrant: s.autoGrant, enabled: s.enabled, intervalMs: s.intervalMs, exclude: s.exclude, format: s.format, groups: s.groups })
+        } else {
+          sources.setSource(ctx, name, d)
+        }
         done.sources.push(name)
       } catch (err) { done.failed.push({ section: 'sources', id: name, error: err.message }) }
     }

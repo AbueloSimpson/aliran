@@ -125,9 +125,12 @@ export const config = {
     telegramBotToken: process.env.REPORTS_TELEGRAM_BOT_TOKEN || '', // SECRET
     telegramChatId: process.env.REPORTS_TELEGRAM_CHAT_ID || ''
   },
-  // Remote channel sources (S27): provider JSON feeds pulled on a schedule.
+  // Remote channel sources (S27): provider JSON feeds and M3U playlists pulled on a
+  // schedule.
   sources: {
-    tickMs: int(process.env.SOURCES_TICK_MS, 3600000), // registry scan cadence (due-check, not fetch)
+    // Registry scan cadence — a due-check, never a fetch, so 5 minutes is cheap and it
+    // is what makes a sub-hour per-source intervalMs (an event playlist) actually work.
+    tickMs: int(process.env.SOURCES_TICK_MS, 300000),
     bootDelayMs: int(process.env.SOURCES_BOOT_DELAY_MS, 15000),
     defaultIntervalMs: int(process.env.SOURCES_SYNC_INTERVAL_MS, 86400000), // daily pull per source
     fetchTimeoutMs: int(process.env.SOURCES_FETCH_TIMEOUT_MS, 30000),

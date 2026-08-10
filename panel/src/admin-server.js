@@ -50,9 +50,12 @@
 //   PATCH  /api/packages/:name               edit label/members/default (member edits materialize for every holder)
 //   DELETE /api/packages/:name               remove + strip from users (grants covered only by it are removed; manual ones survive)
 //   GET    /api/streams
-//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?,restricted?,url?}
+//   POST   /api/streams                      {id,title?,description?,category?,feedKey?,key?,order?,featured?,restricted?,url?,headers?}
 //                                            url (https) makes it a REDIRECT channel: viewers play the url, no P2P feed
-//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,restricted?,url?,...}
+//                                            headers {referer?,origin?,user-agent?} ride WITH that url (hotlink-protected
+//                                            providers) — they need a url, and {}/null clears them
+//   PATCH  /api/streams/:id                  {title?,description?,category?,feedKey?,isLive?,status?,order?,featured?,restricted?,url?,headers?,...}
+//                                            clearing the url clears the headers with it
 //   DELETE /api/streams/:id                  FULL purge (catalog+secret+grants+art)
 //   POST   /api/streams/:id/art/:kind        raw image body (content-type → extension)
 //   GET    /api/assets/:id/:file             art bytes from the assets drive (authed)
@@ -71,8 +74,11 @@
 //   POST   /api/publishers/:name/status      {status:'active'|'revoked'}
 //   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
 //   GET    /api/sources                      remote channel sources (S27) + owned-channel counts
-//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?}
+//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?,format?,groups?}
+//                                            format 'json' (default) | 'm3u'; groups = the m3u group-titles to import
+//                                            (case-insensitive exact match; absent/[] = every entry)
 //   PATCH  /api/sources/:name                edit any field (incl. exclude:[{id,title}] — deselected feed ids)
+//                                            a format or groups change resets the ETag, so the next sync re-reads the body
 //   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
 //   GET    /api/sources/:name/channels       imported + excluded entries (the channels-dialog data)
 //   GET    /api/categories                   category vocabulary + per-category channel counts

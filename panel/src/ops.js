@@ -259,6 +259,10 @@ export async function addStream (ctx, id, opts = {}) {
   const url = opts.url != null ? normRedirectUrl(opts.url) : null
   if (opts.redirect != null && normBool(opts.redirect) !== !!url) bad("redirect must match url — pass an https 'url' to create a redirect channel")
   if (url && opts.feedKey) bad('a redirect channel cannot have a feedKey — it plays the url instead of a P2P feed')
+  // Playback headers belong TO the url (see normRedirectHeaders): a P2P channel has no
+  // request of its own to hang them on, so the pair is refused instead of stored dead.
+  const headers = opts.headers != null ? normRedirectHeaders(opts.headers) : null
+  if (headers && !url) bad("headers require a redirect url — pass an https 'url', or drop the headers")
   const secrets = loadSecrets(ctx.dataDir)
   const encKeyHex = opts.key || b4a.toString(crypto.randomBytes(32), 'hex')
   secrets[id] = encKeyHex
@@ -275,6 +279,7 @@ export async function addStream (ctx, id, opts = {}) {
     // heartbeat will ever flip their liveness, so they start live/on by default.
     redirect: !!url,
     url,
+    headers: url ? headers : null,
     isLive: !!url,
     poster: null,
     backdrop: null,
@@ -314,13 +319,69 @@ export function normArt (v, kind) {
 // same reason as remote art; deliberately NO file-extension requirement — tokenized
 // CDN URLs carry query strings. Empty string clears (the entry stops being a
 // redirect channel).
+//
+// One carve-out, mirroring normSourceUrl (sources.js): plain http on LOOPBACK. The
+// Android-cleartext rule that makes https mandatory everywhere else does not reach
+// 127.0.0.1 — the SDK already serves its own HLS over http on localhost by design —
+// and without it a local provider stub cannot be imported end-to-end, which is the
+// only way to prove the header path really carries playback.
 export function normRedirectUrl (v) {
   const s = String(v).trim()
   if (s === '') return null
   if (s.length > 2048) bad('url must be at most 2048 characters')
   if (/[\r\n]/.test(s)) bad('url must not contain line breaks')
-  if (!/^https:\/\/./i.test(s)) bad('url must be an https:// URL')
-  return s
+  if (/^https:\/\/./i.test(s)) return s
+  if (/^http:\/\/./i.test(s)) {
+    let u
+    try { u = new URL(s) } catch { u = null }
+    if (u && (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1' || u.hostname === '[::1]')) return s
+  }
+  bad('url must be an https:// URL (plain http:// is allowed only on loopback, for local testing)')
+}
+
+// Playback request headers for a redirect channel: the Referer / Origin / User-Agent
+// a hotlink-protected provider checks before it serves the url. The HOST PLAYER sends
+// them (the desktop app injects them in its main process, the phone hands them to
+// ExoPlayer) — the P2P path has nothing to send them with, so a record with headers
+// and no url is refused at every call site instead of being stored as dead weight.
+//
+// The key list is a strict ALLOWLIST rather than a filter. These three are exactly the
+// forbidden headers a player cannot set for itself, which is the whole reason the
+// catalog has to carry them; an open map would let anyone with catalog write access
+// smuggle an Authorization or Cookie header into every viewer's player. `referrer`
+// (the correctly spelled variant of the famously misspelled header) is accepted and
+// folded onto `referer`, and keys are stored lowercase so the record has ONE canonical
+// shape to compare, inject and byte-compare.
+//
+// Trust boundary: FEED DATA passes through here too — sources.js applies it one key at
+// a time so a single broken #EXTVLCOPT line degrades to a missing header instead of
+// dropping the event — so the value rules match every other free-text catalog field:
+// length capped, no CR/LF (header injection) and no other control characters.
+//
+// An EMPTY value is SKIPPED rather than refused, deliberately: the admin dialogs always
+// send all three keys and leave the unused ones blank, so "" has to mean "not set", or
+// filling in one header would be an error about the other two.
+const REDIRECT_HEADER_KEYS = {
+  referer: 'referer',
+  referrer: 'referer',
+  origin: 'origin',
+  'user-agent': 'user-agent'
+}
+export function normRedirectHeaders (v) {
+  if (v == null || v === '') return null
+  if (typeof v !== 'object' || Array.isArray(v)) bad('headers must be an object, e.g. {"referer":"https://provider.example/"}')
+  const out = {}
+  for (const [rawKey, rawVal] of Object.entries(v)) {
+    const key = REDIRECT_HEADER_KEYS[String(rawKey).trim().toLowerCase()]
+    if (!key) bad(`unknown header "${rawKey}" — headers may only set referer, origin and user-agent (the forbidden headers a player cannot set itself)`)
+    const s = String(rawVal ?? '').trim()
+    if (s === '') continue // an empty value is "not set" — never a header with no value
+    if (s.length > 1024) bad(`headers.${key} must be at most 1024 characters`)
+    if (/[\r\n]/.test(s)) bad(`headers.${key} must not contain line breaks`)
+    if (/[\u0000-\u001f\u007f]/.test(s)) bad(`headers.${key} must not contain control characters`)
+    out[key] = s
+  }
+  return Object.keys(out).length ? out : null // an empty object is never stored — null IS "no headers"
 }
 
 // EPG feed URL: a public https JSON of channels+schedules the CLIENT fetches (never
@@ -369,6 +430,11 @@ export async function setMeta (ctx, id, fields = {}) {
   // matter; we validate independently and let the client require both.
   if (fields.epgUrl !== undefined) c.epgUrl = normEpgUrl(fields.epgUrl)
   if (fields.epgId !== undefined) c.epgId = normEpgId(fields.epgId)
+  // Playback headers for the redirect url (S23 + hotlink-protected providers). null or
+  // an empty object clears. Set BEFORE the url block below on purpose: a request that
+  // clears the url in the same call must end with no headers, whatever order the fields
+  // arrived in — stale provider headers must not survive a redirect→P2P conversion.
+  if (fields.headers !== undefined) c.headers = normRedirectHeaders(fields.headers)
   // Redirect channels (S23): `url` drives the pair atomically — a non-empty https URL
   // makes the entry a redirect channel (liveness defaults on, unless set explicitly in
   // the same request); an empty string clears both (liveness defaults off — a feedless
@@ -381,11 +447,15 @@ export async function setMeta (ctx, id, fields = {}) {
     }
     c.redirect = !!url
     c.url = url
+    if (!url) c.headers = null // no url, nothing to send headers with
     if (fields.url !== undefined) {
       if (fields.isLive == null) c.isLive = !!url
       if (fields.status == null) c.status = url ? 'live' : 'idle'
     }
   }
+  // Catches headers-set-on-a-P2P-channel whichever order the fields came in (headers
+  // alone on a feed channel, or headers plus a url that another rule already refused).
+  if (c.headers && !c.url) bad("headers require a redirect url — set an https 'url' first, or clear the headers")
   if (c.redirect && c.feedKey) bad('a redirect channel cannot have a feedKey — clear the url or the feedKey first')
   await ctx.db.put('catalog/' + id, c)
   return { id, catalog: c }

@@ -464,6 +464,16 @@ function renderStreams () {
   }
 }
 
+// Playback headers of a redirect channel (S23 + hotlink-protected providers). Only the
+// KEY NAMES show: a Referer or a User-Agent is not a secret, but the values are long,
+// they change on every sync of an m3u source, and the operator only ever needs to know
+// WHICH ones are set. The edit dialog shows the values.
+function headersLine (s) {
+  const keys = Object.keys(s.headers || {})
+  if (!keys.length) return ''
+  return `<div class="mono muted" title="the player sends these with the url">headers: ${esc(keys.join(', '))}</div>`
+}
+
 // The expanded per-channel editor, shown under its table row when the name is
 // clicked: poster, description, feed/url line, art slots and curation controls.
 function streamDetailCard (s) {
@@ -476,6 +486,7 @@ function streamDetailCard (s) {
       <div class="mono muted">${s.redirect
         ? `url: ${esc(s.url || '')}`
         : `feed: ${s.feedKey ? esc(s.feedKey.slice(0, 16)) + '…' : '(not set)'}`}</div>
+      ${headersLine(s)}
       <div class="art-row"></div>
       <div class="stream-foot">
         <button class="btn small" data-act="edit">Edit metadata</button>
@@ -750,7 +761,9 @@ function renderSources () {
     const tr = document.createElement('tr')
     tr.innerHTML = `
       <td><b>${esc(s.name)}</b><br><span class="mono muted" title="${esc(s.url)}">${esc(s.url.length > 46 ? s.url.slice(0, 46) + '…' : s.url)}</span></td>
-      <td><span class="chip">${esc(s.category)}</span></td>
+      <td><span class="chip">${esc(s.category)}</span>${(s.format || 'json') === 'm3u'
+        ? ` <span class="chip" title="M3U playlist: ids come from the channel names, #EXTVLCOPT lines import as playback headers${(s.groups || []).length ? ` — groups: ${esc(s.groups.join(', '))}` : ''}">m3u</span>`
+        : ''}</td>
       <td>${s.channels}</td>
       <td class="muted">${fmtInterval(s.intervalMs)}</td>
       <td class="muted">${s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never'}${rep
@@ -1534,6 +1547,38 @@ const FEED_FORMAT_HTML = `
       same time. Keep an entry in the file for as long as you want the channel.</li>
     <li>The panel never changes a manual channel, or a channel from a different source. It skips a clash of ids and
       reports it as a conflict.</li>
+  </ul>
+  <p class="muted footnote"><b>Format “m3u” — an M3U playlist.</b> Set <b>Format</b> to <span class="mono">m3u</span>
+    for a provider playlist. The panel reads this shape:</p>
+  <pre class="codebox mono">#EXTM3U
+#EXTINF:-1 tvg-logo="https://cdn.example/art/game.png" group-title="Live Events",Team A vs Team B
+#EXTVLCOPT:http-referrer=https://provider.example/
+#EXTVLCOPT:http-origin=https://provider.example
+#EXTVLCOPT:http-user-agent=Mozilla/5.0
+https://cdn.example/event/123.m3u8?token=abc</pre>
+  <ul class="muted footnote spec-list">
+    <li><b>The channel name makes the channel id.</b> The panel changes the name into id characters and adds the prefix.
+      A playlist <span class="mono">tvg-id</span> is usually a dummy value, so the panel does not use it. Two entries
+      with the same name get <span class="mono">-2</span> and <span class="mono">-3</span>.</li>
+    <li><b>A new name is a new channel.</b> The panel deletes the old channel and makes a new one. This is correct for
+      events, because each event is new.</li>
+    <li><b>#EXTVLCOPT lines become playback headers.</b> The panel keeps
+      <span class="mono">http-referrer</span>, <span class="mono">http-origin</span> and
+      <span class="mono">http-user-agent</span>. The player sends them with the address. Use them for a provider that
+      refuses a request with no referer. A bad line loses that one header only, and the panel still imports the
+      channel.</li>
+    <li><b>Groups.</b> Set <b>Groups</b> on the source to select the <span class="mono">group-title</span> values you
+      want. The panel compares the full value and ignores upper and lower case. Leave the field empty to take every
+      entry. The sync report counts the other entries as <b>outside your groups</b>.</li>
+    <li><b>tvg-logo</b> becomes the channel art. Use an <span class="mono">https://</span> address.</li>
+    <li><b>No schedule.</b> A playlist is not a program guide, so an imported channel gets no guide pointer.</li>
+    <li><b>One playlist, many rails.</b> Add <b>one source for each group</b>, all with the same URL. Give each source
+      its own groups, its own category and its own prefix. Example: source <span class="mono">events</span> takes the
+      group “Live Events” into the category “Live Events”, and source <span class="mono">sports</span> takes the group
+      “Sports” into the category “Sports”. The channel ids stay separate, because the prefixes are different. Each
+      source syncs and cleans up on its own, and the <span class="mono">ETag</span> keeps the extra pulls cheap.</li>
+    <li><b>Event addresses expire.</b> Set a short interval, for example 30 minutes. The panel then pulls the new
+      addresses and sends them to viewers. A viewer gets them at the next channel start, with no new login.</li>
   </ul>`
 
 $('#source-add-btn').addEventListener('click', () => addSourceDlg())
@@ -1543,19 +1588,24 @@ async function addSourceDlg () {
   const v = await dialog('Add source', [
     { name: 'name', label: 'Name — permanent id (letters, digits, . _ -)', placeholder: 'anime' },
     { name: 'url', label: 'Feed URL (https://)', placeholder: 'https://provider.example/channels.json' },
-    { name: 'category', label: 'Category label (the rail viewers see)', placeholder: 'Anime' }
+    { name: 'format', label: 'Format — json = a provider feed, m3u = a playlist', type: 'select', options: ['json', 'm3u'], value: 'json' },
+    { name: 'category', label: 'Category label (the rail viewers see)', placeholder: 'Anime' },
+    { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' }
   ], {
     okLabel: 'Add',
     body: `<p class="muted">The panel pulls the feed immediately. It then makes a category of <b>redirect channels</b> from it.</p>
            <p class="muted">The sync interval, the channel id prefix and auto-grant keep their defaults. Change them with
            <b>edit</b> on the row.</p>
-           <details class="footnote"><summary>What the feed JSON must contain</summary>${FEED_FORMAT_HTML}</details>`
+           <details class="footnote"><summary>What the feed must contain</summary>${FEED_FORMAT_HTML}</details>`
   })
   if (!v) return
   const name = v.name.trim()
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return toast('name must start alphanumeric and use only letters, digits, . _ -', true)
+  // Groups are meaningless on a json feed, so an m3u-only field must not travel with one —
+  // it would sit in the record inviting a "why is my filter ignored?" later.
+  const groups = v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : []
   try {
-    await api('POST', '/api/sources', { name, url: v.url.trim(), category: v.category.trim() })
+    await api('POST', '/api/sources', { name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups })
     toast(`source "${name}" added — pulling the feed…`)
     await syncSourceNow(name)
   } catch (err) { toast(err.message, true) }
@@ -1569,6 +1619,7 @@ async function syncSourceNow (name) {
       ? `"${name}": feed not modified · ${r.granted} grant(s) sealed`
       : `"${name}": +${r.added} added, ~${r.updated} updated, −${r.removed} removed, ${r.granted} grant(s) sealed` +
         (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : '') +
+        (r.filtered ? ` · ${r.filtered} outside your groups` : '') +
         (r.truncated ? ` · ${r.truncated} over the channel cap — dropped` : ''))
     await refresh()
   } catch (err) { toast(err.message, true); await refresh().catch(() => {}) }
@@ -1601,6 +1652,14 @@ function showSyncReport (s) {
       : '<p class="muted">(ids are recorded from the next sync)</p>'
   }
   if (rep.excluded) body += `<p class="muted">${rep.excluded} excluded by you (channels dialog).</p>`
+  // Not an error and not an exclusion: entries the group filter left in the playlist.
+  if (rep.filtered) body += `<p class="muted">${rep.filtered} entr${rep.filtered === 1 ? 'y is' : 'ies are'} outside your groups. The panel did not import ${rep.filtered === 1 ? 'it' : 'them'}. Edit <b>Groups</b> on the source to take more.</p>`
+  // The one shape where a correct prune and a mistyped group name look the same from
+  // outside: the sync removed every channel, and the filter matched nothing.
+  if (rep.emptiedByFilter) {
+    body += `<p class="warn-text"><b>The group filter matched no entries. All channels of this source were removed.</b>
+      The provider can have changed a group name. Use <b>edit</b> on the source and compare <b>Groups</b> with the group names in the playlist.</p>`
+  }
   dialog(`Last sync — ${s.name}`, [], { okLabel: 'Close', body })
 }
 
@@ -1679,12 +1738,15 @@ async function openSourceChannels (s) {
 async function editSource (s) {
   const v = await dialog(`Edit source ${s.name}`, [
     { name: 'url', label: 'Feed URL (https://)', value: s.url },
+    { name: 'format', label: 'Format — json = a provider feed, m3u = a playlist', type: 'select', options: ['json', 'm3u'], value: s.format || 'json' },
     { name: 'category', label: 'Category label (the rail viewers see)', value: s.category },
+    { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', value: (s.groups || []).join(', '), placeholder: 'Live Events, PPV' },
     { name: 'prefix', label: 'Channel id prefix', value: s.prefix },
     { name: 'minutes', label: 'Sync every (minutes)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 60000), min: 1, max: 43200, step: 1 },
     { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false }
   ], {
-    body: `<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category) on every sync — manual edits to those don't stick on imported channels.</p>
+    body: `<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category — and the playback headers of an m3u) on every sync — manual edits to those don't stick on imported channels.</p>
+      <p class="muted">Changing the <b>format</b> or the <b>groups</b> makes the next sync read the whole feed again. A group you remove takes its channels with it.</p>
       <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>`
   })
   if (!v) return
@@ -1694,7 +1756,11 @@ async function editSource (s) {
   if (minutes > 43200) return toast('sync interval must be at most 30 days (43200 minutes)', true)
   act(() => api('PATCH', `/api/sources/${s.name}`, {
     url: v.url.trim(),
+    format: v.format,
     category: v.category.trim(),
+    // Always sent, so emptying the field really clears the filter. A json source keeps
+    // no groups at all — the field does not apply to it.
+    groups: v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : [],
     prefix: v.prefix.trim(),
     intervalMs: minutes * 60000,
     autoGrant: v.autoGrant
@@ -1831,17 +1897,30 @@ async function addStreamDlg () {
     { name: 'title', label: 'Title (blank = the id)' },
     { name: 'category', label: 'Category' },
     { name: 'feedKey', label: 'Feed key (hex, optional — usually set when the broadcaster registers)' },
-    { name: 'url', label: 'Redirect URL (https://…, optional — CDN redirect channel, no P2P feed)', placeholder: 'https://cdn.example.com/ch/index.m3u8' }
-  ], { okLabel: 'Add' })
+    { name: 'url', label: 'Redirect URL (https://…, optional — CDN redirect channel, no P2P feed)', placeholder: 'https://cdn.example.com/ch/index.m3u8' },
+    { name: 'referer', label: 'Referer header (optional — for a provider that checks it)', placeholder: 'https://provider.example/' },
+    { name: 'origin', label: 'Origin header (optional)', placeholder: 'https://provider.example' },
+    { name: 'userAgent', label: 'User-Agent header (optional)', placeholder: 'Mozilla/5.0' }
+  ], {
+    okLabel: 'Add',
+    body: '<p class="muted">The three header fields work with a <b>redirect URL</b> only. The player sends them with the address. Leave them empty for a normal channel.</p>'
+  })
   if (!v) return
   const id = v.id.trim()
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) return toast('id must start alphanumeric and use only letters, digits, . _ -', true)
+  // Only the three headers the panel accepts, and only the ones that were filled in —
+  // an empty map is "no headers", which is also what the panel stores as none.
+  const headers = {}
+  if (v.referer.trim()) headers.referer = v.referer.trim()
+  if (v.origin.trim()) headers.origin = v.origin.trim()
+  if (v.userAgent.trim()) headers['user-agent'] = v.userAgent.trim()
   const body = {
     id,
     title: v.title.trim() || undefined,
     category: v.category.trim() || undefined,
     feedKey: v.feedKey.trim() || undefined,
-    url: v.url.trim() || undefined // makes it a redirect channel (S23)
+    url: v.url.trim() || undefined, // makes it a redirect channel (S23)
+    headers: Object.keys(headers).length ? headers : undefined
   }
   try {
     const r = await api('POST', '/api/streams', body)
@@ -1871,6 +1950,9 @@ async function editMeta (s) {
     { name: 'category', label: 'Category (comma-separated)', value: (s.category || []).join(', ') },
     { name: 'feedKey', label: 'Feed key (hex)', value: s.feedKey || '', placeholder: 'set when the broadcaster registers' },
     { name: 'url', label: 'Redirect URL (https:// — plays this instead of a P2P feed; empty = none)', value: s.url || '', placeholder: 'https://cdn.example.com/ch/index.m3u8' },
+    { name: 'referer', label: 'Referer header (sent with the redirect URL; empty = none)', value: (s.headers || {}).referer || '', placeholder: 'https://provider.example/' },
+    { name: 'origin', label: 'Origin header (empty = none)', value: (s.headers || {}).origin || '', placeholder: 'https://provider.example' },
+    { name: 'userAgent', label: 'User-Agent header (empty = none)', value: (s.headers || {})['user-agent'] || '', placeholder: 'Mozilla/5.0' },
     { name: 'epgUrl', label: 'EPG feed URL (https:// program guide the app fetches; empty = none)', value: s.epgUrl || '', placeholder: 'https://provider.example/anime.json' },
     { name: 'epgId', label: 'EPG channel id (this channel\'s id inside that feed)', value: s.epgId || '', placeholder: 'demotv.es.629a06…' },
     { name: 'status', label: 'Status', type: 'select', options: ['idle', 'live', 'offline'], value: s.status },
@@ -1878,6 +1960,10 @@ async function editMeta (s) {
     { name: 'restricted', label: 'access controlled — players require the parental PIN before playing', type: 'checkbox', value: !!s.restricted }
   ])
   if (!v) return
+  const headers = {}
+  if (v.referer.trim()) headers.referer = v.referer.trim()
+  if (v.origin.trim()) headers.origin = v.origin.trim()
+  if (v.userAgent.trim()) headers['user-agent'] = v.userAgent.trim()
   const body = {
     title: v.title,
     description: v.description,
@@ -1886,6 +1972,7 @@ async function editMeta (s) {
     isLive: v.isLive,
     restricted: v.restricted,
     url: v.url.trim(), // always sent: empty clears the redirect (explicit status/isLive above win over defaulting)
+    headers, // always sent too: an empty object is how the headers are cleared
     epgUrl: v.epgUrl.trim(), // always sent: empty clears the program-guide pointer
     epgId: v.epgId.trim()
   }

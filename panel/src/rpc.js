@@ -270,6 +270,13 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       // admin resolves the clash.)
       redirect: existing.redirect ?? false,
       url: existing.url ?? null,
+      // …and so are the playback headers that belong to that url (a hotlink-protected
+      // provider's Referer/Origin/User-Agent). Without this line a register onto a
+      // redirect id would erase them and every viewer would start getting 403s.
+      // NOTE: adding a field changes the S29 byte-compare below for records written
+      // before it existed, so the first re-register after this upgrade re-puts each
+      // record once. Bounded and one-time — the heartbeat is idempotent again after.
+      headers: existing.headers ?? null,
       // EPG pointers (S27) are admin-owned metadata too — a re-register must preserve
       // them (a P2P channel can carry an admin-attached program guide).
       epgUrl: existing.epgUrl ?? null,

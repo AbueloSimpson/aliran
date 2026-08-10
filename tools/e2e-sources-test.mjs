@@ -9,7 +9,12 @@
 // mapped fields) → create-user auto-grant hook → autoGrant toggle + reconcile →
 // channel cap truncation → oversized/unreachable feed failure keeping last good
 // state → scheduler (never-synced source syncs itself) → remove with keepChannels
-// (detach) and without (purge). Exits 0 on PASS.
+// (detach) and without (purge) → M3U sources (group filter + `filtered` count, ids
+// slugged from the display names with -2 dedup, #EXTVLCOPT playback headers with
+// per-key degrade, no EPG pointers, exclude-by-slug, token rotation really appending,
+// 304 idempotency, cross-format hints keeping the last good state) → redirect playback
+// headers over the admin API (allowlist, no-url refusal, url-clear clearing them).
+// Exits 0 on PASS.
 import assert from 'assert'
 import http from 'http'
 import os from 'os'
@@ -41,18 +46,24 @@ const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } try { fs.rmSync(dir, { recursive: true, force: true }) } catch {} }
 
 // ---------------------------------------------------------------- feed server
-// Mutable per-path feeds + toggleable ETag support (etag = `"v<rev>"`).
+// Mutable per-path feeds + toggleable ETag support (etag = `"v<rev>"`). `texts` holds
+// the RAW-TEXT fixtures (m3u playlists) — same paths, same ETag machinery, only the
+// content type and the serialization differ, so both formats are exercised against one
+// server and the 304 assertions mean the same thing for each.
 const feeds = { '/anime.json': null, '/kids.json': null }
+const texts = { '/events.m3u': null }
 let rev = 1
 let etagOn = true
 let hits304 = 0
 const feedSrv = http.createServer((req, res) => {
-  const feed = feeds[req.url.split('?')[0]]
-  if (!feed) { res.writeHead(404); res.end(); return }
+  const p = req.url.split('?')[0]
+  const isText = Object.prototype.hasOwnProperty.call(texts, p)
+  const feed = isText ? texts[p] : feeds[p]
+  if (feed == null) { res.writeHead(404); res.end(); return }
   const etag = `"v${rev}"`
   if (etagOn && req.headers['if-none-match'] === etag) { hits304++; res.writeHead(304); res.end(); return }
-  const body = JSON.stringify(feed)
-  const headers = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }
+  const body = isText ? feed : JSON.stringify(feed)
+  const headers = { 'content-type': isText ? 'application/vnd.apple.mpegurl' : 'application/json', 'content-length': Buffer.byteLength(body) }
   if (etagOn) headers.etag = etag
   res.writeHead(200, headers)
   res.end(body)
@@ -61,6 +72,7 @@ await new Promise((r) => feedSrv.listen(0, '127.0.0.1', r))
 cleanups.push(() => new Promise((r) => feedSrv.close(r)))
 const feedBase = `http://127.0.0.1:${feedSrv.address().port}`
 const animeUrl = feedBase + '/anime.json'
+const eventsUrl = feedBase + '/events.m3u'
 
 try {
   // ===== panel store + admin server (in-process, same shape as e2e-admin-api) =====
@@ -384,6 +396,198 @@ try {
   await api('POST', '/api/sources/split/sync', undefined, token)
   assert.deepStrictEqual((await db.get('catalog/split.k1')).value.category, ['Infantil'], 'source-category rename is the durable way to move an imported rail')
   log('K: source/operator split — sync owns membership, catmeta presentation survives sync ✓')
+
+  // ===== Test L: M3U playlists — groups, slug ids, playback headers =====
+  // The live-events shape: entries in several group-titles, #EXTVLCOPT header lines,
+  // a header value poisoned with a bare CR, two entries that slug to the same id, and
+  // URLs whose token the provider rotates. Everything the operator's real playlist has.
+  const eventsM3U = (tok) => [
+    '#EXTM3U',
+    '#EXTINF:-1 tvg-id=".dummy." tvg-name="Alpha" tvg-logo="https://img.example/alpha.png" group-title="Live Events",Alpha vs Beta',
+    '#EXTVLCOPT:http-referrer=https://provider.example/',
+    '#EXTVLCOPT:http-origin=https://provider.example',
+    '#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Aliran)',
+    `https://cdn.example/e/alpha.m3u8?token=${tok}`,
+    '#EXTINF:-1 group-title="Live Events",Gamma vs Delta',
+    `https://cdn.example/e/gamma.m3u8?token=${tok}`,
+    '#EXTINF:-1 tvg-logo="https://img.example/movie.png" group-title="Movies",Some Movie',
+    'https://cdn.example/m/movie.m3u8',
+    '#EXTINF:-1 group-title="Live Events",Poison Match',
+    '#EXTVLCOPT:http-referrer=https://provider.example/ok',
+    '#EXTVLCOPT:http-user-agent=Bad\rUA: injected', // bare CR — this ONE key must degrade away
+    `https://cdn.example/e/poison.m3u8?token=${tok}`,
+    '#EXTINF:-1 group-title="Live Events",Alpha vs Beta', // same name again → -2 suffix
+    `https://cdn.example/e/alpha-backup.m3u8?token=${tok}`,
+    ''
+  ].join('\n')
+  texts['/events.m3u'] = eventsM3U('t1'); rev++
+
+  // groups deliberately lower-cased here: the match is case-insensitive and exact.
+  r = await api('POST', '/api/sources', { name: 'events', url: eventsUrl, format: 'm3u', category: 'Live Events', groups: ['live events'], prefix: 'ev.' }, token)
+  assert.strictEqual(r.status, 201, 'add m3u source: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.format, 'm3u')
+  assert.deepStrictEqual(r.body.groups, ['live events'])
+  r = await api('POST', '/api/sources', { name: 'badfmt', url: eventsUrl, format: 'xspf', category: 'X' }, token)
+  assert.strictEqual(r.status, 400, 'unknown format must be rejected')
+
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.status, 200, 'm3u sync: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.added, 4, 'four Live Events entries imported')
+  assert.strictEqual(r.body.filtered, 1, 'the Movies entry is outside the groups — filtered, not skipped')
+  assert.strictEqual(r.body.skippedCount, 0, 'nothing invalid in the playlist')
+
+  const alpha = (await db.get('catalog/ev.Alpha-vs-Beta')).value
+  assert.ok(alpha, 'id slugged from the display name, with the source prefix')
+  assert.strictEqual(alpha.title, 'Alpha vs Beta')
+  assert.strictEqual(alpha.url, 'https://cdn.example/e/alpha.m3u8?token=t1')
+  assert.strictEqual(alpha.logo, 'https://img.example/alpha.png')
+  assert.deepStrictEqual(alpha.category, ['Live Events'])
+  assert.deepStrictEqual(alpha.headers, {
+    referer: 'https://provider.example/',
+    origin: 'https://provider.example',
+    'user-agent': 'Mozilla/5.0 (Aliran)'
+  }, 'EXTVLCOPT lines land as lowercase-keyed catalog headers')
+  assert.strictEqual(alpha.epgUrl, null, 'a playlist is not a program guide')
+  assert.strictEqual(alpha.epgId, null)
+  assert.strictEqual((await db.get('catalog/ev.Gamma-vs-Delta')).value.headers, null, 'an entry with no EXTVLCOPT lines has no headers')
+  const poison = (await db.get('catalog/ev.Poison-Match')).value
+  assert.ok(poison, 'the entry with a poisoned header line is still imported')
+  assert.deepStrictEqual(poison.headers, { referer: 'https://provider.example/ok' }, 'the CR-poisoned user-agent degraded away, the good key survived')
+  assert.ok((await db.get('catalog/ev.Alpha-vs-Beta-2')), 'a name collision inside one playlist gets a -2 suffix')
+  assert.strictEqual((await db.get('catalog/ev.Some-Movie')), null, 'a filtered group is never imported')
+  assert.ok((await db.get('user/bob')).value.wrapped['ev.Alpha-vs-Beta'], 'imported events auto-granted')
+
+  r = await api('GET', '/api/sources/events/channels', undefined, token)
+  assert.ok(r.body.channels.some((c) => c.feedId === 'Alpha-vs-Beta'), 'channels dialog reports the slug as the feed id (no epgId to fall back on): ' + JSON.stringify(r.body.channels.map((c) => c.feedId)))
+  const evRow = (await api('GET', '/api/sources', undefined, token)).body.find((s) => s.name === 'events')
+  assert.strictEqual(evRow.lastReport.filtered, 1, 'the filtered count reaches the dashboard report')
+
+  // Token rotation: the same events, new URLs. The stringify guard must NOT suppress
+  // these — this is exactly how a fresh token reaches viewers.
+  const vTok = db.version
+  texts['/events.m3u'] = eventsM3U('t2'); rev++
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.body.updated, 4, 'rotated tokens produce updated puts: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.added + r.body.removed, 0, 'a token rotation is not a channel change')
+  assert.ok(db.version > vTok, 'rotated URLs really append')
+  assert.strictEqual((await db.get('catalog/ev.Alpha-vs-Beta')).value.url, 'https://cdn.example/e/alpha.m3u8?token=t2')
+
+  // …and an UNCHANGED playlist still costs nothing.
+  const vIdem = db.version
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, true, 'unchanged m3u revalidates to 304')
+  assert.strictEqual(db.version, vIdem, 'a 304 m3u sync appends nothing to the bee')
+
+  // Exclusion works on the SLUG (the m3u has no feed ids of its own).
+  r = await api('PATCH', '/api/sources/events', { exclude: [{ id: 'Gamma-vs-Delta', title: 'Gamma vs Delta' }] }, token)
+  assert.strictEqual(r.status, 200)
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.body.removed, 1, 'excluded slug removed')
+  assert.strictEqual(r.body.excluded, 1)
+  assert.strictEqual((await db.get('catalog/ev.Gamma-vs-Delta')), null)
+  await api('PATCH', '/api/sources/events', { exclude: [] }, token)
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.body.added, 1, 're-included slug comes back')
+
+  // A filter/format edit must reset the ETag, or a 304 would mask it.
+  let reg = sources.loadSources(dir).events
+  assert.ok(reg.etag, 'a synced source holds an etag')
+  await api('PATCH', '/api/sources/events', { groups: ['live events', 'movies'] }, token)
+  assert.strictEqual(sources.loadSources(dir).events.etag, null, 'a groups change resets the etag')
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, false, 'the widened filter really re-read the body')
+  assert.strictEqual(r.body.added, 1, 'the Movies entry joins once its group is selected')
+  assert.strictEqual(r.body.filtered, 0)
+  await api('PATCH', '/api/sources/events', { groups: ['live events'] }, token)
+  await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual((await db.get('catalog/ev.Some-Movie')), null, 'narrowing the filter takes its channels back out')
+  reg = sources.loadSources(dir).events
+  assert.ok(reg.etag, 'etag re-established after the sync')
+
+  // A group the provider renamed (or the operator mistyped) matches NOTHING. Pruning the
+  // rail is correct — the feed is the membership — but it must not happen in silence.
+  await api('PATCH', '/api/sources/events', { groups: ['Live Eventz'] }, token)
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.body.added + r.body.updated, 0, 'a filter that matches nothing imports nothing')
+  assert.strictEqual(r.body.removed, 4, 'and prunes the whole rail')
+  assert.strictEqual(r.body.emptiedByFilter, true, 'the report FLAGS an empty-filter prune instead of doing it quietly')
+  await api('PATCH', '/api/sources/events', { groups: ['live events'] }, token)
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.body.added, 4, 'fixing the group name brings the rail back')
+  assert.strictEqual(r.body.emptiedByFilter, false, 'and the flag clears')
+
+  await api('PATCH', '/api/sources/events', { format: 'json' }, token)
+  assert.strictEqual(sources.loadSources(dir).events.etag, null, 'a format change resets the etag too')
+
+  // Cross-format bodies: a pointed hint, and the last good state untouched.
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.status, 400, 'a playlist on a json source fails')
+  assert.match(r.body.error, /set the source format to m3u/, 'the error names the fix: ' + r.body.error)
+  assert.ok((await db.get('catalog/ev.Alpha-vs-Beta')), 'the failed sync kept the last good channels')
+  await api('PATCH', '/api/sources/events', { format: 'm3u', url: feedBase + '/anime.json' }, token)
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.status, 400, 'JSON on an m3u source fails')
+  assert.match(r.body.error, /set the source format to json/, 'the reverse hint: ' + r.body.error)
+  assert.ok((await db.get('catalog/ev.Alpha-vs-Beta')), 'still the last good channels')
+  await api('PATCH', '/api/sources/events', { url: eventsUrl }, token)
+  r = await api('POST', '/api/sources/events/sync', undefined, token)
+  assert.strictEqual(r.status, 200, 'back on the playlist, the source recovers')
+  assert.strictEqual((await api('GET', '/api/sources', undefined, token)).body.find((s) => s.name === 'events').lastError, null, 'recovery clears lastError')
+  // Two parser traps, checked directly because neither can be provoked through a normal
+  // playlist without distorting the counts above.
+  const trap = sources.parseM3U('#EXTM3U\n#EXTINF:-1 group-title="Live Events",Movie group-title="Movies" special\nhttps://cdn.example/x.m3u8\n')
+  assert.strictEqual(trap.entries[0].group, 'Live Events', 'a group-title written inside the TITLE cannot override the real group')
+  assert.strictEqual(trap.entries[0].name, 'Movie group-title="Movies" special', 'and the title keeps that text verbatim')
+  const decapitated = sources.parseM3U('#EXTM3U\nhttps://cdn.example/orphan.m3u8\nhttps://cdn.example/orphan2.m3u8\n')
+  assert.strictEqual(decapitated.entries.length, 0)
+  assert.strictEqual(decapitated.stray, 2, 'urls with no #EXTINF are COUNTED — "0 added, 0 skipped" must be impossible on a broken playlist')
+  log('L: m3u — group filter + filtered count, slug ids with -2 dedup, EXTVLCOPT headers (per-key degrade), null EPG, exclude-by-slug, token rotation appends, 304 idempotency, empty-filter prune flagged, format hints keep last good state, title/stray parser traps ✓')
+
+  // ===== Test M: redirect playback headers over the admin API (Part A) =====
+  r = await api('POST', '/api/streams', { id: 'hdr-one', url: 'https://cdn.example/hdr.m3u8', headers: { Referer: 'https://provider.example/', 'USER-AGENT': ' Mozilla/5.0 ' } }, token)
+  assert.strictEqual(r.status, 201, 'create a redirect channel with headers: ' + JSON.stringify(r.body))
+  let hdr = (await db.get('catalog/hdr-one')).value
+  assert.deepStrictEqual(hdr.headers, { referer: 'https://provider.example/', 'user-agent': 'Mozilla/5.0' }, 'keys lowercased, values trimmed')
+
+  r = await api('POST', '/api/streams', { id: 'hdr-two', headers: { referer: 'https://provider.example/' } }, token)
+  assert.strictEqual(r.status, 400, 'headers without a redirect url must be rejected')
+  r = await api('POST', '/api/streams', { id: 'hdr-two', url: 'https://cdn.example/x.m3u8', headers: { authorization: 'Bearer x' } }, token)
+  assert.strictEqual(r.status, 400, 'a header outside the allowlist must be rejected')
+  assert.match(r.body.error, /referer, origin and user-agent/)
+
+  r = await api('PATCH', '/api/streams/hdr-one', { headers: { referrer: 'https://other.example/' } }, token)
+  assert.strictEqual(r.status, 200, 'the referrer alias is accepted')
+  hdr = (await db.get('catalog/hdr-one')).value
+  assert.deepStrictEqual(hdr.headers, { referer: 'https://other.example/' }, 'alias folds onto referer, and the patch REPLACES the map')
+  r = await api('PATCH', '/api/streams/hdr-one', { headers: {} }, token)
+  assert.strictEqual((await db.get('catalog/hdr-one')).value.headers, null, 'an empty object clears')
+
+  await api('PATCH', '/api/streams/hdr-one', { headers: { origin: 'https://provider.example' } }, token)
+  r = await api('PATCH', '/api/streams/hdr-one', { url: '' }, token)
+  assert.strictEqual(r.status, 200, 'clearing the url: ' + JSON.stringify(r.body))
+  hdr = (await db.get('catalog/hdr-one')).value
+  assert.strictEqual(hdr.url, null)
+  assert.strictEqual(hdr.headers, null, 'clearing the url clears the headers with it')
+  r = await api('PATCH', '/api/streams/hdr-one', { headers: { origin: 'https://provider.example' } }, token)
+  assert.strictEqual(r.status, 400, 'headers on a channel with no url are refused whatever the field order')
+  log('M: redirect headers — stored lowercase/trimmed, allowlist enforced, no-url refused, url-clear clears them ✓')
+
+  // ===== Test N: a FAILING source keeps its own retry cadence =====
+  // lastSync is stamped on SUCCESS only, so a due-check that reads it alone leaves a
+  // broken source permanently due — it would re-fetch on EVERY tick, and the tick default
+  // is 5 minutes. The due-check reads the last ATTEMPT instead, so a failure waits.
+  r = await api('POST', '/api/sources', { name: 'broken', url: 'http://127.0.0.1:9/nothing.json', category: 'Broken', intervalMs: 60000 }, token)
+  assert.strictEqual(r.status, 201)
+  r = await api('POST', '/api/sources/broken/sync', undefined, token)
+  assert.strictEqual(r.status, 400, 'the unreachable source fails as expected')
+  const errAt = sources.loadSources(dir).broken.lastErrorAt
+  assert.ok(errAt, 'the failure stamped lastErrorAt')
+  const sched2 = sources.makeSourcesScheduler(ctx, { tickMs: 1e9, bootDelayMs: 1e9 })
+  cleanups.push(() => sched2.close())
+  await sched2.tick()
+  assert.strictEqual(sources.loadSources(dir).broken.lastErrorAt, errAt, 'a source that just failed is NOT retried on the next tick')
+  sched2.close()
+  log('N: a failing source is not re-fetched every tick — the retry floor holds ✓')
 
   log('\nPASS: remote channel sources e2e (S27)')
   await cleanup()

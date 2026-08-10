@@ -9,6 +9,9 @@
 // probes are DISPOSABLE — repeated rotations and a permanently unreachable feed must leave
 // the panel's own on-disk core set unchanged — and, at the end, that a restart RECLAIMS the
 // cores older (pre-purge) builds stranded, with accounts, catalog and assets intact.
+// It also covers the ADMIN-OWNED fields a register must never erase: registering onto a
+// redirect id keeps redirect/url and the playback `headers` that ride with that url, and
+// the byte-compare stays idempotent with the headers field present.
 // No ffmpeg needed. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
@@ -28,7 +31,7 @@ import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore, reclaimStrayCores, loadSecrets, saveSecrets } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { makeBlobsKeyEnricher } from '../panel/src/blobs-key.js'
-import { addPublisher, setPublisherStatus, setPublisherScopes, loadPublishers } from '../panel/src/ops.js'
+import { addPublisher, setPublisherStatus, setPublisherScopes, loadPublishers, addStream } from '../panel/src/ops.js'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 async function waitFor (fn, ms, label) { const t = Date.now(); while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v } catch {} await sleep(300) } throw new Error('timeout: ' + label) }
@@ -334,6 +337,44 @@ try {
   assert.strictEqual((await db.get('catalog/scoped-1')).value.isLive, true, 'named registration unaffected by the legacy cutover')
   log('panel: LEGACY_PUBLISHER=0 rejects unnamed payloads; enrolled sites unaffected ✓')
 
+  // ===== A register onto a REDIRECT id preserves the admin-owned redirect fields =====
+  // redirect/url have always been admin-owned (S23), and the playback `headers` that ride
+  // with that url are too: a hotlink-protected provider's Referer/Origin/User-Agent live
+  // ONLY in the catalog record, so a broadcaster register that dropped them would leave
+  // every viewer with a 403 and no way to tell why. The clash itself is legitimate — the
+  // record ends up with both a feedKey and a url, and viewers keep playing the url until
+  // an admin resolves it — which is exactly why the preservation has to hold.
+  const feedPromo = new Hyperdrive(feedStore.namespace('feed-promo'), { encryptionKey: encKey }); await feedPromo.ready()
+  await feedPromo.put('/index.m3u8', b4a.from('#EXTM3U'))
+  const feedPromoHex = b4a.toString(feedPromo.key, 'hex')
+  feedSwarm.join(feedPromo.discoveryKey, { server: true, client: false }); await feedSwarm.flush()
+
+  const promoHeaders = { referer: 'https://provider.example/', origin: 'https://provider.example', 'user-agent': 'Mozilla/5.0 (Aliran)' }
+  await addStream({ db, dataDir: dirs.panel }, 'scoped-promo', {
+    title: 'Promo', url: 'https://cdn.example/promo.m3u8', headers: { Referer: promoHeaders.referer, ORIGIN: promoHeaders.origin, 'User-Agent': promoHeaders['user-agent'] }
+  })
+  assert.deepStrictEqual((await db.get('catalog/scoped-promo')).value.headers, promoHeaders, 'admin created the redirect channel with normalized headers')
+
+  await registerWithPanel(pcall2, east.secretKey, {
+    publisher: 'east', streamId: 'scoped-promo', feedKey: feedPromoHex, encryptionKey: encKeyHex, title: 'Broadcaster Name', isLive: true
+  })
+  const promo = (await db.get('catalog/scoped-promo')).value
+  assert.strictEqual(promo.feedKey, feedPromoHex, 'the register did land (otherwise the preservation proves nothing)')
+  assert.strictEqual(promo.redirect, true, 're-register preserves the redirect class')
+  assert.strictEqual(promo.url, 'https://cdn.example/promo.m3u8', 're-register preserves the admin-owned url')
+  assert.deepStrictEqual(promo.headers, promoHeaders, 're-register preserves the playback headers VERBATIM, lowercase keys intact')
+  assert.strictEqual(promo.title, 'Promo', 'and the panel-authoritative title is not reseeded onto an existing record')
+
+  // …and the byte-compare still holds with the field present: repeating the payload is a
+  // no-op, so a 5-minute heartbeat on a header-carrying channel costs zero bee appends.
+  const beforeHdr = beeLen()
+  await registerWithPanel(pcall2, east.secretKey, {
+    publisher: 'east', streamId: 'scoped-promo', feedKey: feedPromoHex, encryptionKey: encKeyHex, isLive: true
+  })
+  assert.strictEqual(beeLen(), beforeHdr, 'an unchanged re-register of a header-carrying channel appends nothing')
+  assert.deepStrictEqual((await db.get('catalog/scoped-promo')).value.headers, promoHeaders, 'headers still there after the no-op heartbeat')
+  log('panel: register onto a redirect id preserves redirect/url/headers, and stays idempotent with them ✓')
+
   // ===== Grant + login recovers the registered key =====
   const rwd = evaluateFull(keys.oprf, PASSWORD)
   const salt = randomSalt(); const kp = userKeyPair(); const auth = authKeyPair(); const wk = wrapKeyFrom(rwd)
@@ -444,7 +485,7 @@ try {
   assert.deepStrictEqual((await again.db.get('user/alice'))?.value, aliceBefore, 'accounts still intact after a second restart')
   log('panel: the sweep is idempotent — a clean store is left untouched ✓')
 
-  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; enrichment probes purge their cores, so panel disk is flat across rotations; older builds\' strays reclaimed at start with accounts/catalog/assets intact; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover; S29 register idempotence: unchanged re-register appends nothing)')
+  log('\nRESULT: PASS ✅  (auto-register → private secret → blobsKey enrichment + rotation → grant → login recovers key; enrichment probes purge their cores, so panel disk is flat across rotations; older builds\' strays reclaimed at start with accounts/catalog/assets intact; unauthorized rejected; S26 per-publisher keys: scope/revoke/unknown rejects, live scope edits, legacy fallback + cutover; S29 register idempotence: unchanged re-register appends nothing; a register onto a redirect id preserves redirect/url/headers)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

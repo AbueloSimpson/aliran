@@ -287,13 +287,14 @@ export function registerPanelTools (ctx, h) {
   // ---- streams / packages / sources: create / mutate ----
   def('panel_add_stream', {
     title: 'Add a stream',
-    description: 'Add a channel. Provide `url` (https) for a REDIRECT channel (viewers play the url, no P2P feed); otherwise a P2P channel a broadcaster will register a feed for. Pre-seeded feed flows (operator KB): `feedKey` (64 hex) pre-binds an existing broadcaster feed, and `key` (64 hex) supplies that feed\'s encryption secret so grants seal the RIGHT key. `key` is a SECRET input — a supplied key is stored panel-side and NEVER echoed back in the result. Omit `key` and the panel mints one, returned ONCE here (`encryptionKey`) for the broadcaster\'s data/feed.key — there is no read-back API later.',
+    description: 'Add a channel. Provide `url` (https) for a REDIRECT channel (viewers play the url, no P2P feed); otherwise a P2P channel a broadcaster will register a feed for. `headers` rides with that url for hotlink-protected providers — the HOST PLAYER sends them; only referer / origin / user-agent are accepted (the headers a player cannot set for itself), any other key is refused, and headers without a url are refused. Pre-seeded feed flows (operator KB): `feedKey` (64 hex) pre-binds an existing broadcaster feed, and `key` (64 hex) supplies that feed\'s encryption secret so grants seal the RIGHT key. `key` is a SECRET input — a supplied key is stored panel-side and NEVER echoed back in the result. Omit `key` and the panel mints one, returned ONCE here (`encryptionKey`) for the broadcaster\'s data/feed.key — there is no read-back API later.',
     inputSchema: {
       id: z.string(),
       title: z.string().optional(),
       description: z.string().optional(),
       category: z.union([z.string(), z.array(z.string())]).optional(),
       url: z.string().optional(),
+      headers: z.record(z.string()).optional(),
       order: z.number().int().optional(),
       featured: z.boolean().optional(),
       feedKey: z.string().regex(HEX64, 'feedKey must be 64 hex chars (the hypercore feed public key)').optional(),
@@ -312,8 +313,8 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_set_stream_meta', {
     title: 'Edit a stream',
-    description: 'Patch channel metadata (title/description/category/order/featured/isLive/status/url). EPG pointers: `epgUrl` (public https guide feed the CLIENT fetches) + `epgId` (this channel\'s id inside that feed) — both needed for a guide to show; empty string clears either. `feedKey` (64 hex) re-points the P2P feed — the paired blobsKey resets and is re-filled from the next real registration. The encryption `key` is fixed at creation (add-only): re-keying a stream is delete + re-add, which mints a fresh key and invalidates old grants.',
-    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), url: z.string().optional(), isLive: z.boolean().optional(), status: z.string().optional(), order: z.number().int().nullable().optional(), featured: z.boolean().optional(), feedKey: z.string().regex(HEX64, 'feedKey must be 64 hex chars (the hypercore feed public key)').optional(), epgUrl: z.string().optional(), epgId: z.string().optional() }
+    description: 'Patch channel metadata (title/description/category/order/featured/isLive/status/url). `headers` are the request headers the host player sends with a REDIRECT url (referer / origin / user-agent only) — pass an empty object to clear them, and note that clearing the `url` clears them too. EPG pointers: `epgUrl` (public https guide feed the CLIENT fetches) + `epgId` (this channel\'s id inside that feed) — both needed for a guide to show; empty string clears either. `feedKey` (64 hex) re-points the P2P feed — the paired blobsKey resets and is re-filled from the next real registration. The encryption `key` is fixed at creation (add-only): re-keying a stream is delete + re-add, which mints a fresh key and invalidates old grants.',
+    inputSchema: { id: z.string(), title: z.string().optional(), description: z.string().optional(), category: z.union([z.string(), z.array(z.string())]).optional(), url: z.string().optional(), headers: z.record(z.string()).optional(), isLive: z.boolean().optional(), status: z.string().optional(), order: z.number().int().nullable().optional(), featured: z.boolean().optional(), feedKey: z.string().regex(HEX64, 'feedKey must be 64 hex chars (the hypercore feed public key)').optional(), epgUrl: z.string().optional(), epgId: z.string().optional() }
   }, async ({ id, ...body }) => ok(await p.patch('/api/streams/' + q(id), body)))
 
   def('panel_add_package', {
@@ -330,14 +331,14 @@ export function registerPanelTools (ctx, h) {
 
   def('panel_add_source', {
     title: 'Add a remote source',
-    description: 'Add a remote channel-list source (provider JSON) materialized as a category of redirect channels.',
-    inputSchema: { name: z.string(), url: z.string(), category: z.string(), prefix: z.string().optional(), autoGrant: z.boolean().optional(), enabled: z.boolean().optional(), intervalMs: z.number().int().optional() }
+    description: 'Add a remote channel-list source materialized as a category of redirect channels. `format` picks the parser: "json" (default) is the provider-JSON shape; "m3u" is a playlist — channel ids are slugged from the entry NAMES (playlist tvg-ids are usually dummies), #EXTVLCOPT lines import as per-channel playback headers, and the entries get no EPG pointer. `groups` filters an m3u by group-title (case-insensitive exact match; omit for every entry). RECIPE for a playlist that mixes categories: add SEVERAL sources over the SAME url, each with a disjoint `groups` list and its own `category` and `prefix` — ids stay disjoint, each source prunes independently, and the ETag makes the extra fetches nearly free.',
+    inputSchema: { name: z.string(), url: z.string(), category: z.string(), format: z.enum(['json', 'm3u']).optional(), groups: z.array(z.string()).optional(), prefix: z.string().optional(), autoGrant: z.boolean().optional(), enabled: z.boolean().optional(), intervalMs: z.number().int().optional() }
   }, async (a) => ok(await p.post('/api/sources', a)))
 
   def('panel_set_source', {
     title: 'Edit a remote source',
-    description: 'Edit any field of a remote source. `exclude` REPLACES the deselect list: feed ids (unprefixed, as panel_source_channels reports them) the sync must skip — pass [{id,title}] objects or bare id strings. Changing the exclusion set resets the source\'s ETag, so the next sync re-pulls the full feed body and re-diffs (excluded channels already imported are removed then).',
-    inputSchema: { name: z.string(), url: z.string().optional(), category: z.string().optional(), prefix: z.string().optional(), autoGrant: z.boolean().optional(), enabled: z.boolean().optional(), intervalMs: z.number().int().optional(), exclude: z.array(z.union([z.string(), z.object({ id: z.string(), title: z.string().optional() })])).optional() }
+    description: 'Edit any field of a remote source. `exclude` REPLACES the deselect list: feed ids (unprefixed, as panel_source_channels reports them) the sync must skip — pass [{id,title}] objects or bare id strings. `groups` REPLACES the m3u group-title filter (empty array = take every group). Changing the exclusion set, the `groups` filter or the `format` resets the source\'s ETag, so the next sync re-pulls the full feed body and re-diffs (excluded channels already imported are removed then).',
+    inputSchema: { name: z.string(), url: z.string().optional(), category: z.string().optional(), format: z.enum(['json', 'm3u']).optional(), groups: z.array(z.string()).optional(), prefix: z.string().optional(), autoGrant: z.boolean().optional(), enabled: z.boolean().optional(), intervalMs: z.number().int().optional(), exclude: z.array(z.union([z.string(), z.object({ id: z.string(), title: z.string().optional() })])).optional() }
   }, async ({ name, ...body }) => ok(await p.patch('/api/sources/' + q(name), body)))
 
   def('panel_sync_source', { title: 'Sync a remote source now', description: 'Pull + diff + grant a source immediately; returns the sync report.', inputSchema: { name: z.string() } },

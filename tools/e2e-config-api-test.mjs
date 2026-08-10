@@ -200,6 +200,62 @@ try {
   assert.ok(r.body.result.secretsDeclined.includes('snapch'), 'and the refusal is REPORTED, not silent')
   log('E  panel restore: refuses to overwrite a live per-stream key, and says so')
 
+  // ---- E2: playback headers and the M3U source fields round-trip ----
+  //
+  // Both are fields the snapshot learned about late, and both fail SILENTLY when an
+  // artifact drops them: a restored redirect channel would play without the Referer its
+  // provider demands (403 for every viewer), and a restored m3u source would come back
+  // as `json` and fail its next sync on a body it can no longer parse. The comparators
+  // (STREAM_FIELDS / srcShape) are what decide whether a restore even notices, so drift
+  // each one and check the plan SEES it before checking the restore fixes it.
+  r = await papi('POST', '/api/streams', { id: 'hdrch', title: 'Header Channel', url: 'https://cdn.example/promo.m3u8', headers: { Referer: 'https://provider.example/', 'User-Agent': 'Mozilla/5.0 (Aliran)' } })
+  assert.strictEqual(r.status, 201, 'redirect channel with headers: ' + JSON.stringify(r.body))
+  const HDRS = { referer: 'https://provider.example/', 'user-agent': 'Mozilla/5.0 (Aliran)' }
+  r = await papi('POST', '/api/sources', { name: 'e2em3u', url: 'https://prov.example/events.m3u', format: 'm3u', groups: ['Live Events'], category: 'Events' })
+  assert.strictEqual(r.status, 201, 'm3u source: ' + JSON.stringify(r.body))
+
+  r = await papi('POST', '/api/config/snapshots', { note: 'headers + m3u' })
+  const snapHdr = r.body.id
+
+  await papi('PATCH', '/api/streams/hdrch', { headers: { referer: 'https://wrong.example/' } })
+  await papi('PATCH', '/api/sources/e2em3u', { format: 'json', groups: [] })
+  r = await papi('POST', `/api/config/snapshots/${snapHdr}/plan`, {})
+  assert.deepStrictEqual(r.body.streams.update.find((u) => u.id === 'hdrch')?.fields, ['headers'], 'the plan sees the drifted headers, and ONLY them')
+  assert.deepStrictEqual(r.body.sources.update, ['e2em3u'], 'the plan sees the drifted format/groups — and no phantom on the json sources')
+
+  r = await papi('POST', `/api/config/snapshots/${snapHdr}/restore`, { confirm: true })
+  assert.strictEqual(r.status, 200)
+  r = await papi('GET', '/api/streams')
+  assert.deepStrictEqual(r.body.find((s) => s.id === 'hdrch').headers, HDRS, 'headers round-tripped verbatim, lowercase keys intact')
+  r = await papi('GET', '/api/sources')
+  const m3uSrc = r.body.find((s) => s.name === 'e2em3u')
+  assert.strictEqual(m3uSrc.format, 'm3u', 'the source format round-tripped')
+  assert.deepStrictEqual(m3uSrc.groups, ['Live Events'], 'and its group filter')
+
+  // A PRE-M3U ARTIFACT mentions neither key, and "not mentioned" has to mean "leave it
+  // alone". A comparator that read an absent `format` as `json` would report — and then
+  // really apply — a downgrade of the m3u source the artifact never knew about, leaving a
+  // playlist source its next sync cannot parse. Sources therefore diff PER FIELD, like
+  // streams. Model the artifact by stripping the two keys off a real snapshot on disk (the
+  // id has to match the store's naming pattern, which is also its traversal guard).
+  const legacyId = 'panel-config-20250101-000000.json'
+  const legacyPath = path.join(dirs.panel, 'config-snapshots', legacyId)
+  const legacyEnv = JSON.parse(fs.readFileSync(path.join(dirs.panel, 'config-snapshots', snapHdr), 'utf8'))
+  for (const s of Object.values(legacyEnv.sections.sources)) { delete s.format; delete s.groups }
+  fs.writeFileSync(legacyPath, JSON.stringify(legacyEnv))
+  r = await papi('POST', `/api/config/snapshots/${legacyId}/plan`, {})
+  assert.strictEqual(r.status, 200)
+  assert.deepStrictEqual(r.body.sources.update, [], 'a pre-M3U artifact touches NO source — not the json ones, and not the m3u one: ' + JSON.stringify(r.body.sources))
+  assert.strictEqual(r.body.streams.update.length, 0, 'and it changes nothing about the streams')
+
+  // …and skipping absent fields must not blind the comparison: a field the artifact DOES
+  // carry, and that really differs, is still an update.
+  legacyEnv.sections.sources.e2em3u.url = 'https://prov.example/other-events.m3u'
+  fs.writeFileSync(legacyPath, JSON.stringify(legacyEnv))
+  r = await papi('POST', `/api/config/snapshots/${legacyId}/plan`, {})
+  assert.deepStrictEqual(r.body.sources.update, ['e2em3u'], 'a genuinely different url is still caught: ' + JSON.stringify(r.body.sources))
+  log('E2 panel restore: redirect headers and m3u format/groups round-trip; a pre-M3U artifact raises no phantom diff, a real difference still does')
+
   // ---- F: cross-service and malformed artifacts are refused ----
   assert.strictEqual((await papi('POST', '/api/config/template/plan', { template: { ...ptpl, service: 'broadcaster' } })).status, 409, 'a broadcaster artifact cannot be applied to the panel')
   assert.strictEqual((await papi('POST', '/api/config/template/plan', { template: { aliranSnapshot: 99 } })).status, 400, 'an unknown format version is refused')

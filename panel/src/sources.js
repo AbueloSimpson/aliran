@@ -1,9 +1,18 @@
-// Remote channel sources (S27) — pull a provider-prepared JSON of channels and
-// materialize it as a CATEGORY of redirect channels (S23) in the catalog, kept in
-// sync on a schedule. One source = one feed URL + one rail label ("Anime"); each
-// feed entry becomes `<prefix><feedId>` playing its https url instead of a P2P
-// feed. P2P channels tagged with the same category share the rail — the category
-// field is ordinary catalog metadata either way.
+// Remote channel sources (S27) — pull a provider channel list and materialize it as a
+// CATEGORY of redirect channels (S23) in the catalog, kept in sync on a schedule. One
+// source = one feed URL + one rail label ("Anime"); each feed entry becomes
+// `<prefix><feedId>` playing its https url instead of a P2P feed. P2P channels tagged
+// with the same category share the rail — the category field is ordinary catalog
+// metadata either way.
+//
+// Two feed FORMATS (`format` on the source record):
+//   - 'json' (default): the provider-prepared shape mapFeed reads. Feed ids are the
+//     provider's, and the feed url doubles as the entries' EPG pointer.
+//   - 'm3u': a plain playlist (parseM3U + mapM3U). Ids are SLUGGED FROM THE NAME
+//     because playlist tvg-ids are routinely dummies, `#EXTVLCOPT` lines import as
+//     per-channel playback `headers` (hotlink-protected providers), a `groups` filter
+//     selects which group-titles this source takes, and the entries carry NO EPG
+//     pointer — a playlist is not a program guide.
 //
 // Trust boundary: the feed is THIRD-PARTY DATA, never instructions. Every entry
 // passes the same validators as admin input (normRedirectUrl/normArt/checkName),
@@ -39,7 +48,7 @@ import crypto from 'hypercore-crypto'
 import { sealTo } from '@aliran/core'
 import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { loadSecrets, saveSecrets } from './store.js'
-import { OpsError, checkName, deleteStream, normArt, normRedirectUrl } from './ops.js'
+import { OpsError, checkName, deleteStream, normArt, normRedirectUrl, normRedirectHeaders } from './ops.js'
 import { reconcilePackages } from './packages.js'
 
 const bad = (m) => { throw new OpsError('bad-request', m) }
@@ -51,6 +60,9 @@ const normBool = (v) => v === true || /^(1|true|yes)$/i.test(String(v))
 const TITLE_MAX = 200
 const SKIP_REPORT_MAX = 20
 const EXCLUDE_MAX = 1000
+const GROUP_MAX = 64
+const GROUPS_MAX = 50
+const ID_MAX = 64 // NAME_RE's ceiling (ops.js) — prefix + slug must fit inside it
 
 // ---------------------------------------------------------------- registry
 
@@ -135,6 +147,44 @@ function normExclude (v) {
   return out
 }
 
+// Which parser reads the feed. 'json' is the original provider-JSON shape (mapFeed);
+// 'm3u' is a plain playlist (parseM3U + mapM3U) — the format every IPTV provider hands
+// out for live-event lists. An ABSENT field means json, so every source configured
+// before M3U support keeps working with no migration and no registry rewrite.
+function normFormat (v) {
+  const s = v == null || String(v).trim() === '' ? 'json' : String(v).trim().toLowerCase()
+  if (s !== 'json' && s !== 'm3u') bad("format must be 'json' or 'm3u'")
+  return s
+}
+
+// M3U group filter: the `group-title` values to import — every other entry is left out
+// (counted as `filtered`, which is not an error). null / [] = import everything.
+// Matching at sync time is TRIMMED, CASE-INSENSITIVE and EXACT: a rule an operator can
+// check by eye against the playlist, where a substring rule would quietly drag
+// "Live Events (VIP)" into a "Live Events" source. One playlist can therefore feed
+// SEVERAL sources — same url, disjoint groups, its own category and prefix each —
+// which is how a provider list that mixes events with ordinary channels is split into
+// the right rails without any per-group mapping in the record.
+// Accepts an array or a comma string (CLI parity with normExclude).
+function normGroups (v) {
+  if (v == null || v === '') return null
+  const list = Array.isArray(v) ? v : String(v).split(',')
+  const out = []
+  const seen = new Set()
+  for (const raw of list) {
+    const g = String(raw ?? '').trim()
+    if (!g) continue
+    if (g.length > GROUP_MAX) bad(`group must be at most ${GROUP_MAX} characters`)
+    if (/[\r\n]/.test(g)) bad('group must not contain line breaks')
+    const k = g.toLowerCase()
+    if (seen.has(k)) continue // the match is case-insensitive, so two casings are one group
+    seen.add(k)
+    out.push(g)
+  }
+  if (out.length > GROUPS_MAX) bad(`at most ${GROUPS_MAX} groups per source`)
+  return out.length ? out : null
+}
+
 function normInterval (v, dflt) {
   if (v == null || v === '') return dflt
   const n = typeof v === 'number' ? v : parseInt(v, 10)
@@ -148,12 +198,14 @@ export function addSource (ctx, name, opts = {}) {
   if (hasOwn(sources, name)) exists(`source "${name}" already exists (use set-source to edit)`)
   sources[name] = {
     url: normSourceUrl(opts.url),
+    format: normFormat(opts.format),
     category: normCategoryLabel(opts.category),
     prefix: normPrefix(opts.prefix, name),
     autoGrant: opts.autoGrant == null ? true : normBool(opts.autoGrant),
     enabled: opts.enabled == null ? true : normBool(opts.enabled),
     intervalMs: normInterval(opts.intervalMs, scfg(ctx).defaultIntervalMs),
     exclude: normExclude(opts.exclude),
+    groups: normGroups(opts.groups),
     etag: null,
     lastSync: null,
     lastError: null,
@@ -172,6 +224,13 @@ export function setSource (ctx, name, fields = {}) {
   const s = hasOwn(sources, name) ? sources[name] : null
   if (!s) notFound(`no such source: ${name}`)
   if (fields.url != null) { const u = normSourceUrl(fields.url); if (u !== s.url) { s.url = u; s.etag = null } }
+  if (fields.format != null) {
+    // A format change is a different PARSE of bytes that may be byte-identical, so the
+    // cached validator must not answer 304 and skip the very re-read that was asked for.
+    const f = normFormat(fields.format)
+    if (f !== (s.format || 'json')) s.etag = null
+    s.format = f
+  }
   if (fields.category != null) s.category = normCategoryLabel(fields.category)
   if (fields.prefix != null) s.prefix = normPrefix(fields.prefix, name)
   if (fields.autoGrant != null) s.autoGrant = normBool(fields.autoGrant)
@@ -183,6 +242,12 @@ export function setSource (ctx, name, fields = {}) {
     // needs the full body to apply it, so force a fresh 200.
     if (JSON.stringify(next.map((e) => e.id)) !== JSON.stringify((s.exclude || []).map((e) => e.id))) s.etag = null
     s.exclude = next
+  }
+  if (fields.groups !== undefined) {
+    const next = normGroups(fields.groups)
+    // Same reason as exclude: the next sync needs the full body to apply a filter change.
+    if (JSON.stringify(next) !== JSON.stringify(s.groups ?? null)) s.etag = null
+    s.groups = next
   }
   saveSources(ctx.dataDir, sources)
   return { name, ...s }
@@ -236,14 +301,22 @@ async function ownedIds (ctx, name) {
 
 // ---------------------------------------------------------------- fetch + map
 
+// What an m3u source will accept back. Providers serve playlists under three
+// interchangeable content types and some under text/plain, so the list is broad and
+// ends in a wildcard — the body is what we judge, not the header.
+const M3U_ACCEPT = 'application/vnd.apple.mpegurl, audio/mpegurl, application/x-mpegurl, text/plain;q=0.9, */*;q=0.8'
+
 // Size-capped, timeout-guarded fetch with ETag revalidation. The cap is enforced
 // while STREAMING the body — a feed that lies about content-length cannot balloon
-// panel memory.
-async function fetchFeed (url, etag, { fetchTimeoutMs, maxBytes }) {
+// panel memory. Everything except the accept header and the final body handling is
+// format-agnostic; `format` decides whether the caller gets parsed JSON (`feed`) or
+// the raw playlist text (`text`), and parsing an m3u is deliberately left to mapM3U
+// so a playlist syntax error travels the same reporting path as a bad entry.
+async function fetchFeed (url, etag, { fetchTimeoutMs, maxBytes }, format = 'json') {
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), fetchTimeoutMs)
   try {
-    const headers = { accept: 'application/json' }
+    const headers = { accept: format === 'm3u' ? M3U_ACCEPT : 'application/json' }
     if (etag) headers['if-none-match'] = etag
     let res
     try { res = await fetch(url, { headers, signal: ac.signal, redirect: 'follow' }) } catch (err) {
@@ -266,8 +339,18 @@ async function fetchFeed (url, etag, { fetchTimeoutMs, maxBytes }) {
       }
       chunks.push(b4a.from(value))
     }
+    const body = b4a.toString(b4a.concat(chunks), 'utf8')
+    // Cross-format sniff: a playlist on a json source (or JSON on an m3u one) is nearly
+    // always the `format` field set wrong, and the generic parse error would send the
+    // operator hunting through the provider's file instead. Name the fix here.
+    const head = body.trimStart().slice(0, 16) // trimStart also eats a leading BOM (U+FEFF is JS whitespace)
+    if (format === 'm3u') {
+      if (head.startsWith('{') || head.startsWith('[')) throw new Error('feed is not an M3U playlist — this looks like JSON; set the source format to json')
+      return { text: body, etag: res.headers.get('etag') || null }
+    }
+    if (head.startsWith('#EXTM3U')) throw new Error('feed is not valid JSON — this looks like an M3U playlist; set the source format to m3u')
     let feed
-    try { feed = JSON.parse(b4a.toString(b4a.concat(chunks), 'utf8')) } catch { throw new Error('feed is not valid JSON') }
+    try { feed = JSON.parse(body) } catch { throw new Error('feed is not valid JSON') }
     return { feed, etag: res.headers.get('etag') || null }
   } finally { clearTimeout(timer) }
 }
@@ -314,7 +397,216 @@ function mapFeed (source, feed, { maxChannels }) {
       epgId: rawId
     })
   }
-  return { entries, skipped, truncated, excluded }
+  // `filtered` is the m3u group filter's count; a json feed has no group concept, so it
+  // reports zero and both mappers hand applyFeed/doSync the same shape.
+  return { entries, skipped, truncated, excluded, filtered: 0 }
+}
+
+// ---------------------------------------------------------------- m3u
+//
+// The #EXTVLCOPT lines a playlist uses to declare the request headers a
+// hotlink-protected provider demands, mapped onto the catalog's canonical keys.
+// (`http-referer` is a common misspelling in the wild; accept both.)
+const VLCOPT_HEADERS = {
+  'http-referrer': 'referer',
+  'http-referer': 'referer',
+  'http-origin': 'origin',
+  'http-user-agent': 'user-agent'
+}
+
+// An #EXTINF line is `<duration> <attr="value" …>,<display name>`, so the display name
+// is everything after the FIRST comma that sits OUTSIDE quotes — and it may itself
+// contain commas, which is why "everything after" and not "up to the next one".
+// Both naive readings are wrong on real playlists: indexOf(',') cuts inside an
+// attribute value (`tvg-name="Lakers, Game 3"`), and lastIndexOf(',') beheads any
+// event title that carries a comma (`Lakers vs Celtics, Game 3` → `Game 3`), which
+// would also change the slugged id. So scan once with an in-quotes flag and stop at
+// the first comma seen while outside quotes.
+// Returns the index of that comma, or -1. Callers need the POSITION and not just the
+// name, because it is also the end of the attribute region: the title is free text and
+// may itself read `group-title="Movies"`, which an attribute scan over the whole line
+// would happily believe and use to override the entry's real group.
+function extinfSplit (rest) {
+  let quoted = false
+  for (let i = 0; i < rest.length; i++) {
+    const ch = rest[i]
+    if (ch === '"') quoted = !quoted
+    else if (ch === ',' && !quoted) return i
+  }
+  return -1
+}
+
+// Parse an M3U/M3U8 playlist into raw entries. Dependency-free, and deliberately PURE
+// TEXT → ARRAY: it validates NOTHING, because mapM3U runs the same validators over the
+// result that admin input gets, and the trust boundary has to live in exactly one place.
+//
+// The dialect it understands is the one every IPTV provider emits:
+//
+//   #EXTM3U
+//   #EXTINF:-1 tvg-id="x" tvg-logo="https://…" group-title="Live Events",Team A vs Team B
+//   #EXTVLCOPT:http-referrer=https://provider.example/
+//   #EXTVLCOPT:http-user-agent=Mozilla/5.0 …
+//   https://cdn.example/event/123.m3u8?token=…
+//
+// A one-entry state machine: #EXTINF opens a pending entry, #EXTVLCOPT / #EXTGRP
+// decorate it, and the first non-comment line closes it as the url. Playlist bugs
+// degrade instead of throwing — a second #EXTINF before any url replaces the pending
+// entry, and a bare url with no #EXTINF is COUNTED as `stray` and dropped (there is no
+// metadata to build a channel out of). The count matters: a playlist that lost its
+// #EXTINF lines in transit would otherwise import zero channels and report zero
+// problems, which reads like an empty playlist rather than a broken one. Only a missing
+// #EXTM3U header is fatal, because that means the panel was handed something that is
+// not a playlist at all.
+export function parseM3U (text) {
+  const lines = String(text).trimStart().split(/\r?\n/) // trimStart also eats a leading BOM
+  let i = 0
+  while (i < lines.length && lines[i].trim() === '') i++
+  if (i >= lines.length || !lines[i].trim().startsWith('#EXTM3U')) throw new Error('feed is not an M3U playlist (missing #EXTM3U)')
+  const entries = []
+  let pending = null
+  let stray = 0
+  for (i++; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (line === '') continue
+    if (line.startsWith('#EXTINF:')) {
+      const rest = line.slice('#EXTINF:'.length)
+      // Attributes live BEFORE the first unquoted comma; the title after it is free text
+      // and must never be scanned for them (see extinfSplit).
+      const cut = extinfSplit(rest)
+      const attrRegion = cut < 0 ? rest : rest.slice(0, cut)
+      const attrs = {}
+      for (const m of attrRegion.matchAll(/([A-Za-z0-9-]+)="([^"]*)"/g)) attrs[m[1].toLowerCase()] = m[2]
+      pending = {
+        name: cut < 0 ? '' : rest.slice(cut + 1).trim(),
+        tvgId: attrs['tvg-id'] || '',
+        tvgName: attrs['tvg-name'] || '',
+        logo: attrs['tvg-logo'] || '',
+        group: attrs['group-title'] || '',
+        url: '',
+        headers: {}
+      }
+      continue
+    }
+    if (line.startsWith('#EXTVLCOPT:')) {
+      if (!pending) continue
+      const opt = line.slice('#EXTVLCOPT:'.length)
+      const eq = opt.indexOf('=')
+      if (eq < 0) continue
+      const key = VLCOPT_HEADERS[opt.slice(0, eq).trim().toLowerCase()]
+      if (key) pending.headers[key] = opt.slice(eq + 1).trim() // validated per key in mapM3U
+      continue
+    }
+    if (line.startsWith('#EXTGRP:')) {
+      // The older group syntax — only honoured when the entry carried no group-title.
+      if (pending && !pending.group) pending.group = line.slice('#EXTGRP:'.length).trim()
+      continue
+    }
+    if (line.startsWith('#')) continue // every other directive is playback tuning we do not carry
+    if (!pending) { stray++; continue }
+    pending.url = line
+    entries.push(pending)
+    pending = null
+  }
+  return { entries, stray }
+}
+
+// Turn a display name into a stream id. Event playlists have no stable ids to reuse —
+// tvg-id is routinely ".dummy." and the same slot carries a different match every hour —
+// so the NAME is the identity: the same event keeps the same id from sync to sync, and a
+// retitled one churns (delete + create, which pruning and autoGrant already absorb).
+// The charset is NAME_RE's (ops.js): letters, digits, _ . - , starting alphanumeric.
+function slugify (name, max) {
+  return String(name ?? '')
+    .replace(/[^A-Za-z0-9_.-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .slice(0, Math.max(0, max))
+    .replace(/[^A-Za-z0-9]+$/, '') // the slice can land on a separator
+}
+
+// Map a parsed playlist to catalog-entry fields — the mapFeed contract (same return
+// shape, same skip-don't-throw discipline, same degrade-art-not-channel rule) plus one
+// extra count, `filtered`, for entries left out by the group filter. Filtered entries
+// are NOT skips: nothing is wrong with them, the operator asked for other groups.
+function mapM3U (source, text, { maxChannels }) {
+  const { entries: list, stray } = parseM3U(text)
+  const entries = new Map()
+  const skipped = []
+  const excludedIds = new Set((source.exclude || []).map((e) => e.id))
+  const groups = (source.groups || []).map((g) => String(g).trim().toLowerCase())
+  const inGroups = (e) => !groups.length || groups.includes(String(e.group || '').trim().toLowerCase())
+  const budget = ID_MAX - String(source.prefix || '').length // room left for the slug
+  const used = new Set()
+  let excluded = 0
+  let filtered = 0
+  let truncated = 0
+  // A url line with no #EXTINF above it is a broken playlist, not an empty one — report
+  // it as a skip so the count can never read "0 added, nothing wrong".
+  for (let n = 0; n < stray; n++) skipped.push({ id: '(url with no #EXTINF)', reason: 'no channel information above the address' })
+  for (let i = 0; i < list.length; i++) {
+    if (entries.size >= maxChannels) {
+      // Only entries this source would actually IMPORT are "over the cap". Counting the
+      // raw tail would blame the cap for every entry the group filter was going to drop
+      // anyway — on a playlist where one group is a tenth of the file, that number is
+      // almost entirely fiction.
+      for (let j = i; j < list.length; j++) if (inGroups(list[j])) truncated++
+      break
+    }
+    const e = list[i]
+    const label = (e.name || e.tvgName || e.tvgId || '(unnamed)').slice(0, 128)
+    const skip = (reason) => skipped.push({ id: label, reason })
+    // Group filter FIRST — cheapest test, and it decides whether this entry is even
+    // this source's business (one playlist commonly feeds several sources).
+    if (!inGroups(e)) { filtered++; continue }
+    let slug = slugify(e.name || e.tvgName, budget)
+    if (!slug) { skip('unusable name'); continue }
+    if (used.has(slug)) {
+      // Two events with the same name inside ONE playlist. Deterministic within a sync;
+      // across syncs a reordered playlist can swap which of them gets the -2, which is
+      // acceptable for entries that churn hourly anyway.
+      let n = 2
+      let cand
+      do {
+        const suffix = '-' + n
+        cand = slugify(slug.slice(0, Math.max(1, budget - suffix.length)), budget) + suffix
+        n++
+      } while (used.has(cand) && n < 100)
+      slug = cand
+    }
+    used.add(slug)
+    if (excludedIds.has(slug)) { excluded++; continue } // exclude stores UNPREFIXED feed ids
+    const id = source.prefix + slug
+    try { checkName(id, 'stream id') } catch { skip('invalid id'); continue }
+    if (entries.has(id)) { skip('duplicate id'); continue }
+    let url
+    try { url = normRedirectUrl(e.url) } catch { skip('invalid url'); continue }
+    if (!url) { skip('missing url'); continue }
+    // Headers degrade PER KEY, like art: the url is the channel, and one malformed
+    // #EXTVLCOPT line must not cost the operator the event it was attached to.
+    let headers = null
+    for (const [k, v] of Object.entries(e.headers || {})) {
+      let one
+      try { one = normRedirectHeaders({ [k]: v }) } catch { continue }
+      if (one) headers = { ...(headers || {}), ...one }
+    }
+    let logo = null
+    if (e.logo) { try { logo = normArt(e.logo, 'logo') } catch { logo = null } }
+    entries.set(id, {
+      title: String(e.name || e.tvgName || slug).trim().slice(0, TITLE_MAX),
+      description: '', // a playlist carries none; operator-owned from here (see applyFeed)
+      category: [source.category],
+      url,
+      headers,
+      logo,
+      order: Math.min(i, 9999),
+      // A playlist is not a program guide: pointing clients at source.url would have them
+      // fetch the very m3u they are already playing. Both pointers stay null, and
+      // sourceChannels falls back to "key minus prefix" — which is exactly the slug.
+      epgUrl: null,
+      epgId: null
+    })
+  }
+  return { entries, skipped, truncated, excluded, filtered }
 }
 
 // The channels dialog's data: every entry the source knows about — imported ones
@@ -375,6 +667,7 @@ async function applyFeed (ctx, name, mapped) {
         blobsKey: null,
         redirect: true,
         url: m.url,
+        headers: m.headers ?? null, // provider request headers (m3u #EXTVLCOPT); null for json feeds
         isLive: true, // redirect channels have no broadcaster heartbeat — live by default (S23)
         poster: null,
         backdrop: null,
@@ -397,12 +690,22 @@ async function applyFeed (ctx, name, mapped) {
       category: m.category,
       redirect: true,
       url: m.url,
+      // Headers are FEED-OWNED like the url (the provider rotates both together), but
+      // only written when there is something to write: unconditionally stamping
+      // headers:null onto every record of every existing json source would make the
+      // byte-compare below see a change and re-put the whole fleet once, for a field
+      // none of those channels uses.
+      ...((m.headers ?? null) !== null || (cur.headers ?? null) !== null ? { headers: m.headers ?? null } : {}),
       logo: m.logo,
       order: m.order,
       source: name,
       epgUrl: m.epgUrl,
       epgId: m.epgId
     }
+    // Bee frugality, with one eyes-open exception: an event playlist re-issues its urls
+    // with a fresh token every rotation, so this guard will NOT suppress those puts —
+    // roughly 50 events × 48 syncs/day ≈ 2,400 appends/day. That is deliberate and well
+    // within a Hyperbee's budget; it is the price of delivering live tokens to viewers.
     if (JSON.stringify(next) !== JSON.stringify(cur)) puts.push([id, next, 'updated'])
     else report.unchanged++
   }
@@ -477,12 +780,19 @@ async function doSync (ctx, name) {
   const cfg = scfg(ctx)
   const startedAt = Date.now()
   try {
-    const fetched = await fetchFeed(source.url, source.etag, cfg)
+    const format = source.format || 'json'
+    const fetched = await fetchFeed(source.url, source.etag, cfg, format)
     let report
     if (fetched.notModified) {
-      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length }
+      // Nothing was re-read, so the counts that describe the BODY are not zero — they are
+      // simply unmeasured this round. `unchanged` has always said so with null; `filtered`
+      // carries the last measurement forward instead, or the dashboard's "N outside your
+      // groups" line would blink off on every 304 and back on at the next real pull.
+      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, emptiedByFilter: false }
     } else {
-      const mapped = mapFeed(source, fetched.feed, cfg)
+      // One dispatch, two mappers, one contract — everything downstream (applyFeed, the
+      // report, the dashboard) is format-blind.
+      const mapped = format === 'm3u' ? mapM3U(source, fetched.text, cfg) : mapFeed(source, fetched.feed, cfg)
       const applied = await applyFeed(ctx, name, mapped)
       report = {
         notModified: false,
@@ -490,7 +800,14 @@ async function doSync (ctx, name) {
         skipped: mapped.skipped.slice(0, SKIP_REPORT_MAX),
         skippedCount: mapped.skipped.length,
         truncated: mapped.truncated,
-        excluded: mapped.excluded
+        excluded: mapped.excluded,
+        filtered: mapped.filtered,
+        // A group-title the provider renamed (or the operator mistyped) matches nothing,
+        // and a sync that matches nothing legitimately prunes the whole rail — the feed IS
+        // the membership. That is correct and must keep working, but it must not be
+        // SILENT: this is the one shape where "everything gone" and "filter is wrong" look
+        // identical from the outside, so flag it and let the dashboard say it out loud.
+        emptiedByFilter: mapped.entries.size === 0 && applied.removed > 0 && mapped.filtered > 0
       }
     }
     // Grants reconcile on EVERY sync (304 included): users created since the last
@@ -518,6 +835,8 @@ async function doSync (ctx, name) {
         skippedDetail: report.skipped, // already capped at SKIP_REPORT_MAX
         truncated: report.truncated,
         excluded: report.excluded,
+        filtered: report.filtered, // m3u only: entries outside the source's groups
+        emptiedByFilter: !!report.emptiedByFilter, // the filter matched nothing and the rail was pruned
         granted: report.granted
       }
       saveSources(ctx.dataDir, fresh)
@@ -541,13 +860,18 @@ async function doSync (ctx, name) {
 // ---------------------------------------------------------------- scheduler
 
 // Runs inside the panel process. A cheap tick scans the registry and syncs every
-// ENABLED source whose interval has elapsed (a never-synced source is due
-// immediately); failures are logged and retried on a later tick — the last good
-// imported state stays live throughout. Manual sync (API/CLI) works regardless
-// of enabled, and single-flight dedupes the overlap.
+// ENABLED source whose interval has elapsed since its last ATTEMPT (a never-synced
+// source is due immediately); failures are logged and retried on their own, floored
+// cadence — the last good imported state stays live throughout. Manual sync (API/CLI)
+// works regardless of enabled, and single-flight dedupes the overlap.
+//
+// The default tick is 5 MINUTES, not the source interval: a tick is a registry read
+// and a date comparison, never a fetch, so it costs nothing to run often — and an
+// hourly tick would silently round every sub-hour `intervalMs` (a 30-minute event
+// playlist, say) up to an hour. SOURCES_TICK_MS still overrides it.
 export function makeSourcesScheduler (ctx, opts = {}) {
   const c = (ctx.config && ctx.config.sources) || {}
-  const tickMs = opts.tickMs ?? c.tickMs ?? 3600000
+  const tickMs = opts.tickMs ?? c.tickMs ?? 300000
   const bootDelayMs = opts.bootDelayMs ?? c.bootDelayMs ?? 15000
   let closed = false
   let running = false
@@ -561,7 +885,16 @@ export function makeSourcesScheduler (ctx, opts = {}) {
         if (closed) return
         if (s.enabled === false) continue
         const interval = s.intervalMs || scfg(ctx).defaultIntervalMs
-        if (Date.now() - (s.lastSync || 0) < interval) continue
+        // RETRY CADENCE IS NOT TICK CADENCE. `lastSync` is stamped on SUCCESS only, so a
+        // source whose provider is down stays permanently "due" and re-fetches on every
+        // single tick — which the 5-minute default turned from 24 attempts a day into 288
+        // against a box that is already failing. So the due-check runs against the last
+        // ATTEMPT, success or failure. A failure retries sooner than the source's own
+        // interval (a daily feed should not wait a day to recover) but never faster than
+        // hourly, and never faster than the interval itself for sub-hour sources.
+        const lastAttempt = Math.max(s.lastSync || 0, s.lastErrorAt || 0)
+        const due = (s.lastErrorAt || 0) > (s.lastSync || 0) ? Math.min(interval, 3600000) : interval
+        if (Date.now() - lastAttempt < due) continue
         try {
           const r = await syncSource(ctx, name)
           console.log(`[sources] synced "${name}": +${r.added} ~${r.updated} -${r.removed}${r.notModified ? ' (not modified)' : ''}, grants +${r.granted}`)

@@ -293,13 +293,16 @@ async function main () {
     const [name, url] = pos; if (!name || !url || !opts.category) return usage()
     const s = sources.addSource({ config, keys, dataDir: config.dataDir }, name, {
       url,
+      format: str(opts.format),
       category: str(opts.category),
       prefix: str(opts.prefix),
+      groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined, // comma group-titles (m3u)
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
       enabled: opts.disabled === true ? false : undefined
     })
-    console.log(`Added source "${name}" → category "${s.category}" (prefix "${s.prefix}", every ${Math.round(s.intervalMs / 3600000 * 10) / 10}h, autoGrant ${s.autoGrant}).`)
+    console.log(`Added ${s.format} source "${name}" → category "${s.category}" (prefix "${s.prefix}", every ${Math.round(s.intervalMs / 3600000 * 10) / 10}h, autoGrant ${s.autoGrant}` +
+      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') + ').')
     console.log('The running panel syncs it on its next tick; for an immediate pull use the dashboard "Sync now" or sync-source (panel stopped).')
     return
   }
@@ -308,7 +311,8 @@ async function main () {
     if (Object.keys(all).length === 0) console.log('(no sources)')
     for (const [name, s] of Object.entries(all)) {
       console.log(name, '->', JSON.stringify({
-        url: s.url, category: s.category, prefix: s.prefix, enabled: s.enabled !== false, autoGrant: s.autoGrant !== false,
+        url: s.url, format: s.format || 'json', category: s.category, prefix: s.prefix, groups: s.groups || null,
+        enabled: s.enabled !== false, autoGrant: s.autoGrant !== false,
         lastSync: s.lastSync ? new Date(s.lastSync).toISOString() : null, lastError: s.lastError || null, lastReport: s.lastReport || null
       }))
     }
@@ -318,15 +322,18 @@ async function main () {
     const name = pos[0]; if (!name) return usage()
     const s = sources.setSource({ config, keys, dataDir: config.dataDir }, name, {
       url: str(opts.url),
+      format: str(opts.format),
       category: str(opts.category),
       prefix: str(opts.prefix),
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
       enabled: opts.enabled != null ? opts.enabled : undefined,
-      exclude: opts.exclude != null && opts.exclude !== true ? String(opts.exclude) : undefined // comma feed-ids; '' clears
+      exclude: opts.exclude != null && opts.exclude !== true ? String(opts.exclude) : undefined, // comma feed-ids; '' clears
+      groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined // comma group-titles; '' takes every group
     })
-    console.log(`Updated source "${name}" (category "${s.category}", enabled ${s.enabled !== false}` +
-      ((s.exclude || []).length ? `, ${s.exclude.length} excluded` : '') + '). Changes apply on its next sync.')
+    console.log(`Updated ${s.format || 'json'} source "${name}" (category "${s.category}", enabled ${s.enabled !== false}` +
+      ((s.exclude || []).length ? `, ${s.exclude.length} excluded` : '') +
+      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') + '). Changes apply on its next sync.')
     return
   }
 
@@ -782,11 +789,18 @@ function usage () {
   set-publisher-scopes <name> <globs>   Replace a publisher's channel scopes (comma-separated)
   set-publisher-status <name> <active|revoked>   Revoke/re-activate a publisher's key
   remove-publisher <name>               Hard-delete a publisher (revoke keeps the audit trail)
-  add-source <name> <url> --category <label> [--prefix p.] [--interval-hours N] [--auto-grant false] [--disabled]
-                                        Register a remote channel feed (provider JSON) as a category
+  add-source <name> <url> --category <label> [--format json|m3u] [--groups "Live Events,PPV"]
+                          [--prefix p.] [--interval-hours N] [--auto-grant false] [--disabled]
+                                        Register a remote channel feed as a category. --format m3u reads an M3U
+                                        playlist: ids come from the channel names, #EXTVLCOPT lines import as
+                                        playback headers, and --groups picks the group-titles to take (blank = all).
+                                        Point several sources at ONE playlist, each with its own groups, category
+                                        and prefix, to split a mixed list into the right rails.
   list-sources                          List channel sources + last sync state
-  set-source <name> [--url --category --prefix --interval-hours --auto-grant --enabled true|false --exclude "feedId1,feedId2"]
+  set-source <name> [--url --format --category --prefix --interval-hours --auto-grant --enabled true|false
+                     --exclude "feedId1,feedId2" --groups "Live Events"]
                                         (--exclude DESELECTS feed entries: removed + skipped every sync; "" re-includes all)
+                                        (--groups filters an m3u by group-title; "" takes every group)
   list-categories                       Category vocabulary in use + per-category channel counts
   rename-category <from> <to>           Rename a rail; children of a parent move with it
   merge-categories <a> <b> … --into <c> Retag several categories onto one
