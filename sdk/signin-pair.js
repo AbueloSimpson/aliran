@@ -97,6 +97,28 @@
 //          peer is ever spoken to again. (A brief that only guards the TV side leaves
 //          the sending side unguarded, which is the half that hands out the keys.)
 //
+// WHAT THE COMMIT-REVEAL COSTS: A MACHINE-TIMED WINDOW THAT BURNS THE CODE. New with step
+// 4, unavoidable, and written down here because everything else in this file is.
+//
+//   claim() spends the code inside the signin-hello handler — it has to, that IS the
+//   exclusion — and the TV commits its nonce in the same synchronous block. Only then does
+//   the phone run signin-nonce, a second MACHINE round bounded by RPC_MS. Anything that
+//   breaks the connection in that window loses a code that is already spent: a Wi-Fi to LTE
+//   handoff on the phone, a NAT rebind, a TV that reboots. The viewer has to start a fresh
+//   code on the TV.
+//
+//   Before step 4 there was nothing there. The first thing that could fail after `linked`
+//   was the two-minute human window, so a network blip in the gap was almost impossible to
+//   hit; now there is a ~15-second machine-timed one in front of it. It is INHERENT to
+//   commit-reveal rather than a shape we chose: the TV cannot commit to a nonce before it
+//   knows which peer it is committing to, and it cannot know that before claim() has spent
+//   the code. Moving claim() later would hand the exclusion to whoever asks second.
+//
+//   So there is nothing to fix — but there is something to WORD. It is reported as
+//   `timeout`, never `refused` (see SIGNIN_PAIR_ERRORS), and the only honest screen for it
+//   says the code is gone and to show a new one. Do not word it as the TV refusing, and do
+//   not offer a retry on the same code: there is nothing left to retry against.
+//
 // NO EXTRA SEAL, DELIBERATELY. The payload rides the Noise channel as it is, with no
 // second envelope sealed to an ephemeral X25519 key. The reasoning, since it is the
 // obvious thing to add:
@@ -121,12 +143,20 @@
 // If a future revision does add a seal, the ephemeral public key MUST be committed to in
 // the proof transcript before it is used. An unbound one is worse than none.
 //
-// The raw handshake hash never goes on the wire (core/remote.js says why: secret-stream
-// derives its own message keys from it). Only MACs of it travel, which is all this file
-// produces. The SAS travels nowhere at all — both ends DERIVE it from the transcript they
-// already share, so step 4 costs no message. Nothing here logs — not the code, not the
-// digits, not a byte of key material; the code, the SAS and the PIN reach a SCREEN
-// through onState and nowhere else.
+// WHAT ACTUALLY GOES ON THE WIRE. The raw handshake hash never does (core/remote.js says
+// why: secret-stream derives its own message keys from it). What travels is three MACs OF
+// it — the mutual proof, the nonce commitment and the PIN proof — plus TWO RAW 32-BYTE
+// NONCES, one drawn by each side, sent in clear. Those nonces are not MACs of anything and
+// are not meant to be secret: the commitment is what keeps the TV's unpredictable UNTIL it
+// is revealed, and after that its only job is to be an input both ends agree on.
+//
+// The SAS and the PIN travel nowhere. Both ends DERIVE the SAS from the transcript and the
+// two nonces, and the PIN is only ever proved, never sent. Step 4 is NOT free, though: it
+// costs a `commit` field on the hello reply and a full signin-nonce request/response — the
+// round the note above prices.
+//
+// Nothing here logs — not the code, not the digits, not a byte of key material; the code,
+// the SAS and the PIN reach a SCREEN through onState and nowhere else.
 //
 //   NOTE FOR WP2b, THE HOST HALF. This module is careful because everything it handles is
 //   a live secret for the next three minutes. That care ends at the IPC boundary, which
@@ -154,7 +184,27 @@ const SIGNIN_PROTOCOL = 'aliran-signin'
 // Bumped only for a change the other end cannot parse. A phone and a TV are routinely on
 // different app versions, so both sides check it and refuse rather than guess. v2 added the
 // commit-reveal SAS round (the signin-nonce message and the `commit` field on the hello
-// reply); a v1 peer cannot complete step 4 and both ends refuse it cleanly as malformed.
+// reply): a v1 peer cannot complete step 4.
+//
+// WHAT A MISMATCH LOOKS LIKE, which is not the same question as what goes on the wire — an
+// earlier revision of this comment answered the second and claimed the first. It fails
+// CLOSED in both directions, and that half was never in doubt: no key material moves, and
+// a version-mismatched hello never reaches claim(), so an older peer cannot spend a newer
+// one's code either. What it is not is symmetrically LEGIBLE:
+//
+//   NEWER side reading an OLDER side's answer — legible. parseEnvelope() below reads the
+//     envelope of a reply this version cannot accept, sees a `v` that is not ours, and the
+//     phone reports SIGNIN_PAIR_ERRORS.version: "update the app", which is an action the
+//     viewer can take. Without that the reply is discarded and the peer looks like silence.
+//   OLDER side reading a NEWER side's answer — NOT legible, and nothing written here can
+//     make it so. The older peer's parser predates this file; it discards our answer
+//     whatever we put in it, and reports its own bare timeout ("nobody answered that
+//     code"). The fix for that is retrospective by nature — reading the envelope is what
+//     makes the NEXT bump legible from the older side, and this one is the release that
+//     starts paying it forward.
+//
+// So plan a bump on the assumption that ONE side reports a bare timeout for one release
+// cycle. tools/e2e-signin-pair-test.mjs drives both directions.
 const WIRE_VERSION = 2
 
 // How long the phone looks for a peer before giving up. Generous for the same reason
@@ -179,7 +229,7 @@ const ABORT_MS = 3000
 
 // THE CONNECTION CAP. One sign-in code entertains at most this many connections
 // that OPEN the aliran-signin channel, per role, TOTAL over the code's life — then
-// it burns the code and fails closed. The legitimate flow uses exactly ONE
+// it fails closed. The legitimate flow uses exactly ONE
 // connection per side; the other seven are headroom for the ordinary ways a second
 // one appears with no attacker present: a NAT rebind mid-lookup that makes
 // hyperswarm redial under a fresh session, a TV that dropped and reconnected inside
@@ -212,6 +262,21 @@ const ABORT_MS = 3000
 // a relay could want now costs one counted connection, so the cap finally bounds the search
 // it used to miss. Both roles count, because a relay opens channels on whichever side it
 // attacks.
+//
+// THE TWO ROLES DO NOT COUNT THE SAME, and neither difference is an oversight. Spelled out
+// because "it burns the code" is the short version and is only true of one of them:
+//
+//   TV     it owns the code RECORD, so tripping the cap really does burn it — finish()
+//          stamps the record used and no later peer can spend it. It also keeps counting
+//          for the whole handover, through the two-minute human window and past the peer
+//          that already claimed: a flood arriving late is still a flood, and `settled` is
+//          its only stop.
+//   Phone  there is no record on this side to burn. Tripping the cap fails THIS handover
+//          and nothing else; the TV's code stays live to its own TTL, or until the TV
+//          counts its own flood. This side also STOPS counting the moment `chosen` latches,
+//          because past that point it is talking to exactly one peer and late opens by
+//          strangers cannot change anything — counting them would only hand a stranger a
+//          way to kill a pairing that has already picked its TV.
 const MAX_SIGNIN_CONNECTIONS = 8
 
 // Every message here is a small JSON object; the biggest is the payload at roughly 400
@@ -230,31 +295,52 @@ export class SigninPairError extends Error {
   constructor (code, message) { super(message); this.name = 'SigninPairError'; this.code = code }
 }
 
-// The reasons a caller (and a UI) needs to tell apart. Three are worth reading twice:
+// The reasons a caller (and a UI) needs to tell apart. Five are worth reading twice:
 //
 //   pin       the peer answered, held the code, and could not show the digits — that is
 //             either a mistyped PIN or a device that never had them, and the two are
 //             deliberately indistinguishable from here.
-//   mismatch  the viewer said the two screens did not show the same four digits. This is
-//             the one failure in the list that means "something was in the middle of
-//             this connection", so a UI must not fold it into a generic "try again":
-//             the right next step is a new code on a network the viewer trusts, and the
-//             wording should say so.
+//   mismatch  the viewer said the two screens did not show the same four digits, or a peer
+//             revealed a nonce its commitment does not open to. This is the one failure in
+//             the list that means "something was in the middle of this connection", so a UI
+//             must not fold it into a generic "try again": the right next step is a new
+//             code on a network the viewer trusts, and the wording should say so.
 //   flooded   too many devices opened this code's channel and it was burned unspent (see
 //             MAX_SIGNIN_CONNECTIONS). One code answered by many is what a grind for a
 //             colliding SAS looks like from here, so — like mismatch — this is NOT a bare
 //             "try again": the code is gone, and the viewer starts a fresh one on the TV.
+//
+//   refused   THE PEER ANSWERED, and the answer was not one the step could go on from: a
+//             named refusal ('used' to a second reveal, say), or a well-formed reply
+//             missing the field the step needs. It always means bytes came back.
+//   timeout   NOTHING CAME BACK, or nothing usable did — an RPC timeout, a hangup, a
+//             destroyed channel, an unreadable reply, or a human window that ran out.
+//
+//             That line between the two is deliberate and it is worth defending. `ask()`
+//             answers null for all of the silences alike, so every step has to decide which
+//             of the two it is reporting, and getting it wrong is not cosmetic: a phone
+//             that hands off Wi-Fi to LTE mid-handover is a silence, and telling the viewer
+//             the TV "did not complete" the step accuses a device that did nothing wrong —
+//             while a host UI keying on `refused` versus `timeout` shows the wrong screen
+//             for the commonest failure this feature has. See the machine-timed window in
+//             the header note.
+//
+//   version   a peer answered, well-formed, on a different WIRE_VERSION of this protocol.
+//             Its own code because the viewer's action is its own: not re-check the code,
+//             not show a new one — update the app on one of the two devices. Read
+//             WIRE_VERSION for the direction of this that CANNOT be made legible.
 export const SIGNIN_PAIR_ERRORS = {
   malformed: 'malformed', // not a sign-in code, or a payload that is not one — nothing was sent
-  timeout: 'timeout', // nobody answered, or a step ran out of time
+  timeout: 'timeout', // nothing answered, or nothing usable did, or a step ran out of time
   expired: 'expired', // the code's TTL ran out before anyone linked
   used: 'used', // the code was already spent — one shot means one shot
   busy: 'busy', // a handover is already in flight for this code
   unauthorized: 'unauthorized', // the peer could not prove it holds the code
-  mismatch: 'mismatch', // the compared digits differed — see above
+  mismatch: 'mismatch', // the compared digits differed, or a reveal did not open — see above
   pin: 'pin', // the peer could not prove it learned the digits
   cancelled: 'cancelled', // this side gave up
-  refused: 'refused', // the peer answered, but refused the step
+  refused: 'refused', // the peer ANSWERED and the answer could not be gone on from — see above
+  version: 'version', // the peer speaks another wire version of this protocol — see above
   flooded: 'flooded' // too many devices opened this code's channel — burned as a possible grind
 }
 
@@ -295,13 +381,34 @@ function jsonBody (obj) { return b4a.from(JSON.stringify(obj)) }
 
 // Every parse in this file runs on bytes a stranger on a public topic sent: bounded
 // first, then parsed, then shape-checked. Never throws.
-function parseBody (buf) {
+//
+// The version-agnostic half. Its ONLY purpose is to read the `v` field off a message this
+// version cannot accept, so that a peer on another wire version can be NAMED instead of
+// looking like silence (see WIRE_VERSION). Nothing acts on what it returns: every path that
+// does anything with a message goes through parseBody() below, which additionally pins the
+// version, and that is the invariant to keep if this file grows another caller.
+function parseEnvelope (buf) {
   if (!buf || typeof buf.length !== 'number' || buf.length > MAX_BODY_BYTES) return null
   let v
   try { v = JSON.parse(b4a.toString(buf)) } catch { return null }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null
-  if (v.v !== WIRE_VERSION) return null
   return v
+}
+
+function parseBody (buf) {
+  const v = parseEnvelope(buf)
+  if (!v || v.v !== WIRE_VERSION) return null
+  return v
+}
+
+// Why a message this side could not accept was refused. A wire-version mismatch gets its
+// own name so the OTHER end can put "update the app" on a screen instead of a generic
+// refusal; anything else is malformed. Naming our version to an unproven stranger leaks
+// nothing — every reply this file sends already carries `v`.
+function refusalFor (buf) {
+  const env = parseEnvelope(buf)
+  if (env && typeof env.v === 'number' && env.v !== WIRE_VERSION) return SIGNIN_PAIR_ERRORS.version
+  return SIGNIN_PAIR_ERRORS.malformed
 }
 
 function hexBytes (v, len) {
@@ -547,7 +654,12 @@ export async function receiveSignIn (opts = {}) {
     rpc.respond('signin-hello', (buf) => {
       if (settled) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.cancelled })
       const body = parseBody(buf)
-      if (!body) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.malformed })
+      // Only THIS message needs refusalFor(): a peer on another wire version cannot get a
+      // successful hello, and every later message is gated on being the claimed peer, so
+      // this is the only door a cross-version stranger ever reaches. The refusal stays a
+      // wire answer and nothing more — no onState, no screen change. An unproven stranger
+      // does not get to put words on the viewer's television.
+      if (!body) return jsonBody({ v: WIRE_VERSION, error: refusalFor(buf) })
       const hh = socket.handshakeHash // the channel is open, so the handshake is done
       const theirProof = hexBytes(body.proof, REMOTE_PROOF_BYTES)
       const me = myRole(socket)
@@ -589,6 +701,30 @@ export async function receiveSignIn (opts = {}) {
     // the confirmation belongs on the phone, the device the viewer already trusts — and a
     // relay's other leg has a different transcript AND a different nonce, so its digits
     // disagree, which is the whole check.
+    //
+    // ONE MESSAGE PER CHANNEL, WHERE THE SECURITY INVARIANT IS ONE NONCE PAIR PER CHANNEL.
+    // The two rules differ only for a REPEAT of an IDENTICAL request, and the stricter one
+    // is what is implemented. That is a decision, so here is the whole argument rather than
+    // a note to re-derive it:
+    //
+    //   - What has to hold is that this channel yields at most one (nonceTv, noncePhone)
+    //     pair, hence at most one candidate SAS. Grinding the comparison needs a SECOND
+    //     pair, which means a DIFFERING noncePhone — refused under either rule.
+    //   - Re-answering the SAME noncePhone with the SAME nonceTv would therefore hand back
+    //     only bytes the asker already had, and would not move the digits on this screen.
+    //     So relaxing to "refuse only a differing nonce" would be SOUND. It is not an
+    //     anti-grind guard that is being kept tight here; it is a simpler rule that happens
+    //     to imply the real one.
+    //   - It is also not worth anything here, which is why it is not done. The phone sends
+    //     this once and never retries, and the transport underneath is a reliable ordered
+    //     stream (udx): a response is delivered or the channel is gone — and a gone channel
+    //     cannot be retried on, because the commitment is bound to THIS handshake hash.
+    //     There is no dropped-message case for idempotence to rescue. What a broken
+    //     connection here costs is a spent code, and no rule on this line changes that.
+    //   - If a revision ever DOES add an application-level retry, relax it exactly that far
+    //     and no further: remember noncePhone, refuse a differing one, re-answer an
+    //     identical one with the same nonceTv, and do not emit onState a second time. Never
+    //     by deleting the guard — that is the grind.
     rpc.respond('signin-nonce', (buf) => {
       if (settled) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.cancelled })
       if (!peer || peer.socket !== socket) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.unauthorized })
@@ -605,14 +741,22 @@ export async function receiveSignIn (opts = {}) {
     // the response is deliberately held open. ONE answer per handover, right or wrong:
     // the digits get a single attempt by construction, not by a counter.
     //
-    // The phone only reaches this after ITS viewer confirmed the compared digits (step 4),
-    // but nothing here can verify that and nothing here should pretend to: a peer that
-    // skipped the comparison is a peer that chose not to protect its own account, and the
-    // only device that can enforce the comparison is the one holding the payload.
+    // WHAT THIS SIDE CAN AND CANNOT CHECK ABOUT STEP 4. The two are one line apart, so be
+    // exact — an earlier version of this comment said only the second half and read as an
+    // instruction not to do what the line below it does:
+    //
+    //   CAN     that the compared-digits ROUND RAN on this channel. This TV revealed its own
+    //           nonce, so it holds the record of it — `peer.sasShown` — and it enforces it.
+    //           A peer that jumps straight to the PIN skipped the only round that sees a
+    //           relay, and it is refused. That gate is load-bearing; do not remove it to
+    //           simplify the ordering.
+    //   CANNOT  that the VIEWER CONFIRMED the digits matched. That answer is given on the
+    //           phone, to the phone, and never crosses the wire — by design, because the
+    //           phone is the device holding the account and the only one that can act on a
+    //           "no". A peer that ran the round and then ignored its own viewer is a peer
+    //           that chose not to protect its own account, and nothing here can tell.
     rpc.respond('signin-pin', async (buf) => {
       if (!peer || peer.socket !== socket) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.unauthorized })
-      // The compared-digits round must have run first (peer.sasShown): a peer that jumped
-      // straight to the PIN skipped the one check that sees a relay, so it is refused here.
       if (!peer.sasShown) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.unauthorized })
       if (!parseBody(buf)) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.malformed })
       if (pinAsked) return jsonBody({ v: WIRE_VERSION, error: SIGNIN_PAIR_ERRORS.used })
@@ -810,6 +954,13 @@ export async function sendSignIn (code, payload, opts = {}) {
   const fail = (c, m) => finish(new SigninPairError(c, m))
 
   timer = setTimeout(() => {
+    // A wire-version mismatch is a refusal in the sense that a peer answered and could not
+    // be gone on with, but it is not one the viewer can act on the same way: showing a new
+    // code changes nothing, and "that TV refused the code" would send them looking for the
+    // wrong problem. Its own sentence, naming the only thing that fixes it.
+    if (refusal === SIGNIN_PAIR_ERRORS.version) {
+      return fail(SIGNIN_PAIR_ERRORS.version, 'that TV runs a different version of this feature — update the app on both devices, then show a new code')
+    }
     fail(refusal || SIGNIN_PAIR_ERRORS.timeout, refusal
       ? 'that TV refused the code (' + refusal + ') — show a new one and try again'
       : 'no TV answered that code — re-check it, and check that both devices are online')
@@ -839,8 +990,16 @@ export async function sendSignIn (code, payload, opts = {}) {
     })
     const me = myRole(socket)
 
-    const hello = await ask(rpc, 'signin-hello', { proof: hex(remoteProof(secret, hh, me)) }, RPC_MS)
-    if (!hello) return
+    const { body: hello, version: helloVersion } = await ask(rpc, 'signin-hello', { proof: hex(remoteProof(secret, hh, me)) }, RPC_MS)
+    if (!hello) {
+      // A well-formed answer this version cannot parse is a peer on ANOTHER WIRE VERSION,
+      // and it is worth a name (see WIRE_VERSION). Recorded like the refusals below rather
+      // than acted on, for the same reason: this peer may not be the TV the viewer is
+      // looking at, so keep listening and report it only if the link timer runs out. A real
+      // refusal outranks it, so this never overwrites one.
+      if (helloVersion !== null && helloVersion !== WIRE_VERSION && !refusal) refusal = SIGNIN_PAIR_ERRORS.version
+      return
+    }
     if (hello.error) {
       // Only a REFUSAL of a code this peer clearly recognises is worth reporting; an
       // 'unauthorized' or a malformed answer is an ordinary stranger on a public
@@ -875,14 +1034,29 @@ export async function sendSignIn (code, payload, opts = {}) {
     // MAX_SIGNIN_CONNECTIONS counts. The viewer answers HERE, on the device that already
     // holds the account. See core/remote.js remoteCommittedSas for what this does not buy.
     const myNonce = remoteNonce()
-    const nonceRes = await ask(rpc, 'signin-nonce', { nonce: hex(myNonce) }, RPC_MS)
+    const { body: nonceRes } = await ask(rpc, 'signin-nonce', { nonce: hex(myNonce) }, RPC_MS)
     if (settled) return
-    const theirNonce = nonceRes && !nonceRes.error && hexBytes(nonceRes.nonce, REMOTE_NONCE_BYTES)
-    if (!theirNonce) {
-      // Proved the code but would not complete the comparison round — not a TV this device
-      // hands an account to. The code is spent either way.
+    if (!nonceRes) {
+      // NOTHING CAME BACK. Reported as a silence and not as a refusal, because that is what
+      // it is: ask() answers null for an RPC timeout, a hangup, a destroyed channel and an
+      // unreadable reply alike, and the commonest cause by far is the machine-timed window
+      // the header note prices — a phone that changed network between hello and reveal. The
+      // TV did nothing wrong and must not be described as refusing. (The PIN round below
+      // has drawn this same line since it was written; this round did not, and told every
+      // viewer whose Wi-Fi dropped that their TV "did not complete" a step.) The code is
+      // spent on the TV either way, so the only way on is a fresh one.
       await abort(rpc, SIGNIN_PAIR_ERRORS.cancelled)
-      return fail(SIGNIN_PAIR_ERRORS.refused, 'the TV did not complete the comparison step — show a new code and start again')
+      return fail(SIGNIN_PAIR_ERRORS.timeout, 'the TV stopped answering during the comparison step — show a new code and start again')
+    }
+    const theirNonce = !nonceRes.error && hexBytes(nonceRes.nonce, REMOTE_NONCE_BYTES)
+    if (!theirNonce) {
+      // It ANSWERED, and the answer was not one this step can go on from — a named refusal,
+      // or a reply with no usable nonce in it. Either way it proved the code and then would
+      // not finish the comparison round, which is not a TV this device hands an account to.
+      await abort(rpc, SIGNIN_PAIR_ERRORS.cancelled)
+      return fail(SIGNIN_PAIR_ERRORS.refused, nonceRes.error
+        ? 'the TV refused the comparison step (' + nonceRes.error + ') — show a new code and start again'
+        : 'the TV did not complete the comparison step — show a new code and start again')
     }
     if (!remoteNonceCommitValid(secret, hh, theirNonce, commit)) {
       // It revealed a nonce it had not committed to — an active tamper with the one round
@@ -914,7 +1088,7 @@ export async function sendSignIn (code, payload, opts = {}) {
     const pin = newRemotePin()
     onState({ state: SIGNIN_PAIR_STATES.pin, pin })
 
-    const answer = await ask(rpc, 'signin-pin', {}, pinMs)
+    const { body: answer } = await ask(rpc, 'signin-pin', {}, pinMs)
     if (settled) return
     if (!answer || answer.error) {
       // Three different things end up here and a viewer can act on only one of them, so
@@ -939,7 +1113,7 @@ export async function sendSignIn (code, payload, opts = {}) {
 
     // BOTH CHECKS HAVE PASSED. This line, and nothing before it, is where the account
     // leaves this device.
-    const ack = await ask(rpc, 'signin-payload', { payload: body }, payloadMs)
+    const { body: ack } = await ask(rpc, 'signin-payload', { payload: body }, payloadMs)
     if (!ack) return fail(SIGNIN_PAIR_ERRORS.timeout, 'the TV did not confirm the sign-in')
     if (ack.error) return fail(SIGNIN_PAIR_ERRORS.refused, 'the TV refused the sign-in (' + ack.error + ')')
     onState({ state: SIGNIN_PAIR_STATES.sent })
@@ -995,10 +1169,27 @@ export async function sendSignIn (code, payload, opts = {}) {
 
 // One request, bounded, never throwing: a peer that hangs up mid-question is an ordinary
 // event on a public topic, not an exception for the caller to unwind through.
+//
+// Returns TWO things, and the split is the whole point:
+//
+//   body     the parsed message when a message came back that THIS version can act on, and
+//            null otherwise. Every caller acts on this and on nothing else.
+//   version  the `v` a well-formed reply carried, whatever it was. Non-null with a null
+//            `body` is the one silence-shaped outcome that has a name: a peer on another
+//            wire version. Null means nothing readable came back at all — an RPC timeout,
+//            a hangup, a destroyed channel, a body over MAX_BODY_BYTES, or JSON that is not
+//            an object. Those are SILENCES and a caller must report them as `timeout`, not
+//            as the peer refusing anything (see SIGNIN_PAIR_ERRORS).
+const NO_ANSWER = Object.freeze({ body: null, version: null })
 async function ask (rpc, method, body, timeout) {
   let res
-  try { res = await rpc.request(method, jsonBody({ v: WIRE_VERSION, ...body }), { timeout }) } catch { return null }
-  return parseBody(res)
+  try { res = await rpc.request(method, jsonBody({ v: WIRE_VERSION, ...body }), { timeout }) } catch { return NO_ANSWER }
+  const env = parseEnvelope(res)
+  if (!env) return NO_ANSWER
+  return {
+    body: env.v === WIRE_VERSION ? env : null,
+    version: typeof env.v === 'number' ? env.v : null
+  }
 }
 
 // Tell the TV why we stopped, so it can put an accurate screen up NOW instead of after

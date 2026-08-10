@@ -88,8 +88,11 @@
 //   rather than producing a plausible proof.
 //
 //   Do not put the handshake hash itself on the wire. secret-stream derives its
-//   unordered-message keys from it (_setupSecretSend). Only ever send MACs OF it, which
-//   is all this module produces.
+//   unordered-message keys from it (_setupSecretSend). Send only values that COMMIT to it,
+//   which every MAC below does. Read that as a rule about the HASH and not as a claim that
+//   MACs are all this module makes: remoteNonce() and newRemotePin() are raw CSPRNG draws,
+//   they are meant to be transmitted (the nonce) or typed (the PIN), and neither is derived
+//   from the hash, so neither can leak it.
 //
 // WHY KEYED BLAKE2b AND NOT HMAC. sodium-native gives us three options: crypto_auth
 // (HMAC-SHA512-256), crypto_kdf, and crypto_generichash with a key. We use the last.
@@ -129,7 +132,14 @@
 //   on a RAW NoiseSecretStream before any channel exists, a relay holding the code could
 //   precompute a leg's SAS off the bare socket — opening nothing, so counting nothing — and
 //   grind a birthday collision. It is gone; the nonce-committed SAS above replaces it, and
-//   NO derivation in this file is a function of (secret, handshake hash) alone any more.
+//   nothing a VIEWER COMPARES is a function of (secret, handshake hash) alone any more.
+//
+//   Note where that sentence stops. remoteProof STILL is one — `role` is one of two
+//   constants, so a code-holder can precompute both of a socket's proofs off the bare
+//   handshake hash exactly as it once precomputed the SAS. That is fine, and it is argued
+//   in full ~55 lines above (SUFFICIENT FOR THE PROOF, NOT FOR THE COMPARED SAS): the
+//   proof's adversary is a peer WITHOUT the secret, so precomputing it needs the one thing
+//   that adversary does not have. Only the compared digits ever needed the nonces.
 //
 // The two labels that take a COMPOUND message (secret + tokenVersion, topic + epoch)
 // stay unambiguous by fixed widths, not by delimiters: 32 bytes of key material then
@@ -232,6 +242,12 @@ export const SIGNIN_CODE_TTL_MS = 3 * 60 * 1000
 // bytes because a 256-bit MAC is past the point of caring.
 export const REMOTE_TOPIC_BYTES = 32
 export const REMOTE_SECRET_BYTES = 32
+// The width of EVERY MAC this module emits — mac() allocates exactly this — so the same
+// number also sizes the nonce commitment and each SAS draw block, and sdk/signin-pair.js
+// length-checks a commitment off the wire against it. TWO QUESTIONS, ONE ANSWER: "how wide
+// is a proof" and "how wide is a commitment" are not the same question and only happen to
+// agree. Sharing the constant is correct while they do; the day either has to move, SPLIT
+// the constant first and then move it, or the other one silently follows it.
 export const REMOTE_PROOF_BYTES = 32
 
 // The per-side SAS nonce. 32 bytes is not a MAC size here but an ENTROPY floor: the
@@ -743,8 +759,19 @@ export function remoteNonceCommit (secret, handshakeHash, nonce) {
 
 /**
  * Does `commit` commit to `nonce` on THIS connection? Constant-time (sodium_memcmp), and
- * false rather than a throw for a malformed COMMITMENT — that is the value a peer sent. A
- * malformed nonce or handshake hash still throws: those are this side's own inputs.
+ * false rather than a throw for EVERY malformed input — the same rule remoteProofValid
+ * follows, for the same reason: this runs on bytes a stranger on a public topic sent, where
+ * a throw surfaces as a crashed handover instead of a refusal.
+ *
+ * "Every" includes the inputs that are THIS side's own. A malformed nonce, handshake hash
+ * or secret is a caller bug and it still answers `false`, because the whole derivation sits
+ * inside the guarded try below. So do NOT read a `false` here as "the peer tampered with
+ * its commitment": sdk/signin-pair.js turns exactly this `false` into the strongest
+ * viewer-facing warning the product has ('mismatch' — something is between these two
+ * devices), and a caller that passes its own values in unchecked can manufacture that
+ * warning out of its own bug. Validate this side's nonce and hash before calling — or call
+ * remoteNonceCommit(), the PRODUCER, which does throw on all three. test-remote.mjs pins
+ * both halves.
  */
 export function remoteNonceCommitValid (secret, handshakeHash, nonce, commit) {
   if (!isBytes(commit) || commit.length !== REMOTE_PROOF_BYTES) return false

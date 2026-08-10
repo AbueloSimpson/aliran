@@ -565,20 +565,35 @@ export interface SigninPayload {
 }
 
 /**
- * 'malformed' — not a code/payload, nothing was sent; 'timeout' — nobody answered or a
- * step ran out; 'expired'/'used' — the code's TTL ran out / it was already spent;
- * 'busy' — a handover is already in flight for it; 'unauthorized' — the peer could not
- * prove it holds the code; 'mismatch' — the viewer said the two screens showed different
- * digits, which is what a relay looks like from here and must NOT be worded as an
+ * 'malformed' — not a code/payload, nothing was sent; 'expired'/'used' — the code's TTL ran
+ * out / it was already spent; 'busy' — a handover is already in flight for it;
+ * 'unauthorized' — the peer could not prove it holds the code; 'mismatch' — the viewer said
+ * the two screens showed different digits, or a peer revealed a nonce its commitment does
+ * not open to, which is what a relay looks like from here and must NOT be worded as an
  * ordinary retry; 'pin' — the peer could not prove it learned the typed digits;
- * 'cancelled'; 'refused' — the peer answered but declined the step; 'flooded' — too many
- * devices opened this code's channel and it was burned unspent, which is what a grind for
- * a colliding SAS looks like: like 'mismatch', not an ordinary retry — the code is gone
- * and the viewer starts a fresh one on the TV.
+ * 'cancelled'; 'flooded' — too many devices opened this code's channel and it was burned
+ * unspent, which is what a grind for a colliding SAS looks like: like 'mismatch', not an
+ * ordinary retry — the code is gone and the viewer starts a fresh one on the TV.
+ *
+ * The three a UI is most likely to get wrong, because two of them look alike from a
+ * distance and are not:
+ *
+ *   'timeout'  NOTHING came back, or nothing usable did — an RPC timeout, a hangup, a
+ *              destroyed channel, an unreadable reply, or a human window that ran out. The
+ *              commonest real cause is a phone that changed network mid-handover. No device
+ *              did anything wrong; the code is spent and a new one is the way on.
+ *   'refused'  the peer ANSWERED, and the answer was not one the step could go on from — a
+ *              named refusal, or a well-formed reply missing the field the step needs. It
+ *              always means bytes came back. Do not word a 'timeout' as this.
+ *   'version'  a peer answered, well-formed, on a different wire version of the handover
+ *              protocol. The only fix is updating the app on one of the two devices, so do
+ *              not offer a new code or tell the viewer to re-check the one they typed. Note
+ *              the asymmetry: the newer side reports this, the older side of the same pair
+ *              can only report 'timeout', because its parser predates the reply.
  */
 export type SigninPairErrorCode =
   | 'malformed' | 'timeout' | 'expired' | 'used' | 'busy'
-  | 'unauthorized' | 'mismatch' | 'pin' | 'cancelled' | 'refused' | 'flooded'
+  | 'unauthorized' | 'mismatch' | 'pin' | 'cancelled' | 'refused' | 'version' | 'flooded'
 
 export type SigninPairState =
   | 'code' | 'announced' | 'searching' | 'linked' | 'match' | 'pin' | 'pin-entry'

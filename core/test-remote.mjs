@@ -411,9 +411,13 @@ test('a nonce commitment opens to exactly its nonce, on this connection, under t
   assert.ok(!b4a.equals(commit, remotePinProof(s, h, REMOTE_ROLES.responder, '0473')))
 })
 
-// remoteNonceCommitValid runs on a COMMITMENT a peer sent, so a malformed one is false, not
-// a throw. The nonce and hash are this side's own values, so the PRODUCER still throws.
-test('commitment verification refuses a malformed commitment instead of throwing', () => {
+// The VERIFIER answers false for every malformed input, this side's own included — the
+// whole derivation is inside its guarded try, and a throw on a path that runs on a
+// stranger's bytes would be a crashed handover instead of a refusal. The PRODUCER is the
+// half that throws, because there the inputs are only ever this side's own. Both halves are
+// pinned here because the verifier's docblock once claimed it threw on a bad nonce or hash,
+// and sdk/signin-pair.js turns its `false` into the strongest warning in the product.
+test('commitment verification answers false for every malformed input; the producer throws', () => {
   const s = remoteSecret(KAT_PRIV, KAT_TV)
   const h = hh(42)
   const nonce = nn(12)
@@ -423,6 +427,14 @@ test('commitment verification refuses a malformed commitment instead of throwing
   }
   // A malformed secret is a caller bug caught by the guarded try -> false, never a throw.
   assert.strictEqual(remoteNonceCommitValid('nope', h, nonce, good), false)
+  // …and so are a malformed NONCE and a malformed HANDSHAKE HASH. assert.strictEqual, not
+  // assert.throws: the point of these two loops is that nothing escapes as an exception.
+  for (const bad of [null, undefined, b4a.alloc(0), b4a.alloc(31), b4a.alloc(33), 'zz', 42, {}, []]) {
+    assert.strictEqual(remoteNonceCommitValid(s, h, bad, good), false, 'nonce ' + JSON.stringify(bad) + ' did not answer false')
+  }
+  for (const bad of [null, undefined, b4a.alloc(0), b4a.alloc(16), b4a.alloc(65), 'zz', 42, {}, []]) {
+    assert.strictEqual(remoteNonceCommitValid(s, bad, nonce, good), false, 'hash ' + JSON.stringify(bad) + ' did not answer false')
+  }
   // A malformed nonce or hash into the producer throws (this side's own inputs).
   for (const bad of [null, b4a.alloc(0), b4a.alloc(31), b4a.alloc(33), 'zz']) {
     assert.throws(() => remoteNonceCommit(s, h, bad), TypeError, 'commit accepted nonce ' + JSON.stringify(bad))

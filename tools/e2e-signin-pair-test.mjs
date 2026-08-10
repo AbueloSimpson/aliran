@@ -30,6 +30,14 @@
 //   - a GRINDING relay — the refinement that beat the compared digits in two earlier
 //     revisions — gets nothing either: the commit-reveal SAS cannot be precomputed off a
 //     raw socket, so the harvest is inert and the code is spent after a single claim (2j);
+//   - a peer that reveals a nonce its commitment does not open to is read as a relay, not
+//     as a hiccup (2k);
+//   - the TV's own ordering gates hold: no PIN round before the comparison round, and no
+//     second reveal on one channel (2l);
+//   - the comparison round tells a REFUSAL from a SILENCE, because a phone that changed
+//     network is not a TV that declined anything (2m);
+//   - a peer on another WIRE_VERSION fails closed in both directions, and is legible in the
+//     one direction that can be (2n);
 //   - a wrong PIN ends the exchange on both sides, with no retry;
 //   - two phones racing for one public topic produce exactly ONE handover;
 //   - a code expires, and a code nobody serves times out.
@@ -665,8 +673,15 @@ try {
   // commit-reveal for every candidate — and this counter burns the code once too many
   // channels have opened, on either role. The guard cannot wait for a valid proof (a grind
   // proves on none until it is ready), so it counts every connection that OPENS the
-  // aliran-signin channel. Tested across SEQUENTIAL connections — a relay opens them one
-  // after another over the TTL, so a concurrency limit would be no limit at all.
+  // aliran-signin channel.
+  //
+  // SEQUENTIAL, AND EACH ONE CLOSED BEFORE THE NEXT OPENS. That is the shape a relay uses —
+  // one connection after another across the whole TTL — and it is the only shape that tests
+  // what the cap claims to be. At most ONE of these connections is alive at any instant, so
+  // a cap that decremented on close would never trip here and this block would fail. (It
+  // cannot decrement: nothing in sdk/signin-pair.js lowers signinConns. This is the test
+  // that would notice if that changed. An earlier version of this test held every socket
+  // open until after the burn, which a concurrency limit would have passed identically.)
   //
   // What makes this bound real, where an identical cap in an earlier revision bounded
   // nothing: the SAS used to be computable off a raw handshake hash with no channel at all,
@@ -674,6 +689,10 @@ try {
   // candidate to an opened channel; 2j is the end-to-end proof that the raw harvest is now
   // inert. This test is the channel-flood half.
   {
+    // Mirrors the module-private constant in sdk/signin-pair.js, the way SIGNIN_PROTOCOL
+    // above mirrors its. The MAGNITUDE is the half that was untested: `n > 1` passes with a
+    // cap of 2, which would refuse an ordinary NAT rebind as a grind.
+    const MAX_SIGNIN_CONNECTIONS = 8 // must match sdk/signin-pair.js
     const handle = await announcedReceiver({ swarm: newSwarm(), ttlMs: 120000, pinMs: 120000 })
     let burned = null
     handle.result.then(() => {}, (e) => { burned = e.code })
@@ -683,26 +702,26 @@ try {
     for await (const r of capDht.lookup(topic)) for (const p of r.peers) found.add(hex(p.publicKey))
     const tvKey = b4a.from([...found][0], 'hex')
 
-    // One channel-opening connection at a time. Each PROVES NOTHING — it just opens the
+    // One channel-opening connection, then GONE. Each PROVES NOTHING — it just opens the
     // channel — which is exactly the connection a grind uses and a proof-counter misses.
-    const held = []
     const openOne = async () => {
       const s = capDht.connect(tvKey, { keyPair: DHT.keyPair() })
       s.on('error', () => {})
       await new Promise((r) => { if (s.handshakeHash) return r(); s.once('open', r); s.once('error', r) })
       const rpc = new ProtomuxRPC(s, { protocol: SIGNIN_PROTOCOL })
       try { await rpc.fullyOpened() } catch {}
-      await sleep(150) // let the TV process the open before the next
-      held.push(s)
+      await sleep(150) // let the TV count the open…
+      try { s.destroy() } catch {}
+      await sleep(100) // …and let it go away again before the next one arrives
     }
 
     await openOne()
     check(burned === null, 'a single channel-opening connection leaves the code live — the legit flow uses one')
-    let n = 1
-    while (n < 16 && !burned) { await openOne(); n++ }
-    check(burned === SIGNIN_PAIR_ERRORS.flooded, 'enough SEQUENTIAL channel-opening connections burn the code (flooded)')
-    check(n > 1, 'and only after real headroom above the one connection a legitimate pairing needs (burned at n=' + n + ')')
-    for (const s of held) { try { s.destroy() } catch {} }
+    for (let i = 1; i < MAX_SIGNIN_CONNECTIONS; i++) await openOne()
+    check(burned === null, 'exactly MAX_SIGNIN_CONNECTIONS (' + MAX_SIGNIN_CONNECTIONS + ') opens, one at a time and none overlapping, still leave it live')
+    await openOne()
+    await waitFor(() => burned, 10000, 'the connection past the cap to burn the code')
+    check(burned === SIGNIN_PAIR_ERRORS.flooded, 'and the very next one burns it (flooded) — the cap is total over the code\'s life, not concurrent')
 
     // The burned code is dead to an honest sender too — a fresh code is the only way on.
     const late = await sendSignIn(handle.code, payload, { swarm: newSwarm(), timeoutMs: 6000 })
@@ -782,6 +801,197 @@ try {
     for (const s of raw) { try { s.destroy() } catch {} }
     handle.cancel()
     try { await handle.result } catch {}
+  }
+
+  // ---- 2k. a TV that REVEALS A NONCE IT DID NOT COMMIT TO ----
+  // The active tamper on the one round that sees a relay, and the branch remoteNonceCommitValid
+  // exists for. A peer that could open its commitment to a second nonce could pick its
+  // contribution AFTER seeing the phone's, which is exactly the steering the commit-reveal was
+  // added to prevent — so the phone treats a reveal that does not verify as a relay sighting
+  // ('mismatch'), not as a protocol hiccup. Nothing else in this suite drives that line.
+  {
+    const code = newSigninCode().code
+    const { topic, secret } = signinKeys(code)
+    const sw = newSwarm()
+    const seen = { payload: false, tamperIsReal: null }
+    sw.on('connection', (socket) => {
+      socket.on('error', () => {})
+      let rpc = null
+      try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
+      const me = roleOf(socket)
+      const hh = socket.handshakeHash
+      const committed = remoteNonce()
+      const revealed = remoteNonce() // a DIFFERENT one — the tamper
+      const commit = remoteNonceCommit(secret, hh, committed)
+      // Establish that the tamper is a real one BEFORE asking the phone to catch it: a pass
+      // below must not be able to come from the commitment happening to open to both.
+      seen.tamperIsReal = remoteNonceCommitValid(secret, hh, revealed, commit) === false
+      rpc.respond('signin-hello', () => body({ v: 2, ok: true, proof: hex(remoteProof(secret, hh, me)), commit: hex(commit) }))
+      rpc.respond('signin-nonce', () => body({ v: 2, ok: true, nonce: hex(revealed) }))
+      rpc.respond('signin-pin', () => body({ v: 2, ok: true }))
+      rpc.respond('signin-payload', () => { seen.payload = true; return body({ v: 2, ok: true }) })
+      rpc.respond('signin-abort', () => body({ v: 2, ok: true }))
+    })
+    sw.join(topic, { server: true, client: false })
+    await sw.flush()
+
+    const p = await phoneSender(code, { swarm: newSwarm(), timeoutMs: 30000 })
+    let err = null
+    try { await p.result } catch (e) { err = e }
+    check(seen.tamperIsReal === true, 'the revealed nonce genuinely does not open the commitment — the tamper is real')
+    check(err && err.code === SIGNIN_PAIR_ERRORS.mismatch, "a reveal that does not open its commitment is reported as 'mismatch' — the relay wording, not a retry")
+    check(p.st.sas === null, 'and no digits were ever shown, so no viewer could confirm a comparison that never ran')
+    check(seen.payload === false, 'and not a byte of the account was released')
+  }
+
+  // ---- 2l. the TV's ORDERING gates: no PIN before the comparison, no second reveal ----
+  // Two refusals the TV owns, both of which a relay would want and neither of which anything
+  // else here drives. The second is advertised as a feature — one nonce pair per channel is
+  // what makes every extra SAS candidate cost a fresh, counted channel — so it is worth a
+  // test rather than a comment.
+  {
+    const handle = await announcedReceiver({ swarm: newSwarm(), ttlMs: 120000, pinMs: 120000 })
+    const { topic, secret } = signinKeys(handle.canonical)
+    const sw = newSwarm()
+    const out = { hello: null, earlyPin: null, nonce1: null, nonce2: null }
+    let ran = false
+    sw.on('connection', async (socket) => {
+      socket.on('error', () => {})
+      if (ran) return
+      ran = true
+      try {
+        const rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL })
+        const me = roleOf(socket)
+        const hh = socket.handshakeHash
+        out.hello = parse(await rpc.request('signin-hello', body({ v: 2, proof: hex(remoteProof(secret, hh, me)) }), { timeout: 15000 }))
+        // Straight to the PIN round, skipping step 4 entirely — the ordering a peer would
+        // want if it had no intention of letting two screens be compared.
+        out.earlyPin = parse(await rpc.request('signin-pin', body({ v: 2 }), { timeout: 15000 }))
+        out.nonce1 = parse(await rpc.request('signin-nonce', body({ v: 2, nonce: hex(remoteNonce()) }), { timeout: 15000 }))
+        // …and a second reveal with a FRESH nonce, which is what a grind for a colliding SAS
+        // looks like inside one channel.
+        out.nonce2 = parse(await rpc.request('signin-nonce', body({ v: 2, nonce: hex(remoteNonce()) }), { timeout: 15000 }))
+      } catch {}
+    })
+    joinLooking(sw, topic)
+    await waitFor(() => out.nonce2, 30000, 'the hand-rolled peer to run its four requests')
+    check(out.hello && out.hello.ok && out.hello.commit, 'the peer proved the code and was given the TV\'s commitment')
+    check(out.earlyPin && out.earlyPin.error === SIGNIN_PAIR_ERRORS.unauthorized, 'the TV refuses the PIN round before the comparison round has run')
+    check(handle.st.pinEntry === false, '…and never asked its own viewer for digits, so none could be typed')
+    check(out.nonce1 && out.nonce1.nonce, 'the first reveal is answered')
+    check(out.nonce2 && out.nonce2.error === SIGNIN_PAIR_ERRORS.used, 'and a SECOND reveal on the same channel is refused — one nonce pair per channel, so a fresh candidate costs a fresh counted channel')
+    handle.cancel()
+    try { await handle.result } catch {}
+  }
+
+  // ---- 2m. the comparison round: SILENCE is a timeout, a REFUSAL is 'refused' ----
+  // The distinction a host UI keys on, and the one this round got wrong: every silence used
+  // to be reported as the TV refusing. The realistic silence is not an attacker at all — it
+  // is the phone changing network in the ~15 s between the hello (which SPENT the code) and
+  // the reveal, and telling that viewer their TV declined a step is both wrong and useless.
+  for (const [what, mode, want] of [
+    ['answers the comparison round with a refusal', 'error', SIGNIN_PAIR_ERRORS.refused],
+    ['goes quiet in the comparison round', 'silent', SIGNIN_PAIR_ERRORS.timeout]
+  ]) {
+    const code = newSigninCode().code
+    const { topic, secret } = signinKeys(code)
+    const sw = newSwarm()
+    sw.on('connection', (socket) => {
+      socket.on('error', () => {})
+      let rpc = null
+      try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
+      const me = roleOf(socket)
+      const hh = socket.handshakeHash
+      const nonce = remoteNonce()
+      rpc.respond('signin-hello', () => body({ v: 2, ok: true, proof: hex(remoteProof(secret, hh, me)), commit: hex(remoteNonceCommit(secret, hh, nonce)) }))
+      // 'error' answers and declines. 'silent' registers NO responder, so protomux-rpc
+      // rejects the request at the RPC layer — the same branch (ask() -> null) that an RPC
+      // timeout, a hangup and a destroyed channel land in, and the only one a test can reach
+      // without waiting out RPC_MS.
+      if (mode === 'error') rpc.respond('signin-nonce', () => body({ v: 2, error: SIGNIN_PAIR_ERRORS.used }))
+      rpc.respond('signin-abort', () => body({ v: 2, ok: true }))
+    })
+    sw.join(topic, { server: true, client: false })
+    await sw.flush()
+
+    const p = await phoneSender(code, { swarm: newSwarm(), timeoutMs: 30000 })
+    let err = null
+    try { await p.result } catch (e) { err = e }
+    check(err && err.code === want, 'a TV that ' + what + " is reported as '" + want + "'")
+    check(p.st.sas === null, '…with no digits shown either way (' + want + ')')
+  }
+
+  // ---- 2n. A PEER ON ANOTHER WIRE VERSION, both directions ----
+  // WIRE_VERSION exists because a phone and a TV are routinely on different app versions, and
+  // until now nothing tested it: every `v: 1` in this suite was rewritten to `v: 2` when the
+  // commit-reveal landed. Both directions fail closed. Only ONE of them can be made legible,
+  // and the asymmetry is the point — see WIRE_VERSION in sdk/signin-pair.js.
+  {
+    // (A) NEWER phone, OLDER TV. The older responder's parser requires its own version, so it
+    // discards the newer hello and answers in its own dialect. The phone reads the envelope,
+    // sees a `v` that is not ours, and says so — where before it reported a bare timeout that
+    // sent the viewer to re-check a code that was never the problem.
+    const code = newSigninCode().code
+    const { topic } = signinKeys(code)
+    const sw = newSwarm()
+    let sawHello = false
+    sw.on('connection', (socket) => {
+      socket.on('error', () => {})
+      let rpc = null
+      try { rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL }) } catch { return }
+      rpc.respond('signin-hello', (buf) => {
+        sawHello = true
+        const b = parse(buf)
+        return body(b && b.v === 1 ? { v: 1, ok: true } : { v: 1, error: 'malformed' })
+      })
+    })
+    sw.join(topic, { server: true, client: false })
+    await sw.flush()
+
+    const p = await phoneSender(code, { swarm: newSwarm(), timeoutMs: 10000 })
+    let err = null
+    try { await p.result } catch (e) { err = e }
+    check(sawHello, 'the older TV did receive the newer phone\'s hello — this is a version failure, not a lookup failure')
+    check(err && err.code === SIGNIN_PAIR_ERRORS.version, "a phone facing an older TV reports 'version', not the timeout that says nobody answered")
+    check(/version/i.test(err.message) && !/both devices are online/.test(err.message), 'and the wording points at the app version rather than the network')
+    check(p.st.sas === null, 'nothing linked, so nothing was compared or sent')
+  }
+  {
+    // (B) OLDER phone, NEWER TV. The TV NAMES the mismatch on the wire instead of calling it
+    // malformed — which a v1 phone cannot read, and that is the limit being recorded here
+    // rather than a fix. What matters for the viewer is the second half: the TV's code is
+    // untouched, because a version-mismatched hello never reaches claim(). The real phone
+    // still signs in on the same code afterwards.
+    const handle = await announcedReceiver({ swarm: newSwarm(), ttlMs: 120000, pinMs: 60000 })
+    const { topic, secret } = signinKeys(handle.canonical)
+    const sw = newSwarm()
+    let answer = null
+    sw.on('connection', async (socket) => {
+      socket.on('error', () => {})
+      if (answer) return
+      try {
+        const rpc = new ProtomuxRPC(socket, { protocol: SIGNIN_PROTOCOL })
+        // A hello whose PROOF is perfectly good and whose version is not — the strongest
+        // form of the case, so the refusal cannot be mistaken for the proof failing.
+        const req = body({ v: 1, proof: hex(remoteProof(secret, socket.handshakeHash, roleOf(socket))) })
+        answer = parse(await rpc.request('signin-hello', req, { timeout: 15000 })) || { error: 'unparseable' }
+      } catch { answer = { error: 'threw' } }
+    })
+    joinLooking(sw, topic)
+    await waitFor(() => answer, 30000, 'the TV to answer the older phone')
+    check(answer.error === SIGNIN_PAIR_ERRORS.version, "the TV names the wire-version mismatch instead of the generic 'malformed'")
+    check(answer.v === 2 && !answer.commit && !answer.proof, 'and hands over nothing with it — no commitment, no proof')
+    check(handle.st.sas === null, 'and shows no digits for a peer it could not parse')
+
+    // THE HALF THE VIEWER SEES: the code is still live. An older phone must not be able to
+    // burn a code just by being old.
+    const p = await phoneSender(handle.code, { swarm: newSwarm(), timeoutMs: 30000 })
+    await waitFor(() => p.st.sas, 30000, 'the current-version phone to link on the same code')
+    check(p.st.sas === handle.st.sas, 'the version-mismatched peer never spent the code — the real phone links on it')
+    check(p.confirmMatch(true) === true, 'the viewer confirms')
+    await waitFor(() => p.st.pin, 20000, 'the phone to draw the digits')
+    await waitFor(() => handle.submitPin(p.st.pin), 15000, 'the TV to take the digits')
+    check((await p.result).username === 'alice', 'and the handover completes normally')
   }
 
   log('')
