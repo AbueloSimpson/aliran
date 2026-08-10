@@ -29,6 +29,14 @@ const DEFAULT_COLORS: Required<BrandColors> = {
   brandText: '#0B1220'
 }
 
+// Focused-row scale lift (mirror of the client's theme.focusScale). 1.025 is the
+// Android TV focus-system value for LARGE elements (bigger element → smaller scale);
+// a full-width list row is one, and desktop keyboard focus speaks the same TV
+// grammar. Not brandable — it is geometry, not color. Landed as --focus-scale next
+// to the colors; styles.css applies it transform-only, wrapped in
+// prefers-reduced-motion: no-preference (the DOM twin of client/src/motion.ts).
+export const FOCUS_SCALE = 1.025
+
 export function applyTheme (descriptor?: Pick<ServiceDescriptor, 'branding'> | null) {
   const overrides = descriptor?.branding?.colors ?? {}
   const colors: Record<string, string> = { ...DEFAULT_COLORS }
@@ -40,4 +48,5 @@ export function applyTheme (descriptor?: Pick<ServiceDescriptor, 'branding'> | n
     // primary -> --c-primary, focusFillText -> --c-focus-fill-text
     root.style.setProperty('--c-' + k.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()), v)
   }
+  root.style.setProperty('--focus-scale', String(FOCUS_SCALE))
 }

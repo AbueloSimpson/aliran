@@ -286,7 +286,8 @@ const styles = StyleSheet.create({
   introBold: { color: theme.colors.text, fontWeight: '700' },
   input: { width: theme.isTV ? 480 : 300, backgroundColor: theme.colors.surface, color: theme.colors.text, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 14, fontSize: 18, borderWidth: theme.focusRing, borderColor: 'transparent' },
   // The 64-hex key: wider + smaller type so a pasted key is visible for checking.
-  keyInput: { width: theme.isTV ? 640 : 340, fontSize: 14 },
+  // maxWidth: portrait phones (360dp − padding) are narrower than 340 — clip-proof.
+  keyInput: { width: theme.isTV ? 640 : 340, maxWidth: '100%', fontSize: 14 },
   // The pairing code: three short boxes, big wide-tracked type. Read off a card at
   // arm's length and typed on a remote, so legibility beats compactness here.
   groups: { flexDirection: 'row', gap: 12 },
