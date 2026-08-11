@@ -253,19 +253,30 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
             <Text key={i} style={[styles.slot, pin.length === i && styles.slotNext]}>{pin[i] ?? '–'}</Text>
           ))}
         </View>
-        <View style={styles.keys}>
-          {DIGITS.map((d, i) => (
-            <Button
-              key={d}
-              label={d}
-              wide={false}
-              focusFirst={i === 0}
-              // Typing again clears it: the message is about the digits that were sent,
-              // and it must not sit over a fresh set the viewer is still keying in.
-              onPress={() => { setRejected(false); setPin((p) => (p.length >= PIN_LENGTH ? p : p + d)) }}
-            />
-          ))}
-        </View>
+        {/* TWO ROWS OF FIVE, LAID OUT BY HAND — not ten keys left to wrap.
+            Wrapping put `0` alone on a second line, centred, with no key above it, and
+            Android TV navigates by GEOMETRY: down from most of the top row had nothing
+            defined to land on, so focus left the keypad and could not be brought back.
+            A viewer reported it with three of four digits typed and one attempt allowed,
+            stranded on the last one until the code expired — a dead end that costs the
+            whole sign-in, on the screen where there is no second try.
+            Five and five means every key has a neighbour directly above or below it, so
+            up and down are always defined and always reversible. */}
+        {[DIGITS.slice(0, 5), DIGITS.slice(5)].map((rowKeys, r) => (
+          <View key={r} style={styles.keys}>
+            {rowKeys.map((d, i) => (
+              <Button
+                key={d}
+                label={d}
+                wide={false}
+                focusFirst={r === 0 && i === 0}
+                // Typing again clears it: the message is about the digits that were sent,
+                // and it must not sit over a fresh set the viewer is still keying in.
+                onPress={() => { setRejected(false); setPin((p) => (p.length >= PIN_LENGTH ? p : p + d)) }}
+              />
+            ))}
+          </View>
+        ))}
         <Row>
           <Button label={t('sendtv.pinDelete')} onPress={() => setPin((p) => p.slice(0, -1))} />
           <Button label={t('common.ok')} onPress={submit} primary disabled={pin.length < PIN_LENGTH || busy} />
@@ -412,7 +423,10 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: 'transparent'
   },
   slotNext: { borderColor: theme.colors.focus },
-  keys: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: theme.spacing(0.5), marginTop: theme.spacing(0.5) },
+  // ONE ROW OF FIVE, AND IT MUST NEVER WRAP: the columns are what make up and down
+  // defined on a D-pad, and a row that re-wraps on a narrow panel puts a key somewhere
+  // with nothing above it again. Five single-character keys fit on both form factors.
+  keys: { flexDirection: 'row', flexWrap: 'nowrap', justifyContent: 'center', gap: theme.spacing(0.5), marginTop: theme.spacing(0.5) },
   row: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: theme.spacing(0.75), marginTop: theme.spacing(1) },
   btn: {
     minWidth: theme.isTV ? 72 : 52, alignItems: 'center', borderRadius: 10,

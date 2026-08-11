@@ -14,7 +14,7 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text, TextInput, StyleSheet, BackHandler } from 'react-native'
+import { Text, TextInput, View, StyleSheet, BackHandler } from 'react-native'
 
 import { t } from '@aliran/i18n'
 
@@ -379,6 +379,32 @@ test('…and it goes as soon as the viewer keys a new digit — it is about the 
 
   await press(tree, '5')
   expect(texts(tree)).not.toContain(t('sendtv.pinRejected'))
+})
+
+// A DEAD END ON THE ONE SCREEN THAT ALLOWS NO SECOND TRY, reported from a living room:
+// three of the four digits typed, down pressed to reach `0`, and focus left the keypad
+// with no way back — so the code expired with the sign-in one keypress from done.
+//
+// The cause was layout, not focus code. Ten keys in a wrapping, centre-justified row put
+// `0` alone on a second line with no key above it, and Android TV navigates by GEOMETRY:
+// down from most of the top row had nothing defined to land on. Five and five gives every
+// key a neighbour directly above or below, so up and down are always defined and always
+// reversible — which is why this test pins the SHAPE and not any focus property.
+test('the keypad is a 5x5 grid, so every digit has one above or below it', async () => {
+  const tree = await toPinEntry()
+  // HOST nodes only (`type` a string): the label rides the Button component, its Pressable
+  // and the host view alike, so an unfiltered search counts each key three times.
+  const isDigit = (n: { type?: unknown; props?: Record<string, unknown> }) =>
+    typeof n.type === 'string' &&
+    typeof n.props?.accessibilityLabel === 'string' && /^[0-9]$/.test(n.props.accessibilityLabel as string)
+
+  // Every digit is on screen…
+  expect(tree.root.findAll(isDigit)).toHaveLength(10)
+  // …in exactly two groups of five. The single wrapped row that stranded the viewer would
+  // give NONE, because its one container holds all ten. (Ancestors hold ten too, which is
+  // why the count of five is the assertion and the count of ten is not.)
+  const groupsOfFive = tree.root.findAllByType(View).filter((v) => v.findAll(isDigit).length === 5)
+  expect(groupsOfFive).toHaveLength(2)
 })
 
 test('an ACCEPTED PIN says nothing of the kind — it waits', async () => {
