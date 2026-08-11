@@ -532,10 +532,24 @@ export class AliranPlayer {
    * the panel throttle, account status, device registration, maxDevices) and takes a
    * panel-signed token for THIS device.
    *
-   * Split the rejections. Transient ('not connected to panel', a closed channel) means
-   * keep the keys and retry. Terminal — anything the panel refused, 'unknown user', or
-   * 'key handover does not match this account' (what a password rotation looks like from
-   * here) — means ERASE them.
+   * Split the rejections, and split them NARROWLY. Erase only on a verdict about the
+   * account: 'session failed: account disabled', 'session failed: device-limit',
+   * 'session failed: unknown user', or 'key handover does not match this account' (what a
+   * password rotation looks like from here). Everything else KEEPS the keys and retries —
+   * 'not connected to panel', a closed channel, a key store that did not answer, and a
+   * bare 'unknown user' with no 'session failed:' prefix, which is a record that has not
+   * replicated yet rather than an account that does not exist.
+   *
+   * "Anything the panel refused" IS NOT THE RULE, and reading it that way destroyed
+   * credentials here: 'session failed:' also fronts 'auth failed', 'bad request',
+   * 'no session challenge (login first)' and 'missing deviceId' — refusals of the
+   * REQUEST, not decisions about the device.
+   *
+   * Budget the retries in the panel's units, not yours. It counts every login attempt,
+   * not just failed ones, and locks the (account, device) pair out for fifteen minutes
+   * past its threshold — long enough to refuse a viewer standing at the set with the
+   * right password. An attempt that reached the panel should end the retry loop for that
+   * boot; only attempts that never left the device are safe to bound by a clock.
    */
   signInWithKeys(username: string, keys: { priv: string | Uint8Array; authPriv: string | Uint8Array }): Promise<Stream[]>
   /** Last display list. */
