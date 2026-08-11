@@ -58,6 +58,7 @@
     "test:live-entitlement": "node tools/e2e-live-entitlement-test.mjs",
     "test:resource": "node tools/e2e-resource-test.mjs",
     "test:vod": "node tools/e2e-vod-test.mjs",
+    "test:client": "npm --prefix client test",
     "test:desktop-vod": "node tools/desktop-vod-test.mjs",
     "test:desktop-guide": "node tools/desktop-guide-test.mjs",
     "test:desktop-parental": "node tools/desktop-parental-test.mjs",
