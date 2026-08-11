@@ -409,7 +409,8 @@ read the channel's catalog record, it refuses the command instead of guessing at
 the flag.
 
 `setRemoteAccept(false)` makes a television refuse `play` and `stop`. It is the
-opt-out inside the protocol, per set.
+opt-out inside the protocol, per set — and an SDK surface, not a viewer-facing
+one: no shipping client offers the switch (residual risk 10).
 
 ## Casting to a television on the local network
 
@@ -561,8 +562,21 @@ from an instrumented run against real equipment it says **measured**.
     to, stop it, list what it is entitled to, and watch what it shows. This is the
     deliberate shape of the feature: a confirmation prompt on a television would
     need the remote control the feature exists to avoid. `setRemoteAccept(false)`
-    on a given set is the only mitigation inside the protocol. Per-device
-    authorisation would be a protocol change. (asserted, `test:remote-control`)
+    on a given set is the only mitigation inside the protocol — **and no shipping
+    client exposes it.** The apps join with `acceptPlay: true` and offer no
+    switch, so it is available to an operator building a client against the SDK
+    and to no viewer. The shipped lever is still **log out all devices** (item 9),
+    which moves the whole household: there is no per-set answer today. It was left
+    out on purpose. The state belongs in the worklet prefs, beside the parental
+    PIN, and a Settings toggle backed only by module state would read "off" to a
+    viewer and be on again at the next cold boot — a mitigation that lies about
+    itself is worse than one that is absent. Whoever builds it must apply the
+    preference **inside `joinRendezvous()`**, as the `acceptPlay` argument of the
+    `startRemote()` call already made there, and not with a `setRemoteAccept(false)`
+    after that promise resolves: the set is announced and taking commands from the
+    moment the join lands, so anything later leaves a window on every boot.
+    Per-device authorisation would be a protocol change. (asserted,
+    `test:remote-control`)
 11. **The parental-PIN gate on a remote play is an obligation of the host app.**
     The engine checks entitlement and then deliberately does not tune. It emits the
     command with `restricted` on it, and the host must put a restricted channel
