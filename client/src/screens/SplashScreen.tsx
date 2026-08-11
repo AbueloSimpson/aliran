@@ -99,9 +99,9 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
       backend.login(creds.username, creds.password)
     }
 
-    // The restore door. resumeSignIn() resolves and never rejects; `retry` is the only
-    // answer that means the material is still there, and every other failure has already
-    // erased it — so there is nothing to clean up on the way out of any branch.
+    // The restore door. resumeSignIn() resolves and never rejects, and `retry` is the only
+    // answer that means the material is still there — every other failure has either erased
+    // it or found nothing to erase, so there is nothing to clean up out of any branch.
     const withKept = () => {
       if (routed.current) return
       setStatus('authorizing')
@@ -115,8 +115,11 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
           timer.current = setTimeout(() => { if (!routed.current) withKept() }, RETRY_MS)
           return
         }
-        // Gone for good — refused by the operator, unreadable, or a service this device
-        // is no longer on. The worklet erased it; try the other door, then the screen.
+        // Two different endings, one exit. EITHER the sign-in is gone for good — refused
+        // by the operator, unreadable, or a service this device has left, all of which the
+        // worklet has already erased — OR this door simply ran out of budget and the
+        // material is still on the disk for the next boot to try. Neither leaves anything
+        // to unwind, so both take the same way out: the other door, then the screen.
         door.release()
         withSaved(backend.creds)
       })

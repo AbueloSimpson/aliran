@@ -204,7 +204,9 @@ The Keystore key is generated in the key store and never leaves it. On any devic
 with a hardware keymaster it lives in the TEE, so the app can ask the OS to
 unwrap but cannot read the key itself — and neither can anything that reads the
 app's files. `secureKeyStatus()` reports whether that is true on a given device
-rather than assuming it.
+rather than assuming it — and it reports rather than finds out: it will not create
+a key in order to describe one, so a device that has never kept a sign-in answers
+`keyPresent: false` with an *unknown* security level instead of a claim.
 
 **What this buys, plainly.** Reading the app's private files is no longer enough:
 the box is inert without the Keystore, and the Keystore only answers this app on
