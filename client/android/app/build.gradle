@@ -146,6 +146,45 @@ android {
         }
     }
 
+    // 32-BIT: TWO HOLEPUNCH ADDONS ARE BROKEN ON A 32-BIT ABI, SO DO NOT SHIP THEM THERE.
+    // Measured on a TCL Android 14 set-top box (armeabi-v7a only, and that hardware is
+    // common). Without this the P2P engine is DEAD on every 32-bit device: the app starts,
+    // draws its login screen, and sits on "Connecting…" for ever.
+    //
+    //   fs-native-extensions 1.5.0  src/linux.c does fcntl(fd, F_OFD_SETLK, &struct flock)
+    //     and the package defines _FILE_OFFSET_BITS=64 NOWHERE. Open-file-description locks
+    //     need struct flock64 on a 32-bit ABI, so the kernel answers EINVAL, and index.js
+    //     rethrows everything that is not EAGAIN — killing the worklet at corestore's first
+    //     storage open.
+    //   crc-native 1.1.8            SIGBUS/BUS_ADRALN a moment later: a 32-bit load from an
+    //     address that is not 4-byte aligned (observed fault address ended in 3). arm64 and
+    //     x86_64 absorb the misalignment; armv7 faults.
+    //
+    // DROPPING THEM IS A SUPPORTED PATH, NOT A HACK. Each has exactly ONE consumer and each
+    // consumer already handles the addon being absent, because both are optional by design:
+    //   random-access-file/index.js  `try { fsext = require(...) } catch {}`, then guards
+    //                                every use — lock, sparse and trim are simply skipped.
+    //   crc-universal/index.js       falls back to its own JS crc32 implementation.
+    // So a 32-bit build loses file locking and gets a slower CRC, and runs. Both are the
+    // right trade against an engine that does not start at all.
+    //
+    // 64-bit builds are UNTOUCHED and keep both addons — this is scoped to the two 32-bit
+    // ABIs on purpose, so the common case pays nothing.
+    //
+    // REMOVE THIS once Holepunch ships prebuilds with the fixes (a one-line
+    // _FILE_OFFSET_BITS=64 for the first; an alignment-safe read for the second). Both were
+    // reported upstream at the latest published versions — there is no version to bump to.
+    packaging {
+        jniLibs {
+            excludes += [
+                '**/armeabi-v7a/libfs-native-extensions*.so',
+                '**/armeabi-v7a/libcrc-native*.so',
+                '**/x86/libfs-native-extensions*.so',
+                '**/x86/libcrc-native*.so'
+            ]
+        }
+    }
+
     // White-label brand flavor (S19). Only declared when tools/brand.mjs passes
     // -PaliranBrandId / -PaliranBrandRes — a plain build never sees a flavor, so the
     // default dev/release builds (tasks, appId, resources) stay exactly as above.

@@ -32,7 +32,7 @@
 // NOTHING HERE IS LOGGED. The code and both sets of digits are live secrets for the
 // length of the exchange; they reach this component to be rendered and nothing else.
 import React, { useEffect, useRef, useState } from 'react'
-import { View, Text, Pressable, StyleSheet, Platform, ActivityIndicator, TVFocusGuideView } from 'react-native'
+import { View, Text, Pressable, StyleSheet, Platform, ActivityIndicator, TVFocusGuideView, BackHandler } from 'react-native'
 import type { SigninPairInfo } from '@aliran/react-native'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
@@ -89,6 +89,20 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
   const [attempt, setAttempt] = useState(0)
   const service = useRef<string | null>(null)
   const finished = useRef(false)
+
+  // BACK. This is an overlay and NOT a Modal, on purpose (LoginScreen says why), so it gets
+  // no onRequestClose and nothing else was catching the key: on a television BACK fell
+  // straight through to the activity and closed the app to the launcher, mid-exchange, with
+  // the code already spent. Measured on a TCL set-top box, and it was the only escape a
+  // viewer could find from the dead OK button above.
+  //
+  // Deliberately IDENTICAL to Cancel rather than its own path: onClose() unmounts this
+  // screen, and the unmount effect below is what cancels the exchange. Returning true stops
+  // the key propagating, which is the whole point.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true })
+    return () => sub.remove()
+  }, [onClose])
 
   useEffect(() => {
     finished.current = false
@@ -322,6 +336,16 @@ function Button ({ label, onPress, primary, disabled, focusFirst, wide = true }:
       style={[styles.btn, wide && styles.btnWide, primary && styles.btnPrimary, focused && styles.btnFocused, disabled && styles.btnDisabled]}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: !!disabled }}
+      // `disabled` used to reach only the STYLE and the handler, never the Pressable, so a
+      // disabled button stayed FOCUSABLE: on a television the D-pad landed on it, it lit up
+      // like a live control, and OK did nothing. Measured on a TCL set-top box — a viewer
+      // part-way through the PIN pressed down, got the highlighted-but-dead OK, and had no
+      // way forward. `disabled` on the Pressable takes it out of the focus path entirely,
+      // so down from the keypad reaches Delete/Cancel, which are real. Cheaper to keep than
+      // to explain: a control that lies is worse than an absent one.
+      disabled={disabled}
+      focusable={!disabled}
       hasTVPreferredFocus={focusFirst}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}

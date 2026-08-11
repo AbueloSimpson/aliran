@@ -14,7 +14,7 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text, TextInput, StyleSheet } from 'react-native'
+import { Text, TextInput, StyleSheet, BackHandler } from 'react-native'
 
 import { ConnectScreen } from '../src/screens/ConnectScreen'
 import { LoginScreen } from '../src/screens/LoginScreen'
@@ -287,4 +287,72 @@ test('a refused start offers a new code, not only a way out', async () => {
   await answer('signin-start', 'signin-started', { ok: true, code: 'M4XRA3K79QF2', expiresAt: Date.now() + 60000 })
   await pairEvent({ role: 'tv', state: 'code', code: 'M4XRA3K79QF2', expiresAt: Date.now() + 60000 })
   expect(texts(tree).some(t => t === 'M4XRA3K79QF2')).toBe(true)
+})
+
+// --- B6: what a REMOTE can reach, measured on a TCL set-top box -----------------------
+//
+// Both of these were found by a viewer, not by a reviewer, and they compound: the first
+// leaves you needing a way out of the PIN screen, and the second makes the only way out
+// throw you clean out of the app with the code already spent.
+
+test('the OK button is out of the D-pad path until the PIN is complete', async () => {
+  const navigation = { replace: jest.fn() } as any
+  const tree = await mount(<LoginScreen navigation={navigation} route={{} as any} backendReady />)
+
+  await press(tree, 'Sign in with your phone')
+  await answer('signin-start', 'signin-started', { ok: true, code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+  await pairEvent({ role: 'tv', state: 'code', code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+  await pairEvent({ role: 'tv', state: 'pin-entry', sas: '4821' })
+
+  // Part-way through: `disabled` used to reach the style and the handler but never the
+  // Pressable, so the D-pad landed on a lit-up OK that did nothing and the viewer was
+  // stuck. Focusability is the property that matters here — a dead control the remote
+  // cannot reach is fine; one it CAN reach is the bug.
+  // Found by accessibilityLabel, NOT by the suite's pressables(): that helper keys on
+  // onPress being a function, and a properly disabled button no longer has one — so it
+  // cannot see the very state under test. (It failing to find the button IS the fix
+  // working, which is a confusing way to read a test.)
+  const ok = () => tree.root.findAll(n => n.props?.accessibilityLabel === 'OK' && n.props?.focusable !== undefined).pop()!
+
+  // Asserted on `focusable` and accessibilityState, NOT on a `disabled` prop: Pressable
+  // consumes `disabled` and forwards its EFFECT, so the host node never carries the name.
+  // focusable:false is the thing a remote obeys, which makes it the thing worth pinning.
+  for (const d of ['7', '3']) await press(tree, d)
+  expect(ok().props.focusable).toBe(false)
+  expect(ok().props.accessibilityState).toMatchObject({ disabled: true })
+
+  // Completed, it is a real control again.
+  for (const d of ['9', '1']) await press(tree, d)
+  expect(ok().props.focusable).toBe(true)
+  expect(ok().props.accessibilityState).toMatchObject({ disabled: false })
+})
+
+test('BACK closes the sign-in overlay instead of closing the app', async () => {
+  const handlers: Array<() => boolean> = []
+  const spy = jest.spyOn(BackHandler, 'addEventListener').mockImplementation(((_e: string, h: () => boolean) => {
+    handlers.push(h)
+    return { remove () {} }
+  }) as any)
+  try {
+    const navigation = { replace: jest.fn() } as any
+    const tree = await mount(<LoginScreen navigation={navigation} route={{} as any} backendReady />)
+
+    await press(tree, 'Sign in with your phone')
+    await answer('signin-start', 'signin-started', { ok: true, code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+    await pairEvent({ role: 'tv', state: 'code', code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+    expect(texts(tree).some(t => t === 'A3K79QF2M4XR')).toBe(true)
+    expect(handlers).toHaveLength(1)
+
+    // Returning true is the whole point: unhandled, the key reaches the activity and the
+    // television drops the viewer at its launcher, mid-exchange.
+    let handled: boolean | undefined
+    await ReactTestRenderer.act(async () => { handled = handlers[0]() })
+    expect(handled).toBe(true)
+
+    // Same outcome as Cancel: the overlay is gone and the spent code went with it.
+    expect(texts(tree).some(t => t === 'A3K79QF2M4XR')).toBe(false)
+    expect(sentMessages().some(m => m.type === 'signin-cancel')).toBe(true)
+  } finally {
+    spy.mockRestore()
+  }
 })
