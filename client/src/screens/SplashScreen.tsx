@@ -16,9 +16,12 @@
 //
 // The kept sign-in goes first when both exist. It is only ever written by a handover, so
 // it is the newer of the two, and it is the path the device it runs on was built for.
-// When it is refused FOR GOOD the worklet has already erased it, so falling through to
-// the password door — and then to LoginScreen — is a plain sequence with no state to
-// unwind.
+// Falling through to the password door — and then to LoginScreen — is a plain sequence
+// with no state to unwind, and it happens for two different reasons: the sign-in was
+// refused FOR GOOD (the worklet has already erased it) or this door simply ran out of
+// budget (the material is still there and the next boot will try it again). Neither leaves
+// anything for the next door to trip over, which is why the difference does not have to be
+// visible here — but the BUDGETS do, and they are per-door for a reason. See below.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, Image, ActivityIndicator, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -34,7 +37,26 @@ const service = loadServiceDescriptor()
 // Transient backend states while the swarm dials (same policy as LoginScreen).
 const TRANSIENT = /not connected|channel closed/i
 const RETRY_MS = 2500
-const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up to Login
+
+// TWO DOORS, TWO BUDGETS, AND THEY ARE NOT THE SAME SHAPE — because an attempt does not
+// cost the same thing at each of them. One shared counter of 24 was wrong twice over: it
+// gave the restore door eleven minutes, and it let the restore door spend the password
+// door's retries before the password door had made a single attempt.
+//
+// THE PASSWORD DOOR counts, because its attempts are free. backend.login() answers
+// 'login-error' in milliseconds when there is no panel socket, so 24 attempts 2.5 s apart
+// really is ≈1 minute of dialling before giving up to Login.
+const LOGIN_MAX_RETRIES = 24
+// THE RESTORE DOOR uses a DEADLINE, because its attempts are anything but free.
+// resumeSignIn() dials inside the worklet for RESUME_CONNECT_MS (25 s) before it answers
+// retry:true, so an offline set spends ~27.5 s per attempt — and 24 of those is eleven
+// minutes of "Authorizing device" with nothing on screen a viewer can press. A wall-clock
+// budget cannot drift when that worklet constant changes.
+//
+// An attempt already under way is never cut short, so the worst case is the budget plus
+// one attempt: ≈45 s of trying, ≈53 s before the door gives up. Two attempts offline, and
+// the password door then still has its own full minute.
+const RESTORE_BUDGET_MS = 45000
 
 // The doors of this screen (see signinPath.ts). Both end on {type:'streams'}, neither
 // persists anything — the material each one used was already on the device — so what the
@@ -52,7 +74,12 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   // so a locale change (the prefs reply carries the saved language) repaints it.
   const [status, setStatus] = useState<'connecting' | 'authorizing'>('connecting')
   const routed = useRef(false)
-  const tries = useRef(0)
+  // One budget PER DOOR. A television holding both a kept sign-in and a saved password and
+  // booting offline used to run the restore door through the single shared counter, fall
+  // through to the password door with nothing left, and drop to LoginScreen on its first
+  // transient — having never once tried the password it had.
+  const loginTries = useRef(0)
+  const restoreUntil = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const door = useSigninPath<SigninDoor>()
 
@@ -78,12 +105,13 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
     const withKept = () => {
       if (routed.current) return
       setStatus('authorizing')
+      // Started on the FIRST attempt, so the budget measures the door and not each try.
+      if (!restoreUntil.current) restoreUntil.current = Date.now() + RESTORE_BUDGET_MS
       door.claim({ kind: 'restore' })
       backend.resumeSignIn().then((res) => {
         if (routed.current) return
         if (res.ok) { door.release(); route('Menu'); return }
-        if (res.retry && tries.current < MAX_RETRIES) {
-          tries.current += 1
+        if (res.retry && Date.now() < restoreUntil.current) {
           timer.current = setTimeout(() => { if (!routed.current) withKept() }, RETRY_MS)
           return
         }
@@ -121,8 +149,8 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
       if (m.type === 'streams' && d) { door.release(); route('Menu') }
       if (m.type === 'login-error' && d?.kind === 'saved') {
         if (routed.current) return
-        if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
-          tries.current += 1
+        if (TRANSIENT.test(m.message) && loginTries.current < LOGIN_MAX_RETRIES) {
+          loginTries.current += 1
           timer.current = setTimeout(() => {
             // Re-read the owner: the door may have been released while we waited.
             const still = door.current
