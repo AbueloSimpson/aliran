@@ -721,6 +721,10 @@ export function LiveScreen ({ route, navigation }: Props) {
             <>
               <Pressable style={styles.zapUp} onFocus={() => bounceZap(1)} />
               <Pressable style={styles.zapDown} onFocus={() => bounceZap(-1)} />
+              {/* LEFT opens the channel list — the same surface OK opens, reached the way
+                  a set-top box viewer expects. No bounce back to the catcher: opening the
+                  overlay unmounts this whole block, and the overlay takes focus itself. */}
+              <Pressable style={styles.menuLeft} onFocus={() => setOverlay('list')} />
             </>
           )}
           {playing && barShown && (
@@ -1022,7 +1026,15 @@ const styles = StyleSheet.create({
   // Portrait guide: the transparent tap target over the video strip (expand to
   // portrait fullscreen). Same inline height as the strip itself.
   stripTap: { position: 'absolute', top: 0, left: 0, right: 0 },
-  catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 0, right: 0 },
+  // Left inset makes room for menuLeft. The catcher must not span to x=0 or there is
+  // nothing for the focus engine to find when the viewer presses LEFT.
+  catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 80, right: 0 },
+  // The LEFT strip: same trick as the zap strips, for the surface a viewer reaches for
+  // first. Measured on a TCL set — up/down zapped and OK opened the channel list, but
+  // LEFT and RIGHT did nothing at all, and left is where every set-top box in the world
+  // puts its channel menu. A viewer pressed left, got silence, and reported that channel
+  // changing was broken when it had been working the whole time.
+  menuLeft: { position: 'absolute', top: 80, bottom: 80, left: 0, width: 80 },
   // Full-screen wrapper so the NowPlayingBar's own absolute positioning still anchors
   // to the bottom while we fade the whole thing; box-none lets non-button taps reach
   // the catcher beneath. The bottom reveal zone re-shows the faded bar on touch.
