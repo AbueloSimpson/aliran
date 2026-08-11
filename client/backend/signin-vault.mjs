@@ -144,12 +144,34 @@ const SESSION_FAILED = 'session failed: '
  * authPub reach just as easily as a genuinely dead key. Keep, and let the bounded retry
  * give up on its own.
  *
+ * NOT HERE EITHER, AND IT USED TO BE: 'device-limit'. It reads like a verdict and is not
+ * one either — it says the operator's SLOTS ARE FULL, not that these keys are dead, and
+ * the two differ in the way that matters: slots free themselves. An enrolment expires
+ * (sessionTtlMs, 30 days) or a viewer signs another device out, and the same stored keys
+ * work again. Erasing helps nobody — the viewer must then redo a handover AND still meet
+ * the same limit — while keeping means the set signs itself in the moment a slot frees. It
+ * belongs beside 'sessions unavailable': a fact about the operator's configuration, not a
+ * judgement on this account.
+ *
+ * Two things about it are worth having written down, because they cut opposite ways and
+ * both are true. It is UNREACHABLE on any deployment this repo ships: panel/src/rpc.js
+ * takes `devicePolicy` as a parameter defaulting to 'evict', and panel/src/index.js never
+ * passes it, so the limit evicts the oldest device instead of refusing the new one. And it
+ * is the ONLY entry on either list that ANOTHER DEVICE can trigger: on an operator who does
+ * set 'reject', a television whose own enrolment expired while it was switched off comes
+ * back as a new device, finds the household's other sets holding every slot, and — under
+ * the old classification — destroyed its account keys over somebody else's phone.
+ *
+ * KEEPING IT COSTS A RETRY EVERY BOOT, which is why it could not land on its own: a
+ * kept-and-refused sign-in is retried, and until the restore door's budget was denominated
+ * in panel logins rather than seconds, that retry loop was how a television locked itself
+ * out. See client/src/screens/SplashScreen.tsx.
+ *
  * tools/signin-vault-test.mjs reads the responder's literals OUT OF panel/src/rpc.js and
  * fails if a code appears there that this list has never classified.
  */
 const PANEL_VERDICTS = [
   'account disabled', // the operator disabled the account
-  'device-limit', //     maxDevices with devicePolicy 'reject'
   'unknown user' //      the PANEL's own db has no such account (see the note below)
 ]
 

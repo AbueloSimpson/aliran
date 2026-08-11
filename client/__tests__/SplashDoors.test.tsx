@@ -2,8 +2,8 @@
 // password ("saved") — and the thing that decides how long a viewer stares at a spinner:
 // their RETRY BUDGETS.
 //
-// This is the layer WP2c shipped with no tests at all, and it is where both of its
-// defects lived. Neither is visible from the worklet lane or from test:signin-resume,
+// This is the layer WP2c shipped with no tests at all, and it is where all three of its
+// defects lived. None of them is visible from the worklet lane or from test:signin-resume,
 // which starts at signInWithKeys() and never enters the app:
 //
 //   B1  one budget of 24 tries × 2.5 s was written for the PASSWORD door, where a failure
@@ -14,10 +14,17 @@
 //       password, booting offline, spent the whole budget on the restore door, fell
 //       through to the password door with nothing left, and dropped to the sign-in screen
 //       on its first transient — having never once tried the password it had.
+//   B3  the fix for B1 made the restore door's budget a DEADLINE, and a deadline counts
+//       seconds while the panel counts logins. 45 s buys two attempts when each one dials
+//       for 25 s — and nineteen when each one comes back fast. A television whose account
+//       record has not replicated spent 3 logins per attempt, 18 in a boot, and locked
+//       ITSELF out of a panel that tolerates 10 — after which 'login failed: locked' came
+//       back in 20 ms, so the loop ACCELERATED. The set then showed a login screen a
+//       viewer with the right password could not get through for fifteen minutes.
 //
-// Both are timing properties, so the clock is faked and every wait is spent explicitly.
-// The worklet is not mocked: the real backend singleton is driven through its IPC queue,
-// as in RuntimeService.test.tsx.
+// All three are timing properties, so the clock is faked and every wait is spent
+// explicitly. The worklet is not mocked: the real backend singleton is driven through its
+// IPC queue, as in RuntimeService.test.tsx.
 
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
@@ -38,10 +45,29 @@ import { backend } from '../src/worklet'
 const RETRY_MS = 2500
 const RESTORE_BUDGET_MS = 45000
 const LOGIN_MAX_RETRIES = 24
-// What one restore attempt COSTS. resumeSignIn() loops inside the worklet on 'not
+// What one restore attempt COSTS IN TIME. resumeSignIn() loops inside the worklet on 'not
 // connected to panel' for RESUME_CONNECT_MS before it answers retry:true, so an offline
 // device pays this every single time (client/backend/backend.mjs).
 const WORKLET_DIAL_MS = 25000
+
+// …and what an attempt costs THE PANEL, which is the other currency entirely and the one
+// B3 was denominated in wrongly. panel/src/rpc.js counts every `login` against
+// (username|peer) — the ones that succeed too — and refuses past LOCKOUT_THRESHOLD
+// (panel/src/config.js: 10) for LOCKOUT_SECONDS (900). The lockout is per account AND per
+// device, so what a television locks out is itself: its own password fall-through, on
+// every boot, for fifteen minutes at a time.
+const PANEL_LOCKOUT_THRESHOLD = 10
+// The most logins ONE resume can spend: client/backend/backend.mjs RESUME_RECORD_TRIES,
+// the bounded retry for an account record that has not replicated yet. The screen does not
+// know this number and must not need to — see the door rule asserted below.
+const RESUME_RECORD_TRIES = 3
+// The two shapes of a PAYING resume, measured against a real panel at production
+// proof-of-work difficulty:
+//   the record has not replicated  3 logins, 3 s apart, ~6.2 s per resume
+//   the account is already locked  1 login, back in ~20 ms — which is what made the
+//                                  broken loop accelerate rather than slow down
+const UNREPLICATED_MS = 6200
+const LOCKED_MS = 20
 
 type Sent = Record<string, unknown>
 const sent = (): Sent[] => (backend as unknown as { pending: Sent[] }).pending
@@ -94,27 +120,48 @@ async function boot (prefs: { signinSaved?: boolean; creds?: { username: string;
 }
 
 /**
- * Play the offline television: every resume is answered retry:true, but only after the
- * worklet has spent WORKLET_DIAL_MS dialling — which is the cost the budget has to be
- * written against.
- * @returns how many resumes were attempted, and how long the door took.
+ * Run the restore door to its end against ONE failure mode, and add up what that boot
+ * cost the panel.
+ *
+ * @param answer  the 'signin-resumed' the worklet would send. `logins` is the field that
+ *                carries the cost across the IPC boundary; omit it to play an answer the
+ *                worklet never sent — the RN-side timeout, whose cost is unknowable.
+ * @param costMs  how long the worklet takes to produce it.
+ * @returns how many resumes were attempted, how many PANEL LOGINS they spent between
+ *          them, and how long the door took.
  */
-async function runRestoreOffline (nav: { replace: jest.Mock }, cap = 40) {
+async function runRestore (
+  nav: { replace: jest.Mock },
+  answer: Record<string, unknown>,
+  costMs: number,
+  cap = 60
+) {
   const started = Date.now()
   let attempts = 0
+  let spent = 0
   for (let i = 0; i < cap; i++) {
     // Nothing is ever removed from the queue, so a new attempt is a LONGER queue.
     if (resumes().length <= attempts) break
     attempts++
-    await tick(WORKLET_DIAL_MS)
-    await answerResume({ ok: false, error: 'offline', retry: true, message: 'not connected to panel' })
+    if (costMs) await tick(costMs)
+    spent += typeof answer.logins === 'number' ? answer.logins : 0
+    await answerResume(answer)
     // The door is finished when it routes, or when it hands over to the password door.
     if (nav.replace.mock.calls.length || logins().length) break
     await tick(RETRY_MS)
     await flush()
   }
-  return { attempts, elapsed: Date.now() - started }
+  return { attempts, spent, elapsed: Date.now() - started }
 }
+
+/**
+ * Play the offline television: every resume is answered retry:true, but only after the
+ * worklet has spent WORKLET_DIAL_MS dialling — which is the cost in TIME the budget has
+ * to be written against. It costs the panel nothing: 'not connected to panel' is thrown
+ * before any RPC leaves the device, which is exactly why `logins` is 0 here.
+ */
+const runRestoreOffline = (nav: { replace: jest.Mock }) =>
+  runRestore(nav, { ok: false, error: 'offline', retry: true, logins: 0, message: 'not connected to panel' }, WORKLET_DIAL_MS, 40)
 
 test('B1: an offline restore gives up in about a minute, not eleven', async () => {
   const nav = await boot({ signinSaved: true, creds: null })
@@ -137,21 +184,86 @@ test('B1: an offline restore gives up in about a minute, not eleven', async () =
 
 test('B1: the deadline is measured over the door, not reset by each attempt', async () => {
   const nav = await boot({ signinSaved: true, creds: null })
-  // An attempt that answers INSTANTLY (the worklet is up, the panel is not) must not be
-  // able to run for ever just because each try is cheap.
-  let attempts = 0
-  const started = Date.now()
-  for (let i = 0; i < 200; i++) {
-    if (resumes().length <= attempts) break
-    attempts++
-    await answerResume({ ok: false, error: 'offline', retry: true })
-    if (nav.replace.mock.calls.length) break
-    await tick(RETRY_MS)
-    await flush()
-  }
-  expect(Date.now() - started).toBeLessThanOrEqual(RESTORE_BUDGET_MS + RETRY_MS)
+  // An attempt that answers INSTANTLY and costs the panel NOTHING (no engine yet, or a key
+  // store that did not answer) must not be able to run for ever just because each try is
+  // cheap — but the deadline is the right bound for it, because nothing but the viewer's
+  // patience is being spent.
+  const { attempts, spent, elapsed } = await runRestore(
+    nav, { ok: false, error: 'offline', retry: true, logins: 0 }, 0, 200
+  )
+  expect(elapsed).toBeLessThanOrEqual(RESTORE_BUDGET_MS + RETRY_MS)
   expect(attempts).toBeLessThanOrEqual(Math.ceil(RESTORE_BUDGET_MS / RETRY_MS) + 1)
+  // THE ASSERTION THAT WAS MISSING, and its absence is what let B3 through: the bound above
+  // is nineteen attempts, and nineteen attempts is fine ONLY because these ones are free.
+  expect(spent).toBe(0)
   expect(nav.replace).toHaveBeenCalledWith('Login')
+})
+
+// --- B3: the budget the panel is actually keeping ---------------------------------------
+//
+// The rule these three assert is one line and does not name a number: AN ATTEMPT THAT
+// REACHED THE PANEL ENDS THIS DOOR. Free attempts keep the deadline they always had.
+// The screen therefore never has to know how many logins a resume can spend — only whether
+// this one spent any — and the boot ceiling is whatever the worklet's own per-resume cap
+// is, which is where that number belongs.
+
+test('B3: the record has not replicated — one boot, one paying resume, never a lockout', async () => {
+  const nav = await boot({ signinSaved: true, creds: null })
+  // Exactly the case the bounded retry was ADDED for, and the case that reproduced the
+  // lockout against a real panel: the bee replicates but has no `user/alice` yet, so every
+  // resume burns its whole RESUME_RECORD_TRIES and answers retry:true.
+  const { attempts, spent } = await runRestore(
+    nav, { ok: false, error: 'offline', retry: true, logins: RESUME_RECORD_TRIES, message: 'unknown user' }, UNREPLICATED_MS
+  )
+  // Before the fix: 45000 / (6200 + 2500) admits six resumes, 18 logins, and the panel
+  // stops answering at the eleventh.
+  expect(spent).toBeLessThan(PANEL_LOCKOUT_THRESHOLD)
+  expect(spent).toBe(RESUME_RECORD_TRIES) // one resume's worth, and one resume
+  expect(attempts).toBe(1)
+  // Three whole boots inside one 900 s window still fit under the threshold.
+  expect(spent * 3).toBeLessThanOrEqual(PANEL_LOCKOUT_THRESHOLD)
+  expect(nav.replace).toHaveBeenCalledWith('Login')
+})
+
+test('B3: an account already locked out cannot make the door spin faster', async () => {
+  const nav = await boot({ signinSaved: true, creds: null })
+  // The positive feedback loop. Once the throttle has fired, the panel refuses in ~20 ms
+  // — so under a wall-clock budget each refusal bought another attempt sooner than the
+  // last, and the door accelerated into the wall it had just hit.
+  const { attempts, spent } = await runRestore(
+    nav, { ok: false, error: 'offline', retry: true, logins: 1, message: 'login failed: locked (retry 871s)' }, LOCKED_MS
+  )
+  expect(spent).toBeLessThan(PANEL_LOCKOUT_THRESHOLD)
+  expect(attempts).toBe(1)
+  expect(spent).toBe(1)
+  expect(nav.replace).toHaveBeenCalledWith('Login')
+})
+
+test('B3: a resume whose cost never came back is charged as if it had paid', async () => {
+  const nav = await boot({ signinSaved: true, creds: { username: 'viewer', password: 'pw' } })
+  // The one answer the WORKLET never composed, so the one answer with no cost on it: the
+  // RN binding builds this itself when nothing came back inside SIGNIN_RESUME_MS, and it
+  // is the case where the worklet may still be inside signInWithKeys() — which has no
+  // timeout of its own — with a login already in flight. The clock is not what is under
+  // test here (a real timeout arrives at 45 s, where the deadline would have stopped the
+  // door anyway); the CHARGE is, because it is what keeps the door bounded if that
+  // constant ever shortens.
+  const { attempts } = await runRestore(nav, { ok: false, error: 'timeout', retry: true }, 0)
+  expect(attempts).toBe(1)
+  expect(resumes()).toHaveLength(1) // no second resume was ever started
+  // …and the password door — which is about to run a login on that same socket — takes the
+  // rest of the boot with its own budget intact.
+  expect(logins()).toEqual([{ username: 'viewer', password: 'pw' }])
+})
+
+test('B3: the binding reports no cost when the worklet did not answer', async () => {
+  // The other half of the contract the screen relies on, asserted against the binding
+  // rather than assumed: `logins` present = what this resume spent; ABSENT = unknowable.
+  const pending = backend.resumeSignIn()
+  await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(45000) })
+  const res = await pending
+  expect(res).toMatchObject({ ok: false, error: 'timeout', retry: true })
+  expect('logins' in res).toBe(false)
 })
 
 test('B2: the password door still has its full budget after the restore door spent its own', async () => {

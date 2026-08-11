@@ -334,6 +334,26 @@ export interface ResumeSignInResult {
   /** The material is still stored and this is worth another attempt. Never true together
    *  with an error that erased. */
   retry?: boolean
+  /**
+   * WHAT THIS ATTEMPT COST: the number of `login` RPCs it put on the panel.
+   *
+   * `retry` says the keys survived. It says nothing about price, and the two are genuinely
+   * independent — a resume that never found a socket and a resume that spent three logins
+   * waiting for an account record to replicate both come back `retry: true`. A host that
+   * budgets its loop by wall clock cannot tell them apart. The panel can: it counts EVERY
+   * `login` against (username|peer), successes included, and stops answering past
+   * LOCKOUT_THRESHOLD (10 by default) for LOCKOUT_SECONDS (900). The lockout key holds the
+   * device's own swarm key, so what a television spends it on is ITSELF — including its
+   * password screen, which then refuses a viewer standing at the set with the right
+   * password, for fifteen minutes, on every boot.
+   *
+   * So budget the attempts that cost by COUNT, and the ones that cost nothing by the clock.
+   *
+   * ABSENT MEANS UNKNOWN, NOT ZERO, and unknown must be charged as though it had paid. The
+   * only answers that omit it are the ones the worklet did not compose — the `timeout`
+   * below, where the worklet may still be inside signInWithKeys() with a login in flight.
+   */
+  logins?: number
 }
 
 /** Where a phone -> TV sign-in has got to. Three of these are QUESTIONS and the
@@ -849,6 +869,11 @@ export class AliranBackend {
    * other failure means the worklet has already erased what it held and the device needs a
    * new handover from a phone.
    *
+   * AND BUDGET THAT RETRY BY `logins`, NOT BY THE CLOCK. Read the field's own note: some of
+   * these attempts reach the panel and some do not, the panel is counting the ones that do,
+   * and a loop that cannot tell the difference walks a television into a lockout on the
+   * account it is trying to restore.
+   *
    * ONE OWNER OF THE OUTCOME. Do not run this beside a password login on the same screen.
    * Both end on the same {type:'streams'} message, and a host that lets two of them race
    * cannot tell which one won — which is how a failed attempt's state ends up persisted
@@ -862,6 +887,10 @@ export class AliranBackend {
       // comes out of it must be the one this build configured, not a bare default.
       ...this.engineOpts
     }, SIGNIN_RESUME_MS)
+    // No `logins` on this one, and it must stay that way: the worklet has no timeout of its
+    // own around signInWithKeys, so at this moment it may be inside one with a login already
+    // counted by the panel. An absent cost is the honest answer, and the caller reads it as
+    // "assume it paid".
     if (!m || m.type !== 'signin-resumed') return { ok: false, error: 'timeout', retry: true, message: 'the engine did not answer' }
     const { type, tag, ...result } = m // eslint-disable-line @typescript-eslint/no-unused-vars
     return result

@@ -198,9 +198,11 @@
 //        { type:'signin-ack', ok, tag? }   (answer to the three one-word answers:
 //          submit-pin / confirm-service / confirm-match. ok=false means the engine had
 //          nothing waiting for that answer, or the value was malformed)
-//        { type:'signin-resumed', ok, error?, message?, retry?, tag? }   (answer to
-//          'signin-resume'. retry=true — 'offline' — is the ONLY value that means the
-//          material is still stored; every other error already erased it)
+//        { type:'signin-resumed', ok, error?, message?, retry?, logins, tag? }   (answer
+//          to 'signin-resume'. retry=true — 'offline' — is the ONLY value that means the
+//          material is still stored; every other error already erased it. `logins` is what
+//          the attempt COST: how many `login` RPCs reached the panel, which is the only
+//          number a caller can budget a retry loop with — see resumeSignIn)
 //        { type:'vault-request', op:'wrap'|'unwrap', id, data }   (NOT an event: the
 //          worklet asking the HOST to use the platform key store on its behalf, because
 //          a Bare runtime cannot reach a native module. `data` is base64 and is the one
@@ -450,7 +452,11 @@ function pinDigest (saltHex, pin) {
  * That module imports node's `fs`; bare-pack resolves `fs` to `builtin:fs`, and the
  * react-native-bare-kit worklet runtime carries no builtins table, so loading it SIGABRTs
  * the whole app process (see client/backend/bare-builtins.cjs, which says so). What is
- * repeated here is the recipe against bare-fs, and only the recipe.
+ * repeated here is the recipe against bare-fs, and MINUS ONE STEP: that module also fsyncs
+ * the DIRECTORY after the rename. Its own header calls that part non-portable, and the
+ * temp-file fsync above is what prevents a torn file — so what is given up is the rename's
+ * own durability, whose worst case is a box that loses power coming back with the PREVIOUS
+ * prefs whole rather than the new ones. A stale file, not a broken one.
  *
  * @returns {boolean} true when the new contents are on disk. The answer is not decoration:
  *   forgetSignIn() is an ERASE, and an erase that silently did not happen is the one
@@ -560,6 +566,13 @@ function vaultCall (op, data) {
 function forgetSignIn (why) {
   const prev = readPrefs()
   if (!prev.signin) return true
+  // An erase is one of the three things vaultEpoch exists to invalidate, and it was the one
+  // that did not bump it — the comment below said "every sign-out, service change, or
+  // erase" while only the first two did. persistSignIn's write is a whole-object replace
+  // that can land up to ten seconds after it started, so an erase that does not bump can be
+  // undone by a keep it did not know about. Nothing else about this function changes: it
+  // still answers whether the write landed, and still sends the same two statuses.
+  vaultEpoch++
   const ok = writePrefs({ ...prev, signin: null })
   sendPrefs()
   send(ok
@@ -629,6 +642,11 @@ async function persistSignIn (keys) {
 // One resume at a time. Two in flight would each run a full login round against the
 // panel's per-account throttle, and the second could only ever duplicate the first.
 let resuming = false
+// How many times the engine has thrown a corrupt replica away and rebuilt it. Read by the
+// resume loop for one narrow purpose: a purge means the engine RE-RAN the call underneath
+// it, so 'not connected to panel' from the second run is no longer proof that the first
+// run sent nothing. See the refund below.
+let storePurges = 0
 // How long a resume waits for the swarm to find the panel before it gives up and says so.
 // Bounded like every other cold-start wait in the handover path: a television that cannot
 // reach its operator must say it cannot, not spin.
@@ -643,25 +661,42 @@ const NOT_CONNECTED = /not connected to panel/i
 // only way to ask again is to run the login again — which reaches the panel and counts
 // against its throttle: panel/src/rpc.js locks a username+peer out for LOCKOUT_SECONDS
 // (900 s by default) after LOCKOUT_THRESHOLD (10) attempts inside the window, whether they
-// failed or not. So the retries are few and spaced: at most three logins per resume, and
-// the screen above allows two resumes per boot, which leaves the ceiling at six.
+// failed or not. So the retries are few and spaced: at most three logins per resume.
+//
+// AND PER RESUME IS AS FAR AS THIS FILE CAN COUNT, which is why the answer carries the
+// count out. This comment used to finish "…and the screen above allows two resumes per
+// boot, which leaves the ceiling at six". The screen allowed no such thing: its budget was
+// 45 s of WALL CLOCK, and two resumes is only what that buys when each one dials for 25 s
+// first. Take the failure mode this retry was written for — the record has not replicated,
+// so a resume spends its three logins over two RESUME_RECORD_STEP_MS sleeps and answers in
+// ≥6 s — and the screen's 2.5 s spacing makes the cycle ≥8.5 s, so a successor is
+// scheduled while n×8500 + 6000 < 45000, i.e. five more: six resumes, EIGHTEEN logins,
+// against a panel that stops answering at ten. A live panel produced exactly that number.
+// The screen now budgets by the cost this file reports instead.
 const RESUME_RECORD_TRIES = 3
 const RESUME_RECORD_STEP_MS = 3000
 
 async function resumeSignIn (msg) {
   const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
   // Re-entry is refused BEFORE the latch is taken, so this early return can never clear a
-  // latch it did not set.
-  if (resuming) return send({ type: 'signin-resumed', ok: false, error: 'offline', retry: true, message: 'a sign-in is already being resumed', ...tag })
+  // latch it did not set. It costs nothing: no RPC is reached on this path at all.
+  if (resuming) return send({ type: 'signin-resumed', ok: false, error: 'offline', retry: true, logins: 0, message: 'a sign-in is already being resumed', ...tag })
   resuming = true
   let answered = false
+  // WHAT THIS ATTEMPT COST THE PANEL, carried on every answer including the ones composed
+  // in the catch below. `retry: true` says the material survives; it says NOTHING about
+  // price, and a caller that budgets retries by wall clock cannot tell a free failure (no
+  // socket, a key store that did not answer) from one that spent a login the panel's
+  // throttle counted. Held in an object rather than a plain counter so the answer() closure
+  // reads the value at the moment it sends, not the value at the moment it was built.
+  const cost = { logins: 0 }
   const answer = (o) => {
     if (answered) return
     answered = true
-    send({ type: 'signin-resumed', ...o, ...tag })
+    send({ type: 'signin-resumed', logins: cost.logins, ...o, ...tag })
   }
   try {
-    await runResume(msg, answer)
+    await runResume(msg, answer, cost)
   } catch (err) {
     // Nothing below is expected to throw, and a screen is blocked on the reply — so the
     // catch is here rather than at the dispatch site, where it could only send a SECOND
@@ -676,7 +711,7 @@ async function resumeSignIn (msg) {
   }
 }
 
-async function runResume (msg, answer) {
+async function runResume (msg, answer, cost) {
   const stored = readPrefs().signin
   if (!stored) return answer({ ok: false, error: 'none' })
 
@@ -727,13 +762,33 @@ async function runResume (msg, answer) {
   const deadline = Date.now() + RESUME_CONNECT_MS
   let recordTries = 0
   for (;;) {
+    // CHARGED BEFORE THE CALL, not after it. sdk/login.js loginWithKeys sends its `login`
+    // as its second act, and everything that can go wrong afterwards — an unreplicated
+    // record, a key that does not match, a refused session — goes wrong with that login
+    // already counted by the panel. An attempt that never returns at all (the caller's own
+    // timeout fires while this is still inside signInWithKeys) has spent it too.
+    cost.logins++
+    const purges = storePurges
     try {
       await p.signInWithKeys(rec.username, { priv: rec.priv, authPriv: rec.authPriv })
       return answer({ ok: true })
     } catch (err) {
       const message = String((err && err.message) || err)
-      // The operator said no — disabled account, device limit, a password rotation that
-      // replaced the account's keypair. Erase: these keys will never work again.
+      // …and refunded on the ONE error that proves no RPC left the device: sdk/player.js
+      // throws it from _doLoginWithKeys before loginWithKeys is entered. This is what keeps
+      // an offline set's dialling loop free, and it is the whole reason the two kinds of
+      // retry can share one function.
+      //
+      // UNLESS THE STORE WAS PURGED UNDER IT, and that exception is not theoretical. That
+      // one call is wrapped in _recover(), which on a corrupt replica throws the cache away
+      // and runs the whole thing AGAIN — and the read that trips the corruption
+      // (db.get('user/…')) happens AFTER the login RPC. So the second run can answer 'not
+      // connected to panel' out of a freshly rebuilt swarm while the first run's login is
+      // already on the panel's counter. Refunding that would report a boot as free when it
+      // was not, which is the one direction this number must never be wrong in.
+      if (NOT_CONNECTED.test(message) && purges === storePurges) cost.logins--
+      // The operator said no — disabled account, a password rotation that replaced the
+      // account's keypair. Erase: these keys will never work again.
       if (terminalSignInError(err)) {
         forgetSignIn('the operator refused this device: ' + message)
         return answer({ ok: false, error: 'rejected', message })
@@ -794,7 +849,10 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
     send({ type: 'status', ...status })
   })
   player.on('peers', (peers) => send({ type: 'status', peers }))
-  player.on('recovered', (err) => send({ type: 'status', state: 'store:reset', message: String((err && err.message) || err) }))
+  player.on('recovered', (err) => {
+    storePurges++ // a resume in flight has just had its call re-run — see runResume's refund
+    send({ type: 'status', state: 'store:reset', message: String((err && err.message) || err) })
+  })
   player.on('fallback', (e) => send({ type: 'fallback', ...e }))
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
@@ -974,6 +1032,10 @@ IPC.on('data', (data) => {
       // and never throws: resumeSignIn() catches its own way to every outcome, and this
       // guard covers the one thing outside it (a rejected promise from an unexpected
       // shape), because an uncaught throw here takes the whole app process down.
+      //
+      // Deliberately WITHOUT `logins`: this is the one answer composed outside the resume,
+      // so the cost is not knowable here, and an absent cost is read by the caller as "it
+      // may have paid" — the safe direction (sdk/react-native/src/backend.ts).
       resumeSignIn(msg).catch((err) => send({
         type: 'signin-resumed',
         ok: false,

@@ -24,6 +24,10 @@
 //   - a key that is not this account's (what a stolen half-record looks like)  -> ERASE
 //   - the account disabled by the operator                                     -> ERASE
 //   - the account's password rotated (the panel mints a NEW keypair)           -> ERASE
+//   - the operator's device slots full, on a 'reject' panel                    -> KEEP,
+//     because slots free themselves and these keys were never the problem. The test frees
+//     one and signs the same material back in, which is the part an erase would have made
+//     impossible.
 //   - "log out all devices"                                                    -> SIGNS
 //     STRAIGHT BACK IN, and the test asserts that rather than pretending otherwise. It is
 //     the same thing that is already true of a saved password, and docs/security-model.md
@@ -79,7 +83,7 @@ const NEW_PASSWORD = 'test456'
 // production cost.
 const FAST_CONFIG = { argon2: { time: 1, memKiB: 8192 } }
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2erz-panel-'), tv: tmp('e2erz-tv-'), boot2: tmp('e2erz-boot2-'), plain: tmp('e2erz-plain-') }
+const dirs = { panel: tmp('e2erz-panel-'), tv: tmp('e2erz-tv-'), boot2: tmp('e2erz-boot2-'), boot3: tmp('e2erz-boot3-'), plain: tmp('e2erz-plain-') }
 const cleanups = []
 async function cleanup () {
   for (const fn of cleanups.reverse()) { try { await fn() } catch {} }
@@ -128,10 +132,14 @@ try {
   const AUTH_PRIV_HEX = hex(auth.secretKey)
   const HANDOVER = { username: 'alice', panelPubKey, priv: PRIV_HEX, authPriv: AUTH_PRIV_HEX }
 
+  // Mutable so Part 3 can stand up the ONE operator configuration under which the panel
+  // answers 'device-limit' at all. Read per connection, which is why that part needs a
+  // fresh engine to observe the change: attachLoginRpc takes the value once, at attach.
+  let devicePolicy = 'evict'
   const panelSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => panelSwarm.destroy())
   panelSwarm.on('connection', (socket) => {
     panelStore.replicate(socket)
-    attachLoginRpc(socket, { keys, difficulty: DIFFICULTY, throttle: makeThrottle(1000, 60), db, sessionTtlMs: 3600000 })
+    attachLoginRpc(socket, { keys, difficulty: DIFFICULTY, throttle: makeThrottle(1000, 60), db, sessionTtlMs: 3600000, devicePolicy })
   })
   panelSwarm.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false })
   await panelSwarm.flush()
@@ -249,6 +257,51 @@ try {
     check(!!err && /account disabled/i.test(err.message), 'a disabled account refuses the resume by name')
     check(terminalSignInError(err), '…and is TERMINAL: the stored keys are erased')
     await ops.setUserStatus({ db, keys, dataDir: dirs.panel, config: FAST_CONFIG }, 'alice', 'active')
+  }
+
+  // The operator's device slots being FULL. This one looks like a verdict and is not, and
+  // that reading was a real defect: 'device-limit' says nothing about these keys, only that
+  // there is no room right now — and rooms empty. An enrolment expires (sessionTtlMs) or a
+  // viewer signs a device out, and the same stored material works again. A device that
+  // erased on it has thrown away a credential that was about to start working, and gained
+  // the viewer nothing: after a fresh handover they meet the identical limit.
+  //
+  // It is also the one refusal ANOTHER DEVICE can cause. Note what has to be true for a
+  // television to see it: its own enrolment gone (30 days off, or revoked) AND the
+  // household's other sets holding every slot. Under the old classification the phone that
+  // took the last slot silently destroyed the television's sign-in.
+  //
+  // Reachable only on an operator who configured devicePolicy 'reject' — nothing this repo
+  // ships passes it, and the default 'evict' drops the oldest device instead.
+  {
+    const before = (await db.get('user/alice')).value
+    await db.put('user/alice', {
+      ...before,
+      maxDevices: 1,
+      // One slot, held by a device this television is not — a phone that signed in while
+      // the set was off, with the set's own enrolment already expired off the record.
+      devices: [{ deviceId: 'phone-9', label: 'Kitchen phone', issuedAt: Date.now(), expiresAt: Date.now() + 3600000, tokenVersion: before.tokenVersion, status: 'active' }]
+    })
+    devicePolicy = 'reject'
+    const boot3 = createPlayer({ panelPubKey, storeDir: path.join(dirs.boot3, 'store'), deviceId: 'tv-2', swarm: { bootstrap }, remote: { keepSignIn: true } })
+    cleanups.push(() => boot3.stop())
+    await boot3.connect()
+    await waitFor(() => boot3._panelBee.get('user/alice'), 20000, 'record replicated to the third boot')
+    let err = null
+    await waitFor(async () => {
+      try { await boot3.signInWithKeys('alice', reopened); return null } catch (e) { err = e; return /not connected/i.test(e.message) ? null : true }
+    }, 40000, 'resume against a full device list')
+    check(!!err && /device-limit/i.test(err.message), 'a full device list refuses the resume by name')
+    check(!terminalSignInError(err), '…and is classified KEEP: the slots are full, the keys are not dead')
+
+    // …and the proof that keeping was the right call: free the slot, change nothing else,
+    // and the very same stored material signs the television in.
+    await db.put('user/alice', { ...before, maxDevices: 4, devices: [] })
+    const freed = await waitFor(() => boot3.signInWithKeys('alice', reopened).catch(() => null), 40000, 'resume once a slot frees')
+    check(freed.length === 1, 'a slot frees and the SAME kept keys sign it in — which an erase would have made impossible')
+    devicePolicy = 'evict'
+    await boot3.stop()
+    await db.put('user/alice', before)
   }
 
   // A password rotation. The panel mints a FRESH keypair on set-password and re-seals the

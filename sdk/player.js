@@ -661,15 +661,34 @@ export class AliranPlayer extends Emitter {
    * NOT stop with it is a device that still holds working keys, which is the same thing
    * that is true of a device holding a saved password (docs/security-model.md).
    *
-   * WHAT A CALLER MUST DO WITH A REJECTION. Tell the two apart and act differently:
+   * WHAT A CALLER MUST DO WITH A REJECTION. Tell the two apart and act differently — and
+   * the default runs toward KEEPING, because erasing is irreversible and costs a viewer a
+   * walk to another room for a phone:
    *
-   *   transient   'not connected to panel', a closed channel, a swarm still dialling —
-   *               keep the stored material and try again.
-   *   terminal    anything the PANEL said (a failed `session`), 'unknown user', or
-   *               'key handover does not match this account' (which is what a password
-   *               rotation looks like from here, because the panel mints a NEW keypair) —
-   *               ERASE the stored material. Keys that no longer work are no longer a
-   *               convenience, only a liability sitting on a disk.
+   *   transient   'not connected to panel', a closed channel, a swarm still dialling, a
+   *               bare 'unknown user' (the account record has not REPLICATED to this
+   *               device yet — the local bee is empty for the first moments after the
+   *               panel socket comes up), and most of what the panel says — keep the
+   *               stored material and try again.
+   *   terminal    'key handover does not match this account' (which is what a password
+   *               rotation looks like from here, because the panel mints a NEW keypair),
+   *               a session token that does not verify, a success that issued no token,
+   *               and the two `session` codes that are a VERDICT ON THIS ACCOUNT:
+   *               'account disabled' and 'unknown user' — ERASE the stored material.
+   *
+   * "Anything the panel said" IS NOT THE RULE, and reading it that way destroyed accounts.
+   * The same `session` responder answers 'bad request', 'no session challenge (login
+   * first)', 'missing deviceId', 'auth failed', 'sessions unavailable' and 'device-limit':
+   * a malformed call, a lost one-shot challenge, a panel missing its own signing key, an
+   * operator whose device slots are full. None of those is a judgement on these keys.
+   * client/backend/signin-vault.mjs is the worked classification, code by code, and
+   * tools/signin-vault-test.mjs fails if the panel grows a code nobody has classified.
+   *
+   * AND BOUND THE RETRY BY LOGINS, NOT BY TIME. Every attempt that reaches the panel
+   * spends a `login` the panel's throttle counts (LOCKOUT_THRESHOLD, per account and per
+   * peer) — but 'not connected to panel' is thrown before any RPC leaves the device, so
+   * those cost nothing. A loop that cannot tell the two apart locks the account out of the
+   * panel it is trying to reach.
    *
    * @param {string} username
    * @param {object} keys  { priv, authPriv } exactly as 'signin-keys' delivered them

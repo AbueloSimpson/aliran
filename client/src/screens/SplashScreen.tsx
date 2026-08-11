@@ -21,7 +21,10 @@
 // refused FOR GOOD (the worklet has already erased it) or this door simply ran out of
 // budget (the material is still there and the next boot will try it again). Neither leaves
 // anything for the next door to trip over, which is why the difference does not have to be
-// visible here — but the BUDGETS do, and they are per-door for a reason. See below.
+// visible here — but the BUDGETS do. They are per-door, and per door they are denominated
+// in different things: seconds where a retry is free, PANEL LOGINS where it is not. Missing
+// that second half is how a television came to lock itself out of its own account. See
+// below.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, Image, ActivityIndicator, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -47,16 +50,35 @@ const RETRY_MS = 2500
 // 'login-error' in milliseconds when there is no panel socket, so 24 attempts 2.5 s apart
 // really is ≈1 minute of dialling before giving up to Login.
 const LOGIN_MAX_RETRIES = 24
-// THE RESTORE DOOR uses a DEADLINE, because its attempts are anything but free.
-// resumeSignIn() dials inside the worklet for RESUME_CONNECT_MS (25 s) before it answers
-// retry:true, so an offline set spends ~27.5 s per attempt — and 24 of those is eleven
-// minutes of "Authorizing device" with nothing on screen a viewer can press. A wall-clock
-// budget cannot drift when that worklet constant changes.
+// THE RESTORE DOOR uses a DEADLINE FOR THE ATTEMPTS THAT COST NOTHING, because those are
+// slow: resumeSignIn() dials inside the worklet for RESUME_CONNECT_MS (25 s) before it
+// answers retry:true, so an offline set spends ~27.5 s per attempt — and 24 of those is
+// eleven minutes of "Authorizing device" with nothing on screen a viewer can press. A
+// wall-clock budget cannot drift when that worklet constant changes.
 //
 // An attempt already under way is never cut short, so the worst case is the budget plus
 // one attempt: ≈45 s of trying, ≈53 s before the door gives up. Two attempts offline, and
 // the password door then still has its own full minute.
 const RESTORE_BUDGET_MS = 45000
+//
+// …AND A DEADLINE IS THE WRONG BUDGET FOR THE ATTEMPTS THAT DO COST, which is the second
+// half of the same lesson: the seconds are ours, the logins are the panel's. A resume that
+// reaches the panel spends a `login` RPC, and panel/src/rpc.js counts every one of them
+// against (username|peer) — successes included — refusing past LOCKOUT_THRESHOLD (10) for
+// LOCKOUT_SECONDS (900). 45 s buys two attempts when each dials for 25 s, and NINETEEN when
+// each comes back fast. A set whose account record has not replicated pays 3 logins an
+// attempt: six attempts, eighteen logins, and it locks out the account it is restoring —
+// after which 'login failed: locked' returns in 20 ms and the loop ACCELERATES. The lockout
+// key carries this device's own swarm key, so the set locks out only itself, which sounds
+// mild until the fall-through below shows a login screen the viewer's correct password
+// cannot get through for a quarter of an hour, every boot.
+//
+// THE RULE, and it deliberately names no number: AN ATTEMPT THAT REACHED THE PANEL ENDS
+// THIS DOOR. Free attempts keep the deadline they always had. So the most a boot can spend
+// here is whatever ONE resume can spend, which is bounded in the only place that knows it
+// (client/backend/backend.mjs RESUME_RECORD_TRIES, currently three logins 3 s apart) —
+// three whole boots inside one throttle window still fit under ten. And repeating a paying
+// attempt was never worth anything anyway: the panel had already answered.
 
 // The doors of this screen (see signinPath.ts). Both end on {type:'streams'}, neither
 // persists anything — the material each one used was already on the device — so what the
@@ -80,6 +102,10 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   // transient — having never once tried the password it had.
   const loginTries = useRef(0)
   const restoreUntil = useRef(0)
+  // What this boot has already spent at the restore door, in PANEL LOGINS. Splash is the
+  // initial route and every exit is a replace(), so it mounts once and this counter really
+  // is per boot.
+  const restoreLogins = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const door = useSigninPath<SigninDoor>()
 
@@ -105,21 +131,27 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
     const withKept = () => {
       if (routed.current) return
       setStatus('authorizing')
-      // Started on the FIRST attempt, so the budget measures the door and not each try.
+      // Started on the FIRST attempt, so the deadline measures the door and not each try.
+      // (The login count needs no such care — it only ever goes up.)
       if (!restoreUntil.current) restoreUntil.current = Date.now() + RESTORE_BUDGET_MS
       door.claim({ kind: 'restore' })
       backend.resumeSignIn().then((res) => {
         if (routed.current) return
         if (res.ok) { door.release(); route('Menu'); return }
-        if (res.retry && Date.now() < restoreUntil.current) {
+        // WHAT THAT ATTEMPT COST, charged before anything is decided. An answer with no
+        // cost on it is an answer the worklet never composed — the binding's own timeout,
+        // where a login may be in flight this instant — so unknown is charged as paid.
+        restoreLogins.current += typeof res.logins === 'number' ? res.logins : 1
+        if (res.retry && restoreLogins.current === 0 && Date.now() < restoreUntil.current) {
           timer.current = setTimeout(() => { if (!routed.current) withKept() }, RETRY_MS)
           return
         }
         // Two different endings, one exit. EITHER the sign-in is gone for good — refused
         // by the operator, unreadable, or a service this device has left, all of which the
-        // worklet has already erased — OR this door simply ran out of budget and the
-        // material is still on the disk for the next boot to try. Neither leaves anything
-        // to unwind, so both take the same way out: the other door, then the screen.
+        // worklet has already erased — OR this door is out of budget (out of time, or out
+        // of logins) and the material is still on the disk for the next boot to try.
+        // Neither leaves anything to unwind, so both take the same way out: the other door,
+        // then the screen.
         door.release()
         withSaved(backend.creds)
       })

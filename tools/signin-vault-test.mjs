@@ -8,6 +8,13 @@
 // decides on the wording of errors that sdk/login.js writes and codes that panel/src/rpc.js
 // answers with.
 //
+// The LAST group is about the other half of the same judgement: a code classified KEEP is a
+// code the device RETRIES, and a retry that reaches the panel costs a `login` the panel's
+// throttle counts. So it reads the panel's threshold, the worklet's per-resume cap and the
+// screen's rule off the disk and checks the arithmetic between them still leaves a
+// television unable to lock out its own account. Nothing else in the tree connects those
+// four files, and nothing was counting logins across attempts at all.
+//
 // AND THE COUPLING IS TO THOSE FILES, not to a copy of their prose. An earlier revision of
 // this lane claimed to "pin the engine's error prose so a reworded message cannot turn a
 // revocation into an endless retry", and did no such thing: the strings were literals
@@ -92,7 +99,6 @@ try {
   console.log('terminalSignInError — ERASE')
   for (const m of [
     'session failed: account disabled',            // the operator disabled the account
-    'session failed: device-limit',                // maxDevices, policy 'reject'
     'session failed: unknown user',                // the PANEL's own db has no such account
     'key handover does not match this account',    // WHAT A PASSWORD ROTATION LOOKS LIKE
     'panel returned an invalid session token',
@@ -108,6 +114,13 @@ try {
     'login failed: locked (retry 900s)',           // the panel throttle, not a verdict
     'login failed: bad proof-of-work',
     'session failed: sessions unavailable',        // the PANEL is missing its signing key
+    'session failed: device-limit',                // the operator's SLOTS are full, and a
+                                                   // slot frees itself — see the note in
+                                                   // signin-vault.mjs. Reclassified from
+                                                   // ERASE, and only once the restore
+                                                   // door's budget stopped counting
+                                                   // seconds: keeping means retrying
+                                                   // every boot.
     'the panel issued no session challenge — it is too old for a key handover',
     'timeout: panel connection',
     'EPARTIALREAD'                                 // store corruption; recovery handles it
@@ -156,18 +169,38 @@ try {
   // The two halves, declared here and checked against what the panel really answers. A new
   // code in that responder lands in neither list and fails the last check in this group —
   // which is the point: somebody has to decide whether it evicts a television.
-  const VERDICTS = ['account disabled', 'device-limit', 'unknown user']
-  const REQUEST_REFUSALS = ['sessions unavailable', 'bad request', 'no session challenge (login first)', 'auth failed', 'missing deviceId']
+  //
+  // The second list is NOT "malformed requests". It is everything that is not a judgement
+  // on these keys, and it holds three different kinds: a refusal of the REQUEST (a bad
+  // call, a lost one-shot challenge, a signature that did not verify), a panel that cannot
+  // issue sessions at all, and an operator whose device slots are full. Only the first kind
+  // is a bug somewhere; the other two are configuration, and configuration changes.
+  const VERDICTS = ['account disabled', 'unknown user']
+  const NOT_VERDICTS = [
+    'sessions unavailable', //                the PANEL is missing its own signing key
+    'device-limit', //                        maxDevices with devicePolicy 'reject' — slots, not keys
+    'bad request',
+    'no session challenge (login first)',
+    'auth failed',
+    'missing deviceId'
+  ]
   for (const code of VERDICTS) {
     check(sessionCodes.includes(code), `the panel still answers '${code}' (a verdict)`)
     check(terminalSignInError(new Error('session failed: ' + code)) === true, `…and '${code}' erases`)
   }
-  for (const code of REQUEST_REFUSALS) {
-    check(sessionCodes.includes(code), `the panel still answers '${code}' (a request refusal)`)
+  for (const code of NOT_VERDICTS) {
+    check(sessionCodes.includes(code), `the panel still answers '${code}' (not a verdict)`)
     check(terminalSignInError(new Error('session failed: ' + code)) === false, `…and '${code}' keeps`)
   }
-  const unclassified = sessionCodes.filter((c) => !VERDICTS.includes(c) && !REQUEST_REFUSALS.includes(c))
+  const unclassified = sessionCodes.filter((c) => !VERDICTS.includes(c) && !NOT_VERDICTS.includes(c))
   check(unclassified.length === 0, 'every code the session responder can answer is classified — unclassified: ' + JSON.stringify(unclassified))
+  // 'device-limit' is the one entry here that is unreachable on anything this repo ships:
+  // rpc.js takes devicePolicy as a parameter defaulting to 'evict' and index.js never passes
+  // it. Pinned, because the classification above is written for the operator who DOES set
+  // it, and because a default that silently became 'reject' would change what a household's
+  // spare phone can do to a television.
+  check(/devicePolicy = 'evict'/.test(rpc), "rpc.js still defaults devicePolicy to 'evict'")
+  check(!/devicePolicy/.test(read('panel/src/index.js')), 'panel/src/index.js still never passes devicePolicy')
 
   console.log('coupling — sdk/login.js prose')
   const loginSrc = read('sdk/login.js')
@@ -193,6 +226,57 @@ try {
   }
   const missing = Object.keys(LOGIN_PROSE).filter((m) => !thrown.includes(m))
   check(missing.length === 0, 'every classified message is one login.js still throws — stale: ' + JSON.stringify(missing))
+
+  // --- WHAT A BOOT MAY SPEND AT THE PANEL -----------------------------------------------
+  // The other currency of a retry, and the one nothing was counting. A KEPT sign-in is
+  // retried, every keep above buys another retry, and a retry that reaches the panel costs
+  // a `login` the panel's throttle counts — so the classification group above is only safe
+  // while the loop that acts on it is bounded in LOGINS rather than in seconds. It was not:
+  // the restore door's budget was 45 s of wall clock, which admits two attempts when each
+  // dials for 25 s and nineteen when each comes back fast. Six resumes × three logins = 18,
+  // against a threshold of 10, and the television locked out its own account.
+  //
+  // Nothing here can run the screen (client/__tests__/SplashDoors.test.tsx does that). What
+  // it pins is the arithmetic between four files that have no other connection.
+  console.log('coupling — the login budget of one boot')
+  const cfg = read('panel/src/config.js')
+  const threshold = Number((cfg.match(/int\(process\.env\.LOCKOUT_THRESHOLD,\s*(\d+)\)/) || [])[1])
+  const lockoutSec = Number((cfg.match(/int\(process\.env\.LOCKOUT_SECONDS,\s*(\d+)\)/) || [])[1])
+  check(Number.isInteger(threshold) && threshold > 0, `panel/src/config.js LOCKOUT_THRESHOLD defaults to ${threshold}`)
+  check(Number.isInteger(lockoutSec) && lockoutSec > 0, `…for LOCKOUT_SECONDS ${lockoutSec}`)
+  // Counted on EVERY attempt, not only failed ones — which is the fact the old comment in
+  // backend.mjs got wrong by omission and the reason the ceiling has to be so conservative.
+  const loginBody = rpc.slice(rpc.indexOf("rpc.respond('login'"), rpc.indexOf("rpc.respond('session'"))
+  check(/const t = throttle\(\(username \|\| ''\) \+ '\|' \+ peerHex\)/.test(loginBody),
+    'the login responder still throttles on (username|peer), before it knows if the attempt is good')
+
+  const worklet = read('client/backend/backend.mjs')
+  const perResume = Number((worklet.match(/const RESUME_RECORD_TRIES = (\d+)/) || [])[1])
+  check(Number.isInteger(perResume) && perResume > 0, `one resume may spend ${perResume} logins (RESUME_RECORD_TRIES)`)
+  // The screen's rule is "an attempt that reached the panel ends this door", so a boot's
+  // whole restore-door spend is one resume's worth. Three boots inside one lockout window is
+  // an ordinary evening for a set Android keeps reclaiming, and it still has to fit.
+  check(perResume * 3 <= threshold,
+    `three boots of the restore door (${perResume * 3}) still fit under the panel's threshold (${threshold})`)
+
+  // …and that the rule is the one actually written. A revert to a pure deadline puts the
+  // door back where it was, and both halves of the mechanism have to be present for it to
+  // work: the worklet has to report the cost, and the screen has to gate on it.
+  check(/logins: cost\.logins/.test(worklet), 'the worklet reports what a resume cost')
+  check(/if \(NOT_CONNECTED\.test\(message\) && purges === storePurges\) cost\.logins--/.test(worklet),
+    '…refunds the one error that proves no RPC left the device — and not when a store purge re-ran the call')
+  check(/storePurges\+\+/.test(worklet), '…which needs the engine\'s recovery to be counted at all')
+  const splash = read('client/src/screens/SplashScreen.tsx')
+  check(/restoreLogins\.current \+= typeof res\.logins === 'number' \? res\.logins : 1/.test(splash),
+    'the screen charges what the worklet reported, and charges an ABSENT cost as a paid one')
+  check(/res\.retry && restoreLogins\.current === 0 && Date\.now\(\) < restoreUntil\.current/.test(splash),
+    '…and retries only while this door has reached the panel not at all')
+  // The absent cost is not hypothetical: it is what the binding sends when nothing came back
+  // while the worklet may still be inside signInWithKeys().
+  const binding = read('sdk/react-native/src/backend.ts')
+  const timeoutLine = (binding.match(/if \(!m \|\| m\.type !== 'signin-resumed'\) return \{[^}]*\}/) || [''])[0]
+  check(/error: 'timeout'/.test(timeoutLine) && !/logins/.test(timeoutLine),
+    'the binding still answers a timeout with NO cost on it — absent, not zero')
 
   console.log(`\nPASS — ${passed} checks`)
   process.exit(0)

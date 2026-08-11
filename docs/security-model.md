@@ -241,9 +241,9 @@ are immutable JavaScript strings, copied by every hop that touches them, and not
 either runtime can overwrite one. They sit in the heap until a garbage collector that
 makes no promises gets to them — in practice, for the life of the process.
 
-**How an operator actually evicts such a device.** `test:signin-resume` asserts the
-first, second and fourth rows against a real panel; the third and fifth are reasoned
-from behaviour tested elsewhere and are marked as such.
+**How an operator actually evicts such a device.** The last column says whether the
+row is asserted against a real panel by `test:signin-resume` or reasoned from
+behaviour tested elsewhere.
 
 | Action | Effect on a kept sign-in | |
 | --- | --- | --- |
@@ -252,11 +252,29 @@ from behaviour tested elsewhere and are marked as such.
 | Rotate the channel's stream key | **Evicts from that channel**, as for every other device. | reasoned |
 | "Log out all devices" (`tokenVersion`) | **Does not evict.** It ends live sessions; a device still holding working keys takes a new token on its next start. | asserted |
 | Revoke the one device | **Does not evict.** It drops the enrolment; the device re-enrols. | reasoned |
+| Fill the account's device slots, on a panel configured `devicePolicy: reject` | **Does not evict.** The panel answers `device-limit`, which says the slots are full — not that these keys are dead. The set keeps them and signs itself in the moment a slot frees. | asserted |
 
-The last two are not new behaviour and not specific to televisions — a device
-holding a saved *password* signs straight back in after both, and always has. They
-are listed because storing keys makes it worth saying out loud which lever is the
-real one: **change the password.**
+The middle three are not new behaviour and not specific to televisions — a device
+holding a saved *password* signs straight back in after all of them, and always has.
+They are listed because storing keys makes it worth saying out loud which lever is
+the real one: **change the password.**
+
+**`device-limit`, and why it keeps.** It is the one refusal on that list that reads
+like a verdict and is not, and treating it as one was a defect. Slots free
+themselves: an enrolment expires (30 days) or a viewer signs another device out, and
+the identical stored keys work again. Erasing gains the viewer nothing — they must
+then redo a handover *and* still meet the same limit — while keeping costs one
+refused login per boot until a slot opens. It belongs with `sessions unavailable`:
+a fact about the operator's configuration, not a judgement on an account.
+
+Two qualifications, and they cut opposite ways. It is **unreachable on a default
+deployment**: `devicePolicy` defaults to `evict` and nothing the panel ships passes
+`reject`, so the limit drops the oldest device rather than refusing the new one. And
+it is the only refusal here that **another device can cause** — on an operator who
+does set `reject`, a television whose own enrolment lapsed while it was switched off
+comes back as a new device and finds the household's other sets holding every slot.
+Under the old classification, somebody else's phone silently destroyed the
+television's sign-in.
 
 **What does NOT erase it**, and deliberately so. Erasing is the only irreversible act
 in this feature, and its cost to a viewer is walking to another room for a phone — so a
@@ -264,10 +282,34 @@ device erases only on positive evidence that the material can never work again (
 store saying these bytes will not open, a box that fails its MAC, an operator this
 device has left, or a verdict from the panel above). A key store that did not answer, a
 swarm still dialling, an account record that has not replicated to this device yet: all
-of those **keep** what is held and try again on the next start. The consequence is
-worth stating: a *deleted* account leaves an inert record on the television's disk,
-because "this device's copy of the signed record has no such account" is what a cold
-start looks like as well.
+of those **keep** what is held and try again on the next start.
+
+**A deleted account is the honest cost of that default**, and it is worth an operator
+knowing exactly what it leaves behind. Deleting the account leaves an inert record on
+the television's disk, because "this device's copy of the signed record has no such
+account" is what a cold start looks like as well. Three consequences follow:
+
+- The set **spends a small login budget on every boot** trying it — see below. It
+  never locks the account out, and it never stops trying either.
+- The record **cannot be revived by re-creating the username.** Creating an account
+  again mints a fresh keypair, so the stored key fails the seal probe
+  (`key handover does not match this account`) and *that* does erase. Re-creating a
+  deleted viewer therefore evicts the television rather than restoring it.
+- The set falls through to its sign-in screen every time, which is what a viewer
+  sees. Nothing on the television says the account is gone.
+
+The lever that cleans it up on the device is the same one as always: **change the
+password** before deleting, or let the viewer sign the set out.
+
+**What a boot may spend at the panel.** Keeping means retrying, and a retry that
+reaches the panel costs a `login` — which `LOCKOUT_THRESHOLD` counts whether it
+succeeded or not, per account *and* per device. So the restore door is budgeted in
+logins, not in seconds: **an attempt that reached the panel ends it for that boot**,
+and attempts that never left the device (no socket yet, a key store that did not
+answer) are bounded by a wall-clock deadline instead. A boot therefore spends at most
+what one resume can spend — three logins today — so several restarts inside one
+lockout window still fit under a threshold of ten, and a television can never lock out
+the password screen a viewer standing in front of it needs.
 
 **Sign out erases it**, and erases both halves — the record in the worklet and the
 Keystore key it was sealed under, so the file cannot be read even if it survives.

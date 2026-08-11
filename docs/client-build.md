@@ -159,11 +159,14 @@ Splash (boot + auto-auth: "Authorizing device…")
   The set falls back to the sign-in screen — never to a half-signed-in
   state — and it **erases what it holds only on proof**: a key store that
   says the bytes will never open, a record that fails its seal, an
-  operator this device has left, or the panel refusing the account. A key
-  store that did not answer, a swarm still dialling or an account record
-  that has not replicated yet keep the material and try again on the next
-  start, because erasing costs the viewer a walk to another room for a
-  phone. See
+  operator this device has left, or the panel's verdict on the account
+  itself (disabled, or gone from its database). A key store that did not
+  answer, a swarm still dialling, an account record that has not
+  replicated yet, or an operator whose device slots are full all keep the
+  material and try again on the next start, because erasing costs the
+  viewer a walk to another room for a phone. Those retries are budgeted in
+  **panel logins**, not in seconds, so a set can never lock out the account
+  it is restoring — nor the password screen a viewer is standing at. See
   [Security model — Account keys at rest](security-model.md), which is
   explicit about what the Keystore does and does not protect against.
 - **White-label contract.** Screens and components contain **no** brand
