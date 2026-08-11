@@ -972,6 +972,11 @@ export class AliranBackend {
    * `engineReady` / `streams`, which is what they are cached for.
    */
   private reattach () {
+    // Its OWN word, not a message type: this is state being handed back, and a log line
+    // that said 'ready' would read as an engine event that never happened. It is also the
+    // line somebody will grep for on a device — the failure it replaces was an error in
+    // `adb logcat`, and silence would be a worse trade than a breadcrumb.
+    if (this.debug) console.log('[backend]', `re-attach (ready=${this.engineReady}, streams=${this.streams.length})`)
     Promise.resolve().then(() => {
       if (this.engineReady) this.deliver({ type: 'ready' })
       if (this.streams.length > 0) this.deliver({ type: 'streams', streams: this.streams, ...(this.vod ? { vod: this.vod } : {}) })
