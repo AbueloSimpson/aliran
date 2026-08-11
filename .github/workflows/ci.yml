@@ -172,6 +172,23 @@ jobs:
       - name: VOD library end-to-end (test:vod)
         timeout-minutes: 10
         run: npm run test:vod
+      # Cast to a TV: the SECOND, LAN-scoped media server. This lane guards the surface the
+      # feature creates — the loopback server keeps its 127.0.0.1 bind and its CORS-free
+      # responses; the cast server binds ONE private (RFC1918) address rather than 0.0.0.0
+      # and refuses to advertise a public one; it serves nothing outside /cast/<token>/ and
+      # nothing but GET/HEAD; a wrong token — or, when the session is pinned, a peer that is
+      # not the receiver — 404s; the pinned cast feed survives the phone zapping away; a
+      # session whose feed is purged ENDS instead of leaving a bound zombie; and stopCast()
+      # really closes AND unbinds the socket. It also proves the playlist needs NO
+      # rewriting: bare relative segment names inherit the token prefix. Local DHT
+      # testnet + loopback HTTP, no ffmpeg — deterministic, so it belongs here.
+      #
+      # ⚠ It needs a private IPv4 on the runner — that is the address it binds and asserts.
+      # GitHub-hosted runners have one; a self-hosted runner on a public-only host fails
+      # this lane by design, which is exactly the refusal a viewer there would get.
+      - name: Cast to a TV (test:cast)
+        timeout-minutes: 8
+        run: npm run test:cast
       # The desktop app's external-VOD provider client (S53c): pure functions, no
       # network and no Electron. It runs the same fixtures as the phone app's jest
       # suite for the twin module, so the two copies cannot drift silently — and it

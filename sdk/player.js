@@ -73,6 +73,15 @@
 //                        deliberately NOT in the problem-report breadcrumb ring (_recordEmit):
 //                        these carry another household device's LABEL, and a report is
 //                        pseudonymous on purpose.
+//   'cast' ({state,streamId,reason})  the cast session ENDED ON ITS OWN — state 'ended'.
+//                        reason 'feed-evicted' (the tune ladder ran out and purged the
+//                        pinned replica) | 'retune-abandoned' (a zap landed mid-retune
+//                        and the pinned feed was closed without a replacement). Both used
+//                        to leave a zombie: drive nulled, everything 404ing forever, the
+//                        socket still bound and castSession() still handing out a url and
+//                        token that no longer work. The host stops showing "Casting" and
+//                        may restart the session. stopCast() does NOT emit — the caller
+//                        that asked for the stop already knows.
 //   'update-progress' ({received,total})  OTA app-update download progress (throttled)
 //   'update-ready' ({path,entry})   OTA artifact downloaded, sha256-verified, on disk
 //   'update-error' ({message})      OTA download/verify failure (downloadUpdate() also
@@ -154,7 +163,7 @@ import {
 // 64 hex characters are not something a viewer checks against an operator's card.
 import { pairingCode } from '@aliran/core'
 import { isCorruptionError, withRecovery } from './recover.js'
-import { createDriveHandler, playlistUris, THUMB_PATH } from './serve.js'
+import { createDriveHandler, playlistUris, reclaimBelowWindow, THUMB_PATH } from './serve.js'
 import { REPORT_CATEGORIES, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DETAIL_MAX, REPORT_COOLDOWN_MS } from './report.js'
 // The runtime-agnostic half of core/net-tune.js — no fs import (a node:fs edge in this
 // graph would become a `builtin:` ref the Bare worklet cannot load); the /proc ceiling
@@ -417,6 +426,214 @@ const UPDATE_STALL_MS = 60000
 // paths — allow only plain file names, never separators or dot-walks.
 const UPDATE_BASENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
+// --- cast to a TV (startCast) -----------------------------------------------------
+//
+// Route prefix and token size. 32 bytes of hypercore-crypto randomness, hex, fresh per
+// session, in the PATH because a Cast receiver cannot be made to send an auth header.
+//
+// ⚠ WHAT THE TOKEN IS AND IS NOT. It is not the access boundary, and nothing here may say
+// it is. MEASURED on a TCL Google TV (CrKey/1.56.500000) running the stock Default Media
+// Receiver: a separate process that had never seen the cast URL and presented NO credential
+// connected to the device on port 8009, called getSessions, joined the running session and
+// read its media status — which returns contentId, i.e. the FULL media URL, token and all:
+//
+//     playerState : PLAYING
+//     contentId   : http://192.168.1.104:8498/index.m3u8
+//
+// So on a shared network the effective boundary is "anyone who can reach the TV", not
+// "anyone who holds the token". The token is still the right mechanism — a receiver cannot
+// authenticate, the token scopes a session to ONE channel, it dies with the session, and it
+// makes blind scanning of the LAN server useless — but it is a session scope, not a secret
+// the LAN keeps.
+//
+// Three things narrow the surface underneath it, and they are what the design actually
+// leans on: the server exists only while a session does, it is bound to ONE private address
+// (see _startCastServer), and it can be pinned to the receiver's own address
+// (startCast({ receiverHost })), which turns "read contentId and fetch it" into "read
+// contentId AND hold an L2 position that lets you spoof the TV's address".
+const CAST_PREFIX = '/cast/'
+const CAST_TOKEN_BYTES = 32
+
+// STALLED-READ ABORT window for the cast handler (sdk/serve.js readIdleMs), 2× the
+// loopback default.
+//
+// The 6 s default is not a general-purpose number: it is calibrated to ExoPlayer's 8 s
+// read timeout so OUR clean abort lands FIRST and drives the retry. A cast receiver is a
+// different client with a different (and, on every stack we can name, longer) timeout —
+// the Cast receiver's media stack sits on shaka-player, whose default streaming retry
+// timeout is 30 s — so the budget that must fit underneath is bigger, and 6 s is no
+// longer a bound, it is just an aggressive abort.
+//
+// It matters which way we err, because the two failures are NOT symmetric. The abort
+// exists for reads committed to a blob the broadcaster already reclaimed swarm-wide;
+// those are PERMANENT, so waiting longer costs one retry cycle of latency and nothing
+// else. Aborting too early, by contrast, kills a read that would have succeeded — and
+// pump() arms the idle clock BEFORE the first byte, so a cold segment whose first block
+// is still crossing the swarm counts as "stalled". The cast path makes that far more
+// likely than loopback: the bytes travel swarm → phone disk → phone Wi-Fi → TV, and the
+// phone is not also playing the feed locally to keep it warm.
+//
+// 12 s: comfortably inside a 30 s receiver timeout, and double the room for a cold first
+// block. WP0 could not measure the receiver's real read timeout (that firmware never
+// issued a Range request and a synthetic stream never stalls), so this is a reasoned
+// choice, not a measured one — hence startCast({ readIdleMs }) to override it, and 0 to
+// switch the abort off entirely.
+const CAST_READ_IDLE_MS = 12000
+
+// stopCast()'s bound on closing the LAN listener (see _closeCastServer for why the bound
+// is load-bearing on Bare and not on Node), and on the one playlist read the release-time
+// reclaim pass needs.
+const CAST_CLOSE_MS = 2000
+const CAST_RECLAIM_READ_MS = 3000
+
+// CAST RECLAIM POLICY — EXPIRED-BLOCK RECLAIM is OFF for the cast handler (opt in with
+// startCast({ reclaim: true })).
+//
+// On loopback, reclaim is nearly free: it frees blob blocks BELOW the served playlist's
+// window, and those blocks are already unfetchable swarm-wide (the broadcaster cleared
+// them at rotation), so nothing that could have been served is lost. That last step is
+// exactly what stops being true with a receiver in the picture. Because those blocks
+// exist NOWHERE else, the viewer's own replica is the only thing that can still serve a
+// consumer who has fallen below the live window — and a TV on Wi-Fi falls below it far
+// more readily than the phone whose buffer the 6 s/window numbers were tuned against.
+// Reclaiming would convert a recoverable lag into a permanent stall, silently, on a
+// device we cannot instrument.
+//
+// The cost of leaving it off is one feed's blocks (~1× bitrate, ≈0.9 GB/hour at 2 Mbps)
+// retained for the length of ONE cast session. Bounding that is stopCast()'s job and it
+// has to do it ACTIVELY — an earlier version of this note claimed "the loopback handler's
+// very next playlist serve reclaims everything below the window in a single pass", which
+// is not a bound at all: unpinning only removes the opt-OUT, and the handler's reclaim
+// runs exclusively on a live playlist serve for that drive, i.e. only if the viewer
+// happens to tune that channel again. So stopCast() runs ONE reclaim pass itself
+// (reclaimBelowWindow in serve.js) before it hands the feed back.
+//
+// What that still does not cover: an app killed mid-cast (task kill, crash, OOM) never
+// reaches stopCast(), and strands ~1× bitrate for the session — ≈2.7 GB for a 3 h cast at
+// 2 Mbps — until the viewer re-tunes that channel or LRU eviction purges the replica
+// outright. Reclaim exists to bound accumulated watch HISTORY; a cast session is one
+// channel with an explicit end, and the crash case falls back to eviction.
+
+// Constant-time string compare for the cast token. The realistic attack surface is small
+// (a 256-bit random hex path segment, on a LAN, and a receiver hands the whole URL to any
+// peer that asks it — see the note above), but a byte-by-byte early return in front of
+// decrypted entitled content is not worth defending, and this costs nothing. Length is
+// compared first and non-secretly — the token length is public.
+function constantTimeEqual (a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
+// RFC1918 private IPv4 — the address families a TV on the same LAN can actually reach.
+function isPrivateIPv4 (ip) {
+  if (ip.startsWith('10.') || ip.startsWith('192.168.')) return true
+  const m = /^172\.(\d{1,3})\./.exec(ip)
+  return !!m && Number(m[1]) >= 16 && Number(m[1]) <= 31
+}
+
+// A dotted-quad IPv4 literal (any range, loopback included) — the shape the cast server
+// can bind() to directly. A hostname is not one, and neither is anything with a slash,
+// colon, query or userinfo in it.
+const IPV4_LITERAL = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
+function isIPv4Literal (s) {
+  const m = IPV4_LITERAL.exec(String(s))
+  return !!m && m.slice(1).every((o) => Number(o) <= 255 && (o === '0' || !o.startsWith('0')))
+}
+
+// Peer addresses arrive in more than one spelling for the same host: a dual-stack listener
+// reports an IPv4 peer as the IPv4-MAPPED form `::ffff:192.168.1.128`, IPv6 literals may be
+// bracketed and are case-insensitive, and a link-local carries a `%zone` suffix. Compare
+// normalised or the pin below silently never matches. (Not a general IPv6 canonicaliser —
+// receiver pinning is an exact-address check between two values that come from the same
+// LAN, and anything it cannot normalise simply fails to match, which is the safe direction.)
+//
+// IPv4-mapped addresses have THREE spellings for the same host and all of them are folded,
+// because a v4 pin that meets an unfolded one does not error — it silently never matches:
+//
+//   ::ffff:192.168.1.5           what node:net and bare-tcp actually report, and the only
+//                                one reachable from a socket today
+//   0:0:0:0:0:ffff:192.168.1.5   the uncompressed form — a hand-written receiverHost
+//   ::ffff:c0a8:0105             the hex form RFC 4291 also permits
+//
+// The last two are unreachable from a remoteAddress on either runtime; they are folded for
+// the value the HOST supplies, where a plausible spelling that quietly pins nothing is the
+// same failure this whole normaliser exists to prevent. The fold is exact rather than
+// permissive: only ::ffff:0:0/96 (which is by definition v4-mapped) matches, so ::ffff:0:c0a8:105
+// — IPv4-TRANSLATED, a different block — is left alone rather than mistaken for it.
+const V4_MAPPED_RE = /^(?:::|(?:0{1,4}:){5})ffff:(.+)$/
+const V4_MAPPED_HEX_RE = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/
+function normalizePeer (addr) {
+  if (typeof addr !== 'string' || !addr) return null
+  let s = addr.trim().toLowerCase()
+  if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1)
+  const zone = s.indexOf('%')
+  if (zone > 0) s = s.slice(0, zone)
+  const mapped = V4_MAPPED_RE.exec(s)
+  if (mapped) {
+    const tail = mapped[1]
+    const hex = V4_MAPPED_HEX_RE.exec(tail)
+    if (isIPv4Literal(tail)) s = tail
+    else if (hex) {
+      const n = (parseInt(hex[1], 16) * 65536) + parseInt(hex[2], 16)
+      s = [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.')
+    }
+  }
+  return s || null
+}
+
+// `advertiseHost` becomes the AUTHORITY of a URL that carries the session token, so it has
+// to be an authority and nothing else. Unvalidated, `evil.example/x?` produced
+// `http://evil.example/x?:41234/cast/<token>/index.m3u8` — a perfectly valid URL that
+// sends the token to a third party as a query string. The caller controls this value, so
+// this is hardening on a public SDK surface rather than a boundary, but a check that
+// costs one regex belongs on the one input that can redirect a credential.
+// Accepted: an IPv4 literal, a bracketed IPv6 literal, or a DNS hostname.
+const HOSTNAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/
+function isCastHost (s) {
+  if (typeof s !== 'string' || !s || s.length > 253) return false
+  if (s.startsWith('[')) return s.endsWith(']') && /^\[[0-9A-Fa-f:.]+\]$/.test(s) // IPv6 literal
+  if (isIPv4Literal(s)) return true
+  return HOSTNAME_RE.test(s)
+}
+
+// `receiverHost` -> the normalised address list the cast handler pins to, or null for the
+// default (unpinned). One string, or an array: a multi-room Cast GROUP is the case where a
+// single address is wrong, because the members fetch the media themselves rather than
+// through the device the sender launched on — a host that casts to a group must pass every
+// member's address, or leave the pin off. That is also why this option is opt-in and unset
+// by default: WP4 does not speak the Cast protocol and cannot discover any of this itself.
+//
+// ⚠ AN EMPTY ARRAY THROWS. Every other bad value here fails closed — '', 0, false, 'tv.local',
+// '192.168.1.5:8009', ['1234'] and [{}] all reject on the call — but `[]` used to return null,
+// and null means UNPINNED. So the one input that says "pin this session" and names nothing was
+// also the one that silently served every peer, while the host's own code believed it had
+// pinned. The way to get there is not exotic: a host building a multi-room group's member list
+// from a lookup that came back empty (a member offline, an API hiccup, the group not joined
+// yet) — precisely the case the pin exists for. Omitting the option is how you ask for no pin.
+function normalizeReceivers (v) {
+  if (v == null) return null
+  const list = Array.isArray(v) ? v : [v]
+  if (!list.length) {
+    throw new Error('receiverHost must be an IP address, or an array of them (got an empty array — omit receiverHost to leave the session unpinned)')
+  }
+  const out = []
+  for (const raw of list) {
+    const n = normalizePeer(typeof raw === 'string' ? raw : '')
+    // An IP literal only. A hostname would need a DNS round trip per request, and a pin
+    // that never matches is indistinguishable from a cast that simply does not work — so
+    // reject on the CALL rather than let a typo become a silently dead session. The IPv6
+    // side is a shape check, not a parser (it must contain a colon, so a bare '1234'
+    // cannot slip through as one); an unparseable value would only ever fail to match.
+    if (!n || !(isIPv4Literal(n) || (n.includes(':') && /^[0-9a-f:]+$/.test(n)))) {
+      throw new Error('receiverHost must be an IP address, or an array of them (got ' + JSON.stringify(raw) + ')')
+    }
+    if (!out.includes(n)) out.push(n)
+  }
+  return out
+}
+
 // Short free-form host strings that ride along on a problem report (appVersion,
 // platform) and the per-install device id. Anything that is not a non-empty string is
 // dropped rather than coerced — a host that passes an object must not turn into
@@ -456,7 +673,7 @@ function signinFacingMessage (err) {
 }
 
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._remote = normalizeRemote(remote) // see normalizeRemote — default: hold nothing
@@ -481,6 +698,12 @@ export class AliranPlayer extends Emitter {
     this._storeDir = storeDir
     this._http = http
     this._fs = fs
+    // OPTIONAL, unlike http/fs: node:os (Node) or bare-os (Bare). Only startCast() needs
+    // it — to find this device's LAN address — and only when the host does not pass an
+    // explicit advertiseHost. Kept optional so a pre-cast integrator constructing
+    // AliranPlayer({ http, fs }) by hand keeps working; startCast() is the one call that
+    // says so, and it says so with a message that names the fix.
+    this._os = os || null
     this._store = null
     this._swarm = null
     this._panelBee = null
@@ -490,6 +713,14 @@ export class AliranPlayer extends Emitter {
     this._panelDiscovery = null // the panel topic's PeerDiscovery — report() kicks refresh() when the RPC is down
     this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
     this._server = null
+    // --- cast to a TV (startCast): the SECOND, LAN-scoped server ---
+    // Everything here is null while no cast session exists, and goes back to null on
+    // stopCast(). The loopback server above is untouched by all of it.
+    this._castServer = null // LAN http server, bound to ONE private address — created per session, closed by stopCast()
+    this._castSockets = null // its live sockets, so stopCast() can hang up a receiver that is mid-stream
+    this._cast = null // { streamId, source, token, drive, feedCacheKey, host, port, url, … }
+    this._castFeedKey = null // the pinned feed's _feeds key — _trimFeeds must never evict it
+    this._castOp = null // serializes startCast/stopCast (a double-tapped Cast button must not leave two servers)
     this._assetsDrive = null
     this._epgDrive = null // sparse replica of the CURRENT guide epoch drive (meta/epgKey)
     this._epgDiscovery = null
@@ -610,7 +841,7 @@ export class AliranPlayer extends Emitter {
 
   // Every engine event passes through here, so the breadcrumb ring is fed AT the emit
   // sites — all of them, including ones added later — instead of by a dozen hand-placed
-  // calls that a future edit would forget. Only the five diagnostic events are recorded:
+  // calls that a future edit would forget. Only the diagnostic events are recorded:
   // 'peers' and 'streams' fire on a timer / on every catalog edit and would flush the
   // ring of everything that matters, so 'peers' is sampled into _lastPeers instead.
   // Recording can never affect delivery — a bad detail must not swallow an 'error'.
@@ -631,6 +862,17 @@ export class AliranPlayer extends Emitter {
         return this._recordEvent('fallback', `${arg && arg.streamId} (${arg && arg.reason})`)
       case 'source-changed':
         return this._recordEvent('source-changed', `${arg && arg.streamId} -> ${arg && arg.source}`)
+      // A cast that ended ON ITS OWN. "The TV stopped and I do not know why" is a report an
+      // operator gets, and without this the only trace of the cause was a 'cast' event the
+      // host app consumed and dropped — nothing reached the ring, so the report looked like
+      // a normal viewing session.
+      //
+      // ⚠ state + streamId + reason ONLY, listed one field at a time. The ring leaves this
+      // device inside a problem report, and a cast session's url and token must never ride
+      // along on one. _endCast's payload deliberately carries neither, and this case must
+      // stay narrow enough that adding a field to that payload later cannot change it.
+      case 'cast':
+        return this._recordEvent('cast', `${arg && arg.state} ${arg && arg.streamId} (${arg && arg.reason})`)
     }
   }
 
@@ -1871,6 +2113,592 @@ export class AliranPlayer extends Emitter {
     return { streamId: a.streamId, source: a.source, url: a.source === 'p2p' ? a.localUrl : a.cdnUrl }
   }
 
+  // --- cast to a TV -----------------------------------------------------------------
+  //
+  // resolve() hands the host a 127.0.0.1 URL. A TV cannot reach it — that loopback bind
+  // is the entire security boundary for normal playback, because the bytes behind it are
+  // DECRYPTED entitled content. So casting does not widen that server; it stands up a
+  // SECOND one that exists only while a cast session does, bound to ONE private LAN
+  // address, whose every path is behind a fresh 32-byte token:
+  //
+  //     http://<lan-ip>:<port>/cast/<token>/index.m3u8
+  //
+  // ONE address, not 0.0.0.0. This server was originally bound to all interfaces with the
+  // token as its only access control, which meant it also answered on the VPN tunnel,
+  // every container bridge, the mobile-data interface, and — on a host whose only
+  // non-internal IPv4 is public (a desktop on a VPS, a flat network, a routable carrier
+  // v4) — on the open internet. And the token is NOT a secret the network keeps: a receiver
+  // reads the whole URL back to any unauthenticated peer that joins its session (measured —
+  // see the CAST_PREFIX note above). So the bind is the SAME address the URL advertises,
+  // _lanAddress() REFUSES to pick a non-RFC1918 one, and a host that knows its receiver's
+  // address can pin the server to it (startCast({ receiverHost })).
+  //
+  // The token lives in the PATH, not the query string: the serving core splits the query
+  // off before routing (sdk/serve.js), so a ?token= would be silently discarded rather
+  // than checked — a wrong-token request would then be served, not refused.
+  //
+  // The path prefix is also what makes the playlist work UNCHANGED. The broadcaster's
+  // playlists carry bare relative segment names (ffmpeg's hls muxer writes the basename;
+  // mirrorDirToDrive copies the file byte-for-byte), so a receiver that fetched
+  // …/cast/<token>/index.m3u8 resolves `seg123.ts` against it and asks for
+  // …/cast/<token>/seg123.ts on its own. No playlist rewriting, no per-segment signing.
+  //
+  // The feed drive is PINNED for the session. The loopback route resolves against
+  // this._feedDrive, which every zap replaces — a receiver holding a stable URL must not
+  // silently follow the phone's channel changes mid-playlist. Pinning also protects the
+  // feed from _trimFeeds (eviction PURGES the replica's storage) and from the loopback
+  // handler's expired-block reclaim (see _requestHandler).
+  //
+  // Pinned to the CHANNEL, not to a Hyperdrive object: a tune-watchdog retune (which
+  // closes and re-opens the same feedKey) and a broadcaster restart (which rotates the
+  // channel onto a new one) both re-point the session — see _recastFeed, which also
+  // records what that does NOT cover.
+
+  /**
+   * Start serving an entitled stream to a TV on this device's LAN.
+   *
+   * Resolves to { url, host, port, token, streamId, source, feedKey, type, candidates,
+   * receiverHost }.
+   * Hand `url` to the receiver. Redirect channels (S23) — and any host configured
+   * hybrid.mode 'cdn-only' — resolve to a remote URL with source 'cdn' and NO local
+   * server at all: host/port/token are undefined, and a redirect channel's `headers`
+   * rides along exactly as it does from resolve().
+   *
+   * opts:
+   *   advertiseHost  override the auto-detected LAN address (a virtual adapter winning
+   *                  the pick, an operator-known hostname, a host with no RFC1918
+   *                  address at all). Validated as a bare authority — it becomes the
+   *                  host of a URL that carries the session token. An IPv4 literal that
+   *                  is one of this device's own addresses is also what the server binds
+   *                  to; anything else (a hostname, a NAT address) falls back to a
+   *                  0.0.0.0 bind, which is then the host's explicit choice. That fallback
+   *                  is this option's alone: an AUTO-picked address the device has lost by
+   *                  bind time (the network moved while the feed opened) REJECTS instead of
+   *                  widening — see _bindAddress.
+   *   receiverHost   OPT-IN receiver pin: an IP address (or an array of them) that is the
+   *                  ONLY peer this session serves — everything else 404s, identically to
+   *                  a wrong token. Off by default. It exists because the token is NOT the
+   *                  boundary on a shared network: a receiver reads the full media URL back
+   *                  to any unauthenticated peer that joins its session (measured — see the
+   *                  CAST_PREFIX note at the top of this file), so pinning is what turns
+   *                  "read the URL and fetch it" into "read the URL AND answer as the TV".
+   *                  WP4 cannot discover the address itself (the engine does not speak the
+   *                  Cast protocol) — the host passes it once it knows which device it
+   *                  launched on. ⚠ A multi-room GROUP fetches from each member, so pass
+   *                  every member's address or leave the pin off. ⚠ An EMPTY array throws:
+   *                  asking for a pin and naming nothing must not quietly serve everyone.
+   *   readIdleMs     stalled-read abort window for THIS session (default
+   *                  CAST_READ_IDLE_MS); 0 disables it.
+   *   reclaim        opt the cast handler INTO expired-block reclaim (default off — see
+   *                  the CAST RECLAIM POLICY note at the top of this file).
+   *
+   * Serialized against stopCast(): a double-tapped Cast button cannot leave two servers.
+   */
+  startCast (streamId, opts = {}) {
+    const run = () => this._doStartCast(streamId, opts)
+    const p = (this._castOp || Promise.resolve()).then(run, run)
+    this._castOp = p.catch(() => {}) // a failed op must not poison the next one
+    return p
+  }
+
+  /**
+   * End the cast session: hang up the receiver's sockets, close the LAN server, forget
+   * the token, unpin the feed. Idempotent — resolves false when nothing was casting.
+   */
+  stopCast () {
+    const run = () => this._doStopCast()
+    const p = (this._castOp || Promise.resolve()).then(run, run)
+    this._castOp = p.catch(() => {})
+    return p
+  }
+
+  /**
+   * The live cast session (same shape startCast() resolved to), or null.
+   *
+   * `url` is always a string here: _doStartCast publishes this._cast only AFTER the bind
+   * succeeds, precisely so this getter cannot hand out the half-built session (url null,
+   * port null) that it used to expose between the pin and the listen — a shape
+   * sdk/index.d.ts declares impossible. That ordering is also why this getter does not
+   * need to serialize on _castOp.
+   */
+  castSession () {
+    const c = this._cast
+    if (!c) return null
+    return {
+      streamId: c.streamId,
+      url: c.url,
+      host: c.host ?? undefined,
+      port: c.port ?? undefined,
+      token: c.token ?? undefined,
+      source: c.source,
+      feedKey: c.feedKey ?? null,
+      type: c.type,
+      headers: c.headers,
+      candidates: c.candidates,
+      receiverHost: c.receivers ?? undefined
+    }
+  }
+
+  async _doStartCast (streamId, { advertiseHost, receiverHost, readIdleMs, reclaim } = {}) {
+    const keys = this._entitled.get(streamId)
+    if (!keys) throw new Error('not entitled to ' + streamId)
+    // advertiseHost becomes the authority of a token-bearing URL — check its SHAPE before
+    // anything else, so a caller typo fails on the call rather than on the receiver.
+    if (advertiseHost != null && !isCastHost(advertiseHost)) {
+      throw new Error('advertiseHost must be a bare hostname or IP address (got ' + JSON.stringify(String(advertiseHost)) + ')')
+    }
+    // receiverHost is compared against a SOCKET's remote address, so it must be a literal:
+    // resolving a name per request is not something a media serve can afford, and a
+    // silently-never-matching pin would look exactly like a broken cast.
+    const receivers = normalizeReceivers(receiverHost)
+    // Live catalog read first (the resolve() contract): an admin URL edit or a feedKey
+    // rotation must reach a cast the same way it reaches a tune.
+    const chan = await this._currentChannel(streamId, keys)
+    const type = chan.type === 'vod' ? 'vod' : 'live'
+
+    // Redirect channels: the viewer already plays an operator-set remote https URL, so
+    // there is nothing local to serve and no reason to open a socket. Hand the receiver
+    // the same URL the phone would have played. Checked before the cdn-only branch below,
+    // exactly as resolve() orders them — a redirect record names its own URL and the
+    // operator's cdnUrl template has nothing to say about it.
+    if (chan.redirect && chan.url) {
+      return this._castRemote(streamId, chan.url, type, null, chan.headers ?? undefined)
+    }
+
+    // hybrid.mode 'cdn-only' means "never open P2P", and this call USED TO IGNORE IT: it
+    // opened a Hyperdrive, joined a swarm topic and replicated on a host that had
+    // explicitly configured the opposite. resolve() honours the mode by returning the
+    // operator's own cdnUrl(streamId), and _thumbTarget honours it by refusing to warm a
+    // drive; mirror resolve(). Mirroring beats refusing here: a receiver plays an https
+    // CDN URL directly, so a cdn-only host gets a WORKING Cast button that costs it no
+    // P2P at all, and the shape is already proven by the redirect branch above. Ordered
+    // like resolve(): before the "not broadcasting" check, so a catalog entry with no
+    // feedKey still casts from the CDN.
+    if (this._hybrid.mode === 'cdn-only') {
+      return this._castRemote(streamId, this._hybrid.cdnUrl(streamId), type, chan.feedKey ?? null, undefined)
+    }
+
+    const feedKey = chan.feedKey
+    if (!feedKey || !keys.encryptionKey) {
+      throw new Error(type === 'vod' ? 'title is not available right now' : 'channel is not broadcasting right now')
+    }
+    // Resolve the LAN address BEFORE opening anything: "no usable interface" is an
+    // instant, actionable failure, not something to discover after a 15 s tune.
+    const picked = advertiseHost ? { address: String(advertiseHost), candidates: undefined } : this._lanAddress()
+    const host = picked.address
+
+    // Open (or reuse) the feed through the same bounded single-flight path every other
+    // caller uses. Reuse matters: casting the channel the viewer is already watching must
+    // not open a second Hyperdrive over the same store namespace.
+    let feed = await this._openFeedWithin(feedKey, keys.encryptionKey, this._tune.timeoutMs)
+    if (!feed) feed = await this._openFeedWithin(feedKey, keys.encryptionKey, this._tune.timeoutMs)
+    if (!feed) throw new Error(`tune timeout: the feed did not open within ${Math.round(this._tune.timeoutMs * 2 / 1000)}s — try again`)
+
+    // Replace any previous session (and its port + token), handing the teardown the NEW
+    // pin: it trims the cache, and the feed we just opened must already be protected when
+    // it does — the previous session's unpinning is exactly what can put the cache over
+    // its cap.
+    const cacheKey = feedKey + ':' + keys.encryptionKey
+    await this._doStopCast(cacheKey)
+    const token = b4a.toString(hcrypto.randomBytes(CAST_TOKEN_BYTES), 'hex')
+    // Built here but NOT published to this._cast yet — see below.
+    const session = {
+      streamId, source: 'p2p', type, feedKey, token,
+      drive: feed.drive,
+      feedCacheKey: cacheKey,
+      host, port: null, url: null, headers: undefined,
+      candidates: picked.candidates,
+      receivers // null = unpinned (the default); otherwise the only addresses served
+    }
+    this._castFeedKey = cacheKey // pin: _trimFeeds must not purge it mid-cast
+    let port
+    try {
+      // `host` is passed so the bind can be narrowed to it, and `candidates !== undefined`
+      // says the address was AUTO-PICKED rather than supplied — which decides whether a
+      // no-longer-owned address may widen the bind to 0.0.0.0 or must fail (see
+      // _startCastServer). The pick happened before the feed opened, i.e. up to 2×
+      // tune.timeoutMs ago, which is long enough for the network to have moved.
+      //
+      // The handler needs no session handed to it: it resolves this._cast per request, and
+      // this._cast is published below, after the bind — a socket that is listening but has
+      // no session simply 404s everything, which is the correct answer for that instant.
+      port = await this._startCastServer({
+        readIdleMs: Number.isFinite(readIdleMs) && readIdleMs >= 0 ? readIdleMs : CAST_READ_IDLE_MS,
+        reclaim: reclaim === true
+      }, host, picked.candidates !== undefined)
+    } catch (err) {
+      await this._doStopCast() // never leave a pinned feed (or a half-built server) behind a failed bind
+      throw err
+    }
+    session.port = port
+    session.url = `http://${host}:${port}/cast/${token}/index.m3u8`
+    // PUBLISH LAST. this._cast used to be assigned before the bind, which made
+    // castSession() briefly return { url: null, port: null } — a shape sdk/index.d.ts
+    // declares impossible (url: string). Nothing can be served before this line anyway:
+    // the socket is listening but the handler resolves every path against this._cast.
+    this._cast = session
+    return { url: session.url, host, port, token, streamId, source: 'p2p', feedKey, type, candidates: picked.candidates, receiverHost: receivers ?? undefined }
+  }
+
+  // The no-local-server cast: a redirect channel's operator-set URL, or a cdn-only host's
+  // own cdnUrl(). Identical shape either way — the receiver dials a remote URL and this
+  // device serves nothing, so there is no address, no port and no token to mint.
+  async _castRemote (streamId, url, type, feedKey, headers) {
+    await this._doStopCast()
+    this._cast = {
+      streamId, source: 'cdn', url, type,
+      token: null, drive: null, feedCacheKey: null, host: null, port: null,
+      feedKey, headers, candidates: undefined
+    }
+    return { url, host: undefined, port: undefined, token: undefined, streamId, source: 'cdn', feedKey, type, headers }
+  }
+
+  // A session that ended WITHOUT the host asking — the pinned feed was purged or closed
+  // out from under it. Both callers have already dropped the drive handle synchronously
+  // (so requests 404 instead of reading a purged drive); this is what actually ENDS the
+  // session: closes the socket, clears the token, unpins, and tells the host.
+  //
+  // Before this existed, those paths nulled cast.drive and stopped: the listener stayed
+  // bound for the life of the process, castSession() kept handing out a url and token that
+  // answered 404 forever, and the host UI showed "Casting" with nothing behind it. The old
+  // comment called that "a dead cast, which is the truth" — the host was never told.
+  //
+  // Fire-and-forget through the SAME _castOp chain as startCast/stopCast, so it cannot
+  // interleave with a session the host is starting right now.
+  _endCast (reason) {
+    const dying = this._cast
+    if (!dying) return
+    const run = () => {
+      // ⚠ Identity check, not a null check. This runs at the BACK of the _castOp queue, and
+      // a startCast() already in flight can publish a brand-new session before we get
+      // there — most easily through _openFeedWithin's own timeout eviction, which is a
+      // caller of _endCast. Tearing down the session that REPLACED the dead one would turn
+      // a self-heal into a bug that kills the cast the host just asked for.
+      if (this._cast !== dying) return
+      // …and it must still be the DEAD session. Every caller nulls cast.drive immediately
+      // before calling this; a drive back on it means something RE-POINTED the session while
+      // this waited its turn (a rotation follow, or a retune that landed just after the
+      // guard gave up on it). That session recovered — ending it would be the same "kill the
+      // cast the host is watching" bug the identity check above exists to prevent.
+      if (dying.drive) return
+      return this._doStopCast().then((ended) => {
+        if (ended) this.emit('cast', { state: 'ended', streamId: dying.streamId, reason })
+      })
+    }
+    const p = (this._castOp || Promise.resolve()).then(run, run)
+    this._castOp = p.catch(() => {})
+  }
+
+  // nextPin: the feed cache key the CALLER is about to pin (startCast replacing a session).
+  // Passing it keeps the incoming feed protected across the _trimFeeds() below, which the
+  // outgoing session's unpinning is precisely what can trigger.
+  async _doStopCast (nextPin = null) {
+    const cast = this._cast
+    // Clear the session state FIRST: resolveTarget reads this._cast synchronously, so a
+    // request racing the teardown must see "no session" (404) rather than a drive whose
+    // server is already closing.
+    this._cast = null
+    this._castFeedKey = nextPin
+    const server = this._castServer; this._castServer = null
+    const sockets = this._castSockets; this._castSockets = null
+    // Hang up first, then close. A receiver holds keep-alive sockets open for the whole
+    // programme, and close() alone waits for them: without this, stopCast() would park
+    // until the TV happened to disconnect (bare-http1's close destroys only IDLE ones —
+    // lib/server.js, `connection === null || connection.idle`).
+    if (sockets) for (const s of sockets) { try { s.destroy() } catch {} }
+    if (server) await this._closeCastServer(server, sockets)
+    if (cast && cast.feedCacheKey) {
+      // ONE reclaim pass over the feed this session pinned. Reclaim was OFF for the whole
+      // session (CAST RECLAIM POLICY), so the replica has been accumulating ~1× bitrate of
+      // blocks that are already unfetchable swarm-wide, and unpinning alone frees NOTHING:
+      // the handler's reclaim only ever runs on a live playlist serve for that drive, so
+      // without this the disk stays committed until the viewer happens to tune the channel
+      // again. Fire-and-forget and never throws — stopCast() must not wait on disk I/O.
+      //
+      // NOT when the caller is re-pinning this very feed (startCast replacing a session on
+      // the same channel, incl. a double-tapped Cast button): the receiver is not going
+      // away, and freeing its below-window blocks is the one thing the whole policy exists
+      // to prevent.
+      if (cast.drive && cast.type !== 'vod' && nextPin !== cast.feedCacheKey) this._reclaimCastFeed(cast.drive)
+      // The unpinned feed re-enters the normal LRU (and the loopback handler's reclaim).
+      this._trimFeeds()
+    }
+    return !!cast
+  }
+
+  // Close the LAN listener, bounded. The bound is NOT cosmetic and the two runtimes do not
+  // agree on what close() does — measured, not assumed:
+  //
+  //   node:http   Server.close() closes the listen handle SYNCHRONOUSLY and then waits for
+  //               connections to drain before firing the callback. The port is free the
+  //               moment close() returns.
+  //   bare-http1  close() (lib/server.js) delegates to bare-tcp's Server.close(), which
+  //               only sets CLOSING and calls _closeMaybe() — and _closeMaybe() invokes
+  //               binding.close() on the LISTENER only when _connections.size === 0. So on
+  //               Bare the port stays BOUND until the last connection drains, and the
+  //               sweep above is what makes that happen (socket.destroy() is itself async,
+  //               so the sockets are usually still counted when close() runs).
+  //
+  // Which means the old claim here — "the listener is already destroyed by close(), so the
+  // bound only affects the callback" — is true on Node and FALSE on Bare, which is what
+  // ships in the app. If a socket never settles, the timeout returns with the port still
+  // bound. That is worth saying out loud rather than silently returning: a stopped cast
+  // holding an off-loopback listener is exactly the surface this feature promised to close.
+  // (bare-tcp also never clears its BOUND state bit, so `server.listening` stays true
+  // there forever — it is only a usable signal on Node, which is where the lane asserts it.)
+  async _closeCastServer (server, sockets) {
+    let closed = false
+    let timer = null
+    let sweep = null
+    await new Promise((resolve) => {
+      const done = () => { if (timer) clearTimeout(timer); if (sweep) clearTimeout(sweep); resolve() }
+      try {
+        server.close(() => { closed = true; done() })
+      } catch { done(); return }
+      // Second sweep at the halfway mark: a connection accepted between the sweep in
+      // _doStopCast and close() is not in `sockets`, and on Bare one such socket is enough
+      // to hold the listener bound. bare-tcp exposes its live connections as a Set;
+      // node:http's `connections` is a deprecated NUMBER, so only iterate a real iterable.
+      sweep = setTimeout(() => {
+        if (sockets) for (const s of sockets) { try { s.destroy() } catch {} }
+        const live = server.connections
+        if (live && typeof live[Symbol.iterator] === 'function') {
+          for (const s of live) { try { s.destroy() } catch {} }
+        }
+      }, CAST_CLOSE_MS / 2)
+      timer = setTimeout(done, CAST_CLOSE_MS)
+    })
+    // Only report when the port really may still be held. `listening` is honest on Node
+    // (false after close() = the port is already free and only the drain callback is
+    // outstanding, which is not worth recording) and permanently true on Bare, where a
+    // close that did not settle DOES mean still bound — so the two runtimes land on the
+    // right answer through the same expression.
+    //
+    // Into the BREADCRUMB RING, not 'error'. 'error' is the friendly host-UI channel — the
+    // strings on it are written for a viewer to read and act on ("switch to it again to
+    // retry") — and a viewer who just pressed Stop cannot do anything with a port-release
+    // diagnostic, nor should they see one. It is real operator evidence, though (a lingering
+    // off-loopback listener is the exact surface this feature promised to close), so it goes
+    // where operator evidence goes: the ring that rides along on a problem report. Silence
+    // was the one option ruled out; the earlier code chose the loudest instead.
+    if (!closed && server.listening !== false) {
+      this._recordEvent('cast-close', `port not released within ${CAST_CLOSE_MS}ms — a wedged connection may still hold the LAN listener`)
+    }
+    return closed
+  }
+
+  // One expired-block reclaim pass over a feed a cast session just released. Reads the
+  // drive's CURRENT playlist for the window (the handler's reclaim gets the body from the
+  // serve it rides; there is no serve here) and never throws — a stop must not fail
+  // because a drive was closed or purged underneath it.
+  _reclaimCastFeed (drive) {
+    let timer = null
+    // Bounded: the playlist blob is the ONE rolling blob in the drive, so a read of it can
+    // commit to blocks no peer holds and never settle (the stalled-read shape the serve
+    // core's idle abort exists for). A reclaim that never runs is fine; a promise that
+    // never settles is not.
+    const bounded = new Promise((resolve) => { timer = setTimeout(() => resolve(null), CAST_RECLAIM_READ_MS) })
+    Promise.race([Promise.resolve().then(() => drive.get('/index.m3u8')), bounded])
+      .then(async (buf) => {
+        if (timer) { clearTimeout(timer); timer = null }
+        if (!buf) return
+        const text = b4a.toString(buf)
+        if (!text || /#EXT-X-ENDLIST/m.test(text)) return // VOD is never reclaimed
+        await reclaimBelowWindow(drive, text)
+      })
+      .catch(() => { if (timer) { clearTimeout(timer); timer = null } })
+  }
+
+  // The LAN server. Created per session (stopCast closes it), so a new session always
+  // means a new port AND a new token — a receiver holding the old URL cannot drift onto
+  // the new one.
+  //
+  // BOUND TO ONE ADDRESS, not 0.0.0.0, whenever `host` is an IPv4 literal this device
+  // actually owns — which is every auto-picked address, because _lanAddress() enumerates
+  // them. A 0.0.0.0 bind meant the token was the ONLY thing between decrypted entitled
+  // content and every interface the device has: the VPN tunnel, each container bridge, the
+  // mobile-data interface, and the public internet on a host whose only non-internal IPv4
+  // is routable. Narrowing the bind removes the whole class instead of trusting the token
+  // to hold on surfaces the feature never meant to reach.
+  //
+  // The fallback stays 0.0.0.0 for an `advertiseHost` we cannot bind — a hostname, or a
+  // NAT/forwarded address that belongs to a router rather than to us. That is the host
+  // explicitly asking to be reachable at a name this device does not own, so a wide bind is
+  // the only thing that can honour it, and it is a choice the caller made.
+  //
+  // ⚠ It is a choice ONLY on that path, which an earlier version of this comment got wrong by
+  // claiming it for both. An AUTO-PICKED address (`mustOwn`) nobody chose: _lanAddress() runs
+  // before the feed opens and _bindAddress re-enumerates after it, up to 2× tune.timeoutMs
+  // later, so a Wi-Fi handoff, a VPN toggle or a DHCP change in that window means the device
+  // no longer owns the address the URL is about to advertise — and widening to 0.0.0.0 there
+  // would answer on every interface for an address that is already dead. Failing is both
+  // safer and more useful (the URL would not have worked anyway), and the two cases are
+  // already distinguishable: only the auto-pick reports `candidates`.
+  async _startCastServer (handlerOpts, host, mustOwn = false) {
+    const server = this._http.createServer(this._castRequestHandler(handlerOpts))
+    server.on('error', () => {}) // a socket-level server error must never throw into the host
+    const sockets = new Set()
+    server.on('connection', (s) => {
+      sockets.add(s)
+      try { s.on('close', () => sockets.delete(s)) } catch {}
+    })
+    // Published BEFORE the listen: a rejected bind used to leave a fully constructed server
+    // that nothing ever closed, because _castServer was only assigned on success and
+    // _doStopCast had nothing to find. It is the one error path the teardown did not cover.
+    this._castServer = server
+    this._castSockets = sockets
+    const bind = this._bindAddress(host, mustOwn)
+    await new Promise((resolve, reject) => {
+      let done = false
+      server.once('error', (err) => { if (!done) { done = true; reject(err) } })
+      server.listen(0, bind, () => { if (!done) { done = true; resolve() } })
+    })
+    return server.address().port
+  }
+
+  // What to bind() for an advertised host: the address itself when this device owns it,
+  // 0.0.0.0 otherwise. Loopback literals count as owned (the lane casts to 127.0.0.1),
+  // which is why this checks every address including the internal ones.
+  //
+  // mustOwn = the address was AUTO-PICKED, not supplied. Then "otherwise" is not a fallback,
+  // it is a stale pick — refuse instead of widening (see _startCastServer).
+  _bindAddress (host, mustOwn = false) {
+    if (isIPv4Literal(host)) {
+      let ifaces = null
+      try { ifaces = this._os && this._os.networkInterfaces() } catch {}
+      for (const list of Object.values(ifaces || {})) {
+        for (const a of list || []) {
+          if (a && a.address === host) return host
+        }
+      }
+      if (host.startsWith('127.')) return host // always ours, even with no `os` to ask
+    }
+    if (mustOwn) {
+      // Only reachable for an address _lanAddress() DID enumerate a moment ago, so this is
+      // the network moving under the session, not a bad input.
+      throw new Error(`this device no longer has the LAN address ${host} — the network changed while the feed opened (Wi-Fi handoff, VPN, a new lease). Start the cast again, or pass { advertiseHost }.`)
+    }
+    return '0.0.0.0' // a hostname, an IPv6 literal, or a NAT address — not ours to bind
+  }
+
+  // Cast request handler: a SECOND createDriveHandler instance whose resolveTarget serves
+  // only /cast/<token>/… off the pinned drive. Everything else — /assets/*, /epg/*,
+  // /feedthumb/*, a bare /index.m3u8, a stale token, a request after stopCast() — is null,
+  // which the serving core answers 404. Synchronous by contract, like _thumbTarget.
+  _castRequestHandler ({ readIdleMs, reclaim }) {
+    return createDriveHandler((p, req) => {
+      const cast = this._cast
+      if (!cast || !cast.token || !cast.drive) return null
+      // RECEIVER PIN (opt-in, unset by default — see startCast's receiverHost). A receiver
+      // hands the whole media URL, token included, to any unauthenticated peer that asks it
+      // over the Cast protocol (measured — see the note at the top of this file), so the
+      // token cannot be the boundary on a shared network. When the host knows which device
+      // it launched on, this makes the address part of the boundary too: an attacker then
+      // needs the URL AND an L2 position that lets it answer as the TV.
+      //
+      // 404, never 403: a refusal must not confirm that the path exists. It returns null
+      // like every other refusal here, so a wrong address and a wrong token are the same
+      // response byte for byte.
+      if (cast.receivers && !cast.receivers.includes(normalizePeer(req && req.socket && req.socket.remoteAddress))) return null
+      if (!p.startsWith(CAST_PREFIX)) return null
+      const slash = p.indexOf('/', CAST_PREFIX.length)
+      const token = slash < 0 ? p.slice(CAST_PREFIX.length) : p.slice(CAST_PREFIX.length, slash)
+      if (!constantTimeEqual(token, cast.token)) return null
+      let rest = slash < 0 ? '' : p.slice(slash)
+      // The serving core only rewrites a bare '/' — under a token prefix the equivalent
+      // is /cast/<token> and /cast/<token>/, so do it here.
+      if (rest === '' || rest === '/') rest = '/index.m3u8'
+      return { drive: cast.drive, path: rest, media: true }
+    }, {
+      // The receiver is cross-origin by construction (the Default Media Receiver page is
+      // served from https://www.gstatic.com), so without these it fetches the playlist and
+      // then NO segments at all. Measured — see the CORS note in sdk/serve.js.
+      cors: true,
+      // The phone is not playing this feed locally while it casts, so these playlist
+      // serves are the ONLY thing pulling its segments: keep the whole-window read-ahead
+      // (churn headroom) and let a metered network narrow it, exactly as on loopback.
+      liveReadAhead: () => (this._netExpensive ? 3 : Infinity),
+      readIdleMs,
+      // Default OFF — see the CAST RECLAIM POLICY note at the top of this file.
+      ...(reclaim ? { reclaim: true } : {}),
+      onError: (err) => { if (isCorruptionError(err)) this._purge().catch(() => {}) }
+    })
+  }
+
+  // This device's LAN IPv4, as a receiver on the same network must address it. Returns
+  // { address, candidates } — `candidates` is every private address that qualified, in
+  // pick order, and `address` is candidates[0].
+  //
+  // Two filters, and it is worth being exact about what each one buys, because an earlier
+  // version of this comment described a filter the code did not have:
+  //
+  //   169.254.0.0/16 is SKIPPED. An APIPA address means DHCP never answered, so nothing
+  //   can route to it; advertising one produces a cast that simply never connects.
+  //
+  //   RFC1918 is REQUIRED, not preferred. The old code ended `find(isPrivateIPv4) ||
+  //   found[0]`, so on a host whose only non-internal IPv4 is public — a desktop on a VPS,
+  //   a flat network, a routable carrier v4 — startCast() advertised, and bound, an
+  //   internet-reachable server for decrypted entitled content. Refusing is the only
+  //   defensible default; `advertiseHost` is the deliberate override and the error says so.
+  //
+  // ⚠ WHAT THIS CANNOT TELL APART, said plainly because the old comment claimed otherwise.
+  // It named "a container bridge" as the thing the private-address filter protects against
+  // — but a container bridge is private, so the filter is a no-op against its own example.
+  // Hyper-V (172.25.x), WSL2, Docker (172.17.x) and carrier CGNAT on rmnet_data* (10.x) are
+  // ALL RFC1918 and all indistinguishable from Wi-Fi here: os.networkInterfaces() carries
+  // no route metric, no gateway and no link state. On this repo's own build box, `Wi-Fi
+  // 192.168.1.104` and `vEthernet (Default Switch) 172.25.64.1` both qualify, and the pick
+  // is decided purely by enumeration order. A phone that is casting is on Wi-Fi AND usually
+  // has mobile data up, so this is the common case, not an edge one.
+  //
+  // So the pick is a guess and is documented as one. What the SDK can do honestly is hand
+  // the host every candidate (returned here, and on the resolved session as `candidates`)
+  // so a UI can offer "try another address" instead of leaving the viewer with a Cast
+  // button that produces a receiver which never connects.
+  _lanAddress () {
+    if (!this._os) throw new Error('cast needs an injected `os` module (createPlayer wires it) — or pass { advertiseHost }')
+    let ifaces = null
+    try { ifaces = this._os.networkInterfaces() } catch {}
+    const found = []
+    for (const list of Object.values(ifaces || {})) {
+      for (const a of list || []) {
+        // family is 'IPv4' on node:os and bare-os; the numeric 4 covers older node:os.
+        if (!a || a.internal || (a.family !== 'IPv4' && a.family !== 4)) continue
+        if (typeof a.address !== 'string' || !a.address || a.address.startsWith('169.254.')) continue
+        found.push(a.address)
+      }
+    }
+    if (!found.length) throw new Error('no usable LAN IPv4 address on this device — connect to Wi-Fi, or pass { advertiseHost }')
+    const candidates = found.filter(isPrivateIPv4)
+    if (!candidates.length) {
+      throw new Error('no private (RFC1918) IPv4 address on this device — the only candidate' +
+        (found.length > 1 ? 's are ' : ' is ') + found.join(', ') +
+        ', and casting there would publish entitled content beyond the LAN. Pass { advertiseHost } to override.')
+    }
+    return { address: candidates[0], candidates }
+  }
+
+  // Follow a feed swap that happens UNDER a cast session. Two paths already own such a
+  // swap and both are about the ACTIVE stream: the tune watchdog's retune, which CLOSES
+  // the drive before re-opening the same feedKey (a pinned cast would then be reading a
+  // closed drive — 500s, not a stall), and the catalog's rotation follow, where a
+  // broadcaster restart moves the channel to a new feedKey and the old one goes dead.
+  // A cast is pinned to a CHANNEL, so following either is the correct meaning of the pin;
+  // only the phone's ZAPPING must not move it.
+  //
+  // LIMIT: a cast pinned to a channel the phone has zapped AWAY from is not tracked by
+  // either caller, so it does not follow a feedKey rotation — the receiver stalls and the
+  // host restarts the session. Following that would need the cast to carry its own
+  // catalog watcher.
+  _recastFeed (streamId, cacheKey, drive) {
+    const c = this._cast
+    if (!c || c.source !== 'p2p' || c.streamId !== streamId || !drive) return
+    c.drive = drive
+    c.feedCacheKey = cacheKey
+    c.feedKey = cacheKey.split(':')[0]
+    this._castFeedKey = cacheKey
+  }
+
   // Low-level: replicate an encrypted feed by its keys and serve it on localhost with
   // Range support. Returns the port. (resolve() is the entitlement-checked path; this
   // one also powers the dev direct-play IPC message.)
@@ -1981,6 +2809,10 @@ export class AliranPlayer extends Emitter {
     for (const key of [...this._feeds.keys()]) {
       if (this._feeds.size <= this._feedLimit) break
       if (key === this._activeFeedKey) continue // never drop the feed we are serving
+      // …nor the feed a cast session pinned. Eviction PURGES the replica's storage, so
+      // browsing far enough while a TV plays would delete the drive out from under the
+      // receiver — and the phone's own zapping is exactly what fills the cache.
+      if (key === this._castFeedKey) continue
       this._evictFeed(key)
     }
   }
@@ -1992,6 +2824,22 @@ export class AliranPlayer extends Emitter {
     Promise.resolve(feed).then((f) => {
       if (!f || !f.drive) return
       if (this._feedDrive === f.drive) { this._feedDrive = null; this._feedDiscovery = null }
+      // Eviction PURGES the storage. _trimFeeds already refuses to evict a cast-pinned
+      // feed, but the other callers do not know about the pin — the tune ladder's last
+      // rung purges the replica of the channel it gave up on (see _startTuneWatchdog), and
+      // that fires while the phone is ON the cast channel, so it is NOT the documented
+      // "zapped away" limit. Drop the handle synchronously so requests 404 instead of
+      // reading a purged drive…
+      if (this._cast && this._cast.drive === f.drive) {
+        this._cast.drive = null
+        this._castFeedKey = null
+        // …and then actually END the session. Nulling the drive alone left the listener
+        // bound for the life of the process, castSession() handing out a url and token
+        // that answered 404 forever, and the host UI showing "Casting" with nothing behind
+        // it. The old comment claimed "the host sees a dead cast, which is the truth" —
+        // the host saw nothing at all.
+        this._endCast('feed-evicted')
+      }
       // Eviction (cache overflow / rotation-away / wedged open) purges the replica's
       // STORAGE, not just the handles: drive.purge() (hyperdrive 11) closes the
       // drive and deletes both cores (db + blobs) from disk, so an evicted feed
@@ -2177,6 +3025,7 @@ export class AliranPlayer extends Emitter {
     this._active = null
     this._zapDir = 0
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
+    await this.stopCast() // the LAN socket must not outlive the engine that fed it
     const server = this._server; this._server = null
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
@@ -2484,15 +3333,59 @@ export class AliranPlayer extends Emitter {
     const cacheKey = a.feedKey + ':' + keys.encryptionKey
     const pending = this._feeds.get(cacheKey)
     this._feeds.delete(cacheKey)
+    let castUnpointed = false // this retune left a pinned cast holding no drive
     try {
       const f = await pending
       if (f && f.drive) {
         if (this._feedDrive === f.drive) { this._feedDrive = null; this._feedDiscovery = null }
+        // A cast pinned to this feed is about to be reading a CLOSED drive — drop its
+        // handle so requests 404 for the few hundred ms of the reopen instead of 500ing,
+        // then re-point it below.
+        if (this._cast && this._cast.drive === f.drive) { this._cast.drive = null; castUnpointed = true }
         await f.drive.close()
       }
     } catch {}
-    if (this._active !== a) return // zapped away while closing — that resolve owns the serving slot now
-    const feed = await this._openFeed(a.feedKey, keys.encryptionKey)
+    if (this._active !== a) {
+      // Zapped away while closing — that resolve owns the serving slot now, and this
+      // retune will never reopen the feed. A cast whose drive we just dropped would sit
+      // there 404ing forever behind a bound socket, so end it properly instead. (This
+      // return used to be the second way to make a zombie session; the first was
+      // _evictFeed.)
+      if (castUnpointed) this._endCast('retune-abandoned')
+      return
+    }
+    // The reopen below is UNBOUNDED on purpose (see the note above this function), and a
+    // cast whose drive was just dropped holds null until it lands. If that open REJECTS the
+    // only caller is `.catch(() => {})`; if it never settles — the likelier of the two —
+    // nothing downstream runs at all. Either way castUnpointed was consumed only on the
+    // branch above, so the session sat there with no drive, 404ing behind a bound socket,
+    // with nothing left to end it: the same zombie shape this path was rewritten to remove,
+    // in the same function. The tune watchdog does not cover it either — its last rung calls
+    // _evictFeed on a cache entry this function already deleted, and _evictFeed's own
+    // _endCast rides the OLD open settling. So the CAST gets its own bound here. The
+    // RETUNE's wait is unchanged: a slow reopen still recovers the tune when it lands.
+    const stranded = castUnpointed ? this._cast : null
+    let castGuard = null
+    if (stranded) {
+      castGuard = setTimeout(() => {
+        if (this._cast === stranded && !stranded.drive) this._endCast('retune-failed')
+      }, this._tune.timeoutMs)
+      castGuard.unref?.() // diagnostics must never hold a host process open
+    }
+    let feed
+    try {
+      feed = await this._openFeed(a.feedKey, keys.encryptionKey)
+    } catch (err) {
+      if (castGuard) clearTimeout(castGuard)
+      if (stranded && this._cast === stranded && !stranded.drive) this._endCast('retune-failed')
+      throw err
+    }
+    if (castGuard) clearTimeout(castGuard)
+    // Re-point the cast BEFORE the _active check below. A cast is pinned to the CHANNEL,
+    // and whether the phone zapped away during the reopen has nothing to do with whether
+    // this channel's feed is now open again — doing it after the check is what left a
+    // zapped-during-retune cast holding the null drive it was given above.
+    this._recastFeed(a.streamId, cacheKey, feed.drive) // a cast on this channel follows the retune
     if (this._active !== a) return
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
@@ -2974,6 +3867,10 @@ export class AliranPlayer extends Emitter {
     if (this._active !== a) return
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
+    // A cast on this channel follows the rotation too: the OLD feedKey is dead (the
+    // broadcaster restarted onto a new one), so a pin left behind would serve a feed that
+    // never advances again.
+    this._recastFeed(a.streamId, feedKey + ':' + keys.encryptionKey, feed.drive)
     a.feedKey = feedKey
     a.lastSig = null
     a.lastAdvance = Date.now()
@@ -3008,6 +3905,11 @@ export class AliranPlayer extends Emitter {
     const grantWatcher = this._grantWatcher; this._grantWatcher = null
     if (grantWatcher) { try { await grantWatcher.close() } catch {} } // _openPanel below re-arms it (_username survives the purge)
     this._zapRanges.clear() // warm ranges die with their (closing) cores; the prefetch loop re-warms on the fresh store
+    // A cast session's pinned drive is one of the feeds about to be closed, so the session
+    // is over whatever happens — end it honestly (socket down, URL dead) instead of
+    // leaving a receiver pointed at a handler that would 500 on a closed drive. Not
+    // awaited: _purgeAndRebuild is on the recovery path and must not park on a socket.
+    this.stopCast().catch(() => {})
     this._closeFeeds() // drop every cached feed on the dead store (fire-and-forget; see _closeFeeds)
     const epgWatcher = this._epgWatcher; this._epgWatcher = null
     if (epgWatcher) { try { await epgWatcher.close() } catch {} }
@@ -3510,7 +4412,21 @@ export class AliranPlayer extends Emitter {
       // without making the channel active. Ancillary like art and the guide: a miss
       // 404s instantly (media:false) and the row falls back to poster/logo.
       if (p.startsWith('/feedthumb/')) return this._thumbTarget(p.slice('/feedthumb/'.length))
-      return this._feedDrive ? { drive: this._feedDrive, path: p, media: true } : null
+      // /cast/* belongs to the LAN server and ONLY to it. Refusing it here keeps the two
+      // surfaces from quietly becoming one: nothing about holding a token should make the
+      // loopback server answer differently, and a bug that pointed a receiver at 127.0.0.1
+      // must fail loudly instead of half-working.
+      if (p.startsWith(CAST_PREFIX)) return null
+      if (!this._feedDrive) return null
+      // Cast-pinned feed: opt this target out of the expired-block reclaim below. The
+      // phone is expected to stop local playback while it casts (so these serves should
+      // not happen at all), but nothing in the engine ENFORCES that — a host that keeps
+      // the phone playing the cast channel would otherwise free, from under the receiver,
+      // the one remaining copy of every block below the live window. Decided here, with
+      // the exact drive in hand, because the handler awaits before reclaiming and a zap
+      // can swap _feedDrive in that window.
+      const pinned = this._cast && this._cast.drive === this._feedDrive
+      return { drive: this._feedDrive, path: p, media: true, ...(pinned ? { reclaim: false } : {}) }
     }, {
       // Churn headroom: replicate the ACTIVE stream's whole live window on-device
       // (not just the newest 3 segments), so an upstream peer's death cannot take

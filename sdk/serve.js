@@ -99,6 +99,46 @@ export function contentType (p) {
 // would read as "thumbnails are just slow" and be near-impossible to attribute.
 export const THUMB_PATH = '/thumb.jpg'
 
+// CORS headers for the LAN-scoped cast server (sdk/player.js startCast). OPT-IN — the
+// loopback server leaves `cors` unset, so not one CORS header appears on any response of
+// its own. That is the whole of what this option changes. (It is NOT the whole of what the
+// cast work changed on loopback: the method gate below is shared and does apply there. The
+// precise claim lives with it — "loopback byte-for-byte unchanged" is the overstated form.)
+//
+// Measured, not assumed (WP0 cast trial against a TCL Terraza, CrKey/1.56.500000
+// DeviceType/AndroidTV, on the stock Default Media Receiver CC1AD845): an http:// LAN URL
+// plays with no mixed-content block, but WITHOUT Access-Control-Allow-Origin the receiver
+// fetched the playlist four times, fetched ZERO segments and went IDLE/ERROR. The receiver
+// page's origin is https://www.gstatic.com, so every media fetch is cross-origin: ACAO is
+// not a nicety here, it is the difference between playback and a silent failure.
+//
+// That firmware sent NO OPTIONS preflight and used NO Range header. Both are answered
+// anyway. Range is not a CORS-safelisted request header, so any receiver that does seek
+// WILL preflight — and `Access-Control-Allow-Headers: Range` is what makes that preflight
+// pass.
+//
+// ⚠ Allow-Methods is NOT what saves it. An earlier version of this comment (and the
+// d9332bb commit message) claimed a preflight answered without Allow-Methods "fails
+// closed"; that is spec-wrong. Fetch's CORS-preflight check tests the method only when
+// it is not CORS-safelisted, and GET/HEAD/POST are — so a preflight with no Allow-Methods
+// at all still succeeds for the GET that follows. The header STAYS, for two honest
+// reasons: it is the truthful advertisement of what this server serves (the handler
+// really does refuse every other method with a 405, see below), and it is the only thing
+// that would admit a non-safelisted method if a receiver stack ever used one.
+//
+// Expose-Headers is what lets a receiver read Content-Range/Content-Length off a 206.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Range',
+  'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type'
+}
+const CORS_PREFLIGHT = {
+  ...CORS_HEADERS,
+  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+  'Access-Control-Max-Age': '86400'
+}
+const NO_CORS = {}
+
 // Defaults: waitMs under ExoPlayer's 8 s read timeout; pollMs ≈ one segment write;
 // readAhead covers the 2–3 segments a player fetches before first frame — hosts widen
 // LIVE playlists to the whole window via liveReadAhead (the player passes Infinity,
@@ -208,15 +248,23 @@ class Reclaim {
     const now = Date.now()
     if (now - (this._last.get(drive) || 0) < this._intervalMs) return
     this._last.set(drive, now)
-    this._run(drive, playlistUris(text)).catch(() => {})
+    reclaimBelowWindow(drive, text).catch(() => {})
   }
+}
 
-  async _run (drive, uris) {
+// ONE reclaim pass over a live feed replica, given the playlist body that defines the
+// current window. Exported because reclaim is otherwise only ever reachable from a live
+// playlist SERVE, and there is one caller that has to run a pass without one: when a cast
+// session ends (sdk/player.js stopCast), the feed it pinned has been accumulating dead
+// blocks for the whole session and nothing will free them until the viewer happens to
+// tune that channel again. Never throws — a reclaim must never break a serve or a stop.
+export async function reclaimBelowWindow (drive, playlistText) {
+  try {
     // Reclaim floor = the lowest blob offset a playlist entry still references.
     // An entry not replicated yet is skipped: its blocks are not stored locally
     // either, so a clear that overshoots it frees nothing it shouldn't.
     let min = Infinity
-    for (const path of uris) {
+    for (const path of playlistUris(playlistText)) {
       const entry = await drive.entry(path)
       const blob = entry && entry.value && entry.value.blob
       if (!blob) continue
@@ -233,27 +281,27 @@ class Reclaim {
     // already be gone at the broadcaster too — the exact stalled-read shape the idle
     // abort exists for. Punch AROUND it instead: the thumbnail's own blocks are the one
     // thing below the floor that is still wanted.
-    const keep = await this._thumbRange(drive, min)
+    const keep = await thumbBlockRange(drive, min)
     if (!keep) { await blobs.core.clear(0, min); return }
     if (keep.start > 0) await blobs.core.clear(0, keep.start)
     if (keep.end < min) await blobs.core.clear(keep.end, min)
-  }
+  } catch { /* a reclaim is best-effort by construction */ }
+}
 
-  // The live thumbnail's blob block range, clamped to below the reclaim floor, or null
-  // when there is nothing to protect (no entry, not replicated, already above the floor).
-  // One extra metadata read per THROTTLED pass — the same cost as one more playlist URI,
-  // paid at most once per reclaimIntervalMs. Never throws: a reclaim must never break a
-  // serve, so an unreadable entry simply falls back to the plain clear.
-  async _thumbRange (drive, min) {
-    try {
-      const entry = await drive.entry(THUMB_PATH)
-      const blob = entry && entry.value && entry.value.blob
-      if (!blob || !(blob.blockLength > 0)) return null
-      const start = blob.blockOffset
-      if (!(start < min)) return null // already above the floor — the plain clear misses it anyway
-      return { start, end: Math.min(start + blob.blockLength, min) }
-    } catch { return null }
-  }
+// The live thumbnail's blob block range, clamped to below the reclaim floor, or null
+// when there is nothing to protect (no entry, not replicated, already above the floor).
+// One extra metadata read per THROTTLED pass — the same cost as one more playlist URI,
+// paid at most once per reclaimIntervalMs. Never throws: a reclaim must never break a
+// serve, so an unreadable entry simply falls back to the plain clear.
+async function thumbBlockRange (drive, min) {
+  try {
+    const entry = await drive.entry(THUMB_PATH)
+    const blob = entry && entry.value && entry.value.blob
+    if (!blob || !(blob.blockLength > 0)) return null
+    const start = blob.blockOffset
+    if (!(start < min)) return null // already above the floor — the plain clear misses it anyway
+    return { start, end: Math.min(start + blob.blockLength, min) }
+  } catch { return null }
 }
 
 // Bounded wait for a drive entry. Each entry() probe is itself raced against a
@@ -322,7 +370,12 @@ function pump (rs, res, wanted, idleMs = 0) {
 
 // Build an async (req, res) handler.
 //
-//   resolveTarget(pathname) -> { drive, path, media, idle?, etag? } | null
+//   resolveTarget(pathname, req) -> { drive, path, media, idle?, etag?, reclaim? } | null
+//     req is the live request, ONLY so a target can decide on something the path cannot
+//     carry — today that is exactly one thing: the cast handler's optional receiver pin
+//     reads req.socket.remoteAddress (sdk/player.js). Do not read the body or attach
+//     listeners here; resolveTarget is synchronous by contract and every caller returns a
+//     plain object. A resolver that ignores it (all of them but one) is unaffected.
 //     media: true  = feed content — availability wait + read-ahead apply
 //            false = ancillary (posters/art, guide files) — miss 404s immediately
 //     idle:  opt IN to the STALLED-READ ABORT on a non-media target. media:true carries
@@ -338,27 +391,78 @@ function pump (rs, res, wanted, idleMs = 0) {
 //            drive's version). Sent as a strong ETag; a matching If-None-Match
 //            answers 304 with no body, so a poll of an unchanged guide costs
 //            nothing — the same economy the https EPG path gets from its 304s.
+//     reclaim: false opts THIS target's drive OUT of the handler's expired-block reclaim
+//            (no effect when the handler never had `reclaim` on). Per TARGET, not per
+//            handler, because the decision belongs to the drive being served and can
+//            change at runtime: while a cast session pins a feed for a TV receiver
+//            (sdk/player.js startCast), the loopback handler must not free that feed's
+//            below-window blocks — the receiver buffers deeper than the phone and those
+//            blocks are already unfetchable swarm-wide, so the local copy is the only
+//            one left. Deciding it HERE, where the exact drive is in hand, rather than
+//            through the handler-wide `reclaim` function, is what pairs the decision with
+//            the drive it was made about: the handler awaits between resolveTarget and
+//            the reclaim call, and a zap can swap the served drive in that window, so a
+//            handler-wide predicate would apply this request's answer to a different
+//            drive. It does NOT make the decision FRESH. A cast that starts after
+//            resolveTarget ran and before the playlist body finishes still gets one
+//            reclaim pass on the drive it just pinned, because this request already
+//            answered "reclaim allowed" for it. That costs the receiver the blocks below
+//            a window it has not reached yet; the opt-out holds from the next serve on.
 //
-// opts: { waitMs, pollMs, readAhead, liveReadAhead, reclaim, reclaimIntervalMs } —
-// see DEFAULTS; liveReadAhead (number or function -> number, default = readAhead)
+// opts: { waitMs, pollMs, readAhead, liveReadAhead, reclaim, reclaimIntervalMs,
+// readIdleMs, cors } — see DEFAULTS; liveReadAhead (number or function -> number, default = readAhead)
 // widens the live-playlist read-ahead — Infinity replicates the whole live window
 // on-device (churn headroom); a function is re-evaluated per playlist serve so the
 // host can narrow it at runtime (metered network). reclaim (true, or a function ->
 // boolean re-evaluated per serve; default off) clears blob blocks below the live
 // window after a LIVE playlist serves for a media target — see Reclaim above; VOD
-// and non-media targets are never reclaimed. onError(err) is called for
+// and non-media targets are never reclaimed. readIdleMs overrides the stalled-read abort
+// window per handler (the default is tuned to ExoPlayer; a cast receiver's read timeout is
+// a different, longer number — see CAST_READ_IDLE_MS in sdk/player.js). cors (default OFF)
+// adds the CORS headers above to every response and answers OPTIONS 204 BEFORE any drive
+// read — only the LAN-scoped cast server turns it on. onError(err) is called for
 // unexpected failures (the SDK routes corruption errors into store recovery).
 export function createDriveHandler (resolveTarget, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts }
   const readAhead = cfg.readAhead > 0 ? new ReadAhead(cfg.readAhead, cfg.liveReadAhead) : null
   const reclaim = cfg.reclaim ? new Reclaim(cfg.reclaim, cfg.reclaimIntervalMs) : null
+  const cors = cfg.cors ? CORS_HEADERS : NO_CORS
   return async function handler (req, res) {
     try {
+      // Preflight: answered before resolveTarget, so it never touches a drive and never
+      // depends on the cast token being right. Gating it on the token would only turn a
+      // plain 404 into an opaque CORS error in the receiver's console — no more private
+      // (the GET that follows still 404s) and much harder to diagnose from a TV.
+      if (cfg.cors && req.method === 'OPTIONS') { res.writeHead(204, CORS_PREFLIGHT); return res.end() }
+
+      // GET/HEAD only (plus OPTIONS above, when cors is on). A drive handler has no write
+      // path, so answering POST/DELETE/TRACE with a 200 and the full body mutated nothing
+      // — but it contradicted the Allow-Methods this same server advertises, and a media
+      // server that answers every verb is surface with no reason to exist. RFC 9110
+      // requires the Allow header on a 405, and it is the same list the preflight sends.
+      //
+      // ⚠ THIS GATE IS SHARED and it sits BEFORE resolveTarget, so it applies to every
+      // consumer of this factory — the SDK's LOOPBACK media server and the tools/lane drive
+      // server (tools/lib/serve-drive.js), not just the cast server it was added for. On
+      // loopback that is the one thing the cast work changed. Precisely: GET/HEAD responses
+      // are unchanged; a POST/DELETE/TRACE that used to fall through and be served as a GET
+      // now answers 405. (The repeater is NOT a consumer — its opt-in status server is a
+      // separate http.createServer carrying a GET-only gate of its own.) Inert for
+      // everything that ships — every non-GET verb in this repo is aimed at a panel /
+      // broadcaster / reseller admin API, the RN, Android, desktop and client trees issue
+      // GET only (no HttpURLConnection or OkHttp anywhere in the Android sources), and the
+      // serve, reclaim, epg-p2p and assets lanes pass. But inert is not "byte-for-byte
+      // unchanged", and the sentence above is the version that is true.
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { ...cors, Allow: cfg.cors ? 'GET, HEAD, OPTIONS' : 'GET, HEAD' })
+        return res.end('method not allowed')
+      }
+
       let urlPath = decodeURIComponent((req.url || '/').split('?')[0])
       if (urlPath === '/') urlPath = '/index.m3u8'
 
-      const target = resolveTarget(urlPath)
-      if (!target || !target.drive) { res.writeHead(404); return res.end('not found') }
+      const target = resolveTarget(urlPath, req)
+      if (!target || !target.drive) { res.writeHead(404, cors); return res.end('not found') }
       const { drive, path: p, media, idle, etag } = target
       // Stalled-read abort: implicit for media, opt-in for a rolling ancillary blob.
       const idleMs = (media || idle) ? cfg.readIdleMs : 0
@@ -367,15 +471,16 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       // must not touch blocks at all.
       const etagValue = etag ? `"${etag}"` : null
       if (etagValue && req.headers['if-none-match'] === etagValue) {
-        res.writeHead(304, { ETag: etagValue }); return res.end()
+        res.writeHead(304, { ...cors, ETag: etagValue }); return res.end()
       }
 
       let entry = await waitEntry(drive, p, media ? cfg.waitMs : 0, cfg.pollMs)
-      if (!entry) { res.writeHead(404); return res.end('not found') }
+      if (!entry) { res.writeHead(404, cors); return res.end('not found') }
 
       const size = entry.value.blob.byteLength
       const range = req.headers.range
       const headers = {
+        ...cors,
         'Content-Type': contentType(p),
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'no-cache',
@@ -385,11 +490,14 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       // Read-ahead (and reclaim) ride the playlist request: by the time the player
       // asks for the newest segments their blocks are (being) pulled already, and
       // blocks that rotated OUT of a live window get freed. Fire-and-forget.
-      const prefetchAfter = (readAhead || reclaim) && media && p.endsWith('.m3u8')
+      // target.reclaim === false opts THIS drive out (a cast-pinned feed — see the
+      // resolveTarget contract above); the read-ahead is unaffected either way.
+      const mayReclaim = reclaim && target.reclaim !== false
+      const prefetchAfter = (readAhead || mayReclaim) && media && p.endsWith('.m3u8')
         ? (text) => {
             if (readAhead) { try { readAhead.update(drive, text) } catch {} }
             // LIVE playlists only — the ENDLIST (VOD) branch must never reclaim.
-            if (reclaim && !/#EXT-X-ENDLIST/m.test(String(text))) { try { reclaim.update(drive, text) } catch {} }
+            if (mayReclaim && !/#EXT-X-ENDLIST/m.test(String(text))) { try { reclaim.update(drive, text) } catch {} }
           }
         : null
 
@@ -398,7 +506,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
         const start = m && m[1] ? parseInt(m[1], 10) : 0
         const end = m && m[2] ? parseInt(m[2], 10) : size - 1
         if (isNaN(start) || isNaN(end) || start > end || end >= size) {
-          res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end()
+          res.writeHead(416, { ...cors, 'Content-Range': `bytes */${size}` }); return res.end()
         }
         const wanted = end - start + 1
         res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
@@ -425,7 +533,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
       }
     } catch (err) {
       if (opts.onError) { try { opts.onError(err) } catch {} }
-      try { res.writeHead(500); res.end('server error: ' + (err && err.message)) } catch {}
+      try { res.writeHead(500, cors); res.end('server error: ' + (err && err.message)) } catch {}
     }
   }
 }
