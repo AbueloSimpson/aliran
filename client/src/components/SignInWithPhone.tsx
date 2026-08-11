@@ -324,10 +324,23 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
 
 // An overlay, not a Modal: on TV a Modal is its own focus container and swallows the
 // remote (the SortMenu / TrackMenu / LanguageMenu lesson).
+//
+// AND AN OVERLAY DOES NOT TAKE WHAT IS UNDER IT OUT OF THE FOCUS PATH, which is the price
+// of that choice and cost a viewer a whole sign-in. The screen behind this panel — the
+// login form, with its username field, password field and two buttons — stays focusable
+// while the panel covers it. Pressing down off the keypad moved focus onto a real, working
+// control that is invisible under the panel: not a lost cursor, a cursor somewhere the
+// viewer cannot see, which is worse and has no way back. Measured with `uiautomator dump`
+// on a TCL set — six focusable nodes on screen, four of them the hidden form.
+//
+// So focus is TRAPPED in all four directions for as long as the panel is up. That is what
+// TVFocusGuideView's trap props are for, and it is the whole fix: nothing inside changes,
+// nothing outside can be reached. The panel always holds at least one focusable control
+// (there is a Cancel or a Close on every branch), so trapping cannot strand anyone.
 function Panel ({ heading, children }: { heading: string; children: React.ReactNode }) {
   return (
     <View style={styles.overlay}>
-      <FocusPane autoFocus style={styles.panel}>
+      <FocusPane autoFocus trapFocusUp trapFocusDown trapFocusLeft trapFocusRight style={styles.panel}>
         <Text style={styles.heading}>{heading}</Text>
         {children}
       </FocusPane>

@@ -390,6 +390,24 @@ test('…and it goes as soon as the viewer keys a new digit — it is about the 
 // down from most of the top row had nothing defined to land on. Five and five gives every
 // key a neighbour directly above or below, so up and down are always defined and always
 // reversible — which is why this test pins the SHAPE and not any focus property.
+// THE ACTUAL CAUSE, and it was not the keypad. This panel is an overlay rather than a
+// Modal (a Modal swallows the remote on TV), and an overlay does not take what is under it
+// out of the focus path — so the login form behind it stayed focusable and down off the
+// keypad landed on an invisible username field with no way back. `uiautomator dump` on the
+// set showed six focusable nodes with the panel up, four of them the covered form.
+//
+// Asserted as PROPS because focus is a platform behaviour jest cannot exercise: what this
+// guards is that somebody does not quietly drop the trap and hand the bug back.
+test('the panel traps focus, so the screen underneath cannot be reached', async () => {
+  const tree = await toPinEntry()
+  const panes = tree.root.findAll((n) => n.props?.trapFocusUp !== undefined)
+  expect(panes.length).toBeGreaterThan(0)
+  for (const p of panes) {
+    expect([p.props.trapFocusUp, p.props.trapFocusDown, p.props.trapFocusLeft, p.props.trapFocusRight])
+      .toEqual([true, true, true, true])
+  }
+})
+
 test('the keypad is a 5x5 grid, so every digit has one above or below it', async () => {
   const tree = await toPinEntry()
   // HOST nodes only (`type` a string): the label rides the Button component, its Pressable
