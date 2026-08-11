@@ -148,6 +148,14 @@ try {
     const plain = createPlayer({ panelPubKey, storeDir: path.join(dirs.plain, 'store'), deviceId: 'tv-plain', swarm: { bootstrap } })
     cleanups.push(() => plain.stop())
     check(plain._remote.keepSignIn === false, 'keepSignIn is OFF by default')
+    // …and the `remote: true` shorthand does not smuggle it in either. That shorthand
+    // covers the two features about MEMORY for the length of a session; writing the
+    // account to a disk is a property of the BUILD — does it have a key store, does it
+    // erase on sign-out — and has to be asked for by name. It used to be included, so a
+    // phone that wrote `remote: true` to get sendSignIn() was handed account keys at rest.
+    const shorthand = createPlayer({ storeDir: path.join(dirs.plain, 'shorthand'), deviceId: 'tv-short', remote: true })
+    check(shorthand._remote.sendToTv === true && shorthand._remote.control === true && shorthand._remote.keepSignIn === false,
+      '`remote: true` turns on the two memory features and NOT keepSignIn')
     let handed = 0
     plain.on('signin-keys', () => { handed++ })
     await plain.connect()

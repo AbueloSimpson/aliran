@@ -337,13 +337,21 @@ function normalizeUploadPolicy (v) {
 // the login has already happened, so the material is either retained or unrecoverable.
 // Hence the constructor, which is also the only place a packager can see it.
 //
-//   remote: true                       all on (a build that is both phone and TV)
-//   remote: { sendToTv: true }         one on, the rest off
+//   remote: true                       the two MEMORY features on; keepSignIn still off
+//   remote: { keepSignIn: true }       the disk one, and it can only be asked for by name
 //   omitted / false                    everything off
+//
+// `remote: true` DOES NOT INCLUDE keepSignIn, and the asymmetry is deliberate. The other
+// two decide what a login keeps in memory for the length of a session; this one is an
+// undertaking to write the account to a disk and protect it there, which is a property of
+// the BUILD (does it have a key store, does it erase on sign-out) and not something a
+// shorthand can be sure of. It used to be included, which meant a host that wrote
+// `remote: true` to get sendSignIn() on a phone was handed account keys at rest as well —
+// on a device that has a keyboard and a password and needs none of it. Ask for it by name.
 function normalizeRemote (v) {
   const out = { sendToTv: false, control: false, keepSignIn: false }
   if (v == null || v === false) return out
-  if (v === true) return { sendToTv: true, control: true, keepSignIn: true }
+  if (v === true) return { sendToTv: true, control: true, keepSignIn: false }
   if (typeof v !== 'object' || Array.isArray(v)) throw new Error('remote must be a boolean or an object of feature flags')
   for (const k of Object.keys(v)) {
     // Unknown keys throw rather than being ignored: a typo'd `sendtoTV: true` that
@@ -1122,8 +1130,16 @@ export class AliranPlayer extends Emitter {
     // The ONE moment this device could keep what it was just given. Everything above ran
     // on a payload that is a local variable and stops existing when this method returns —
     // which is the right default, and is where a build that did not ask for `keepSignIn`
-    // stays. A build that DID ask gets the material here, once, and is expected to have
-    // somewhere safe to put it before the next line puts "signed in" on the screen.
+    // stays. A build that DID ask gets the material here, once.
+    //
+    // ONCE, AND NOTHING WAITS FOR IT. emit() is synchronous and returns the moment the
+    // listener yields, so a host that is putting the material somewhere safe — the viewer
+    // app's Keystore round trip takes seconds — is still doing it while the line below puts
+    // "signed in" on the screen, and this method never learns whether it worked. That is
+    // deliberate: a set is signed in for this session either way, and a keeping that failed
+    // must not become a sign-in that failed. But it makes this one-shot emit the host's
+    // whole supply — there is no second delivery to fall back on — so any retrying worth
+    // doing belongs on the host's side of the listener.
     //
     // Deliberately NOT on the 'signin-pair' stream. That stream is relayed verbatim to
     // hosts, screens and (on Android) across an IPC channel a debug build prints; a

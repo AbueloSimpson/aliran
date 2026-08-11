@@ -121,7 +121,9 @@ export type UploadPolicy = 'reseed' | 'client-only'
  *             set survives Android reclaiming its process). Turn it on only with a real
  *             place to put keys — see docs/security-model.md, "Account keys at rest".
  *
- * `remote: true` enables all of them.
+ * `remote: true` enables the two MEMORY features (sendToTv, control) and NOT keepSignIn:
+ * writing account keys to a disk is a property of the build, so it can only be asked for
+ * by name.
  */
 export interface RemoteFeatures {
   sendToTv?: boolean
