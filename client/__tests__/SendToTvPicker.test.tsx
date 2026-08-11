@@ -35,6 +35,7 @@ const mockCast: any = {
   sessionStartedListeners: [] as any[],
   sessionStartFailedListeners: [] as any[],
   session: null as string | null,
+  mediaStatusListeners: [] as any[],
   endCurrentSession: jest.fn(async () => { mockCast.session = null }),
   loadMedia: jest.fn(async () => {})
 }
@@ -61,7 +62,17 @@ jest.mock('react-native-google-cast', () => ({
       endCurrentSession: mockCast.endCurrentSession,
       getCurrentCastSession: async () => (mockCast.session
         ? {
-            client: { loadMedia: mockCast.loadMedia },
+            client: {
+              // A receiver that plays what it is given: the load is accepted, and the
+              // status that proves it played follows on a later turn (see cast.ts).
+              loadMedia: async (req: unknown) => {
+                await mockCast.loadMedia(req)
+                Promise.resolve().then(() => {
+                  for (const fn of [...mockCast.mediaStatusListeners]) fn({ playerState: 'playing' })
+                })
+              },
+              onMediaStatusUpdated: (fn: unknown) => { mockCast.mediaStatusListeners.push(fn); return { remove: () => {} } }
+            },
             getCastDevice: async () => ({ deviceId: mockCast.session, friendlyName: mockCast.deviceName })
           }
         : null),
@@ -140,6 +151,7 @@ beforeEach(() => {
   mockCast.session = null
   mockCast.sessionStartedListeners = []
   mockCast.sessionStartFailedListeners = []
+  mockCast.mediaStatusListeners = []
   offPeers = watchPeers()
 })
 afterEach(async () => {

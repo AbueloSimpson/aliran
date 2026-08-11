@@ -51,6 +51,12 @@ const mockCast: any = {
   stopDiscovery: jest.fn(),
   endCurrentSession: jest.fn(async () => { mockCast.session = null }),
   loadMedia: jest.fn(async () => {}),
+  // …and the media status the receiver reports back, which is the ONLY evidence that a
+  // load actually played. 'plays' / 'errors' / 'stalls' are the three real outcomes;
+  // 'manual' hands the timing to the test.
+  mediaStatusListeners: [] as any[],
+  media: 'plays' as 'plays' | 'errors' | 'stalls' | 'manual',
+  mediaStatus: (s: unknown) => { for (const fn of [...mockCast.mediaStatusListeners]) fn(s) },
   sessionStarted: (deviceId: string) => {
     mockCast.session = deviceId
     for (const fn of [...mockCast.sessionStartedListeners]) fn({})
@@ -87,7 +93,20 @@ jest.mock('react-native-google-cast', () => ({
       endCurrentSession: mockCast.endCurrentSession,
       getCurrentCastSession: async () => (mockCast.session
         ? {
-            client: { loadMedia: mockCast.loadMedia },
+            client: {
+              // The per-case stub still decides whether the REQUEST is accepted; the
+              // status that follows it, on a later turn, is what says it played.
+              loadMedia: async (req: unknown) => {
+                await mockCast.loadMedia(req)
+                if (mockCast.media === 'manual') return
+                Promise.resolve().then(() => {
+                  if (mockCast.media === 'plays') mockCast.mediaStatus({ playerState: 'playing' })
+                  else if (mockCast.media === 'errors') mockCast.mediaStatus({ playerState: 'idle', idleReason: 'error' })
+                  else mockCast.mediaStatus({ playerState: 'buffering' }) // and never more than that
+                })
+              },
+              onMediaStatusUpdated: (fn: unknown) => { mockCast.mediaStatusListeners.push(fn); return { remove: () => {} } }
+            },
             // deviceId, not just the friendly name: a session is only an answer for the
             // device that was asked for, and another room's set is a live session too.
             getCastDevice: async () => ({ deviceId: mockCast.session, friendlyName: mockCast.deviceName })
@@ -171,6 +190,8 @@ beforeEach(() => {
   mockCast.deviceName = 'Kitchen display'
   mockCast.session = null
   mockCast.outcome = 'started'
+  mockCast.media = 'plays'
+  mockCast.mediaStatusListeners = []
   mockCast.startSession = selectRoute()
   mockCast.endCurrentSession = jest.fn(async () => { mockCast.session = null })
   // castRun() replaces this per case; the cases that never reach it still have to open
@@ -380,6 +401,59 @@ test('a live session with ANOTHER television does not answer for this one', asyn
   await flush()
   expect(await p).toBe('cast-connect')
   expect(lastOf('cast-start')).toBeUndefined()
+})
+
+// --- …and the media has to PLAY, not merely be accepted ------------------------------
+//
+// The second half of the same trap. loadMedia() resolves when the receiver ACCEPTS the
+// load request, which says nothing about whether anything played — and on a TCL set the
+// receiver took the load, fetched once, and sat on a Chromecast logo with
+// `playerState: NONE, buffered position: 0` while the phone showed "Sending to TV". A
+// viewer got no error at all, which is worse than a wrong one.
+
+test('a receiver that accepts the load and never plays is a LOAD failure', async () => {
+  jest.useFakeTimers()
+  mockCast.media = 'stalls' // buffering, for ever — the state that used to read as success
+  const p = sendCast(TARGET, CHANNEL)
+  await flush()
+  const start = lastOf('cast-start')
+  workletSays({ type: 'cast-started', ok: true, session: { ...SESSION, receiverHost: ['192.168.1.77'] }, tag: start.tag })
+  await flush()
+  expect(mockCast.loadMedia).toHaveBeenCalled() // it WAS asked…
+  jest.advanceTimersByTime(20000)
+  await flush()
+  const stop = lastOf('cast-stop')
+  if (stop) { workletSays({ type: 'cast-stopped', ok: true, tag: stop.tag }); await flush() }
+  expect(await p).toBe('cast-load')             // …and it never played
+  expect(activeSend()).toBeNull()               // and nothing is left claiming otherwise
+  expect(mockCast.endCurrentSession).toHaveBeenCalled()
+})
+
+test('a receiver that says it could not play is a load failure too, without the wait', async () => {
+  mockCast.media = 'errors' // idle + idleReason 'error', the receiver's own words
+  const { failure } = await castRun()
+  expect(failure).toBe('cast-load')
+  expect(activeSend()).toBeNull()
+})
+
+// The status stream carries the PREVIOUS media as well, and a receiver that was idle a
+// moment ago is every receiver that has just been connected to. Honouring that idle would
+// fail every cast before its load had even been sent.
+test('an idle report from BEFORE the load does not fail the cast', async () => {
+  mockCast.media = 'manual'
+  const p = sendCast(TARGET, CHANNEL)
+  await flush()
+  const start = lastOf('cast-start')
+  // The stale status the receiver was already sitting in, arriving before this cast's
+  // load has been sent. (An idle AFTER the load is a different thing entirely — that one
+  // is the receiver refusing OUR media, and the test above pins it.)
+  mockCast.mediaStatus({ playerState: 'idle', idleReason: 'error' })
+  workletSays({ type: 'cast-started', ok: true, session: { ...SESSION, receiverHost: ['192.168.1.77'] }, tag: start.tag })
+  await flush()
+  mockCast.mediaStatus({ playerState: 'playing' }) // …and then it really does play
+  await flush()
+  expect(await p).toBeNull()
+  expect(activeSend()).toMatchObject({ kind: 'cast' })
 })
 
 // --- teardown ----------------------------------------------------------------------

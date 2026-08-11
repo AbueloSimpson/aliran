@@ -406,30 +406,96 @@ export async function sessionDeviceName (): Promise<string | null> {
   } catch { return null }
 }
 
-/** Hand the receiver a URL to play. `live` picks the stream type — a live channel has no
- *  duration, and the television's own controls must not offer a seek bar for one. */
+// How long the receiver has to get from "load accepted" to "playing". Sized like a cold
+// tune on a set that has to fetch a playlist and fill a buffer, not like a local call.
+const MEDIA_PLAY_MS = 20000
+
+/**
+ * Hand the receiver a URL to play, and resolve only once it IS playing. `live` picks the
+ * stream type — a live channel has no duration, and the television's own controls must not
+ * offer a seek bar for one.
+ *
+ * loadMedia() ON ITS OWN MEANS "THE RECEIVER ACCEPTED THE REQUEST", which is the same
+ * promise-means-accepted trap as startSession() one screen up, and it cost the same thing:
+ * the app declared the cast a success, the sheet put "Sending to TV" on screen, and the
+ * television sat on a Chromecast logo with `playerState: NONE, buffered: 0`. Measured on a
+ * TCL set — the receiver took the load, fetched once, and never played. The viewer was told
+ * nothing at all, which is worse than an error.
+ *
+ * So the answer here is the receiver's own media status: PLAYING is the only success.
+ * `loading` and `buffering` are progress, not arrival — a stalled cast sits in `buffering`
+ * for ever, which is precisely the state that used to be reported as working.
+ */
 export async function loadMedia (url: string, opts: { title?: string; live?: boolean; image?: string } = {}): Promise<boolean> {
   if (!castSupported()) return false
   try {
     const session = await castContext()?.getSessionManager?.()?.getCurrentCastSession?.()
     const client = session?.client ?? session?.getClient?.()
     if (!client?.loadMedia) return false
-    await client.loadMedia({
-      mediaInfo: {
-        contentUrl: url,
-        // HLS. The receiver refuses to guess, and gets it wrong when it tries.
-        contentType: 'application/x-mpegURL',
-        streamType: opts.live === false ? 'buffered' : 'live',
-        metadata: {
-          type: 'generic',
-          title: opts.title ?? '',
-          ...(opts.image ? { images: [{ url: opts.image }] } : {})
-        }
-      },
-      autoplay: true
-    })
-    return true
+    // Subscribed BEFORE the load, for the same reason the session listener is: a receiver
+    // that starts quickly reports it quickly.
+    const playing = awaitPlayback(client)
+    try {
+      await loadRequest(client, url, opts)
+    } catch (err) { playing.cancel(); throw err }
+    playing.armFailure() // …only now may an `idle` be OUR media rather than the last one's
+    return await playing.settled
   } catch { return false }
+}
+
+/**
+ * Resolve true when the receiver reports it is PLAYING, false when it reports it went idle
+ * because of an error, false when it never gets there at all.
+ *
+ * THE FAILURE VERDICT IS ARMED LATE, and that is not a detail: the status stream carries
+ * the PREVIOUS media too. A receiver that was idle a moment ago — which is every receiver
+ * that has just been connected to — would otherwise answer for a load that has not even
+ * been sent yet, and every cast would fail instantly.
+ */
+function awaitPlayback (client: any): { settled: Promise<boolean>; cancel: () => void; armFailure: () => void } {
+  const subs: { remove?: () => void }[] = []
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let answer: ((ok: boolean) => void) | null = null
+  let armed = false
+  const finish = (ok: boolean) => {
+    if (!answer) return
+    const done = answer
+    answer = null
+    if (timer) { clearTimeout(timer); timer = null }
+    for (const s of subs) { try { s?.remove?.() } catch { /* already gone */ } }
+    subs.length = 0
+    done(ok)
+  }
+  const settled = new Promise<boolean>((resolve) => { answer = resolve })
+  try {
+    const sub = client.onMediaStatusUpdated?.((status: { playerState?: string; idleReason?: string } | null) => {
+      const state = status?.playerState
+      if (state === 'playing') return finish(true)
+      // The receiver saying, in its own words, that it could not play what it was given.
+      if (armed && state === 'idle' && status?.idleReason === 'error') return finish(false)
+    })
+    if (sub) subs.push(sub)
+  } catch { /* a library shape without the status stream — the ceiling is then the answer */ }
+  timer = setTimeout(() => finish(false), MEDIA_PLAY_MS)
+  return { settled, cancel: () => finish(false), armFailure: () => { armed = true } }
+}
+
+/** The load call itself, kept separate so the wait above reads as one thing. */
+async function loadRequest (client: any, url: string, opts: { title?: string; live?: boolean; image?: string }): Promise<void> {
+  await client.loadMedia({
+    mediaInfo: {
+      contentUrl: url,
+      // HLS. The receiver refuses to guess, and gets it wrong when it tries.
+      contentType: 'application/x-mpegURL',
+      streamType: opts.live === false ? 'buffered' : 'live',
+      metadata: {
+        type: 'generic',
+        title: opts.title ?? '',
+        ...(opts.image ? { images: [{ url: opts.image }] } : {})
+      }
+    },
+    autoplay: true
+  })
 }
 
 /**

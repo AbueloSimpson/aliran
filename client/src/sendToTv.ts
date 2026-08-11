@@ -365,6 +365,15 @@ export async function sendCast (target: CastTarget, stream: Stream): Promise<Sen
   // echo the field, and then it reads "unpinned" on a session that is pinned: the
   // warning overstates the exposure rather than hiding it.
   const pinnedTo = started.session.receiverHost
+  // WHERE THE TELEVISION WAS SENT, minus the one thing that must never be logged. A cast
+  // that connects and then plays nothing is indistinguishable, from the outside, from a
+  // cast that was never asked for — and the three facts that separate them are the address
+  // the server bound, the port, and the pin the engine applied. The URL carries the session
+  // token and is deliberately absent: host and port are what a viewer's network can be
+  // debugged from, and neither is a secret (anything on the LAN can see both).
+  console.log('[cast]', `serving ${started.session.source} from ${started.session.host ?? '?'}:${started.session.port ?? '?'}` +
+    ` pin=${Array.isArray(pinnedTo) && pinnedTo.length ? pinnedTo.join(',') : 'none'}` +
+    ` asked=${pin ?? 'none'} target=${target.address ?? 'no-address'}${target.isGroup ? ' group' : ''}`)
   active = {
     kind: 'cast',
     deviceId: target.deviceId,
