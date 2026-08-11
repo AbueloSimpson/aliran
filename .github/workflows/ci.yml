@@ -92,6 +92,21 @@ jobs:
       # coexistence. In-process panel + loopback feed server — no DHT.
       - name: Channel packages (test:packages)
         run: npm run test:packages
+      # Live entitlement (S57): a viewer with the app OPEN follows their own panel-signed
+      # `user/<name>` record without re-logging in — a channel cataloged AND granted
+      # mid-session becomes playable (url + headers verbatim), and a revoked redirect
+      # channel leaves the lineup without tearing down the play already running. Two of
+      # the four cases are the load-bearing ones. A newly granted P2P channel must NOT be
+      # admitted, because its key is sealed to an account key the engine no longer holds
+      # after login — admitting it would put an unplayable channel in the lineup. And a P2P
+      # grant must SURVIVE the panel's ordinary two-put revoke->reconcile: removal is
+      # symmetric with admission, and dropping a P2P id on the grant-less intermediate is
+      # a ONE-WAY DOOR for that viewer. test:sdk covers the same ground inside its much
+      # larger run; this lane exists so the feature stays verifiable on its own. LOCAL DHT
+      # testnet, no broadcaster and no ffmpeg, outbound UDP only — deterministic.
+      - name: Live entitlement, no re-login (test:live-entitlement)
+        timeout-minutes: 10
+        run: npm run test:live-entitlement
       # The Aliran MCP server (S46): boots an in-process panel admin server + a
       # broadcaster control server, launches mcp/src/index.js over a stdio pipe and
       # drives it as an MCP client (tools/resources, a write chain, annotations, docs
@@ -162,6 +177,15 @@ jobs:
       # is the only automated guard on the desktop half (the renderer has no jest).
       - name: Desktop external VOD provider (test:desktop-vod)
         run: npm run test:desktop-vod
+      # The desktop EPG guide (WS4): the same twin-lane shape as the VOD one above, and the
+      # strictest of the family. It asserts desktop/renderer/src/guide.ts is CODE-IDENTICAL
+      # to client/src/guide.ts with comments stripped, then re-runs the client's own guide
+      # cases verbatim against an esbuild bundle of the DESKTOP copy and renders GuideGrid
+      # through react-dom/server. Without it the two copies of the grid math drift and the
+      # same schedule quietly draws a different grid on a television and on a desktop —
+      # which is precisely the class of bug the mirrored-module pattern trades for.
+      - name: Desktop EPG guide, twin of the client copy (test:desktop-guide)
+        run: npm run test:desktop-guide
       # Desktop parental controls: the restricted-channel visibility rule and the PIN
       # gate. Same reasoning as the lane above — the phone half has a jest suite, the
       # desktop half had nothing, and this is the only thing standing between a
