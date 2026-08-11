@@ -71,14 +71,35 @@ export function castSupported (): boolean {
 }
 
 /**
- * Does this device actually have the Cast framework? getPlayServicesState() answers
- * 'success' | 'missing' | 'updating' | 'updateRequired' | 'disabled' | 'invalid', and
- * only the first one means "cast is possible here". Anything else — including a null
- * from a platform that does not implement the probe — hides the button.
+ * PARKED — 2026-08-11, by the operator's decision, and this is the whole switch.
+ *
+ * Casting to a Chromecast does not work on this fleet yet. Measured across three receivers
+ * from two makers: the session is established, the receiver launches, and the media either
+ * never plays or renders one frame and stalls. Two candidate causes are on the table (the
+ * receiver pin, and the manifest the receiver fetches) and neither is settled, so the half
+ * that fails is switched off rather than left in front of viewers.
+ *
+ * ONLY THE CHROMECAST HALF. The HANDOFF half — sending a channel to another Aliran device
+ * signed in to the same account — is a different mechanism that serves nothing from this
+ * phone, and it stays. See sendToTv.ts for why the two are not one feature.
+ *
+ * Everything below is intact and tested. Turn this back to `true` to restore the feature;
+ * nothing else was removed.
+ */
+export const CAST_ENABLED = false
+
+/**
+ * Should this build offer casting at all? Two questions in one, deliberately: whether the
+ * feature is switched on (above), and whether this device actually has the Cast framework.
+ * getPlayServicesState() answers 'success' | 'missing' | 'updating' | 'updateRequired' |
+ * 'disabled' | 'invalid', and only the first one means "cast is possible here". Anything
+ * else — including a null from a platform that does not implement the probe — hides the
+ * button, which is the same outcome the parked flag produces.
  *
  * Never rejects.
  */
 export async function castAvailable (): Promise<boolean> {
+  if (!CAST_ENABLED) return false
   if (!castSupported()) return false
   try {
     return (await castContext()?.getPlayServicesState?.()) === 'success'
@@ -298,15 +319,33 @@ export async function connect (deviceId: string): Promise<boolean> {
     // was never asked anything.
     const manager = castContext()?.getSessionManager?.()
     if (typeof manager?.startSession !== 'function') return false
+    // WHAT WAS ALREADY THERE, read before anything is asked for. It answers the
+    // already-connected case outright, and it is what lets the wait below recognise a
+    // session as OURS without depending on the platform reporting a device id (see
+    // awaitSession — that dependency cost a working feature once already).
+    const before = await currentSession(manager)
+    if (before?.deviceId && before.deviceId === deviceId) return true
     // SUBSCRIBED FIRST. A receiver that is already awake answers in a few hundred
     // milliseconds, and a listener attached after the request is a listener attached
     // after the event it exists for.
-    const session = awaitSession(manager, deviceId)
+    const session = awaitSession(manager, deviceId, before)
     let selected
     try { selected = await manager.startSession(deviceId) } catch (err) { session.cancel(); throw err }
     if (selected === false) { session.cancel(); return false }
     return await session.settled
   } catch { return false }
+}
+
+/** The framework's current session, as {id, deviceId} — either field may be null when the
+ *  platform will not say. Null when there is no session at all. */
+async function currentSession (manager: any): Promise<{ id: string | null; deviceId: string | null } | null> {
+  try {
+    const s = await manager.getCurrentCastSession?.()
+    if (!s) return null
+    let deviceId: string | null = null
+    try { deviceId = (await s.getCastDevice?.())?.deviceId ?? null } catch { /* will not say */ }
+    return { id: s.id ?? null, deviceId }
+  } catch { return null }
 }
 
 /**
@@ -324,11 +363,20 @@ export async function connect (deviceId: string): Promise<boolean> {
  *                                   listener on host resume; a shape that does not emit
  *                                   still answers getCurrentCastSession().
  *
- * And the poll checks WHICH device, which the events need not: a session to another
- * television in the house is live at this moment for a viewer who is switching sets, and
- * answering "connected" off that one would hand this channel's URL to the wrong room.
+ * AND THE POLL MUST NOT LEAN ON THE DEVICE ID. Matching the current session's device
+ * against the one that was picked reads as the obvious check, and it is a trap: where the
+ * platform will not report a device id — which is a thing that happens, and which the
+ * events cannot rescue because a build whose event stream is silent is exactly the build
+ * that needs the poll — nothing ever matches and every cast fails on the ceiling with "the
+ * TV did not accept the connection". Measured across three receivers from two makers.
+ *
+ * So the discriminator is the SESSION, not the device: `before` is what existed when the
+ * request went out, and a session that was not there a moment ago is the one just asked
+ * for. The device id is still honoured when it IS reported, because it is the stronger
+ * answer — a viewer moving a channel from one set to another has a live session throughout,
+ * and accepting that unchanged session would hand this channel to the wrong room.
  */
-function awaitSession (manager: any, deviceId: string): { settled: Promise<boolean>; cancel: () => void } {
+function awaitSession (manager: any, deviceId: string, before: { id: string | null; deviceId: string | null } | null): { settled: Promise<boolean>; cancel: () => void } {
   const subs: { remove?: () => void }[] = []
   let timer: ReturnType<typeof setTimeout> | null = null
   let poll: ReturnType<typeof setInterval> | null = null
@@ -352,18 +400,16 @@ function awaitSession (manager: any, deviceId: string): { settled: Promise<boole
   } catch { /* a library shape without the events — the poll is then the whole answer */ }
   timer = setTimeout(() => finish(false), SESSION_START_MS)
   poll = setInterval(() => {
-    currentSessionIs(manager, deviceId).then((yes) => { if (yes) finish(true) }).catch(() => {})
+    currentSession(manager).then((now) => {
+      if (!now) return
+      // The platform naming the set we asked for: the strongest answer there is.
+      if (now.deviceId && now.deviceId === deviceId) return finish(true)
+      // …otherwise a session that did not exist when the request went out. We have just
+      // asked for one, so this is it.
+      if (!before || (now.id && now.id !== before.id)) return finish(true)
+    }).catch(() => {})
   }, SESSION_POLL_MS)
   return { settled, cancel: () => finish(false) }
-}
-
-/** Is the framework's current session a session with THIS device? False for no session,
- *  for a session with another receiver, and for anything that will not say. */
-async function currentSessionIs (manager: any, deviceId: string): Promise<boolean> {
-  const session = await manager.getCurrentCastSession?.()
-  if (!session) return false
-  const device = await session.getCastDevice?.()
-  return !!device && device.deviceId === deviceId
 }
 
 /**

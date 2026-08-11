@@ -119,7 +119,7 @@ jest.mock('react-native-google-cast', () => ({
   }
 }))
 
-import { isLanAddress, parseAddress } from '../src/cast'
+import { castAvailable, CAST_ENABLED, isLanAddress, parseAddress } from '../src/cast'
 import {
   activeSend, armRendezvous, joinRendezvous, leaveRendezvous, sendCast, stopSending,
   __resetForTests, type CastTarget
@@ -202,6 +202,24 @@ afterEach(() => {
   ;(Platform as { OS: string }).OS = realOS
   jest.useRealTimers()
   jest.restoreAllMocks()
+})
+
+// --- the feature is PARKED, and that is a decision, not an accident ------------------
+//
+// Casting does not work on this fleet yet: measured across three receivers from two makers,
+// the session starts, the receiver launches, and the media either never plays or renders one
+// frame and stalls. Rather than leave a button that fails in front of viewers, the Chromecast
+// half is switched off at a single flag while the cause is found. Everything below this line
+// still runs, because the machinery is intact and the feature is coming back — the sheet's own
+// suite re-enables it to keep the UI covered (see SendToTvPicker.test.ts).
+//
+// The HANDOFF half is untouched: it serves nothing from this phone and is a different
+// mechanism entirely.
+
+test('casting is parked: castAvailable answers no even where the framework is live', async () => {
+  expect(CAST_ENABLED).toBe(false)
+  mockCast.playServices = 'success' // a device that could cast perfectly well
+  expect(await castAvailable()).toBe(false)
 })
 
 // --- which addresses are worth pinning to -----------------------------------------

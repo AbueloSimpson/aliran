@@ -88,6 +88,17 @@ jest.mock('react-native-google-cast', () => ({
 const CHROMECAST = { deviceId: 'cc-1', friendlyName: 'Kitchen display', modelName: 'Chromecast', ipAddress: '/192.168.1.77', capabilities: ['VideoOut'] }
 const SPEAKER_GROUP = { deviceId: 'cc-1', friendlyName: 'Whole house', ipAddress: '/192.168.1.77', capabilities: ['AudioOut', 'MultizoneGroup'] }
 
+// CASTING IS PARKED IN THIS BUILD (src/cast.ts CAST_ENABLED), so castAvailable() answers no
+// and the sheet draws no cast section at all. This suite is about what the sheet DOES with
+// receivers, and that behaviour is the thing worth keeping under test while the feature
+// waits — so it opts back in here, with the same probe the real one uses minus the flag.
+// The parked decision itself is pinned in SendToTvCast.test.ts, against the real module.
+jest.mock('../src/cast', () => ({
+  ...jest.requireActual('../src/cast'),
+  CAST_ENABLED: true,
+  castAvailable: async () => mockCast.playServices === 'success'
+}))
+
 import { SendToTvSheet } from '../src/components/SendToTvSheet'
 import { NowPlayingBar } from '../src/components/NowPlayingBar'
 import { backend, type Stream } from '../src/worklet'

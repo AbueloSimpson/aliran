@@ -166,7 +166,11 @@ export function SendToTvSheet ({ stream, onClose }: SendToTvSheetProps) {
 
   const searching = canCast && casts.length === 0 && !searchedOut
   const noCastDevices = canCast && casts.length === 0 && searchedOut
-  const nothing = handoffs.length === 0 && !canCast
+  // "There is no way to send from this device at all" — which cannot happen while casting
+  // is parked (castLib.CAST_ENABLED): the handoff half is always offered, and its own empty
+  // state ("sign in to this service on your TV") is the sentence that helps. Without this
+  // guard a viewer with no signed-in TV would read both, the second contradicting the first.
+  const nothing = castLib.CAST_ENABLED && handoffs.length === 0 && !canCast
 
   return (
     <View style={styles.overlay}>
