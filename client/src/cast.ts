@@ -262,13 +262,31 @@ export function isLanAddress (addr: string): boolean {
   return false
 }
 
+// How long a receiver has to produce a session. A set that is asleep has to wake, join
+// the network and launch the receiver application before it can answer, so this is sized
+// like a cold start rather than a local call — the picker shows a spinner on the row the
+// whole time. It is a ceiling, not a wait: the ordinary answer is an event in under a
+// second, and this only decides how long a television that says NOTHING may hold the sheet.
+const SESSION_START_MS = 30000
+// …and how often the current session is re-read while waiting. See awaitSession: the
+// events are the answer, and this catches the two things they cannot report.
+const SESSION_POLL_MS = 500
+
 /**
- * Connect to a receiver. Resolves false when the framework says the session did not
- * start.
+ * Connect to a receiver: resolves once a Cast SESSION really exists, or false.
  *
- * Lenient about the shape of "yes" and strict about "no": only an explicit false is
- * treated as a refusal, because a session that started and then cannot take the media
- * fails again at loadMedia — which tears both halves down anyway.
+ * startSession() DOES NOT MEAN THAT, and believing it did is what broke casting on every
+ * channel and every television. The bridge (RNGCSessionManager.java) looks the device up
+ * in the MediaRouter's route list, calls `router.selectRoute(routeInfo)` and resolves
+ * true — and selectRoute is fire-and-forget. Its promise means "a matching route was
+ * selected", never "a session exists": the session is established asynchronously
+ * afterwards and reported through onSessionStarted / onSessionStartFailed. So the flow
+ * went straight on to stand a LAN origin server up and hand the media URL to a session
+ * that was not there yet, every attempt failed, and the sheet blamed the URL. Measured
+ * with a castv2 probe against two sets: no Default Media Receiver session existed at all.
+ *
+ * Lenient about the shape of "yes" and strict about "no": an explicit false from
+ * startSession means no route matched, and there is nothing to wait for.
  */
 export async function connect (deviceId: string): Promise<boolean> {
   if (!castSupported()) return false
@@ -280,8 +298,72 @@ export async function connect (deviceId: string): Promise<boolean> {
     // was never asked anything.
     const manager = castContext()?.getSessionManager?.()
     if (typeof manager?.startSession !== 'function') return false
-    return (await manager.startSession(deviceId)) !== false
+    // SUBSCRIBED FIRST. A receiver that is already awake answers in a few hundred
+    // milliseconds, and a listener attached after the request is a listener attached
+    // after the event it exists for.
+    const session = awaitSession(manager, deviceId)
+    let selected
+    try { selected = await manager.startSession(deviceId) } catch (err) { session.cancel(); throw err }
+    if (selected === false) { session.cancel(); return false }
+    return await session.settled
   } catch { return false }
+}
+
+/**
+ * Wait for the session the request above asked for: true when one starts, false when the
+ * framework says it will not, false when the television simply never answers.
+ *
+ * THE POLL IS NOT BELT-AND-BRACES. Two real cases produce no event at all, and both of
+ * them would otherwise hold the sheet for the full ceiling and then report a failure over
+ * a session that is up and working:
+ *
+ *   the route is ALREADY selected   the viewer casts a second channel to the set they are
+ *                                   already casting to. selectRoute() has nothing to
+ *                                   change, so no session STARTS — there is one already.
+ *   a build with no events          the native side of this library attaches its session
+ *                                   listener on host resume; a shape that does not emit
+ *                                   still answers getCurrentCastSession().
+ *
+ * And the poll checks WHICH device, which the events need not: a session to another
+ * television in the house is live at this moment for a viewer who is switching sets, and
+ * answering "connected" off that one would hand this channel's URL to the wrong room.
+ */
+function awaitSession (manager: any, deviceId: string): { settled: Promise<boolean>; cancel: () => void } {
+  const subs: { remove?: () => void }[] = []
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let poll: ReturnType<typeof setInterval> | null = null
+  let answer: ((ok: boolean) => void) | null = null
+  const finish = (ok: boolean) => {
+    if (!answer) return
+    const done = answer
+    answer = null
+    if (timer) { clearTimeout(timer); timer = null }
+    if (poll) { clearInterval(poll); poll = null }
+    for (const s of subs) { try { s?.remove?.() } catch { /* already gone */ } }
+    subs.length = 0
+    done(ok)
+  }
+  const settled = new Promise<boolean>((resolve) => { answer = resolve })
+  try {
+    const started = manager.onSessionStarted?.(() => finish(true))
+    if (started) subs.push(started)
+    const failed = manager.onSessionStartFailed?.(() => finish(false))
+    if (failed) subs.push(failed)
+  } catch { /* a library shape without the events — the poll is then the whole answer */ }
+  timer = setTimeout(() => finish(false), SESSION_START_MS)
+  poll = setInterval(() => {
+    currentSessionIs(manager, deviceId).then((yes) => { if (yes) finish(true) }).catch(() => {})
+  }, SESSION_POLL_MS)
+  return { settled, cancel: () => finish(false) }
+}
+
+/** Is the framework's current session a session with THIS device? False for no session,
+ *  for a session with another receiver, and for anything that will not say. */
+async function currentSessionIs (manager: any, deviceId: string): Promise<boolean> {
+  const session = await manager.getCurrentCastSession?.()
+  if (!session) return false
+  const device = await session.getCastDevice?.()
+  return !!device && device.deviceId === deviceId
 }
 
 /**

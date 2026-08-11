@@ -23,14 +23,32 @@ import { Platform, Text } from 'react-native'
 // this factory takes precedence over that file for this suite. NOT `{ virtual: true }`:
 // see the mock file for the resolver-cache race that spelling lost, which took the eight
 // cast cases below down as a block on about one run in three.
+//
+// AND THE SESSION IS TWO STEPS HERE TOO. startSession() only means the MediaRouter
+// selected a matching route; whether a Cast session exists is reported afterwards through
+// onSessionStarted / onSessionStartFailed, and cast.connect() waits for it. The gap is
+// modelled rather than skipped — see SendToTvCast.test.ts, where it is what is on trial.
 const mockCast: any = {
   devices: [] as any[],
   playServices: 'success',
   deviceName: 'Kitchen display',
-  startSession: jest.fn(async () => true),
-  endCurrentSession: jest.fn(async () => {}),
+  sessionStartedListeners: [] as any[],
+  sessionStartFailedListeners: [] as any[],
+  session: null as string | null,
+  endCurrentSession: jest.fn(async () => { mockCast.session = null }),
   loadMedia: jest.fn(async () => {})
 }
+function selectRoute () {
+  return jest.fn(async (deviceId: string) => {
+    // Reported on a LATER turn, never in the same one — selectRoute is fire-and-forget.
+    Promise.resolve().then(() => {
+      mockCast.session = deviceId
+      for (const fn of [...mockCast.sessionStartedListeners]) fn({})
+    })
+    return true
+  })
+}
+mockCast.startSession = selectRoute()
 jest.mock('react-native-google-cast', () => ({
   CastContext: {
     getPlayServicesState: async () => mockCast.playServices,
@@ -39,12 +57,16 @@ jest.mock('react-native-google-cast', () => ({
       onDevicesUpdated: () => ({ remove: () => {} })
     }),
     getSessionManager: () => ({
-      startSession: mockCast.startSession,
+      startSession: (id: string) => mockCast.startSession(id),
       endCurrentSession: mockCast.endCurrentSession,
-      getCurrentCastSession: async () => ({
-        client: { loadMedia: mockCast.loadMedia },
-        getCastDevice: async () => ({ friendlyName: mockCast.deviceName })
-      }),
+      getCurrentCastSession: async () => (mockCast.session
+        ? {
+            client: { loadMedia: mockCast.loadMedia },
+            getCastDevice: async () => ({ deviceId: mockCast.session, friendlyName: mockCast.deviceName })
+          }
+        : null),
+      onSessionStarted: (fn: unknown) => { mockCast.sessionStartedListeners.push(fn); return { remove: () => {} } },
+      onSessionStartFailed: (fn: unknown) => { mockCast.sessionStartFailedListeners.push(fn); return { remove: () => {} } },
       onSessionEnded: () => ({ remove: () => {} })
     })
   }
@@ -112,9 +134,12 @@ beforeEach(() => {
   mockCast.devices = []
   mockCast.playServices = 'success'
   mockCast.deviceName = 'Kitchen display'
-  mockCast.startSession = jest.fn(async () => true)
-  mockCast.endCurrentSession = jest.fn(async () => {})
+  mockCast.startSession = selectRoute()
+  mockCast.endCurrentSession = jest.fn(async () => { mockCast.session = null })
   mockCast.loadMedia = jest.fn(async () => {})
+  mockCast.session = null
+  mockCast.sessionStartedListeners = []
+  mockCast.sessionStartFailedListeners = []
   offPeers = watchPeers()
 })
 afterEach(async () => {

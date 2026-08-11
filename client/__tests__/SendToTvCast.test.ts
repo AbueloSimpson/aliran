@@ -24,18 +24,55 @@ import { Platform } from 'react-native'
 // per-worker resolver cache whenever another suite had already required the package from
 // src/cast.ts first: every test below then ran against the real library and failed
 // 'cast-connect' as a block. The mechanism is written up in the mock file.
+//
+// AND THE SESSION IS TWO STEPS, because on a real device it is. startSession() reaches
+// RNGCSessionManager.java, which looks the device up in the MediaRouter's route list,
+// calls `router.selectRoute()` and resolves TRUE — and selectRoute is fire-and-forget.
+// Whether a Cast session then exists is reported afterwards, through onSessionStarted /
+// onSessionStartFailed. A stub that answered `true` and had a session ready in the same
+// breath is what let "the promise means a session exists" ship: it made a race that
+// failed on every channel and every television look like a passing suite.
 const mockCast: any = {
   devices: [] as any[],
   deviceListeners: [] as any[],
   sessionEndedListeners: [] as any[],
+  sessionStartedListeners: [] as any[],
+  sessionStartFailedListeners: [] as any[],
   playServices: 'success',
   deviceName: 'Kitchen display',
+  // Which device the framework currently holds a session with, or null. Set by a session
+  // that starts, cleared by one that ends — the same thing getCurrentCastSession() reads.
+  session: null as string | null,
+  // What happens AFTER the route is selected: 'started' / 'failed' report themselves,
+  // 'silent' reports nothing (a set that never answers — and also a route that was
+  // already selected, which has no state change to report), 'manual' waits for the test.
+  outcome: 'started' as 'started' | 'failed' | 'silent' | 'manual',
   startDiscovery: jest.fn(),
   stopDiscovery: jest.fn(),
-  startSession: jest.fn(async () => true),
-  endCurrentSession: jest.fn(async () => {}),
-  loadMedia: jest.fn(async () => {})
+  endCurrentSession: jest.fn(async () => { mockCast.session = null }),
+  loadMedia: jest.fn(async () => {}),
+  sessionStarted: (deviceId: string) => {
+    mockCast.session = deviceId
+    for (const fn of [...mockCast.sessionStartedListeners]) fn({})
+  },
+  sessionStartFailed: () => {
+    for (const fn of [...mockCast.sessionStartFailedListeners]) fn({}, 'connection failed')
+  }
 }
+function selectRoute () {
+  return jest.fn(async (deviceId: string) => {
+    // Reported on a later turn, never in the same one: this IS the gap the fix waits out.
+    const outcome = mockCast.outcome
+    if (outcome === 'started' || outcome === 'failed') {
+      Promise.resolve().then(() => {
+        if (outcome === 'started') mockCast.sessionStarted(deviceId)
+        else mockCast.sessionStartFailed()
+      })
+    }
+    return true
+  })
+}
+mockCast.startSession = selectRoute()
 jest.mock('react-native-google-cast', () => ({
   CastContext: {
     getPlayServicesState: async () => mockCast.playServices,
@@ -46,12 +83,18 @@ jest.mock('react-native-google-cast', () => ({
       onDevicesUpdated: (fn: unknown) => { mockCast.deviceListeners.push(fn); return { remove: () => {} } }
     }),
     getSessionManager: () => ({
-      startSession: mockCast.startSession,
+      startSession: (id: string) => mockCast.startSession(id),
       endCurrentSession: mockCast.endCurrentSession,
-      getCurrentCastSession: async () => ({
-        client: { loadMedia: mockCast.loadMedia },
-        getCastDevice: async () => ({ friendlyName: mockCast.deviceName })
-      }),
+      getCurrentCastSession: async () => (mockCast.session
+        ? {
+            client: { loadMedia: mockCast.loadMedia },
+            // deviceId, not just the friendly name: a session is only an answer for the
+            // device that was asked for, and another room's set is a live session too.
+            getCastDevice: async () => ({ deviceId: mockCast.session, friendlyName: mockCast.deviceName })
+          }
+        : null),
+      onSessionStarted: (fn: unknown) => { mockCast.sessionStartedListeners.push(fn); return { remove: () => {} } },
+      onSessionStartFailed: (fn: unknown) => { mockCast.sessionStartFailedListeners.push(fn); return { remove: () => {} } },
       onSessionEnded: (fn: unknown) => { mockCast.sessionEndedListeners.push(fn); return { remove: () => {} } }
     })
   }
@@ -122,13 +165,21 @@ beforeEach(() => {
   ;(backend as any).pending = []
   mockCast.deviceListeners = []
   mockCast.sessionEndedListeners = []
+  mockCast.sessionStartedListeners = []
+  mockCast.sessionStartFailedListeners = []
   mockCast.playServices = 'success'
   mockCast.deviceName = 'Kitchen display'
-  mockCast.startSession = jest.fn(async () => true)
-  mockCast.endCurrentSession = jest.fn(async () => {})
+  mockCast.session = null
+  mockCast.outcome = 'started'
+  mockCast.startSession = selectRoute()
+  mockCast.endCurrentSession = jest.fn(async () => { mockCast.session = null })
+  // castRun() replaces this per case; the cases that never reach it still have to open
+  // on a clean one, or "the URL was never handed over" reads the LAST test's hand-over.
+  mockCast.loadMedia = jest.fn(async () => {})
 })
 afterEach(() => {
   ;(Platform as { OS: string }).OS = realOS
+  jest.useRealTimers()
   jest.restoreAllMocks()
 })
 
@@ -234,6 +285,101 @@ test('a pin the engine did not apply reads UNPINNED, whatever was asked for', as
 test('an EMPTY receiverHost from the engine is unpinned too — it names nothing', async () => {
   await castRun({ pinnedTo: [] })
   expect(activeSend()).toMatchObject({ pinned: false })
+})
+
+// --- the session has to EXIST before anything is served ------------------------------
+//
+// This is the one that reached hardware: pick any channel, tap "Play on TV", pick either
+// television, and it failed with "The TV did not start the channel. Try again." — on two
+// different sets and several channels. A castv2 probe polling both televisions through
+// repeated attempts saw NO Default Media Receiver session at all, while the same probe
+// caught a control cast fine. There was nothing wrong with the URL, the server or the
+// channel: the session was never there to load anything into.
+//
+// The cause is one word — `startSession()` resolves on the ROUTE being selected — and the
+// cost of believing it was three things done to a television that had not answered yet: a
+// LAN origin server stood up on the phone, a live session token put on the network, and
+// the wrong half of the flow blamed on the sheet.
+
+test('nothing is served until the session really starts', async () => {
+  mockCast.outcome = 'manual'
+  const p = sendCast(TARGET, CHANNEL)
+  await flush()
+  // The bridge answered "route selected", which is all it has ever meant…
+  expect(mockCast.startSession).toHaveBeenCalledWith('cc:1')
+  // …and on the strength of that, this phone has done NOTHING.
+  expect(lastOf('cast-start')).toBeUndefined()
+  expect(mockCast.loadMedia).not.toHaveBeenCalled()
+
+  // The framework establishes the session and says so.
+  mockCast.sessionStarted('cc:1')
+  await flush()
+  const start = lastOf('cast-start')
+  expect(start).toBeTruthy()
+  workletSays({ type: 'cast-started', ok: true, session: { ...SESSION, receiverHost: ['192.168.1.77'] }, tag: start.tag })
+  await flush()
+  expect(await p).toBeNull()
+  expect(mockCast.loadMedia).toHaveBeenCalled()
+  expect(activeSend()).toMatchObject({ kind: 'cast', pinned: true })
+})
+
+// THE MISLABELLING, and it is the half that costs somebody a day. With connect() unable
+// to answer no, a session that never started fell through to loadMedia() and reported
+// 'cast-load' — "The TV did not start the channel" — which points the next person at the
+// origin server this phone stands up, and the origin server was fine every time.
+test('a session that FAILS to start is a connect failure, not a load failure', async () => {
+  mockCast.outcome = 'failed'
+  const failure = await sendCast(TARGET, CHANNEL)
+  expect(failure).toBe('cast-connect')
+  expect(lastOf('cast-start')).toBeUndefined() // no server was stood up…
+  expect(mockCast.loadMedia).not.toHaveBeenCalled() // …and nothing was handed to nobody
+  expect(activeSend()).toBeNull()
+})
+
+test('a television that never answers gives the sheet back rather than holding it', async () => {
+  jest.useFakeTimers()
+  mockCast.outcome = 'silent'
+  const p = sendCast(TARGET, CHANNEL)
+  await flush()
+  expect(lastOf('cast-start')).toBeUndefined()
+  jest.advanceTimersByTime(30000)
+  await flush()
+  expect(await p).toBe('cast-connect')
+  expect(lastOf('cast-start')).toBeUndefined()
+})
+
+// A ROUTE THAT IS ALREADY SELECTED REPORTS NOTHING, because nothing changed — and the
+// viewer sending a second channel to the set they are already casting to is the ordinary
+// way to reach that. Waiting on an event that will never come would turn a working
+// session into a 30-second wait and then a lie, so the current session is read as well.
+test('the set this phone is already casting to needs no new session', async () => {
+  jest.useFakeTimers()
+  mockCast.outcome = 'silent'
+  mockCast.session = 'cc:1' // still connected from the last channel
+  const p = sendCast(TARGET, CHANNEL)
+  await flush()
+  jest.advanceTimersByTime(500)
+  await flush()
+  const start = lastOf('cast-start')
+  expect(start).toBeTruthy()
+  workletSays({ type: 'cast-started', ok: true, session: { ...SESSION, receiverHost: ['192.168.1.77'] }, tag: start.tag })
+  await flush()
+  expect(await p).toBeNull()
+})
+
+// …but the current session is only an answer for the device it belongs to. A viewer
+// moving a channel from the bedroom set to the kitchen one has a live session the whole
+// time, and reading "connected" off it would hand this channel's URL to the wrong room.
+test('a live session with ANOTHER television does not answer for this one', async () => {
+  jest.useFakeTimers()
+  mockCast.outcome = 'silent'
+  mockCast.session = 'cc:2' // the bedroom, still playing
+  const p = sendCast(TARGET, CHANNEL)
+  await flush()
+  jest.advanceTimersByTime(30000)
+  await flush()
+  expect(await p).toBe('cast-connect')
+  expect(lastOf('cast-start')).toBeUndefined()
 })
 
 // --- teardown ----------------------------------------------------------------------
