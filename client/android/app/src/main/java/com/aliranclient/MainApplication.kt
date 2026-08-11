@@ -17,6 +17,10 @@ class MainApplication : Application(), ReactApplication {
           // Packages that cannot be autolinked yet can be added manually here, for example:
           // add(MyReactNativePackage())
           add(OrientationPackage()) // fullscreen-is-landscape lock (see OrientationModule)
+          // Google Cast needs no manual entry here: react-native-google-cast autolinks,
+          // and everything this app needs from it — the Play Services probe, the device
+          // list, each device's address and whether it is a multi-room group — is on its
+          // own JS surface (see client/src/cast.ts).
         },
     )
   }

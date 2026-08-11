@@ -21,6 +21,7 @@ import { SUPPORTED_LOCALES, useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { appInfoCached, checkForUpdate } from '../update'
+import { leaveRendezvous } from '../sendToTv'
 import { theme } from '../theme'
 import { LanguageMenu } from '../components/LanguageMenu'
 import { PinEntryModal, PinSetupModal } from '../components/PinModal'
@@ -114,6 +115,11 @@ export function SettingsScreen ({ navigation }: Props) {
   function signOut () {
     backend.clearCredentials()
     backend.streams = [] // drop the session's display list; a fresh login rebuilds it
+    // "Play on a TV" goes with the session. The rendezvous key is derived from the
+    // ACCOUNT, so a signed-out device that stayed on it would still announce itself as
+    // one of that account's devices — and a television would still take its commands.
+    // This also stops anything being sent and re-arms the join for the next sign-in.
+    leaveRendezvous()
     navigation.reset({ index: 0, routes: [{ name: 'Login' }] })
   }
 
@@ -125,6 +131,7 @@ export function SettingsScreen ({ navigation }: Props) {
     backend.clearService()
     backend.clearCredentials()
     backend.streams = []
+    leaveRendezvous() // same reason as sign-out: the rendezvous belongs to the session
     navigation.reset({ index: 0, routes: [{ name: 'Connect' }] })
   }
 

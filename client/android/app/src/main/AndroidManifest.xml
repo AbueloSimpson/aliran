@@ -1,7 +1,29 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
- 
+    <!-- Google Cast ("Play on a TV", phone). The Cast framework reads both to find
+         receivers on the local network; neither is a runtime permission and neither
+         prompts. They are normal permissions, so a device that cannot cast at all (no
+         Play Services) simply never uses them.
+
+         ANDROID 16 / LOCAL NETWORK PROTECTION — checked, and the answer is DO NOTHING
+         YET. The permission is android.permission.ACCESS_LOCAL_NETWORK and Google's own
+         guidance is explicit: declare and request it only when targeting SDK 37 or
+         higher. Apps at SDK 36 or lower (this app targets 36) keep implicit local-network
+         access through INTERNET, and in Android 16 the restriction is opt-in behind a
+         developer/compat flag rather than enforced. Declaring it now would be a
+         permission in the manifest that grants nothing and appears on a listing.
+
+         IT WILL MATTER AT targetSdk 37, AND IN BOTH DIRECTIONS. Casting needs OUTBOUND
+         local access (mDNS discovery, and the connection to the receiver on port 8009)
+         AND INBOUND — the engine's cast server accepts a TCP connection FROM the
+         television, which the same permission covers. So the day this app moves to SDK
+         37, this feature needs ACCESS_LOCAL_NETWORK plus a runtime request, or it stops
+         working at both ends. See docs at
+         developer.android.com/privacy-and-security/local-network-permission -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.faketouch" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -34,5 +56,13 @@
             <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
         </intent-filter>
       </activity>
+      <!-- Google Cast configuration. The framework instantiates this class itself the
+           first time CastContext.getSharedInstance() runs (MainActivity, guarded) and
+           reads the receiver id from it: the STOCK receiver CC1AD845, so no Cast
+           Developer Console registration and nothing an operator has to host. See
+           CastOptionsProvider.kt. -->
+      <meta-data
+        android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+        android:value="com.aliranclient.CastOptionsProvider" />
     </application>
 </manifest>

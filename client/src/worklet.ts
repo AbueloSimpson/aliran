@@ -28,9 +28,9 @@ const PREWARM_CHANNELS = 12
 // thin pipe — see sdk/player.js).
 const ZAP_PREFETCH: boolean = false
 
-// "Send to TV": which half of it THIS device may play. The two flags are OPPOSITES on a
-// television, on purpose — reading them as one switch is the mistake this note exists to
-// prevent.
+// "Send to TV": which half of it THIS device may play. The flags are not one switch —
+// two of them are OPPOSITES on a television, on purpose — and reading them as one is the
+// mistake this note exists to prevent.
 //
 //   sendToTv    the SENDING half. It makes every login keep the account's two private
 //               keys in memory for the whole session, because a phone cannot recover them
@@ -53,10 +53,21 @@ const ZAP_PREFETCH: boolean = false
 //               material is a device an operator has to be able to reason about, so this
 //               is on exactly where it is needed and nowhere else.
 //
+//   control     "Play on my TV" — the rendezvous the account's own devices meet on. ON
+//               EVERYWHERE, because both ends of it are this app: a phone joins as the
+//               controller that sends, a television joins as the one that announces and
+//               takes commands, and a device that never joined is a device that cannot
+//               be sent to. What it costs is a derived account secret held for the
+//               session — not a key, but a live authenticator and a stable correlator
+//               for "these devices are one account", which is why the engine keeps it
+//               off until something asks. Nothing here is written down and no topic is
+//               joined until startRemote() is called (client/src/sendToTv.ts calls it
+//               after login, per role).
+//
 // Boot-time only, and there is no runtime switch on purpose: by the time one could be
 // flipped the login has already happened, so the key material is either retained or
 // unrecoverable. Settings hides "Sign in a TV" on the same test.
-const REMOTE: RemoteFeatures = { sendToTv: !Platform.isTV, keepSignIn: Platform.isTV }
+const REMOTE: RemoteFeatures = { sendToTv: !Platform.isTV, keepSignIn: Platform.isTV, control: true }
 
 // The version stamped on problem reports: the NATIVE versionName when the installer
 // module can say (the truth about the installed build), package.json otherwise.

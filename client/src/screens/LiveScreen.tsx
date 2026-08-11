@@ -88,6 +88,7 @@ import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/C
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { TrackMenu } from '../components/TrackMenu'
 import { ReportSheet } from '../components/ReportSheet'
+import { SendToTvSheet, useSendToTv } from '../components/SendToTvSheet'
 import { SectionLoading } from '../components/SectionLoading'
 import { theme } from '../theme'
 
@@ -183,6 +184,12 @@ export function LiveScreen ({ route, navigation }: Props) {
   const [selectedAudio, setSelectedAudio] = useState<SelectedTrack | undefined>(undefined)
   const [showTracks, setShowTracks] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
+  // "Play on a TV" (phone). The hook answers whether the entry point should exist at
+  // all — this device can reach the Cast framework, or the account already has a
+  // television on the rendezvous. Neither = no button: a picker that can only ever be
+  // empty is worse than no picker.
+  const [sendTvOpen, setSendTvOpen] = useState(false)
+  const sendTv = useSendToTv()
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Bottom bar auto-hide (phone): `barShown` gates mounting; `barOpacity` fades it.
   // TV never auto-hides (theme.isTV branch in armBarHide).
@@ -280,6 +287,16 @@ export function LiveScreen ({ route, navigation }: Props) {
 
   // Remember the channel across a trip out to the Menu (see lastStreamId).
   useEffect(() => { if (playingId) lastStreamId = playingId }, [playingId])
+
+  // TELEVISION SIDE of "play on my TV": tell the controllers this set stopped. The engine
+  // publishes the channel and "playing" itself (it learns both from resolve()), but it
+  // cannot see a viewer leaving playback — that is one of the two things only a host
+  // knows, and it is what updateRemoteStatus() is for. Phones never announce themselves
+  // on the rendezvous, so this is TV-only.
+  useEffect(() => {
+    if (!theme.isTV) return
+    return () => { backend.updateRemoteStatus({ state: 'stopped' }) }
+  }, [])
 
   // The Guide tuned a channel while THIS screen stayed mounted (Guide sits above Live
   // in the stack, so navigate('Live') pops back with fresh params instead of
@@ -697,6 +714,12 @@ export function LiveScreen ({ route, navigation }: Props) {
                 volume={volume}
                 muted={muted}
                 onVolume={(v, m) => { setVolume(v); setMuted(m); showBar() }}
+                // Phone-only twice over: the whole button row is inside NowPlayingBar's
+                // !theme.isTV gate, and the hook is false on a television anyway.
+                onSendToTv={sendTv.can && !theme.isTV ? () => { showBar(); setSendTvOpen(true) } : undefined}
+                // Lit while a session runs: casting leaves the local picture playing, so
+                // this is the only sign on the screen that the phone is serving a TV.
+                sendingToTv={sendTv.sending}
               />
             </Animated.View>
           )}
@@ -861,6 +884,14 @@ export function LiveScreen ({ route, navigation }: Props) {
           panel of the channel being watched (TV). The engine attaches the ACTIVE
           stream, so this sheet is only reachable while one is playing. */}
       <ReportSheet visible={reportOpen} channelTitle={playing?.title} onClose={() => setReportOpen(false)} />
+
+      {/* "Play on a TV" (phone) — hand the channel to another Aliran device, or cast it
+          to a Chromecast. Mounted only while open: the sheet runs Cast discovery, which
+          is a standing multicast cost, and it stops when the sheet unmounts. A live
+          session keeps running regardless — it lives in sendToTv.ts, not here. */}
+      {sendTvOpen && playing && !theme.isTV && (
+        <SendToTvSheet stream={playing} onClose={() => setSendTvOpen(false)} />
+      )}
 
       {/* Parental gate: a restricted channel was picked while locked. One correct
           PIN unlocks the rest of the app session. */}

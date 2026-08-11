@@ -1,0 +1,256 @@
+// "Play on a TV" — the sheet a viewer actually sees.
+//
+// THE THING THIS SUITE EXISTS TO DEFEND is that the two ways to put a channel on a
+// television never blur into one list. They are not interchangeable: a handoff leaves
+// this phone free, a cast turns it into an origin server that must stay awake and whose
+// stream is reachable by anything on the network that can read the URL off the
+// television. A viewer who has never heard of either has one source of truth about which
+// one they picked — this sheet — so the sections, their order, and the sentence under
+// each of them are behavior, not decoration.
+//
+// The second thing is the unpinned state. A session runs unpinned whenever the platform
+// gave no usable address for the receiver, and always for a speaker group — so unpinned
+// is a normal outcome, not an edge case, and an unpinned session that says nothing is
+// exactly the silent default the security review objected to.
+
+import React from 'react'
+import ReactTestRenderer from 'react-test-renderer'
+import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
+import { Platform, Text } from 'react-native'
+
+const mockCast: any = {
+  devices: [] as any[],
+  playServices: 'success',
+  deviceName: 'Kitchen display',
+  startSession: jest.fn(async () => true),
+  endCurrentSession: jest.fn(async () => {}),
+  loadMedia: jest.fn(async () => {})
+}
+jest.mock('react-native-google-cast', () => ({
+  CastContext: {
+    getPlayServicesState: async () => mockCast.playServices,
+    getDiscoveryManager: () => ({
+      getDevices: async () => mockCast.devices,
+      onDevicesUpdated: () => ({ remove: () => {} })
+    }),
+    getSessionManager: () => ({
+      startSession: mockCast.startSession,
+      endCurrentSession: mockCast.endCurrentSession,
+      getCurrentCastSession: async () => ({
+        client: { loadMedia: mockCast.loadMedia },
+        getCastDevice: async () => ({ friendlyName: mockCast.deviceName })
+      }),
+      onSessionEnded: () => ({ remove: () => {} })
+    })
+  }
+}), { virtual: true })
+
+// What the ANDROID bridge really sends for a device: ipAddress is a stringified
+// java.net.InetAddress ('hostname/1.2.3.4'), and a group is marked in `capabilities`.
+const CHROMECAST = { deviceId: 'cc-1', friendlyName: 'Kitchen display', modelName: 'Chromecast', ipAddress: '/192.168.1.77', capabilities: ['VideoOut'] }
+const SPEAKER_GROUP = { deviceId: 'cc-1', friendlyName: 'Whole house', ipAddress: '/192.168.1.77', capabilities: ['AudioOut', 'MultizoneGroup'] }
+
+import { SendToTvSheet } from '../src/components/SendToTvSheet'
+import { NowPlayingBar } from '../src/components/NowPlayingBar'
+import { backend, type Stream } from '../src/worklet'
+import { __resetForTests, watchPeers } from '../src/sendToTv'
+
+const CHANNEL: Stream = { id: 'news', title: 'News 24', isLive: true }
+const SESSION = {
+  url: 'http://192.168.1.44:51234/cast/deadbeef/index.m3u8',
+  streamId: 'news', source: 'p2p', host: '192.168.1.44', port: 51234
+}
+
+const TV = { deviceId: 'tv-1', label: 'Living room TV', role: 'tv', platform: 'android', appVersion: '0.5.0' }
+const PHONE = { deviceId: 'ph-2', label: 'Kitchen phone', role: 'controller', platform: 'android', appVersion: '0.5.0' }
+
+function sent (): any[] { return (backend as any).pending }
+function lastOf (type: string): any {
+  const all = sent().filter((m) => m?.type === type)
+  return all[all.length - 1]
+}
+function workletSays (msg: unknown) { (backend as any).onData(JSON.stringify(msg) + '\n') }
+
+function texts (tree: RendererInstance): string[] {
+  return tree.root.findAllByType(Text).map((t) => [t.props.children].flat(9).map(String).join(''))
+}
+function joined (tree: RendererInstance): string { return texts(tree).join(' | ') }
+function rowFor (tree: RendererInstance, label: string) {
+  const found = tree.root.findAll((n) => n.props?.accessibilityRole === 'button' && n.props?.accessibilityLabel === label)
+  if (!found.length) throw new Error(`no device row for "${label}" in: ${joined(tree)}`)
+  return found[0]
+}
+
+const mounted: RendererInstance[] = []
+async function createTree (el: React.ReactElement): Promise<RendererInstance> {
+  let tree!: RendererInstance
+  await ReactTestRenderer.act(async () => { tree = ReactTestRenderer.create(el) })
+  await ReactTestRenderer.act(async () => {})
+  mounted.push(tree)
+  return tree
+}
+
+const realOS = Platform.OS
+let offPeers: (() => void) | null = null
+beforeEach(() => {
+  ;(Platform as { OS: string }).OS = 'android'
+  __resetForTests()
+  ;(backend as any).pending = []
+  mockCast.devices = []
+  mockCast.playServices = 'success'
+  mockCast.deviceName = 'Kitchen display'
+  mockCast.startSession = jest.fn(async () => true)
+  mockCast.endCurrentSession = jest.fn(async () => {})
+  mockCast.loadMedia = jest.fn(async () => {})
+  offPeers = watchPeers()
+})
+afterEach(async () => {
+  while (mounted.length) { const tree = mounted.pop()!; await ReactTestRenderer.act(async () => { tree.unmount() }) }
+  offPeers?.(); offPeers = null
+  ;(Platform as { OS: string }).OS = realOS
+  jest.restoreAllMocks()
+})
+
+// --- the two sections ---------------------------------------------------------------
+
+test('handoff targets come FIRST, and casting is described as this phone doing the work', async () => {
+  mockCast.devices = [CHROMECAST]
+  workletSays({ type: 'remote-peers', peers: [TV] })
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  const all = texts(tree)
+  const yours = all.findIndex((s) => s === 'YOUR DEVICES')
+  const casts = all.findIndex((s) => s === 'CAST DEVICES')
+  expect(yours).toBeGreaterThanOrEqual(0)
+  expect(casts).toBeGreaterThan(yours) // the better mechanism is the one read first
+
+  const body = all.join(' | ')
+  // Each section says what happens to THIS PHONE, in the viewer's terms.
+  expect(body).toContain('The TV gets the channel and plays it. You can then use this phone for other things.')
+  expect(body).toContain('This phone sends the channel to the TV.')
+  // …and the cast section carries the exposure warning where it is read, not in a footer
+  // — including the fact that the app narrows it when it can, so the sentence does not
+  // overstate a risk the active card may then say is closed.
+  expect(body).toContain('Other devices on this network can also get the channel.')
+  expect(body).toContain('The app prevents this when it knows the address of the TV.')
+  // Both targets are pickable.
+  expect(() => rowFor(tree, 'Living room TV')).not.toThrow()
+  expect(() => rowFor(tree, 'Kitchen display')).not.toThrow()
+})
+
+test('a controller is not a handoff target — a play sent to one is refused "unknown"', async () => {
+  workletSays({ type: 'remote-peers', peers: [TV, PHONE] })
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  expect(joined(tree)).toContain('Living room TV')
+  expect(joined(tree)).not.toContain('Kitchen phone')
+})
+
+test('no Cast framework on this device: the whole cast section is absent', async () => {
+  mockCast.playServices = 'missing' // no Play Services — a Fire OS stick, an AOSP box
+  workletSays({ type: 'remote-peers', peers: [TV] })
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  expect(joined(tree)).toContain('YOUR DEVICES')
+  expect(joined(tree)).not.toContain('CAST DEVICES')
+})
+
+// --- the entry point ----------------------------------------------------------------
+
+test('NowPlayingBar grows the TV button only when a handler is given', async () => {
+  const props = { number: 1, clock: '17:45', favorite: false, onSearch: () => {}, onInfo: () => {}, onToggleFavorite: () => {}, onReport: () => {} }
+  const without = await createTree(<NowPlayingBar stream={CHANNEL} {...props} />)
+  expect(joined(without)).not.toContain('Play on TV')
+  const withIt = await createTree(<NowPlayingBar stream={CHANNEL} {...props} onSendToTv={() => {}} />)
+  expect(joined(withIt)).toContain('Play on TV')
+})
+
+// --- sending ------------------------------------------------------------------------
+
+test('tapping a television asks IT to play — nothing is served from this phone', async () => {
+  workletSays({ type: 'remote-peers', peers: [TV] })
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  await ReactTestRenderer.act(async () => { rowFor(tree, 'Living room TV').props.onPress() })
+  const cmd = lastOf('remote-cmd')
+  expect(cmd).toMatchObject({ cmd: 'play', deviceId: 'tv-1', streamId: 'news' })
+  expect(lastOf('cast-start')).toBeUndefined()
+
+  await ReactTestRenderer.act(async () => { workletSays({ type: 'remote-ack', ok: true, tag: cmd.tag }) })
+  expect(joined(tree)).toContain('Living room TV plays the channel.')
+  expect(joined(tree)).toContain('The TV plays the channel. You can use this phone for other things.')
+})
+
+test('a refusal is named, and "did not answer" is never dressed up as "said no"', async () => {
+  workletSays({ type: 'remote-peers', peers: [TV] })
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+
+  await ReactTestRenderer.act(async () => { rowFor(tree, 'Living room TV').props.onPress() })
+  await ReactTestRenderer.act(async () => { workletSays({ type: 'remote-ack', ok: false, error: 'refused', tag: lastOf('remote-cmd').tag }) })
+  expect(joined(tree)).toContain('That device does not accept commands.')
+
+  await ReactTestRenderer.act(async () => { rowFor(tree, 'Living room TV').props.onPress() })
+  await ReactTestRenderer.act(async () => { workletSays({ type: 'remote-ack', ok: false, error: 'timeout', tag: lastOf('remote-cmd').tag }) })
+  const body = joined(tree)
+  expect(body).toContain('That device did not answer. It can still start the channel.')
+  expect(body).not.toContain('does not accept commands')
+})
+
+// --- what the active card says about exposure ---------------------------------------
+
+async function castAndSettle (tree: RendererInstance, row = 'Kitchen display') {
+  await ReactTestRenderer.act(async () => { rowFor(tree, row).props.onPress() })
+  await ReactTestRenderer.act(async () => {
+    workletSays({ type: 'cast-started', ok: true, session: SESSION, tag: lastOf('cast-start').tag })
+  })
+}
+
+test('a PINNED cast says only that television can get the channel', async () => {
+  mockCast.devices = [CHROMECAST]
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  await castAndSettle(tree)
+  const body = joined(tree)
+  expect(body).toContain('This phone sends to Kitchen display.')
+  expect(body).toContain('Only that TV can get the channel.')
+  expect(body).toContain('Keep the phone on. If you stop the phone, the TV stops.')
+})
+
+test('an UNPINNED cast says so on the card — it is never a silent default', async () => {
+  // A device the platform gave no usable address for: the commonest real case.
+  mockCast.devices = [{ ...CHROMECAST, ipAddress: undefined }]
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  await castAndSettle(tree)
+  const body = joined(tree)
+  expect(body).toContain('The app does not know the address of the TV. Other devices on this network can also get the channel.')
+  expect(body).not.toContain('Only that TV can get the channel.')
+})
+
+test('a speaker GROUP gets its own sentence — one address would break the other members', async () => {
+  mockCast.devices = [SPEAKER_GROUP]
+  mockCast.deviceName = 'Whole house'
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  await castAndSettle(tree, 'Whole house')
+  const body = joined(tree)
+  expect(body).toContain('Each device in the group gets the channel.')
+  expect(body).not.toContain('Only that TV can get the channel.')
+  expect(lastOf('cast-start')).not.toHaveProperty('receiverHost')
+})
+
+test('the session URL is never rendered — the card shows names, not the token', async () => {
+  mockCast.devices = [CHROMECAST]
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  await castAndSettle(tree)
+  const body = joined(tree)
+  expect(body).not.toContain('deadbeef')
+  expect(body).not.toContain('/cast/')
+})
+
+test('a second tap cannot race the first: every other row goes inert while one runs', async () => {
+  mockCast.devices = [CHROMECAST]
+  workletSays({ type: 'remote-peers', peers: [TV] })
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  // Leave the cast start unanswered so the sheet stays busy on that row.
+  await ReactTestRenderer.act(async () => { rowFor(tree, 'Kitchen display').props.onPress() })
+  expect(lastOf('cast-start')).toBeTruthy()
+  expect(rowFor(tree, 'Living room TV').props.onPress).toBeUndefined()
+  await ReactTestRenderer.act(async () => {
+    workletSays({ type: 'cast-started', ok: true, session: SESSION, tag: lastOf('cast-start').tag })
+  })
+  expect(rowFor(tree, 'Living room TV').props.onPress).toBeInstanceOf(Function)
+})

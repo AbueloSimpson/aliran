@@ -25,6 +25,7 @@
     "react": "19.2.0",
     "react-native": "npm:react-native-tvos@0.83.0-0",
     "react-native-bare-kit": "^0.13.3",
+    "react-native-google-cast": "^4.9.1",
     "react-native-safe-area-context": "^5.5.2",
     "react-native-screens": "4.25.0",
     "react-native-video": "6.19.2"

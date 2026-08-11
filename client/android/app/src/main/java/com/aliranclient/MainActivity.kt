@@ -1,5 +1,6 @@
 package com.aliranclient
 
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -10,6 +11,7 @@ import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
+import com.google.android.gms.cast.framework.CastContext
 
 class MainActivity : ReactActivity() {
 
@@ -30,6 +32,42 @@ class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(null)
     enableImmersive()
+    warmCastFramework()
+  }
+
+  /**
+   * Google Cast builds its context from an Activity, and discovery does not run until it
+   * exists — react-native-google-cast's own setup instructions put this call right here,
+   * unguarded.
+   *
+   * UNGUARDED IT IS A CRASH AT LAUNCH, not a missing feature: getSharedInstance() THROWS
+   * where Google Play Services is absent, and this fleet runs on Fire OS sticks and AOSP
+   * boxes where it is. So it is swallowed whole, and whether casting exists on this device
+   * is decided in JS by CastContext.getPlayServicesState() (client/src/cast.ts), which
+   * probes availability without ever touching the call that throws.
+   *
+   * The Google API is called rather than the library's own RNGCCastContext wrapper (which
+   * guards the same way) so this file depends on the stable Cast SDK surface instead of a
+   * third-party internal package path.
+   *
+   * SKIPPED ON A TELEVISION. Casting FROM a television is meaningless (the set IS the
+   * receiver), the button is gated off there anyway, and this is Play Services work at
+   * every launch on the slowest hardware in the fleet. Leanback covers Android TV; no
+   * touchscreen covers the Fire TV sticks, which have no Play Services to warm regardless.
+   */
+  private fun warmCastFramework() {
+    try {
+      val pm = packageManager
+      if (pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+          !pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
+      ) {
+        return
+      }
+      CastContext.getSharedInstance(this)
+    } catch (t: Throwable) {
+      // No Play Services, no Cast framework, or a device that refuses it: casting is
+      // simply not offered here, and the app carries on being a television app.
+    }
   }
 
   /** Re-hide the bars after a transient reveal (edge swipe) or a dialog/keyboard. */

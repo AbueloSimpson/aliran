@@ -75,6 +75,30 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
   the host app via the callbacks — see `client/src/screens/LiveScreen.tsx` for a
   complete example (the Aliran app dogfoods this package).
 
+**Putting a channel on a television** — two different mechanisms behind one phrase, and
+a host that presents them as one will mislead a viewer:
+
+- `backend.remotePlay(deviceId, streamId)` asks **another Aliran device on the same
+  account** to tune the channel itself. It joins the swarm, decrypts and plays; the
+  sending device is then free — pocket it, switch it off, leave the house. Nothing is
+  served from the sender and there is no URL to leak. Join the rendezvous first with
+  `backend.startRemote({ role })` (`'tv'` announces and accepts, `'controller'` sends),
+  and build the picker from `backend.onRemotes()` filtered to `role === 'tv'`. Needs
+  `remote: { control: true }` at `start()`. A `{state:'play'}` on `backend.onRemote()` is
+  a **command, not a notification**: the engine checked entitlements and deliberately did
+  not tune it, so a `restricted` channel still owes the viewer the same parental gate a
+  local zap goes through.
+- `backend.startCast(streamId, opts)` makes **this device the origin server** for a
+  Chromecast: a second HTTP server binds one private address and the receiver fetches
+  every segment from it. So the device must stay awake and on the network, and the media
+  URL is readable off the receiver by anything on the network that joins its session —
+  measured, not theorised. **Pass `opts.receiverHost` whenever you know it** and the
+  session serves that address only; the engine cannot discover it, because it does not
+  speak the Cast protocol. A multi-room group fetches from every member, so pass all of
+  them or none. Tell the viewer which of the two states they are in — an unpinned session
+  should be visible, not a silent default. Cast discovery, the receiver's address and the
+  Play Services gate are the host's; `client/src/cast.ts` is a worked example.
+
 Requirements: peers `react-native-bare-kit` (min SDK 29) and `react-native-video`;
 Android release builds need cleartext-to-loopback permitted for the local media
 server (see the [client build guide](https://abuelosimpson.github.io/aliran/client-build/)).

@@ -128,6 +128,32 @@
 //                                        boot, because the stored record names its own
 //                                        operator and a resume may be what builds the
 //                                        engine. Answers 'signin-resumed'.
+//   "Send to TV", the PLAYBACK half (sdk/player.js startCast + sdk/remote-control.js).
+//   Two ways to put this device's channel on a television, and they are not the same
+//   thing: a CAST makes this device the origin server for a Chromecast, and a HANDOFF
+//   asks another Aliran device on this account to pull the channel itself.
+//        { type:'cast-start', streamId, receiverHost?, advertiseHost?, tag? }
+//                                     -> stand up the LAN cast server and answer
+//                                        'cast-started' with the session (url, host,
+//                                        port, token, candidates). receiverHost = the
+//                                        receiver's address, or an array of them: the
+//                                        session then serves that peer ONLY. The host
+//                                        is the only layer that knows it (the engine
+//                                        does not speak Cast), so it is passed in here.
+//        { type:'cast-stop', tag? }   -> end it. Answers 'cast-stopped'.
+//        { type:'remote-start', role, label?, acceptPlay?, tag? }
+//                                     -> join the account rendezvous ('tv' announces and
+//                                        accepts, 'controller' looks up and sends).
+//                                        Answers 'remote-started', then pushes the peer
+//                                        list as it stands.
+//        { type:'remote-list', tag? } -> the cached peer list, as 'remote-peers'.
+//        { type:'remote-cmd', cmd:'play'|'stop', deviceId, streamId?, tag? }
+//                                     -> controller role: ask that television to play a
+//                                        channel, or to stop. Answers 'remote-ack'.
+//        { type:'remote-accept', ok } -> TV role: take commands at all, or refuse them.
+//        { type:'remote-status', state?, position? }   -> TV role: the two things only a
+//                                        host knows (paused, and the playhead).
+//        { type:'remote-leave' }      -> leave the rendezvous.
 //        { type:'vault-reply', id, ok, data?, code? }  -> the host's answer to a
 //                                        'vault-request' (below). `data` is base64 on ok;
 //                                        `code` is the key store's reason on failure, and
@@ -203,6 +229,27 @@
 //          material is still stored; every other error already erased it. `logins` is what
 //          the attempt COST: how many `login` RPCs reached the panel, which is the only
 //          number a caller can budget a retry loop with — see resumeSignIn)
+//        { type:'cast-started', ok, session?, error?, message?, tag? }   (answer to
+//          'cast-start'. THE WHOLE `cast-` FAMILY IS EXCLUDED FROM THE RN DEBUG LOGGER
+//          BY PREFIX: `session.url` carries the session token, and this app ships
+//          debug:true in release builds, so without that exclusion the token would be
+//          printed into `adb logcat`. Excluded as a family, not one message at a time,
+//          so a message added later is excluded by default)
+//        { type:'cast-stopped', ok, tag? }
+//        { type:'cast-ended', state:'ended', streamId, reason }   (the session ended ON
+//          ITS OWN — the feed was evicted or a retune closed it. stopCast() does NOT
+//          produce this: the caller that asked already knows)
+//        { type:'remote-peers', peers }   (the account's own other devices on the
+//          rendezvous; re-sent on every change. `role` says which are televisions —
+//          a 'play' to anything else is refused 'unknown')
+//        { type:'remote-started', ok, role?, error?, message?, tag? }
+//        { type:'remote-ack', ok, error?, message?, tag? }   (answer to 'remote-cmd';
+//          error is a RemoteControlErrorCode — 'timeout' NEVER means the device
+//          declined, and 'unavailable' is the catch-all, never "nothing is broadcasting")
+//        { type:'remote-info', role, state, … }   (a command this TV was given, or the
+//          status of a television a controller is pointed at. {state:'play'} is a
+//          COMMAND: the engine checked entitlements and deliberately did NOT tune it,
+//          so the host still owes a `restricted` channel its parental-PIN gate)
 //        { type:'vault-request', op:'wrap'|'unwrap', id, data }   (NOT an event: the
 //          worklet asking the HOST to use the platform key store on its behalf, because
 //          a Bare runtime cannot reach a native module. `data` is base64 and is the one
@@ -866,6 +913,17 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
   player.on('zap-prefetch', (e) => send({ type: 'zap-prefetch', ...e }))
+  // "Send to TV", the CAST half. Relayed under the `cast-` prefix like the two other
+  // families with something to hide: a cast reply carries the session URL, and the
+  // session URL carries the token. This event carries neither — it says a session
+  // stopped — but it wears the prefix anyway, because the RN binding excludes the
+  // FAMILY and a message that opted out one at a time is a message someone forgets.
+  player.on('cast', (e) => send({ type: 'cast-ended', ...e }))
+  // …and the HANDOFF half. `remotes` is the picker's device list; `remote` is a command
+  // or a status push. Neither is a secret — a deviceId is a picker handle, not a
+  // credential (sdk/remote-control.js) — so both log like every other relay.
+  player.on('remotes', (peers) => send({ type: 'remote-peers', peers }))
+  player.on('remote', (e) => send({ type: 'remote-info', ...e }))
   // The account material a RECEIVED handover delivered. Fires once, and only on a build
   // that asked for it (remote.keepSignIn — televisions). It NEVER reaches send(): it is
   // consumed here, sealed, and only the sealed box touches the disk. That asymmetry is
@@ -1139,6 +1197,109 @@ IPC.on('data', (data) => {
           send({ type: 'report-result', ok: res.ok === true, ...(res.error ? { error: res.error } : {}), ...(res.retryAfter ? { retryAfter: res.retryAfter } : {}), ...(res.id ? { id: res.id } : {}) })
         }).catch((err) => send({ type: 'report-result', ok: false, error: String((err && err.message) || err) }))
       }
+    } else if (msg.type === 'cast-start') {
+      // Stand up the LAN server a Chromecast fetches from. ALWAYS answers: a sheet is
+      // showing a spinner on the device row that was tapped, and every way this can fail
+      // — no engine, no private address, a channel this account cannot show — has to
+      // reach it. The engine's own rejections carry the sentence worth showing.
+      //
+      // receiverHost is passed through UNVALIDATED on purpose: the SDK validates it (and
+      // throws on an empty array rather than silently serving everyone), and a second
+      // opinion here would only be a second thing to keep in step.
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      if (!player) {
+        send({ type: 'cast-started', ok: false, error: 'offline', message: 'sign in on this device first', ...tag })
+      } else {
+        const opts = {}
+        if (msg.receiverHost != null) opts.receiverHost = msg.receiverHost
+        if (typeof msg.advertiseHost === 'string') opts.advertiseHost = msg.advertiseHost
+        try {
+          player.startCast(String(msg.streamId || ''), opts)
+            .then((s) => send({ type: 'cast-started', ok: true, session: s, ...tag }))
+            .catch((err) => send({ type: 'cast-started', ok: false, message: String((err && err.message) || err), ...tag }))
+        } catch (err) {
+          send({ type: 'cast-started', ok: false, message: String((err && err.message) || err), ...tag })
+        }
+      }
+    } else if (msg.type === 'cast-stop') {
+      // Idempotent, and answered either way — the sheet's Stop button is disabled until
+      // this lands, so a swallowed reply is a button that never comes back.
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      if (!player) {
+        send({ type: 'cast-stopped', ok: false, ...tag })
+      } else {
+        try {
+          player.stopCast()
+            .then((ok) => send({ type: 'cast-stopped', ok: ok === true, ...tag }))
+            .catch(() => send({ type: 'cast-stopped', ok: false, ...tag }))
+        } catch { send({ type: 'cast-stopped', ok: false, ...tag }) }
+      }
+    } else if (msg.type === 'remote-start') {
+      // Join the account rendezvous — 'tv' announces and takes commands, 'controller'
+      // looks up and sends them. Needs a live session AND a build that opted into
+      // remote.control, and BOTH refusals are worth naming: the second cannot be fixed
+      // at runtime. Answered always (the picker waits on it before it lists anything).
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      if (!player) {
+        send({ type: 'remote-started', ok: false, error: 'offline', message: 'sign in on this device first', ...tag })
+      } else {
+        try {
+          player.startRemote({ role: msg.role, label: msg.label, ...(typeof msg.acceptPlay === 'boolean' ? { acceptPlay: msg.acceptPlay } : {}) })
+            .then((r) => {
+              send({ type: 'remote-started', ok: true, role: r.role, ...tag })
+              // The peer list as it stands the moment the rendezvous is live. Without it
+              // a picker opened before the first `remotes` event shows an empty list and
+              // no reason for it.
+              try { send({ type: 'remote-peers', peers: player.listRemotes() }) } catch { /* engine gone */ }
+            })
+            .catch((err) => send({ type: 'remote-started', ok: false, ...(err && err.code ? { error: err.code } : {}), message: String((err && err.message) || err), ...tag }))
+        } catch (err) {
+          send({ type: 'remote-started', ok: false, message: String((err && err.message) || err), ...tag })
+        }
+      }
+    } else if (msg.type === 'remote-list') {
+      // The cached list, on demand — a sheet that mounts between two `remotes` events
+      // has nothing to draw otherwise.
+      let peers = []
+      try { peers = player ? player.listRemotes() : [] } catch { peers = [] }
+      send({ type: 'remote-peers', peers, ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {}) })
+    } else if (msg.type === 'remote-cmd') {
+      // Controller role: ask a television to play or stop. ONE message for both because
+      // they share an answer — accepted, or a RemoteControlError code the sheet turns
+      // into a sentence. `error` is load-bearing: 'timeout' NEVER means the device
+      // declined, and the copy has to be able to tell those apart.
+      const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
+      const done = (p) => p
+        .then(() => send({ type: 'remote-ack', ok: true, ...tag }))
+        .catch((err) => send({ type: 'remote-ack', ok: false, ...(err && err.code ? { error: err.code } : {}), message: String((err && err.message) || err), ...tag }))
+      if (!player) {
+        send({ type: 'remote-ack', ok: false, error: 'offline', ...tag })
+      } else {
+        try {
+          if (msg.cmd === 'play') done(player.remotePlay(String(msg.deviceId || ''), String(msg.streamId || '')))
+          else if (msg.cmd === 'stop') done(player.remoteStop(String(msg.deviceId || '')))
+          else send({ type: 'remote-ack', ok: false, error: 'malformed', ...tag })
+        } catch (err) {
+          send({ type: 'remote-ack', ok: false, ...(err && err.code ? { error: err.code } : {}), message: String((err && err.message) || err), ...tag })
+        }
+      }
+    } else if (msg.type === 'remote-accept') {
+      // TV role, the take-over switch. Anything but an explicit false leaves it on.
+      if (player) { try { player.setRemoteAccept(msg.ok !== false) } catch (err) { fail(err) } }
+    } else if (msg.type === 'remote-status') {
+      // TV role. The two things only a HOST knows — paused, and where the playhead is.
+      // Fire-and-forget: nothing is waiting on it, and a status push that failed is not
+      // worth an error banner over a picture that is playing fine.
+      if (player) {
+        try {
+          player.updateRemoteStatus({
+            ...(typeof msg.state === 'string' ? { state: msg.state } : {}),
+            ...(typeof msg.position === 'number' ? { position: msg.position } : {})
+          })
+        } catch { /* no rendezvous, or the engine is gone */ }
+      }
+    } else if (msg.type === 'remote-leave') {
+      if (player) { try { player.stopRemote().catch(() => {}) } catch { /* already gone */ } }
     } else if (msg.feedKey && msg.encryptionKey) {
       ensurePlayer().serveFeed(msg.feedKey, msg.encryptionKey).then((port) => send({ type: 'port', port })).catch(fail)
     } else if (msg.username) {

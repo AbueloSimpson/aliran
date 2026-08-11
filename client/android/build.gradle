@@ -15,6 +15,13 @@ buildscript {
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"
+        // Google Cast ("Play on a TV"). PINNED ON PURPOSE: react-native-google-cast's
+        // own build.gradle reads this ext and falls back to the dynamic version `+`,
+        // which would let two builds of the same commit ship different Cast SDKs. The
+        // app module declares the same coordinate (android/app/build.gradle) because it
+        // compiles against these classes itself and the library exposes them only as an
+        // `implementation` dependency — both must resolve to ONE version.
+        castFrameworkVersion = "21.5.0"
     }
     repositories {
         google()

@@ -20,7 +20,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { AppState, InteractionManager, View } from 'react-native'
-import { NavigationContainer } from '@react-navigation/native'
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranBackend, EngineNotice } from '@aliran/react-native'
 import { setLocale, useI18n } from '@aliran/i18n'
@@ -33,6 +33,7 @@ import { categoryModel, channelNumbers } from './catalog'
 import { visibleStreams } from './parental'
 import { hasBakedKey, loadServiceDescriptor } from './config'
 import { checkForUpdate, onUpdateAvailable, type AvailableUpdate } from './update'
+import { joinRendezvous, watchPeers } from './sendToTv'
 import { theme } from './theme'
 import { UpdateBanner } from './components/UpdateBanner'
 import { SplashScreen } from './screens/SplashScreen'
@@ -93,6 +94,11 @@ export type RootStackParamList = {
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
+
+// "Play on my TV" arrives from OUTSIDE the tree — another device of this account sends
+// it — so the routing needs a handle that does not belong to any screen. Nothing else
+// uses this; screens keep their own navigation prop.
+const navRef = createNavigationContainerRef<RootStackParamList>()
 
 // Feed connection-cost changes to the engine so "Smooth zapping" auto-suspends on
 // metered networks (cellular / metered hotspots). Optional native module: a build
@@ -164,6 +170,29 @@ export default function App () {
           channelNumbers(v)
         })
       }
+      // "Send to TV": the catalog push is the first moment a login is KNOWN to have
+      // happened, and startRemote() needs one. It is re-sent live on every panel edit and
+      // again after a sign-out/sign-in, so the once-per-session latch lives in
+      // sendToTv.ts — where the sign-out that has to clear it can reach it. Never throws,
+      // and a build without `remote: { control: true }` simply answers false: the feature
+      // is then absent, which is not a failure to report.
+      if (m.type === 'streams') joinRendezvous().catch(() => {})
+    })
+    const offPeers = watchPeers()
+    // TELEVISION SIDE. A {state:'play'} is a COMMAND, not a notification: the engine
+    // checked the channel against this device's entitlements and deliberately did NOT
+    // tune it, precisely so the host still owes a `restricted` channel its parental-PIN
+    // gate. Routing through Live's own param path is what keeps that gate in front of it
+    // — that path already runs play(), which raises the PIN modal.
+    const offRemote = backend.onRemote((info) => {
+      if (info.role !== 'tv' || !navRef.isReady()) return
+      if (info.state === 'play' && info.streamId) {
+        // tuneKey: a value-equal streamId alone would never re-fire Live's param effect,
+        // so a second "play this again" from the phone would do nothing.
+        navRef.navigate('Live', { streamId: info.streamId, tuneKey: Date.now() })
+      } else if (info.state === 'stop') {
+        navRef.navigate('Menu')
+      }
     })
     const offUpdate = onUpdateAvailable(setUpdate)
     const appState = AppState.addEventListener('change', (s) => {
@@ -183,13 +212,13 @@ export default function App () {
       // the viewer battery and uplink.
       offNet = NetInfo?.addEventListener((s) => backend.setNetworkProfile(!!s?.details?.isConnectionExpensive, s?.type === 'cellular'))
     } catch { /* native module absent (stale APK / jest) — expensive-network gate just stays off */ }
-    return () => { off(); offUpdate(); appState.remove(); if (offNet) offNet() }
+    return () => { off(); offPeers(); offRemote(); offUpdate(); appState.remove(); if (offNet) offNet() }
   }, [])
 
   if (!engineSupported) return <EngineUnavailable />
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navRef}>
       <View style={{ flex: 1 }}>
         <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerShown: false }}>
           <Stack.Screen name="Splash">

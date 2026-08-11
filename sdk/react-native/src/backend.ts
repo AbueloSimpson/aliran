@@ -465,6 +465,120 @@ export interface SignInSendResult {
   message?: string
 }
 
+// --- "Send to TV": cast a channel to a Chromecast, or hand it to another device ---
+
+/**
+ * A live cast session — this device serving one channel to a receiver on the LAN.
+ *
+ * `url` IS THE SECRET. It carries the per-session token, and it is what makes the whole
+ * `cast-` message family invisible to the debug logger. Render nothing from it, log
+ * nothing from it, and put it nowhere a crash reporter would follow.
+ *
+ * And the token is a session SCOPE, not an access boundary: a Cast receiver hands the
+ * whole media URL back to any unauthenticated peer that joins its session — measured on
+ * a TCL Google TV running the stock receiver. `receiverHost` is what narrows that, and
+ * it is off unless the host passed one.
+ */
+export interface CastSessionInfo {
+  /** The URL the receiver loads. Contains the session token — never log it. */
+  url: string
+  streamId: string
+  /** 'p2p' = served off this device's LAN server; 'cdn' = an operator URL, no server. */
+  source: 'p2p' | 'cdn'
+  /** LAN address the URL advertises AND the server bound to — absent for 'cdn'. */
+  host?: string
+  port?: number
+  /** The addresses this session serves, and nothing else. Absent = it serves ANY peer
+   *  that can read the URL off the receiver — a state to show, not to assume. */
+  receiverHost?: string[]
+  type?: 'live' | 'vod'
+  /** Redirect channels only: headers the receiver must send (provider hotlink checks). */
+  headers?: Record<string, string>
+  /** Every private address this device offered, best guess first. Offer these when a
+   *  receiver cannot reach `host`, and start again with a chosen advertiseHost. */
+  candidates?: string[]
+}
+
+/** Why a cast session ended on its own. None of them is the viewer's doing, and all
+ *  three mean the same thing on screen: it stopped, start it again. */
+export type CastEndedReason = 'feed-evicted' | 'retune-abandoned' | 'retune-failed'
+
+/** How a device on the account rendezvous describes itself. `deviceId` is a PICKER
+ *  HANDLE, not a credential: it proves "some device of this account" and no more. */
+export interface RemoteIdentity {
+  deviceId: string
+  label: string | null
+  platform: string | null
+  appVersion: string | null
+}
+
+/** …plus which end of the feature it runs. Only the peer list carries `role` — a
+ *  `from` on a command is the peer's own message and has none. */
+export interface RemotePeer extends RemoteIdentity {
+  role: 'tv' | 'controller'
+}
+
+/** Why a remote command did not land.
+ *
+ *  'refused' = remote control is switched off there. 'unentitled' = its account cannot
+ *  show that channel. 'unavailable' = it TOOK the command and could not carry it out —
+ *  the catch-all, and never "nothing is broadcasting". 'timeout' = nothing came back,
+ *  and it NEVER means the device declined. */
+export type RemoteControlErrorCode =
+  | 'malformed' | 'timeout' | 'version' | 'unauthorized'
+  | 'refused' | 'unentitled' | 'unavailable' | 'unknown' | 'offline'
+
+/** What a television reports it is doing. */
+export type RemoteStatusState = 'playing' | 'paused' | 'stopped'
+
+/**
+ * A command this device was given (role 'tv'), or the state of a television this device
+ * is pointed at (role 'controller').
+ *
+ * {state:'play'} IS A COMMAND, NOT A NOTIFICATION. The engine checked the channel
+ * against this device's entitlements and deliberately did not tune it — so a
+ * `restricted` channel still owes the viewer the same parental-PIN gate a local zap
+ * goes through, and the host is what owes it.
+ */
+export interface RemoteInfo {
+  role: 'tv' | 'controller'
+  state: 'play' | 'stop' | 'refused' | 'status'
+  streamId?: string
+  /** state 'play': parental-gated — challenge before tuning. */
+  restricted?: boolean
+  title?: string
+  command?: 'play' | 'stop'
+  reason?: RemoteControlErrorCode | string
+  /** The sender's own claim about itself. No `role` on it — see RemotePeer. */
+  from?: RemoteIdentity
+  status?: { streamId: string | null; state: RemoteStatusState; position: number | null }
+}
+
+/** Answer to startCast(). ok=false carries the engine's own sentence. */
+export interface CastStartResult {
+  ok: boolean
+  session?: CastSessionInfo
+  error?: string
+  message?: string
+}
+
+/** Answer to remotePlay()/remoteStop(). See RemoteControlErrorCode before writing copy
+ *  for `error` — three of those codes are routinely mistaken for each other. */
+export interface RemoteCommandResult {
+  ok: boolean
+  error?: RemoteControlErrorCode | string
+  message?: string
+}
+
+/** Answer to startRemote(). ok=false with no `error` usually means this build never
+ *  asked for `remote: { control: true }` — which cannot be fixed at runtime. */
+export interface RemoteStartResult {
+  ok: boolean
+  role?: 'tv' | 'controller'
+  error?: string
+  message?: string
+}
+
 export type BackendMessage =
   | { type: 'ready' }
   | { type: 'streams'; streams: Stream[]; vod?: VodConfig }
@@ -542,6 +656,23 @@ export type BackendMessage =
   | { type: 'signin-ack'; ok: boolean; tag?: string }
   // Answer to resumeSignIn(): did the stored sign-in put this device back in a session?
   | { type: 'signin-resumed'; ok: boolean; error?: ResumeSignInError; message?: string; retry?: boolean; tag?: string }
+  // Answer to startCast(). `session.url` carries the session token, which is why the
+  // whole `cast-` family skips the debug logger below.
+  | { type: 'cast-started'; ok: boolean; session?: CastSessionInfo; error?: string; message?: string; tag?: string }
+  // Answer to stopCast().
+  | { type: 'cast-stopped'; ok: boolean; tag?: string }
+  // The session ended ON ITS OWN — stop showing "Casting". stopCast() does not produce
+  // this: the caller that asked for the stop already knows.
+  | { type: 'cast-ended'; state: 'ended'; streamId: string; reason: CastEndedReason | string }
+  // The account's own other devices on the rendezvous; re-sent on every change.
+  | { type: 'remote-peers'; peers: RemotePeer[]; tag?: string }
+  // Answer to startRemote().
+  | { type: 'remote-started'; ok: boolean; role?: 'tv' | 'controller'; error?: string; message?: string; tag?: string }
+  // Answer to remotePlay()/remoteStop().
+  | { type: 'remote-ack'; ok: boolean; error?: RemoteControlErrorCode | string; message?: string; tag?: string }
+  // A command this device was given, or a television's status. See RemoteInfo — a
+  // {state:'play'} still owes a restricted channel its PIN gate.
+  | ({ type: 'remote-info' } & RemoteInfo)
 
 /**
  * The worklet asking THIS layer to use the platform key store on its behalf (Android
@@ -568,6 +699,17 @@ const SIGNIN_RESUME_MS = 45000
 // …and the three one-word answers, which are in-memory calls on an exchange that is
 // already running. Short: a slow one means the worklet is gone.
 const SIGNIN_ACK_MS = 5000
+// A cast start opens the feed (a cold DHT lookup on a channel that is not the one
+// playing), pins it and binds a server. Sized like a first tune, not like a local call.
+const CAST_START_MS = 30000
+// A stop is local: close sockets, close the server, forget the token.
+const CAST_STOP_MS = 5000
+// Joining the rendezvous derives its key and joins a DHT topic.
+const REMOTE_START_MS = 20000
+// A command crosses to another device and waits for it to accept. The engine has its own
+// (shorter) timeout underneath and answers 'timeout' itself, so this ceiling is only
+// reached when the worklet is gone.
+const REMOTE_CMD_MS = 20000
 
 export interface StartOptions {
   /** Omit to boot the worklet WITHOUT connecting (S36 runtime-descriptor flow: read
@@ -682,6 +824,21 @@ export class AliranBackend {
    */
   signinTv: SigninPairInfo | null = null
   signinPhone: SigninPairInfo | null = null
+  /**
+   * The account's other devices on the rendezvous, latest push. Empty until
+   * startRemote() joins one. Build a "send to" list from the peers whose `role` is
+   * 'tv' — a play to anything else is refused 'unknown'.
+   */
+  remotes: RemotePeer[] = []
+  /**
+   * The live cast session, or null. Set by startCast(), cleared by stopCast() AND by
+   * the session ending on its own ({type:'cast-ended'}) — so a sheet that re-mounts
+   * reads the truth rather than a session that stopped while it was closed.
+   *
+   * HOLDS THE SESSION URL, which holds the token. Same rule as the sign-in fields
+   * above: render what you need from `host`/`streamId`, log and serialize nothing.
+   */
+  castSession: CastSessionInfo | null = null
 
   private worklet: WorkletInstance | null = null
   // Flips when start() finds no engine in this build/device: every later send()
@@ -1106,6 +1263,146 @@ export class AliranBackend {
   /** Phone role. Abandon an in-flight send (the TV's code is spent either way). */
   cancelSendSignIn () { this.send({ type: 'signin-send-cancel' }) }
 
+  // --- "Send to TV" ------------------------------------------------------------
+  //
+  // TWO DIFFERENT THINGS, and a host that presents them as one will mislead a viewer.
+  //
+  //   startCast()   makes THIS DEVICE the origin server. A second HTTP server binds one
+  //                 private address, the feed is pinned for the session, and a receiver
+  //                 fetches every segment from here. So this device has to stay awake and
+  //                 on the network, it is decrypting and serving the whole time, and the
+  //                 media URL is reachable by anything that can read it off the receiver.
+  //                 Works with any Chromecast; the host does the discovery.
+  //
+  //   remotePlay()  asks ANOTHER ALIRAN DEVICE on the same account to tune the channel
+  //                 itself. It joins the swarm, it decrypts, it plays. This device sends
+  //                 one message and can then be switched off. Nothing is served from
+  //                 here and no URL exists to leak. Only works to a device running this
+  //                 app, signed into this account, with remote control on.
+  //
+  // Where both are possible, the second is better in every dimension a viewer would care
+  // about. Say so in the picker.
+
+  /**
+   * Serve a channel to a Cast receiver on this device's LAN.
+   *
+   * PASS `receiverHost` WHENEVER YOU KNOW IT. The engine cannot discover it — it does not
+   * speak the Cast protocol — and without it the session serves any peer that can read
+   * the media URL, which a receiver hands out to anything that joins its session. One
+   * address, or an array. A multi-room GROUP fetches from EVERY member, so one address is
+   * wrong for a group: pass all of them or none. An EMPTY array is refused rather than
+   * treated as "unpinned" — omit the field for that.
+   *
+   * `advertiseHost` overrides the auto-detected LAN address (a Hyper-V/WSL bridge winning
+   * the pick, or a device with no private address at all). The answer's `candidates` are
+   * what to offer a viewer whose receiver cannot reach the address that was chosen.
+   *
+   * Never rejects: the failures are all worth a sentence on a screen.
+   */
+  async startCast (streamId: string, opts: { receiverHost?: string | string[]; advertiseHost?: string } = {}): Promise<CastStartResult> {
+    const m = await this.request('cast-started', {
+      type: 'cast-start',
+      streamId,
+      ...(opts.receiverHost != null ? { receiverHost: opts.receiverHost } : {}),
+      ...(opts.advertiseHost ? { advertiseHost: opts.advertiseHost } : {})
+    }, CAST_START_MS)
+    if (!m || m.type !== 'cast-started') return { ok: false, error: 'timeout', message: 'the engine did not answer' }
+    if (m.ok && m.session) this.castSession = m.session
+    return { ok: m.ok, session: m.session, error: m.error, message: m.message }
+  }
+
+  /** End the cast session — sockets hung up, server closed, token dead. Idempotent, and
+   *  it does NOT produce a {type:'cast-ended'}: that message is only ever the session
+   *  stopping by itself. */
+  async stopCast (): Promise<boolean> {
+    const m = await this.request('cast-stopped', { type: 'cast-stop' }, CAST_STOP_MS)
+    // Cleared whatever came back. A stop that timed out has still left the host with no
+    // way to reach the session, and a UI still showing "Casting" over a dead server is
+    // worse than one that stopped a beat early.
+    this.castSession = null
+    return !!m && m.type === 'cast-stopped' && m.ok === true
+  }
+
+  /**
+   * Join the account rendezvous — the channel this device's other devices meet on.
+   * 'tv' announces itself and accepts commands; 'controller' looks up and sends them.
+   *
+   * Needs a live session AND a build constructed with `remote: { control: true }`. The
+   * second is boot-time only: a false answer on a build that never asked for it is not
+   * retryable, and no amount of waiting changes it.
+   */
+  async startRemote (opts: { role: 'tv' | 'controller'; label?: string; acceptPlay?: boolean }): Promise<RemoteStartResult> {
+    const m = await this.request('remote-started', {
+      type: 'remote-start',
+      role: opts.role,
+      ...(opts.label ? { label: opts.label } : {}),
+      ...(typeof opts.acceptPlay === 'boolean' ? { acceptPlay: opts.acceptPlay } : {})
+    }, REMOTE_START_MS)
+    if (!m || m.type !== 'remote-started') return { ok: false, error: 'timeout', message: 'the engine did not answer' }
+    return { ok: m.ok, role: m.role, error: m.error, message: m.message }
+  }
+
+  /** Leave the rendezvous. Idempotent. */
+  stopRemote () { this.send({ type: 'remote-leave' }) }
+
+  /** Ask the worklet to re-send the peer list (it also arrives unprompted on every
+   *  change). For a picker that mounted between two pushes. */
+  refreshRemotes () { this.send({ type: 'remote-list' }) }
+
+  /**
+   * Controller role. Ask a TELEVISION to play a channel. ok=true means it ACCEPTED —
+   * it checked its own entitlements and told its host to tune. What then happened
+   * arrives as a status push on {type:'remote-info'}.
+   *
+   * Read `error` before writing the message: 'timeout' NEVER means the device declined,
+   * and 'unavailable' is the catch-all, not "nothing is broadcasting".
+   */
+  async remotePlay (deviceId: string, streamId: string): Promise<RemoteCommandResult> {
+    return this.remoteCommand({ type: 'remote-cmd', cmd: 'play', deviceId, streamId })
+  }
+
+  /** Controller role. Ask that device to stop. */
+  async remoteStop (deviceId: string): Promise<RemoteCommandResult> {
+    return this.remoteCommand({ type: 'remote-cmd', cmd: 'stop', deviceId })
+  }
+
+  private async remoteCommand (body: Record<string, unknown>): Promise<RemoteCommandResult> {
+    const m = await this.request('remote-ack', body, REMOTE_CMD_MS)
+    if (!m || m.type !== 'remote-ack') return { ok: false, error: 'timeout', message: 'the engine did not answer' }
+    return { ok: m.ok, error: m.error, message: m.message }
+  }
+
+  /** TV role. The take-over switch: off refuses play AND stop. */
+  setRemoteAccept (ok: boolean) { this.send({ type: 'remote-accept', ok }) }
+
+  /** TV role. The two things only a HOST knows — paused, and the playhead. The engine
+   *  already publishes the channel and whether it is playing. */
+  updateRemoteStatus (status: { state?: RemoteStatusState; position?: number }) {
+    this.send({ type: 'remote-status', ...status })
+  }
+
+  /** Subscribe to the peer list. Fires with the CURRENT list right away, so a picker
+   *  never paints an empty section it has no reason for. Returns the unsubscribe. */
+  onRemotes (fn: (peers: RemotePeer[]) => void) {
+    const off = this.onMessage((m) => { if (m.type === 'remote-peers') fn(m.peers || []) })
+    fn(this.remotes)
+    return off
+  }
+
+  /** Subscribe to commands and status pushes ({type:'remote-info'}). */
+  onRemote (fn: (info: RemoteInfo) => void) {
+    return this.onMessage((m) => {
+      if (m.type !== 'remote-info') return
+      const { type, ...info } = m // eslint-disable-line @typescript-eslint/no-unused-vars
+      fn(info)
+    })
+  }
+
+  /** Subscribe to a cast session ending ON ITS OWN. Not fired by stopCast(). */
+  onCastEnded (fn: (info: { streamId: string; reason: CastEndedReason | string }) => void) {
+    return this.onMessage((m) => { if (m.type === 'cast-ended') fn({ streamId: m.streamId, reason: m.reason }) })
+  }
+
   /** Subscribe to the sign-in progress stream only. Returns the unsubscribe function
    *  (usable as a useEffect cleanup). A screen that mounts late should also read
    *  `signinTv` / `signinPhone` — the step it missed is cached there. */
@@ -1168,13 +1465,21 @@ export class AliranBackend {
         //   vault-*   carries the file key that seals a stored sign-in. Not an account key
         //             — those never leave the worklet — but it is the one thing on this
         //             channel that would let a reader of the log open the record beside it.
+        //   cast-*    carries the cast session URL, and the URL carries the session
+        //             token. It is not the boundary a shared network keeps — a receiver
+        //             reads it back to any peer that joins its session — but printing it
+        //             into `adb logcat` hands it to anything on the DEVICE as well, and
+        //             this app ships debug:true in release builds. Excluded as a FAMILY,
+        //             like the two above: {type:'cast-ended'} carries no URL at all and
+        //             still wears the prefix, because the alternative is a list somebody
+        //             has to remember to add to.
         //
         // Everything else: long lines collapse to their type to keep the log readable —
         // EXCEPT 'error', where the payload (often a worklet stack trace) is the only
         // diagnostic there is.
         if (this.debug) {
           const secret = msg.type === 'prefs' ||
-            (typeof msg.type === 'string' && (msg.type.startsWith('signin-') || msg.type.startsWith('vault-')))
+            (typeof msg.type === 'string' && (msg.type.startsWith('signin-') || msg.type.startsWith('vault-') || msg.type.startsWith('cast-')))
           console.log('[backend]', secret ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
         }
         // Handled HERE and never relayed: the worklet is asking this layer to use the
@@ -1207,6 +1512,11 @@ export class AliranBackend {
           if (info.role === 'tv') this.signinTv = info
           else if (info.role === 'phone') this.signinPhone = info
         }
+        if (msg.type === 'remote-peers') this.remotes = msg.peers || []
+        // The session stopped by itself (the feed was evicted, or a retune closed it).
+        // Clearing here is what keeps a re-mounting sheet from painting "Casting" over a
+        // server that is already closed and a token that is already dead.
+        if (msg.type === 'cast-ended') this.castSession = null
         this.listeners.forEach(fn => fn(msg as BackendMessage))
       } catch { /* ignore partial/invalid */ }
     }

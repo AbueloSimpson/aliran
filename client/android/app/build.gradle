@@ -169,6 +169,21 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
+    // Google Cast ("Play on a TV", phone). react-native-google-cast autolinks and pulls
+    // the framework in, but only as an `implementation` dependency — which is NOT on this
+    // module's compile classpath. The app compiles two things against it itself
+    // (CastOptionsProvider, and the warm-up call in MainActivity), so the coordinate is
+    // declared here rather than inherited by luck.
+    //
+    // The version comes from the SAME ext the library reads (android/build.gradle
+    // castFrameworkVersion), so the two cannot resolve to different Cast SDKs.
+    //
+    // NOT A TV DEPENDENCY, but it ships in the one APK: this is a single-APK build for
+    // phone AND Android TV, and there is no flavor to split it into. It is classes a
+    // television never loads — nothing on TV calls into the framework (see
+    // MainActivity.warmCastFramework and client/src/cast.ts).
+    implementation("com.google.android.gms:play-services-cast-framework:${rootProject.ext.castFrameworkVersion}")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

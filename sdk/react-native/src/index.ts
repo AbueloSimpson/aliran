@@ -9,6 +9,14 @@ export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfi
 // switch on it and always keep a sentence for the ones you do not know.
 export type { RemoteFeatures, SigninPairState, SigninPairErrorCode, SigninPairReason, SigninPairInfo, SignInStartResult, SignInSendResult, ResumeSignInResult, ResumeSignInError } from './backend'
 export { SIGNIN_PAIR_ERRORS, isSigninPairError } from './backend'
+// "Send to TV", the PLAYBACK half. TWO different things behind one phrase, and the
+// difference is the viewer's to know: backend.startCast() makes THIS device the origin
+// server for a Chromecast (it stays awake, it serves, and the media URL is readable off
+// the receiver by anything on the network — pass `receiverHost` when you know it);
+// backend.remotePlay() asks another Aliran device on the same account to pull the
+// channel itself, after which this device is free. The second needs `remote: {
+// control: true }` at start(); the first needs nothing.
+export type { CastSessionInfo, CastEndedReason, CastStartResult, RemoteIdentity, RemotePeer, RemoteInfo, RemoteStatusState, RemoteControlErrorCode, RemoteCommandResult, RemoteStartResult } from './backend'
 // Platform key store (Android Keystore), native half. The binding uses it internally to
 // keep a television's sign-in across restarts — `remote: { keepSignIn: true }` at start(),
 // then backend.resumeSignIn() on the next boot. Exported so a host can REPORT what its

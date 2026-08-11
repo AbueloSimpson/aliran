@@ -57,9 +57,23 @@ export interface NowPlayingBarProps {
   volume?: number
   muted?: boolean
   onVolume?: (volume: number, muted: boolean) => void
+  /**
+   * Open the "Play on a TV" picker. Absent = no button, which is the answer on a device
+   * that can neither cast (no Play Services — the Fire OS sticks and AOSP boxes in this
+   * fleet) nor see a television of this account to hand the channel to.
+   *
+   * PHONE ONLY, and not by convention: this whole row is inside the `!theme.isTV` gate
+   * because a focusable over the video hijacks the TV D-pad zap engine (the S7 lesson in
+   * the file header). A cast button on a television is also meaningless — the set IS the
+   * receiver.
+   */
+  onSendToTv?: () => void
+  /** A send is running — light the button. Casting leaves the local picture playing, so
+   *  this is the only sign on the screen that the phone is serving a television. */
+  sendingToTv?: boolean
 }
 
-export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
+export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume, onSendToTv, sendingToTv }: NowPlayingBarProps) {
   const { t } = useI18n()
   // What's on NOW from the program guide (S27) — the airing program is more useful on
   // the bar than the channel synopsis. Falls back to the description ("via demotv")
@@ -113,6 +127,10 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onIn
             <BarButton glyph={favorite ? '★' : '☆'} label={t('live.bar.favorite')} active={favorite} onPress={onToggleFavorite} />
             <BarButton glyph="⚑" label={t('live.bar.report')} onPress={onReport} />
             {hasTracks && <BarButton glyph="CC" label={t('live.bar.subtitles')} onPress={() => onTracks?.()} />}
+            {/* A two-letter glyph like CC above, and for the same reason: the pictorial
+                alternatives (📺, the Cast chevron) are COLOR emoji on Android and would
+                break the monochrome set. */}
+            {onSendToTv && <BarButton glyph="TV" label={t('tvplay.bar')} active={sendingToTv} onPress={onSendToTv} />}
             {onVolume && <VolumeControl volume={volume ?? 1} muted={!!muted} onChange={onVolume} />}
           </View>
         )}
