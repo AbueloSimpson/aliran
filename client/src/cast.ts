@@ -10,9 +10,16 @@
 //      touches CastContext.getSharedInstance() — the call that throws where the answer is
 //      no. The UI asks BEFORE it draws a button, so the outcome is a missing button.
 //
-//   2. NO MODULE AT ALL. A jest run has no native side — react-native-google-cast is a
-//      real dependency of the app and is not installed in this workspace. require() is
-//      guarded and everything below degrades to "cast is not available here".
+//   2. NO MODULE AT ALL. A build can be assembled without react-native-google-cast, so
+//      the require() below is guarded and everything under it degrades to "cast is not
+//      available here".
+//
+//      A jest run is NOT one of those, whatever this comment used to say. The package is
+//      installed in the test workspace and loads; what a test run lacks is the NATIVE
+//      side, so the module answers and every call under it reaches nothing. Tests are
+//      given __mocks__/react-native-google-cast.js through jest.config.js rather than the
+//      real package, and that mock file records why the substitution had to move into
+//      config to be reliable.
 //
 //   3. A TELEVISION. Casting FROM an Android TV is meaningless (the set IS the receiver)
 //      and the button would sit in the D-pad path — the S7 lesson, see NowPlayingBar.

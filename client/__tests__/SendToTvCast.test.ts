@@ -15,8 +15,15 @@
 
 import { Platform } from 'react-native'
 
-// The Cast library, virtually: it is a real dependency of the app and is not installed
-// in this workspace, which is also the shape of every device that cannot cast.
+// The Cast library, with a receiver on the end of it. jest.config.js already maps the
+// package to __mocks__/react-native-google-cast.js — a device with no Play Services —
+// and this factory takes precedence over that file for this suite.
+//
+// NOT `{ virtual: true }`, which is what it used to say. The package IS installed, and a
+// virtual mock is keyed on the file that called jest.mock, so it lost to jest's
+// per-worker resolver cache whenever another suite had already required the package from
+// src/cast.ts first: every test below then ran against the real library and failed
+// 'cast-connect' as a block. The mechanism is written up in the mock file.
 const mockCast: any = {
   devices: [] as any[],
   deviceListeners: [] as any[],
@@ -48,7 +55,7 @@ jest.mock('react-native-google-cast', () => ({
       onSessionEnded: (fn: unknown) => { mockCast.sessionEndedListeners.push(fn); return { remove: () => {} } }
     })
   }
-}), { virtual: true })
+}))
 
 import { isLanAddress, parseAddress } from '../src/cast'
 import {

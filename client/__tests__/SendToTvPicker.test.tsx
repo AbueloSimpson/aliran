@@ -18,6 +18,11 @@ import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
 import { Platform, Text } from 'react-native'
 
+// The Cast library, with receivers on the end of it. jest.config.js already maps the
+// package to __mocks__/react-native-google-cast.js — a device with no Play Services — and
+// this factory takes precedence over that file for this suite. NOT `{ virtual: true }`:
+// see the mock file for the resolver-cache race that spelling lost, which took the eight
+// cast cases below down as a block on about one run in three.
 const mockCast: any = {
   devices: [] as any[],
   playServices: 'success',
@@ -43,7 +48,7 @@ jest.mock('react-native-google-cast', () => ({
       onSessionEnded: () => ({ remove: () => {} })
     })
   }
-}), { virtual: true })
+}))
 
 // What the ANDROID bridge really sends for a device: ipAddress is a stringified
 // java.net.InetAddress ('hostname/1.2.3.4'), and a group is marked in `capabilities`.
