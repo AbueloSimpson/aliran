@@ -13,6 +13,14 @@
 // being typed on one (<SendSignInToTv>). A TV build never shows the row — it cannot
 // send, by construction: the key material a send needs is only retained where
 // worklet.ts asks for it (remote.sendToTv), which is everywhere except a television.
+//
+// And the mirror of that row, TELEVISION-ONLY: "Let my devices change this TV". Membership
+// of the account rendezvous is knowledge of one account-wide secret, so ANY device holding
+// it can change what this set shows — the deliberate shape of the feature, because a
+// confirmation prompt on a television would need the remote control the feature exists to
+// avoid. This switch is the only per-set answer to that, and the only one INSIDE the
+// protocol: the shipped alternative is "log out all devices" on the panel, which moves the
+// whole household. See residual 10 in docs/security-model.md.
 import React, { useEffect, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
@@ -54,6 +62,12 @@ export function SettingsScreen ({ navigation }: Props) {
   // Parental controls (device policy — the worklet stores the PIN digest; the UI
   // only ever sees "a PIN exists" + the hide toggle).
   const [parental, setParental] = useState<{ hide: boolean } | null>(backend.parental)
+  // "Let my devices change this TV" (television only). NOT held optimistically, unlike
+  // every other toggle on this screen: this row is a security control, and the one thing
+  // it must never do is read "off" over a preference that did not reach the disk. The
+  // worklet answers with 'prefs' only once the write landed, so what is painted here is
+  // what a reboot would restore. Default ON — null in prefs = the viewer never chose.
+  const [acceptRemote, setAcceptRemote] = useState<boolean>(backend.remoteAccept !== false)
   const [pinModal, setPinModal] = useState<PinModalState>(null)
   // UI language: the PINNED choice (null = follow the device) plus whether its picker
   // is open. What is actually being rendered right now is `locale`, above.
@@ -97,6 +111,7 @@ export function SettingsScreen ({ navigation }: Props) {
         setUsername(m.creds?.username ?? null)
         setSmoothZap(m.smoothZapping ?? false)
         setParental(m.parental ?? null)
+        setAcceptRemote(m.remoteAccept !== false)
         setLanguage(m.language ?? null)
       }
       if (m.type === 'streams') setChannels(m.streams.length)
@@ -111,6 +126,10 @@ export function SettingsScreen ({ navigation }: Props) {
     setSmoothZap(next) // optimistic; the worklet's 'prefs' reply confirms
     backend.setZapPrefetch(next)
   }
+
+  // Deliberately NOT optimistic — see the state declaration. The row repaints when the
+  // worklet says the preference is on disk, and stays put if it never says so.
+  function toggleAcceptRemote () { backend.setRemoteAccept(!acceptRemote) }
 
   function signOut () {
     backend.clearCredentials()
@@ -162,6 +181,25 @@ export function SettingsScreen ({ navigation }: Props) {
             />
           )}
         </View>
+
+        {/* Television only, and the mirror of the phone's "Sign in a TV" row above: a
+            phone SENDS, a television is what gets driven, and this is the set saying
+            whether it may be. Off refuses play AND stop — "may not change my channel"
+            cannot mean "…but may switch it off" — and it survives the power cut a
+            television gets instead of a shutdown. */}
+        {theme.isTV && (
+          <>
+            <Text style={styles.groupTitle}>{t('settings.group.tvplay')}</Text>
+            <View style={styles.group}>
+              <ToggleRow
+                label={t('settings.acceptRemote')}
+                hint={t('settings.acceptRemoteHint')}
+                value={acceptRemote}
+                onToggle={toggleAcceptRemote}
+              />
+            </View>
+          </>
+        )}
 
         <Text style={styles.groupTitle}>{t('settings.group.playback')}</Text>
         <View style={styles.group}>

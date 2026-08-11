@@ -182,10 +182,16 @@ export async function joinRendezvous (): Promise<boolean> {
   join = 'joining'
   let res
   try {
+    // acceptPlay is OMITTED, and the omission is the feature. The per-set take-over switch
+    // is a persisted preference, and the worklet — which owns the prefs file — resolves it
+    // into this very call. Passing `true` from here is what the old code did, and it made
+    // the switch unbuildable: the set is announced and taking commands from the moment the
+    // join lands, so a preference applied by a setRemoteAccept() after this promise
+    // resolves leaves a window on EVERY boot in which a television whose viewer switched
+    // this off is taking commands anyway. The preference has to be in the join.
     res = await backend.startRemote({
       role: Platform.isTV ? 'tv' : 'controller',
-      label: deviceLabel(),
-      acceptPlay: true
+      label: deviceLabel()
     })
   } catch {
     if (join === 'joining') join = 'idle' // nothing was decided — the next push retries

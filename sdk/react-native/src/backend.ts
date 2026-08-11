@@ -619,7 +619,10 @@ export type BackendMessage =
   // signinSaved: this device is holding a phone -> TV sign-in it can resume (the material
   // itself never crosses into the RN layer — this is a yes/no). Absent on worklet bundles
   // older than the field: treat as false, i.e. there is nothing to resume.
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null; signinSaved?: boolean }
+  // remoteAccept: the persisted "let my other devices change this television" switch —
+  // null/absent = never set, so the join's default (accept) applies. Read it to PAINT the
+  // toggle; do not pass it to startRemote(), which resolves it from the prefs file itself.
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null; remoteAccept?: boolean | null; signinSaved?: boolean }
   // Answer to parentalVerify(): did the submitted PIN match? tag echoes the request's.
   | { type: 'parental-verify'; ok: boolean; tag?: string }
   // Answer to resolvePairing(): the panel key a service pairing code stands for, after
@@ -802,6 +805,14 @@ export class AliranBackend {
   /** Parental controls (device-local): null = no PIN set; { hide } = PIN exists +
    *  the hide-restricted-channels toggle. The PIN digest stays in the worklet. */
   parental: { hide: boolean } | null = null
+  /**
+   * "Play on my TV", the per-set take-over switch, as persisted (device-local, kept
+   * across sign-out like the parental PIN). null = the viewer never chose, so a join
+   * accepts. This is for PAINTING the Settings toggle and nothing else: startRemote()
+   * reads the same preference out of the prefs file, which is the copy that cannot be
+   * stale, so never pass this value back in as `acceptPlay`.
+   */
+  remoteAccept: boolean | null = null
   /**
    * This device is holding a phone -> TV sign-in it can resume — call resumeSignIn()
    * instead of showing the sign-in screen. A yes/no and nothing more: the key material
@@ -1372,7 +1383,22 @@ export class AliranBackend {
     return { ok: m.ok, error: m.error, message: m.message }
   }
 
-  /** TV role. The take-over switch: off refuses play AND stop. */
+  /**
+   * TV role. The take-over switch: off refuses play AND stop.
+   *
+   * PERSISTED, and that is what makes it a mitigation rather than a mood. The worklet
+   * writes it beside the parental PIN and every later join reads it back, so a set left
+   * switched off comes back switched off — a toggle backed only by module state would read
+   * "off" to the viewer and be on again at the next cold boot. It applies to the RUNNING
+   * session too, so a viewer who switches it off mid-evening is not waiting for a reboot.
+   *
+   * `remoteAccept` is NOT written optimistically here, unlike every other prefs mirror on
+   * this object. The worklet updates it on the 'prefs' reply it sends once the preference
+   * is on disk, and sends nothing if the write failed — so a screen bound to that field
+   * shows what a reboot would restore, which for this one switch is the only honest thing
+   * it can show. A toggle that sprang to "off" over a failed write would be the exact
+   * mitigation-that-lies this switch exists to avoid.
+   */
   setRemoteAccept (ok: boolean) { this.send({ type: 'remote-accept', ok }) }
 
   /** TV role. The two things only a HOST knows — paused, and the playhead. The engine
@@ -1496,7 +1522,7 @@ export class AliranBackend {
         // platform key store, and no host listener has any business seeing the file key
         // that goes with it.
         if (msg.type === 'vault-request') { this.onVaultRequest(msg); continue }
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.signinSaved = msg.signinSaved === true; this.prefsLoaded = true }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.remoteAccept = msg.remoteAccept ?? null; this.signinSaved = msg.signinSaved === true; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
           this.port = msg.port ?? null

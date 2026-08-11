@@ -223,3 +223,49 @@ test('standalone phone screen (no preview prop): tap tunes immediately, no card'
   expect(onTune).toHaveBeenCalledTimes(1)
   expect(texts(tree)).not.toContain('Tap again to watch')
 })
+
+// ─── "Play on a TV" from the guide (the header chip) ─────────────────────────────
+//
+// The bar's TV button can only send WHAT IS PLAYING, and it lives inside fullscreen behind
+// an auto-hide timer — unreachable in portrait, whose resting state is this guide. So the
+// chip is the portrait route to the feature, and in landscape it does the thing the bar
+// cannot: send the row the viewer has SELECTED, without tuning it on this phone first.
+
+test('guide chip: absent unless the host offers it', async () => {
+  jest.spyOn(epg, 'getPrograms').mockResolvedValue([])
+  ;(backend as any).streams = [guided, guideless]
+  const tree = await createTree(<GuidePanel playingId="moon-cat" onTune={jest.fn()} />)
+  expect(texts(tree)).not.toContain('Play on TV')
+})
+
+test('guide chip: with no selection it sends the PLAYING channel', async () => {
+  jest.spyOn(epg, 'getPrograms').mockResolvedValue([])
+  ;(backend as any).streams = [guided, guideless]
+  const onSendToTv = jest.fn()
+  const tree = await createTree(<GuidePanel playingId="moon-cat" onTune={jest.fn()} onSendToTv={onSendToTv} />)
+  await ReactTestRenderer.act(async () => { pressableWithText(tree, 'TV PLAY ON TV').props.onPress() })
+  expect(onSendToTv).toHaveBeenCalledTimes(1)
+  expect(onSendToTv.mock.calls[0][0].id).toBe('moon-cat')
+})
+
+// THE POINT OF PUTTING IT HERE. Landscape selects a row before it tunes one, so the chip
+// can name a channel this phone is not watching — no local tune, no stream this phone
+// never wanted, and the television pulls it off the swarm itself.
+test('guide chip: a selected row is what gets sent, not what is playing', async () => {
+  jest.spyOn(epg, 'getPrograms').mockResolvedValue([])
+  ;(backend as any).streams = [guided, guideless]
+  const onSendToTv = jest.fn()
+  const tree = await createTree(<GuidePanel playingId="moon-cat" preview="overlay" onTune={jest.fn()} onSendToTv={onSendToTv} />)
+  await ReactTestRenderer.act(async () => { rowFor(tree, 'Shop TV').props.onPress() }) // select, not tune
+  await ReactTestRenderer.act(async () => { pressableWithText(tree, 'TV PLAY ON TV').props.onPress() })
+  expect(onSendToTv.mock.calls[0][0].id).toBe('shop-tv')
+})
+
+// Nothing selected and nothing playing = nothing to send, so the chip does not appear
+// rather than appearing and refusing.
+test('guide chip: hidden when there is nothing to send', async () => {
+  jest.spyOn(epg, 'getPrograms').mockResolvedValue([])
+  ;(backend as any).streams = [guided, guideless]
+  const tree = await createTree(<GuidePanel playingId={null} onTune={jest.fn()} onSendToTv={jest.fn()} />)
+  expect(texts(tree)).not.toContain('PLAY ON TV')
+})

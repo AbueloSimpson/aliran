@@ -145,12 +145,21 @@
 //                                     -> join the account rendezvous ('tv' announces and
 //                                        accepts, 'controller' looks up and sends).
 //                                        Answers 'remote-started', then pushes the peer
-//                                        list as it stands.
+//                                        list as it stands. acceptPlay OMITTED takes the
+//                                        PERSISTED preference, which is the whole point of
+//                                        persisting it: the set is announced and taking
+//                                        commands from the moment the join lands, so the
+//                                        preference has to be IN the join, never a
+//                                        'remote-accept' sent after it.
 //        { type:'remote-list', tag? } -> the cached peer list, as 'remote-peers'.
 //        { type:'remote-cmd', cmd:'play'|'stop', deviceId, streamId?, tag? }
 //                                     -> controller role: ask that television to play a
 //                                        channel, or to stop. Answers 'remote-ack'.
 //        { type:'remote-accept', ok } -> TV role: take commands at all, or refuse them.
+//                                        PERSISTED, beside the parental PIN: a switch that
+//                                        forgot itself at the next boot would be a
+//                                        mitigation that lies about itself. Read back by
+//                                        'remote-start' (below) as the acceptPlay default.
 //        { type:'remote-status', state?, position? }   -> TV role: the two things only a
 //                                        host knows (paused, and the playhead).
 //        { type:'remote-leave' }      -> leave the rendezvous.
@@ -470,6 +479,12 @@ function readPrefs () {
         typeof p.parental.hash === 'string' && /^[0-9a-f]{64}$/.test(p.parental.hash)
         ? { salt: p.parental.salt, hash: p.parental.hash, hide: p.parental.hide === true }
         : null,
+      // "Play on my TV", the per-set take-over switch. A DEVICE policy like the parental
+      // PIN beside it: sign-out keeps it, because the set it protects is the same set
+      // whoever signs in next will be sitting in front of. null = the viewer never chose,
+      // so the join's own default (accept) applies — the smoothZapping shape, and for the
+      // same reason: "never chose" and "chose the default" must stay tellable apart.
+      remoteAccept: typeof (p && p.remoteAccept) === 'boolean' ? p.remoteAccept : null,
       // The kept phone -> TV sign-in: a sealed box plus the wrapped file key that opens
       // it (see "The sign-in vault" in the header). Gated on read like everything else
       // here — a half-written record must read as "nothing is saved", because the
@@ -478,7 +493,7 @@ function readPrefs () {
       signin: gateVaultRecord(p && p.signin)
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null, signin: null }
+    return { creds: null, favorites: [], smoothZapping: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null, remoteAccept: null, signin: null }
   }
 }
 
@@ -1244,7 +1259,14 @@ IPC.on('data', (data) => {
         send({ type: 'remote-started', ok: false, error: 'offline', message: 'sign in on this device first', ...tag })
       } else {
         try {
-          player.startRemote({ role: msg.role, label: msg.label, ...(typeof msg.acceptPlay === 'boolean' ? { acceptPlay: msg.acceptPlay } : {}) })
+          // acceptPlay: an explicit choice from the caller wins, then the PERSISTED
+          // preference, then the engine's own default (accept). Resolved HERE rather than
+          // in the app because this layer owns the prefs file — the RN mirror of it is a
+          // copy that arrives in a message, and a join that ran before it landed would
+          // announce an accepting set on a television whose viewer had switched that off.
+          const persisted = readPrefs().remoteAccept
+          const accept = typeof msg.acceptPlay === 'boolean' ? msg.acceptPlay : persisted
+          player.startRemote({ role: msg.role, label: msg.label, ...(typeof accept === 'boolean' ? { acceptPlay: accept } : {}) })
             .then((r) => {
               send({ type: 'remote-started', ok: true, role: r.role, ...tag })
               // The peer list as it stands the moment the rendezvous is live. Without it
@@ -1285,7 +1307,17 @@ IPC.on('data', (data) => {
       }
     } else if (msg.type === 'remote-accept') {
       // TV role, the take-over switch. Anything but an explicit false leaves it on.
-      if (player) { try { player.setRemoteAccept(msg.ok !== false) } catch (err) { fail(err) } }
+      //
+      // PERSIST FIRST, THEN APPLY. The write is what makes this a preference rather than a
+      // session mood: a viewer who switches the television off after turning this off has
+      // to find it still off. If the write fails the engine is left ALONE — a set that says
+      // "off" until the next boot and then quietly takes commands again is worse than one
+      // that never claimed to be off, and writePrefs() has already told the UI it failed.
+      const ok = msg.ok !== false
+      if (writePrefs({ ...readPrefs(), remoteAccept: ok })) {
+        sendPrefs()
+        if (player) { try { player.setRemoteAccept(ok) } catch (err) { fail(err) } }
+      }
     } else if (msg.type === 'remote-status') {
       // TV role. The two things only a HOST knows — paused, and where the playhead is.
       // Fire-and-forget: nothing is waiting on it, and a status push that failed is not

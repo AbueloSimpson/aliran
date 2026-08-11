@@ -194,6 +194,12 @@ export function LiveScreen ({ route, navigation }: Props) {
   // television on the rendezvous. Neither = no button: a picker that can only ever be
   // empty is worse than no picker.
   const [sendTvOpen, setSendTvOpen] = useState(false)
+  // WHICH channel the sheet is about. null = "whatever is playing", which is what the
+  // NowPlayingBar's button means and is the only thing this used to support. The guide's
+  // chip names a channel instead, so an id is held rather than the record: the sheet must
+  // keep tracking the catalog (an operator removing the channel has to reach it), and a
+  // captured Stream would freeze at the moment the sheet opened.
+  const [sendTvId, setSendTvId] = useState<string | null>(null)
   const sendTv = useSendToTv()
   const menuIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Bottom bar auto-hide (phone): `barShown` gates mounting; `barOpacity` fades it.
@@ -414,6 +420,41 @@ export function LiveScreen ({ route, navigation }: Props) {
   // The playing record is a vod library title (S8a): transport UI on the bar, pause is
   // app-owned, and the SDK's live self-heal is off (it keys on the port recordType).
   const playingVod = !!playing && isVod(playing)
+
+  // THE OTHER TWO THINGS ONLY A HOST KNOWS (the companion to the 'stopped' effect above):
+  // a pause, and the playhead. Both are properties of a VOD TITLE — a live channel has no
+  // pause here and no meaningful playhead — so titles report both and everything else
+  // reports plain 'playing'.
+  //
+  // THAT SECOND HALF IS THE ONE THAT IS EASY TO MISS. Zapping away from a PAUSED title
+  // leaves 'paused' as the last thing this set ever said about itself. A zap to another
+  // channel is fine on its own — the engine pushes `playing` for the new one and drops the
+  // playhead with the channel it belonged to — but the word has to be retracted for the
+  // case where nothing else pushes, and saying it explicitly costs one message.
+  //
+  // A position on its own never sends anything: the engine stores it and lets it ride the
+  // next push that a real change causes (sdk/player.js updateRemoteStatus). So the ticking
+  // seconds cost one worklet message each and NOTHING on the rendezvous — only the pause
+  // flips reach the other devices. That is why the playhead is split into its own effect
+  // rather than riding this one's deps: a per-second re-run of this one would be a
+  // per-second status push.
+  //
+  // `playing` gates it because "nothing is on" is the ENGINE's to say, not this screen's:
+  // a mount with no channel yet, or the blink while a catalog reload re-finds the record,
+  // must not be reported as a set that is playing something.
+  useEffect(() => {
+    if (!theme.isTV || !playing) return
+    if (!playingVod) { backend.updateRemoteStatus({ state: 'playing' }); return }
+    backend.updateRemoteStatus({ state: vodPaused ? 'paused' : 'playing', position: vodPos })
+    // Keyed on the ID, not the record: a catalog push replaces the array and hands back a
+    // fresh object for the SAME channel, and that is not a change worth a message.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing?.id, playingVod, vodPaused])
+
+  useEffect(() => {
+    if (!theme.isTV || !playingVod) return
+    backend.updateRemoteStatus({ position: vodPos }) // stored; it rides the next real change
+  }, [playingVod, vodPos])
 
   // A restricted entry channel (jumped in from Favorites/Search, or resumed):
   // raise the PIN modal once on mount instead of autoplaying it.
@@ -732,7 +773,7 @@ export function LiveScreen ({ route, navigation }: Props) {
                 // televisions on the account, so on a set belonging to an account with two
                 // of them it answers true. NowPlayingBar's own !theme.isTV gate is the
                 // second one. Removing either puts a focusable in the TV D-pad path.
-                onSendToTv={sendTv.can && !theme.isTV ? () => { showBar(); setSendTvOpen(true) } : undefined}
+                onSendToTv={sendTv.can && !theme.isTV ? () => { showBar(); setSendTvId(null); setSendTvOpen(true) } : undefined}
                 // Lit while a session runs. Not the only sign — the bar lives inside the
                 // fullscreen overlay and fades on a timer, so the standing chip below is
                 // what a viewer in the guide (portrait's resting state) actually sees.
@@ -779,6 +820,13 @@ export function LiveScreen ({ route, navigation }: Props) {
               // Portrait's resting state is the guide and the bar only shows in
               // fullscreen — this chip is the portrait route into the in-player search.
               onSearch={() => setOverlay('search')}
+              // …and the same route to "Play on a TV", which additionally carries the row
+              // the viewer has SELECTED. Sending from the bar means tuning the channel on
+              // this phone first, which spends a stream it never wanted to watch. The
+              // overlay stays open behind the sheet: the viewer is browsing a schedule,
+              // and sending one channel to the set is not a reason to leave it.
+              // Phone-only for the same two reasons as the bar button — see there.
+              onSendToTv={sendTv.can && !theme.isTV ? (s) => { setSendTvId(s.id); setSendTvOpen(true) } : undefined}
             />
           ) : <GuideSkeleton />}
         </View>
@@ -928,7 +976,14 @@ export function LiveScreen ({ route, navigation }: Props) {
           sheet on a channel being resolvable took the Stop button away with it — the one
           control that shuts down a LAN origin server. The sheet handles a null stream. */}
       {sendTvOpen && !theme.isTV && (
-        <SendToTvSheet stream={playing} onClose={() => setSendTvOpen(false)} />
+        <SendToTvSheet
+          // Resolved at RENDER, so the sheet keeps tracking the catalog either way: the
+          // guide's chip names a channel by id, and everything else means "what is
+          // playing". A named channel that leaves the catalog resolves to null, which is
+          // the state the sheet already handles.
+          stream={sendTvId ? streams.find((s) => s.id === sendTvId) ?? null : playing}
+          onClose={() => setSendTvOpen(false)}
+        />
       )}
 
       {/* Parental gate: a restricted channel was picked while locked. One correct

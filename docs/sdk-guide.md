@@ -463,7 +463,7 @@ until the host answers.
 | `listRemotes()` | Devices of this account that have **proved** themselves. Build a picker from the ones whose `role` is `'tv'`. |
 | `remotePlay(deviceId, streamId)` | Ask a television to play a channel. Resolves on **acceptance** — what happened arrives as a status push. |
 | `remoteStop(deviceId)` | Ask that television to stop. |
-| `setRemoteAccept(ok)` | TV: the take-over switch. Off refuses `play` **and** `stop`. |
+| `setRemoteAccept(ok)` | TV: the take-over switch, for the RUNNING session. Off refuses `play` **and** `stop`. Persisting it is the host's job — pass it as `startRemote({ acceptPlay })` too, or it is on again at the next boot. |
 | `updateRemoteStatus({ state?, position? })` | TV: the two things only a host knows. The engine already publishes the channel and whether it plays. |
 | `stopRemote()` | Leave the rendezvous. Idempotent. |
 
@@ -834,6 +834,15 @@ Two more things worth knowing before you build a picker:
   devices", a password reset or disabling the account move the household
   to a new rendezvous. `setRemoteAccept(false)` is the per-set opt-out
   inside the protocol.
+- **If you offer that opt-out, you own making it durable.** The engine has no
+  prefs file, so `setRemoteAccept()` is session state: persist the viewer's
+  choice yourself and pass it as `startRemote({ acceptPlay })`. Calling
+  `setRemoteAccept(false)` *after* the join has resolved is too late — the set
+  is announced and taking commands from the moment the join lands, so that
+  spelling leaves a window on every boot. Call it for the running session and
+  pass `acceptPlay` for the next one. The shipped apps do exactly this: the
+  worklet keeps the preference beside the parental PIN and resolves it into
+  its own `startRemote()`.
 
 `remotePlay()` rejects with a `RemoteControlError`: `unknown` (not on the
 list, or not a television), `unavailable` (it accepted and could not carry

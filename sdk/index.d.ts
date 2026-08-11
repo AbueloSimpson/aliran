@@ -683,7 +683,9 @@ export class AliranPlayer {
   startRemote(opts?: {
     role?: RemoteControlRole
     label?: string
-    /** TV: accept play/stop at all (default true) — setRemoteAccept() flips it at runtime. */
+    /** TV: accept play/stop at all (default true) — setRemoteAccept() flips it at runtime.
+     *  This is where a host's persisted "let my phone change this TV" preference belongs:
+     *  applying it after the join has already announced the set is a boot-sized window. */
     acceptPlay?: boolean
   }): Promise<{
     role: RemoteControlRole
@@ -708,7 +710,17 @@ export class AliranPlayer {
   remotePlay(deviceId: string, streamId: string): Promise<{ ok: true }>
   /** Controller role. Ask that device to stop. */
   remoteStop(deviceId: string): Promise<{ ok: true }>
-  /** TV role. The take-over switch; off refuses play AND stop. */
+  /**
+   * TV role. The take-over switch; off refuses play AND stop.
+   *
+   * At THIS layer the switch is session state and nothing else — this is the engine, and
+   * the engine has no prefs file. A host offering it as a Settings toggle owns making it
+   * durable, and owns applying it as the `acceptPlay` of its own startRemote() call: the
+   * set is announced and taking commands from the moment the join lands, so a
+   * setRemoteAccept(false) issued after that promise resolves leaves a window on every
+   * boot. Call this one for the RUNNING session, and pass `acceptPlay` for the next join.
+   * (The React Native binding does both — see its `remoteAccept`.)
+   */
   setRemoteAccept(ok: boolean): void
   /**
    * TV role. Refine what controllers are told. The engine already publishes the channel and

@@ -286,6 +286,50 @@ Facts to know before you print it:
 Set `SERVICE_NAME` in the panel `.env` to your service name. The app shows this
 name while a viewer pairs, before the viewer signs in.
 
+### Televisions: signing one in, and driving it from a phone
+
+Three related things a viewer can do with a television. You configure none of them
+— they are properties of the apps — but two of them change what your levers do, so
+know them before a viewer calls you.
+
+- **Sign in a TV from a phone.** Nobody types a password on a TV remote. The
+  television shows a 12-character code, the viewer types it on their phone, and the
+  two devices compare four digits before anything crosses.
+- **Play on my TV.** A phone tells a television to play a channel, and the
+  television gets that channel **itself**, from the swarm. No video goes from the
+  phone to the television. The two devices find each other from the account key, so
+  there is no code and no setup.
+- **Cast to a Chromecast or Google TV.** For a television that does not run your
+  app. Here the **phone** is the source: it must stay on and on the same network.
+
+**What changes for you.** Two of your usual levers do less than their names say:
+
+| You do | What happens to a television signed in from a phone |
+| --- | --- |
+| **Revoke device** | It stops that device counting against `maxDevices`. It does **not** re-key the account, and it does **not** remove the device from "play on my TV". |
+| **Log out all devices** | This is the lever that ends "play on my TV" for a set. It moves the **whole household** to a new rendezvous, so every device must sign in again. |
+| **Disable the account** | Stops new logins. It does not re-key. |
+| **Change the password** | **The only action that re-keys the account.** |
+
+**If a viewer says a television got their account and should not have**, tell them
+to **change the password**. Nothing else re-keys. What crosses in a phone-to-TV
+sign-in is the account key itself, not a session, so a television that holds it can
+open that account's channels — and can sign in another television in turn.
+
+**Before you delete an account that has a television on it**, change the password
+first. Deleting alone leaves the television holding keys and retrying; and creating
+the same username again makes a **new** account, which evicts that television
+rather than restoring it.
+
+**A viewer can also switch a television off from being driven** — Settings →
+"Play on this TV" on the set itself. That switch is theirs, not yours: nothing in
+the dashboard shows or sets it, so a set that refuses commands looks the same to
+you as a set that is switched off.
+
+Exposure, measurements and the full list of what these features do and do not
+protect against:
+[security-model.md](security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting).
+
 ## G. The VOD library (optional)
 
 On-demand titles come from the **[library](vod-library.md)** — a separate
@@ -516,6 +560,10 @@ in-memory. What CAN grow forever is whatever captures that stdout:
   per-stream keys a template leaves out, so grant the channels again after an
   import. Mount `./backups` read-only into each service (the shipped compose file
   does) or the archive list stays empty.
+- **A television signed in from a phone holds the account key, not a session:**
+  only a **password change** re-keys it. *Revoke device* and *log out all devices*
+  do not, and only the second removes a set from "play on my TV". See
+  [Televisions](#televisions-signing-one-in-and-driving-it-from-a-phone).
 - **Monitoring:** watch panel login RPC, peer counts, lockouts; the dashboards show
   live channel health (ffmpeg, peers, registration). See [Monitoring](#monitoring)
   for `/healthz` + `/metrics`.

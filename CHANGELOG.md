@@ -67,10 +67,18 @@ not been on a television yet**; each says so where it is described.
   checks entitlement and then deliberately **does not tune**: it hands the command
   to the host with `restricted` on it, so a parental PIN stays in front of a
   restricted channel — and where it cannot read the channel's record it
-  **refuses** rather than guessing at the flag. `setRemoteAccept(false)` is the
-  per-set opt-out. New: `startRemote()`, `listRemotes()`, `remotePlay()`,
-  `remoteStop()`, `setRemoteAccept()`, `updateRemoteStatus()`, `stopRemote()`,
-  plus `remotes` and `remote` events. Lane: `test:remote-control`.
+  **refuses** rather than guessing at the flag. A television can refuse the whole
+  arrangement — Settings → "Play on this TV" → *Let my devices change this TV* —
+  and that preference is **persisted** beside the parental PIN and applied inside
+  the join, because a switch that forgot itself at the next boot would be a
+  mitigation that lies about itself. It is also the one toggle in the app that
+  never paints optimistically: the set reports what a reboot would restore. A
+  television publishes what only a host can know — a pause and the playhead of a
+  title — and retracts a pause when the viewer zaps away from it. New:
+  `startRemote()`, `listRemotes()`, `remotePlay()`, `remoteStop()`,
+  `setRemoteAccept()`, `updateRemoteStatus()`, `stopRemote()`, plus `remotes` and
+  `remote` events. Lanes: `test:remote-control`, and the client suites
+  `AcceptRemoteToggle` / `RemoteStatusHost`.
 
 - **Cast a channel to a Chromecast or Google TV.** `startCast()` stands up a
   **second** media server that exists only while a session does, binds **one

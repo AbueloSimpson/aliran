@@ -409,8 +409,10 @@ read the channel's catalog record, it refuses the command instead of guessing at
 the flag.
 
 `setRemoteAccept(false)` makes a television refuse `play` and `stop`. It is the
-opt-out inside the protocol, per set — and an SDK surface, not a viewer-facing
-one: no shipping client offers the switch (residual risk 10).
+opt-out inside the protocol, per set, and the viewer reaches it on the television
+itself: Settings → "Play on this TV" → *Let my devices change this TV*. The
+preference is persisted beside the parental PIN and applied inside the join, so a
+set left switched off comes back switched off (residual risk 10).
 
 ## Casting to a television on the local network
 
@@ -562,21 +564,27 @@ from an instrumented run against real equipment it says **measured**.
     to, stop it, list what it is entitled to, and watch what it shows. This is the
     deliberate shape of the feature: a confirmation prompt on a television would
     need the remote control the feature exists to avoid. `setRemoteAccept(false)`
-    on a given set is the only mitigation inside the protocol — **and no shipping
-    client exposes it.** The apps join with `acceptPlay: true` and offer no
-    switch, so it is available to an operator building a client against the SDK
-    and to no viewer. The shipped lever is still **log out all devices** (item 9),
-    which moves the whole household: there is no per-set answer today. It was left
-    out on purpose. The state belongs in the worklet prefs, beside the parental
-    PIN, and a Settings toggle backed only by module state would read "off" to a
-    viewer and be on again at the next cold boot — a mitigation that lies about
-    itself is worse than one that is absent. Whoever builds it must apply the
-    preference **inside `joinRendezvous()`**, as the `acceptPlay` argument of the
-    `startRemote()` call already made there, and not with a `setRemoteAccept(false)`
-    after that promise resolves: the set is announced and taking commands from the
-    moment the join lands, so anything later leaves a window on every boot.
-    Per-device authorisation would be a protocol change. (asserted,
-    `test:remote-control`)
+    on a given set is the only mitigation inside the protocol, and it now **ships
+    as a viewer-facing switch**: Settings → "Play on this TV" → *Let my devices
+    change this TV*, on television builds only. Off refuses play **and** stop —
+    "may not change my channel" cannot mean "…but may switch it off". The
+    preference is persisted in the worklet prefs beside the parental PIN and is
+    applied **inside the join**, as the `acceptPlay` argument of the
+    `startRemote()` call, rather than by a `setRemoteAccept(false)` afterwards:
+    the set is announced and taking commands from the moment the join lands, so
+    anything later would leave a window on every boot. The switch also never
+    paints optimistically — the worklet answers only once the write is on disk,
+    because a mitigation that lies about itself is worse than one that is absent.
+    It is a **device** policy: a sign-out keeps it, since the set it protects is
+    the set the next viewer sits in front of.
+    **What it does not do**: it is all-or-nothing for that television, and it is
+    the viewer's switch, not the operator's — nothing in the panel shows or sets
+    it, so an operator cannot tell a set that has switched itself off from one
+    that never joined. The operator's lever is still **log out all devices**
+    (item 9), which moves the whole household. Per-device authorisation would be
+    a protocol change. (the refusal is asserted by `test:remote-control`; the
+    persistence and the never-optimistic painting by the client suites
+    `AcceptRemoteToggle` and `SendToTvCast`)
 11. **The parental-PIN gate on a remote play is an obligation of the host app.**
     The engine checks entitlement and then deliberately does not tune. It emits the
     command with `restricted` on it, and the host must put a restricted channel

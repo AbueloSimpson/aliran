@@ -320,9 +320,20 @@ function starts (): number { return sent().filter((m) => m?.type === 'remote-sta
 test('a phone joins as a CONTROLLER — it never announces itself, so it is never a target', async () => {
   const { joined, req } = await joinRun()
   expect(joined).toBe(true)
-  expect(req).toMatchObject({ type: 'remote-start', role: 'controller', acceptPlay: true })
+  expect(req).toMatchObject({ type: 'remote-start', role: 'controller' })
   expect(typeof req.label).toBe('string')
   expect(req.label.length).toBeGreaterThan(0)
+})
+
+// THE JOIN CARRIES NO acceptPlay, AND THAT IS THE PER-SET SWITCH WORKING. The take-over
+// preference is persisted, and the WORKLET resolves it into its own startRemote() call —
+// it owns the prefs file, while this layer only mirrors it in a message that may not have
+// arrived yet. Sending `acceptPlay: true` from here, which is what this used to do, would
+// overrule a television whose viewer had switched it off, on every boot, for the window
+// between the join landing and anything noticing.
+test('the join does not overrule the persisted take-over switch', async () => {
+  const { req } = await joinRun()
+  expect(req).not.toHaveProperty('acceptPlay')
 })
 
 test('joined once per session: a later catalog push does not re-join', async () => {

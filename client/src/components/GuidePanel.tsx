@@ -29,6 +29,12 @@
 // only the single preview card probes). Tapping a row tunes its channel (or selects,
 // see above); guide-less rows show the honest "No program information" cell (D2).
 //
+// Header chips (phone, LiveScreen guide mode): SEARCH and "Play on TV", both there for
+// the same reason — portrait's resting state is this guide and the NowPlayingBar only
+// exists in fullscreen, so without them a portrait viewer has no route to either. The TV
+// chip carries the SELECTED row where landscape has one, which is the thing the bar's
+// button cannot do: send a channel to the television without tuning it on this phone first.
+//
 // This file also owns the guide chrome BOTH presentations share (the TV grid header
 // imports it from here): category chips, the NOW pill, the time bar — and the
 // GuidePreviewCard the TV grid mounts in its header.
@@ -98,9 +104,17 @@ export interface GuidePanelProps {
    *  portrait's resting state is the guide, so without this chip a portrait viewer
    *  has no route to the in-player search (the bar only shows in fullscreen). */
   onSearch?: () => void
+  /**
+   * Optional "Play on a TV" affordance in the header (LiveScreen guide mode passes it on
+   * a phone). Same reasoning as onSearch, plus one the search chip does not have: it
+   * carries the SELECTED row where there is one, so a viewer can put a channel on the
+   * television WITHOUT tuning it here first. Tuning it first is what the bar's button
+   * makes you do, and it costs this phone a stream it never wanted to watch.
+   */
+  onSendToTv?: (s: Stream) => void
 }
 
-export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch }: GuidePanelProps) {
+export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch, onSendToTv }: GuidePanelProps) {
   const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // Category scope — the same chips grammar as the TV grid header.
@@ -143,6 +157,11 @@ export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch }: G
   // The preview card's channel — only in overlay mode, and only while the selection
   // is still in the visible list (a category race drops it harmlessly).
   const selectedStream = preview === 'overlay' && selectedId ? list.find((s) => s.id === selectedId) ?? null : null
+  // What the "Play on a TV" chip would send: the row the viewer is standing on, and the
+  // playing channel when there is no selection (portrait never selects — tap tunes). Read
+  // out of `streams`, not `list`, because the playing channel need not be in the category
+  // being browsed. Null = nothing to send, and the chip does not appear.
+  const sendTarget = selectedStream ?? streams.find((s) => s.id === playingId) ?? null
 
   // Two-tier tap (overlay mode): first tap places the selection, the second tap on
   // the SAME row commits the tune. Everywhere else a tap tunes immediately.
@@ -192,6 +211,16 @@ export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch }: G
         <View style={styles.headerChips}>
           <CategoryChips model={model} activeKey={activeKey} onSelect={pickCategory} />
         </View>
+        {onSendToTv && sendTarget && (
+          <Pressable
+            style={({ pressed }) => [styles.searchChip, pressed && styles.chipFocused]}
+            onPress={() => onSendToTv(sendTarget)}
+            accessibilityRole="button"
+            accessibilityLabel={t('tvplay.bar')}
+          >
+            <Text style={styles.searchChipText}>TV {t('tvplay.bar').toLocaleUpperCase(getLocale())}</Text>
+          </Pressable>
+        )}
         {onSearch && (
           <Pressable
             style={({ pressed }) => [styles.searchChip, pressed && styles.chipFocused]}

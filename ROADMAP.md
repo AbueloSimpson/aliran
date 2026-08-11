@@ -210,8 +210,12 @@ following only the docs.
   P2P itself, so no video crosses between them. The engine checks entitlement and
   then deliberately **does not tune** — it hands the command to the host with a
   `restricted` flag, so a parental PIN stays in front of a restricted channel, and
-  it refuses outright where it cannot read the channel's record. `setRemoteAccept`
-  is the per-set opt-out. Lane: `test:remote-control`
+  it refuses outright where it cannot read the channel's record. A television can
+  switch the whole arrangement off for itself (Settings → "Play on this TV"); the
+  preference persists across restarts and is applied inside the join, not after
+  it. The phone offers the feature from the player bar **and from the guide**,
+  where it can send a channel this phone is not watching.
+  Lane: `test:remote-control`
 - 🚧 **Cast to a Chromecast or Google TV** — a second HTTP server that exists only
   while a session does, bound to **one private LAN address**, serving one pinned
   channel behind a per-session path token. The loopback server of ordinary

@@ -17,8 +17,8 @@
 | `upload-art <id> <poster\|backdrop\|logo> <file>` | Adds art to the assets drive. |
 | `set-max-devices <u> <n>` | Sets the concurrent device limit. |
 | `list-devices <u>` | Shows a user's enrolled devices. |
-| `logout-device <u> <deviceId>` | Drops one device enrollment. This is cooperative — it does not bump `tokenVersion`. |
-| `logout-all <u>` | Revokes all of a user's sessions by bumping `tokenVersion`. |
+| `logout-device <u> <deviceId>` | Drops one device enrollment. This is cooperative — it does not bump `tokenVersion`, so it does **not** remove that device from "play on my TV" ([Televisions](#televisions-and-the-account-rendezvous)). |
+| `logout-all <u>` | Revokes all of a user's sessions by bumping `tokenVersion`. Also the only lever that takes a device off the account rendezvous — it moves the whole household. |
 | `list` | Lists users and streams. |
 | `add-admin <name>` / `remove-admin <name>` | Adds or removes an admin account for the HTTP admin API. |
 | `set-admin-password <name>` / `list-admins` | Rotates an admin password, which revokes their sessions, or lists admins. |
@@ -113,10 +113,10 @@ the replicated database. Login attempts are rate-limited
 | `POST /api/users` | Creates a user (`{username,password}`). |
 | `GET /api/users/:u` · `DELETE /api/users/:u` | Gets one user, or deletes the account record. |
 | `GET /api/users/:u/devices` | Enrolled devices |
-| `DELETE /api/users/:u/devices/:deviceId` | Drops one device enrollment. This is cooperative — it does not bump `tokenVersion`. |
-| `POST /api/users/:u/password` | Rotates the password. This re-seals the user's grants. |
+| `DELETE /api/users/:u/devices/:deviceId` | Drops one device enrollment. This is cooperative — it does not bump `tokenVersion`, so it does **not** remove that device from "play on my TV" ([Televisions](#televisions-and-the-account-rendezvous)). |
+| `POST /api/users/:u/password` | Rotates the password. This re-seals the user's grants — and it is the **only** call that re-keys the account, so it is the answer to a phone-to-TV sign-in that went to the wrong television. |
 | `POST /api/users/:u/status` `{status}` | `active` or `disabled` |
-| `POST /api/users/:u/logout-all` · `POST /api/users/:u/max-devices` | Session/device controls |
+| `POST /api/users/:u/logout-all` · `POST /api/users/:u/max-devices` | Session/device controls. `logout-all` bumps `tokenVersion`, which also moves the whole household to a new account rendezvous. |
 | `POST /api/users/:u/grants` `{streamId}` · `DELETE /api/users/:u/grants/:id` | Grants or revokes access. A revoke removes the manual grant only — if a package still covers the same stream id, the panel re-seals it in the same request. |
 | `POST /api/users/:u/packages` `{packages:['basic',…]}` | Replaces the user's package list. Materializes sealed grants immediately. User summaries carry `packages` and `manualGrants` as provenance fields. |
 | `GET/POST /api/streams` | Lists streams, or adds one. Add takes the `add-stream` fields plus `order`/`featured` and `url` — an https `url` creates a **redirect channel**. The response returns the encryption key once. |
@@ -540,3 +540,29 @@ used to leave a channel with no working source behind an HTTP 200).
   "status": "active"
 }
 ```
+
+### Televisions and the account rendezvous
+
+"Play on my TV" has **no operator surface** — no endpoint, no CLI command, no
+dashboard control. It is a property of the viewer's own devices: the account's
+devices meet on a rendezvous derived from the account key and `tokenVersion`, and
+any of them can change what another shows. Nothing is written to the panel when
+they do, so the device list, the activity feed and `maxDevices` never see it.
+
+Three consequences the surfaces above are annotated for:
+
+- **`tokenVersion` is the rendezvous epoch.** Bumping it (password change,
+  `logout-all`, disabling the account) moves the whole household to a new
+  rendezvous. Per-device revoke deliberately does not bump it, so a device revoked
+  on its own **stays** on the rendezvous and can still drive the other devices.
+  Removing one device from this feature is not possible today; `logout-all` is the
+  lever, and it moves everyone.
+- **A phone-to-TV sign-in hands over the account key, not a session.** Only
+  `POST /api/users/:u/password` re-keys. Revoke, `logout-all` and disabling the
+  account all leave the key working.
+- **The per-set opt-out belongs to the viewer.** A television can refuse commands
+  (its own Settings → "Play on this TV"), and that preference is not reported to
+  the panel: a set that refuses looks exactly like a set that never joined.
+
+Full exposure and measurements:
+[security-model.md](security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting).
