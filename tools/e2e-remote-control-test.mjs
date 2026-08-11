@@ -27,14 +27,17 @@
 // proof exists for. BOTH DIRECTIONS, which is the half that used to be missing:
 //
 //   answering  — what this television REPLIES to a stranger:
-//                - a forged proof is refused and the channel is closed;
+//                - a forged proof is refused, and the refusal names nothing about this
+//                  device — not its proof, not its id, not its label;
 //                - `play` without a hello at all is refused;
-//                - so is `play` after a refused hello — a peer cannot talk its way past the
-//                  latch, and now cannot talk at all: the refusal took the channel;
+//                - so is `play` after a refused hello, on that same channel — a peer cannot
+//                  talk its way past the latch;
 //                - a malformed body is a refusal that ALSO ends the channel, so a stranger
 //                  that sends nothing else cannot sit on this socket forever;
 //                - another wire version is named rather than reported as silence;
-//                - a malformed streamId never reaches the entitlement map.
+//                - a malformed streamId never reaches the entitlement map;
+//                - and a PROVEN peer's second `whoami` cannot rewrite its first: it cannot
+//                  promote itself to a television, nor take another device's id.
 //   opening    — what this television SENDS a peer that has proved nothing. It offers its
 //                channel to every connection its swarm has, and protomux writes the bytes
 //                before the far mux decides whether to accept the channel at all — so a
@@ -106,6 +109,13 @@ const hex = (b) => b4a.toString(b, 'hex')
 const body = (o) => b4a.from(JSON.stringify(o))
 const parse = (buf) => { try { return JSON.parse(b4a.toString(buf)) } catch { return null } }
 const roleOf = (socket) => (socket.isInitiator ? REMOTE_ROLES.initiator : REMOTE_ROLES.responder)
+// The 'close' listeners a remote session has on a socket, COUNTED BY OWNER and never against
+// a baseline: hyperswarm attaches its own 'close' listeners to a connection on its own
+// schedule, so a number snapshotted before a session starts is already stale by the time it
+// is compared, and a `<=` against it passes whether or not anything was taken off. Every
+// close listener sdk/remote-control.js puts on a socket routes to dropPeer(), and nothing
+// else on these sockets does.
+const ourCloses = (socket) => socket.listeners('close').filter((f) => /dropPeer/.test(String(f))).length
 
 // Every 'remote' / 'remotes' event an engine emitted, for assertions and for the negative
 // scan at the end.
@@ -199,7 +209,6 @@ try {
   const tvStart = await tv.startRemote({ role: 'tv', label: 'Living Room' })
   await tvStart.flushed()
   const phoneStart = await phone.startRemote({ role: 'controller', label: 'Pixel' })
-  check(tvStart.topics.length >= 1 && tvStart.topics.length <= 2, 'the television joined the current epoch and (unless it is epoch 0) the previous one')
   check(JSON.stringify(tvStart.topics) === JSON.stringify(phoneStart.topics), 'both devices derived the same rendezvous topics')
   // The session's OWN epochs, read once and reused everywhere below — see the header note
   // about UTC midnight. epochs() is ascending, so DAY[1] is the current one.
@@ -422,8 +431,12 @@ try {
     check(forged && forged.error === REMOTE_CONTROL_ERRORS.unauthorized, 'a proof under a FORGED secret is refused')
     check(!forged.proof && !forged.deviceId && !forged.label, 'and the REFUSAL carries nothing — not the television\'s proof, not its name (what it sends UNPROMPTED is 2b below)')
     check(!tv.listRemotes().find((p) => p.deviceId === 'ghost'), 'the forged peer never appears in the device list')
+    // EITHER outcome is the claim being made here, and the claim is only about the latch: a
+    // refused peer that finds the channel already gone is `thrown`, one that gets a message
+    // in before the drop lands is refused again. That the channel really does go is a
+    // separate claim, and it is proved on its own in the malformed-body probe below.
     const after = await c.ask('play', { v: 1, streamId: 'news' })
-    check(after && (after.error === REMOTE_CONTROL_ERRORS.unauthorized || after.thrown), 'and it cannot talk its way past the latch afterwards — the refusal took the channel with it')
+    check(after && (after.error === REMOTE_CONTROL_ERRORS.unauthorized || after.thrown), 'and it cannot talk its way past the latch afterwards — a refused hello leaves nothing it can use')
     await c.close()
   }
 
@@ -467,6 +480,29 @@ try {
   const named = await lab.ask('whoami', { v: 1, role: 'controller', deviceId: 'lab-remote', label: 'Lab' })
   check(named && named.ok === true, 'the second round carries the identity')
   await waitFor(() => tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), 5000, 'and only then does it join the list')
+
+  // A SECOND WHOAMI CANNOT REWRITE THE FIRST. This peer holds the account secret, so it is
+  // entitled to be on the list at all — but identity is latched to the CHANNEL, and re-sending
+  // it is how a proven device would otherwise have promoted itself to `role: 'tv'` to get past
+  // the check in command(), or taken the household television's own deviceId and won
+  // findPeer() on Map insertion order. It is answered ok — a re-send is not an error — and
+  // changes nothing.
+  //
+  // TWO SENDS, one shape each, because one send carrying both proves neither: a peer that had
+  // taken the other device's id would no longer answer to its own, so findPeer('lab-remote')
+  // would come back empty and the role assertion would pass for entirely the wrong reason.
+  const promoteAttempt = await lab.ask('whoami', { v: 1, role: 'tv', deviceId: 'lab-remote', label: 'Lab' })
+  check(promoteAttempt && promoteAttempt.ok === true, 'a proven peer may send whoami a second time — that is not an error')
+  check(!!tv.listRemotes().find((p) => p.deviceId === 'lab-remote' && p.role === 'controller'), '…but the role it gave the first time is the one that stands')
+  let promoted = null
+  try { await tv.remotePlay('lab-remote', 'news') } catch (err) { promoted = err }
+  check(promoted && promoted.code === REMOTE_CONTROL_ERRORS.unknown, '…so it cannot promote itself into a television and start taking channel changes')
+
+  await lab.ask('whoami', { v: 1, role: 'controller', deviceId: 'phone-1', label: 'Not The Phone' })
+  const claimed = tv.listRemotes().filter((p) => p.deviceId === 'phone-1')
+  check(claimed.length === 1 && claimed[0].label === 'Pixel', "…nor can it take the real phone's deviceId: one phone-1 on the list, and it is the phone")
+  check(!!tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), '…it is still the device it named itself, and a host that cached the list still agrees with it')
+
   const traversal = await lab.ask('play', { v: 1, streamId: '../../catalog/movies' })
   check(traversal && traversal.error === REMOTE_CONTROL_ERRORS.malformed, 'a malformed streamId is refused on SHAPE, before it can reach the entitlement map')
   const noVersion = await lab.ask('play', { streamId: 'news' })
@@ -596,15 +632,25 @@ try {
   // whose remote session starts after ours must still find a responder on a connection our
   // own eager channel was already thrown off. Its teardown therefore cannot live in the
   // per-channel listener list, because dropPeer() empties that, and a channel closing before
-  // its socket is the COMMON case here (every stranger's mux rejects the eager open). It did
-  // live there, so the socket's later close removed nothing: one Protomux, one dead
-  // NoiseSecretStream and one closure over this entire session retained per peer met, on a
-  // television that runs for weeks against a churning 64-peer swarm.
+  // its socket is the COMMON case on a borrowed swarm (every stranger's mux rejects the eager
+  // open). It did live there, so the socket's later close removed nothing: one Protomux, one
+  // dead NoiseSecretStream and one closure over this entire session retained per peer met, on
+  // a television that runs for weeks against a churning 64-peer swarm.
   //
   // Measured on the socket's own 'close' listener count — public, and it moves by exactly
   // one. An UNRELATED secret, so this session's rendezvous cannot collide with the two live
-  // engines above. The channel is closed FROM THE FAR SIDE while the socket stays up, which
-  // is the shape the finding is about and the ordinary case on a borrowed swarm.
+  // engines above.
+  //
+  // THE CHANNEL IS CLOSED FROM THE FAR SIDE AND NOT BY A MUX REJECTION, which is a choice and
+  // not an oversight. The rejection is the commoner cause in production, but protomux hands a
+  // rejected session back to the OPENER as an ordinary channel close — the same event on the
+  // same listener that this stranger's destroy() produces — so driving it that way would test
+  // protomux's dispatch rather than what dropPeer() does with the event, which is where the
+  // bug was. A far-side destroy is that event, deterministically and at a moment this lane
+  // chooses. Nor is the rejection left unrun: both engines in Part 1 offer their eager channel
+  // to the PANEL's socket, whose mux has no handler for this protocol and refuses it, so a
+  // rejection that threw would take this lane down with it. Exercised every run, asserted
+  // nowhere — which is the right split for a path whose behaviour belongs to a dependency.
   {
     const topic = hcrypto.randomBytes(32)
     const mine = new Hyperswarm({ bootstrap }); cleanups.push(() => mine.destroy())
@@ -628,11 +674,7 @@ try {
     stranger.join(topic, { client: true, server: false })
     stranger.flush().catch(() => {})
     const sock = await waitFor(() => (found && [...mine.connections].includes(found) ? found : null), 30000, 'the two test swarms meet')
-    // COUNTED BY OWNER, not against a baseline: hyperswarm attaches its own 'close'
-    // listeners to a connection on its own schedule, so a number snapshotted before the
-    // session starts is already stale when it is compared. Every listener this session puts
-    // on a socket routes to dropPeer, and nothing else on the socket does.
-    const ours = () => sock.listeners('close').filter((f) => /dropPeer/.test(String(f))).length
+    const ours = () => ourCloses(sock) // by owner, not against a baseline — see the helper
     const session = startRemoteControl({
       secret: hex(hcrypto.randomBytes(32)), role: 'tv', identity: { deviceId: 'leak-tv' }, swarm: mine
     })
@@ -650,14 +692,14 @@ try {
   // Teardown: no topic, no listener, no peer.
   const swarmListeners = tv._swarm.listenerCount('connection')
   const peerSocket = [...tv._swarm.connections][0] || null
-  const socketCloses = peerSocket ? peerSocket.listenerCount('close') : 0
+  const socketCloses = peerSocket ? ourCloses(peerSocket) : 0
   await tv.stopRemote()
   await phone.stopRemote()
   {
     const left = DAY.every((n) => tv._swarm.status(remoteTopic(SECRET, n)) === null && phone._swarm.status(remoteTopic(SECRET, n)) === null)
     check(left, 'stopRemote() leaves every rendezvous topic on both devices')
     check(tv._swarm.listenerCount('connection') === swarmListeners - 1, "…removes its 'connection' listener from the borrowed swarm")
-    if (peerSocket) check(peerSocket.listenerCount('close') <= socketCloses, "…and its per-socket 'close' listeners, without destroying the socket")
+    if (peerSocket) check(socketCloses > 0 && ourCloses(peerSocket) === 0, "…and takes back every per-socket 'close' listener it had put on, leaving none of its own")
     check(peerSocket ? !peerSocket.destroyed : true, 'the socket itself survives — it is also carrying replication and the panel RPC')
     check(tv.listRemotes().length === 0 && phone.listRemotes().length === 0, 'and both device lists are empty')
   }

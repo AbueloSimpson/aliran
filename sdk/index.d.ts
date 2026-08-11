@@ -542,8 +542,9 @@ export class AliranPlayer {
    * Controller role. Ask a TELEVISION to play a channel. Resolves on ACCEPTANCE (it checked
    * its own entitlements and told its host to tune) — what happened arrives as a status
    * push. Rejects with a RemoteControlError: 'unknown' = not on the list, or not a
-   * television; 'unavailable' = it could not read that channel's catalog record and would
-   * not guess at its parental flag; 'timeout' NEVER means the device declined.
+   * television; 'unavailable' = it took the command and could not carry it out — the
+   * catch-all, most often a catalog record it could not read, and never "nothing is
+   * broadcasting"; 'timeout' NEVER means the device declined.
    */
   remotePlay(deviceId: string, streamId: string): Promise<{ ok: true }>
   /** Controller role. Ask that device to stop. */
@@ -842,7 +843,9 @@ export type RemoteStatusState = 'playing' | 'paused' | 'stopped'
 
 /**
  * 'refused' = remote control is switched off on that device. 'unentitled' = its account
- * cannot show that channel. 'timeout' = nothing came back, and NEVER means it declined.
+ * cannot show that channel. 'unavailable' = it took the command and could not carry it out,
+ * the catch-all — offer a retry, and never "nothing is broadcasting". 'timeout' = nothing
+ * came back, and NEVER means it declined.
  */
 export type RemoteControlErrorCode =
   | 'malformed'

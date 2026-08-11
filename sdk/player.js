@@ -1336,8 +1336,10 @@ export class AliranPlayer extends Emitter {
    * with a RemoteControlError whose `.code` is one of REMOTE_CONTROL_ERRORS ('refused' =
    * remote control is switched off there, 'unentitled' = that account cannot show it,
    * 'unknown' = it is not on the list, or is on it and is not a television, 'unavailable' =
-   * it could not read that channel's catalog record and would not guess at its parental
-   * flag, 'timeout' = it did not answer, and note that 'timeout' never means it declined).
+   * it took the command and could not carry it out — the CATCH-ALL, most often a catalog
+   * record it could not read and would not guess a parental flag from, and never a claim
+   * that nothing is broadcasting; 'timeout' = it did not answer, and note that 'timeout'
+   * never means it declined).
    */
   async remotePlay (deviceId, streamId) {
     if (!this._remoteCtl) throw new Error('start a remote session first (startRemote)')

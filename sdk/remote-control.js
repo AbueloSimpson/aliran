@@ -136,7 +136,10 @@
 // sdk/signin-pair.js opens with, and this file used to be a regression from it. What that
 // reveals to a stranger is that this device has the feature and is looking for account
 // peers, and nothing about WHICH account: the proof is a MAC under a secret they do not
-// have, and one MAC of a handshake hash they cannot reproduce is not a correlator.
+// have, over a handshake hash that is unique to THIS connection. They can reproduce that
+// hash — they are an endpoint of the handshake that produced it — and reproducing it buys
+// them nothing without the secret. What it buys is that two proofs from one device on two
+// connections share no value to link them by. A bare proof is not a correlator.
 //
 // WHAT WOULD HAVE TRAVELLED, if identity rode along. `deviceId` is the host's per-install
 // id when the host passes one — but when it does not, sdk/player.js falls back to the login
@@ -276,13 +279,25 @@ export const REMOTE_CONTROL_ROLES = { tv: 'tv', controller: 'controller' }
 /** What a status push may say. `paused` only ever comes from a host refinement. */
 export const REMOTE_STATUS_STATES = { playing: 'playing', paused: 'paused', stopped: 'stopped' }
 
-// The reasons a caller (and a UI) needs to tell apart. Two are worth reading twice:
+// The reasons a caller (and a UI) needs to tell apart. Three are worth reading twice:
 //
-//   refused    the TV ANSWERED and said no — remote control is switched off on it
-//              (setAcceptPlay(false)). A UI should say that, not "try again".
-//   unentitled the TV answered and that channel is not in ITS catalogue. On one account
-//              that normally means the two devices are on different logins, or the
-//              controller's catalogue is stale — never that the command was malformed.
+//   refused      the TV ANSWERED and said no — remote control is switched off on it
+//                (setAcceptPlay(false)). A UI should say that, not "try again".
+//   unentitled   the TV answered and that channel is not in ITS catalogue. On one account
+//                that normally means the two devices are on different logins, or the
+//                controller's catalogue is stale — never that the command was malformed.
+//   unavailable  the TV took the command and could not carry it out. THIS ONE IS THE
+//                CATCH-ALL and is meant to be: four different things arrive as it — a
+//                catalog record the television could not read (sdk/player.js fails closed
+//                there rather than guess a parental flag), an onPlay that threw without
+//                naming a reason, an onStop that threw, and an error code from a peer that
+//                this version does not recognize (see command()). A UI should offer a
+//                RETRY, because every one of those is transient, and must not say "nothing
+//                is broadcasting": this protocol never learns that. What is actually on the
+//                television arrives on the status channel, which is the surface to believe.
+//                Splitting the catalog case off into a code of its own was considered and
+//                refused: it would leave the other three in a bag that is still a bag, for
+//                a distinction a viewer cannot act on differently.
 //
 // And the same timeout/refused line sdk/signin-pair.js draws, for the same reason: `ask()`
 // answers null for every silence alike, so each caller has to decide which of the two it is
@@ -294,7 +309,7 @@ export const REMOTE_CONTROL_ERRORS = {
   unauthorized: 'unauthorized', // the peer never proved it holds the account secret
   refused: 'refused', // remote control is switched off on that device
   unentitled: 'unentitled', // that device's account cannot play that channel
-  unavailable: 'unavailable', // it accepted, and could not start it (nothing broadcasting)
+  unavailable: 'unavailable', // it took the command and could not carry it out — see above
   unknown: 'unknown', // not a device this command can be sent to: no such device in the
   // list (it may have just gone away), or one that is not a television — see command()
   offline: 'offline' // this device has no rendezvous to talk on
@@ -718,11 +733,23 @@ export function startRemoteControl (opts = {}) {
       if (!body) return refuse(e, refusalFor(buf))
       const theirId = normalizeRemoteIdentity(body)
       if (!theirId) return refuse(e, REMOTE_CONTROL_ERRORS.malformed)
-      const first = !e.verified
-      e.verified = true
-      e.id = theirId
-      e.role = body.role === REMOTE_CONTROL_ROLES.tv ? REMOTE_CONTROL_ROLES.tv : REMOTE_CONTROL_ROLES.controller
-      if (first) {
+      // THE FIRST WHOAMI ON A CHANNEL WINS, and a later one changes nothing. greet() has
+      // always latched this way — it writes id and role only while `!verified` — and this
+      // responder used to overwrite both unconditionally, so a peer could re-send at any
+      // time and silently become a different device: take the television's own deviceId and
+      // win findPeer() on Map insertion order, or flip its role to 'tv' to get past the
+      // check in command(). It takes the account secret to reach this line at all, and a
+      // secret-holder could have opened a fresh channel claiming either thing from the
+      // start — so this is not a privilege it did not have. What it WAS is silent: a host
+      // that acted on the `remotes` event would have disagreed with listRemotes() with no
+      // event in between, which is a bug whoever is holding the secret. Nothing in this
+      // module ever re-sends `whoami` on a live channel, so the latch costs nothing
+      // legitimate; a device that has really become someone else re-opens its channel, and
+      // the drop and the re-add are both announced.
+      if (!e.verified) {
+        e.verified = true
+        e.id = theirId
+        e.role = body.role === REMOTE_CONTROL_ROLES.tv ? REMOTE_CONTROL_ROLES.tv : REMOTE_CONTROL_ROLES.controller
         announcePeers()
         // One status to the peer that just arrived, so a phone opened after the television
         // was already playing shows what is on instead of an empty screen. This is the only
