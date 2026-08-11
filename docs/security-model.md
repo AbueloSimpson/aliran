@@ -223,30 +223,61 @@ Keystore raises the bar from "read a file" to "execute as this app", and no furt
 An operator who treats set-top boxes in uncontrolled locations as trusted should not
 change that judgement because of this section.
 
-**How an operator actually evicts such a device** (`test:signin-resume` asserts each
-of these):
+**"The account keys never leave the worklet" is not a sandbox.** It is said often in
+the code and it is worth being exact about, because it sounds like an isolation
+boundary and is not one: the Bare worklet is a *thread inside the app's own process*,
+with the same UID, the same files and the same debugger. What the arrangement actually
+guarantees is narrower and still worth the forty lines it costs — the account's two
+private keys are only ever in that runtime's heap, so they **never enter the React
+Native message stream**, and therefore never the debug logger that prints it, never a
+host listener, never a component's state, never a problem report. The only secret that
+crosses is the random file key, which opens nothing without a file the other side never
+sees. Against code running *as the app*, none of this helps; see the paragraph above.
 
-| Action | Effect on a kept sign-in |
-| --- | --- |
-| Change the viewer's password | **Evicts.** `set-password` mints a *fresh* account keypair and re-seals the grants to it, so the stored keys stop matching the record and the device erases them. |
-| Disable the account | **Evicts.** The panel refuses the session; the device erases. |
-| Rotate the channel's stream key | **Evicts from that channel**, as for every other device. |
-| "Log out all devices" (`tokenVersion`) | **Does not evict.** It ends live sessions; a device still holding working keys takes a new token on its next start. |
-| Revoke the one device | **Does not evict.** It drops the enrolment; the device re-enrols. |
+Nor is any of it erasable from memory afterwards. The file key and both account keys
+are immutable JavaScript strings, copied by every hop that touches them, and nothing in
+either runtime can overwrite one. They sit in the heap until a garbage collector that
+makes no promises gets to them — in practice, for the life of the process.
+
+**How an operator actually evicts such a device.** `test:signin-resume` asserts the
+first, second and fourth rows against a real panel; the third and fifth are reasoned
+from behaviour tested elsewhere and are marked as such.
+
+| Action | Effect on a kept sign-in | |
+| --- | --- | --- |
+| Change the viewer's password | **Evicts.** `set-password` mints a *fresh* account keypair and re-seals the grants to it, so the stored keys stop matching the record and the device erases them. | asserted |
+| Disable the account | **Evicts.** The panel refuses the session; the device erases. | asserted |
+| Rotate the channel's stream key | **Evicts from that channel**, as for every other device. | reasoned |
+| "Log out all devices" (`tokenVersion`) | **Does not evict.** It ends live sessions; a device still holding working keys takes a new token on its next start. | asserted |
+| Revoke the one device | **Does not evict.** It drops the enrolment; the device re-enrols. | reasoned |
 
 The last two are not new behaviour and not specific to televisions — a device
 holding a saved *password* signs straight back in after both, and always has. They
 are listed because storing keys makes it worth saying out loud which lever is the
 real one: **change the password.**
 
+**What does NOT erase it**, and deliberately so. Erasing is the only irreversible act
+in this feature, and its cost to a viewer is walking to another room for a phone — so a
+device erases only on positive evidence that the material can never work again (the key
+store saying these bytes will not open, a box that fails its MAC, an operator this
+device has left, or a verdict from the panel above). A key store that did not answer, a
+swarm still dialling, an account record that has not replicated to this device yet: all
+of those **keep** what is held and try again on the next start. The consequence is
+worth stating: a *deleted* account leaves an inert record on the television's disk,
+because "this device's copy of the signed record has no such account" is what a cold
+start looks like as well.
+
 **Sign out erases it**, and erases both halves — the record in the worklet and the
 Keystore key it was sealed under, so the file cannot be read even if it survives.
-Uninstalling the app, "clear data" and a factory reset destroy the Keystore key too.
+Changing the operator ("Change service…") erases it too: the record names the panel it
+came from and is worthless anywhere else. Uninstalling the app, "clear data" and a
+factory reset destroy the Keystore key too.
 
 Only builds that ask for this hold anything: the engine hands the material over
-solely when constructed with `remote: { keepSignIn: true }`, and the viewer app
-sets that on televisions and nowhere else. A phone signed in by another phone still
-has a keyboard and a password, so it keeps nothing.
+solely when constructed with `remote: { keepSignIn: true }` — **by name**, since the
+`remote: true` shorthand covers the two features that are about memory and pointedly
+not this one — and the viewer app sets it on televisions and nowhere else. A phone
+signed in by another phone still has a keyboard and a password, so it keeps nothing.
 
 ## What this does NOT protect against
 
