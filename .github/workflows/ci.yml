@@ -337,14 +337,16 @@ jobs:
     name: e2e over the public DHT (best effort, non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 70
+    # 85 = the sum of the step timeouts below (71) plus headroom for checkout/npm ci. Keep it
+    # above that sum, or a slow early suite silently cancels the later ones.
+    timeout-minutes: 85
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-      - name: Install ffmpeg (needed by test:sdk / test:broadcaster-api)
+      - name: Install ffmpeg (needed by test:sdk / test:broadcaster-api / test:thumbs)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npm ci
       # Each suite retries once (DHT discovery is the flaky part) and is time-capped:
@@ -375,3 +377,19 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 12
         run: npm run test:broadcaster-api || npm run test:broadcaster-api
+      # ⚠ NOT here because it needs the public DHT — test:thumbs runs a LOCAL testnet and is
+      # hermetic. It is here for the job's OTHER property: continue-on-error. It is slow
+      # (section G alone remuxes 4x600 content-seconds flat out) and its bounded-storage
+      # assertions are timing-sensitive — section D's held-block slack is sized from the
+      # fixture, and a loaded shared runner is not the machine those numbers were taken on. A
+      # flaky REQUIRED lane is worse than no lane, so it reports signal here until it has a
+      # track record on runners; promote it to `core` (which already installs ffmpeg and
+      # already runs local-testnet suites like test:vod) once it has one.
+      # It runs LAST deliberately: if the job hits its ceiling, the newest signal is what gets
+      # cut, not the established suites above.
+      # The pure half — served-path/filename agreement, argv isolation, knob precedence — does
+      # NOT wait for any of that: it is duplicated into test:args (X4) in the required job.
+      - name: Live channel thumbnails (test:thumbs)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: npm run test:thumbs || npm run test:thumbs

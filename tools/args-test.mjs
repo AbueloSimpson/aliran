@@ -8,8 +8,12 @@ import {
   upgradeInputString, TRANSCODE_DEFAULTS, ingestTuningArgs,
   pickSlateFile, parseVideoProfile, hwDecodeArgs, HW_DECODE_FAIL_RE,
   videoChain, logoInputArgs, parseResolution, mainInputCount,
-  thumbArgs, thumbDecodeArgs, isCompleteJpeg, THUMB_FAIL_RE
+  thumbArgs, thumbDecodeArgs, isCompleteJpeg, THUMB_FAIL_RE, THUMB_FILENAME
 } from '../broadcaster/src/hls.js'
+// The ONE import from outside the broadcaster, for the cross-workspace filename check in X4.
+// serve.js is runtime-agnostic by construction (no node:/bare- imports, no side effects), so
+// it costs this lane nothing and keeps it "safe anywhere".
+import { THUMB_PATH } from '../sdk/serve.js'
 import {
   ControlError, normalizeInput, normalizeTranscode, randomStreamKey,
   isPushInput, pushUrl, pickSource, normalizeIngestTuning, pickSlate, waitLoopIdle, runPool,
@@ -953,5 +957,52 @@ assert.ok(!isCompleteJpeg(Buffer.from([0x00, 0x00, 0xFF, 0xD9])), 'no SOI = not 
 assert.ok(!isCompleteJpeg(Buffer.alloc(0)), 'a zero-byte file is the classic mid-write read')
 assert.ok(!isCompleteJpeg(null), 'and an unreadable one never throws')
 log('X: torn-JPEG guard — only a complete SOI..EOI image is ever published ✓')
+
+// --- X4: the pure half of the LIVE thumbnail lane (tools/e2e-thumbs-test.mjs section A).
+// It is duplicated here on purpose: that lane needs ffmpeg + a DHT testnet and is therefore
+// not in the required job, so for a while nothing on every-PR CI checked any of this — and
+// the `-y` overwrite-guard fix (which is correct and load-bearing) silently shifted its argv
+// by one and broke it, unnoticed. These assertions cost milliseconds and no dependencies.
+//
+// ⚠ Anchor on FLAGS, never on fixed offsets. A `slice(0, 2)` is precisely what `-y` broke.
+assert.strictEqual(THUMB_PATH, '/' + THUMB_FILENAME,
+  `the SDK's served path and the broadcaster's written filename must agree (${THUMB_PATH} vs ${THUMB_FILENAME})`)
+// Argv isolation. The thumbnail is a SECOND output, appended strictly after the segment
+// output's filename so none of its options can reach the media path — this runs in the same
+// ffmpeg process as every live channel on the box, so a leak here is a fleet-wide incident.
+const segOnly = ffmpegArgs({ input: { kind: 'test' }, hls: HLS }, outDir)
+const segPlusThumb = ffmpegArgs({ input: { kind: 'test' }, hls: HLS, thumb: THUMB }, outDir)
+assert.deepStrictEqual(segPlusThumb.slice(0, segOnly.length), segOnly,
+  'the thumbnail output is appended AFTER the segment output, changing nothing before it')
+assert.deepStrictEqual(segPlusThumb.slice(segOnly.length), thumbArgs(THUMB, outDir),
+  'everything added is the thumbnail output itself')
+assert.deepStrictEqual(ffmpegArgs({ input: { kind: 'test' }, hls: HLS, thumb: null }, outDir), segOnly,
+  'a channel with thumbnails off spawns the exact argv it always did')
+// The copy path additionally gains the decoder hint — INSERTED as an input option. It does
+// not lead the argv; `-y` does.
+const copyBase = ffmpegArgs({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'copy' }, hls: HLS }, outDir)
+const copyThumbed = ffmpegArgs({ input: { kind: 'pull', url: 'http://o/s' }, transcode: { encoder: 'copy' }, hls: HLS, thumb: THUMB }, outDir)
+const skipAt = copyThumbed.indexOf('-skip_frame')
+assert.strictEqual(copyThumbed[0], '-y', 'the overwrite guard still leads the argv')
+assert.deepStrictEqual(copyThumbed.slice(skipAt, skipAt + 2), ['-skip_frame', 'nokey'], 'copy + thumbnail decodes keyframes only')
+assert.ok(skipAt > 0 && skipAt < copyThumbed.indexOf('-i'), '-skip_frame is a decoder option, so it precedes -i')
+assert.deepStrictEqual([...copyThumbed.slice(0, skipAt), ...copyThumbed.slice(skipAt + 2)].slice(0, copyBase.length), copyBase,
+  'the copy channel keeps its exact media argv')
+// The knob table. `test` inputs throughout, so the video gate (X2 above) is already clear and
+// what is being measured here is the KNOBS: kill switch > per-channel > copy-default-off.
+const knobXcode = { input: { kind: 'test' }, transcode: { encoder: 'libx264' } }
+const knobCopy = { input: { kind: 'test' }, transcode: { encoder: 'copy' } }
+const cfgOff = { thumbs: { enabled: false, intervalSeconds: 30, width: 320, quality: 7 } }
+const cfgNoDefault = { thumbs: { enabled: true, intervalSeconds: 0, width: 320, quality: 7 } }
+assert.ok(resolveThumb(knobXcode, cfgOn), 'a transcoding channel follows the fleet default (on)')
+assert.strictEqual(resolveThumb(knobCopy, cfgOn), null, 'a copy channel is NOT on by default (it would decode)')
+assert.ok(resolveThumb({ ...knobCopy, thumb: true }, cfgOn), 'a copy channel opts in explicitly')
+assert.strictEqual(resolveThumb({ ...knobXcode, thumb: false }, cfgOn), null, 'per-channel opt-out wins over the fleet default')
+assert.strictEqual(resolveThumb({ ...knobXcode, thumb: true }, cfgOff), null, 'THUMBS=0 overrides even an explicit per-channel opt-in')
+assert.strictEqual(resolveThumb(knobXcode, cfgNoDefault), null, 'THUMB_INTERVAL_SECONDS=0 turns the fleet default off')
+assert.strictEqual(resolveThumb({ ...knobXcode, thumb: true }, cfgNoDefault).intervalSeconds, 30,
+  'an opt-in under a 0 fleet interval falls back to the built-in 30 s')
+assert.strictEqual(resolveThumb(knobXcode, cfgOn).intervalSeconds, 30, 'the fleet interval is carried through')
+log('X: served-path/written-filename agreement across workspaces + argv isolation + knob precedence ✓')
 
 log('\nRESULT: PASS ✅  (S15a args table + input/transcode validation + backup sources + incident correlation + offline slate + resume pacing + gpu decode path + overlays/audio/CENC + live thumbnail argv/video gate)')

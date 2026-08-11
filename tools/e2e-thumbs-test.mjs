@@ -141,8 +141,17 @@ try {
   // The copy path additionally gains the decoder hint — as an INPUT option, and only there.
   const copyBase = ffmpegArgs({ input: { kind: 'pull', url: 'http://h/x' }, transcode: { encoder: 'copy' }, hls }, '/out')
   const copyThumbed = ffmpegArgs({ input: { kind: 'pull', url: 'http://h/x' }, transcode: { encoder: 'copy' }, hls, thumb: { intervalSeconds: 30 } }, '/out')
-  assert.deepStrictEqual(copyThumbed.slice(0, 2), ['-skip_frame', 'nokey'], 'copy + thumbnail decodes keyframes only')
-  assert.deepStrictEqual(copyThumbed.slice(2, copyBase.length + 2), copyBase, 'the copy channel keeps its exact media argv')
+  // ⚠ The hint is INSERTED into the argv; it does not lead it. `-y` does (the image2
+  // overwrite guard — see ffmpegArgs). Anchor on the flag rather than a fixed offset, so the
+  // next leading global cannot silently re-point these assertions at the wrong words: that is
+  // exactly what the `-y` hotfix did to the two `slice(0, 2)` / `slice(2, …)` calls here.
+  const skipAt = copyThumbed.indexOf('-skip_frame')
+  assert.strictEqual(copyThumbed[0], '-y', 'the overwrite guard still leads the argv')
+  assert.deepStrictEqual(copyThumbed.slice(skipAt, skipAt + 2), ['-skip_frame', 'nokey'], 'copy + thumbnail decodes keyframes only')
+  assert.ok(skipAt > 0 && skipAt < copyThumbed.indexOf('-i'), '-skip_frame is a decoder option, so it precedes -i')
+  // Drop the two hint words and what is left still OPENS with the untouched media argv.
+  const copyMedia = [...copyThumbed.slice(0, skipAt), ...copyThumbed.slice(skipAt + 2)]
+  assert.deepStrictEqual(copyMedia.slice(0, copyBase.length), copyBase, 'the copy channel keeps its exact media argv')
   assert.strictEqual(thumbDecodeArgs({ encoder: 'libx264' }, { intervalSeconds: 30 }, { kind: 'pull', url: 'http://h/x' }).length, 0,
     '-skip_frame is NEVER applied to a transcoding channel (it would reduce the channel to keyframes)')
   assert.strictEqual(thumbDecodeArgs({ encoder: 'copy' }, { intervalSeconds: 30 }, { kind: 'test' }).length, 0,
