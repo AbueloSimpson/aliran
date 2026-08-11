@@ -68,17 +68,23 @@ const RESTORE_BUDGET_MS = 45000
 // LOCKOUT_SECONDS (900). 45 s buys two attempts when each dials for 25 s, and NINETEEN when
 // each comes back fast. A set whose account record has not replicated pays 3 logins an
 // attempt: six attempts, eighteen logins, and it locks out the account it is restoring —
-// after which 'login failed: locked' returns in 20 ms and the loop ACCELERATES. The lockout
-// key carries this device's own swarm key, so the set locks out only itself, which sounds
-// mild until the fall-through below shows a login screen the viewer's correct password
-// cannot get through for a quarter of an hour, every boot.
+// after which 'login failed: locked' returns in 20 ms and the loop ACCELERATES.
+//
+// The peer half of that key is the engine's Hyperswarm public key, which sdk/player.js
+// leaves to hyperswarm to mint at random per instance — so the set locks out only itself,
+// and only for as long as this app process lives. That sounds mild, and here is what it
+// actually costs: the fall-through below then runs the password door on the SAME socket,
+// 'login failed: locked (retry 871s)' is not transient, and a viewer standing at the set
+// with the correct password is told to wait a quarter of an hour. Restarting the app would
+// clear it, which is not a thing anybody knows to try.
 //
 // THE RULE, and it deliberately names no number: AN ATTEMPT THAT REACHED THE PANEL ENDS
 // THIS DOOR. Free attempts keep the deadline they always had. So the most a boot can spend
 // here is whatever ONE resume can spend, which is bounded in the only place that knows it
 // (client/backend/backend.mjs RESUME_RECORD_TRIES, currently three logins 3 s apart) —
-// three whole boots inside one throttle window still fit under ten. And repeating a paying
-// attempt was never worth anything anyway: the panel had already answered.
+// a third of the panel's tolerance, with the password door's own fall-through still to come
+// out of the same window. And repeating a paying attempt was never worth anything anyway:
+// the panel had already answered.
 
 // The doors of this screen (see signinPath.ts). Both end on {type:'streams'}, neither
 // persists anything — the material each one used was already on the device — so what the

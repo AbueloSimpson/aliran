@@ -303,13 +303,19 @@ password** before deleting, or let the viewer sign the set out.
 
 **What a boot may spend at the panel.** Keeping means retrying, and a retry that
 reaches the panel costs a `login` — which `LOCKOUT_THRESHOLD` counts whether it
-succeeded or not, per account *and* per device. So the restore door is budgeted in
-logins, not in seconds: **an attempt that reached the panel ends it for that boot**,
-and attempts that never left the device (no socket yet, a key store that did not
-answer) are bounded by a wall-clock deadline instead. A boot therefore spends at most
-what one resume can spend — three logins today — so several restarts inside one
-lockout window still fit under a threshold of ten, and a television can never lock out
-the password screen a viewer standing in front of it needs.
+succeeded or not, against the account *and* the peer that asked. So the restore door
+is budgeted in logins, not in seconds: **an attempt that reached the panel ends it for
+that boot**, and attempts that never left the device (no socket yet, a key store that
+did not answer) are bounded by a wall-clock deadline instead. A boot therefore spends
+at most what one resume can spend — three logins today, against a threshold of ten —
+which leaves room for the set's own password fall-through and for a viewer typing at
+the sign-in screen afterwards.
+
+That last part is the reason the budget exists. A device that spends the whole
+threshold locks out *itself* (the peer half of the key is the engine's swarm identity,
+which is random per app process, so no other device is affected) — and the first thing
+it locks out is the sign-in screen it falls through to seconds later, where a viewer
+with the correct password is told to wait fifteen minutes.
 
 **Sign out erases it**, and erases both halves — the record in the worklet and the
 Keystore key it was sealed under, so the file cannot be read even if it survives.

@@ -53,9 +53,10 @@ const WORKLET_DIAL_MS = 25000
 // …and what an attempt costs THE PANEL, which is the other currency entirely and the one
 // B3 was denominated in wrongly. panel/src/rpc.js counts every `login` against
 // (username|peer) — the ones that succeed too — and refuses past LOCKOUT_THRESHOLD
-// (panel/src/config.js: 10) for LOCKOUT_SECONDS (900). The lockout is per account AND per
-// device, so what a television locks out is itself: its own password fall-through, on
-// every boot, for fifteen minutes at a time.
+// (panel/src/config.js: 10) for LOCKOUT_SECONDS (900). The peer half is the engine's
+// Hyperswarm key, random per instance, so a set locks out only itself and only for this app
+// process — and what it locks out is its own password fall-through, seconds later, in front
+// of a viewer holding the right password.
 const PANEL_LOCKOUT_THRESHOLD = 10
 // The most logins ONE resume can spend: client/backend/backend.mjs RESUME_RECORD_TRIES,
 // the bounded retry for an account record that has not replicated yet. The screen does not
@@ -220,7 +221,8 @@ test('B3: the record has not replicated — one boot, one paying resume, never a
   expect(spent).toBeLessThan(PANEL_LOCKOUT_THRESHOLD)
   expect(spent).toBe(RESUME_RECORD_TRIES) // one resume's worth, and one resume
   expect(attempts).toBe(1)
-  // Three whole boots inside one 900 s window still fit under the threshold.
+  // A third of the panel's tolerance, which leaves the password door's own fall-through
+  // and a viewer typing at the sign-in screen room in the same window.
   expect(spent * 3).toBeLessThanOrEqual(PANEL_LOCKOUT_THRESHOLD)
   expect(nav.replace).toHaveBeenCalledWith('Login')
 })

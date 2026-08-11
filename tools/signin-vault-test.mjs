@@ -254,10 +254,12 @@ try {
   const perResume = Number((worklet.match(/const RESUME_RECORD_TRIES = (\d+)/) || [])[1])
   check(Number.isInteger(perResume) && perResume > 0, `one resume may spend ${perResume} logins (RESUME_RECORD_TRIES)`)
   // The screen's rule is "an attempt that reached the panel ends this door", so a boot's
-  // whole restore-door spend is one resume's worth. Three boots inside one lockout window is
-  // an ordinary evening for a set Android keeps reclaiming, and it still has to fit.
+  // whole restore-door spend is one resume's worth. Held to a third of the panel's
+  // tolerance rather than to the whole of it: the password door's fall-through runs on the
+  // same socket in the same window, and a viewer who then types at the sign-in screen needs
+  // attempts left after both.
   check(perResume * 3 <= threshold,
-    `three boots of the restore door (${perResume * 3}) still fit under the panel's threshold (${threshold})`)
+    `the restore door's ceiling (${perResume}) is a third of the panel's threshold (${threshold}) or better`)
 
   // …and that the rule is the one actually written. A revert to a pure deadline puts the
   // door back where it was, and both halves of the mechanism have to be present for it to

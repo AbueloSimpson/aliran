@@ -342,10 +342,11 @@ export interface ResumeSignInResult {
    * waiting for an account record to replicate both come back `retry: true`. A host that
    * budgets its loop by wall clock cannot tell them apart. The panel can: it counts EVERY
    * `login` against (username|peer), successes included, and stops answering past
-   * LOCKOUT_THRESHOLD (10 by default) for LOCKOUT_SECONDS (900). The lockout key holds the
-   * device's own swarm key, so what a television spends it on is ITSELF — including its
-   * password screen, which then refuses a viewer standing at the set with the right
-   * password, for fifteen minutes, on every boot.
+   * LOCKOUT_THRESHOLD (10 by default) for LOCKOUT_SECONDS (900). The peer half is the
+   * engine's Hyperswarm key — minted at random per instance, so a device only ever locks
+   * out ITSELF, and only for the life of this process. What that costs is the fall-through:
+   * the password screen a host shows next is refused too, in front of a viewer holding the
+   * right password.
    *
    * So budget the attempts that cost by COUNT, and the ones that cost nothing by the clock.
    *
