@@ -573,8 +573,6 @@ export class AliranPlayer extends Emitter {
     // …and the marker for the window BEFORE the handle exists, for the same reason
     // _signinStarting has one: startRemote() awaits a store open first. Set synchronously.
     this._remoteCtlStarting = null
-    // Last peer list, so listRemotes() answers the same thing the 'remotes' event carried.
-    this._remotes = []
     // Rolling breadcrumb ring (newest last, REPORT_EVENT_LIMIT entries) fed from
     // emit() — what the engine was complaining about just before the viewer reported.
     // NOT `_events`: that name is the Emitter's listener map (see the class above), and
@@ -1223,7 +1221,7 @@ export class AliranPlayer extends Emitter {
           platform: this._platform || null,
           appVersion: this._appVersion || null
         },
-        onPeers: (list) => { this._remotes = list; this.emit('remotes', list) },
+        onPeers: (list) => this.emit('remotes', list),
         onPlay: async ({ streamId, from }) => {
           // THE ENTITLEMENT CHECK, against this device's OWN login snapshot. The peer sent a
           // name; everything that could turn a name into bytes — the feed key, the sealed
@@ -1232,13 +1230,38 @@ export class AliranPlayer extends Emitter {
             throw new RemoteControlError(REMOTE_CONTROL_ERRORS.unentitled, 'this device is not entitled to ' + streamId)
           }
           const s = this._streams.find((x) => x.id === streamId) || null
+          // FAIL CLOSED ON A CHANNEL THIS DEVICE CANNOT DESCRIBE. `_entitled` and `_streams`
+          // are different objects and they legitimately disagree: _pushCatalog() rebuilds
+          // the display list from records that must READ BACK, so an id whose catalog record
+          // has not replicated (or that the operator has just removed) drops out of
+          // `_streams` while it stays in `_entitled`; and a re-login fills `_entitled` before
+          // _publishLogin() assigns `_streams`, an await apart.
+          //
+          // In those windows this used to emit `restricted: false` — the DEFAULT, from a
+          // record it never found — and the host's parental gate, which keys on exactly that
+          // flag, did not fire. A remote `play` is the one path that can name a channel that
+          // is not in the display list at all; a local zap cannot, which is why the fail-open
+          // mattered here and nowhere else.
+          //
+          // REFUSED, rather than reported as `restricted: true`, for three reasons. A host
+          // with no PIN configured HIDES restricted channels rather than challenging for
+          // them (see _display), so `restricted: true` hands it a command it has no defined
+          // answer for — the gate would be nominal. A refusal is visible on the phone as a
+          // named error the viewer can retry, where a silently-gated play looks like the
+          // television ignored them. And both windows are transient and self-healing — a
+          // catalog tick, or the end of a login — so the whole cost of refusing is that
+          // retry. Reporting a `restricted` value read from no record is a fabrication in
+          // either direction; the honest answer is that this device cannot say yet.
+          if (!s) {
+            throw new RemoteControlError(REMOTE_CONTROL_ERRORS.unavailable, 'this device cannot read the catalog record for ' + streamId + ' right now')
+          }
           this.emit('remote', {
             role: 'tv',
             state: 'play',
             streamId,
             // The host must gate this exactly as it gates a local zap — see the note above.
-            restricted: !!(s && s.restricted),
-            title: s ? s.title : undefined,
+            restricted: s.restricted === true,
+            title: s.title,
             from
           })
         },
@@ -1279,6 +1302,12 @@ export class AliranPlayer extends Emitter {
    * The account's other devices on the rendezvous, each having PROVED it holds the account
    * secret: { deviceId, label, platform, appVersion, role }. Empty when no session is
    * running. `deviceId` is the peer's own claim — a handle for a picker, not a credential.
+   *
+   * THIS IS EVERY DEVICE, NOT EVERY TARGET. Controllers verify each other exactly as a
+   * phone and a television do, so two phones on one account each appear in the other's
+   * list — which is what a television needs to show the phones watching it. A "send to"
+   * picker must FILTER ON `role === 'tv'`: remotePlay() to anything else rejects with
+   * 'unknown', because a controller runs no play responder to send to.
    */
   listRemotes () {
     return this._remoteCtl ? this._remoteCtl.peers() : []
@@ -1290,7 +1319,9 @@ export class AliranPlayer extends Emitter {
    * — which is not the same as playing: what happened arrives as a `status` push. Rejects
    * with a RemoteControlError whose `.code` is one of REMOTE_CONTROL_ERRORS ('refused' =
    * remote control is switched off there, 'unentitled' = that account cannot show it,
-   * 'timeout' = it did not answer, and note that 'timeout' never means it declined).
+   * 'unknown' = it is not on the list, or is on it and is not a television, 'unavailable' =
+   * it could not read that channel's catalog record and would not guess at its parental
+   * flag, 'timeout' = it did not answer, and note that 'timeout' never means it declined).
    */
   async remotePlay (deviceId, streamId) {
     if (!this._remoteCtl) throw new Error('start a remote session first (startRemote)')
@@ -1331,7 +1362,6 @@ export class AliranPlayer extends Emitter {
     if (this._remoteCtlStarting) this._remoteCtlStarting.cancelled = true
     const handle = this._remoteCtl
     this._remoteCtl = null
-    this._remotes = []
     if (handle) { try { await handle.destroy() } catch {} }
   }
 

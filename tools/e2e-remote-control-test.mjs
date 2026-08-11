@@ -15,24 +15,50 @@
 //     the TV's own remote updates the phone too;
 //   - `stop` arrives and the status follows it;
 //   - an UNENTITLED streamId is refused against the TELEVISION'S own catalogue;
-//   - the take-over switch refuses play AND stop when it is off.
+//   - the take-over switch refuses play AND stop when it is off;
+//   - a command aimed at a CONTROLLER is named, not misreported as a timeout;
+//   - rapid channel changes COALESCE into one status carrying where the viewer ended up;
+//   - and a channel this device is entitled to but cannot READ fails CLOSED — refused,
+//     rather than reported to the host as unrestricted from a record nobody found.
 //
-// Part 2 drives sdk/remote-control.js with a hand-rolled hostile peer, because the
-// interesting cases are the refusals. The peer is given the real TOPIC (which it could
-// learn by watching the DHT) but a FORGED secret, so it is exactly the adversary the mutual
-// proof exists for:
-//   - a forged proof is refused and the channel is closed;
-//   - `play` without a hello at all is refused;
-//   - so is `play` after a refused hello — a peer cannot talk its way past the latch;
-//   - another wire version is named rather than reported as silence;
-//   - a malformed streamId never reaches the entitlement map.
+// Part 2 drives sdk/remote-control.js with hand-rolled hostile peers, because the
+// interesting cases are the refusals. They are given the real TOPIC (which they could learn
+// by watching the DHT) but a FORGED secret, so they are exactly the adversary the mutual
+// proof exists for. BOTH DIRECTIONS, which is the half that used to be missing:
 //
-// Part 3 is the epoch: current + previous joined, one full period of tolerated skew, and —
-// the half that makes an epoch worth anything — the aged-out topic actually LEFT on a roll.
+//   answering  — what this television REPLIES to a stranger:
+//                - a forged proof is refused and the channel is closed;
+//                - `play` without a hello at all is refused;
+//                - so is `play` after a refused hello — a peer cannot talk its way past the
+//                  latch, and now cannot talk at all: the refusal took the channel;
+//                - a malformed body is a refusal that ALSO ends the channel, so a stranger
+//                  that sends nothing else cannot sit on this socket forever;
+//                - another wire version is named rather than reported as silence;
+//                - a malformed streamId never reaches the entitlement map.
+//   opening    — what this television SENDS a peer that has proved nothing. It offers its
+//                channel to every connection its swarm has, and protomux writes the bytes
+//                before the far mux decides whether to accept the channel at all — so a
+//                peer that merely registers a responder reads the opening hello. It must
+//                find a proof in it and NOTHING else: no deviceId (a truncation of the
+//                account public key when the host passes none), no label, no platform, no
+//                version, no role. Identity follows verification, in both directions.
+//
+// Part 3 is the epoch: current + previous joined, a real second session one whole period
+// ahead sharing exactly one topic with the first, and — the half that makes an epoch worth
+// anything — the aged-out topic actually LEFT on a roll.
 //
 // Part 4 is the gate and teardown: with `remote.control` off, startRemote() refuses and NO
 // topic is ever joined; after stopRemote() no topic, no listener and no peer is left behind,
-// and a fresh session on the same engines finds the same peers again.
+// and a fresh session on the same engines finds the same peers again. It also pins the
+// per-socket teardown a rejected channel leaves behind — the notify that unpairs a stranger's
+// mux must OUTLIVE the channel close, or a television running for weeks against a churning
+// swarm retains one Protomux, one dead NoiseSecretStream and one session-wide closure per
+// peer it ever met.
+//
+// EVERY EPOCH IN THIS FILE COMES FROM THE SESSION'S OWN epochs(), never from a fresh
+// Date.now(). Wall-clock reads scattered through a lane disagree with each other, and with
+// the session, if a run straddles UTC midnight — a millisecond window, but a required lane
+// must not carry one.
 //
 // Requires loopback UDP only. Exits 0 on PASS.
 // Run: npm run test:remote-control
@@ -45,13 +71,13 @@ import b4a from 'b4a'
 import {
   evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
   userKeyPair, sealTo, authKeyPair, ARGON2_DEFAULT,
-  remoteSecret, remoteTopic, remoteProof, REMOTE_ROLES
+  remoteSecret, remoteTopic, remoteProof, REMOTE_ROLES, REMOTE_PROOF_BYTES
 } from '@aliran/core'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
 import { createPlayer } from '../sdk/index.js'
-import { startRemoteControl, REMOTE_PROTOCOL, REMOTE_CONTROL_ERRORS } from '../sdk/remote-control.js'
+import { startRemoteControl, REMOTE_PROTOCOL, REMOTE_CONTROL_ERRORS, REMOTE_EPOCH_MS } from '../sdk/remote-control.js'
 
 const log = (...a) => console.log(...a)
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
@@ -62,6 +88,9 @@ async function waitFor (fn, ms, label) {
 }
 
 const DIFFICULTY = 8 // low for a fast test
+// Mirrors STATUS_MIN_MS in sdk/remote-control.js, which is deliberately not exported (it is
+// a property of the protocol, not a knob). Only used here to wait out a trailing send.
+const STATUS_FLOOR_MS = 1000
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
 const dirs = { panel: tmp('e2erc-panel-'), tv: tmp('e2erc-tv-'), phone: tmp('e2erc-phone-'), plain: tmp('e2erc-plain-') }
@@ -172,10 +201,16 @@ try {
   const phoneStart = await phone.startRemote({ role: 'controller', label: 'Pixel' })
   check(tvStart.topics.length >= 1 && tvStart.topics.length <= 2, 'the television joined the current epoch and (unless it is epoch 0) the previous one')
   check(JSON.stringify(tvStart.topics) === JSON.stringify(phoneStart.topics), 'both devices derived the same rendezvous topics')
+  // The session's OWN epochs, read once and reused everywhere below — see the header note
+  // about UTC midnight. epochs() is ascending, so DAY[1] is the current one.
+  const DAY = tv._remoteCtl.epochs()
   {
-    const e = Math.floor(Date.now() / 86400000)
-    const want = [hex(remoteTopic(SECRET, e - 1)), hex(remoteTopic(SECRET, e))].sort()
-    check(JSON.stringify([...tvStart.topics].sort()) === JSON.stringify(want), 'and those topics are remoteTopic(secret, epoch) for the current DAY and the one before it')
+    check(DAY.length === 2 && DAY[1] === DAY[0] + 1, 'those two epochs are consecutive — the current period and the one before it')
+    // The period itself, read off the module rather than recomputed from a clock: a second
+    // Date.now() here is the midnight race the header warns about, for a constant.
+    check(REMOTE_EPOCH_MS === 24 * 60 * 60 * 1000, 'and the period is ONE DAY — the linkage window the epoch bounds')
+    const want = DAY.map((e) => hex(remoteTopic(SECRET, e))).sort()
+    check(JSON.stringify([...tvStart.topics].sort()) === JSON.stringify(want), 'and each topic is remoteTopic(secret, epoch) for one of them')
     check(!tvStart.topics.includes(hex(remoteTopic(SECRET))), 'the PERMANENT (un-epoched) topic is never joined')
   }
 
@@ -255,11 +290,88 @@ try {
   check(tuned.length === before, '…and the ENGINE tuned nothing — the host refused at its PIN gate, which is where that decision belongs')
   pinRequired = false
 
+  // --- a controller is a PEER, not a TARGET ---
+  // Two devices of one account verify each other whichever ends they are running, so the
+  // television lists the phone exactly as the phone lists the television. Sending a channel
+  // change to it reaches a device with no `play` responder: protomux-rpc answers
+  // UNKNOWN_METHOD, ask() cannot tell that from silence, and this used to surface as
+  // `timeout` — the one code the vocabulary promises means "it did not answer". A viewer who
+  // tapped their own other phone in a picker would have been told their television had
+  // dropped off Wi-Fi.
+  let notATv = null
+  try { await tv.remotePlay('phone-1', 'news') } catch (err) { notATv = err }
+  check(notATv && notATv.code === REMOTE_CONTROL_ERRORS.unknown, 'a command aimed at a CONTROLLER is refused as "unknown", not misreported as a timeout')
+
+  // --- coalescing ---
+  // "At most one message a second, carrying where the viewer ended up" is one of the three
+  // decisions the status design makes and nothing exercised it. Three channel changes back
+  // to back on a redirect channel (resolve() opens no feed and joins no topic, so each is
+  // sub-millisecond) cannot produce three pushes: the first may flush on the spot if the
+  // floor has already elapsed, but the two after it fall inside the window and share one
+  // trailing send. Asserted as "fewer than three" rather than "exactly two" because which
+  // side of the floor the FIRST one lands on is a real timing question and not the claim.
+  {
+    const statusCount = () => phoneEvents.seen.filter((s) => s.state === 'status').length
+    const n0 = statusCount()
+    await tv.resolve('sports'); await tv.resolve('news'); await tv.resolve('sports')
+    const settled = await waitFor(() => {
+      const s = phoneEvents.last('status')
+      return s && s.status.streamId === 'sports' && statusCount() > n0 ? s : null
+    }, 10000, 'the coalesced status reaches the phone')
+    await sleep(STATUS_FLOOR_MS + 500) // any trailing send still owed has landed by now
+    check(statusCount() - n0 < 3, 'three channel changes inside the one-second floor produce FEWER than three status pushes — they coalesce')
+    check(settled.status.streamId === 'sports' && phoneEvents.last('status').status.streamId === 'sports', '…and what lands says where the viewer ENDED UP, not where they passed through')
+  }
+
+  // --- fail closed on a channel this device cannot describe ---
+  // `_entitled` and `_streams` are different objects and they legitimately disagree:
+  // _pushCatalog() rebuilds the display list only from records that READ BACK, so an id
+  // whose catalog record has not replicated (or that the operator just removed) drops out of
+  // `_streams` while it stays in `_entitled`; and a re-login fills `_entitled` an await
+  // before _publishLogin() assigns `_streams`. Reproduced directly here, on a channel that
+  // really IS parental-gated — which is the whole point. A remote `play` is the only path
+  // that can name a channel absent from the display list; a local zap cannot.
+  {
+    const keptStreams = tv.listStreams()
+    check(!!keptStreams.find((s) => s.id === 'sports' && s.restricted), 'the channel about to go missing is a restricted one')
+    const playsBefore = tvEvents.seen.filter((s) => s.state === 'play').length
+    const tunedBefore = tuned.length
+    tv._streams = keptStreams.filter((s) => s.id !== 'sports')
+    let blind = null
+    try { await phone.remotePlay('tv-1', 'sports') } catch (err) { blind = err }
+    tv._streams = keptStreams
+    check(blind && blind.code === REMOTE_CONTROL_ERRORS.unavailable, 'a play for a channel the television is entitled to but cannot READ is REFUSED')
+    check(tvEvents.seen.filter((s) => s.state === 'play').length === playsBefore, '…no command reached the host at all, so nothing was reported to it as unrestricted from a record nobody found')
+    check(tuned.length === tunedBefore, '…and nothing was tuned')
+  }
+
+  // --- a playhead belongs to the channel it was measured on ---
+  // `position` is sticky on purpose: the host sends one, it is stored, and it rides the next
+  // push some real change caused. But a channel change is exactly the change it must NOT
+  // ride — zapping A -> B used to publish B's status carrying A's playhead.
+  {
+    await tv.resolve('news')
+    await waitFor(() => { const s = phoneEvents.last('status'); return s && s.status.streamId === 'news' ? s : null }, 10000, 'the phone follows the television to news')
+    await sleep(STATUS_FLOOR_MS + 200) // clear of the floor, so the next change sends at once
+    tv.updateRemoteStatus({ position: 1234 }) // stored; a position alone never sends anything
+    await tv.resolve('sports')
+    const zapped = await waitFor(() => { const s = phoneEvents.last('status'); return s && s.status.streamId === 'sports' ? s : null }, 10000, 'and on to sports')
+    check(zapped.status.position === null, '…carrying NO playhead: the one the host set belongs to the channel that is no longer on')
+
+    // …and it does ride a change on the SAME channel, which is the half that was always right.
+    await sleep(STATUS_FLOOR_MS + 200)
+    tv.updateRemoteStatus({ position: 99 })
+    tv.updateRemoteStatus({ state: 'paused' })
+    const paused = await waitFor(() => { const s = phoneEvents.last('status'); return s && s.status.state === 'paused' ? s : null }, 10000, 'a host-reported pause reaches the phone')
+    check(paused.status.position === 99 && paused.status.streamId === 'sports', '…still carrying the playhead the host set, because the channel did not change')
+    tv.updateRemoteStatus({ state: 'playing' })
+  }
+
   // ============================================================================
   // PART 2 — a peer that knows the topic and NOT the secret
   // ============================================================================
 
-  const topicNow = remoteTopic(SECRET, Math.floor(Date.now() / 86400000))
+  const topicNow = remoteTopic(SECRET, DAY[1])
   const forgedSecret = hex(hcrypto.randomBytes(32))
   const hostile = new Hyperswarm({ bootstrap }); cleanups.push(() => hostile.destroy())
   const hostileSocket = await new Promise((resolve, reject) => {
@@ -269,59 +381,145 @@ try {
     hostile.flush().catch(() => {})
   })
   await new Promise((resolve) => { if (hostileSocket.handshakeHash) resolve(); else hostileSocket.once('connect', resolve) })
-  const hrpc = new ProtomuxRPC(hostileSocket, { protocol: REMOTE_PROTOCOL })
   const hh = hostileSocket.handshakeHash
   const hRole = roleOf(hostileSocket)
-  const hAsk = async (method, obj) => {
-    try { return parse(await hrpc.request(method, body(obj), { timeout: 10000 })) } catch (err) { return { thrown: String(err && err.message) } }
+
+  // --- 2a. what this television ANSWERS a stranger ---
+  //
+  // ONE CHANNEL PER PROBE, because every refusal to an unproven peer now tears the channel
+  // down: a stranger that sends nothing but malformed bodies used to be able to talk forever
+  // on a socket that is also carrying a viewer's feed. A real adversary re-opens, so this is
+  // the more faithful harness as well as the necessary one — and each re-open exercises the
+  // protomux `pair` notify that lets a late-starting device reach an existing connection.
+  const channel = () => {
+    const rpc = new ProtomuxRPC(hostileSocket, { protocol: REMOTE_PROTOCOL })
+    const ask = async (method, obj) => {
+      try { return parse(await rpc.request(method, body(obj), { timeout: 10000 })) } catch (err) { return { thrown: String(err && err.message) } }
+    }
+    return { rpc, ask, close: async () => { destroyQuietly(rpc); await sleep(200) } }
+  }
+  const probe = async (method, obj) => {
+    const c = channel()
+    const out = await c.ask(method, obj)
+    await c.close()
+    return out
   }
 
   // Straight to a command, with no hello at all.
-  const bare = await hAsk('play', { v: 1, streamId: 'news' })
+  const bare = await probe('play', { v: 1, streamId: 'news' })
   check(bare && bare.error === REMOTE_CONTROL_ERRORS.unauthorized, 'a peer that never said hello cannot play anything ("unauthorized")')
 
   // Another wire version: NAMED, so the other end can say "update the app" rather than
   // reporting a silence.
-  const wrongVersion = await hAsk('hello', { v: 99, proof: hex(remoteProof(SECRET, hh, hRole)), deviceId: 'ghost' })
+  const wrongVersion = await probe('hello', { v: 99, proof: hex(remoteProof(SECRET, hh, hRole)), deviceId: 'ghost' })
   check(wrongVersion && wrongVersion.error === REMOTE_CONTROL_ERRORS.version, 'a peer on another wire version is named, not treated as noise')
 
-  // The real thing: a forged secret.
-  const forged = await hAsk('hello', { v: 1, proof: hex(remoteProof(forgedSecret, hh, hRole)), deviceId: 'ghost', label: 'Not Your TV' })
-  check(forged && forged.error === REMOTE_CONTROL_ERRORS.unauthorized, 'a proof under a FORGED secret is refused')
-  check(!forged.proof, 'and the television does not hand its own proof to an unproven stranger')
-  check(!tv.listRemotes().find((p) => p.deviceId === 'ghost'), 'the forged peer never appears in the device list')
+  // The real thing: a forged secret — and then talking on past the refusal, on the SAME
+  // channel, because "it cannot talk its way past the latch" is a claim about one channel.
+  {
+    const c = channel()
+    const forged = await c.ask('hello', { v: 1, proof: hex(remoteProof(forgedSecret, hh, hRole)), deviceId: 'ghost', label: 'Not Your TV' })
+    check(forged && forged.error === REMOTE_CONTROL_ERRORS.unauthorized, 'a proof under a FORGED secret is refused')
+    check(!forged.proof && !forged.deviceId && !forged.label, 'and the REFUSAL carries nothing — not the television\'s proof, not its name (what it sends UNPROMPTED is 2b below)')
+    check(!tv.listRemotes().find((p) => p.deviceId === 'ghost'), 'the forged peer never appears in the device list')
+    const after = await c.ask('play', { v: 1, streamId: 'news' })
+    check(after && (after.error === REMOTE_CONTROL_ERRORS.unauthorized || after.thrown), 'and it cannot talk its way past the latch afterwards — the refusal took the channel with it')
+    await c.close()
+  }
 
-  // Talking on past the refusal buys nothing: the latch is the only thing `play` consults.
-  const after = await hAsk('play', { v: 1, streamId: 'news' })
-  check(after && (after.error === REMOTE_CONTROL_ERRORS.unauthorized || after.thrown), 'and it cannot talk its way past the latch afterwards')
-
-  destroyQuietly(hrpc)
+  // A MALFORMED BODY IS A REFUSAL THAT ALSO ENDS THE CHANNEL. It used not to be: only a
+  // failed proof tore anything down, so "every failure path tears down" was untrue as
+  // written and a stranger sending junk was never dropped.
+  {
+    const c = channel()
+    const junk = await c.ask('hello', { proof: hex(remoteProof(SECRET, hh, hRole)) }) // no `v`
+    check(junk && junk.error === REMOTE_CONTROL_ERRORS.malformed, 'a hello with no wire version on it is refused as malformed')
+    // The refusal is WRITTEN FIRST and the drop lands on the next tick, so that the stranger
+    // still reads why. A message already in flight can therefore still find the channel open
+    // — this asserts the settled state, which is the claim.
+    await sleep(500)
+    const next = await c.ask('hello', { v: 1, proof: hex(remoteProof(SECRET, hh, hRole)) })
+    check(next && next.thrown, '…and the channel is then GONE, so a stranger that sends nothing but junk cannot sit on this socket')
+    await c.close()
+  }
 
   // The same socket again, this time with the REAL secret — which the test holds because it
-  // minted the account. Two things at once:
-  //   1. the channel the television dropped after the forged hello is re-openable, which is
-  //      the protomux `pair` notify doing its job (a device whose remote session starts
-  //      LATER than its peer's has to be able to open on a connection that already exists);
-  //   2. a peer that has proved itself still gets its message bodies shape-checked.
-  await sleep(200)
-  const lab = new ProtomuxRPC(hostileSocket, { protocol: REMOTE_PROTOCOL })
-  const lAsk = async (method, obj) => {
-    try { return parse(await lab.request(method, body(obj), { timeout: 10000 })) } catch (err) { return { thrown: String(err && err.message) } }
-  }
-  const greeted = await lAsk('hello', { v: 1, proof: hex(remoteProof(SECRET, hh, hRole)), deviceId: 'lab-remote', label: 'Lab' })
+  // minted the account. Three things at once:
+  //   1. the channel the television dropped after each refusal is re-openable, which is the
+  //      protomux `pair` notify doing its job (a device whose remote session starts LATER
+  //      than its peer's has to be able to open on a connection that already exists);
+  //   2. the TWO ROUNDS: `hello` proves and gets identity back, `whoami` sends identity and
+  //      is what actually puts this peer on the list;
+  //   3. a peer that has proved itself still gets its message bodies shape-checked — and is
+  //      NOT dropped for one bad body, because on a real account that is a version skew.
+  // Identity offered without a proof first, on its own channel: `whoami` is the only place a
+  // peer's name is read off the wire, so it has to be gated on the same latch `play` is.
+  const unproven = await probe('whoami', { v: 1, role: 'controller', deviceId: 'sneak' })
+  check(unproven && unproven.error === REMOTE_CONTROL_ERRORS.unauthorized, 'a whoami on a channel that never proved anything is refused')
+  check(!tv.listRemotes().find((p) => p.deviceId === 'sneak'), 'and names nobody')
+
+  const lab = channel()
+  const greeted = await lab.ask('hello', { v: 1, proof: hex(remoteProof(SECRET, hh, hRole)) })
   check(greeted && greeted.ok === true && greeted.role === 'tv', 'a peer that DOES hold the account secret is accepted on a re-opened channel (the late-starting-device path)')
   check(!!greeted.proof, 'and the television proves itself back to it')
-  await waitFor(() => tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), 5000, 'it joins the list')
-  const traversal = await lAsk('play', { v: 1, streamId: '../../catalog/movies' })
+  check(greeted.deviceId === 'tv-1' && greeted.label === 'Living Room', 'and names itself — to a peer that has just proved, which is the whole precondition')
+  check(!tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), 'a proof alone does not put a peer on the list: it has not said who it is yet')
+  const named = await lab.ask('whoami', { v: 1, role: 'controller', deviceId: 'lab-remote', label: 'Lab' })
+  check(named && named.ok === true, 'the second round carries the identity')
+  await waitFor(() => tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), 5000, 'and only then does it join the list')
+  const traversal = await lab.ask('play', { v: 1, streamId: '../../catalog/movies' })
   check(traversal && traversal.error === REMOTE_CONTROL_ERRORS.malformed, 'a malformed streamId is refused on SHAPE, before it can reach the entitlement map')
-  const noVersion = await lAsk('play', { streamId: 'news' })
+  const noVersion = await lab.ask('play', { streamId: 'news' })
   check(noVersion && noVersion.error === REMOTE_CONTROL_ERRORS.malformed, 'and so is a body with no wire version on it')
-  const oversized = await lAsk('play', { v: 1, streamId: 'news', pad: 'x'.repeat(4096) })
+  const oversized = await lab.ask('play', { v: 1, streamId: 'news', pad: 'x'.repeat(4096) })
   check(oversized && oversized.error === REMOTE_CONTROL_ERRORS.malformed, 'and one over the size bound, which is checked BEFORE the JSON is parsed')
-  destroyQuietly(lab)
+  check(!!tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), '…and three bad bodies did NOT cost a PROVEN peer its channel — on a real account that is a version skew, not an attack')
+  destroyQuietly(lab.rpc)
   destroyQuietly(hostileSocket)
-  await waitFor(() => !tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), 10000, 'a dropped socket leaves the list')
-  check(true, 'and a peer that goes away leaves the list behind it')
+  await waitFor(() => !tv.listRemotes().find((p) => p.deviceId === 'lab-remote'), 10000, 'a peer that goes away leaves the list behind it')
+
+  // --- 2b. what this television SENDS, unprompted, to a peer that has proved nothing ---
+  //
+  // The opener direction, which the suite never covered. This television offers its channel
+  // to every connection its swarm has, and protomux writes an opened channel's messages
+  // straight to the stream — nothing waits to see whether the far mux will accept it. So a
+  // peer that does no more than REGISTER A RESPONDER for this protocol reads the opening
+  // hello, whatever it does or does not know. It must find a proof in it and nothing else.
+  //
+  // The responder is registered SYNCHRONOUSLY in the connection handler: the television's
+  // channel open is already on its way, and one registered an await later misses it — which
+  // is exactly why the old harness's hostile peer never saw this message.
+  async function lurk ({ proofSecret, deviceId, label }) {
+    const swarm = new Hyperswarm({ bootstrap })
+    const seen = { hello: null, whoami: null }
+    swarm.on('connection', (socket) => {
+      socket.on('error', () => {})
+      const rpc = new ProtomuxRPC(socket, { protocol: REMOTE_PROTOCOL })
+      rpc.respond('hello', (buf) => {
+        seen.hello = parse(buf)
+        return body({ v: 1, ok: true, role: 'controller', deviceId, label, proof: hex(remoteProof(proofSecret, socket.handshakeHash, roleOf(socket))) })
+      })
+      rpc.respond('whoami', (buf) => { seen.whoami = parse(buf); return body({ v: 1, ok: true }) })
+    })
+    swarm.join(topicNow, { client: true, server: false })
+    swarm.flush().catch(() => {})
+    await waitFor(() => seen.hello, 40000, 'the television greets ' + deviceId)
+    await sleep(2000) // whichever way it goes, the second round has had its chance by now
+    await swarm.destroy()
+    return seen
+  }
+  const namedFields = (m) => ['deviceId', 'label', 'platform', 'appVersion', 'role'].filter((k) => m[k] !== undefined)
+  {
+    const honest = await lurk({ proofSecret: SECRET, deviceId: 'lurk-ok', label: 'Lurker' })
+    check(typeof honest.hello.proof === 'string' && honest.hello.proof.length === REMOTE_PROOF_BYTES * 2, "the opening hello a stranger is handed carries a proof")
+    check(namedFields(honest.hello).length === 0, '…and NOTHING else: no deviceId — which is a truncation of the ACCOUNT public key when the host passes none — no label, no platform, no version, no role')
+    check(honest.whoami && honest.whoami.deviceId === 'tv-1' && honest.whoami.label === 'Living Room' && honest.whoami.role === 'tv', 'identity arrives in the SECOND round, once the answer has proved the account secret')
+
+    const liar = await lurk({ proofSecret: forgedSecret, deviceId: 'lurk-bad', label: 'Not Yours' })
+    check(namedFields(liar.hello).length === 0, 'a peer that will answer with a FORGED proof is handed the same bare hello')
+    check(liar.whoami === null, '…and is never told who this device is: identity follows verification in BOTH directions')
+    check(!tv.listRemotes().find((p) => p.deviceId === 'lurk-bad'), 'and it never joins the list')
+  }
 
   // ============================================================================
   // PART 3 — the epoch: two topics, one period of skew, and the roll that LEAVES
@@ -344,15 +542,31 @@ try {
     check(!!swarmA.status(remoteTopic(SECRET, 10)) && !!swarmA.status(remoteTopic(SECRET, 9)), 'both are really joined on the swarm')
 
     // A device whose clock is a whole period out still overlaps on one topic — which is the
-    // entire reason the previous epoch is joined at all.
-    const skewed = [11, 10]
-    check(skewed.some((e) => session.epochs().includes(e)), 'a device one whole period ahead still overlaps on a shared topic')
+    // entire reason the previous epoch is joined at all. Asserted against a REAL second
+    // session running on a skewed clock; it used to be asserted against two literals, which
+    // is a property of the two literals and not of the system.
+    {
+      const swarmB = new Hyperswarm({ bootstrap }); cleanups.push(() => swarmB.destroy())
+      const ahead = startRemoteControl({
+        secret: SECRET,
+        role: 'controller',
+        identity: { deviceId: 'epoch-phone' },
+        swarm: swarmB,
+        epochMs: EPOCH,
+        tickMs: 25,
+        now: () => clock + EPOCH // a whole period fast
+      })
+      check(JSON.stringify(ahead.epochs()) === '[10,11]', 'a device one whole period ahead lands on the next pair of epochs')
+      const shared = ahead.epochs().filter((e) => session.epochs().includes(e))
+      check(shared.length === 1 && shared[0] === 10, '…and the two still share exactly one topic, which is the skew budget the previous epoch buys')
+      const sharedTopic = hex(remoteTopic(SECRET, shared[0]))
+      check(session.topics().includes(sharedTopic) && ahead.topics().includes(sharedTopic), 'both are really on that shared topic')
+      await ahead.destroy()
+    }
 
     clock += EPOCH // roll
-    await waitFor(() => session.epochs().join() === '10,11', 2000, 'the epoch rolls')
-    check(session.epochs().join() === '10,11', 'a roll joins the new current epoch')
-    await waitFor(() => swarmA.status(remoteTopic(SECRET, 9)) === null, 2000, 'the aged-out topic is left')
-    check(swarmA.status(remoteTopic(SECRET, 9)) === null, '…and LEAVES the aged-out one, which is the half that makes the epoch worth anything')
+    await waitFor(() => session.epochs().join() === '10,11', 2000, 'a roll joins the new current epoch')
+    await waitFor(() => swarmA.status(remoteTopic(SECRET, 9)) === null, 2000, '…and LEAVES the aged-out one, which is the half that makes the epoch worth anything')
 
     await session.destroy()
     check(swarmA.status(remoteTopic(SECRET, 10)) === null && swarmA.status(remoteTopic(SECRET, 11)) === null, 'destroy() leaves every topic behind it')
@@ -371,10 +585,66 @@ try {
     let gated = null
     try { await plain.startRemote({ role: 'tv' }) } catch (err) { gated = err }
     check(gated && /remote: \{ control: true \}/.test(String(gated.message)), 'startRemote() refuses on that build, and names the flag')
-    const e = Math.floor(Date.now() / 86400000)
-    const anyJoined = [e, e - 1].some((n) => plain._swarm.status(remoteTopic(SECRET, n)) !== null)
+    const anyJoined = DAY.some((n) => plain._swarm.status(remoteTopic(SECRET, n)) !== null)
     check(!anyJoined, 'and NO rendezvous topic was ever joined — the gate is not just a thrown error')
     check(plain.listRemotes().length === 0, 'listRemotes() is empty rather than throwing')
+  }
+
+  // --- what a REJECTED channel leaves on the socket ---
+  //
+  // The `pair` notify has to OUTLIVE its channel — that is the whole point of it: a device
+  // whose remote session starts after ours must still find a responder on a connection our
+  // own eager channel was already thrown off. Its teardown therefore cannot live in the
+  // per-channel listener list, because dropPeer() empties that, and a channel closing before
+  // its socket is the COMMON case here (every stranger's mux rejects the eager open). It did
+  // live there, so the socket's later close removed nothing: one Protomux, one dead
+  // NoiseSecretStream and one closure over this entire session retained per peer met, on a
+  // television that runs for weeks against a churning 64-peer swarm.
+  //
+  // Measured on the socket's own 'close' listener count — public, and it moves by exactly
+  // one. An UNRELATED secret, so this session's rendezvous cannot collide with the two live
+  // engines above. The channel is closed FROM THE FAR SIDE while the socket stays up, which
+  // is the shape the finding is about and the ordinary case on a borrowed swarm.
+  {
+    const topic = hcrypto.randomBytes(32)
+    const mine = new Hyperswarm({ bootstrap }); cleanups.push(() => mine.destroy())
+    const stranger = new Hyperswarm({ bootstrap }); cleanups.push(() => stranger.destroy())
+    let found = null
+    let strangerRpc = null
+    let greeted = false
+    mine.on('connection', (s) => { s.on('error', () => {}); found = s })
+    stranger.on('connection', (s) => {
+      s.on('error', () => {})
+      // A peer that takes the channel and refuses: it never proves anything, so the session
+      // holds an UNVERIFIED entry on it — the state every stranger on a borrowed swarm is in.
+      const rpc = new ProtomuxRPC(s, { protocol: REMOTE_PROTOCOL })
+      rpc.respond('hello', () => { greeted = true; return body({ v: 1, error: REMOTE_CONTROL_ERRORS.unauthorized }) })
+      strangerRpc = rpc
+    })
+    // Announce FIRST and flush it, then look up: a client that queries before the announce
+    // lands does not retry for ten minutes, which is longer than this lane lives.
+    mine.join(topic, { server: true, client: false })
+    await mine.flush()
+    stranger.join(topic, { client: true, server: false })
+    stranger.flush().catch(() => {})
+    const sock = await waitFor(() => (found && [...mine.connections].includes(found) ? found : null), 30000, 'the two test swarms meet')
+    // COUNTED BY OWNER, not against a baseline: hyperswarm attaches its own 'close'
+    // listeners to a connection on its own schedule, so a number snapshotted before the
+    // session starts is already stale when it is compared. Every listener this session puts
+    // on a socket routes to dropPeer, and nothing else on the socket does.
+    const ours = () => sock.listeners('close').filter((f) => /dropPeer/.test(String(f))).length
+    const session = startRemoteControl({
+      secret: hex(hcrypto.randomBytes(32)), role: 'tv', identity: { deviceId: 'leak-tv' }, swarm: mine
+    })
+    await waitFor(() => greeted, 15000, 'the session opens its channel on the borrowed connection and greets')
+    check(ours() === 2, 'a live channel carries two socket listeners of this session: one for the channel, one for the mux notify')
+    // THE CHANNEL DIES, THE SOCKET LIVES — the common case, and the one the bug was in.
+    destroyQuietly(strangerRpc)
+    await sleep(1500)
+    check(ours() === 1, 'when the CHANNEL closes under a live socket the notify teardown SURVIVES it — it used to be swept away with the channel, leaving nothing to unpair the mux when the socket finally died')
+    await session.destroy()
+    check(ours() === 0, '…and destroy() takes that one back off, so nothing of the session outlives it')
+    await stranger.destroy()
   }
 
   // Teardown: no topic, no listener, no peer.
@@ -384,8 +654,7 @@ try {
   await tv.stopRemote()
   await phone.stopRemote()
   {
-    const e = Math.floor(Date.now() / 86400000)
-    const left = [e, e - 1].every((n) => tv._swarm.status(remoteTopic(SECRET, n)) === null && phone._swarm.status(remoteTopic(SECRET, n)) === null)
+    const left = DAY.every((n) => tv._swarm.status(remoteTopic(SECRET, n)) === null && phone._swarm.status(remoteTopic(SECRET, n)) === null)
     check(left, 'stopRemote() leaves every rendezvous topic on both devices')
     check(tv._swarm.listenerCount('connection') === swarmListeners - 1, "…removes its 'connection' listener from the borrowed swarm")
     if (peerSocket) check(peerSocket.listenerCount('close') <= socketCloses, "…and its per-socket 'close' listeners, without destroying the socket")
@@ -399,8 +668,7 @@ try {
   const tvAgain = await tv.startRemote({ role: 'tv', label: 'Living Room' })
   await tvAgain.flushed()
   await phone.startRemote({ role: 'controller', label: 'Pixel' })
-  await waitFor(() => phone.listRemotes().find((p) => p.deviceId === 'tv-1'), 40000, 'the two devices find each other again')
-  check(true, 'a fresh session on the same engines finds the same devices again (nothing was left wedged)')
+  await waitFor(() => phone.listRemotes().find((p) => p.deviceId === 'tv-1'), 40000, 'a fresh session on the same engines finds the same devices again (nothing was left wedged)')
   check((await phone.remotePlay('tv-1', 'news')).ok === true, 'and commands work on it')
 
   // stop() must take the rendezvous with it, both windows included.

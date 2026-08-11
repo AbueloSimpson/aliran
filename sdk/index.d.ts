@@ -332,8 +332,12 @@ export interface PlayerEvents {
       /** state 'refused': which command was turned away. */
       command?: 'play' | 'stop'
       reason?: RemoteControlErrorCode
-      /** Which device sent it (its own claim — a picker handle, not a credential). */
-      from?: RemotePeer
+      /**
+       * Which device sent it (its own claim — a picker handle, not a credential). A
+       * RemoteIdentity and NOT a RemotePeer: this is the peer's `whoami` verbatim, so it
+       * carries no `role`. Only listRemotes() / the `remotes` event add one.
+       */
+      from?: RemoteIdentity
       /** role 'controller', state 'status': what that television is showing. */
       status?: { streamId: string | null; state: RemoteStatusState; position: number | null }
     }
@@ -526,12 +530,18 @@ export class AliranPlayer {
     /** Await it to know the rendezvous is live (a TV's announce has landed). */
     flushed(): Promise<boolean>
   }>
-  /** Devices of this account that have PROVED themselves on the rendezvous. */
+  /**
+   * Devices of this account that have PROVED themselves on the rendezvous — televisions
+   * AND controllers (two phones on one account list each other). Build a "send to" picker
+   * from the ones whose `role` is 'tv'; remotePlay() to any other rejects 'unknown'.
+   */
   listRemotes(): RemotePeer[]
   /**
-   * Controller role. Ask a device to play a channel. Resolves on ACCEPTANCE (it checked its
-   * own entitlements and told its host to tune) — what happened arrives as a status push.
-   * Rejects with a RemoteControlError; 'timeout' never means the device declined.
+   * Controller role. Ask a TELEVISION to play a channel. Resolves on ACCEPTANCE (it checked
+   * its own entitlements and told its host to tune) — what happened arrives as a status
+   * push. Rejects with a RemoteControlError: 'unknown' = not on the list, or not a
+   * television; 'unavailable' = it could not read that channel's catalog record and would
+   * not guess at its parental flag; 'timeout' NEVER means the device declined.
    */
   remotePlay(deviceId: string, streamId: string): Promise<{ ok: true }>
   /** Controller role. Ask that device to stop. */
@@ -867,7 +877,15 @@ export interface RemoteIdentity {
   appVersion: string | null
 }
 
-/** …plus which end of this feature it is running, once its hello has been read. */
+/**
+ * …plus which end of this feature it is running, once its `whoami` has been read.
+ *
+ * ONLY peers()/listRemotes() and the `remotes` event hand these out — those are the two
+ * places that build the shape and add `role`. Every `from` on a callback or a `remote`
+ * event is a bare RemoteIdentity: it is the peer's own message, and there is no `role` on
+ * it. Do not widen a `from` to this type to make a `.role` read compile — the property is
+ * `undefined` at runtime.
+ */
 export interface RemotePeer extends RemoteIdentity {
   role: RemoteControlRole | null
 }
@@ -880,8 +898,12 @@ export interface RemoteControlHandle {
   epochs(): number[]
   /** The rendezvous is live on the DHT. False rather than a throw on a failed lookup. */
   flushed(): Promise<boolean>
+  /** Televisions AND controllers — only `role === 'tv'` can be given a command. */
   peers(): RemotePeer[]
-  /** Controller: resolves on ACCEPTANCE, not on playback. */
+  /**
+   * Controller: resolves on ACCEPTANCE, not on playback. Rejects 'unknown' when the
+   * deviceId is not on the list or is not a television.
+   */
   play(deviceId: string, streamId: string): Promise<{ ok: true }>
   stop(deviceId: string): Promise<{ ok: true }>
   /** TV: push what is on. Sends only when the CHANNEL or the STATE changed. */
@@ -908,12 +930,15 @@ export function startRemoteControl(opts: {
   swarm?: unknown
   bootstrap?: string[]
   epochMs?: number
+  /** The epoch re-read cadence (default one minute). Tests only. */
+  tickMs?: number
   now?: () => number
   acceptPlay?: boolean
-  onPlay?: (cmd: { streamId: string; from: RemotePeer }) => Promise<void> | void
-  onStop?: (cmd: { from: RemotePeer }) => Promise<void> | void
-  onRefused?: (info: { type: 'play' | 'stop'; streamId?: string; from: RemotePeer; reason: RemoteControlErrorCode }) => void
-  onStatus?: (s: { from: RemotePeer; streamId: string | null; state: RemoteStatusState; position: number | null }) => void
+  // Every `from` below is a RemoteIdentity — the peer's own `whoami`, with no `role` on it.
+  onPlay?: (cmd: { streamId: string; from: RemoteIdentity }) => Promise<void> | void
+  onStop?: (cmd: { from: RemoteIdentity }) => Promise<void> | void
+  onRefused?: (info: { type: 'play' | 'stop'; streamId?: string; from: RemoteIdentity; reason: RemoteControlErrorCode }) => void
+  onStatus?: (s: { from: RemoteIdentity; streamId: string | null; state: RemoteStatusState; position: number | null }) => void
   onPeers?: (peers: RemotePeer[]) => void
   onError?: (err: Error) => void
 }): RemoteControlHandle

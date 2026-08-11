@@ -21,11 +21,14 @@
 //             sdk/login.js so the private key never leaves that scope.
 //   2. TV     announce on remoteTopic(secret, epoch) — current AND previous epoch.
 //      Phone  look up the same two topics. It never announces (see JOIN MODES below).
-//   3. BOTH   one round of mutual proof, bound to the Noise handshake hash
-//             (remoteProof / remoteProofValid). A peer that cannot prove is refused and
-//             its channel is closed. There is no SAS and no PIN here, and that is not an
-//             omission — see WHAT THIS DOES NOT NEED below.
-//   4. Phone  play / stop. TV: status, pushed on change.
+//   3. BOTH   `hello`: a PROOF and nothing else, bound to the Noise handshake hash
+//             (remoteProof / remoteProofValid). The answer carries the answerer's own
+//             proof and — because the asker has now proved itself — its identity. A peer
+//             that cannot prove is refused and its channel is closed. There is no SAS and
+//             no PIN here, and that is not an omission — see WHAT THIS DOES NOT NEED.
+//   4. BOTH   `whoami`: the asker's identity, sent only after the answer's proof verified.
+//             See IDENTITY GOES SECOND below — that ordering is load-bearing.
+//   5. Phone  play / stop. TV: status, pushed on change.
 //
 // WHAT THIS DOES NOT NEED, and why saying so is not hand-waving. sdk/signin-pair.js runs a
 // compared-digits round and a typed-PIN round on top of the same mutual proof. Both exist
@@ -40,9 +43,17 @@
 // the controller { client: true, server: false }. Joining a topic as a server ANNOUNCES an
 // IP:port on it; the controller never has to be found, only to find, so it never publishes
 // one. A phone is the device that moves between home, work, a café and a friend's flat, so
-// its address history is the one worth not writing into the DHT. This also means two TVs
-// on one account never connect to each other (neither dials), which is correct: nothing in
-// this protocol is TV-to-TV.
+// its address history is the one worth not writing into the DHT.
+//
+//   IT DOES NOT MEAN TWO TVs NEVER MEET, and an earlier draft of this comment said it did.
+//   Neither dials the other ON THIS RENDEZVOUS, which is all the join modes decide. But this
+//   module runs on a BORROWED swarm and deliberately offers its channel to every connection
+//   that swarm already has (see BOTH SIDES OPEN below), and two televisions on one account
+//   are routinely connected already because both re-seed the same feed topics. Both then
+//   open, both greet, both verify, and each lists the other. That is harmless — a television
+//   runs no `play` responder for another television to reach, and the status events it
+//   receives are dropped by a role that has no onStatus — but it HAPPENS, and a future change
+//   must not be built on the belief that it cannot.
 //
 // THE EPOCH. remoteTopic(secret, epoch) takes an optional coarse epoch precisely so this
 // module can bound a linkage window, and WHETHER to use it is this module's decision. It
@@ -109,13 +120,45 @@
 //   - and a protomux `pair` notify stays registered for the life of the session, so a peer
 //     that opens after our own eager channel was rejected still finds a responder here.
 //
-// Offering the channel to every connected peer sounds indiscriminate and is not, because
-// of what protomux does with it: a peer with no remote session has no handler for this
-// protocol, so its mux REJECTS the channel on arrival (protomux _requestSession) and our
-// end closes immediately. The standing set is therefore the account's own devices, and a
-// stranger pays one rejected channel open. What it does reveal to that stranger is that
-// this device has the feature and is looking for account peers; it reveals nothing about
-// WHICH account, because the proof is a MAC under a secret they do not have.
+// IDENTITY GOES SECOND, AND THAT IS THE WHOLE REASON THERE ARE TWO ROUNDS.
+//
+// The channel is offered to EVERY connection the borrowed swarm has, and on that swarm the
+// other end is normally not an account device at all: it is the broadcaster, a repeater, or
+// another of the operator's subscribers, up to hyperswarm's maxPeers at a time. A peer with
+// no remote session has no handler for this protocol, so its mux rejects the channel on
+// arrival (protomux _requestSession) and our end closes immediately — but THAT DECISION
+// HAPPENS AFTER THE BYTES ARE ON THE WIRE. Protomux writes an opened channel's messages to
+// the stream straight away; nothing waits to see whether the far side will accept it. So
+// anything the opening message carries has already been delivered to a peer that chose to
+// register a handler for `aliran-remote` and answer, whatever it does or does not know.
+//
+// Hence the opening `hello` carries a PROOF AND NOTHING ELSE — the same shape
+// sdk/signin-pair.js opens with, and this file used to be a regression from it. What that
+// reveals to a stranger is that this device has the feature and is looking for account
+// peers, and nothing about WHICH account: the proof is a MAC under a secret they do not
+// have, and one MAC of a handshake hash they cannot reproduce is not a correlator.
+//
+// WHAT WOULD HAVE TRAVELLED, if identity rode along. `deviceId` is the host's per-install
+// id when the host passes one — but when it does not, sdk/player.js falls back to the login
+// result, and sdk/login.js derives THAT from user.pub.subarray(0, 8): a truncation of the
+// ACCOUNT public key, identical on every device of the account. An unauthenticated peer
+// would have learned "this device is on account X, it is a television, it is called Living
+// Room, it runs 0.5.0" — and meeting two devices of one account on any network, at any
+// time, would have linked them, with no rendezvous topic and no secret needed. That is
+// precisely the correlator the one-day epoch and the controller's announce-nothing join
+// mode exist to deny, and it would have been handed out over a plain replication socket
+// that neither of them covers.
+//
+// So: `hello` proves. The ANSWER may carry identity, because by the time it is written the
+// asker's proof has been checked. `whoami` carries the asker's identity, and is sent only
+// once the answer's proof has been checked in turn. Neither side names itself to anything
+// it has not authenticated, in either direction.
+//
+// The second round is also what keeps the RESPONDER-ONLY path whole. A device that answers
+// but whose own greet never completes (a slow peer, a timed-out ask) still learns who its
+// peer is, because that peer's `whoami` tells it. Folding identity into the hello answer
+// alone would have made this module's peer list depend on an emergent property — "both
+// sides always greet" — instead of on the protocol.
 //
 // NO CONNECTION CAP, deliberately, where sdk/signin-pair.js has one. That cap exists to
 // bound a birthday search against a four-digit comparison behind a 60-bit code. There is
@@ -155,7 +198,19 @@
 // message to a peer the moment it verifies so a phone that arrives late still knows what is
 // on. `position` rides along when the host supplies one and is never itself a reason to
 // send — a scrubber that follows a live playhead is a message per second per phone for the
-// length of a film, which is what this rule exists to refuse.
+// length of a film, which is what this rule exists to refuse. A `position` also does not
+// SURVIVE a channel change: a playhead the host has not re-sent belongs to the channel that
+// is no longer on, and letting it ride out on the next channel's status is simply a wrong
+// number (it used to).
+//
+//   THE ONE PUSH THAT IS NOT THROTTLED is that arrival message, and it is left that way on
+//   purpose. It goes to ONE peer, exactly once per channel (the `first` latch), and only
+//   after that peer has PROVED it holds the account secret — so nothing unproven can ask for
+//   it and nothing can ask for it twice without tearing down and re-establishing a channel
+//   it had to authenticate on. Putting it behind the floor would buy nothing measurable and
+//   would cost the thing it exists for: a phone opened while the television is already
+//   playing would show an empty screen for up to a second, or — if the trailing send were
+//   later coalesced away by a real change — never see the sync at all.
 //
 // Nothing here logs. The wire helpers below (jsonBody/parseBody/refusalFor/guardSocket/…)
 // are deliberately a COPY of sdk/signin-pair.js's rather than an extraction: they are
@@ -240,7 +295,8 @@ export const REMOTE_CONTROL_ERRORS = {
   refused: 'refused', // remote control is switched off on that device
   unentitled: 'unentitled', // that device's account cannot play that channel
   unavailable: 'unavailable', // it accepted, and could not start it (nothing broadcasting)
-  unknown: 'unknown', // no such device in the list — it may have just gone away
+  unknown: 'unknown', // not a device this command can be sent to: no such device in the
+  // list (it may have just gone away), or one that is not a television — see command()
   offline: 'offline' // this device has no rendezvous to talk on
 }
 
@@ -400,7 +456,8 @@ export function normalizeRemoteIdentity (p) {
  *                                         otherwise (its topics are left on destroy())
  * @param {string[]} [opts.bootstrap]      custom DHT bootstrap nodes (tests, private DHTs)
  * @param {number} [opts.epochMs]          override REMOTE_EPOCH_MS (tests)
- * @param {number} [opts.tickMs]           override the epoch re-read cadence (tests)
+ * @param {number} [opts.tickMs]           override EPOCH_TICK_MS, the epoch re-read cadence
+ *                                         (tests — a roll is not worth waiting a minute for)
  * @param {function} [opts.now]            clock, for tests
  * @param {boolean} [opts.acceptPlay]      TV: accept play/stop at all (default true)
  * @param {function} [opts.onPlay]         TV: async ({streamId, from}) — THROW to refuse,
@@ -442,14 +499,22 @@ export function startRemoteControl (opts = {}) {
 
   let acceptPlay = opts.acceptPlay !== false
   let destroyed = false
-  // socket -> { rpc, mux, hh, noiseRole, verified, id, role, unlisten[] }
+  // socket -> { rpc, mux, hh, noiseRole, proven, verified, id, role, unlisten[] }
   const peers = new Map()
-  // Every mux this session registered a `pair` notify on. Tracked separately from `peers`
-  // because the notify must OUTLIVE a dropped channel — that is the whole point of it: a
-  // peer whose session starts after ours finds a responder here even though our own eager
-  // channel was rejected and closed minutes ago. Unregistered in destroy(), where leaving
-  // one behind would retain this session's whole scope for the life of the socket.
-  const paired = new Set()
+  // mux -> undo(). Every mux this session registered a `pair` notify on, with the one
+  // function that takes it back off. Tracked separately from `peers` because the notify must
+  // OUTLIVE a dropped channel — that is the whole point of it: a peer whose session starts
+  // after ours finds a responder here even though our own eager channel was rejected and
+  // closed minutes ago.
+  //
+  // ITS LIFETIME IS THE SOCKET'S. The undo is registered in open() and is deliberately NOT
+  // in the entry's `unlisten`, because dropPeer() runs every listener in there — so a
+  // teardown living in `unlisten` is destroyed by the ordinary channel close, which on this
+  // swarm is the COMMON case (every stranger's mux rejects our eager channel). That left one
+  // Protomux, one destroyed NoiseSecretStream and one notify closure over this whole session
+  // retained per churned peer, on the long-lived television this feature is aimed at.
+  const paired = new Map()
+  const unpair = (mux) => { try { mux.unpair({ protocol: REMOTE_PROTOCOL }) } catch {} }
   // epoch number -> PeerDiscovery session. Exactly the epochs this device is announcing on
   // (or looking up on) right now — the window the epoch exists to bound.
   const joined = new Map()
@@ -533,11 +598,22 @@ export function startRemoteControl (opts = {}) {
   const publishStatus = (next = {}) => {
     if (destroyed) return
     const streamId = next.streamId === undefined ? status.streamId : (next.streamId === null ? null : shortLabel(next.streamId, 128))
-    const state = Object.prototype.hasOwnProperty.call(REMOTE_STATUS_STATES, next.state) ? next.state : status.state
+    // typeof FIRST. hasOwnProperty stringifies its key, so hasOwnProperty(STATES, ['playing'])
+    // is true and the UNSTRINGIFIED array would then be forwarded — a host testing
+    // `state === 'playing'` silently never matches. The guard against prototype keys is
+    // right; the coercion was the bug. Same shape at the `status` responder and in command().
+    const state = typeof next.state === 'string' && Object.prototype.hasOwnProperty.call(REMOTE_STATUS_STATES, next.state)
+      ? next.state
+      : status.state
+    // A CHANNEL CHANGE DROPS A CARRIED-OVER POSITION. `position` is sticky by design — the
+    // host sends one when it has one and it rides the next push something else caused — but
+    // a playhead is a property of the channel it was measured on. Zapping A -> B with no new
+    // position used to publish B's status carrying A's playhead.
+    const zapped = streamId !== status.streamId
     const position = next.position === undefined
-      ? status.position
+      ? (zapped ? null : status.position)
       : (Number.isFinite(next.position) && next.position >= 0 ? Math.round(next.position) : null)
-    const changed = streamId !== status.streamId || state !== status.state
+    const changed = zapped || state !== status.state
     status = { streamId, state, position }
     if (!changed || role !== REMOTE_CONTROL_ROLES.tv) return
     const since = Date.now() - statusSentAt
@@ -565,25 +641,43 @@ export function startRemoteControl (opts = {}) {
   // Wire the responders. Called for the eagerly-opened channel AND for one the peer opened
   // (through the mux `pair` notify), so both paths land on identical behaviour.
   const attach = (socket, rpc, hh) => {
-    const entry = { rpc, mux: rpc.mux, hh, noiseRole: myRole(socket), verified: false, id: null, role: null, unlisten: [] }
+    const entry = { rpc, mux: rpc.mux, hh, noiseRole: myRole(socket), proven: false, verified: false, id: null, role: null, unlisten: [] }
     peers.set(socket, entry)
 
     // Two closes, and they do NOT mean the same thing. A CHANNEL close is ordinary — a peer
     // whose remote session has not started rejects ours — and the mux must stay paired so
-    // that peer can open later. A SOCKET close ends everything, so the mux is dropped from
-    // `paired` too; otherwise a long session with churning peers accumulates one dead
-    // Protomux per closed connection.
-    const onSocketClose = () => { paired.delete(entry.mux); dropPeer(socket) }
+    // that peer can open later. A SOCKET close ends everything. Both end THIS entry, and
+    // that is all either of these does: the mux's own teardown is registered in open(),
+    // outside `unlisten`, for the reason written at `paired`.
+    const onSocketClose = () => dropPeer(socket)
     socket.once('close', onSocketClose)
     entry.unlisten.push(() => { try { socket.off('close', onSocketClose) } catch {} })
     const onChannelClose = () => dropPeer(socket)
     rpc.on('close', onChannelClose)
     entry.unlisten.push(() => { try { rpc.off('close', onChannelClose) } catch {} })
 
+    /**
+     * EVERY REFUSAL TO AN UNPROVEN PEER ENDS THE CHANNEL — the answer is written first and
+     * the drop lands on the next tick, so the stranger still reads why. It used to be only
+     * the failed proof that tore down, which left a peer that sends nothing but malformed
+     * bodies talking forever on a socket that is also carrying a viewer's feed.
+     *
+     * ONLY unproven peers. A device that HAS proved it holds the account secret and then
+     * sends one body this version cannot read is a wire-version skew or a bug on the
+     * household's own hardware, and cutting its channel for that would be self-inflicted.
+     */
+    const refuse = (e, code) => {
+      if (!e || !e.proven) setTimeout(() => dropPeer(socket), 0)
+      return jsonBody({ v: WIRE_VERSION, error: code })
+    }
+
     // THE PROOF, as a SYNCHRONOUS responder: there is no await anywhere between testing the
-    // peer's proof and setting `verified`, so no second message on this channel can
-    // interleave with the latch. (The sign-in work was broken twice by exactly this class of
-    // thing; the rule is cheap to keep and expensive to rediscover.)
+    // peer's proof and setting the latch, so no second message on this channel can interleave
+    // with it. (The sign-in work was broken twice by exactly this class of thing; the rule is
+    // cheap to keep and expensive to rediscover.)
+    //
+    // NOTHING IS READ OFF THIS MESSAGE BUT THE PROOF, and nothing about this device is
+    // written into the answer until that proof has been checked. See IDENTITY GOES SECOND.
     rpc.respond('hello', (buf) => {
       // Re-read rather than trusting the closure: a socket whose channel was dropped and
       // re-opened has a NEW entry, and a latch set on a stale one would verify nothing.
@@ -591,17 +685,39 @@ export function startRemoteControl (opts = {}) {
       if (destroyed || !e || e.rpc !== rpc) return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.offline })
       const body = parseBody(buf)
       // The only door a cross-version stranger reaches: every later message is gated on
-      // being a verified peer, so this is the one place worth naming a version mismatch.
-      if (!body) return jsonBody({ v: WIRE_VERSION, error: refusalFor(buf) })
+      // having proved, so this is the one place worth naming a version mismatch.
+      if (!body) return refuse(e, refusalFor(buf))
       const theirProof = hexBytes(body.proof, REMOTE_PROOF_BYTES)
-      const theirId = normalizeRemoteIdentity(body)
       if (!hh || !theirProof || !remoteProofValid(secret, hh, peerRole(e.noiseRole), theirProof)) {
         // Not a device of this account. Answer plainly — it learns nothing it did not know
-        // by finding this topic — then close OUR CHANNEL on the next tick, not the socket.
-        setTimeout(() => dropPeer(socket), 0)
-        return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.unauthorized })
+        // by finding this topic — then close OUR CHANNEL, not the socket.
+        return refuse(e, REMOTE_CONTROL_ERRORS.unauthorized)
       }
-      if (!theirId) return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.malformed })
+      // --- the latch: no await between the test and the set ---
+      e.proven = true
+      // Identity travels HERE and not before: this peer has just proved it holds the account
+      // secret, which is the whole precondition. It is not `verified` yet — that needs an
+      // identity FROM it, and this message deliberately does not carry one.
+      return jsonBody({
+        v: WIRE_VERSION,
+        ok: true,
+        role,
+        proof: hex(remoteProof(secret, hh, e.noiseRole)),
+        ...me
+      })
+    })
+
+    // ROUND TWO, and the ONLY place a peer's identity is read off the wire. Reached only on
+    // a channel where that peer's proof has already verified, in either direction (its own
+    // `hello` here, or the proof it put in the answer to ours — greet() sets the same latch).
+    rpc.respond('whoami', (buf) => {
+      const e = peers.get(socket)
+      if (destroyed || !e || e.rpc !== rpc) return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.offline })
+      if (!e.proven) return refuse(e, REMOTE_CONTROL_ERRORS.unauthorized)
+      const body = parseBody(buf)
+      if (!body) return refuse(e, refusalFor(buf))
+      const theirId = normalizeRemoteIdentity(body)
+      if (!theirId) return refuse(e, REMOTE_CONTROL_ERRORS.malformed)
       const first = !e.verified
       e.verified = true
       e.id = theirId
@@ -613,13 +729,7 @@ export function startRemoteControl (opts = {}) {
         // push that is not caused by a change, and it goes to ONE peer.
         if (role === REMOTE_CONTROL_ROLES.tv) setTimeout(() => sendStatusTo(e), 0)
       }
-      return jsonBody({
-        v: WIRE_VERSION,
-        ok: true,
-        role,
-        proof: hex(remoteProof(secret, hh, e.noiseRole)),
-        ...me
-      })
+      return jsonBody({ v: WIRE_VERSION, ok: true })
     })
 
     if (role === REMOTE_CONTROL_ROLES.tv) {
@@ -628,11 +738,11 @@ export function startRemoteControl (opts = {}) {
       // the id itself, and no key or URL ever travels this channel in either direction.
       rpc.respond('play', async (buf) => {
         const e = peers.get(socket)
-        if (!e || !e.verified) return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.unauthorized })
+        if (!e || !e.verified) return refuse(e, REMOTE_CONTROL_ERRORS.unauthorized)
         const body = parseBody(buf)
-        if (!body) return jsonBody({ v: WIRE_VERSION, error: refusalFor(buf) })
+        if (!body) return refuse(e, refusalFor(buf))
         const streamId = typeof body.streamId === 'string' && STREAM_ID_RE.test(body.streamId) ? body.streamId : null
-        if (!streamId) return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.malformed })
+        if (!streamId) return refuse(e, REMOTE_CONTROL_ERRORS.malformed)
         if (!acceptPlay || !onPlay) {
           try { onRefused({ type: 'play', streamId, from: { ...e.id }, reason: REMOTE_CONTROL_ERRORS.refused }) } catch {}
           return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.refused })
@@ -640,7 +750,9 @@ export function startRemoteControl (opts = {}) {
         try {
           await onPlay({ streamId, from: { ...e.id } })
         } catch (err) {
-          const reason = err && Object.prototype.hasOwnProperty.call(REMOTE_CONTROL_ERRORS, err.code)
+          // typeof first — see publishStatus(): the key is stringified by hasOwnProperty,
+          // so an array or a String object would pass the guard and be forwarded raw.
+          const reason = err && typeof err.code === 'string' && Object.prototype.hasOwnProperty.call(REMOTE_CONTROL_ERRORS, err.code)
             ? err.code
             : REMOTE_CONTROL_ERRORS.unavailable
           try { onRefused({ type: 'play', streamId, from: { ...e.id }, reason }) } catch {}
@@ -654,8 +766,8 @@ export function startRemoteControl (opts = {}) {
 
       rpc.respond('stop', async (buf) => {
         const e = peers.get(socket)
-        if (!e || !e.verified) return jsonBody({ v: WIRE_VERSION, error: REMOTE_CONTROL_ERRORS.unauthorized })
-        if (!parseBody(buf)) return jsonBody({ v: WIRE_VERSION, error: refusalFor(buf) })
+        if (!e || !e.verified) return refuse(e, REMOTE_CONTROL_ERRORS.unauthorized)
+        if (!parseBody(buf)) return refuse(e, refusalFor(buf))
         // The same switch as play: "my phone may not change my television" cannot mean
         // "…but it may switch it off".
         if (!acceptPlay || !onStop) {
@@ -673,7 +785,10 @@ export function startRemoteControl (opts = {}) {
         if (!e || !e.verified) return
         const body = parseBody(buf)
         if (!body) return
-        const state = Object.prototype.hasOwnProperty.call(REMOTE_STATUS_STATES, body.state) ? body.state : null
+        // typeof first — see publishStatus() for what the coercion admitted.
+        const state = typeof body.state === 'string' && Object.prototype.hasOwnProperty.call(REMOTE_STATUS_STATES, body.state)
+          ? body.state
+          : null
         if (!state) return
         try {
           onStatus({
@@ -689,13 +804,16 @@ export function startRemoteControl (opts = {}) {
 
   // Say hello. BOTH roles do this on every channel they end up on, which is what makes the
   // session order-independent on a borrowed swarm (see the header).
+  //
+  // THE OPENING MESSAGE IS A PROOF AND NOTHING ELSE. Read IDENTITY GOES SECOND in the header
+  // before adding a field to it: these bytes reach anything that registered a handler for
+  // this protocol, whether or not it knows the account, because protomux has already written
+  // them by the time the far mux decides whether to accept the channel at all.
   const greet = async (socket) => {
     const entry = peers.get(socket)
     if (!entry || destroyed) return
     const { body: reply } = await ask(entry.rpc, 'hello', {
-      proof: hex(remoteProof(secret, entry.hh, entry.noiseRole)),
-      role,
-      ...me
+      proof: hex(remoteProof(secret, entry.hh, entry.noiseRole))
     }, RPC_MS)
     // The entry is re-read, not carried across the await: a channel that closed and
     // re-opened in the meantime is a DIFFERENT entry, and writing the latch onto the old one
@@ -706,12 +824,24 @@ export function startRemoteControl (opts = {}) {
     const theirId = normalizeRemoteIdentity(reply)
     if (!theirs || !theirId || !remoteProofValid(secret, entry.hh, peerRole(entry.noiseRole), theirs)) return
     // --- the latch: no await between the test and the set ---
-    if (entry.verified) return // its own hello already verified it; do not announce twice
-    entry.verified = true
-    entry.id = theirId
-    entry.role = reply.role === REMOTE_CONTROL_ROLES.tv ? REMOTE_CONTROL_ROLES.tv : REMOTE_CONTROL_ROLES.controller
-    announcePeers()
-    if (role === REMOTE_CONTROL_ROLES.tv) sendStatusTo(entry)
+    // A valid proof in the ANSWER is the same evidence a valid proof in an incoming `hello`
+    // is, so it sets the same latch. That is what lets this peer's `whoami` be accepted, and
+    // what stops refuse() from cutting the channel under a device that has authenticated
+    // itself in this direction only.
+    entry.proven = true
+    if (!entry.verified) { // its own whoami may have got here first; do not announce twice
+      entry.verified = true
+      entry.id = theirId
+      entry.role = reply.role === REMOTE_CONTROL_ROLES.tv ? REMOTE_CONTROL_ROLES.tv : REMOTE_CONTROL_ROLES.controller
+      announcePeers()
+      if (role === REMOTE_CONTROL_ROLES.tv) sendStatusTo(entry)
+    }
+    // --- end of the latch ---
+    // NOW say who we are, and not one message sooner: the peer proved itself in the answer
+    // above, so this is the first moment this device's deviceId may leave it. The result is
+    // not acted on — this peer is already listed here, and a lost `whoami` only means IT
+    // does not list US, which its own greet() on this same channel repairs.
+    await ask(entry.rpc, 'whoami', { role, ...me }, RPC_MS)
   }
 
   // Is there room for a channel of ours on this socket? A CLOSED entry is not room taken —
@@ -736,6 +866,17 @@ export function startRemoteControl (opts = {}) {
     // The peer may open its half at any time — its session may start after ours — so keep a
     // notify registered for as long as this session runs. Without it, a channel we opened
     // too early is rejected and there is nothing left on this socket for the peer to reach.
+    //
+    // AN UNDOCUMENTED ORDERING THIS NOTIFY DEPENDS ON. The callback re-enters open(), which
+    // awaits handshakeHash(socket) before it can create the channel — and protomux resumes
+    // _requestSession as soon as the notify's own await settles, rejecting the session if no
+    // channel exists by then. It works because hyperswarm emits 'connection' only AFTER the
+    // Noise handshake, so socket.handshakeHash is already set and that await resolves in the
+    // same microtask turn. If a future runtime hands over a socket mid-handshake, the notify
+    // path stops working and this is where to look. It is not repaired by removing the
+    // await: binding a proof to a null handshake hash is the one caller mistake
+    // core/remote.js names, so the correct repair is to create the channel first and only
+    // then greet.
     const mux = rpc.mux
     if (mux && !paired.has(mux)) {
       try {
@@ -743,7 +884,12 @@ export function startRemoteControl (opts = {}) {
           if (destroyed || !claimable(socket)) return // one channel per socket; a second is refused
           open(socket).catch(() => {})
         })
-        paired.add(mux)
+        // The notify's lifetime is the SOCKET's — see `paired`. Registered here, torn down
+        // here or in destroy(), and never through the entry's `unlisten`, which the ordinary
+        // channel close empties.
+        const onSocketGone = () => { paired.delete(mux); unpair(mux); dropPeer(socket) }
+        socket.once('close', onSocketGone)
+        paired.set(mux, () => { unpair(mux); try { socket.off('close', onSocketGone) } catch {} })
       } catch {}
     }
     greet(socket).catch(() => {})
@@ -795,6 +941,20 @@ export function startRemoteControl (opts = {}) {
     if (destroyed) throw new RemoteControlError(REMOTE_CONTROL_ERRORS.offline, 'this device is not on the account rendezvous')
     const entry = findPeer(deviceId)
     if (!entry) throw new RemoteControlError(REMOTE_CONTROL_ERRORS.unknown, 'that device is not answering on this account right now')
+    // A CONTROLLER IS A PEER LIKE ANY OTHER HERE, and that is worth naming rather than
+    // discovering. Two phones on one account verify each other by exactly this mechanism and
+    // each lists the other, but a controller registers no `play` and no `stop` responder — so
+    // a command to one comes back as protomux-rpc's UNKNOWN_METHOD, which ask() cannot tell
+    // from silence and command() would report as `timeout`. `timeout` is documented as "it
+    // did not answer", so a viewer who tapped their own other phone in a picker would be told
+    // their television had dropped off Wi-Fi. Refused here instead, with a reason.
+    //
+    // peers() deliberately still lists controllers: a television shows which phones are
+    // watching it, and filtering them out of the shared list to protect one caller would
+    // take that away. A host building a "send to" picker filters on role === 'tv'.
+    if (entry.role !== REMOTE_CONTROL_ROLES.tv) {
+      throw new RemoteControlError(REMOTE_CONTROL_ERRORS.unknown, 'that device is not a television — nothing on it can change a channel')
+    }
     const { body: reply, version } = await ask(entry.rpc, method, body, RPC_MS)
     if (!reply) {
       // NOTHING CAME BACK, or nothing this version can read. Reported as a silence and never
@@ -806,7 +966,12 @@ export function startRemoteControl (opts = {}) {
       throw new RemoteControlError(REMOTE_CONTROL_ERRORS.timeout, 'that device did not answer')
     }
     if (reply.error) {
-      const code = Object.prototype.hasOwnProperty.call(REMOTE_CONTROL_ERRORS, reply.error) ? reply.error : REMOTE_CONTROL_ERRORS.unavailable
+      // typeof first — see publishStatus(). `reply.error` is a stranger's JSON, so an array
+      // would otherwise pass the guard and land in a RemoteControlError.code a host compares
+      // with ===.
+      const code = typeof reply.error === 'string' && Object.prototype.hasOwnProperty.call(REMOTE_CONTROL_ERRORS, reply.error)
+        ? reply.error
+        : REMOTE_CONTROL_ERRORS.unavailable
       throw new RemoteControlError(code, 'that device refused (' + code + ')')
     }
     return { ok: true }
@@ -827,9 +992,17 @@ export function startRemoteControl (opts = {}) {
       const all = [...joined.values()].map((d) => Promise.resolve(d.flushed()).catch(() => false))
       return (await Promise.all(all)).every(Boolean)
     },
-    /** Every device of this account that has PROVED itself on this rendezvous. */
+    /**
+     * Every device of this account that has PROVED itself on this rendezvous — televisions
+     * AND controllers, because a television wants to show which phones are watching it.
+     * Only the ones whose `role` is 'tv' can be given a command: see command().
+     */
     peers: peerList,
-    /** Controller: ask a device to play a channel. Resolves {ok:true} on ACCEPTANCE. */
+    /**
+     * Controller: ask a TELEVISION to play a channel. Resolves {ok:true} on ACCEPTANCE.
+     * Rejects with `unknown` for a deviceId that is not on the list, or is on it and is not
+     * a television.
+     */
     play: (deviceId, streamId) => {
       if (typeof streamId !== 'string' || !STREAM_ID_RE.test(streamId)) {
         return Promise.reject(new RemoteControlError(REMOTE_CONTROL_ERRORS.malformed, 'that is not a channel id'))
@@ -858,7 +1031,7 @@ export function startRemoteControl (opts = {}) {
       // Stop answering for a protocol we no longer run. A notify left behind retains this
       // whole session's scope for the life of the socket, which on a borrowed swarm is the
       // life of the app.
-      for (const mux of paired) { try { mux.unpair({ protocol: REMOTE_PROTOCOL }) } catch {} }
+      for (const undo of paired.values()) { try { undo() } catch {} }
       paired.clear()
       for (const socket of [...peers.keys()]) dropPeer(socket)
       const leaving = [...joined.values()]
