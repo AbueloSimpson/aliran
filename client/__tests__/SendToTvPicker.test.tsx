@@ -80,6 +80,14 @@ function rowFor (tree: RendererInstance, label: string) {
   if (!found.length) throw new Error(`no device row for "${label}" in: ${joined(tree)}`)
   return found[0]
 }
+/** A button found by the words ON it — the Stop control carries its label as a child. */
+function buttonSaying (tree: RendererInstance, text: string) {
+  const found = tree.root.findAll((n) => n.props?.accessibilityRole === 'button' &&
+    n.findAllByType(Text).some((t) => [t.props.children].flat(9).map(String).join('').includes(text)))
+  if (!found.length) throw new Error(`no button saying "${text}" in: ${joined(tree)}`)
+  // Pressable renders host views that inherit the role, so take the one that owns the press.
+  return found.find((n) => typeof n.props.onPress === 'function') ?? found[0]
+}
 
 const mounted: RendererInstance[] = []
 async function createTree (el: React.ReactElement): Promise<RendererInstance> {
@@ -129,9 +137,12 @@ test('handoff targets come FIRST, and casting is described as this phone doing t
   expect(body).toContain('This phone sends the channel to the TV.')
   // …and the cast section carries the exposure warning where it is read, not in a footer
   // — including the fact that the app narrows it when it can, so the sentence does not
-  // overstate a risk the active card may then say is closed.
+  // overstate a risk the active card may then say is closed. LIMITS, not PREVENTS: an
+  // address check against a socket peer does not stop an attacker who can hold that
+  // address, and the security model says exactly that.
   expect(body).toContain('Other devices on this network can also get the channel.')
-  expect(body).toContain('The app prevents this when it knows the address of the TV.')
+  expect(body).toContain('The app limits this to the address of the TV when it knows the address.')
+  expect(body).not.toContain('prevents')
   // Both targets are pickable.
   expect(() => rowFor(tree, 'Living room TV')).not.toThrow()
   expect(() => rowFor(tree, 'Kitchen display')).not.toThrow()
@@ -194,20 +205,29 @@ test('a refusal is named, and "did not answer" is never dressed up as "said no"'
 
 // --- what the active card says about exposure ---------------------------------------
 
+/** The engine echoes its own normalised `receiverHost`, and the card is computed from
+ *  THAT rather than from what the phone asked for — so the reply mirrors the request. */
 async function castAndSettle (tree: RendererInstance, row = 'Kitchen display') {
   await ReactTestRenderer.act(async () => { rowFor(tree, row).props.onPress() })
   await ReactTestRenderer.act(async () => {
-    workletSays({ type: 'cast-started', ok: true, session: SESSION, tag: lastOf('cast-start').tag })
+    const start = lastOf('cast-start')
+    const session = { ...SESSION, ...(start.receiverHost ? { receiverHost: [start.receiverHost] } : {}) }
+    workletSays({ type: 'cast-started', ok: true, session, tag: start.tag })
   })
 }
 
-test('a PINNED cast says only that television can get the channel', async () => {
+test('a PINNED cast says what pinning actually delivers, and no more', async () => {
   mockCast.devices = [CHROMECAST]
   const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
   await castAndSettle(tree)
   const body = joined(tree)
   expect(body).toContain('This phone sends to Kitchen display.')
-  expect(body).toContain('Only that TV can get the channel.')
+  // NOT "only that TV can get the channel": the pin is an address check against a socket
+  // peer, so it raises the bar to holding a position on the network that answers as the
+  // television — it does not stop somebody who can. Both the security model and the SDK
+  // say so, and the card is the one place a viewer reads it.
+  expect(body).toContain('The app limits the channel to the address of the TV.')
+  expect(body).not.toContain('Only that TV')
   expect(body).toContain('Keep the phone on. If you stop the phone, the TV stops.')
 })
 
@@ -218,7 +238,7 @@ test('an UNPINNED cast says so on the card — it is never a silent default', as
   await castAndSettle(tree)
   const body = joined(tree)
   expect(body).toContain('The app does not know the address of the TV. Other devices on this network can also get the channel.')
-  expect(body).not.toContain('Only that TV can get the channel.')
+  expect(body).not.toContain('The app limits the channel to the address of the TV.')
 })
 
 test('a speaker GROUP gets its own sentence — one address would break the other members', async () => {
@@ -228,8 +248,52 @@ test('a speaker GROUP gets its own sentence — one address would break the othe
   await castAndSettle(tree, 'Whole house')
   const body = joined(tree)
   expect(body).toContain('Each device in the group gets the channel.')
-  expect(body).not.toContain('Only that TV can get the channel.')
+  expect(body).not.toContain('The app limits the channel to the address of the TV.')
   expect(lastOf('cast-start')).not.toHaveProperty('receiverHost')
+})
+
+// --- the controls that must not disappear -------------------------------------------
+
+// STOP IS THE ONLY WAY TO SHUT DOWN A LAN ORIGIN SERVER, and it used to be mounted behind
+// `playing` — a channel resolved out of the phone's own parental-filtered catalog. A cast
+// depends on none of that: the operator removing the playing channel, a parental change
+// over a restricted one, or any window with an empty catalog took the button away and left
+// force-quit as the recovery, with the phone still decrypting and serving.
+test('Stop is reachable with no channel playing — a cast outlives this phone\'s catalog', async () => {
+  mockCast.devices = [CHROMECAST]
+  const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+  await castAndSettle(tree)
+
+  // The catalog goes out from under it; the sheet re-mounts with nothing to send.
+  await ReactTestRenderer.act(async () => { tree.update(<SendToTvSheet stream={null} onClose={() => {}} />) })
+  const body = joined(tree)
+  expect(body).toContain('This phone sends to Kitchen display.') // the session is still up
+  expect(body).toContain('Stop')
+  expect(body).toContain('No channel to send now.')
+
+  await ReactTestRenderer.act(async () => { buttonSaying(tree, 'Stop').props.onPress() })
+  const stop = lastOf('cast-stop')
+  expect(stop).toBeTruthy()
+  // Settle the request so stopSending() finishes inside the test rather than after it.
+  await ReactTestRenderer.act(async () => { workletSays({ type: 'cast-stopped', ok: true, tag: stop.tag }) })
+})
+
+// "Looking for devices…" HAS A TERMINAL STATE. Discovery pushes an empty list for a network
+// with no receivers — the ordinary case indoors — so without a deadline the phone spins for
+// as long as the sheet is open and never says the plain thing.
+test('discovery that finds nothing says so instead of spinning forever', async () => {
+  jest.useFakeTimers()
+  try {
+    mockCast.devices = []
+    const tree = await createTree(<SendToTvSheet stream={CHANNEL} onClose={() => {}} />)
+    expect(joined(tree)).toContain('Looking for devices…')
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(9000) })
+    const body = joined(tree)
+    expect(body).not.toContain('Looking for devices…')
+    expect(body).toContain('No cast devices. Make sure that the TV is on and on this Wi-Fi network.')
+  } finally {
+    jest.useRealTimers()
+  }
 })
 
 test('the session URL is never rendered — the card shows names, not the token', async () => {

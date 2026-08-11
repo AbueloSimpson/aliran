@@ -75,7 +75,7 @@ import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { setOrientation } from '../orientation'
 import { useMountDeferred } from '../defer'
-import { markUnlocked, needsPin, visibleStreams } from '../parental'
+import { blockedWithoutPin, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
 import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
@@ -129,7 +129,12 @@ export function LiveScreen ({ route, navigation }: Props) {
   const [playingId, setPlayingId] = useState<string | null>(() => {
     const candidate = route.params?.streamId ?? lastStreamId ?? pickHero(visibleStreams(backend.streams))?.id ?? null
     const s = backend.streams.find(x => x.id === candidate)
-    return s && needsPin(s) ? null : candidate // the mount effect below raises the PIN modal
+    // Two different refusals, and only one of them has a modal behind it. needsPin →
+    // the mount effect below raises the PIN entry. blockedWithoutPin → nothing is
+    // raised, because there is no PIN to enter: the streams effect falls back to the
+    // hero. (A candidate resolved from `backend.streams` — the UNFILTERED list — is
+    // what makes this reachable at all; see parental.blockedWithoutPin.)
+    return s && (blockedWithoutPin(s.restricted) || needsPin(s)) ? null : candidate
   })
   // Guide-mode geometry (phone): portrait puts the ONE video surface as a 16:9
   // strip on top of the grid; landscape overlays the grid on the fullscreen video.
@@ -428,6 +433,12 @@ export function LiveScreen ({ route, navigation }: Props) {
   }, [streams])
 
   function play (s: Stream, { collapse = false }: { collapse?: boolean } = {}) {
+    // The last gate before a tune, and it stands here as well as at the routes that can
+    // reach it: a restricted channel on a device with NO PIN is refused outright. Every
+    // local caller passes a record out of `streams` (already parental-filtered), so this
+    // only ever fires for something that arrived from outside those lists — a remote
+    // play, or a `lastStreamId` left over from before the PIN was removed.
+    if (blockedWithoutPin(s.restricted)) return
     if (needsPin(s)) { setPinTarget(s); return } // resolved by the PIN modal
     if (s.id !== playingId) {
       setPlayingId(s.id)
@@ -714,11 +725,15 @@ export function LiveScreen ({ route, navigation }: Props) {
                 volume={volume}
                 muted={muted}
                 onVolume={(v, m) => { setVolume(v); setMuted(m); showBar() }}
-                // Phone-only twice over: the whole button row is inside NowPlayingBar's
-                // !theme.isTV gate, and the hook is false on a television anyway.
+                // The !theme.isTV here is what actually holds this to a phone, and it is
+                // NOT redundant with the hook: useSendToTv().can counts the OTHER
+                // televisions on the account, so on a set belonging to an account with two
+                // of them it answers true. NowPlayingBar's own !theme.isTV gate is the
+                // second one. Removing either puts a focusable in the TV D-pad path.
                 onSendToTv={sendTv.can && !theme.isTV ? () => { showBar(); setSendTvOpen(true) } : undefined}
-                // Lit while a session runs: casting leaves the local picture playing, so
-                // this is the only sign on the screen that the phone is serving a TV.
+                // Lit while a session runs. Not the only sign — the bar lives inside the
+                // fullscreen overlay and fades on a timer, so the standing chip below is
+                // what a viewer in the guide (portrait's resting state) actually sees.
                 sendingToTv={sendTv.sending}
               />
             </Animated.View>
@@ -885,11 +900,32 @@ export function LiveScreen ({ route, navigation }: Props) {
           stream, so this sheet is only reachable while one is playing. */}
       <ReportSheet visible={reportOpen} channelTitle={playing?.title} onClose={() => setReportOpen(false)} />
 
+      {/* WHILE A SESSION RUNS, SAY SO — IN EVERY OVERLAY AND EVERY ORIENTATION. A cast
+          leaves the local picture playing and changes nothing a viewer can see, and the
+          lit TV glyph that used to be the only sign lives on the NowPlayingBar: inside
+          `overlay === 'none'`, behind an auto-hide timer, and unreachable in portrait,
+          whose resting state is the guide. So a phone could be awake, decrypting and
+          serving a television with nothing on screen saying it. This chip is outside all
+          of that, and it is also the way back to Stop. */}
+      {sendTv.sending && !theme.isTV && (
+        <Pressable
+          style={styles.castingChip}
+          accessibilityRole="button"
+          accessibilityLabel={t('tvplay.sending')}
+          onPress={() => setSendTvOpen(true)}
+        >
+          <Text style={styles.castingChipText}>{t('tvplay.sending')}</Text>
+        </Pressable>
+      )}
+
       {/* "Play on a TV" (phone) — hand the channel to another Aliran device, or cast it
           to a Chromecast. Mounted only while open: the sheet runs Cast discovery, which
           is a standing multicast cost, and it stops when the sheet unmounts. A live
-          session keeps running regardless — it lives in sendToTv.ts, not here. */}
-      {sendTvOpen && playing && !theme.isTV && (
+          session keeps running regardless — it lives in sendToTv.ts, not here.
+          NOT gated on `playing`: a cast outlives this phone's own catalog, and gating the
+          sheet on a channel being resolvable took the Stop button away with it — the one
+          control that shuts down a LAN origin server. The sheet handles a null stream. */}
+      {sendTvOpen && !theme.isTV && (
         <SendToTvSheet stream={playing} onClose={() => setSendTvOpen(false)} />
       )}
 
@@ -942,6 +978,15 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.overlayStrong
   },
   guideHintText: { color: theme.colors.text, fontSize: theme.type.caption, fontWeight: '700' },
+  // The standing "a TV is being fed from here" chip. Top-left, over whatever the screen
+  // is showing — the accent bed is there to be noticed, because the thing it reports is
+  // this phone serving decrypted video to the network.
+  castingChip: {
+    position: 'absolute', top: theme.safeY, left: theme.safeX,
+    paddingHorizontal: theme.spacing(1), paddingVertical: 6, borderRadius: 14,
+    backgroundColor: theme.colors.accent
+  },
+  castingChipText: { color: theme.colors.onPrimary, fontSize: theme.type.caption, fontWeight: '800' },
   zapUp: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
   zapDown: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 80 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },

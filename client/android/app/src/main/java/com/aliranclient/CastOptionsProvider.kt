@@ -23,8 +23,20 @@ import com.reactnative.googlecast.GoogleCastOptionsProvider
  * viewer's television launches.
  *
  * EXTENDS the library's provider rather than replacing it, so the media notification, the
- * lock-screen controls and the expanded-controller activity it configures keep working —
- * substituting a bare OptionsProvider would quietly drop all three.
+ * lock-screen controls and the expanded controller it configures are all still configured
+ * — a bare OptionsProvider would drop the three of them.
+ *
+ * CONFIGURED IS NOT THE SAME AS WORKING, and this class inherits getCastOptions()
+ * verbatim, so the two things that method assumes are ON THE MANIFEST, not here:
+ *
+ *   - setExpandedControllerActivityClassName(RNGCExpandedControllerActivity) names a class
+ *     whose <activity> the library's own manifest does not carry — its Expo config plugin
+ *     is what injects it, and this app does not use Expo. AndroidManifest.xml declares it.
+ *   - the notification the same method builds needs POST_NOTIFICATIONS from API 33, which
+ *     the manifest declares and cast.ts requests at the moment a cast starts.
+ *
+ * Neither was here when this comment first claimed all three "keep working"; they were
+ * configured and then failed at the platform, which is why both are now spelled out.
  */
 class CastOptionsProvider : GoogleCastOptionsProvider() {
   override fun getReceiverApplicationId(context: Context): String =

@@ -23,6 +23,17 @@
          developer.android.com/privacy-and-security/local-network-permission -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- The Cast framework's media notification — the transport controls on the shade and
+         the lock screen while this phone casts. GoogleCastOptionsProvider configures it
+         unconditionally (CastMediaOptions.setNotificationOptions) and from API 33 the
+         framework cannot post it without this permission, so without the line the
+         notification simply never appeared on any current device.
+
+         DECLARING IT IS HALF THE JOB — it is a RUNTIME permission. cast.ts asks for it
+         when a cast actually starts, which is the only moment this app has a reason to
+         ask. Denied, everything still works: the standing chip on the Live screen is the
+         in-app sign that a session is running, and it does not depend on the platform. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.faketouch" android:required="false" />
@@ -56,6 +67,24 @@
             <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
         </intent-filter>
       </activity>
+      <!-- THE CAST EXPANDED CONTROLLER. Declared here because nothing else will: the
+           class lives in react-native-google-cast, whose own AndroidManifest.xml is
+           EMPTY, and the library's Expo config plugin is what normally injects this
+           <activity> — an app that does not use Expo (this one) gets nothing.
+
+           It is not optional decoration. CastOptionsProvider extends the library's
+           provider and inherits getCastOptions() verbatim, and that method calls
+           setExpandedControllerActivityClassName(RNGCExpandedControllerActivity) — so the
+           framework's media notification and the lock-screen controls both target this
+           class by name. Undeclared, tapping either threw ActivityNotFoundException.
+
+           No intent-filter, so it is not exported and nothing outside the app can start
+           it. It inherits AppTheme, which is Theme.AppCompat.DayNight.NoActionBar — what
+           ExpandedControllerActivity needs, since it installs its own toolbar. -->
+      <activity
+        android:name="com.reactnative.googlecast.RNGCExpandedControllerActivity"
+        android:label="@string/app_name"
+        android:exported="false" />
       <!-- Google Cast configuration. The framework instantiates this class itself the
            first time CastContext.getSharedInstance() runs (MainActivity, guarded) and
            reads the receiver id from it: the STOCK receiver CC1AD845, so no Cast

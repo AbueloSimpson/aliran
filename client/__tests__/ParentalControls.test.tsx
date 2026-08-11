@@ -19,7 +19,7 @@ jest.mock('react-native/Libraries/Modal/Modal', () => ({
 }))
 import { SettingsScreen } from '../src/screens/SettingsScreen'
 import { backend, type Stream } from '../src/worklet'
-import { hasPin, markUnlocked, needsPin, visibleStreams } from '../src/parental'
+import { blockedWithoutPin, hasPin, markUnlocked, needsPin, visibleStreams } from '../src/parental'
 
 // The module-singleton backend has no worklet in jest: send() queues messages in
 // `pending`, and onData() simulates worklet replies (SmoothZappingToggle pattern).
@@ -65,6 +65,27 @@ test('PIN set: restricted channels are listed but gated; hide folds them away ag
   backend.parental = { hide: true }
   expect(visibleStreams([plain, adult]).map(s => s.id)).toEqual(['news'])
   // hidden ≠ unlocked: any leftover path into playback still asks
+  expect(needsPin(adult)).toBe(true)
+})
+
+// THE SECOND CLAUSE OF THE RULE. "Hidden" is only half of what no-PIN means: the channel
+// does not exist on this device, so nothing may play it either. needsPin() answering false
+// is correct — there is no PIN to compare an entry against — and it is exactly why a route
+// that names a channel from OUTSIDE the lists (a remote play from another device on the
+// account, resolved against the unfiltered catalog) walks straight through the gate.
+test('no PIN: a restricted channel is BLOCKED, not merely unlisted', () => {
+  expect(blockedWithoutPin(adult.restricted)).toBe(true)
+  expect(blockedWithoutPin(plain.restricted)).toBe(false)
+})
+
+test('a PIN turns the block into a challenge — including with "hide" on', () => {
+  backend.parental = { hide: false }
+  expect(blockedWithoutPin(adult.restricted)).toBe(false)
+  expect(needsPin(adult)).toBe(true)
+  // Hidden is not unreachable: a device with a PIN has a challenge to raise, so a channel
+  // it has folded away is still allowed to reach playback and ask.
+  backend.parental = { hide: true }
+  expect(blockedWithoutPin(adult.restricted)).toBe(false)
   expect(needsPin(adult)).toBe(true)
 })
 

@@ -61,7 +61,17 @@
 // A door with no viewer-facing control (SplashScreen's two, which open from the prefs
 // reply rather than from a press) satisfies this by opening at most one: read `current`
 // first and return if anything already owns the outcome.
+//
+// ONE THING OUTSIDE THIS FILE RIDES ON claim(), and it is here rather than in three
+// screens because this is the only chokepoint in the app that means "somebody is signing
+// in right now": "Play on a TV" re-arms its rendezvous join on it. A sign-out latches
+// that join shut — the catalog push that triggers it keeps arriving afterwards, so
+// without the latch the device rejoined the SIGNED-OUT account's rendezvous at the
+// operator's next catalog edit — and a door opening is what says the next session will
+// be a new one. A door added without a claim() loses the send-to-TV feature until the
+// app is restarted; a door that claims correctly gets it for free.
 import { useRef } from 'react'
+import { armRendezvous } from './sendToTv'
 
 /** A door, as its screen describes it. `kind` is what the 'streams' handler switches on;
  *  everything else on the object is whatever that door has to persist. */
@@ -82,7 +92,7 @@ export function useSigninPath<T extends { kind: string }> (): SigninPathHandle<T
   const held = useRef<T | null>(null)
   return useRef<SigninPathHandle<T>>({
     get current () { return held.current },
-    claim (path: T) { held.current = path },
+    claim (path: T) { held.current = path; armRendezvous() },
     release () { held.current = null }
   }).current
 }

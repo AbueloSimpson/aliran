@@ -76,7 +76,7 @@ export interface ActiveSend {
   candidates?: string[]
 }
 
-/** Why a send did not happen. The sheet turns these into sentences (sendtv.error.*);
+/** Why a send did not happen. The sheet turns these into sentences (tvplay.error.*);
  *  anything not on the list falls back to the generic one. */
 export type SendFailure =
   | 'cast-connect'    // the television refused the session, or never answered
@@ -92,11 +92,36 @@ export type SendFailure =
 
 let active: ActiveSend | null = null
 let peers: RemotePeer[] = []
-// Joined once per SESSION, not once per app run. The catalog push that signals a login
-// is re-sent live on every panel edit, so the join needs a latch — and a sign-out has to
-// clear that latch, or the next sign-in would never rejoin and the feature would be
-// silently absent for the rest of the app run.
-let joined = false
+
+/**
+ * WHERE THIS DEVICE STANDS WITH THE ACCOUNT RENDEZVOUS.
+ *
+ * A boolean was not enough, because the trigger is the CATALOG PUSH — the first moment a
+ * login is known to have happened, and also a message the engine re-sends live on every
+ * panel edit and every entitlement change. Three separate things have to hold:
+ *
+ *   HELD ACROSS THE AWAIT. The old latch was read before `startRemote()` and written
+ *   after it, so two pushes inside one in-flight start sent two `remote-start` requests.
+ *   The engine throws on the second ("a remote session is already running on this
+ *   device") and that failure then CLEARED the latch the first call had just set — so
+ *   every later push fired another doomed start for the life of the run, each holding a
+ *   pending listener for the request timeout.
+ *
+ *   A PERMANENT NO IS FINAL. A build constructed without `remote: { control: true }`, or
+ *   an account whose panel record predates tokenVersion, answers no and will answer no
+ *   however long anyone waits — the binding's own docstring says exactly that. Only the
+ *   two answers that decided nothing ('timeout' — the worklet never replied; 'offline' —
+ *   no session yet) leave the door open for the next push.
+ *
+ *   A SIGN-OUT IS STICKY. leaveRendezvous() leaves, but the pushes do not stop: sign-out
+ *   rewrites the prefs file and nothing else, so the engine keeps its session and keeps
+ *   publishing the catalog. With a latch that merely reset, the next panel edit put a
+ *   SIGNED-OUT device back on the signed-out account's rendezvous — announcing itself,
+ *   `acceptPlay: true`, taking that account's commands — while the screen showed Login.
+ *   Only armRendezvous() clears it, and only a sign-in door calls that.
+ */
+type JoinState = 'idle' | 'joining' | 'joined' | 'refused' | 'signed-out'
+let join: JoinState = 'idle'
 const listeners = new Set<() => void>()
 // Torn down with the session, not with the sheet: a cast keeps running while the picker
 // is closed, and the television dropping it has to stop the server either way.
@@ -153,16 +178,45 @@ export function deviceLabel (): string {
  * feature simply is not there — which is correct, and not a runtime failure to report.
  */
 export async function joinRendezvous (): Promise<boolean> {
-  if (joined) return true
+  if (join !== 'idle') return join === 'joined' // see JoinState: every other value is final for now
+  join = 'joining'
+  let res
   try {
-    const res = await backend.startRemote({
+    res = await backend.startRemote({
       role: Platform.isTV ? 'tv' : 'controller',
       label: deviceLabel(),
       acceptPlay: true
     })
-    joined = res.ok === true
-    return joined
-  } catch { return false }
+  } catch {
+    if (join === 'joining') join = 'idle' // nothing was decided — the next push retries
+    return false
+  }
+  // A sign-out landed while this was in flight. Its `remote-leave` may have reached an
+  // engine that had not joined yet, so if the start then succeeded the device is on a
+  // rendezvous nobody is signed in to — leave it again. The state is left alone: only a
+  // sign-in door re-arms it.
+  if (join !== 'joining') {
+    if (res.ok === true) { try { backend.stopRemote() } catch { /* no engine */ } }
+    return false
+  }
+  if (res.ok === true) { join = 'joined'; return true }
+  join = res.error === 'timeout' || res.error === 'offline' ? 'idle' : 'refused'
+  return false
+}
+
+/**
+ * A SIGN-IN DOOR HAS OPENED, so whatever session comes next is a new one.
+ *
+ * Called from signinPath.claim() — the module every door of every sign-in screen already
+ * goes through, and the only chokepoint in this app that means "somebody is signing in
+ * right now". It clears a sign-out, and it clears a refusal too: an account whose panel
+ * record has no rendezvous is a property of the ACCOUNT, so the next one to sign in on
+ * this device deserves its own answer.
+ *
+ * Idempotent, and it never joins anything itself — the catalog push does that.
+ */
+export function armRendezvous (): void {
+  if (join === 'signed-out' || join === 'refused') join = 'idle'
 }
 
 /**
@@ -173,11 +227,14 @@ export async function joinRendezvous (): Promise<boolean> {
  *      television, still accepting that account's commands.
  *   2. Stop anything being sent — a cast still running is this device serving entitled
  *      content to a television for an account it no longer holds.
- *   3. Clear the latch, so the NEXT sign-in joins again. Without this the feature works
- *      once per app run and then quietly does not.
+ *   3. HOLD the door shut. The catalog push that triggers a join keeps arriving after a
+ *      sign-out (it rewrites the prefs file; the engine keeps its session and keeps
+ *      publishing), so a latch that merely reset put this device straight back on the
+ *      signed-out account's rendezvous at the operator's next catalog edit. Only a
+ *      sign-in door re-opens it — see armRendezvous().
  */
 export function leaveRendezvous (): void {
-  joined = false
+  join = 'signed-out'
   stopSending().catch(() => {})
   peers = []
   try { backend.stopRemote() } catch { /* no engine, or never joined */ }
@@ -253,6 +310,10 @@ function normalizeRemoteError (code: string | undefined): SendFailure {
 export async function sendCast (target: CastTarget, stream: Stream): Promise<SendFailure | null> {
   const pin = target.address && !target.isGroup ? target.address : null
 
+  // Before the session, so the framework's media notification can post the moment one
+  // exists. Never blocks the cast — see askNotificationPermission.
+  await cast.askNotificationPermission()
+
   if (!(await cast.connect(target.deviceId))) return 'cast-connect'
 
   const started = await backend.startCast(stream.id, pin ? { receiverHost: pin } : {})
@@ -269,6 +330,16 @@ export async function sendCast (target: CastTarget, stream: Stream): Promise<Sen
     return 'cast-load'
   }
 
+  // WHAT THE ENGINE PINNED, NOT WHAT WE ASKED IT TO. `session.receiverHost` is the
+  // engine's own normalised list (sdk/player.js normalizeReceivers) and it is typed on
+  // CastSessionInfo precisely so a host can confirm; absent means the session serves any
+  // peer that can read the URL off the television. The sentence a viewer reads their
+  // exposure off has to be computed from that, because everything between the request
+  // and the answer can drop the pin — an address the engine would not take, an option a
+  // worklet does not know. The one direction this can be wrong is a worklet too old to
+  // echo the field, and then it reads "unpinned" on a session that is pinned: the
+  // warning overstates the exposure rather than hiding it.
+  const pinnedTo = started.session.receiverHost
   active = {
     kind: 'cast',
     deviceId: target.deviceId,
@@ -277,7 +348,7 @@ export async function sendCast (target: CastTarget, stream: Stream): Promise<Sen
     deviceName: (await cast.sessionDeviceName()) || target.name,
     streamId: stream.id,
     streamTitle: stream.title,
-    pinned: !!pin,
+    pinned: Array.isArray(pinnedTo) && pinnedTo.length > 0,
     group: target.isGroup,
     host: started.session.host,
     candidates: started.session.candidates
@@ -339,6 +410,6 @@ export function __resetForTests () {
   disarmTeardown()
   active = null
   peers = []
-  joined = false
+  join = 'idle'
   listeners.clear()
 }

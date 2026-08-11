@@ -1473,12 +1473,22 @@ export class AliranBackend {
         //             like the two above: {type:'cast-ended'} carries no URL at all and
         //             still wears the prefix, because the alternative is a list somebody
         //             has to remember to add to.
+        //   remote-info
+        //             is not a credential and is treated like one anyway: it carries the
+        //             channel TITLE a television was told to play and, on a `play`,
+        //             whether that channel is parental-restricted. That is a viewing
+        //             record — of somebody else's household set, named by a device that
+        //             is not this one — and it is short enough to fall under the raw-line
+        //             rule below, so without this it prints in full. The rest of the
+        //             `remote-` family stays visible: a peer list is picker handles and
+        //             labels, and it is the first thing to look at when a television will
+        //             not appear.
         //
         // Everything else: long lines collapse to their type to keep the log readable —
         // EXCEPT 'error', where the payload (often a worklet stack trace) is the only
         // diagnostic there is.
         if (this.debug) {
-          const secret = msg.type === 'prefs' ||
+          const secret = msg.type === 'prefs' || msg.type === 'remote-info' ||
             (typeof msg.type === 'string' && (msg.type.startsWith('signin-') || msg.type.startsWith('vault-') || msg.type.startsWith('cast-')))
           console.log('[backend]', secret ? msg.type : msg.type === 'error' || line.length <= 200 ? line : msg.type)
         }

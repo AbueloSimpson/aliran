@@ -9,4 +9,11 @@ module.exports = {
     // singleton (they drive its IPC queue directly; see __mocks__/react-native-bare-kit.js).
     '^react-native-bare-kit$': '<rootDir>/__mocks__/react-native-bare-kit.js',
   },
+  // COLD CACHE, NOT SLOW TESTS. On `--no-cache` — which is what a fresh CI runner does —
+  // several suites lost races against jest's 5 s default while every worker was babel-
+  // transforming react-native at once. Each of them passes in well under a second on a
+  // warm cache, and passes on a cold one when it is the only suite running, so the
+  // failures were contention rather than anything a test asserts. The client suite now
+  // has a required CI lane, so the default was going to flake there.
+  testTimeout: 30000,
 };

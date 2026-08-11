@@ -32,9 +32,21 @@ import {
   type ActiveSend, type CastTarget, type HandoffTarget, type SendFailure
 } from '../sendToTv'
 
+// How long "Looking for devices…" runs before the sheet says it found none. The Cast
+// framework answers a warm mDNS cache in well under a second and a cold one in a few, so
+// this is generous rather than tuned — the list keeps updating either way.
+const DISCOVERY_MS = 8000
+
 export interface SendToTvSheetProps {
-  /** The channel being watched — the one this sheet sends. */
-  stream: Stream
+  /**
+   * The channel being watched — the one this sheet sends. NULL is a real state, not a
+   * caller mistake: a cast keeps running whatever this phone's own catalog does, and the
+   * catalog can empty out under it (the operator removes the playing channel, a parental
+   * change hides it, a re-login lands between two pushes). The picker then has nothing to
+   * send and the ACTIVE CARD is the whole point of the sheet — its Stop button is the only
+   * way to shut down a LAN origin server that is still decrypting and serving.
+   */
+  stream: Stream | null
   onClose: () => void
 }
 
@@ -77,7 +89,12 @@ export function SendToTvSheet ({ stream, onClose }: SendToTvSheetProps) {
   // The row a tap is working on — one at a time, and the rest go inert while it runs.
   // A cast start connects a session, reads an address, binds a server and loads a URL;
   // a second tap in the middle of that is four more steps racing the first four.
+  //
+  // THE REF IS THE LATCH; the state is only what the rows render from. A `useCallback`
+  // closed over the STATE reads the value from its own render cycle, so two presses in
+  // the same frame — a fat finger on two rows, a double tap — both saw null and both ran.
   const [busyId, setBusyId] = useState<string | null>(null)
+  const busyRef = useRef<string | null>(null)
   const [failure, setFailure] = useState<SendFailure | null>(null)
   const alive = useRef(true)
 
@@ -112,24 +129,43 @@ export function SendToTvSheet ({ stream, onClose }: SendToTvSheetProps) {
   }, [])
 
   const run = useCallback(async (id: string, go: () => Promise<SendFailure | null>) => {
-    if (busyId) return
+    if (busyRef.current) return
+    busyRef.current = id
     setFailure(null)
     setBusyId(id)
     const err = await go()
+    busyRef.current = null
     if (!alive.current) return
     setBusyId(null)
     if (err) setFailure(err)
-  }, [busyId])
+  }, [])
 
   const stop = useCallback(async () => {
-    if (busyId) return
+    if (busyRef.current) return
+    busyRef.current = 'stop'
+    // A previous send's error has nothing to say about the session that just stopped.
+    setFailure(null)
     setBusyId('stop')
     await stopSending()
+    busyRef.current = null
     if (!alive.current) return
     setBusyId(null)
-  }, [busyId])
+  }, [])
 
-  const searching = canCast && casts.length === 0
+  // "Looking for devices…" IS A STATE, NOT A SPINNER THAT NEVER ENDS. Discovery pushes an
+  // empty list for a network with no receivers, which is the ordinary case indoors, and it
+  // pushes nothing at all when there is nothing to push — so without a deadline the phone
+  // spins for as long as the sheet is open and never says the plain thing. The list stays
+  // live afterwards: a receiver that wakes up later still appears.
+  const [searchedOut, setSearchedOut] = useState(false)
+  useEffect(() => {
+    if (!canCast) return
+    const timer = setTimeout(() => { if (alive.current) setSearchedOut(true) }, DISCOVERY_MS)
+    return () => clearTimeout(timer)
+  }, [canCast])
+
+  const searching = canCast && casts.length === 0 && !searchedOut
+  const noCastDevices = canCast && casts.length === 0 && searchedOut
   const nothing = handoffs.length === 0 && !canCast
 
   return (
@@ -137,55 +173,63 @@ export function SendToTvSheet ({ stream, onClose }: SendToTvSheetProps) {
       <View style={styles.panel}>
         <Text style={styles.heading}>{t('tvplay.title')}</Text>
         <ScrollView style={styles.body} contentContainerStyle={styles.bodyInner}>
-          <Text style={styles.channel} numberOfLines={1}>{stream.title}</Text>
+          {!!stream && <Text style={styles.channel} numberOfLines={1}>{stream.title}</Text>}
 
           {active && <ActiveCard active={active} busy={busyId === 'stop'} onStop={stop} />}
 
           {!!failure && <Text style={styles.error}>{failureText(t, failure)}</Text>}
 
-          {/* --- handoff: the television does the work ------------------------- */}
-          <Text style={styles.section}>{t('tvplay.yourDevices')}</Text>
-          <Text style={styles.sectionHint}>{t('tvplay.yourDevicesHint')}</Text>
-          {handoffs.length === 0
-            ? <Text style={styles.empty}>{t('tvplay.noYourDevices')}</Text>
-            : handoffs.map((d) => (
-              <DeviceRow
-                key={d.deviceId}
-                name={d.name}
-                sub={d.platform ?? undefined}
-                busy={busyId === d.deviceId}
-                disabled={!!busyId && busyId !== d.deviceId}
-                onPress={() => run(d.deviceId, () => sendHandoff(d, stream))}
-              />
-            ))}
+          {/* Nothing to send, but the card above is still live and still stoppable: the
+              rows below would have no channel to hand over, so they are not offered. */}
+          {!stream && <Text style={styles.empty}>{t('tvplay.noChannel')}</Text>}
 
-          {/* --- cast: THIS PHONE does the work -------------------------------- */}
-          {canCast && (
+          {!!stream && (
             <>
-              <Text style={styles.section}>{t('tvplay.castDevices')}</Text>
-              <Text style={styles.sectionHint}>{t('tvplay.castHint')}</Text>
-              <Text style={styles.sectionWarn}>{t('tvplay.castWarn')}</Text>
-              {searching
-                ? (
-                  <View style={styles.searching}>
-                    <ActivityIndicator color={theme.colors.primary} />
-                    <Text style={styles.empty}>{t('tvplay.searching')}</Text>
-                  </View>
-                  )
-                : casts.map((d) => (
+              {/* --- handoff: the television does the work --------------------- */}
+              <Text style={styles.section}>{t('tvplay.yourDevices')}</Text>
+              <Text style={styles.sectionHint}>{t('tvplay.yourDevicesHint')}</Text>
+              {handoffs.length === 0
+                ? <Text style={styles.empty}>{t('tvplay.noYourDevices')}</Text>
+                : handoffs.map((d) => (
                   <DeviceRow
                     key={d.deviceId}
                     name={d.name}
-                    sub={d.model}
+                    sub={d.platform ?? undefined}
                     busy={busyId === d.deviceId}
                     disabled={!!busyId && busyId !== d.deviceId}
-                    onPress={() => run(d.deviceId, () => sendCast(d, stream))}
+                    onPress={() => run(d.deviceId, () => sendHandoff(d, stream))}
                   />
                 ))}
+
+              {/* --- cast: THIS PHONE does the work ---------------------------- */}
+              {canCast && (
+                <>
+                  <Text style={styles.section}>{t('tvplay.castDevices')}</Text>
+                  <Text style={styles.sectionHint}>{t('tvplay.castHint')}</Text>
+                  <Text style={styles.sectionWarn}>{t('tvplay.castWarn')}</Text>
+                  {searching && (
+                    <View style={styles.searching}>
+                      <ActivityIndicator color={theme.colors.primary} />
+                      <Text style={styles.empty}>{t('tvplay.searching')}</Text>
+                    </View>
+                  )}
+                  {noCastDevices && <Text style={styles.empty}>{t('tvplay.noCastDevices')}</Text>}
+                  {casts.map((d) => (
+                    <DeviceRow
+                      key={d.deviceId}
+                      name={d.name}
+                      sub={d.model}
+                      busy={busyId === d.deviceId}
+                      disabled={!!busyId && busyId !== d.deviceId}
+                      onPress={() => run(d.deviceId, () => sendCast(d, stream))}
+                    />
+                  ))}
+                </>
+              )}
+
+              {nothing && <Text style={styles.empty}>{t('tvplay.nothing')}</Text>}
             </>
           )}
-
-          {nothing && <Text style={styles.empty}>{t('tvplay.nothing')}</Text>}
         </ScrollView>
         <Pressable style={styles.close} accessibilityRole="button" onPress={onClose}>
           <Text style={styles.closeText}>{t('common.close')}</Text>

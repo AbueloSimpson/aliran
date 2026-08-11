@@ -10,9 +10,9 @@
 //      touches CastContext.getSharedInstance() — the call that throws where the answer is
 //      no. The UI asks BEFORE it draws a button, so the outcome is a missing button.
 //
-//   2. NO MODULE AT ALL. A jest run has no native side, and the legacy flavor strips
-//      native modules. require() is guarded and everything below degrades to
-//      "cast is not available here".
+//   2. NO MODULE AT ALL. A jest run has no native side — react-native-google-cast is a
+//      real dependency of the app and is not installed in this workspace. require() is
+//      guarded and everything below degrades to "cast is not available here".
 //
 //   3. A TELEVISION. Casting FROM an Android TV is meaningless (the set IS the receiver)
 //      and the button would sit in the D-pad path — the S7 lesson, see NowPlayingBar.
@@ -24,7 +24,7 @@
 // device the viewer picked, and goes into startCast() before the server binds. Two device
 // facts decide it, and both are on the Device object the picker already holds:
 // `ipAddress`, and whether `capabilities` says MultizoneGroup.
-import { Platform } from 'react-native'
+import { PermissionsAndroid, Platform, type Permission } from 'react-native'
 
 /** A Chromecast the discovery manager can see. */
 export interface CastDevice {
@@ -44,8 +44,8 @@ export interface CastDevice {
   isGroup: boolean
 }
 
-// The library, resolved once. A build without it (jest, the legacy flavor) leaves this
-// null and every function below turns into a no-op.
+// The library, resolved once. A build without it (a jest run) leaves this null and every
+// function below turns into a no-op.
 let lib: any = null
 try { lib = require('react-native-google-cast') } catch { lib = null }
 
@@ -82,10 +82,11 @@ export async function castAvailable (): Promise<boolean> {
  * Start looking for receivers, and call back with the list as it changes. Returns the
  * unsubscribe (usable as a useEffect cleanup).
  *
- * On ANDROID the framework runs discovery itself while the app is in the foreground and
- * suspends it in the background; startDiscovery/stopDiscovery are iOS-only and are called
- * here only so an iOS build would behave. So this does not "turn discovery on" — it
- * subscribes to a list the framework is already keeping.
+ * The framework runs discovery itself while the app is in the foreground and suspends it
+ * in the background — startDiscovery/stopDiscovery are the iOS half of the library's API
+ * and castSupported() already gated this to Android, so the two calls below are inert
+ * belt-and-braces rather than anything this app relies on. So this does not "turn
+ * discovery on": it subscribes to a list the framework is already keeping.
  */
 export function discover (onDevices: (devices: CastDevice[]) => void): () => void {
   if (!castSupported()) return () => {}
@@ -103,7 +104,7 @@ export function discover (onDevices: (devices: CastDevice[]) => void): () => voi
     manager = castContext()?.getDiscoveryManager?.()
     if (!manager) return () => {}
     sub = manager.onDevicesUpdated?.(push) ?? null
-    manager.startDiscovery?.() // iOS only; a no-op on Android
+    manager.startDiscovery?.() // the library's iOS half; never reached on this Android-only path
     // …and the devices already known, because onDevicesUpdated only fires on a CHANGE.
     Promise.resolve(manager.getDevices?.()).then(push).catch(() => {})
   } catch {
@@ -137,21 +138,98 @@ function normalizeDevices (list: unknown[]): CastDevice[] {
 }
 
 /**
- * The address, out of what the Android bridge actually sends.
+ * The address, out of what the Android bridge actually sends — in the ONE spelling the
+ * engine's pin can match.
  *
  * IT IS NOT A BARE ADDRESS. The bridge stringifies a java.net.InetAddress, and
  * InetAddress.toString() renders as `hostname/1.2.3.4` — or `/1.2.3.4` when there is no
  * hostname. Passing that through as a host would produce a pin that matches nothing, and
- * a session that believes it is pinned while serving every peer is the worst possible
- * outcome of this feature. So the address is the part after the last slash, and it then
- * has to survive isLanAddress before it is used at all.
+ * a session that believes it is pinned is the worst possible outcome of this feature. So
+ * the address is the part after the last slash.
+ *
+ * AND THE SPELLING IS NOT FREE EITHER, WHICH IS THE IPv6 HALF OF THE SAME BUG. The engine
+ * compares the pin against a socket's remote address after a normaliser that lowercases,
+ * drops the `%zone` and folds the v4-mapped forms — and which says in its own comment
+ * that it is not a general IPv6 canonicaliser. Java's getHostAddress() renders IPv6
+ * UNCOMPRESSED (`fe80:0:0:0:0:0:0:1%wlan0`, never `fe80::1`), the peer arrives compressed,
+ * and the two are then different strings for one host: the pin matches nothing, the
+ * television 404s, and the card says "only that TV can get the channel" over a cast that
+ * does not work. Fail-closed for exposure and fail-open for honesty, one address family
+ * over from the case this whole function exists to prevent. So an IPv6 address is put
+ * into the canonical form (RFC 5952 — what inet_ntop produces, and therefore what the
+ * socket will report), and anything that cannot be canonicalised with certainty returns
+ * null: the session then runs UNPINNED and the card says so, which is true.
  *
  * Returns null for anything that is not an address on the local network.
  */
 export function parseAddress (raw: unknown): string | null {
   if (typeof raw !== 'string' || !raw) return null
   const tail = raw.slice(raw.lastIndexOf('/') + 1).trim()
-  return isLanAddress(tail) ? tail : null
+  // The zone names an interface on THIS device and is no part of the peer's address; the
+  // engine strips it too, so sending it would only be noise on the wire.
+  const bare = tail.split('%')[0].toLowerCase()
+  if (!bare) return null
+  const addr = bare.includes(':') ? canonicalIPv6(bare) : bare
+  return addr && isLanAddress(addr) ? addr : null
+}
+
+/**
+ * An IPv6 literal in the one form a socket peer will be reported as: lowercase, no
+ * leading zeros in a group, and the LONGEST run of two or more zero groups replaced by
+ * `::` (leftmost on a tie). That is RFC 5952, and it is what inet_ntop — and therefore
+ * every runtime that reports a remote address — produces.
+ *
+ * Deliberately a PARSER, not a tidier: eight groups after expansion, hex only, an
+ * optional embedded IPv4 tail, and null for everything else. A value this cannot read is
+ * a value whose spelling cannot be guaranteed to match, and an unpinned session that says
+ * it is unpinned beats a pinned one that serves nobody.
+ */
+function canonicalIPv6 (addr: string): string | null {
+  const halves = addr.split('::')
+  if (halves.length > 2) return null
+  const head = expandGroups(halves[0])
+  const tail = halves.length === 2 ? expandGroups(halves[1]) : []
+  if (!head || !tail) return null
+  // `::` stands for at least one omitted group, so a compressed form carries at most 7.
+  const groups = halves.length === 2
+    ? (head.length + tail.length > 7 ? null : [...head, ...Array(8 - head.length - tail.length).fill('0'), ...tail])
+    : (head.length === 8 ? head : null)
+  if (!groups) return null
+  // Re-compress from the full eight, so an input that compressed a single zero group —
+  // or a shorter run than the longest — comes back out spelled the one canonical way.
+  let bestAt = -1
+  let bestLen = 0
+  for (let i = 0; i < 8; i++) {
+    if (groups[i] !== '0') continue
+    let j = i
+    while (j < 8 && groups[j] === '0') j++
+    if (j - i > bestLen) { bestLen = j - i; bestAt = i }
+    i = j - 1
+  }
+  if (bestLen < 2) return groups.join(':')
+  return groups.slice(0, bestAt).join(':') + '::' + groups.slice(bestAt + bestLen).join(':')
+}
+
+/** One side of a `::`, as zero-stripped hex groups — or null if any of it is not one.
+ *  An embedded IPv4 tail (`::ffff:192.168.1.5`) counts as two groups. */
+function expandGroups (half: string): string[] | null {
+  if (half === '') return []
+  const list = half.split(':')
+  const out: string[] = []
+  for (let i = 0; i < list.length; i++) {
+    const g = list[i]
+    if (g.includes('.')) {
+      if (i !== list.length - 1) return null // only ever the tail
+      const o = g.split('.')
+      if (o.length !== 4 || !o.every((x) => /^\d{1,3}$/.test(x) && Number(x) <= 255)) return null
+      const n = o.map(Number)
+      out.push((n[0] * 256 + n[1]).toString(16), (n[2] * 256 + n[3]).toString(16))
+      continue
+    }
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null
+    out.push(g.replace(/^0+(?=.)/, ''))
+  }
+  return out
 }
 
 /**
@@ -188,8 +266,43 @@ export function isLanAddress (addr: string): boolean {
 export async function connect (deviceId: string): Promise<boolean> {
   if (!castSupported()) return false
   try {
-    return (await castContext()?.getSessionManager?.()?.startSession?.(deviceId)) !== false
+    // The manager and the method are checked BEFORE the leniency about the return value.
+    // Written as one optional chain, every miss on the way in produced `undefined`, which
+    // is not `false` — so a library shape this build does not know read as a connected
+    // session and the flow went on to stand a LAN origin server up for a television that
+    // was never asked anything.
+    const manager = castContext()?.getSessionManager?.()
+    if (typeof manager?.startSession !== 'function') return false
+    return (await manager.startSession(deviceId)) !== false
   } catch { return false }
+}
+
+/**
+ * Ask for the notification permission the Cast framework's media notification needs, if
+ * this device is new enough to require one and has not already answered.
+ *
+ * ASKED AT THE CAST, not at start-up: it is the one moment the app has a reason to want
+ * it, and it is the moment a viewer can see why. The framework configures that
+ * notification unconditionally (GoogleCastOptionsProvider) and from API 33 cannot post it
+ * without the grant — so without this the shade and lock-screen controls were dead on
+ * every current device however the manifest was written.
+ *
+ * NEVER BLOCKS AND NEVER THROWS. A refusal, an old platform, a missing module: the cast
+ * goes ahead either way, and the standing chip on the Live screen is the sign that does
+ * not depend on any of this.
+ */
+export async function askNotificationPermission (): Promise<void> {
+  // Written as "is it 33 or more" rather than "is it under 33" on purpose: a platform that
+  // does not report a numeric version answers NaN, and NaN fails BOTH comparisons — so the
+  // negative form would have walked an unknown runtime into a permission dialog.
+  if (Platform.OS !== 'android' || !(Number(Platform.Version) >= 33)) return
+  try {
+    // Read off the map rather than named: PERMISSIONS.POST_NOTIFICATIONS is absent from
+    // older react-native typings AND from older runtimes, and this must degrade on both.
+    const perm = (PermissionsAndroid.PERMISSIONS as Record<string, Permission>).POST_NOTIFICATIONS
+    if (!perm || await PermissionsAndroid.check(perm)) return
+    await PermissionsAndroid.request(perm)
+  } catch { /* no native module, or the dialog could not be shown — cast anyway */ }
 }
 
 /** The name the receiver reports for itself, once a session exists — better than the

@@ -39,3 +39,27 @@ export function visibleStreams (streams: Stream[]): Stream[] {
 export function needsPin (s: Stream | null | undefined): boolean {
   return !!s?.restricted && hasPin() && !sessionUnlocked
 }
+
+/**
+ * Is this channel REFUSED outright on this device — no challenge, nothing to enter, it
+ * simply is not here?
+ *
+ * THE SECOND CLAUSE OF THE RULE AT THE TOP OF THIS FILE. With no PIN configured a
+ * restricted channel does not exist on this device: visibleStreams() takes it out of
+ * every list, and there is no PIN to compare an entry against. needsPin() therefore
+ * answers false for it — correct for a channel nothing local can reach, and wrong the
+ * moment something outside the lists names one.
+ *
+ * Exactly one thing can: a `play` command from another device on the account. It arrives
+ * with an id, and the id is resolved against the UNFILTERED catalog, because the engine
+ * deliberately does not tune it for you — it hands the host a command precisely so the
+ * host applies this rule (sdk/player.js, onPlay). A television that hides a channel must
+ * not play it because a phone asked.
+ *
+ * `hide` does NOT belong here. A device WITH a PIN that has hidden its restricted
+ * channels can still be sent one: it has a challenge to raise, and raising it is what
+ * the file header means by "any leftover path into playback still asks".
+ */
+export function blockedWithoutPin (restricted: boolean | undefined): boolean {
+  return restricted === true && !hasPin()
+}

@@ -30,7 +30,7 @@ import { setLocale, useI18n } from '@aliran/i18n'
 import { deviceLocaleTag, pickLocale, serviceDefaultLocale } from './i18n'
 import { backend } from './worklet'
 import { categoryModel, channelNumbers } from './catalog'
-import { visibleStreams } from './parental'
+import { blockedWithoutPin, visibleStreams } from './parental'
 import { hasBakedKey, loadServiceDescriptor } from './config'
 import { checkForUpdate, onUpdateAvailable, type AvailableUpdate } from './update'
 import { joinRendezvous, watchPeers } from './sendToTv'
@@ -181,12 +181,33 @@ export default function App () {
     const offPeers = watchPeers()
     // TELEVISION SIDE. A {state:'play'} is a COMMAND, not a notification: the engine
     // checked the channel against this device's entitlements and deliberately did NOT
-    // tune it, precisely so the host still owes a `restricted` channel its parental-PIN
-    // gate. Routing through Live's own param path is what keeps that gate in front of it
-    // — that path already runs play(), which raises the PIN modal.
+    // tune it, precisely so the host still owes a `restricted` channel the SAME parental
+    // treatment a local zap gets. That treatment has two clauses, and this is the only
+    // route in the app that can reach the second one:
+    //
+    //   PIN configured   → route it. Live's param path runs play(), which raises the PIN
+    //                      modal — the gate this device can actually offer.
+    //   NO PIN           → REFUSE. With no PIN a restricted channel does not exist on
+    //                      this set (parental.visibleStreams takes it out of every list)
+    //                      and there is nothing to challenge for, so falling through to
+    //                      the router is not a gate — it is the channel simply playing
+    //                      because another device asked for it. The engine says the same
+    //                      from its side: a host with no PIN HIDES these rather than
+    //                      challenging, so `restricted: true` is a command with one
+    //                      defined answer, and this is it.
+    //
+    // Nothing is shown when it is refused, deliberately: on this device that channel does
+    // not exist, and a set that announced "a channel you cannot see was just refused"
+    // would leak the very thing hiding it is for.
     const offRemote = backend.onRemote((info) => {
       if (info.role !== 'tv' || !navRef.isReady()) return
       if (info.state === 'play' && info.streamId) {
+        // The event's own flag is the authority — the engine reads it off THIS device's
+        // catalog record and refuses outright when it cannot read one. The local record
+        // is the same fact read twice, for a worklet older than the field: an id that is
+        // restricted here must not tune here whatever the message left out.
+        const local = backend.streams.find((s) => s.id === info.streamId)
+        if (blockedWithoutPin(info.restricted || local?.restricted)) return
         // tuneKey: a value-equal streamId alone would never re-fire Live's param effect,
         // so a second "play this again" from the phone would do nothing.
         navRef.navigate('Live', { streamId: info.streamId, tuneKey: Date.now() })
