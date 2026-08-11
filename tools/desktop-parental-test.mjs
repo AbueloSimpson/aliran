@@ -17,6 +17,7 @@
 //   2. visibleStreams: no PIN hides restricted channels, a PIN reveals them, and the
 //      hide toggle folds them away again;
 //   3. needsPin: only a restricted channel, only with a PIN, only while locked;
+//   3b. autoTunable: what the app may start BY ITSELF never includes a gated channel;
 //   4. one unlock covers the session, and clearing the PIN re-locks it;
 //   5. the digest round-trips — the right PIN verifies, a wrong one does not — and the
 //      stored record never contains the PIN itself;
@@ -48,14 +49,16 @@ function ruleSource (rel) {
     if (!m) throw new Error(`${rel}: could not find ${name}`)
     return m[0].split('\n').filter((l) => !l.trim().startsWith('//')).join('\n').trim()
   }
-  return { visibleStreams: grab('visibleStreams'), needsPin: grab('needsPin') }
+  return { visibleStreams: grab('visibleStreams'), needsPin: grab('needsPin'), autoTunable: grab('autoTunable') }
 }
 
 const deskRules = ruleSource(DESKTOP_SRC)
 const phoneRules = ruleSource(PHONE_SRC)
 ok(deskRules.visibleStreams === phoneRules.visibleStreams, 'visibleStreams is identical on desktop and phone')
 ok(deskRules.needsPin === phoneRules.needsPin, 'needsPin is identical on desktop and phone')
+ok(deskRules.autoTunable === phoneRules.autoTunable, 'autoTunable is identical on desktop and phone')
 ok(/streams\.filter\(\(s\) => !s\.restricted\)/.test(deskRules.visibleStreams), 'visibleStreams filters on the restricted flag itself')
+ok(/streams\.filter\(\(s\) => !needsPin\(s\)\)/.test(deskRules.autoTunable), 'autoTunable filters on the gate itself, not on the restricted flag')
 
 // ---------------------------------------------------------------- load the module
 // The renderer is TypeScript, so transpile it the same way the app's own build does.
@@ -134,6 +137,27 @@ const ids = (list) => list.map((s) => s.id)
   p.clearPin()
   ok(!p.hasPin() && !p.isUnlocked(), 'clearPin removes the PIN and re-locks the session')
   eq(ids(p.visibleStreams(LINEUP)), ['news-1', 'scares'], 'after clearPin the restricted channel is hidden again')
+}
+
+// ------------------------------------------------- lane D2: what may play by ITSELF
+// The set the app is allowed to start with no viewer action behind the choice — the
+// cold-start hero, and the fallback after a DECLINED PIN challenge. Both used to pick
+// over the whole list, so on "PIN set + hide off" (restricted channels listed on
+// purpose) the app tuned a gated channel unprompted, and cancelling the prompt swapped
+// in a different one. A gated channel must never be in this set (found 2026-08-11).
+{
+  const p = await freshModule()
+  eq(ids(p.autoTunable(p.visibleStreams(LINEUP))), ['news-1', 'scares'], 'no PIN: the gate is inert and the restricted channel is not listed anyway')
+
+  await p.setPin('1234')
+  // The configuration the bypass needed: it IS listed here, and must still not auto-play.
+  eq(ids(p.visibleStreams(LINEUP)), ['news-1', 'scares', 'screambox'], 'PIN set: the restricted channel is listed…')
+  eq(ids(p.autoTunable(p.visibleStreams(LINEUP))), ['news-1', 'scares'], '…but never auto-tunable')
+  eq(ids(p.autoTunable([LINEUP[2]])), [], 'every channel gated: nothing is auto-tunable, so nothing plays')
+  eq(ids(p.autoTunable([])), [], 'an empty lineup stays empty')
+
+  p.markUnlocked()
+  eq(ids(p.autoTunable(p.visibleStreams(LINEUP))), ['news-1', 'scares', 'screambox'], 'after the unlock the whole list is fair game again')
 }
 
 // ---------------------------------------------------------------- lane E: the digest

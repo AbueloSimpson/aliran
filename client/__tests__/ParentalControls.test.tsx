@@ -4,6 +4,9 @@
 // hide → hidden again. The worklet owns the digest — the RN layer only mirrors
 // { hide } and round-trips verification. The worklet side (salted digest, prefs
 // persistence) runs for real in the bundle; here we drive the message protocol.
+//
+// The AUTOMATIC tune paths — the channel LiveScreen starts by itself on a cold
+// navigation or after a declined PIN — live in ParentalHeroFallback.test.tsx.
 
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
