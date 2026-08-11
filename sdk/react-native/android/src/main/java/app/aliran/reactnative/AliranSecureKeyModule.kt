@@ -63,16 +63,24 @@ import javax.crypto.spec.GCMParameterSpec
  * factory reset, "clear data", and reset() below, which sign-out calls.
  * ---------------------------------------------------------------------------------------
  *
- * Every method resolves or rejects with one of three codes, and the app routes on them:
+ * Every method resolves or rejects with one of three codes, and THEY DO NOT MEAN THE SAME
+ * THING. The caller's response to two of them is to erase the account a television is
+ * holding, which sends a viewer to another room for a phone, so the split is the product:
  *
- *   E_UNAVAILABLE  no usable key store on this device — the feature is simply off here.
+ *   E_UNAVAILABLE  the key store could not be reached — absent on this device, or simply
+ *                  not answering right now. The Android keystore daemon is not reliably up
+ *                  the instant an app process starts, and a set that erased an account over
+ *                  one cold-boot hiccup would be unrecoverable by design. TRANSIENT: the
+ *                  caller keeps what it has and asks again.
  *   E_LOCKED       there is no key for this app any more (uninstall/restore, a keystore
  *                  reset, a wiped alias). Whatever was wrapped with it is unreadable.
+ *                  TERMINAL.
  *   E_BAD_BLOB     the input is not something this key produced — truncated, corrupted,
- *                  or from another device.
+ *                  or from another device. TERMINAL.
  *
- * All three mean the same thing to the caller: erase the stored record and ask for a new
- * sign-in. They are separate so a bug report can say which one happened.
+ * The distinction only exists if it survives the trip: sdk/react-native/src/secure-key.ts
+ * carries `e.code` through as a typed value rather than flattening every rejection to null,
+ * which is what an earlier revision did while this block claimed the app could route on it.
  */
 class AliranSecureKeyModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
   override fun getName(): String = NAME
@@ -93,7 +101,7 @@ class AliranSecureKeyModule(reactContext: ReactApplicationContext) : ReactContex
       return
     }
     val key = try {
-      loadKey() ?: generateKey()
+      loadKey(keyStore()) ?: generateKey()
     } catch (e: Exception) {
       // Unloadable alias: drop it and mint a fresh one. If THAT fails there is no
       // usable key store here at all.
@@ -118,7 +126,16 @@ class AliranSecureKeyModule(reactContext: ReactApplicationContext) : ReactContex
     }
   }
 
-  /** Unwrap what wrapBytes produced (base64 in, base64 out). */
+  /**
+   * Unwrap what wrapBytes produced (base64 in, base64 out).
+   *
+   * THE TWO FAILURES ON THIS SIDE ARE NOT THE SAME FAILURE, and separating them is the
+   * whole reason this method is longer than its counterpart. "The key store would not
+   * open" is a condition of the moment — the keystore daemon at cold boot — and answering
+   * it E_LOCKED told the caller the account it holds is dead. "This app has no key" really
+   * is dead. So the store is opened first, on its own, and only what happens AFTER it
+   * opened can be terminal.
+   */
   @ReactMethod
   fun unwrapBytes(blobB64: String, promise: Promise) {
     val blob = decode(blobB64)
@@ -126,10 +143,16 @@ class AliranSecureKeyModule(reactContext: ReactApplicationContext) : ReactContex
       promise.reject("E_BAD_BLOB", "not a wrapped blob")
       return
     }
-    val key = try {
-      loadKey()
+    val ks = try {
+      keyStore()
     } catch (e: Exception) {
-      // A key that will not load is gone as far as this blob is concerned. Do NOT mint a
+      promise.reject("E_UNAVAILABLE", describe(e), e)
+      return
+    }
+    val key = try {
+      loadKey(ks)
+    } catch (e: Exception) {
+      // The store opened and then would not hand over this alias. Do NOT mint a
       // replacement here — that would answer "cannot read it" with a silent new key and
       // leave the caller believing the store still holds something.
       promise.reject("E_LOCKED", describe(e), e)
@@ -174,40 +197,52 @@ class AliranSecureKeyModule(reactContext: ReactApplicationContext) : ReactContex
    * `hardwareBacked` false means the key is protected by software only — the wrap is
    * still worth having (it is bound to this app) but claims about hardware must not be
    * made about it. Never rejects: an unavailable store answers { available: false }.
+   *
+   * IT CREATES NOTHING. This is exported from the package and is documented as "read it to
+   * REPORT, never to decide", so a host is entitled to call it on a phone that will never
+   * keep a sign-in — and an earlier revision minted the wrapping key here as a side effect
+   * of describing it, leaving a permanent Keystore entry behind on every device that merely
+   * asked. A read-shaped API must not make state. The cost is that `securityLevel` cannot
+   * be answered before the first wrap: Android has no way to describe a key that does not
+   * exist, so `keyPresent` false is reported alongside "unknown" rather than a guess.
    */
   @ReactMethod
   fun status(promise: Promise) {
     val map = Arguments.createMap()
     try {
-      val key = loadKey() ?: generateKey()
+      val key = loadKey(keyStore()) // null = the store works, this app has no key in it yet
       map.putBoolean("available", true)
+      map.putBoolean("keyPresent", key != null)
       var hardware = false
       var level = "unknown"
-      try {
-        val factory = SecretKeyFactory.getInstance(key.algorithm, PROVIDER)
-        val info = factory.getKeySpec(key, KeyInfo::class.java) as KeyInfo
-        if (Build.VERSION.SDK_INT >= 31) {
-          val sl = info.securityLevel
-          hardware = sl == KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT ||
-            sl == KeyProperties.SECURITY_LEVEL_STRONGBOX
-          level = when (sl) {
-            KeyProperties.SECURITY_LEVEL_STRONGBOX -> "strongbox"
-            KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "tee"
-            KeyProperties.SECURITY_LEVEL_SOFTWARE -> "software"
-            else -> "unknown"
+      if (key != null) {
+        try {
+          val factory = SecretKeyFactory.getInstance(key.algorithm, PROVIDER)
+          val info = factory.getKeySpec(key, KeyInfo::class.java) as KeyInfo
+          if (Build.VERSION.SDK_INT >= 31) {
+            val sl = info.securityLevel
+            hardware = sl == KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT ||
+              sl == KeyProperties.SECURITY_LEVEL_STRONGBOX
+            level = when (sl) {
+              KeyProperties.SECURITY_LEVEL_STRONGBOX -> "strongbox"
+              KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "tee"
+              KeyProperties.SECURITY_LEVEL_SOFTWARE -> "software"
+              else -> "unknown"
+            }
+          } else {
+            @Suppress("DEPRECATION")
+            hardware = info.isInsideSecureHardware
+            level = if (hardware) "tee" else "software"
           }
-        } else {
-          @Suppress("DEPRECATION")
-          hardware = info.isInsideSecureHardware
-          level = if (hardware) "tee" else "software"
+        } catch (_: Exception) {
+          // The key works; we just cannot describe it. Say so rather than claiming either way.
         }
-      } catch (_: Exception) {
-        // The key works; we just cannot describe it. Say so rather than claiming either way.
       }
       map.putBoolean("hardwareBacked", hardware)
       map.putString("securityLevel", level)
     } catch (e: Exception) {
       map.putBoolean("available", false)
+      map.putBoolean("keyPresent", false)
       map.putBoolean("hardwareBacked", false)
       map.putString("securityLevel", "none")
     }
@@ -216,11 +251,14 @@ class AliranSecureKeyModule(reactContext: ReactApplicationContext) : ReactContex
 
   // --- key store plumbing ---------------------------------------------------------------
 
+  /** Open the AndroidKeyStore. Throws when there is no usable store here AT THIS MOMENT,
+   *  which callers must map to E_UNAVAILABLE and never to "your key is gone". */
   private fun keyStore(): KeyStore = KeyStore.getInstance(PROVIDER).apply { load(null) }
 
-  /** The app's key, or null when there is none. Throws when the store itself is unusable. */
-  private fun loadKey(): SecretKey? {
-    val ks = keyStore()
+  /** The app's key in an ALREADY-OPEN store, or null when there is none. Throws only for a
+   *  store that opened and then refused this alias — which is a key problem, not a store
+   *  problem, and that is exactly the difference the two codes carry. */
+  private fun loadKey(ks: KeyStore): SecretKey? {
     if (!ks.containsAlias(ALIAS)) return null
     val entry = ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry ?: return null
     return entry.secretKey
