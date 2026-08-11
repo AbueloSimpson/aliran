@@ -31,6 +31,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          # Two lockfiles matter to this job: the root one and the phone app's, which
+          # test:client installs separately (see that lane). Keying the npm cache on both
+          # is what keeps the app's react-native tree cached instead of re-fetched on
+          # every run — with only the root lockfile in the key, an unchanged root is an
+          # exact hit, and an exact hit never saves, so the app's tarballs never persist.
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
       - name: Install ffmpeg (needed by test:vod)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npm ci
@@ -172,6 +180,42 @@ jobs:
       - name: VOD library end-to-end (test:vod)
         timeout-minutes: 10
         run: npm run test:vod
+      # The phone/TV app's OWN jest suite (client/__tests__): the screens, hooks and
+      # helpers that no lane above ever loads — React Native trees rendered under
+      # react-test-renderer, with the worklet driven through its IPC queue rather than
+      # mocked. It is the only automated guard on that whole layer, and the two desktop
+      # lanes below quietly lean on it: each calls itself the twin of a client/ module
+      # running the SAME fixtures "so the two copies cannot drift silently", which only
+      # holds while something actually runs the other copy.
+      #
+      # Three things it needs are NOT in a checkout, which is the whole reason this ran
+      # only on developer machines until now:
+      #
+      #   1. client/ is deliberately NOT an npm workspace — it carries its own
+      #      react-native-tvos toolchain (see client/README.md) — so the root `npm ci`
+      #      above installs none of it and it needs an install of its own.
+      #      --legacy-peer-deps is load-bearing rather than tidiness: react-native there
+      #      is an npm ALIAS of react-native-tvos, whose prerelease version satisfies no
+      #      strict peer range, so a plain `npm ci` dies with ERESOLVE (the same trap
+      #      sdk/react-native/package.json documents). The @aliran/* deps are file: links
+      #      resolved through symlinks into i18n/, sdk/ and core/ in this same checkout,
+      #      so nothing is published or fetched for them.
+      #   2. config/service.json is per-deployment and gitignored. The keyless PUBLIC
+      #      descriptor is the only committed one that will load at all — config.ts
+      #      refuses service.example.json on purpose, because its panelPubKey is still the
+      #      REPLACE_ placeholder, and a real panel key has no business in CI. Suites that
+      #      need a baked key mock hasBakedKey() themselves, so keyless costs no coverage.
+      #   3. backend/app.bundle.js is bare-pack output, also gitignored, and src/worklet.ts
+      #      imports it — without it 13 of the 28 suites cannot even load. Building it here
+      #      costs ~7 s and makes a Bare backend that stops bundling a build failure too.
+      - name: Install the phone app's dependencies (client/ is not a workspace)
+        run: npm ci --prefix client --legacy-peer-deps
+      - name: Pick the keyless service descriptor (config/service.json is gitignored)
+        run: cp client/config/service.public.json client/config/service.json
+      - name: Bundle the Bare worklet backend (src/worklet.ts imports it)
+        run: npm --prefix client run bundle-backend
+      - name: Phone/TV app jest suite (test:client)
+        run: npm run test:client
       # The desktop app's external-VOD provider client (S53c): pure functions, no
       # network and no Electron. It runs the same fixtures as the phone app's jest
       # suite for the twin module, so the two copies cannot drift silently — and it

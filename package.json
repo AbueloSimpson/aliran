@@ -62,6 +62,7 @@
     "test:sdk": "node tools/e2e-sdk-test.mjs",
     "test:resource": "node tools/e2e-resource-test.mjs",
     "test:vod": "node tools/e2e-vod-test.mjs",
+    "test:client": "npm --prefix client test",
     "test:desktop-vod": "node tools/desktop-vod-test.mjs",
     "test:desktop-parental": "node tools/desktop-parental-test.mjs",
     "test:desktop-redirect-headers": "node tools/desktop-redirect-headers-test.mjs",
