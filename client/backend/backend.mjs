@@ -693,7 +693,12 @@ async function resumeSignIn (msg) {
   const answer = (o) => {
     if (answered) return
     answered = true
-    send({ type: 'signin-resumed', logins: cost.logins, ...o, ...tag })
+    // `logins` LAST, deliberately. The screen's whole budget is "did this attempt reach
+    // the panel", and this is the one line that tells it. Spread the caller's object
+    // first and a future answer({ …, logins: n }) silently overrides the measured cost
+    // with a guessed one — the single edit that would put the retry storm back, in the
+    // single place nothing would look for it.
+    send({ type: 'signin-resumed', ...o, ...tag, logins: cost.logins })
   }
   try {
     await runResume(msg, answer, cost)
