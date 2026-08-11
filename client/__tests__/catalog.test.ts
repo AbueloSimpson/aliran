@@ -91,3 +91,29 @@ test('categoryModel: parent/sub tree; a channel joins BOTH its parent and sub gr
   expect(m.groups['Anime/Español'].map((x) => x.id)).toEqual(['moon-cat']) // sub = just that one
   expect(m.groups.All).toHaveLength(5)
 })
+
+// --- memoization (S22 round 8): the derivations pay once per catalog array ---
+// A large vod library made every guide/live mount recompute seconds of curation
+// sort + grouping; the caches key on the input ARRAY IDENTITY (+ the collation
+// locale), so the same catalog reference yields the same result object.
+
+test('categoryModel/channelNumbers memoize on array identity; a new array recomputes', () => {
+  const streams = [s('b', ['News'], { order: 2 }), s('a', ['News'], { order: 1 })]
+  expect(categoryModel(streams)).toBe(categoryModel(streams)) // same ref in, same OBJECT out
+  expect(channelNumbers(streams)).toBe(channelNumbers(streams))
+  expect(zapOrder(streams)).toBe(zapOrder(streams))
+  const clone = [...streams]
+  expect(categoryModel(clone)).not.toBe(categoryModel(streams)) // fresh ref = fresh compute
+  expect(categoryModel(clone).groups.All.map(x => x.id)).toEqual(categoryModel(streams).groups.All.map(x => x.id)) // same content
+})
+
+test('a locale switch invalidates the memo (the title tie-break collates per locale)', () => {
+  const { setLocale, getLocale } = require('@aliran/i18n')
+  const prev = getLocale()
+  const streams = [s('b', ['News']), s('a', ['News'])]
+  const before = categoryModel(streams)
+  try {
+    setLocale(prev === 'tr' ? 'en' : 'tr')
+    expect(categoryModel(streams)).not.toBe(before) // recomputed under the new collation
+  } finally { setLocale(prev) }
+})

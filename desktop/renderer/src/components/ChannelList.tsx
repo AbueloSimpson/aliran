@@ -14,6 +14,8 @@ import { useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
+import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
+import { ProgressHairline } from './ProgressHairline'
 
 // Fixed row geometry — the desktop mirror of the client's getItemLayout
 // (ChannelListPanel.tsx). Every row occupies ROW_H px, so the visible window is
@@ -26,29 +28,6 @@ const ROW_GAP = 2
 const ROW_H = ROW_INNER_H + ROW_GAP
 const OVERSCAN = 4
 
-// Live thumbnail refresh cadence — the broadcaster rolls /thumb.jpg at the same period,
-// so a faster tick would re-fetch the frame the row already shows.
-const THUMB_REFRESH_MS = 30000
-
-// Thumb-first channel art (the desktop half of the client's useChannelThumb). The engine
-// hands out thumbBase for EVERY channel, so a 404 is the normal "nothing to show" answer
-// (thumbnails off, feed not warm, metered network) and the row falls back to the logo —
-// never a broken-image state. The ?t= stamp is load-bearing: the thumbnail rolls IN
-// PLACE, so an unchanged URL would leave the browser cache pinned to the first frame.
-// Each tick also re-probes a missing thumb — the SDK warms a cold feed on that first
-// miss, so the picture appears one tick later instead of never.
-function useChannelThumb (thumbBase?: string): [string | null, () => void] {
-  const [stamp, setStamp] = useState(0)
-  const [broken, setBroken] = useState(false)
-  useEffect(() => {
-    if (!thumbBase) return
-    setBroken(false)
-    const timer = setInterval(() => { setStamp(Date.now()); setBroken(false) }, THUMB_REFRESH_MS)
-    return () => clearInterval(timer)
-  }, [thumbBase])
-  return [thumbBase && !broken ? `${thumbBase}?t=${stamp}` : null, () => setBroken(true)]
-}
-
 export interface ChannelListProps {
   streams: Stream[]
   /** Panel heading. Absent = the generic "CHANNELS" from the catalog. */
@@ -59,6 +38,10 @@ export interface ChannelListProps {
   onSelect: (s: Stream) => void
   /** Open channel detail (the 'i' key / right-click). */
   onInfo?: (s: Stream) => void
+  /** Two-tier select (WS4): Enter/click on the row of the channel ALREADY PLAYING —
+   *  previously a no-op re-tune — opens the full program guide instead. Every other
+   *  row keeps tuning via onSelect. Absent = the old single-tier behavior. */
+  onGuide?: (s: Stream) => void
   onClose: () => void
   /** Any interaction (defers the auto-hide timer). */
   onActivity?: () => void
@@ -67,7 +50,7 @@ export interface ChannelListProps {
   active?: boolean
 }
 
-export function ChannelList ({ streams, heading, numbers, playingId, favorites, onSelect, onInfo, onClose, onActivity, active = true }: ChannelListProps) {
+export function ChannelList ({ streams, heading, numbers, playingId, favorites, onSelect, onInfo, onGuide, onClose, onActivity, active = true }: ChannelListProps) {
   const { t } = useI18n()
   const [focus, setFocus] = useState(() => {
     const i = streams.findIndex((s) => s.id === playingId)
@@ -88,6 +71,10 @@ export function ChannelList ({ streams, heading, numbers, playingId, favorites, 
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // The two-tier pick (Enter and click share it): the already-playing row opens the
+  // guide when the caller wired one, every other row tunes.
+  const pick = (s: Stream) => (s.id === playingId && onGuide ? onGuide(s) : onSelect(s))
 
   // Keep the focused index valid when the category scopes the list down.
   useEffect(() => {
@@ -114,13 +101,13 @@ export function ChannelList ({ streams, heading, numbers, playingId, favorites, 
       else if (e.key === 'ArrowUp') { e.preventDefault(); onActivity?.(); setFocus((i) => Math.max(0, i - 1)) }
       else if (e.key === 'PageDown') { e.preventDefault(); onActivity?.(); setFocus((i) => Math.min(streams.length - 1, i + 10)) }
       else if (e.key === 'PageUp') { e.preventDefault(); onActivity?.(); setFocus((i) => Math.max(0, i - 10)) }
-      else if (e.key === 'Enter') { e.preventDefault(); const s = streams[focus]; if (s) onSelect(s) }
+      else if (e.key === 'Enter') { e.preventDefault(); const s = streams[focus]; if (s) pick(s) }
       else if (e.key === 'i' || e.key === 'I') { const s = streams[focus]; if (s && onInfo) { e.preventDefault(); onInfo(s) } }
       else if (e.key === 'Escape') { e.preventDefault(); onClose() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [streams, focus, onSelect, onInfo, onClose, onActivity, active])
+  }, [streams, focus, onSelect, onInfo, onGuide, playingId, onClose, onActivity, active])
 
   const firstRow = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN)
   const lastRow = Math.min(streams.length, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN)
@@ -146,7 +133,7 @@ export function ChannelList ({ streams, heading, numbers, playingId, favorites, 
                 focused={i === focus}
                 favorite={favorites.includes(s.id)}
                 onHover={() => { setFocus(i); onActivity?.() }}
-                onClick={() => onSelect(s)}
+                onClick={() => pick(s)}
                 onContextMenu={onInfo ? () => onInfo(s) : undefined}
               />
             )
@@ -207,9 +194,13 @@ function ChannelRow ({ stream, top, number, playing, focused, favorite, onHover,
           {favorite && <span className="row-star">★</span>}
         </span>
         {nowText && <span className="row-now">{nowText}</span>}
+        {/* Program progress under the subline (full text width). No guide/program:
+            the hairline renders transparent, never collapses — the row height is
+            pinned (.channel-row), so every row must lay out identically. */}
+        {!vod && <ProgressHairline program={data?.now} className="row-hairline" />}
       </span>
       {art
-        ? <img className={'row-logo' + (thumbUri ? ' row-thumb' : '')} src={art} alt="" loading="lazy" onError={thumbUri ? onThumbError : undefined} />
+        ? <img className={'row-logo' + (thumbUri ? ' row-thumb' : '')} src={art} alt={thumbUri ? t('live.livePreview', { title: stream.title ?? '' }) : ''} loading="lazy" onError={thumbUri ? onThumbError : undefined} />
         : <span className="row-logo row-logo-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</span>}
     </div>
   )

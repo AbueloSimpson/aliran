@@ -1,52 +1,34 @@
 // One channel row (the reference's LISTA DE CANALES row): derived channel number,
 // title, now-playing line (the current EPG program when the channel has a guide — S27 —
 // else the catalog description), LIVE badge, favorite star, and on the right edge the
-// channel's LIVE thumbnail (the rolling frame off its own feed) falling back to the
-// station logo. Focus grammar: focused row = light fill (focusFill tokens); the playing
-// channel keeps an accent edge bar. Press = play/select; long-press = channel info.
+// STATION LOGO (or the initial box). Logos are channel identity — the live thumbnail
+// deliberately does NOT ride list rows (WS11, the S22 decision): its one surface is
+// the guide's preview pane (GuidePanel.GuidePreviewCard). Focus grammar: focused row =
+// light fill (focusFill tokens); the playing channel keeps an accent edge bar.
+// Press = play/select; long-press = channel info.
 // vod library titles (S8a) ride the same row: runtime badge instead of LIVE, no
 // channel number ('—'), and status 'unavailable' grays them out.
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '@aliran/react-native'
+import { prefersReducedMotion } from '../motion'
+import { ProgressHairline } from './ProgressHairline'
 import { theme } from '../theme'
 
 // Exact row geometry (QA round 2): the channel list jumps to the playing channel with
 // FlatList getItemLayout, and that math is only exact when every row is EXACTLY this
 // tall — so the row's height is pinned (a guide-less one-liner centers in the same box)
-// instead of following its text. Same discipline as VOD_ROW_H (D5).
-const ROW_INNER_H = theme.isTV ? 64 : 56
+// instead of following its text. Same discipline as VOD_ROW_H (D5). Grown for the
+// guide UI (WS1) around a doubled art box (now the logo box — WS11 kept the size when
+// the thumb left the rows). Phone side re-tightened ~0.85 (S22 round 3: the side
+// panel read too large in landscape) — TV keeps the 10-foot metrics untouched.
+const ROW_INNER_H = theme.isTV ? 80 : 54
 const ROW_MB = 2
 /** One list row + the gap under it — the getItemLayout unit. */
 export const CHANNEL_ROW_H = ROW_INNER_H + ROW_MB
-
-// Live thumbnail refresh cadence — the broadcaster rolls /thumb.jpg at the same period,
-// so a faster tick would re-fetch the frame the row is already showing.
-const THUMB_REFRESH_MS = 30000
-
-// Thumb-first channel art. The engine hands out thumbBase for EVERY channel, so a 404 is
-// the normal "nothing to show" answer (thumbnails off, feed not warm, metered network)
-// and the caller falls back to the logo — never a broken-image state. Two details carry
-// the feature:
-//   the ?t= stamp — the thumbnail rolls IN PLACE, so without a changing URL the Image
-//     cache would pin the first frame forever;
-//   the tick lives in the ROW — a FlatList unmounts rows that scroll away, so only the
-//     visible channels ever fetch, and each re-probes after a miss (the SDK warms a cold
-//     feed on that first miss, so the picture appears on the next tick instead of never).
-function useChannelThumb (thumbBase?: string): [string | null, () => void] {
-  const [stamp, setStamp] = useState(0)
-  const [broken, setBroken] = useState(false)
-  useEffect(() => {
-    if (!thumbBase) return
-    setBroken(false)
-    const timer = setInterval(() => { setStamp(Date.now()); setBroken(false) }, THUMB_REFRESH_MS)
-    return () => clearInterval(timer)
-  }, [thumbBase])
-  return [thumbBase && !broken ? `${thumbBase}?t=${stamp}` : null, () => setBroken(true)]
-}
 
 export interface ChannelRowProps {
   stream: Stream
@@ -73,13 +55,17 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
   // one cached fetch (src/epg.ts); guide-less channels never fetch.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const nowText = data?.now?.title || stream.description
-  // Right-edge art: what is on screen RIGHT NOW when the channel has a live thumbnail,
-  // the station logo otherwise (and the initial box when it has neither).
-  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
-  const art = thumbUri || stream.logo
   return (
     <Pressable
-      style={[styles.row, playing && styles.rowPlaying, focused && styles.rowFocused]}
+      style={[
+        styles.row, playing && styles.rowPlaying, focused && styles.rowFocused,
+        // Focus scale lift (TV grammar, theme.focusScale) — a transform, so it is
+        // skipped under the OS reduced-motion setting; the fill/border grammar above
+        // always applies. zIndex only reorders within this row's own list cell —
+        // cross-row stacking is decided between cell wrappers, so the ~1px overhang
+        // may underdraw the next row; at 1.025 that is imperceptible.
+        focused && !prefersReducedMotion() && styles.rowScaled
+      ]}
       hasTVPreferredFocus={hasTVPreferredFocus}
       onFocus={() => { setFocused(true); onFocus?.() }}
       onBlur={() => setFocused(false)}
@@ -97,9 +83,13 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
         {!!nowText && (
           <Text style={[styles.nowPlaying, focused && styles.textDimOnFill]} numberOfLines={1}>{nowText}</Text>
         )}
+        {/* Program progress under the subline (full text width). No guide/program:
+            the hairline renders transparent, never collapses — the row height is
+            pinned (getItemLayout above), so every row must lay out identically. */}
+        {!vod && <ProgressHairline program={data?.now} style={styles.hairline} />}
       </View>
-      {art
-        ? <Image source={{ uri: art }} style={styles.logo} resizeMode={thumbUri ? 'cover' : 'contain'} onError={thumbUri ? onThumbError : undefined} />
+      {stream.logo
+        ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" />
         : <View style={[styles.logo, styles.logoFallback]}><Text style={[styles.logoInitial, focused && styles.textOnFill]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
     </Pressable>
   )
@@ -114,18 +104,22 @@ const styles = StyleSheet.create({
   },
   rowPlaying: { borderLeftColor: theme.colors.accent },
   rowFocused: { backgroundColor: theme.colors.focusFill },
-  number: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: theme.isTV ? 52 : 40 },
+  rowScaled: { transform: [{ scale: theme.focusScale }], zIndex: 1 },
+  number: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontVariant: ['tabular-nums'], width: theme.isTV ? 52 : 34 },
   main: { flex: 1, marginRight: theme.spacing(1) },
   titleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  title: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', flexShrink: 1 },
+  title: { color: theme.colors.text, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '700', flexShrink: 1 },
   dimmed: { opacity: 0.5 },
   live: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption - 2, fontWeight: '800', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
   duration: { color: theme.colors.textDim, borderColor: theme.colors.textDim, borderWidth: 1, fontSize: theme.type.caption - 2, fontWeight: '700', fontVariant: ['tabular-nums'], paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
   star: { color: theme.colors.accent, fontSize: theme.type.label },
-  nowPlaying: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 2 },
+  nowPlaying: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.caption : theme.type.caption - 1, marginTop: 2 },
+  hairline: { marginTop: 4 },
   textOnFill: { color: theme.colors.focusFillText },
   textDimOnFill: { color: theme.colors.focusFillText, opacity: 0.7 },
-  logo: { width: theme.isTV ? 56 : 42, height: theme.isTV ? 32 : 24, borderRadius: 4 },
+  // 16:9 art box (phone 72×40 / TV 112×63) — kept from the thumb era so the row
+  // geometry (CHANNEL_ROW_H, getItemLayout) never moved when the logo took it over.
+  logo: { width: theme.isTV ? 112 : 72, height: theme.isTV ? 63 : 40, borderRadius: 4 },
   logoFallback: { backgroundColor: theme.colors.surface, alignItems: 'center', justifyContent: 'center' },
   logoInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' }
 })

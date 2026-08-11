@@ -55,6 +55,12 @@ function requireKeys () {
 
 const str = (v) => (v != null && v !== true ? String(v) : undefined)
 
+// A comma-list flag that can also be CLEARED. `str` is wrong for these: parseArgs turns a
+// bare `--flag` AND `--flag ""` into `true` alike, and str drops both — so the `""` every
+// usage line documents as "clears this filter" quietly did nothing. Here `true` means the
+// empty list, which is what the validators read as "no filter".
+const clearable = (v) => (v == null ? undefined : v === true ? '' : String(v))
+
 // "hm=1,hs=2" -> { hm: '1', hs: '2' }; "" -> {}. Values may contain '=' (split once).
 function parseKeyVals (s) {
   const out = {}
@@ -297,12 +303,26 @@ async function main () {
       category: str(opts.category),
       prefix: str(opts.prefix),
       groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined, // comma group-titles (m3u)
+      // Name filters (m3u): comma substrings tested against the entry name — the way one
+      // mixed "Live Events" group is split into a rail per sport.
+      titleInclude: opts['title-include'] != null && opts['title-include'] !== true ? String(opts['title-include']) : undefined,
+      titleExclude: opts['title-exclude'] != null && opts['title-exclude'] !== true ? String(opts['title-exclude']) : undefined,
+      // Guide pointers (m3u): --epg keeps each entry's tvg-id as the guide channel id (the
+      // EPG service matches on it); --epg-url is the app-format guide address, the only
+      // thing that becomes a channel's epgUrl. Off by default — an events playlist shares
+      // placeholder tvg-ids.
+      epg: opts.epg != null ? opts.epg : undefined,
+      epgUrl: opts['epg-url'] != null && opts['epg-url'] !== true ? String(opts['epg-url']) : undefined,
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
+      allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // let this source import http:// stream urls
       enabled: opts.disabled === true ? false : undefined
     })
     console.log(`Added ${s.format} source "${name}" → category "${s.category}" (prefix "${s.prefix}", every ${Math.round(s.intervalMs / 3600000 * 10) / 10}h, autoGrant ${s.autoGrant}` +
-      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') + ').')
+      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') +
+      ((s.titleInclude || []).length ? `, name has: ${s.titleInclude.join(' | ')}` : '') +
+      ((s.titleExclude || []).length ? `, name has not: ${s.titleExclude.join(' | ')}` : '') +
+      (s.epg ? `, guide on${s.epgUrl ? ` (${s.epgUrl})` : ''}` : '') + ').')
     console.log('The running panel syncs it on its next tick; for an immediate pull use the dashboard "Sync now" or sync-source (panel stopped).')
     return
   }
@@ -312,6 +332,10 @@ async function main () {
     for (const [name, s] of Object.entries(all)) {
       console.log(name, '->', JSON.stringify({
         url: s.url, format: s.format || 'json', category: s.category, prefix: s.prefix, groups: s.groups || null,
+        titleInclude: s.titleInclude || null, titleExclude: s.titleExclude || null,
+        // The guide fields are m3u-only, so a json row does not carry them: printing
+        // `epg: false` on every json source would read like a setting that source has.
+        ...((s.format || 'json') === 'm3u' ? { epg: s.epg === true, epgUrl: s.epgUrl || null } : {}),
         enabled: s.enabled !== false, autoGrant: s.autoGrant !== false,
         lastSync: s.lastSync ? new Date(s.lastSync).toISOString() : null, lastError: s.lastError || null, lastReport: s.lastReport || null
       }))
@@ -327,13 +351,32 @@ async function main () {
       prefix: str(opts.prefix),
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
+      allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // flip the http:// exemption for this source
+      epg: opts.epg != null ? opts.epg : undefined, // take the entries' tvg-id as the guide id (m3u)
+      // --epg-url "" clears it, and the channels then carry no guide address at all (there
+      // is no fallback to the playlist's own). Same `clearable` shape as the list filters.
+      epgUrl: clearable(opts['epg-url']),
       enabled: opts.enabled != null ? opts.enabled : undefined,
-      exclude: opts.exclude != null && opts.exclude !== true ? String(opts.exclude) : undefined, // comma feed-ids; '' clears
-      groups: opts.groups != null && opts.groups !== true ? String(opts.groups) : undefined // comma group-titles; '' takes every group
+      // All four list filters clear with `""`, as the usage text has always said. parseArgs
+      // collapses `--groups ""` to `true` (an empty next argument reads as "no value"), so
+      // `true` IS what an operator clearing a filter sends — map it to '' rather than dropping
+      // it. Dropping it made the documented clear a silent no-op for --exclude and --groups:
+      // a filter set from the shell could never be unset from the shell. Every clear here
+      // WIDENS what the source takes, so this is the safe direction to be wrong in.
+      exclude: clearable(opts.exclude), // comma feed-ids; '' re-includes all
+      groups: clearable(opts.groups), // comma group-titles; '' takes every group
+      titleInclude: clearable(opts['title-include']), // comma name substrings; '' takes every name
+      titleExclude: clearable(opts['title-exclude'])
     })
     console.log(`Updated ${s.format || 'json'} source "${name}" (category "${s.category}", enabled ${s.enabled !== false}` +
       ((s.exclude || []).length ? `, ${s.exclude.length} excluded` : '') +
-      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') + '). Changes apply on its next sync.')
+      ((s.groups || []).length ? `, groups: ${s.groups.join(', ')}` : '') +
+      ((s.titleInclude || []).length ? `, name has: ${s.titleInclude.join(' | ')}` : '') +
+      ((s.titleExclude || []).length ? `, name has not: ${s.titleExclude.join(' | ')}` : '') +
+      // Guide state only where it means something (m3u); on a json source it is not a
+      // setting at all, and set-source refuses to give it one.
+      ((s.format || 'json') === 'm3u' ? `, guide ${s.epg ? 'on' : 'off'}${s.epg && s.epgUrl ? ` (${s.epgUrl})` : ''}` : '') +
+      '). Changes apply on its next sync.')
     return
   }
 
@@ -790,17 +833,58 @@ function usage () {
   set-publisher-status <name> <active|revoked>   Revoke/re-activate a publisher's key
   remove-publisher <name>               Hard-delete a publisher (revoke keeps the audit trail)
   add-source <name> <url> --category <label> [--format json|m3u] [--groups "Live Events,PPV"]
-                          [--prefix p.] [--interval-hours N] [--auto-grant false] [--disabled]
+                          [--title-include "[MLB],[NFL]"] [--title-exclude "(WEBCAST),(STRMXHD)"]
+                          [--epg] [--epg-url https://…/guide.json]
+                          [--prefix p.] [--interval-hours N] [--auto-grant false] [--allow-cleartext] [--disabled]
                                         Register a remote channel feed as a category. --format m3u reads an M3U
                                         playlist: ids come from the channel names, #EXTVLCOPT lines import as
                                         playback headers, and --groups picks the group-titles to take (blank = all).
+                                        --title-include/--title-exclude then select INSIDE a group by the entry
+                                        name: comma-separated pieces of text, upper and lower case ignored, each at
+                                        least 2 characters (one character matches almost every name).
+                                        With --title-include the panel takes an entry only when its name contains
+                                        one of them; --title-exclude drops an entry that contains one of them, and
+                                        wins over --title-include.
                                         Point several sources at ONE playlist, each with its own groups, category
-                                        and prefix, to split a mixed list into the right rails.
+                                        and prefix, to split a mixed list into the right rails. One group that
+                                        mixes sports splits the same way with --title-include and a two-level
+                                        category: --title-include "[MLB]" --category "Live Events/MLB" --prefix mlb.
+                                        for one source, "[NFL]" / "Live Events/NFL" / nfl. for the next, and a
+                                        catch-all source with --title-exclude "[MLB],[NFL]" for the rest.
+                                        --allow-cleartext lets THIS source import http:// (non-TLS) stream urls;
+                                        off by default, and manual channels are never affected. http only plays
+                                        where the client permits cleartext.
+                                        --epg gives the channels a program guide. Each playlist entry names its
+                                        channel in the guide (tvg-id="…"), and --epg keeps that id on the channel.
+                                        Your EPG service uses these ids to match the guide to the channels.
+                                        The playlist also names its guide file in the first line (url-tvg="…").
+                                        The panel reads it and shows it in the sync report, but it does NOT put it
+                                        on the channels: that file is in the XMLTV format, and the apps read a
+                                        guide in a different format. Add the address to your EPG service.
+                                        --epg-url is the address the APPS read, and it must hold a guide in the
+                                        app format (the same file shape as a json source). "" for none. The
+                                        panel clears it when --epg is false.
+                                        Off by default, because a guide id must be different for each channel.
+                                        A provider writes one dummy id on many entries of an event list, for
+                                        example "Soccer.Dummy.us" on every football match. The panel refuses an
+                                        id that it finds on more than one channel of this source, or on a channel
+                                        of a different source, and counts it in the sync report. Use --epg for a
+                                        list of TV channels, not for events.
   list-sources                          List channel sources + last sync state
-  set-source <name> [--url --format --category --prefix --interval-hours --auto-grant --enabled true|false
-                     --exclude "feedId1,feedId2" --groups "Live Events"]
+  set-source <name> [--url --format --category --prefix --interval-hours --auto-grant --allow-cleartext true|false
+                     --enabled true|false --exclude "feedId1,feedId2" --groups "Live Events"
+                     --title-include "[MLB]" --title-exclude "(WEBCAST)"
+                     --epg true|false --epg-url https://…/guide.json]
                                         (--exclude DESELECTS feed entries: removed + skipped every sync; "" re-includes all)
                                         (--groups filters an m3u by group-title; "" takes every group)
+                                        (--title-include/--title-exclude filter an m3u by entry name, upper and
+                                         lower case ignored; exclude wins; "" takes every name again)
+                                        (--allow-cleartext true lets this source import http:// stream urls; source-scoped)
+                                        (--epg true keeps the guide id (tvg-id) of each m3u entry on its channel, for
+                                         your EPG service to match; the guide address in the playlist is reported, not
+                                         stored. --epg-url is the app-format guide address, "" for none, and --epg
+                                         false clears it. Each channel needs a different id, so keep --epg false for
+                                         events. Both fields are m3u-only)
   list-categories                       Category vocabulary in use + per-category channel counts
   rename-category <from> <to>           Rename a rail; children of a parent move with it
   merge-categories <a> <b> … --into <c> Retag several categories onto one

@@ -26,9 +26,12 @@ export type { EngineNoticeProps, EngineNoticeColors } from './EngineNotice'
 // Remote EPG data layer (S27): the program-guide fetch/cache/now-next service +
 // React hook. A channel's `epgUrl`/`epgId` (from the panel catalog) point at the feed;
 // apps render their own visuals from this. See src/epg.ts.
-export { EpgService, epg } from './epg'
+export { EpgService, epg, programProgress } from './epg'
 export type { EpgProgram, NowNext, EpgServiceOpts } from './epg'
-export { useEpg } from './useEpg'
+export { useEpg, useEpgPrograms, useEpgProgramsState } from './useEpg'
+// Live-thumbnail hook (WS0): thumb-first channel art off the engine's thumbBase, with
+// the rolling ?t= stamp and 404→logo fallback semantics. See src/thumbs.ts.
+export { useChannelThumb } from './thumbs'
 // Viewer problem reports (S50c): the category enum + labels + the consent line a
 // "Report a problem" UI must show. Submit with backend.sendReport(); the answer
 // arrives as {type:'report-result'}. See src/report.ts.

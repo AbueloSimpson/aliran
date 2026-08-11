@@ -4,7 +4,7 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text } from 'react-native'
+import { Text, Image } from 'react-native'
 import { NowPlayingBar } from '../src/components/NowPlayingBar'
 import { epg } from '@aliran/react-native'
 import type { Stream } from '../src/worklet'
@@ -13,7 +13,7 @@ function texts (tree: RendererInstance): string {
   return tree.root.findAllByType(Text).map(t => [t.props.children].flat(9).map(String).join('')).join(' | ')
 }
 
-const props = { number: 1, clock: '17:45', favorite: false, onChannels: () => {}, onInfo: () => {}, onToggleFavorite: () => {}, onReport: () => {} }
+const props = { number: 1, clock: '17:45', favorite: false, onSearch: () => {}, onInfo: () => {}, onToggleFavorite: () => {}, onReport: () => {} }
 const mounted: RendererInstance[] = []
 async function createTree (el: React.ReactElement): Promise<RendererInstance> {
   let tree!: RendererInstance
@@ -62,4 +62,21 @@ test('no transport row for live channels', async () => {
   const t = texts(await createTree(<NowPlayingBar stream={stream} {...props} />))
   expect(t).not.toContain('❚❚')
   expect(t).not.toContain('--:--')
+})
+
+// --- no live thumb on the bar (WS11) ---
+// The bar sits under/next to the ACTUAL live video, so a rolling feed frame here only
+// duplicated the picture. The engine still hands out thumbBase for every channel; the
+// bar must ignore it — station logo only, no probe, ever.
+
+const LOGO = 'http://127.0.0.1:1234/assets/news/logo.png'
+const THUMB = 'http://127.0.0.1:1234/feedthumb/news'
+
+test('the bar shows only the station logo — thumbBase never probes, nothing rolls', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv', logo: LOGO, thumbBase: THUMB }
+  const tree = await createTree(<NowPlayingBar stream={stream} {...props} />)
+  const images = tree.root.findAllByType(Image)
+  expect(images).toHaveLength(1) // the identity logo, nothing else
+  expect(images[0].props.source.uri).toBe(LOGO)
+  expect(images[0].props.resizeMode).toBe('contain')
 })

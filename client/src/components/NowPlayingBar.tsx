@@ -2,7 +2,9 @@
 // (overlay 'none'). Replaces the old transient bottom OSD: instead of a channel-identity
 // chip that peeked on a tap and faded, the bottom of fullscreen now carries a standing
 // bar — derived number + logo + title/synopsis + wall clock on top, a row of touch
-// controls (Channels / Info / Favorite) beneath.
+// controls (Search / Info / Favorite) beneath. Search (WS15) replaced the Channels
+// button: it opens the in-player channel search overlay so the viewer never backs
+// fully out — the channel list itself stays one tap away on the video (landscape).
 //
 // Touch model: the container is pointerEvents "box-none" and the identity row is "none",
 // so only the three buttons capture touches — a tap anywhere else on the bar (or the
@@ -21,6 +23,7 @@ import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration } from '../catalog'
 import { useEpg } from '@aliran/react-native'
 import { VolumeControl } from './VolumeControl'
+import { ProgressHairline } from './ProgressHairline'
 import { theme } from '../theme'
 
 /** Transport state for a vod title (position/duration in seconds). */
@@ -35,7 +38,7 @@ export interface NowPlayingBarProps {
   number?: number
   clock: string
   favorite: boolean
-  onChannels: () => void
+  onSearch: () => void
   onInfo: () => void
   onToggleFavorite: () => void
   onReport: () => void
@@ -56,13 +59,16 @@ export interface NowPlayingBarProps {
   onVolume?: (volume: number, muted: boolean) => void
 }
 
-export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
+export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume }: NowPlayingBarProps) {
   const { t } = useI18n()
   // What's on NOW from the program guide (S27) — the airing program is more useful on
   // the bar than the channel synopsis. Falls back to the description ("via demotv")
   // for channels without an EPG. The channel synopsis still lives in the Info panel.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const subtitle = data?.now?.title || stream.description
+  // No live thumb on the bar (WS11): the bar sits under/next to the ACTUAL live
+  // video, so a rolling feed frame here only duplicated the picture (and cost an
+  // off-layout probe per zap). The thumb's one surface is the guide preview pane.
   return (
     <View style={styles.wrap} pointerEvents="box-none">
       <View style={styles.bar} pointerEvents="box-none">
@@ -75,6 +81,10 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
               {stream.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
             </View>
             {!!subtitle && <Text style={styles.desc} numberOfLines={1}>{subtitle}</Text>}
+            {/* Program progress under the title/now line — the zap-flash surface, so a
+                zap instantly shows how far into the program the channel is. Guide-less
+                channels render it transparent (same bar height either way). */}
+            {!vod && <ProgressHairline program={data?.now} style={styles.hairline} />}
           </View>
           <View style={styles.divider} />
           <Text style={styles.clock}>{clock}</Text>
@@ -96,7 +106,9 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
         {/* Touch controls — phone only (see file header). */}
         {!theme.isTV && (
           <View style={styles.buttons}>
-            <BarButton glyph="☰" label={t('live.bar.channels')} onPress={onChannels} />
+            {/* ⌕ (text presentation) — U+1F50D renders as a COLOR emoji on Android,
+                which would break the monochrome glyph set (☰ ⓘ ★ ⚑). */}
+            <BarButton glyph="⌕" label={t('menu.search')} onPress={onSearch} />
             <BarButton glyph="ⓘ" label={t('live.bar.info')} onPress={onInfo} />
             <BarButton glyph={favorite ? '★' : '☆'} label={t('live.bar.favorite')} active={favorite} onPress={onToggleFavorite} />
             <BarButton glyph="⚑" label={t('live.bar.report')} onPress={onReport} />
@@ -165,6 +177,7 @@ const styles = StyleSheet.create({
   },
   info: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.25) },
   logo: { width: theme.isTV ? 60 : 44, height: theme.isTV ? 34 : 24, borderRadius: 4 },
+  hairline: { marginTop: 4 },
   number: { color: theme.colors.accent, fontSize: theme.type.title, fontWeight: '800', fontVariant: ['tabular-nums'] },
   main: { flexShrink: 1, flexGrow: 1 },
   titleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -173,7 +186,8 @@ const styles = StyleSheet.create({
   desc: { color: theme.colors.textDim, fontSize: theme.type.caption, marginTop: 2 },
   divider: { width: 1, height: 24, backgroundColor: theme.colors.textDim, opacity: 0.3 },
   clock: { color: theme.colors.text, fontSize: theme.type.title, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  buttons: { flexDirection: 'row', gap: theme.spacing(1), marginTop: theme.spacing(1) },
+  // wrap: the row holds 4-6 controls — portrait phones are too narrow for one line.
+  buttons: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing(1), marginTop: theme.spacing(1) },
   transport: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1), marginTop: theme.spacing(1) },
   playBtn: { paddingHorizontal: theme.spacing(1.25), paddingVertical: 6, borderRadius: 10, backgroundColor: theme.colors.overlay },
   playGlyph: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', width: 22, textAlign: 'center' },

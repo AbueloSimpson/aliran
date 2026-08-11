@@ -534,6 +534,20 @@ export class AliranPlayer extends Emitter {
     // "disabled", which is exactly what a host should treat as "no VOD section".
     this._vod = null
     this._entitled = new Map() // streamId -> { feedKey, encryptionKey }
+    // The logged-in account name. Set by _doLogin, cleared by stop() — the predicate
+    // for "a login has established what this viewer may see", and the key the grant
+    // watcher below needs to find its own record. Deliberately NOT folded into
+    // _session: that one exists only when the panel issued a token, while the grant
+    // watch must run for any successful login.
+    this._username = null
+    // Live entitlement refresh: watcher over this viewer's OWN `user/<name>` record in
+    // the replicated panel bee — the same signed source login() reads its grants from
+    // (see sdk/login.js). Lifetime tracks _catalogWatcher's: re-armed by _openPanel
+    // after a corruption purge, closed by stop().
+    this._grantWatcher = null
+    this._pushPending = null // coalescing guard for _pushCatalog (see there)
+    this._pushAgain = false // a push arrived mid-rebuild — sweep once more before settling
+    this._pushTimeoutMs = 30000 // ceiling on ONE display-list rebuild (see _pushCatalog)
     // --- problem reports (S50c) ---
     // Per-install device identity. Passed to the panel at login so device limits and
     // revocation address THIS install (without it every install of a given account
@@ -2118,6 +2132,10 @@ export class AliranPlayer extends Emitter {
   // Full teardown (tests / host shutdown). The worklet never calls this — it dies with
   // the app process.
   async stop () {
+    // FIRST, before anything is torn down: _username gates _doPushCatalog, and a push
+    // that slipped through mid-teardown would call _ensureServer() and leave a NEW
+    // listening server behind after stop() had already closed the old one.
+    this._username = null
     this._clearHybridTimers()
     this._clearTuneTimer()
     this._clearZapPrefetch()
@@ -2144,6 +2162,8 @@ export class AliranPlayer extends Emitter {
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} }
+    const grantWatcher = this._grantWatcher; this._grantWatcher = null
+    if (grantWatcher) { try { await grantWatcher.close() } catch {} }
     this._closeFeeds() // fire-and-forget close of every opened feed (see _closeFeeds)
     const epgWatcher = this._epgWatcher; this._epgWatcher = null
     if (epgWatcher) { try { await epgWatcher.close() } catch {} }
@@ -2165,6 +2185,10 @@ export class AliranPlayer extends Emitter {
     // so this is also what stops a token — and the account key material behind
     // sendSignIn() — following a viewer to another operator's panel.
     this._session = null
+    // (_username was already nulled at the top of stop() — it dies with the session for
+    // the same reason the token does: a service switch reuses the engine, and a stale
+    // name would re-arm the grant watch on another operator's bee, where 'user/<name>'
+    // is a DIFFERENT person's record.)
     this._eventRing = []
     this._feedKeyLive.clear() // the catalog view dies with the session (see _doLogin)
     this._reportCooldown.clear()
@@ -2673,6 +2697,7 @@ export class AliranPlayer extends Emitter {
     this._panelDiscovery = this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
     this._watchCatalog()
     this._watchEpgKey()
+    this._watchGrants() // no-op before the first login; re-arms the grant watch after a purge
   }
 
   // Live catalog push: watch the replicated bee's catalog/ range and re-emit 'streams'
@@ -2698,13 +2723,186 @@ export class AliranPlayer extends Emitter {
     run()
   }
 
+  // Live entitlement refresh (S57): watch this viewer's OWN `user/<name>` record and
+  // follow its `wrapped` grant map, so channels granted mid-session appear without a
+  // re-login. Armed from _doLogin (first login) and from _openPanel (re-arm after a
+  // corruption purge rebuilds the bee); a no-op until a login has set _username.
+  //
+  // WHY THIS IS NOT SELF-GRANTING. The record lives in the panel-signed hyperbee the
+  // client merely REPLICATES: every append carries the panel's signature, the client
+  // holds no writer key, and a forged `wrapped` entry cannot be appended. This is the
+  // exact record — and the exact field — login() already derives its grants from
+  // (sdk/login.js reads salt/verifier/encPriv/wrapped straight out of it; the RPC only
+  // supplies the OPRF evaluation and the session token). Following it live therefore
+  // reads the panel's SIGNED statement of entitlement, not a client assertion.
+  //
+  // Cheap by construction: the panel writes `user/<name>` essentially only when that
+  // user's grant set CHANGES (panel/src/sources.js reconcileGrants puts under
+  // `if (dirty)`, deleteStream only for users that held the grant). A half-hourly source
+  // sync over an unchanged playlist re-puts catalog records but touches no user record,
+  // so this watcher stays silent through exactly the churn that wakes _watchCatalog.
+  // A few paths do re-put the record with an UNCHANGED id set (set-password, status and
+  // device edits, package provenance migration) — those cost one wasted record read and
+  // push nothing, because the refresh below finds no delta.
+  _watchGrants () {
+    if (!this._panelBee || !this._username) return
+    const prev = this._grantWatcher; this._grantWatcher = null
+    // .catch, not try/catch: close() returns a promise, so a synchronous try around a
+    // non-awaited call catches nothing and a rejection would surface as an UNHANDLED
+    // rejection — which is what aborts the Bare worklet (the S22 crash class).
+    if (prev) prev.close().catch(() => {}) // re-login/re-arm: never leave two watchers on one bee
+    const key = 'user/' + this._username
+    const watcher = this._panelBee.watch({ gte: key, lte: key }) // one record, not a range
+    this._grantWatcher = watcher
+    ;(async () => {
+      try {
+        // Catch up FIRST. A hyperbee watcher only reports appends made after it starts,
+        // so every arming point has a blind window behind it: a corruption purge rebuilds
+        // the replica from scratch, and a client that was disconnected (backgrounded
+        // phone, dead panel socket) misses whatever landed meanwhile. Usually free at
+        // login: it re-reads the record login() just used, so nothing differs. Not
+        // ALWAYS free — sdk/login.js builds its projection under `if (enc && cat)`, so a
+        // granted id whose catalog record was momentarily unreadable is absent from
+        // _entitled while present in `wrapped`, and this catch-up (and every later one)
+        // re-reads that id's catalog record. That is the intended repair, not waste.
+        //
+        // NOT wrapped in _recover, unlike the loop below. A purge re-runs _openPanel,
+        // which re-arms this watcher, which would catch up again — so recovering HERE
+        // could spin purge→arm→fail→purge on a persistently bad replica. A failed
+        // catch-up is cheap to lose: the next append to the record re-runs it, and real
+        // corruption is still found (and purged) by _watchCatalog and resolve().
+        try { await this._refreshEntitlements() } catch {}
+        for await (const _ of watcher) { // eslint-disable-line no-unused-vars
+          if (this._grantWatcher !== watcher) return // superseded by purge/stop/re-login
+          await this._recover(() => this._refreshEntitlements())
+        }
+      } catch (err) {
+        // The bee closing underneath us (stop/purge) ends the watcher — not an error.
+        if (this._grantWatcher === watcher && !this._purging) this.emit('error', err)
+      }
+    })()
+  }
+
+  // Re-derive _entitled from the replicated user record and re-emit the display list.
+  //
+  // ADMITS only REDIRECT channels (`redirect:true` + `url`). That asymmetry is the whole
+  // security argument. A redirect channel's url+headers sit in CLEARTEXT in the same
+  // replicated catalog, so its entitlement is already an authorization check the client
+  // performs in resolve() — admitting one on the strength of a signed `wrapped[id]` is
+  // exactly as strong as what login does today. A P2P channel's key is sealTo(user.pub,
+  // secret) and needs the account private key to open; that key is derived from the
+  // password inside login() and deliberately NOT retained by the engine, so a newly
+  // granted P2P stream still waits for the next login — the same boundary a re-KEYED
+  // stream already sits behind (see resolve()). Entries land with encryptionKey:null,
+  // which every P2P path in this file already treats as "nothing to open" (prewarm,
+  // _warmNeighbor, _retuneActive, _thumbTarget, _maybeReresolveActiveFeed, the replica
+  // sweep) — the null is inert by construction, not by new guards.
+  //
+  // REMOVES ids the panel has revoked, so a revoked channel can no longer be resolve()d.
+  // It deliberately does NOT touch this._active: revoke() + the package reconcile that
+  // follows it are TWO puts, and the intermediate one is grant-less — tearing down
+  // playback there would yank a viewer mid-watch over a state that exists for
+  // milliseconds. An already-resolved play runs to its end, which matches the posture
+  // panel/src/ops.js revoke() already documents (a client may have cached the key;
+  // real revocation of live content is a stream-key rotation).
+  async _refreshEntitlements () {
+    const who = this._username
+    if (!this._panelBee || !who) return
+    const node = await this._panelBee.get('user/' + who)
+    // A momentarily unreadable record (or a deleted account) must not silently empty
+    // the lineup — leave the last known entitlement standing and wait for the next tick.
+    if (!node || !node.value || !node.value.wrapped) return
+    // A login (re-login, or a switch to another account) ran while that get was in
+    // flight: _doLogin nulls _username before it rebuilds _entitled precisely so this
+    // check can fire. Without it a refresh started for the PREVIOUS user would write
+    // that user's grants into the incoming session's freshly cleared map.
+    if (this._username !== who) return
+    const wrapped = node.value.wrapped
+    const granted = (id) => Object.prototype.hasOwnProperty.call(wrapped, id) // ids may be 'constructor' etc. — NAME_RE allows it
+    let changed = false
+    // Removal is SYMMETRIC with admission below: only entries this method could put
+    // back may be taken away. Dropping a P2P entry would be a one-way door — the admit
+    // loop cannot re-seal one without the account key — and the panel's ORDINARY revoke
+    // path walks straight through that door: panel/src/admin-server.js and admin-cli.js
+    // both call ops.revoke() and THEN reconcilePackages(), two separate puts, and the
+    // intermediate record is grant-less. A viewer watching a package-covered P2P channel
+    // would lose it for the rest of the session even though the panel's end state still
+    // grants it. So P2P entitlement stays login-scoped in BOTH directions, exactly as it
+    // was before live refresh existed; redirect channels, which we can always re-admit
+    // from the catalog, follow the record live.
+    for (const [id, k] of this._entitled) {
+      if (granted(id) || k.redirect !== true) continue
+      this._entitled.delete(id)
+      this._feedKeyLive.delete(id) // its lifetime is exactly _entitled's (see the constructor)
+      changed = true
+    }
+    for (const id of Object.keys(wrapped)) {
+      if (this._entitled.has(id)) continue
+      const cat = await this._panelBee.get('catalog/' + id)
+      // Re-checked EVERY iteration, not once before the loop: _doLogin's teardown +
+      // rebuild is synchronous, so an account switch can complete in full between two
+      // turns of this loop. Without this, a refresh that began for the previous user
+      // would write THAT user's redirect channels — url and provider headers included —
+      // into the incoming user's freshly built map.
+      if (this._username !== who) return
+      const v = cat && cat.value
+      // Panel write ORDER is load-bearing here: applyFeed puts catalog/<id> before
+      // reconcileGrants writes user/<name>, so a granted id always has its record. If a
+      // future panel path ever granted first, this skip would hold until the NEXT append
+      // to user/<name> — which for a stable account can be days.
+      if (!v || v.redirect !== true || !v.url) continue // P2P (or not yet cataloged): next login
+      this._entitled.set(id, { feedKey: null, encryptionKey: null, redirect: true, url: v.url, headers: v.headers ?? null, type: v.type ?? null, durationSec: v.durationSec ?? null })
+      changed = true
+    }
+    if (changed && this._username === who) await this._pushCatalog()
+  }
+
   // Rebuild the display list for the current session from the latest replicated
-  // catalog records and emit it. Display-only: the sealed stream keys in _entitled
-  // come from the user record at login and are not touched — a stream whose feed was
-  // re-keyed (new feedKey in the catalog) needs a fresh login to unseal anyway, and
-  // a newly granted stream only appears after the next login.
-  async _pushCatalog () {
-    if (!this._entitled.size || !this._panelBee) return
+  // catalog records and emit it. Display-only for P2P: the sealed stream keys in
+  // _entitled come from the user record at login and are not touched here — a stream
+  // whose feed was re-keyed (new feedKey in the catalog) needs a fresh login to unseal
+  // anyway. Which STREAMS are in the map is now maintained live by _refreshEntitlements.
+  //
+  // Coalesced: _watchCatalog and _watchGrants both land here, and one source sync fires
+  // both. Each call costs one bee get per entitled stream (~126 on a live events
+  // lineup), so a burst of appends must collapse into ONE rebuild instead of queueing a
+  // full sweep per append. Leading-edge plus ONE trailing re-run: a call that arrives
+  // mid-rebuild may describe state the in-flight sweep already read past, so it sets the
+  // flag and the loop sweeps once more — any number of arrivals collapse into that
+  // single extra pass. Callers await the whole thing, trailing pass included.
+  //
+  // BOUNDED, and that is not optional once the promise is shared. _doPushCatalog does an
+  // unbounded bee.get per entitled stream, and on a sparse replica whose panel socket has
+  // died a get can park forever — the same hazard _currentChannel races a timer for. Left
+  // unbounded here, ONE hung sweep would never settle _pushPending, so every later call
+  // would be handed that dead promise and BOTH watchers would park for the life of the
+  // process, silently and with no error. A timed-out sweep is abandoned WITHOUT emitting:
+  // a truncated lineup would read as "these channels are gone", so the previous list
+  // stands and the next append retries.
+  _pushCatalog () {
+    if (this._pushPending) { this._pushAgain = true; return this._pushPending }
+    const run = async () => {
+      do {
+        this._pushAgain = false
+        let timer
+        try {
+          await Promise.race([
+            this._doPushCatalog(),
+            new Promise((resolve) => { timer = setTimeout(resolve, this._pushTimeoutMs) })
+          ])
+        } finally { clearTimeout(timer) }
+      } while (this._pushAgain)
+    }
+    this._pushPending = run().finally(() => { this._pushPending = null; this._pushAgain = false })
+    return this._pushPending
+  }
+
+  async _doPushCatalog () {
+    // Gate on the LOGIN, not on _entitled.size — the comment above this method has always
+    // said "once a login has established what the user is entitled to see", and with
+    // grants now revocable mid-session an emptied map is a real lineup that the host
+    // must be told about, not a pre-login state to suppress.
+    if (!this._username || !this._panelBee) return
     const port = await this._ensureServer()
     const streams = []
     for (const id of this._entitled.keys()) {
@@ -2788,6 +2986,8 @@ export class AliranPlayer extends Emitter {
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} } // corrupt bees may refuse; bee close below retries
+    const grantWatcher = this._grantWatcher; this._grantWatcher = null
+    if (grantWatcher) { try { await grantWatcher.close() } catch {} } // _openPanel below re-arms it (_username survives the purge)
     this._zapRanges.clear() // warm ranges die with their (closing) cores; the prefetch loop re-warms on the fresh store
     this._closeFeeds() // drop every cached feed on the dead store (fire-and-forget; see _closeFeeds)
     const epgWatcher = this._epgWatcher; this._epgWatcher = null
@@ -2882,16 +3082,31 @@ export class AliranPlayer extends Emitter {
     await this._openAssets()
     this._openEpg().catch(() => {}) // the guide is never allowed to delay (or fail) a login
     const port = await this._ensureServer() // posters must be loadable before anything plays
+    // Stand the live-entitlement machinery down for the rebuild below. Deliberately here
+    // and not at the top of _doLogin: a REJECTED login (wrong password) must not clobber
+    // the session already running, so nothing may be torn down until oprfLogin has
+    // returned. From here to the _watchGrants() at the end, _username is null — which
+    // blocks both _refreshEntitlements and _doPushCatalog, so no half-built lineup can
+    // be emitted and no stale refresh can write into the map being rebuilt.
+    this._username = null
+    const grantWatcher = this._grantWatcher; this._grantWatcher = null
+    if (grantWatcher) grantWatcher.close().catch(() => {}) // fire-and-forget (see _watchGrants on why .catch)
     this._entitled.clear()
     // _feedKeyLive AUGMENTS _entitled (same streamId keys, fresher feedKey), so it must
     // die with it. A re-login or a user switch can hand the SAME streamId a different
     // channel — a stale entry here would then out-vote the new snapshot's feedKey and
     // point /feedthumb at the previous session's feed for the rest of the session.
     this._feedKeyLive.clear()
-    return streams.map((s) => {
+    const display = streams.map((s) => {
       this._entitled.set(s.id, { feedKey: s.feedKey, encryptionKey: s.encryptionKey, redirect: s.redirect === true, url: s.url ?? null, headers: s.headers ?? null, type: s.type ?? null, durationSec: s.durationSec ?? null })
       return this._display(port, s.id, s)
     })
+    // Set only AFTER the snapshot is rebuilt: _username is what unblocks _pushCatalog,
+    // and a catalog append landing mid-login must not push a half-built lineup. Arming
+    // the grant watch last, on the finished map, keeps its first catch-up a no-op.
+    this._username = username
+    this._watchGrants()
+    return display
   }
 
   // Catalog record -> display shape handed to hosts (login result and live pushes):

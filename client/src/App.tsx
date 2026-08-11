@@ -19,7 +19,7 @@
 // every color/string flows from the service descriptor via theme.ts).
 
 import React, { useEffect, useState } from 'react'
-import { AppState, View } from 'react-native'
+import { AppState, InteractionManager, View } from 'react-native'
 import { NavigationContainer } from '@react-navigation/native'
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AliranBackend, EngineNotice } from '@aliran/react-native'
@@ -29,6 +29,8 @@ import { setLocale, useI18n } from '@aliran/i18n'
 // design D5). The saved override arrives below with the worklet's prefs reply.
 import { deviceLocaleTag, pickLocale, serviceDefaultLocale } from './i18n'
 import { backend } from './worklet'
+import { categoryModel, channelNumbers } from './catalog'
+import { visibleStreams } from './parental'
 import { hasBakedKey, loadServiceDescriptor } from './config'
 import { checkForUpdate, onUpdateAvailable, type AvailableUpdate } from './update'
 import { theme } from './theme'
@@ -38,6 +40,7 @@ import { ConnectScreen } from './screens/ConnectScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { MenuScreen } from './screens/MenuScreen'
 import { LiveScreen } from './screens/LiveScreen'
+import { GuideScreen } from './screens/GuideScreen'
 import { FavoritesScreen } from './screens/FavoritesScreen'
 import { SearchScreen } from './screens/SearchScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
@@ -50,7 +53,19 @@ export type RootStackParamList = {
   Connect: undefined
   Login: undefined
   Menu: undefined
-  Live: { streamId?: string } | undefined
+  // tuneKey: a fresh stamp per Guide tune, so navigating here with a VALUE-EQUAL
+  // streamId (re-tuning the channel the params already name) still fires Live's
+  // param effect. Callers that mount Live fresh (Favorites/Search) don't need it.
+  // guide (phone only): open with the guide MODE up — the time-grid around the ONE
+  // playing video surface (portrait: 16:9 strip above the grid). The Menu's GUIDE
+  // tile uses this on phone; on TV it keeps navigating to the Guide screen.
+  // search (phone only): open with the in-player search overlay up (WS15) — same
+  // split: the Menu's SEARCH tile uses this on phone; TV keeps the Search screen.
+  Live: { streamId?: string; tuneKey?: number; guide?: boolean; search?: boolean } | undefined
+  // The full EPG guide (WS3). streamId = the channel Live was playing when it opened
+  // the guide — the row the grid mounts at and the NOW pill's jump target. Absent
+  // when entered from the Menu tile.
+  Guide: { streamId?: string } | undefined
   Favorites: undefined
   Search: undefined
   Settings: undefined
@@ -136,6 +151,19 @@ export default function App () {
       // No saved choice (null) means "follow the device", which is what the module
       // import above already decided — recomputing it keeps ONE resolution order.
       if (m.type === 'prefs') setLocale(pickLocale(m.language, deviceLocaleTag(), serviceDefaultLocale()))
+      // Warm the catalog derivations the moment a catalog (or a parental change)
+      // lands (S22 round 8): the curation sort + category grouping over a large vod
+      // library cost seconds of JS, memoized per catalog in catalog.ts/parental.ts.
+      // Paying them here, off the interaction path, makes the FIRST guide/live open
+      // as instant as the later ones. The locale swap above happens first, so the
+      // warm computes under the locale the screens will use.
+      if (m.type === 'streams' || m.type === 'prefs') {
+        InteractionManager.runAfterInteractions(() => {
+          const v = visibleStreams(backend.streams)
+          categoryModel(v)
+          channelNumbers(v)
+        })
+      }
     })
     const offUpdate = onUpdateAvailable(setUpdate)
     const appState = AppState.addEventListener('change', (s) => {
@@ -177,6 +205,7 @@ export default function App () {
           </Stack.Screen>
           <Stack.Screen name="Menu" component={MenuScreen} />
           <Stack.Screen name="Live" component={LiveScreen} />
+          <Stack.Screen name="Guide" component={GuideScreen} />
           <Stack.Screen name="Favorites" component={FavoritesScreen} />
           <Stack.Screen name="Search" component={SearchScreen} />
           <Stack.Screen name="Settings" component={SettingsScreen} />

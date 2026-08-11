@@ -6,6 +6,9 @@
 //     ├─ login   (exception path: none saved / auth failed)
 //     └─ menu    (hub: icon bar over the featured stream's wallpaper)
 //          ├─ live        one fullscreen video surface + browse/detail overlays
+//          ├─ guide       the full EPG time-grid (WS4) — also reachable from Live's
+//          │              channel list (OK on the already-playing row); tuning a
+//          │              channel there lands back in Live playing it
 //          ├─ vod         Movies & Series from the operator's external provider (S53;
 //          │              the tile only exists while the panel delivers an enabled
 //          │              provider config) → vodSeries (a series' seasons/episodes,
@@ -26,6 +29,7 @@ import { SplashScreen } from './screens/SplashScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { MenuScreen, type MenuTarget } from './screens/MenuScreen'
 import { LiveScreen } from './screens/LiveScreen'
+import { GuideScreen } from './screens/GuideScreen'
 import { FavoritesScreen } from './screens/FavoritesScreen'
 import { SearchScreen } from './screens/SearchScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
@@ -33,7 +37,7 @@ import { VodScreen, type VodPick } from './screens/VodScreen'
 import { VodSeriesScreen, type VodSeriesPick } from './screens/VodSeriesScreen'
 import { VodPlayerScreen } from './screens/VodPlayerScreen'
 
-type Screen = 'connect' | 'splash' | 'login' | 'menu' | 'live' | 'favorites' | 'search' | 'settings' | 'vod' | 'vodSeries' | 'vodPlayer'
+type Screen = 'connect' | 'splash' | 'login' | 'menu' | 'live' | 'guide' | 'favorites' | 'search' | 'settings' | 'vod' | 'vodSeries' | 'vodPlayer'
 
 export function App () {
   // A renderer reload mid-session (dev Ctrl+R) still has the engine logged in —
@@ -50,6 +54,10 @@ export function App () {
   // The series whose detail page is open (S54d, design D6) — the desktop equivalent of
   // the phone app's VodSeries route.
   const [seriesPick, setSeriesPick] = useState<VodSeriesPick | null>(null)
+  // Guide context (WS4): the channel Live was playing when it opened the guide (the
+  // grid's mount row + NOW pill target; null from the Menu tile), and where Esc
+  // returns to — the desktop stand-in for the phone stack's pop-back.
+  const [guideCtx, setGuideCtx] = useState<{ streamId: string | null; from: 'menu' | 'live' }>({ streamId: null, from: 'menu' })
 
   useEffect(() => {
     return backend.onMessage((m) => {
@@ -67,6 +75,7 @@ export function App () {
   const go = (target: MenuTarget) => {
     if (target === 'exit') { window.close(); return }
     if (target === 'live') setLiveStart(undefined)
+    if (target === 'guide') setGuideCtx({ streamId: null, from: 'menu' })
     setScreen(target)
   }
 
@@ -74,6 +83,19 @@ export function App () {
   if (screen === 'splash') return <SplashScreen authorizing={authorizing} />
   if (screen === 'login') return <LoginScreen />
   if (screen === 'menu') return <MenuScreen onGo={go} />
+  if (screen === 'guide') {
+    return (
+      <GuideScreen
+        playingId={guideCtx.streamId}
+        // Tuning navigates into Live playing the pick — the same watch() jump
+        // Favorites/Search make. LiveScreen is keyed on liveStart, so a value-equal
+        // re-tune still lands as a fresh mount (the client's tuneKey concern is a
+        // remount here).
+        onTune={watch}
+        onBack={() => setScreen(guideCtx.from)}
+      />
+    )
+  }
   if (screen === 'favorites') return <FavoritesScreen onWatch={watch} onBack={toMenu} />
   if (screen === 'search') return <SearchScreen onWatch={watch} onBack={toMenu} />
   if (screen === 'settings') return <SettingsScreen onBack={toMenu} onSignOut={() => setScreen('login')} />
@@ -115,5 +137,14 @@ export function App () {
       />
     )
   }
-  return <LiveScreen key={liveStart ?? 'live'} initialStreamId={liveStart} onExit={toMenu} />
+  return (
+    <LiveScreen
+      key={liveStart ?? 'live'}
+      initialStreamId={liveStart}
+      onExit={toMenu}
+      // Two-tier OK (WS4): the channel list's already-playing row opens the guide
+      // anchored on that channel; Esc there returns here.
+      onGuide={(streamId) => { setGuideCtx({ streamId, from: 'live' }); setScreen('guide') }}
+    />
+  )
 }
