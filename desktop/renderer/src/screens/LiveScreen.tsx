@@ -55,7 +55,13 @@ function clockText (d: Date) {
   return `${h < 10 ? '0' + h : h}:${m < 10 ? '0' + m : m}`
 }
 
-export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; initialStreamId?: string }) {
+export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
+  onExit: () => void
+  initialStreamId?: string
+  /** Two-tier OK (WS4): the channel list's already-playing row opens the full EPG
+   *  guide anchored on that channel. Absent = the old single-tier behavior. */
+  onGuide?: (streamId: string) => void
+}) {
   const { t, tn } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
@@ -385,6 +391,11 @@ export function LiveScreen ({ onExit, initialStreamId }: { onExit: () => void; i
               active={pane === 'list'}
               onSelect={(s) => play(s, { collapse: true })}
               onInfo={openInfo}
+              // Two-tier OK — but NOT while a playback error is up: play() honors
+              // re-selecting the SAME channel as the retry the error message
+              // promises, and routing that press to the Guide would shadow it.
+              // Absent onGuide = the old path (the client's exact rule).
+              onGuide={error || !onGuide ? undefined : (s) => onGuide(s.id)}
               onClose={overlayBack}
               onActivity={bumpMenuIdle}
             />

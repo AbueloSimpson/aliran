@@ -5,8 +5,10 @@
      (http://<dev-machine-LAN-IP>:8081), which the main config's loopback-only
      cleartext whitelist blocks — adb-reverse tunnels are too flaky on the dev phone
      (see aliran dev-phone lore). Permitting cleartext broadly here mirrors the stock
-     RN debug template (usesCleartextTraffic=true); RELEASE keeps the strict
-     loopback-only config. -->
+     RN debug template (usesCleartextTraffic=true). NOTE: release ALSO permits
+     cleartext broadly now (a deliberate posture for http provider streams — see
+     main/res/xml/network_security_config.xml); this debug override is functionally
+     the same as release today, kept separate only so the two can diverge again. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

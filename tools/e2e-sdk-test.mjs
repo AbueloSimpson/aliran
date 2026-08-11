@@ -49,9 +49,19 @@
 // the very next tune (live catalog read, no re-login), a feedless NON-redirect entry
 // must still throw 'not broadcasting', and zapping p2p↔redirect must arm/clear the
 // tune watchdog cleanly with the hybrid machinery untouched.
-// Requires ffmpeg/ffprobe on PATH + outbound UDP. Exits 0 on PASS.
+// Then LIVE ENTITLEMENT (S57): the SDK watches the viewer's own panel-signed
+// `user/<name>` record, so a channel cataloged AND granted mid-session becomes playable
+// with NO re-login, a revoked one leaves the lineup and can no longer be resolved
+// (without tearing down the active play), and a newly granted P2P channel is correctly
+// held back until the next login — the engine keeps no private key to unseal it. Removal
+// is symmetric with admission, so a P2P grant survives the panel's two-put
+// revoke->reconcile. tools/e2e-live-entitlement-test.mjs covers the same ground on a
+// LOCAL testnet (deterministic) — keep the two in step.
+// Runs on a LOCAL DHT testnet (never the public DHT), like every other e2e lane here.
+// Requires ffmpeg/ffprobe on PATH. Exits 0 on PASS.
 import Corestore from 'corestore'
 import Hyperswarm from 'hyperswarm'
+import createTestnet from 'hyperdht/testnet.js'
 import Hyperdrive from 'hyperdrive'
 import hcrypto from 'hypercore-crypto'
 import http from 'http'
@@ -74,6 +84,14 @@ async function waitFor (fn, ms, label) {
   const t = Date.now()
   while (Date.now() - t < ms) { try { const v = await fn(); if (v) return v } catch {} await sleep(300) }
   throw new Error('timeout: ' + label)
+}
+// A call that MUST reject, with a message matching `re`. Resolving is as much a failure
+// as the wrong error — an entitlement gate that quietly succeeds is the bug being tested.
+async function assertRejects (fn, re, label) {
+  let msg = null
+  try { await fn() } catch (e) { msg = String(e.message) }
+  if (msg === null) throw new Error(label + ' must reject, but it resolved')
+  if (!re.test(msg)) throw new Error(label + ' rejected with the wrong error: ' + msg)
 }
 function httpGet (port, p, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -101,11 +119,20 @@ const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
 try {
+  // ===== Local DHT testnet =====
+  // Every swarm and player below is pinned to it. This lane used to ride the PUBLIC DHT
+  // — alone among the e2e lanes — which made it flaky to the point of uselessness: five
+  // consecutive runs failed at five DIFFERENT sections, and a run on unmodified main
+  // failed earliest of all, at the first login. Nothing here needs the real DHT: the
+  // tune self-heal exercises re-LOOKUPS, which a testnet performs just as well.
+  const testnet = await createTestnet(3); cleanups.push(() => testnet.destroy())
+  const bootstrap = testnet.bootstrap
+
   // ===== Broadcaster: encrypted feed =====
   const encKey = hcrypto.randomBytes(32)
   const feedStore = new Corestore(dirs.feed); await feedStore.ready(); cleanups.push(() => feedStore.close())
   const feed = new Hyperdrive(feedStore.namespace('feed'), { encryptionKey: encKey }); await feed.ready()
-  const feedSwarm = new Hyperswarm(); cleanups.push(() => feedSwarm.destroy())
+  const feedSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm.destroy())
   feedSwarm.on('connection', s => feed.replicate(s))
   feedSwarm.join(feed.discoveryKey, { server: true, client: false }); await feedSwarm.flush()
   const ff = startFfmpeg({ input: 'test', hls: { time: 2, listSize: 6 } }, dirs.out); cleanups.push(() => ff.kill())
@@ -128,7 +155,7 @@ try {
   const encKey4 = hcrypto.randomBytes(32)
   const feedStore4 = new Corestore(dirs.feed4); await feedStore4.ready(); cleanups.push(() => feedStore4.close())
   const feed4 = new Hyperdrive(feedStore4.namespace('feed'), { encryptionKey: encKey4 }); await feed4.ready()
-  const feedSwarm4 = new Hyperswarm(); cleanups.push(() => feedSwarm4.destroy())
+  const feedSwarm4 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm4.destroy())
   feedSwarm4.on('connection', s => feed4.replicate(s))
   feedSwarm4.join(feed4.discoveryKey, { server: true, client: false }); await feedSwarm4.flush()
   const stopMirror4 = mirrorDirToDrive(dirs.out, feed4, { interval: 400 }); cleanups.push(() => stopMirror4())
@@ -174,14 +201,14 @@ try {
 
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   const throttle = makeThrottle(1000, 60)
-  const panelSwarm = new Hyperswarm(); cleanups.push(() => panelSwarm.destroy())
+  const panelSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => panelSwarm.destroy())
   panelSwarm.on('connection', (socket) => { panelStore.replicate(socket); attachLoginRpc(socket, { keys, difficulty: DIFFICULTY, throttle, db, sessionTtlMs: 3600000 }) })
   panelSwarm.join(hcrypto.hash(keys.signing.publicKey), { server: true, client: false }); await panelSwarm.flush()
   log('panel: serving login RPC; pubkey', panelPubKey.slice(0, 16) + '…')
 
   // ===== SDK: the whole client side, headless =====
   const events = { ready: 0, streams: 0, lastStreams: null, status: [], peers: [], feedChanged: [] }
-  const player = createPlayer({ panelPubKey, storeDir: dirs.cli })
+  const player = createPlayer({ panelPubKey, storeDir: dirs.cli, swarm: { bootstrap } })
   player.on('ready', () => { events.ready++ })
   player.on('streams', (s) => { events.streams++; events.lastStreams = s })
   player.on('status', (s) => { events.status.push(s.state) })
@@ -318,7 +345,7 @@ try {
   const feedRot = new Hyperdrive(rotStore.namespace('feed'), { encryptionKey: encKey }); await feedRot.ready() // SAME encKey → fresh feedKey
   const rotKeyHex = b4a.toString(feedRot.key, 'hex')
   if (rotKeyHex === b4a.toString(feed.key, 'hex')) throw new Error('rotated feed must carry a fresh key')
-  const rotSwarm = new Hyperswarm(); cleanups.push(() => rotSwarm.destroy())
+  const rotSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => rotSwarm.destroy())
   rotSwarm.on('connection', s => feedRot.replicate(s))
   rotSwarm.join(feedRot.discoveryKey, { server: true, client: false }); await rotSwarm.flush()
   const stopMirrorRot = mirrorDirToDrive(dirs.out, feedRot, { interval: 400 }); cleanups.push(() => stopMirrorRot())
@@ -356,6 +383,7 @@ try {
   const player2 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli2,
+    swarm: { bootstrap },
     prewarm: true, // open entitled feeds at login so the FIRST zap is warm
     hybrid: { mode: 'hybrid', cdnUrl: () => cdnUrl, readyTimeoutMs: 2000, probeIntervalMs: 700, rebufferMsToFallback: 5000 }
   })
@@ -395,7 +423,7 @@ try {
   log('hybrid: fell back to CDN (reason timeout); CDN playlist serves')
 
   // "Start the broadcaster" for movies: seed feed2 with the same live HLS dir.
-  const feedSwarm2 = new Hyperswarm(); cleanups.push(() => feedSwarm2.destroy())
+  const feedSwarm2 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm2.destroy())
   feedSwarm2.on('connection', s => feed2.replicate(s))
   feedSwarm2.join(feed2.discoveryKey, { server: true, client: false }); await feedSwarm2.flush()
   const stopMirror2 = mirrorDirToDrive(dirs.out, feed2, { interval: 400 }); cleanups.push(() => stopMirror2())
@@ -426,6 +454,7 @@ try {
   const player3 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli3,
+    swarm: { bootstrap },
     tune: { timeoutMs: 4000, relookupMinMs: 1000, relookupMaxMs: 4000 }
   })
   player3.on('status', (s) => ev3.status.push(s.state))
@@ -467,7 +496,7 @@ try {
   // plain re-zap: it must do a FRESH open (no app restart) and play. Emulate the
   // viewer: if another tune window expires before the public-DHT lookup + replication
   // catch up, re-zap again — each attempt must be a fresh open, never the dead one.
-  const feedSwarm3 = new Hyperswarm(); cleanups.push(() => feedSwarm3.destroy())
+  const feedSwarm3 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm3.destroy())
   feedSwarm3.on('connection', s => feed3.replicate(s))
   feedSwarm3.join(feed3.discoveryKey, { server: true, client: false }); await feedSwarm3.flush()
   const stopMirror3 = mirrorDirToDrive(dirs.out, feed3, { interval: 400 }); cleanups.push(() => stopMirror3())
@@ -501,6 +530,7 @@ try {
   const player4 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli4,
+    swarm: { bootstrap },
     tune: { timeoutMs: 9000, relookupMinMs: 1000, relookupMaxMs: 9000 }
   })
   player4.on('status', (s) => ev4.status.push(s.state))
@@ -567,7 +597,7 @@ try {
   // The viewer must now KEEP the watchdog armed (content probe fails), walk the ladder
   // ('feed:retune', then 'feed:reconnect' — a peer IS attached), and surface the
   // friendly error instead of spinning silently forever.
-  const feedSwarm5 = new Hyperswarm(); cleanups.push(() => feedSwarm5.destroy())
+  const feedSwarm5 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm5.destroy())
   feedSwarm5.on('connection', s => feed5.replicate(s))
   feedSwarm5.join(feed5.discoveryKey, { server: true, client: false }); await feedSwarm5.flush()
   const blobs5 = await feed5.getBlobs()
@@ -590,6 +620,7 @@ try {
   const player5 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli5,
+    swarm: { bootstrap },
     tune: { timeoutMs: 4000, relookupMinMs: 1000, relookupMaxMs: 4000 }
   })
   player5.on('status', (s) => ev5.status.push(s.state))
@@ -633,7 +664,7 @@ try {
   // now gate "healthy" on servable content: starting on P2P against the pathological
   // feed must produce 'fallback' (reason 'stall'), and while the feed stays
   // unservable the viewer must STAY on CDN — no 'source-changed' back to p2p.
-  const feedSwarm6 = new Hyperswarm(); cleanups.push(() => feedSwarm6.destroy())
+  const feedSwarm6 = new Hyperswarm({ bootstrap }); cleanups.push(() => feedSwarm6.destroy())
   feedSwarm6.on('connection', s => feed6.replicate(s))
   feedSwarm6.join(feed6.discoveryKey, { server: true, client: false }); await feedSwarm6.flush()
   const blobs6 = await feed6.getBlobs()
@@ -656,6 +687,7 @@ try {
   const player6 = createPlayer({
     panelPubKey,
     storeDir: dirs.cli6,
+    swarm: { bootstrap },
     prewarm: true, // warm 'talk' at login so the P2P start below is deterministic
     hybrid: { mode: 'hybrid', cdnUrl: () => cdnUrl, readyTimeoutMs: 4000, probeIntervalMs: 700, rebufferMsToFallback: 4000 }
   })
@@ -711,7 +743,7 @@ try {
   // Curated order here is [movies(order 1), news(order 5), shopping, sports], so playing
   // 'movies' must warm 'news' — which by now lives on the ROTATED feed (rotKeyHex),
   // proving the prefetch also follows the catalog's current feedKey.
-  const playerZ = createPlayer({ panelPubKey, storeDir: dirs.cliZ, zapPrefetch: { neighbors: 1, intervalMs: 700 } })
+  const playerZ = createPlayer({ panelPubKey, storeDir: dirs.cliZ, swarm: { bootstrap }, zapPrefetch: { neighbors: 1, intervalMs: 700 } })
   cleanups.push(() => playerZ.stop())
   await playerZ.connect()
   let streamsZ = null
@@ -805,7 +837,7 @@ try {
   // server:false is the hyperswarm mechanism behind "serves nothing to other viewers":
   // an unannounced peer is not discoverable on the topic, so a probing viewer can never
   // dial it — practically zero viewer-to-viewer upload by construction.
-  const playerU = createPlayer({ panelPubKey, storeDir: dirs.cliU, uploadPolicy: 'client-only' })
+  const playerU = createPlayer({ panelPubKey, storeDir: dirs.cliU, swarm: { bootstrap }, uploadPolicy: 'client-only' })
   cleanups.push(() => playerU.stop())
   await playerU.connect()
   let streamsU = null
@@ -912,11 +944,12 @@ try {
   await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl, headers: promoHeaders, isLive: true, status: 'live' })
   await db.put('catalog/void', { title: 'Void', category: ['misc'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, isLive: false, status: 'idle' })
 
-  const evC = { fallback: 0, sourceChanged: 0, status: [] }
-  const playerC = createPlayer({ panelPubKey, storeDir: dirs.cliC }) // default p2p-only — NO hybrid config anywhere
+  const evC = { fallback: 0, sourceChanged: 0, status: [], lastStreams: null }
+  const playerC = createPlayer({ panelPubKey, storeDir: dirs.cliC, swarm: { bootstrap } }) // default p2p-only — NO hybrid config anywhere
   playerC.on('fallback', () => { evC.fallback++ })
   playerC.on('source-changed', () => { evC.sourceChanged++ })
   playerC.on('status', (s) => evC.status.push(s.state))
+  playerC.on('streams', (s) => { evC.lastStreams = s })
   cleanups.push(() => playerC.stop())
   await playerC.connect()
   let streamsC = null
@@ -988,6 +1021,82 @@ try {
   await db.put('catalog/promo', { title: 'Promo', category: ['promo'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: promoUrl2, headers: null, isLive: true, status: 'live' })
   await waitFor(async () => (await resolveWithin(playerC, 'promo', 20000)).headers === undefined, 40000, 'cleared headers resolve to undefined')
   log('redirect: cleared headers stop reaching the viewer (no stale snapshot fallback)')
+
+  // ===== (f) LIVE ENTITLEMENT (S57): grants followed mid-session, no re-login =====
+  // The operator's m3u source re-syncs every 30 min and adds/prunes channels all day. A
+  // viewer who signed in that morning used to be stuck with the morning lineup until a
+  // full app RESTART, because _pushCatalog only ever re-read ids captured at login. The
+  // SDK now watches its OWN `user/<name>` record — the panel-signed grant map login()
+  // already reads — and follows it. login() is NOT called again anywhere below.
+  const grantRec = async (mutate) => {
+    const cur = (await db.get('user/cdnuser')).value
+    mutate(cur.wrapped)
+    await db.put('user/cdnuser', cur)
+  }
+  const inList = (id) => (evC.lastStreams || []).some((s) => s.id === id)
+
+  // (f1) a BRAND-NEW redirect channel, cataloged and granted while the client is live.
+  const lateUrl = `http://127.0.0.1:${cdnPort}/index.m3u8?src=late`
+  const lateHeaders = { referer: 'https://provider.example/late/', 'user-agent': 'AliranTest/3.0' }
+  await db.put('catalog/late', { title: 'Late Addition', category: ['events'], type: 'live', protection: 'self', feedKey: null, blobsKey: null, redirect: true, url: lateUrl, headers: lateHeaders, isLive: true, status: 'live' })
+  await grantRec((w) => { w.late = sealTo(kpC.publicKey, hcrypto.randomBytes(32)) })
+  await waitFor(async () => inList('late'), 40000, 'a mid-session grant reaches the display list without re-login')
+  const rLate = await resolveWithin(playerC, 'late', 20000)
+  if (rLate.url !== lateUrl) throw new Error('a mid-session-granted redirect must resolve to its url, got ' + rLate.url)
+  if (hsig(rLate.headers) !== hsig(lateHeaders)) throw new Error('a mid-session-granted redirect must carry its headers, got ' + hsig(rLate.headers))
+  if (rLate.source !== 'cdn' || rLate.port !== undefined) throw new Error('a mid-session-granted redirect must resolve as cdn with no port: ' + JSON.stringify(rLate))
+  log('live-entitlement: a channel added AND granted mid-session became playable with no re-login')
+
+  // (f2) the P2P boundary holds. A newly granted NON-redirect channel carries a key
+  // sealed to the account public key, and the engine deliberately keeps no private key
+  // after login — so it must NOT be admitted. Silently playing it is impossible (no
+  // encryptionKey), so the failure mode this guards against is a broken-looking channel
+  // appearing in the lineup. Same boundary a re-KEYED stream already sits behind.
+  await db.put('catalog/p2plate', { title: 'P2P Late', category: ['misc'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), blobsKey: null, isLive: true, status: 'live' })
+  await grantRec((w) => { w.p2plate = sealTo(kpC.publicKey, encKey) })
+  // The watcher fires within milliseconds of the append; this is generous room for it to
+  // WRONGLY admit the channel. _entitled is asserted directly as well as the display
+  // list: a correct run emits no push at all here (nothing changed), so the list alone
+  // would still read clean if the id had in fact been admitted.
+  await sleep(5000)
+  if (inList('p2plate') || playerC._entitled.has('p2plate')) throw new Error('a mid-session-granted P2P channel must NOT be admitted (no private key after login)')
+  await assertRejects(() => playerC.resolve('p2plate'), /not entitled/, 'resolve() of an unadmitted P2P grant')
+  log('live-entitlement: a mid-session-granted P2P channel correctly waits for the next login')
+
+  // (f3) revocation is followed too — the id leaves _entitled, so it can no longer be
+  // resolved. The resolve() below makes 'promo' the ACTIVE play again (f1 tuned 'late'
+  // after section (e) left promo active), because the policy under test is deliberate:
+  // drop the channel from the lineup but NEVER tear down _active.
+  // revoke() + the package reconcile that follows it are two separate puts whose
+  // intermediate state is grant-less, and yanking a viewer mid-watch over a state that
+  // lives for milliseconds is worse than letting the play finish.
+  await resolveWithin(playerC, 'promo', 20000) // make promo unambiguously the active play
+  if (!playerC._active || playerC._active.streamId !== 'promo') throw new Error('test setup: promo should be the active play before the revoke')
+  await grantRec((w) => { delete w.promo })
+  await waitFor(async () => !inList('promo'), 40000, 'a revoked grant leaves the display list')
+  await assertRejects(() => playerC.resolve('promo'), /not entitled/, 'resolve() of a revoked grant')
+  if (!playerC._active || playerC._active.streamId !== 'promo') throw new Error('a revoke must NOT tear down the active play')
+  if (!inList('late') || !inList('news')) throw new Error('a revoke must not disturb the surviving grants')
+  log('live-entitlement: revoke removed the channel and blocked re-resolve, active play untouched')
+
+  // (f4) removal is SYMMETRIC with admission: only what can be re-admitted may be
+  // dropped. 'news' is a P2P grant this user holds. The panel's ORDINARY revoke is TWO
+  // puts — admin-server.js/admin-cli.js call ops.revoke() and THEN reconcilePackages()
+  // — and the intermediate record is grant-less. Dropping a P2P id on that intermediate
+  // state would be a ONE-WAY DOOR: nothing can re-seal it without the account private
+  // key, so a package-covered channel would stay gone for the whole session even though
+  // the panel's END state still grants it.
+  const newsSealed = (await db.get('user/cdnuser')).value.wrapped.news
+  await grantRec((w) => { delete w.news }) // put 1: ops.revoke()
+  await sleep(2500)
+  await grantRec((w) => { w.news = newsSealed }) // put 2: reconcilePackages() re-seals
+  await sleep(2500)
+  if (!playerC._entitled.has('news')) throw new Error('a P2P grant must SURVIVE the panel revoke->reconcile two-put (removal must be symmetric with admission)')
+  const rNewsAfter = await resolveWithin(playerC, 'news', 20000)
+  if (rNewsAfter.source !== 'p2p') throw new Error('the surviving P2P grant must still resolve over P2P')
+  const liveEntitlementProven = true
+  log('live-entitlement: P2P grant survived the panel two-put revoke->reconcile')
+
   await playerC.stop()
   const redirectProven = true
   log('redirect: zap p2p↔redirect clean — watchdog armed on news, cleared on promo; hybrid machinery untouched')
@@ -995,8 +1104,8 @@ try {
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
-    meteredGated && directionalProven && stallGated && clientOnlyProven && redirectProven)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + S23 redirect channels verified)' : 'FAIL ❌')
+    meteredGated && directionalProven && stallGated && clientOnlyProven && redirectProven && liveEntitlementProven)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

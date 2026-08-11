@@ -762,7 +762,7 @@ function renderSources () {
     tr.innerHTML = `
       <td><b>${esc(s.name)}</b><br><span class="mono muted" title="${esc(s.url)}">${esc(s.url.length > 46 ? s.url.slice(0, 46) + '…' : s.url)}</span></td>
       <td><span class="chip">${esc(s.category)}</span>${(s.format || 'json') === 'm3u'
-        ? ` <span class="chip" title="M3U playlist: ids come from the channel names, #EXTVLCOPT lines import as playback headers${(s.groups || []).length ? ` — groups: ${esc(s.groups.join(', '))}` : ''}">m3u</span>`
+        ? ` <span class="chip" title="M3U playlist: ids come from the channel names, #EXTVLCOPT lines import as playback headers${(s.groups || []).length ? ` — groups: ${esc(s.groups.join(', '))}` : ''}${(s.titleInclude || []).length ? ` — name has: ${esc(s.titleInclude.join(', '))}` : ''}${(s.titleExclude || []).length ? ` — name has not: ${esc(s.titleExclude.join(', '))}` : ''}${s.epg ? ` — program guide on${s.epgUrl ? `: ${esc(s.epgUrl)}` : ' (address from the playlist)'}` : ''}">m3u</span>`
         : ''}</td>
       <td>${s.channels}</td>
       <td class="muted">${fmtInterval(s.intervalMs)}</td>
@@ -1550,16 +1550,17 @@ const FEED_FORMAT_HTML = `
   </ul>
   <p class="muted footnote"><b>Format “m3u” — an M3U playlist.</b> Set <b>Format</b> to <span class="mono">m3u</span>
     for a provider playlist. The panel reads this shape:</p>
-  <pre class="codebox mono">#EXTM3U
-#EXTINF:-1 tvg-logo="https://cdn.example/art/game.png" group-title="Live Events",Team A vs Team B
+  <pre class="codebox mono">#EXTM3U url-tvg="https://provider.example/guide.xml"
+#EXTINF:-1 tvg-id="TeamA.us" tvg-logo="https://cdn.example/art/game.png" group-title="Live Events",Team A vs Team B
 #EXTVLCOPT:http-referrer=https://provider.example/
 #EXTVLCOPT:http-origin=https://provider.example
 #EXTVLCOPT:http-user-agent=Mozilla/5.0
 https://cdn.example/event/123.m3u8?token=abc</pre>
   <ul class="muted footnote spec-list">
     <li><b>The channel name makes the channel id.</b> The panel changes the name into id characters and adds the prefix.
-      A playlist <span class="mono">tvg-id</span> is usually a dummy value, so the panel does not use it. Two entries
-      with the same name get <span class="mono">-2</span> and <span class="mono">-3</span>.</li>
+      A playlist <span class="mono">tvg-id</span> is usually a dummy value, so the panel does not use it for the
+      channel id (it can use it for the program guide — see below). Two entries with the same name get
+      <span class="mono">-2</span> and <span class="mono">-3</span>.</li>
     <li><b>A new name is a new channel.</b> The panel deletes the old channel and makes a new one. This is correct for
       events, because each event is new.</li>
     <li><b>#EXTVLCOPT lines become playback headers.</b> The panel keeps
@@ -1569,17 +1570,79 @@ https://cdn.example/event/123.m3u8?token=abc</pre>
       channel.</li>
     <li><b>Groups.</b> Set <b>Groups</b> on the source to select the <span class="mono">group-title</span> values you
       want. The panel compares the full value and ignores upper and lower case. Leave the field empty to take every
-      entry. The sync report counts the other entries as <b>outside your groups</b>.</li>
+      entry. The sync report counts the other entries as <b>left out by your filters</b>.</li>
+    <li><b>Name has / Name has not.</b> These two fields select by the channel <b>name</b>, one level below the group.
+      Write pieces of text, separated by commas. The panel looks for each piece <b>inside</b> the name and ignores
+      upper and lower case. These are not regular expressions.
+      <ul>
+        <li><b>Name has</b> — the panel takes an entry only when its name contains at least one of your pieces. An
+          empty field takes every name.</li>
+        <li><b>Name has not</b> — the panel drops an entry when its name contains one of your pieces. Use it for a
+          provider tag that never plays, for example <span class="mono">(WEBCAST)</span>.</li>
+        <li><b>Name has not wins.</b> A name that matches both fields stays out.</li>
+        <li>Write <b>2 characters or more</b> for each piece. One character is inside almost every name, and it
+          removes almost the full rail with no warning.</li>
+        <li>A comma always starts the next piece, so a piece cannot contain a comma. The panel refuses one.</li>
+      </ul>
+      The sync report counts these entries as <b>left out by your filters</b>, together with the group filter.</li>
     <li><b>tvg-logo</b> becomes the channel art. Use an <span class="mono">https://</span> address.</li>
-    <li><b>No schedule.</b> A playlist is not a program guide, so an imported channel gets no guide pointer.</li>
+    <li><b>Program guide.</b> A playlist can name its guide. The first line holds the address:
+      <span class="mono">#EXTM3U url-tvg="https://provider.example/guide.xml"</span> (the names
+      <span class="mono">x-tvg-url</span> and <span class="mono">tvg-url</span> mean the same). Each entry then gives
+      its own id in that guide: <span class="mono">tvg-id="ESPN.us"</span>. Set <b>Program guide</b> on the source to
+      keep these ids on the imported channels.
+      <ul>
+        <li><b>Off is the default.</b> A source that you do not change keeps no guide id and no guide address, as
+          before.</li>
+        <li><b>The panel keeps the ids, not the address.</b> The address in the first line points to a file in the
+          XMLTV format. The apps read a guide in a different format, so the panel never puts that address on a
+          channel. The sync report shows you the address. Add it to your EPG service: the service reads the file and
+          sends the guide to the apps, and it uses the <span class="mono">tvg-id</span> of each channel to match
+          it.</li>
+        <li><b>Each channel needs a different id.</b> A guide holds one schedule for each id. Two channels with the
+          same id are one channel for the guide: the first one takes the schedule, and the other one gets nothing.</li>
+        <li><b>Keep this setting off for a list of events.</b> A provider writes one dummy id on many entries of an
+          event list, for example <span class="mono">Soccer.Dummy.us</span> on every football match of the day. The
+          programs for that id have no real data. They give only the word “Soccer”, with no team names and no correct
+          times.</li>
+        <li><b>The panel refuses an id it finds more than once</b> in the same source, on every entry that has it,
+          and counts them in the sync report. It also refuses an id that a different source, or a channel you made
+          yourself, already uses. So a wrong choice gives you <b>no</b> guide, never a wrong one.</li>
+        <li><b>Guide address</b> on the source is a different thing. It is the address the <b>apps</b> read.
+          It must hold a guide in the app format: the same <span class="mono">{"channels":[…]}</span> file as a json
+          source, with an <span class="mono">epg</span> list for each channel. Set it only if you publish such a file.
+          Leave it empty for none.</li>
+      </ul></li>
     <li><b>One playlist, many rails.</b> Add <b>one source for each group</b>, all with the same URL. Give each source
       its own groups, its own category and its own prefix. Example: source <span class="mono">events</span> takes the
       group “Live Events” into the category “Live Events”, and source <span class="mono">sports</span> takes the group
       “Sports” into the category “Sports”. The channel ids stay separate, because the prefixes are different. Each
       source syncs and cleans up on its own, and the <span class="mono">ETag</span> keeps the extra pulls cheap.</li>
+    <li><b>One group, one rail for each sport.</b> Many providers put the whole day into one group, for example
+      “Live Events”, and write the sport into the name:
+      <span class="mono">[MLB] Boston Red Sox at Toronto Blue Jays</span>. Use <b>Name has</b> to split it. Add one
+      source for each sport, all with the same URL and the same group, and give each one a different piece of text, a
+      different category and a different prefix:
+      <ul>
+        <li><span class="mono">mlb</span> — Name has <span class="mono">[MLB]</span>, category
+          <span class="mono">Live Events/MLB</span>, prefix <span class="mono">mlb.</span></li>
+        <li><span class="mono">nfl</span> — Name has <span class="mono">[NFL]</span>, category
+          <span class="mono">Live Events/NFL</span>, prefix <span class="mono">nfl.</span></li>
+        <li><span class="mono">events</span> — the rest: Name has <b>not</b>
+          <span class="mono">[MLB], [NFL]</span>, category <span class="mono">Live Events</span>, prefix
+          <span class="mono">ev.</span></li>
+      </ul>
+      A category written as <b>Parent/Child</b> is a child rail in the apps, so “Live Events” now holds an <b>MLB</b>
+      rail and an <b>NFL</b> rail. Keep the pieces of text <b>separate</b>: an entry that two sources take gets two
+      channels. The prefixes keep the ids apart, so the two sources never fight over one channel.</li>
     <li><b>Event addresses expire.</b> Set a short interval, for example 30 minutes. The panel then pulls the new
       addresses and sends them to viewers. A viewer gets them at the next channel start, with no new login.</li>
   </ul>`
+
+// The comma-separated source filter fields (groups, name has, name has not) all read the
+// same way: split, trim, drop the empties — so an operator can space them out, and an empty
+// field means "no filter" rather than one blank rule.
+const csvField = (s) => String(s ?? '').split(',').map((t) => t.trim()).filter(Boolean)
 
 $('#source-add-btn').addEventListener('click', () => addSourceDlg())
 $('#source-format-btn').addEventListener('click', () => dialog('Source feed format', [], { okLabel: 'Close', body: FEED_FORMAT_HTML }))
@@ -1590,22 +1653,44 @@ async function addSourceDlg () {
     { name: 'url', label: 'Feed URL (https://)', placeholder: 'https://provider.example/channels.json' },
     { name: 'format', label: 'Format — json = a provider feed, m3u = a playlist', type: 'select', options: ['json', 'm3u'], value: 'json' },
     { name: 'category', label: 'Category label (the rail viewers see)', placeholder: 'Anime' },
-    { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' }
+    { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' },
+    { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', placeholder: '[MLB], [NFL]' },
+    { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', placeholder: '(WEBCAST), (STRMXHD)' },
+    { name: 'epg', label: 'Program guide (m3u only) — keep the guide id (tvg-id) of each entry', type: 'checkbox', value: false },
+    { name: 'epgUrl', label: 'Guide address (m3u only) — for the apps, in the app guide format; leave empty for none', placeholder: 'https://provider.example/guide.json' },
+    { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: false }
   ], {
     okLabel: 'Add',
     body: `<p class="muted">The panel pulls the feed immediately. It then makes a category of <b>redirect channels</b> from it.</p>
            <p class="muted">The sync interval, the channel id prefix and auto-grant keep their defaults. Change them with
            <b>edit</b> on the row.</p>
+           <p class="muted"><b>Allow cleartext</b> is for a provider that serves some streams over plain http, not https.
+           It applies to this source only, never to manual channels. An http stream plays only where the client permits cleartext.</p>
+           <p class="muted"><b>Program guide</b> keeps the guide id of each entry, for a playlist of TV channels where
+           each entry has its own id. Your EPG service uses these ids to give the channels a guide. Keep this setting
+           off for a list of events. A provider writes one dummy id on many entries of an event list, and a shared id
+           gives every channel the same wrong guide.</p>
            <details class="footnote"><summary>What the feed must contain</summary>${FEED_FORMAT_HTML}</details>`
   })
   if (!v) return
   const name = v.name.trim()
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return toast('name must start alphanumeric and use only letters, digits, . _ -', true)
-  // Groups are meaningless on a json feed, so an m3u-only field must not travel with one —
-  // it would sit in the record inviting a "why is my filter ignored?" later.
-  const groups = v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : []
+  // Groups and the name filters are meaningless on a json feed, so an m3u-only field must
+  // not travel with one — it would sit in the record inviting a "why is my filter ignored?"
+  // later. (mapFeed reads none of them; only mapM3U does.)
+  const m3uOnly = (s) => (v.format === 'm3u' ? csvField(s) : [])
+  const groups = m3uOnly(v.groups)
   try {
-    await api('POST', '/api/sources', { name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups })
+    await api('POST', '/api/sources', {
+      name, url: v.url.trim(), format: v.format, category: v.category.trim(), groups,
+      titleInclude: m3uOnly(v.titleInclude),
+      titleExclude: m3uOnly(v.titleExclude),
+      // The guide fields are m3u-only for the same reason as the filters: mapFeed reads
+      // neither, so on a json source they would sit in the record doing nothing.
+      epg: v.format === 'm3u' ? v.epg : false,
+      epgUrl: v.format === 'm3u' ? v.epgUrl.trim() : '',
+      allowCleartext: v.allowCleartext
+    })
     toast(`source "${name}" added — pulling the feed…`)
     await syncSourceNow(name)
   } catch (err) { toast(err.message, true) }
@@ -1619,7 +1704,8 @@ async function syncSourceNow (name) {
       ? `"${name}": feed not modified · ${r.granted} grant(s) sealed`
       : `"${name}": +${r.added} added, ~${r.updated} updated, −${r.removed} removed, ${r.granted} grant(s) sealed` +
         (r.skippedCount ? ` · ${r.skippedCount} skipped` : '') + (r.conflicts.length ? ` · ${r.conflicts.length} conflicts` : '') +
-        (r.filtered ? ` · ${r.filtered} outside your groups` : '') +
+        (r.filtered ? ` · ${r.filtered} left out by your filters` : '') +
+        (r.epgSkipped ? ` · ${r.epgSkipped} without a guide (id used more than once)` : '') +
         (r.truncated ? ` · ${r.truncated} over the channel cap — dropped` : ''))
     await refresh()
   } catch (err) { toast(err.message, true); await refresh().catch(() => {}) }
@@ -1652,13 +1738,45 @@ function showSyncReport (s) {
       : '<p class="muted">(ids are recorded from the next sync)</p>'
   }
   if (rep.excluded) body += `<p class="muted">${rep.excluded} excluded by you (channels dialog).</p>`
-  // Not an error and not an exclusion: entries the group filter left in the playlist.
-  if (rep.filtered) body += `<p class="muted">${rep.filtered} entr${rep.filtered === 1 ? 'y is' : 'ies are'} outside your groups. The panel did not import ${rep.filtered === 1 ? 'it' : 'them'}. Edit <b>Groups</b> on the source to take more.</p>`
-  // The one shape where a correct prune and a mistyped group name look the same from
-  // outside: the sync removed every channel, and the filter matched nothing.
+  // What the playlist says its guide is. INFORMATION, not a setting: the panel never puts
+  // this address on a channel (the apps read a guide in a different format), so the line
+  // states what the address is for and leaves the operator to register it.
+  if (rep.epgDeclared) {
+    // The last sentence is only true while this source does NOT keep the guide ids. On a
+    // source that already does — an events source above all, where the red warning right
+    // below says the opposite — it would advise switching on what is already on.
+    body += `<p class="muted">The playlist names a program guide: <span class="mono">${esc(rep.epgDeclared)}</span>.
+      The panel does not put this address on the channels, because the apps read a guide in a different format. An EPG
+      service reads an address like this one and sends the guide to the apps. It uses the guide id
+      (<span class="mono">tvg-id</span>) of each channel to match the guide to the channel.${s.epg
+        ? ''
+        : ' This source does not keep those ids. Turn <b>Program guide</b> on to keep them.'}</p>`
+  }
+  // The guide guard: a shared tvg-id is not a channel id, so the panel keeps it off every
+  // channel that carries it. This line is the only place an operator learns it happened —
+  // and it must name BOTH halves, because the cross-source half (the id is already on a
+  // channel outside this source) has a completely different fix from the in-playlist one.
+  if (rep.epgSkipped) {
+    body += `<p class="warn-text"><b>${rep.epgSkipped} channel${rep.epgSkipped === 1 ? '' : 's'} got no program guide.</b>
+      A guide holds one schedule for each guide id, so each channel needs an id of its own. The panel found these ids
+      more than once, and it does not put an id on two channels.</p>
+      <p class="muted">There are two causes, and you can see which one from the channels:</p>
+      <ul class="muted footnote spec-list">
+        <li>The <b>playlist gives the same id to more than one entry</b>. This is normal in a list of events. Use
+          <b>edit</b> and turn <b>Program guide</b> off for this source.</li>
+        <li><b>Another source, or a channel you made yourself, already uses that id.</b> The channel that has the id
+          keeps it. Give the other channel a different id, or remove the guide id from one of the two.</li>
+      </ul>`
+  }
+  // Not an error and not an exclusion: entries the source's filters (group + name) left in
+  // the playlist. One count for both, because the operator question is the same one.
+  if (rep.filtered) body += `<p class="muted">${rep.filtered} entr${rep.filtered === 1 ? 'y is' : 'ies are'} left out by your filters. The panel did not import ${rep.filtered === 1 ? 'it' : 'them'}. Edit <b>Groups</b>, <b>Name has</b> or <b>Name has not</b> on the source to take more.</p>`
+  // The one shape where a correct prune and a mistyped filter look the same from
+  // outside: the sync removed every channel, and the filters matched nothing.
   if (rep.emptiedByFilter) {
-    body += `<p class="warn-text"><b>The group filter matched no entries. All channels of this source were removed.</b>
-      The provider can have changed a group name. Use <b>edit</b> on the source and compare <b>Groups</b> with the group names in the playlist.</p>`
+    body += `<p class="warn-text"><b>Your filters matched no entries. All channels of this source were removed.</b>
+      The provider can have changed a group name, or the words it writes in the channel names. Use <b>edit</b> on the
+      source and compare <b>Groups</b> and <b>Name has</b> with the playlist.</p>`
   }
   dialog(`Last sync — ${s.name}`, [], { okLabel: 'Close', body })
 }
@@ -1741,13 +1859,21 @@ async function editSource (s) {
     { name: 'format', label: 'Format — json = a provider feed, m3u = a playlist', type: 'select', options: ['json', 'm3u'], value: s.format || 'json' },
     { name: 'category', label: 'Category label (the rail viewers see)', value: s.category },
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', value: (s.groups || []).join(', '), placeholder: 'Live Events, PPV' },
+    { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', value: (s.titleInclude || []).join(', '), placeholder: '[MLB], [NFL]' },
+    { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', value: (s.titleExclude || []).join(', '), placeholder: '(WEBCAST), (STRMXHD)' },
+    { name: 'epg', label: 'Program guide (m3u only) — keep the guide id (tvg-id) of each entry', type: 'checkbox', value: !!s.epg },
+    { name: 'epgUrl', label: 'Guide address (m3u only) — for the apps, in the app guide format; leave empty for none', value: s.epgUrl || '', placeholder: 'https://provider.example/guide.json' },
     { name: 'prefix', label: 'Channel id prefix', value: s.prefix },
     { name: 'minutes', label: 'Sync every (minutes)', type: 'number', value: Math.round((s.intervalMs || 86400000) / 60000), min: 1, max: 43200, step: 1 },
-    { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false }
+    { name: 'autoGrant', label: 'auto-grant imported channels to every user', type: 'checkbox', value: s.autoGrant !== false },
+    { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: !!s.allowCleartext }
   ], {
     body: `<p class="muted">The feed overwrites its mapped fields (title, url, logo, order, category — and the playback headers of an m3u) on every sync — manual edits to those don't stick on imported channels.</p>
-      <p class="muted">Changing the <b>format</b> or the <b>groups</b> makes the next sync read the whole feed again. A group you remove takes its channels with it.</p>
-      <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>`
+      <p class="muted">Changing the <b>format</b>, the <b>groups</b> or a <b>name</b> filter makes the next sync read the whole feed again. A group or a name you no longer take goes out of the catalog with its channels.</p>
+      <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>
+      <p class="muted"><b>Allow cleartext</b> lets this source import plain-http stream URLs, for a provider that serves some streams over http instead of https. It applies to this source only, never to manual channels, and the next sync re-reads the feed to apply it. An http stream plays only where the client permits cleartext.</p>
+      <p class="muted"><b>Program guide</b> keeps the guide id (<span class="mono">tvg-id</span>) of each entry on the imported channels. Your EPG service uses these ids to match the guide to the channels. A guide id must be different for each channel, so use this for a playlist of TV channels. A provider writes one dummy id on many entries of an event list: the panel refuses an id it finds more than once, and the sync report counts it.</p>
+      <p class="muted"><b>Guide address</b> is for the apps, which read a guide in the app format over https. The address in the playlist is <b>not</b> in that format, so the panel never uses it: the sync report shows it, and you add it to your EPG service instead. The panel clears this field when <b>Program guide</b> is off.</p>`
   })
   if (!v) return
   // Validate here, in the field's own unit — the API's error talks milliseconds.
@@ -1758,12 +1884,17 @@ async function editSource (s) {
     url: v.url.trim(),
     format: v.format,
     category: v.category.trim(),
-    // Always sent, so emptying the field really clears the filter. A json source keeps
-    // no groups at all — the field does not apply to it.
-    groups: v.format === 'm3u' ? v.groups.split(',').map((g) => g.trim()).filter(Boolean) : [],
+    // Always sent, so emptying a field really clears that filter. A json source keeps
+    // no groups and no name filters at all — they do not apply to it.
+    groups: v.format === 'm3u' ? csvField(v.groups) : [],
+    titleInclude: v.format === 'm3u' ? csvField(v.titleInclude) : [],
+    titleExclude: v.format === 'm3u' ? csvField(v.titleExclude) : [],
+    epg: v.format === 'm3u' ? v.epg : false,
+    epgUrl: v.format === 'm3u' ? v.epgUrl.trim() : '', // '' = the channels carry no guide address
     prefix: v.prefix.trim(),
     intervalMs: minutes * 60000,
-    autoGrant: v.autoGrant
+    autoGrant: v.autoGrant,
+    allowCleartext: v.allowCleartext
   }), `source "${s.name}" updated — applies on its next sync`)
 }
 

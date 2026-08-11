@@ -21,9 +21,18 @@ export function hideRestricted (): boolean { return backend.parental?.hide === t
 export function validPinFormat (pin: string): boolean { return /^\d{4,8}$/.test(pin) }
 
 // The single visibility rule every browse surface applies to the display list.
+// Single-slot memo (S22 round 8): a stable OUTPUT identity per (catalog, pin, hide)
+// lets catalog.ts's WeakMap-cached derivations hit across every screen mount —
+// without it each mount's fresh filter array forced the seconds-long regroup of a
+// large vod catalog. The pin/hide flags ride the key so parental changes recompute.
+let visCache: { src: Stream[]; pin: boolean; hide: boolean; out: Stream[] } | null = null
 export function visibleStreams (streams: Stream[]): Stream[] {
-  if (!hasPin() || hideRestricted()) return streams.filter((s) => !s.restricted)
-  return streams
+  const pin = hasPin()
+  const hide = hideRestricted()
+  if (visCache && visCache.src === streams && visCache.pin === pin && visCache.hide === hide) return visCache.out
+  const out = (!pin || hide) ? streams.filter((s) => !s.restricted) : streams
+  visCache = { src: streams, pin, hide, out }
+  return out
 }
 
 // Does tuning THIS channel need a PIN entry first?

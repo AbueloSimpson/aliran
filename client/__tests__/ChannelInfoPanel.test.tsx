@@ -5,7 +5,7 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text } from 'react-native'
+import { Image, StyleSheet, Text } from 'react-native'
 import { ChannelInfoPanel } from '../src/components/ChannelInfoPanel'
 import { epg } from '@aliran/react-native'
 import type { Stream } from '../src/worklet'
@@ -64,4 +64,48 @@ test('an EPG channel that resolves empty falls back to the placeholder', async (
   const stream: Stream = { ...baseStream, epgUrl: 'https://epg.example/anime.json', epgId: 'ghost' }
   const tree = await createTree(<ChannelInfoPanel stream={stream} {...props} />)
   expect(texts(tree)).toContain('No program information')
+})
+
+// WS12 (S22 feedback): on PHONE (Platform.isTV is false under jest) the resolved art
+// is a full-panel BACKGROUND under a scrim, the identity compacts to a small logo +
+// single title line, and the guide renders in the foreground — no 16:9 art box that
+// pushes the now-program below the fold.
+test('phone: art becomes the panel background and the guide stays in the foreground', async () => {
+  const now = Date.now()
+  jest.spyOn(epg, 'getNowNext').mockResolvedValue({
+    now: { title: 'Moon Cat A', start: now - 600_000, stop: now + 1_200_000 },
+    next: [{ title: 'Moon Cat B', start: now + 1_200_000, stop: now + 4_800_000 }]
+  })
+  const stream: Stream = {
+    ...baseStream,
+    poster: 'https://art.example/poster.jpg',
+    logo: 'https://art.example/logo.png',
+    // The engine hands thumbBase to EVERY channel — the panel must ignore it (S22
+    // round-4 policy: live thumbs live in the guide preview card and the Menu hero
+    // only; the panel never probes, least of all for the playing channel).
+    thumbBase: 'http://127.0.0.1:1234/feedthumb/moon-cat',
+    epgUrl: 'https://epg.example/anime.json',
+    epgId: 'moon-cat'
+  }
+  const tree = await createTree(<ChannelInfoPanel stream={stream} {...props} />)
+
+  // The art chain resolves to the CURATED poster — thumbBase never probes.
+  const bg = tree.root.findAllByType(Image).filter(i => i.props.testID === 'info-art-bg')
+  expect(bg).toHaveLength(1)
+  expect(bg[0].props.source.uri).toBe('https://art.example/poster.jpg')
+  expect(bg[0].props.style).toBe(StyleSheet.absoluteFill)
+
+  // Identity row: the SMALL channel logo, not the old stacked 16:9 art box.
+  const logo = tree.root.findAllByType(Image).filter(i => i.props.testID === 'info-logo')
+  expect(logo).toHaveLength(1)
+  expect(logo[0].props.source.uri).toBe('https://art.example/logo.png')
+
+  // One title line only — the phone identity is compact by design.
+  const title = tree.root.findAllByType(Text).find(t => t.props.children === 'Moon Cat')
+  expect(title!.props.numberOfLines).toBe(1)
+
+  // And the program guide still renders over the background.
+  const t = texts(tree)
+  expect(t).toContain('Moon Cat A')
+  expect(t).toContain('UP NEXT')
 })

@@ -286,7 +286,14 @@ export interface UpdateCheckResult {
 export interface PlayerEvents {
   /** connect() joined the panel topic. */
   ready: []
-  /** Display list — at login, and re-emitted LIVE on panel catalog edits. */
+  /**
+   * Display list — at login, and re-emitted LIVE on panel catalog edits AND on changes
+   * to this viewer's grants. Redirect channels track grants live: one granted
+   * mid-session APPEARS here and a revoked one DISAPPEARS, with no re-login. P2P
+   * channels stay LOGIN-SCOPED in both directions (the engine keeps no key to unseal a
+   * new grant, so it also declines to drop an existing one) and change only on the next
+   * login.
+   */
   streams: [streams: Stream[]]
   status: [status: { state: 'feed:open' | 'feed:ready' | 'feed:retune' | 'feed:reconnect' }]
   /** Peer count of the served feed, every 3 s while serving. */

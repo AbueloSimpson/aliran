@@ -6,18 +6,39 @@
 import { getLocale } from '@aliran/i18n'
 import type { Stream } from './types'
 
+// MEMOIZATION (S22 round 8, ported from the client twin): the derivations cost
+// seconds of JS over a large vod library — measured on the phone, and the desktop
+// renderer runs the same catalog through the same functions. visibleStreams
+// (parental.ts) memoizes its output identity, so a WeakMap keyed on the input array
+// pays each derivation ONCE per catalog update and every later call is O(1). The
+// locale rides the key: the title tie-break collates in the viewer's locale, so a
+// language switch must recompute.
+interface Keyed<T> { locale: string; out: T }
+function memo1<T> (cache: WeakMap<Stream[], Keyed<T>>, streams: Stream[], compute: () => T): T {
+  const locale = getLocale()
+  const hit = cache.get(streams)
+  if (hit && hit.locale === locale) return hit.out
+  const out = compute()
+  cache.set(streams, { locale, out })
+  return out
+}
+const curationCache = new WeakMap<Stream[], Keyed<Stream[]>>()
+const modelCache = new WeakMap<Stream[], Keyed<CategoryModel>>()
+const zapCache = new WeakMap<Stream[], Keyed<Stream[]>>()
+const numbersCache = new WeakMap<Stream[], Keyed<Map<string, number>>>()
+
 // Panel curation sort: (order ?? Infinity, title). Stable for equal keys.
 // The title tie-break sorts in the VIEWER's locale (S56 design D9): collation is not
 // universal — Swedish files "ä" after "z", Turkish files "ı" before "i" — and the list
 // a viewer scans should be alphabetical to THEM. Engines without a real collator ignore
 // the argument and fall back to code-point order, which is what they did before.
 export function sortByCuration (streams: Stream[]): Stream[] {
-  return [...streams].sort((a, b) => {
+  return memo1(curationCache, streams, () => [...streams].sort((a, b) => {
     const ao = a.order ?? Infinity
     const bo = b.order ?? Infinity
     if (ao !== bo) return ao - bo
     return (a.title || '').localeCompare(b.title || '', getLocale())
-  })
+  }))
 }
 
 // Hero / wallpaper pick: first featured live ?? first live ?? first channel ?? first.
@@ -59,6 +80,10 @@ export interface CategoryModel {
 // a channel tagged "Anime/Español" lands in BOTH the 'Anime' parent group and the
 // 'Anime/Español' sub group. Uncategorized channels live only in 'All'.
 export function categoryModel (streams: Stream[]): CategoryModel {
+  return memo1(modelCache, streams, () => computeCategoryModel(streams))
+}
+
+function computeCategoryModel (streams: Stream[]): CategoryModel {
   const sorted = sortByCuration(streams)
   const groups: Record<string, Stream[]> = { All: sorted }
   const top: string[] = ['All']
@@ -91,16 +116,20 @@ export function isVod (s: Stream): boolean {
 // LIVE catalog only. vod titles are on-demand — they neither take a channel number
 // (adding movies must not renumber the lineup) nor sit in the zap ring.
 export function zapOrder (streams: Stream[]): Stream[] {
-  return sortByCuration(streams.filter(s => !isVod(s)))
+  // The filter output is a fresh array, so the curation cache can't help through
+  // it — cache on the INPUT array instead (one zap ring per catalog update).
+  return memo1(zapCache, streams, () => sortByCuration(streams.filter(s => !isVod(s))))
 }
 
 // Derived channel numbers (D3): curated sort over the live catalog -> 1..N. The same
 // stream keeps its number in every category group; vod titles have none. Zero-pad
 // for the 10-foot list.
 export function channelNumbers (streams: Stream[]): Map<string, number> {
-  const map = new Map<string, number>()
-  zapOrder(streams).forEach((s, i) => map.set(s.id, i + 1))
-  return map
+  return memo1(numbersCache, streams, () => {
+    const map = new Map<string, number>()
+    zapOrder(streams).forEach((s, i) => map.set(s.id, i + 1))
+    return map
+  })
 }
 
 export function formatChannelNumber (n: number | undefined): string {

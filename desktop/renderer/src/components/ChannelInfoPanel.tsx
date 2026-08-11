@@ -13,7 +13,8 @@ import { getLocale, useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
-import type { EpgProgram } from '../../../../sdk/react-native/src/epg'
+import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
+import { programProgress, type EpgProgram } from '../../../../sdk/react-native/src/epg'
 
 function hhmm (ms: number): string {
   const d = new Date(ms)
@@ -33,7 +34,13 @@ export interface ChannelInfoPanelProps {
 
 export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite }: ChannelInfoPanelProps) {
   const { t, tn } = useI18n()
-  const art = stream.poster || stream.backdrop || stream.logo
+  // Thumb-first art: what is on screen RIGHT NOW beats curated art — the panel opens
+  // on a channel the viewer is deciding whether to watch. The thumb is 16:9 like the
+  // art box (aspect-ratio in styles.css), so cover doesn't crop it; a 404 (the
+  // ordinary "no thumbnail" answer — see thumbBase in the SDK) falls back to the
+  // curated chain.
+  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
+  const art = thumbUri || stream.poster || stream.backdrop || stream.logo
   const vod = isVod(stream)
   const duration = vod ? formatDuration(stream.durationSec) : ''
   return (
@@ -45,7 +52,7 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
 
       <div className="info-art-box">
         {art
-          ? <img className="info-art" src={art} alt="" />
+          ? <img className="info-art" src={art} alt={thumbUri ? t('live.livePreview', { title: stream.title ?? '' }) : ''} onError={thumbUri ? onThumbError : undefined} />
           : <div className="info-art info-art-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</div>}
         {stream.isLive && <span className="info-live badge-live">{t('common.liveBadge')}</span>}
         {duration && <span className="info-duration">{duration}</span>}
@@ -117,7 +124,7 @@ function EpgGuide ({ stream }: { stream: Stream }) {
 }
 
 function NowRow ({ program }: { program: EpgProgram }) {
-  const pct = Math.max(0, Math.min(1, (Date.now() - program.start) / (program.stop - program.start)))
+  const pct = programProgress(program, Date.now())
   return (
     <div className="epg-now">
       <div className="epg-now-head">

@@ -7,12 +7,14 @@
 // vod transport (S8a): when the playing record is a library title the bar grows a
 // transport row — play/pause, elapsed / runtime, and a scrubbable seek bar.
 
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
 import { formatChannelNumber, formatDuration } from '../catalog'
 import { VolumeControl } from './VolumeControl'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
+import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
+import { ProgressHairline } from './ProgressHairline'
 
 export interface VodTransport {
   position: number
@@ -46,17 +48,40 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
   // synopsis; the synopsis still lives in the Info panel.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const subtitle = data?.now?.title || stream.description
+  // Live thumb between the identity (logo + number) and the text block — what is on
+  // screen right now, straight off the channel's own feed. A 404 is the ordinary "no
+  // thumbnail" answer (see thumbBase in the SDK). The probe happens OFF-LAYOUT
+  // (absolute + opacity 0, real dims): the bar is the zap-flash surface and the slot
+  // mounting before the 404 answer would snap the text block sideways on every zap
+  // to a thumb-less channel. Only a decoded frame (onLoad) lets the thumb take
+  // layout space; the latch re-arms per channel.
+  const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
+  const [thumbShown, setThumbShown] = useState(false)
+  useEffect(() => { setThumbShown(false) }, [stream.thumbBase])
   return (
     <div className="nowplaying">
       <div className="np-info">
         {stream.logo && <img className="np-logo" src={stream.logo} alt="" />}
         <span className="np-number">{formatChannelNumber(number)}</span>
+        {thumbUri && (
+          <img
+            className={'np-live-thumb' + (thumbShown ? '' : ' probe')}
+            src={thumbUri}
+            alt={thumbShown ? t('live.livePreview', { title: stream.title ?? '' }) : ''}
+            onLoad={() => setThumbShown(true)}
+            onError={() => { setThumbShown(false); onThumbError() }}
+          />
+        )}
         <span className="np-main">
           <span className="np-title-line">
             <span className="np-title">{stream.title}</span>
             {stream.isLive && <span className="np-live">{t('common.liveBadge')}</span>}
           </span>
           {subtitle && <span className="np-desc">{subtitle}</span>}
+          {/* Program progress under the title/now line — the zap-flash surface, so a
+              zap instantly shows how far into the program the channel is. Guide-less
+              channels render it transparent (same bar height either way). */}
+          {!vod && <ProgressHairline program={data?.now} className="np-hairline" />}
         </span>
         <span className="np-divider" />
         <span className="np-clock">{clock}</span>

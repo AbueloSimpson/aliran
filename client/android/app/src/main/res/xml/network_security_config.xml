@@ -1,9 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The Bare worklet serves feeds and catalog art on loopback over plain HTTP
-     (http://127.0.0.1:<port>/...), which Android blocks by default since API 28.
-     Permit cleartext ONLY to loopback (plus the emulator's host aliases, used by
-     Metro in dev builds); all other traffic keeps the platform HTTPS-only default. -->
+<!-- DELIBERATE BLANKET CLEARTEXT POSTURE. This release config permits plain-HTTP
+     (non-TLS) traffic to EVERY host, not just loopback. It is a conscious operator
+     decision so the app can play redirect/event streams a provider serves over http
+     rather than https (the source-scoped allowCleartext exemption in the panel is what
+     lets those http URLs into the catalog; this is the client half that lets them play).
+
+     SECURITY TRADEOFF, named honestly: cleartext stream traffic is unencrypted and can
+     be read or tampered with by anyone on the network path (MITM). We accept that for
+     the stream media here; it is not a "strict" config and does not pretend to be.
+
+     minSdk is 24 and a networkSecurityConfig is present, so on every supported device the
+     platform HONORS this file and IGNORES the manifest android:usesCleartextTraffic
+     attribute — the base-config below is authoritative regardless of the release
+     manifest placeholder's value. The loopback domain-config is kept explicit (the Bare
+     worklet serves feeds and catalog art on http://127.0.0.1:<port>, and Metro on the
+     emulator host aliases in dev); base-config already covers it, so this is documentation
+     more than mechanism. The DEBUG variant keeps its own broader override. -->
 <network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>

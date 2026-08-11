@@ -3,7 +3,8 @@
 // client/src (white-label acceptance, S18). Sizing follows the 10-foot guidance in
 // Google's TV design system (developer.android.com/design/ui/tv): larger type scale,
 // overscan-safe margins, and a three-part focus grammar — border box (menu icons),
-// accent underline (category rail), light row fill (lists).
+// accent underline (category rail), light row fill (lists) — plus, on TV only, a
+// slight scale lift (focusScale) on the focused list row.
 import { Platform } from 'react-native'
 import { loadServiceDescriptor, type ServiceDescriptor } from './config'
 
@@ -51,6 +52,13 @@ export function makeTheme (descriptor?: Pick<ServiceDescriptor, 'branding'>) {
     colors,
     // D-pad focus ring for the 10-foot UI (invisible border keeps layout stable on phone).
     focusRing: isTV ? 3 : 0,
+    // Focused-row scale lift (10-foot polish) — 1 on phone, where touch has no focus
+    // state to announce. Skipped entirely under reduced motion (src/motion.ts).
+    // 1.025 is the Android TV focus-system value for LARGE elements (bigger element →
+    // smaller scale); a full-width list row is one. It also keeps the overhang on a
+    // ~730px panel row to ~9px/side, inside what the panel can absorb without the
+    // FlatList clipping the lift (device-verify on the emulator).
+    focusScale: isTV ? 1.025 : 1,
     // Android TV uses a "10-foot" UI: larger type, more spacing, focus rings.
     isTV,
     spacing: (n: number) => px(n * (isTV ? 12 : 8)),

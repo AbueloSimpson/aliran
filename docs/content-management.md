@@ -184,12 +184,50 @@ POST /api/sources {"name":"events","url":"https://provider.example/live.m3u8","f
   the id is a slug of the display name (prefix + slug, 64 characters at most, with
   `-2`/`-3` on a clash). A retitled event becomes a new id — this is normal for
   live-event lists, and the prune-and-grant machinery handles the churn.
-- **No program guide.** A playlist is not an EPG, so `epgUrl`/`epgId` stay unset. Set
-  them by hand on a channel if you have a compatible guide (see EPG below).
 - **Group filter.** `groups` selects which `group-title`s this source takes. It is a
   list (or a comma-separated string), matched case-insensitive and exact. Leave it
   empty (or unset) to take every group. Filtered entries are not errors — the sync
   report counts them separately as `filtered`.
+- **Name filters.** `titleInclude` / `titleExclude` select one level below the group,
+  on the entry's **display name** — the field a provider actually uses when a single
+  group carries the whole day (`[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed`).
+  Both are lists (or comma-separated strings) of case-insensitive **substrings**, never
+  regular expressions. `titleInclude` takes an entry only if its name contains at least
+  one of them; `titleExclude` drops an entry whose name contains one of them and **wins**
+  over `titleInclude`, so "take the MLB games, but never the dead `(WEBCAST)` feeds"
+  reads exactly as written. Each rule is 2–64 characters and may not contain a comma —
+  the comma separates rules, and every surface that shows the list joins it with commas.
+  Leave both empty for no name filtering; their leftovers land in the same `filtered`
+  count as the group filter's. A filter that matches **nothing** correctly prunes the
+  whole rail (the feed *is* the membership), so the report flags that one shape as
+  `emptiedByFilter` — check the rule against the playlist before assuming the provider
+  went dark.
+- **Program guide (opt-in, `epg`).** A playlist *does* name its guide: the `#EXTM3U`
+  header carries `url-tvg="…"` (also spelled `x-tvg-url` / `tvg-url`), and each entry's
+  `tvg-id` is that guide's channel id. Set `epg: true` on the source (dashboard
+  **Program guide**, `--epg`, or the API/MCP field) and the panel keeps each entry's
+  `tvg-id` as the channel's **`epgId`** — the field the [EPG service](epg-service.md)
+  matches on to deliver the schedule over P2P. The default is **off**, and both guide
+  fields are m3u-only (a JSON source refuses them: its own entry ids are already its
+  guide ids).
+    - **The header address is reported, never stored.** The panel reads `url-tvg` and
+      shows it in the sync report as the guide the playlist declares, but puts it on
+      **no** channel: it points at an XMLTV document, while the `epgUrl` an app fetches
+      must be the provider-JSON shape described under **EPG** below. Register that
+      address in your EPG service instead.
+    - **`epgUrl` on the source** is the separate, operator-set pointer that *is* written
+      to every imported channel. Set it only if you publish a compatible JSON guide
+      (https required — the viewer's device fetches it). `""` clears it, and turning
+      `epg` off clears it too.
+    - **Leave `epg` off for an event playlist.** Those write one placeholder `tvg-id`
+      across the whole day (`Soccer.Dummy.us` on every match, with filler programmes
+      behind it), and the EPG service takes the **first** match on a duplicate — a
+      shared id would collapse a hundred events onto one guide entry. As a guard the
+      panel refuses any `tvg-id` it finds on more than one imported entry, or on a
+      channel outside this source (another source, or one you made by hand): the
+      incumbent keeps the id, the newcomer gets none, and the sync report counts them
+      as `epgSkipped`. A mistaken opt-in therefore shows up as **no** guide, never a
+      wrong one.
 
 **Mixed playlists (one URL, many categories).** A provider list often mixes event
 entries with regular channels that belong in different rails. Add **one source per
@@ -203,6 +241,23 @@ POST /api/sources {"name":"sports","url":"https://provider.example/all.m3u8","fo
 
 Ids stay disjoint by prefix, so the sources never collide; each one syncs and prunes
 on its own; and the shared ETag keeps the extra fetches cheap.
+
+**One group, a rail per sport (child rails).** When the provider puts the whole day
+inside *one* group and writes the sport into the **name**, the group filter cannot
+reach it — split with disjoint `titleInclude` instead, same one-URL shape, and give
+each source a two-level category (`Parent/Child` is already a child rail in the apps,
+so no client change is needed):
+
+```bash
+POST /api/sources {"name":"mlb","url":"https://provider.example/all.m3u8","format":"m3u","groups":["Live Events"],"titleInclude":["[MLB]"],"category":"Live Events/MLB","prefix":"mlb."}
+POST /api/sources {"name":"nfl","url":"https://provider.example/all.m3u8","format":"m3u","groups":["Live Events"],"titleInclude":["[NFL]"],"category":"Live Events/NFL","prefix":"nfl."}
+POST /api/sources {"name":"events","url":"https://provider.example/all.m3u8","format":"m3u","groups":["Live Events"],"titleExclude":["[MLB]","[NFL]"],"category":"Live Events","prefix":"ev."}
+```
+
+Keep the rules **disjoint**: an entry that two sources both take becomes two channels
+(the prefixes keep the ids apart, so they never fight — you simply get it twice). Add
+dead provider tags such as `(WEBCAST)` to `titleExclude` to drop entries that never
+play.
 
 **Sync policy:**
 
@@ -249,10 +304,12 @@ channel or another source is skipped and reported as a conflict.
 **EPG (program guide):** provider feeds often carry a schedule per channel (an
 `epg` array of `{title, start, stop}` with ISO times). It is deliberately **not**
 imported into the catalog. The replicated Hyperbee is append-only, so a day of
-schedule per category would grow every client's store forever. Instead, each
-imported record carries two pointers, `epgUrl` (the same feed URL) and `epgId`
-(the channel's id inside it), and **the app fetches the guide directly over
-https, on demand**:
+schedule per category would grow every client's store forever. Instead, each record
+imported **from a JSON feed** carries two pointers, `epgUrl` (the same feed URL) and
+`epgId` (the channel's id inside it), and **the app fetches the guide directly over
+https, on demand**. (A playlist source carries pointers only when you opt in — see
+**Program guide** under [Playlist (M3U) sources](#playlist-m3u-sources) — and its
+`epgId` is the half that matters, because the guide reaches viewers over P2P.)
 
 - Opening a channel's **Info panel** shows a live **Now / Up next** guide (the
   current program with an elapsed bar, then the next few) built from the feed.
@@ -274,7 +331,10 @@ and the same guide lights up. Leave them unset for the placeholder.
 **Guide over P2P (optional):** the standalone EPG service can publish the same
 schedules into a replicated guide drive, and apps then fetch the guide
 peer-to-peer FIRST and use the https path as the fallback. The `epgId` field
-above is also what maps a provider channel to its stream there. See
+above is also what maps a provider channel to its stream there — which is why a
+playlist source with `epg: true` gets a real guide from its `tvg-id`s alone, with
+no `epgUrl` on the channels at all. Register the guide document the playlist
+declares (the sync report shows the address) as a provider in the service. See
 [epg-service.md](epg-service.md).
 
 ## Channel ingest & transcode
