@@ -39,3 +39,19 @@ export function visibleStreams (streams: Stream[]): Stream[] {
 export function needsPin (s: Stream | null | undefined): boolean {
   return !!s?.restricted && hasPin() && !sessionUnlocked
 }
+
+// The channels the app may start BY ITSELF, with no viewer action behind the choice:
+// the cold-start hero, and the fallback after a DECLINED PIN challenge. Both used to
+// pick over the WHOLE list, which on "PIN set + hide off" — restricted channels listed
+// on purpose, gated rather than hidden — can hand back a restricted channel: the app
+// tuned it unprompted, and cancelling the prompt swapped in a DIFFERENT restricted one
+// (found 2026-08-11). An automatic pick has nothing to gate, so it must not make one.
+//
+// Feed this to pickHero() at the call site rather than importing it here: this module
+// stays import-free so tools/desktop-parental-test.mjs can transpile the desktop twin
+// on its own. An EMPTY result — every visible channel locked — means play nothing and
+// leave the screen on its empty state; the viewer picks a channel and play() gates
+// that, the one guarded path into playback. After markUnlocked() this is everything.
+export function autoTunable (streams: Stream[]): Stream[] {
+  return streams.filter((s) => !needsPin(s))
+}

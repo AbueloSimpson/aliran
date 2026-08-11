@@ -26,7 +26,7 @@ import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { channelNumbers, categoryModel, isVod, pickHero, splitCategory, subLabel, zapOrder } from '../catalog'
 import { HlsVideo, type HlsVideoHandle, type MediaTrack, type TuneEvent } from '../components/HlsVideo'
-import { markUnlocked, needsPin, visibleStreams } from '../parental'
+import { autoTunable, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
 import { TunePill, type TunePillPhase } from '../components/TunePill'
 import { ChannelList } from '../components/ChannelList'
@@ -218,9 +218,11 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // First streams push after a cold navigation: start the hero channel.
+  // First streams push after a cold navigation: start the hero channel. The hero is
+  // picked over autoTunable() alone: the app must never tune a PIN-gated channel on
+  // its own initiative, and nothing tunable means nothing plays.
   useEffect(() => {
-    if (!playingId && !pinTarget && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
+    if (!playingId && !pinTarget && streams.length) setPlayingId(pickHero(autoTunable(streams))?.id ?? null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
@@ -492,8 +494,11 @@ export function LiveScreen ({ onExit, initialStreamId, onGuide }: {
           }}
           onClose={() => {
             setPinTarget(null)
-            // The mount-time case: nothing playing yet — fall back to the hero.
-            if (!playingIdRef.current && streams.length) setPlayingId(pickHero(streams)?.id ?? streams[0].id)
+            // The mount-time case: nothing playing yet — fall back to the hero. The
+            // fallback is PIN-free by construction (autoTunable): declining the
+            // challenge must not hand over some OTHER restricted channel instead, and
+            // when they are all locked it leaves nothing playing rather than re-asking.
+            if (!playingIdRef.current && streams.length) setPlayingId(pickHero(autoTunable(streams))?.id ?? null)
           }}
         />
       )}
