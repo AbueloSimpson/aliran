@@ -128,8 +128,12 @@
 //                                        boot, because the stored record names its own
 //                                        operator and a resume may be what builds the
 //                                        engine. Answers 'signin-resumed'.
-//        { type:'vault-reply', id, ok, data? }     -> the host's answer to a
-//                                        'vault-request' (below). `data` is base64.
+//        { type:'vault-reply', id, ok, data?, code? }  -> the host's answer to a
+//                                        'vault-request' (below). `data` is base64 on ok;
+//                                        `code` is the key store's reason on failure, and
+//                                        it is load-bearing: only 'locked'/'bad-blob' are
+//                                        evidence that a stored sign-in is unreadable and
+//                                        may be erased.
 //   out: { type:'ready' } | { type:'streams', streams, vod? }   (on login, and pushed
 //                                        again live whenever the panel edits the catalog
 //                                        — same shape; the Home screen re-renders on it.
@@ -229,16 +233,25 @@
 //      Android Keystore — hardware-held on any device with a keymaster, and unreadable by
 //      this app or any other. The wrapped result comes back and is stored beside the box.
 //
-// The account's two private keys therefore never leave this runtime, and the only secret
+// The account's two private keys therefore stay in THIS runtime's heap, and the only secret
 // that crosses the IPC boundary is a file key that is inert without a file the other side
 // never sees. Compare the "remember me" password three paragraphs up, which is plaintext
 // on the same disk: this is the first thing in the app that is not.
 //
-// EVERY FAILURE ENDS THE SAME WAY — erase what is held and let the app show the sign-in
-// screen. No key store, a key that no longer opens the box, a box that does not parse, an
-// operator the device is no longer on, or a panel that refuses the account: five causes,
-// one outcome, and never a half-signed-in state. See docs/security-model.md, "Account
-// keys at rest", for what the Keystore does and does not buy on a television.
+// (That is a claim about one wire, not about a sandbox — Bare runs on a thread inside the
+// app's own process, sharing its UID and its files. What it buys is that the keys never
+// enter the RN message stream, and so never the debug logger, a host listener, a screen's
+// state or a problem report. See signin-vault.mjs, which says the same thing at length.)
+//
+// TWO OUTCOMES, NOT ONE, AND THE DIFFERENCE IS THE WHOLE DESIGN. A failure that PROVES the
+// material is dead — a key store that says these bytes will never open again, a box that
+// fails its MAC, an operator this device is no longer on, a panel that refuses the account
+// — erases and shows the sign-in screen. Everything else (a key store that did not answer,
+// a swarm still dialling, a record that has not replicated yet) KEEPS what is held and asks
+// again, because erasing is the only irreversible act here and its cost is a viewer walking
+// to another room for a phone. There is no half-signed-in state in either direction. See
+// docs/security-model.md, "Account keys at rest", for what the Keystore does and does not
+// buy on a television.
 
 /* global BareKit, Bare */
 import './globals.mjs' // FIRST: polyfills TextEncoder/TextDecoder/crypto for the Bare worklet
@@ -254,11 +267,20 @@ import { resolvePairingCode } from '@aliran/player-sdk/pairing.js'
 // television (tools/signin-vault-test.mjs).
 import {
   SIGNIN_VAULT_VERSION, FILE_KEY_BYTES,
-  gateSignInKeys, gateVaultRecord, sealSignIn, openSignIn, terminalSignInError
+  gateSignInKeys, gateVaultRecord, sealSignIn, openSignIn,
+  terminalSignInError, accountNotReplicatedYet
 } from './signin-vault.mjs'
 
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
+
+// Unref'd throughout: a pending wait must never be the reason a worklet stays alive.
+function sleep (ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms)
+    if (typeof t.unref === 'function') t.unref()
+  })
+}
 
 // Last resort: an uncaught exception in the worklet otherwise SIGABRTs the WHOLE app
 // process (bare-kit). Surface it over IPC instead; the store-recovery and player
@@ -414,9 +436,50 @@ function pinDigest (saltHex, pin) {
   return b4a.toString(hcrypto.hash(b4a.from(saltHex + '|aliran-parental|' + pin)), 'hex')
 }
 
+/**
+ * Replace the prefs file, crash-safely: a sibling temp file, then a rename over the target.
+ *
+ * A plain writeFileSync onto the live path is destructive from its first byte — the file is
+ * truncated, THEN refilled — and this one file holds everything a device needs to be
+ * itself: the saved password, the device id (which is the panel's handle on this install),
+ * favorites, the parental PIN digest, the VOD arrays, and now the sealed sign-in. Anything
+ * that stops the process in that window loses all of them together, and a television is a
+ * device that gets its power cut rather than shut down.
+ *
+ * NOT @aliran/core/atomic-write.js, which is exactly this recipe and is where it belongs.
+ * That module imports node's `fs`; bare-pack resolves `fs` to `builtin:fs`, and the
+ * react-native-bare-kit worklet runtime carries no builtins table, so loading it SIGABRTs
+ * the whole app process (see client/backend/bare-builtins.cjs, which says so). What is
+ * repeated here is the recipe against bare-fs, and only the recipe.
+ *
+ * @returns {boolean} true when the new contents are on disk. The answer is not decoration:
+ *   forgetSignIn() is an ERASE, and an erase that silently did not happen is the one
+ *   failure in this file a caller must never report as success.
+ */
 function writePrefs (prefs) {
-  try { fs.writeFileSync(prefsPath(), b4a.from(JSON.stringify(prefs))) } catch (err) {
+  const file = prefsPath()
+  const tmp = file + '.tmp'
+  let fd = null
+  try {
+    const data = b4a.from(JSON.stringify(prefs))
+    // 0600 from creation, and carried onto the live path by the rename: this file holds a
+    // plaintext password and a sealed account record, and open()'s mode applies only to a
+    // file it CREATES, so a stale temp from an earlier crash must not donate a looser one.
+    fd = fs.openSync(tmp, 'w', 0o600)
+    for (let len = 0; len < data.byteLength;) len += fs.writeSync(fd, len ? data.subarray(len) : data)
+    // Ordering is the rename's job; DURABILITY is this. Without it a box that loses power
+    // can come back with the renamed file and unwritten blocks — the zero-filled prefs this
+    // whole function exists to prevent. Best-effort: a platform that refuses still leaves
+    // the previous file whole.
+    try { fs.fsyncSync(fd) } catch {}
+    fs.closeSync(fd); fd = null
+    fs.renameSync(tmp, file)
+    return true
+  } catch (err) {
+    if (fd !== null) { try { fs.closeSync(fd) } catch {} }
+    try { fs.unlinkSync(tmp) } catch {} // a failed write leaves no litter
     send({ type: 'error', message: 'prefs write failed: ' + String((err && err.message) || err) })
+    return false
   }
 }
 
@@ -450,56 +513,114 @@ function ensureDeviceId () {
 // --- the sign-in vault (see "The sign-in vault" in the header) -------------------------
 
 // A Bare worklet has no bridge to a native module, so the Android Keystore is reachable
-// only through the HOST. These four lines are that round trip: a request goes out, a
-// reply comes back against its id, and a reply that never comes resolves null rather than
-// leaving a television blocked on a screen for ever. Null is a first-class answer
-// throughout — "this device cannot keep a sign-in" and "what it kept cannot be read" are
-// both ordinary outcomes, not errors.
+// only through the HOST. These lines are that round trip: a request goes out, a reply comes
+// back against its id, and a reply that never comes settles on its own rather than leaving
+// a television blocked on a screen for ever.
+//
+// AN ANSWER IS ALWAYS { ok, data?, code? }, never a bare null. The read side's response to
+// "this cannot be unwrapped" is to erase the account this device is holding, and only two
+// of the key store's codes are evidence that erasing is right — so "the host said no" and
+// "the host did not answer" must be different values here, or a busy RN thread at boot
+// destroys a credential (see RETRYABLE below).
 const vaultPending = new Map()
 let vaultSeq = 0
 // Generous for a key-store call (they are milliseconds) because the cost of being wrong
 // is asymmetric: too short strands a device that would have succeeded, too long delays a
 // splash screen that is already spinning.
 const VAULT_REPLY_MS = 10000
+// The host did not answer inside VAULT_REPLY_MS. Not a key-store verdict — the RN thread
+// is at its busiest at exactly the moment a resume runs — so it can never erase.
+const VAULT_NO_ANSWER = 'no-answer'
+// Key-store failures that say nothing about whether the sealed bytes are still good:
+// no module here, a store that would not open, an unrecognised code, and the silence
+// above. Everything else ('locked', 'bad-blob') is proof the box will never open again.
+const VAULT_RETRYABLE = new Set([VAULT_NO_ANSWER, 'absent', 'unavailable', 'unknown'])
 
 function vaultCall (op, data) {
   return new Promise((resolve) => {
     const id = 'v' + (++vaultSeq)
-    const timer = setTimeout(() => { if (vaultPending.delete(id)) resolve(null) }, VAULT_REPLY_MS)
+    const timer = setTimeout(() => {
+      if (vaultPending.delete(id)) resolve({ ok: false, code: VAULT_NO_ANSWER })
+    }, VAULT_REPLY_MS)
     if (typeof timer.unref === 'function') timer.unref()
     vaultPending.set(id, (v) => { clearTimeout(timer); resolve(v) })
     send({ type: 'vault-request', op, id, data })
   })
 }
 
-// Erase the kept sign-in. Called on sign-out and on every failure that proves the record
-// is dead — a written record that cannot produce a session is not a convenience any more,
-// only key material sitting on a disk.
-function forgetSignIn () {
+// Erase the kept sign-in. Called on sign-out, on leaving the operator it belongs to, and on
+// every failure that PROVES the record is dead — a written record that cannot produce a
+// session is not a convenience any more, only key material sitting on a disk.
+//
+// Answers whether the erase actually landed. It used to answer nothing, over a writePrefs
+// that swallowed its own failure, so every caller — including the one that runs after an
+// operator revokes an account — reported success while the record was possibly still there.
+// A failed erase is the loudest thing in this file: it is the difference between a device
+// that has forgotten an account and one that only says it has.
+function forgetSignIn (why) {
   const prev = readPrefs()
-  if (!prev.signin) return
-  writePrefs({ ...prev, signin: null })
+  if (!prev.signin) return true
+  const ok = writePrefs({ ...prev, signin: null })
   sendPrefs()
+  send(ok
+    ? { type: 'status', state: 'signin:erased', message: why || 'the kept sign-in was erased' }
+    : { type: 'status', state: 'signin:erase-failed', message: 'the kept sign-in could NOT be erased — it may still be on this device' })
+  return ok
 }
+
+// Every sign-out, service change, or erase bumps this. persistSignIn() reads it before it
+// waits on the key store and again before it writes, because that wait is up to ten seconds
+// long and a viewer can sign out inside it — and the write is a whole-object replace, so it
+// would put the account back on a television that had just been signed out of it.
+let vaultEpoch = 0
 
 // Keep what a handover just delivered. Best-effort BY DESIGN: the device is already
 // signed in for this session either way, so nothing here may throw into the engine's
 // event emitter, and a failure costs the viewer a repeat handover after the next restart
 // rather than a broken sign-in now. It is reported as a status so it is visible in a
 // logcat without anybody having to guess.
+//
+// The engine emits 'signin-keys' ONCE (sdk/player.js _applySignIn) and nothing waits for
+// this function, so a wrap that is merely slow used to end the story: nothing kept, no
+// retry, and a set that looks signed in and silently is not. The material is still in this
+// scope, so the retry costs nothing and is the whole fix.
+const PERSIST_WRAP_TRIES = 3
+const PERSIST_WRAP_STEP_MS = 1500
+
 async function persistSignIn (keys) {
   const rec = gateSignInKeys(keys)
   if (!rec) return send({ type: 'status', state: 'signin:not-kept', message: 'the sign-in this device received was not storable' })
+  const epoch = vaultEpoch
   try {
     const fileKey = hcrypto.randomBytes(FILE_KEY_BYTES)
     const box = sealSignIn(fileKey, rec)
     // The ONLY thing that crosses to the host: 32 random bytes that open nothing without
     // the box above, which the host never sees.
-    const wrapped = await vaultCall('wrap', b4a.toString(fileKey, 'base64'))
-    if (!wrapped) return send({ type: 'status', state: 'signin:not-kept', message: 'no key store on this device — this sign-in ends with the app' })
-    writePrefs({ ...readPrefs(), signin: { v: SIGNIN_VAULT_VERSION, box, key: wrapped, at: Date.now() } })
+    const b64 = b4a.toString(fileKey, 'base64')
+    let res = null
+    for (let i = 1; i <= PERSIST_WRAP_TRIES; i++) {
+      if (vaultEpoch !== epoch) return send({ type: 'status', state: 'signin:not-kept', message: 'signed out while this sign-in was being kept' })
+      res = await vaultCall('wrap', b64)
+      if (res.ok || !VAULT_RETRYABLE.has(res.code)) break
+      if (i < PERSIST_WRAP_TRIES) await sleep(PERSIST_WRAP_STEP_MS)
+    }
+    if (!res.ok) {
+      return send({
+        type: 'status',
+        state: 'signin:not-kept',
+        message: 'the key store did not seal this sign-in (' + res.code + ') — it ends with the app'
+      })
+    }
+    // THE RE-CHECK, and the reason it is here rather than at the top. Everything above can
+    // take ten seconds per attempt; 'creds-clear' and 'service-clear' are one IPC line and
+    // land in the middle of it. Writing anyway produced a signed-out television holding a
+    // resumable credential, which is the exact state a sign-out exists to prevent.
+    if (vaultEpoch !== epoch) return send({ type: 'status', state: 'signin:not-kept', message: 'signed out while this sign-in was being kept' })
+    const ok = writePrefs({ ...readPrefs(), signin: { v: SIGNIN_VAULT_VERSION, box, key: res.data, at: Date.now() } })
     sendPrefs()
-    send({ type: 'status', state: 'signin:kept' })
+    send(ok
+      ? { type: 'status', state: 'signin:kept' }
+      : { type: 'status', state: 'signin:not-kept', message: 'the prefs file refused the write — this sign-in ends with the app' })
   } catch (err) {
     send({ type: 'status', state: 'signin:not-kept', message: String((err && err.message) || err) })
   }
@@ -513,35 +634,79 @@ let resuming = false
 // reach its operator must say it cannot, not spin.
 const RESUME_CONNECT_MS = 25000
 const RESUME_STEP_MS = 1000
-// The one transient this retries INSIDE the worklet. It is thrown before any RPC leaves
-// the device (sdk/player.js checks for a panel socket first), so retrying it costs the
-// panel nothing and cannot walk the account into a login lockout. Every other failure is
-// answered once and left to the app, which has its own bounded retry.
+// The one FREE transient. It is thrown before any RPC leaves the device (sdk/player.js
+// checks for a panel socket first), so retrying it costs the panel nothing and cannot walk
+// the account into a login lockout.
 const NOT_CONNECTED = /not connected to panel/i
+// …and the one that is NOT free. A bare 'unknown user' means the account record has not
+// replicated into this device's local replica yet (see accountNotReplicatedYet), and the
+// only way to ask again is to run the login again — which reaches the panel and counts
+// against its throttle: panel/src/rpc.js locks a username+peer out for LOCKOUT_SECONDS
+// (900 s by default) after LOCKOUT_THRESHOLD (10) attempts inside the window, whether they
+// failed or not. So the retries are few and spaced: at most three logins per resume, and
+// the screen above allows two resumes per boot, which leaves the ceiling at six.
+const RESUME_RECORD_TRIES = 3
+const RESUME_RECORD_STEP_MS = 3000
 
 async function resumeSignIn (msg) {
   const tag = typeof msg.tag === 'string' ? { tag: msg.tag } : {}
-  const answer = (o) => { resuming = false; send({ type: 'signin-resumed', ...o, ...tag }) }
+  // Re-entry is refused BEFORE the latch is taken, so this early return can never clear a
+  // latch it did not set.
   if (resuming) return send({ type: 'signin-resumed', ok: false, error: 'offline', retry: true, message: 'a sign-in is already being resumed', ...tag })
   resuming = true
+  let answered = false
+  const answer = (o) => {
+    if (answered) return
+    answered = true
+    send({ type: 'signin-resumed', ...o, ...tag })
+  }
+  try {
+    await runResume(msg, answer)
+  } catch (err) {
+    // Nothing below is expected to throw, and a screen is blocked on the reply — so the
+    // catch is here rather than at the dispatch site, where it could only send a SECOND
+    // 'signin-resumed' after one had already gone out. answer() is idempotent; this is not.
+    answer({ ok: false, error: 'offline', retry: true, message: String((err && err.message) || err) })
+  } finally {
+    // THE LATCH IS RELEASED HERE AND NOWHERE ELSE. It used to be cleared by answer(), so a
+    // throw on any path that had not answered yet left it set for the life of the process
+    // — and every later resume then answered 'a sign-in is already being resumed', which
+    // the splash screen spends its whole retry budget on before showing a sign-in screen.
+    resuming = false
+  }
+}
 
+async function runResume (msg, answer) {
   const stored = readPrefs().signin
   if (!stored) return answer({ ok: false, error: 'none' })
 
-  // 1. The key store opens the file key, or it does not. "Does not" covers a reinstall, a
-  //    keystore reset and a device that never had one — all of them mean the box beside
-  //    it is now noise.
-  const fileKeyB64 = await vaultCall('unwrap', stored.key)
-  if (!fileKeyB64) { forgetSignIn(); return answer({ ok: false, error: 'locked' }) }
+  // 1. The key store opens the file key, or it does not — AND WHY IT DID NOT DECIDES
+  //    WHETHER AN ACCOUNT IS DESTROYED. 'locked' and 'bad-blob' are the key store saying
+  //    these bytes will never open again (a reinstall, a keystore reset, a wiped alias):
+  //    the box beside them is noise and erasing is the honest thing to do. Everything else
+  //    — no module, a store that would not open, silence from a busy RN thread at boot —
+  //    is a condition of the moment, and this branch used to treat all of them alike.
+  const un = await vaultCall('unwrap', stored.key)
+  if (!un.ok) {
+    if (VAULT_RETRYABLE.has(un.code)) {
+      return answer({ ok: false, error: 'offline', retry: true, message: 'the key store did not answer (' + un.code + ')' })
+    }
+    forgetSignIn('the key store can no longer open this record (' + un.code + ')')
+    return answer({ ok: false, error: 'locked' })
+  }
 
-  // 2. The file key opens the box, or it does not.
-  const rec = openSignIn(b4a.from(fileKeyB64, 'base64'), stored.box)
-  if (!rec) { forgetSignIn(); return answer({ ok: false, error: 'corrupt' }) }
+  // 2. The file key opens the box, or it does not. Authenticated encryption, so this one
+  //    really is proof: a box that fails its MAC was not written by this device.
+  const rec = openSignIn(b4a.from(un.data, 'base64'), stored.box)
+  if (!rec) { forgetSignIn('the stored sign-in did not open'); return answer({ ok: false, error: 'corrupt' }) }
 
   // 3. The record names its operator, and this device may have been pointed at another
   //    one since ("Change service…"). Signing an account back in to the wrong panel is
   //    not a thing to attempt and find out about.
-  if (connectedKey && connectedKey !== rec.panelPubKey) { forgetSignIn(); return answer({ ok: false, error: 'service' }) }
+  if (connectedKey && connectedKey !== rec.panelPubKey) {
+    forgetSignIn('this device is on a different operator now')
+    return answer({ ok: false, error: 'service' })
+  }
 
   let p = null
   try {
@@ -560,6 +725,7 @@ async function resumeSignIn (msg) {
   }
 
   const deadline = Date.now() + RESUME_CONNECT_MS
+  let recordTries = 0
   for (;;) {
     try {
       await p.signInWithKeys(rec.username, { priv: rec.priv, authPriv: rec.authPriv })
@@ -568,11 +734,23 @@ async function resumeSignIn (msg) {
       const message = String((err && err.message) || err)
       // The operator said no — disabled account, device limit, a password rotation that
       // replaced the account's keypair. Erase: these keys will never work again.
-      if (terminalSignInError(err)) { forgetSignIn(); return answer({ ok: false, error: 'rejected', message }) }
+      if (terminalSignInError(err)) {
+        forgetSignIn('the operator refused this device: ' + message)
+        return answer({ ok: false, error: 'rejected', message })
+      }
+      // The signed record has not replicated into this device's copy yet. The handover
+      // path waits up to 30 s for exactly this before it logs in (sdk/player.js
+      // _applySignIn); the resume path did not wait at all, and classified the result as
+      // "the account is gone" — so a cold start over a cold DHT could erase a working
+      // account on its first attempt. Ask again, a few times, slowly.
+      if (accountNotReplicatedYet(err) && ++recordTries < RESUME_RECORD_TRIES && Date.now() < deadline) {
+        await sleep(RESUME_RECORD_STEP_MS)
+        continue
+      }
       if (!NOT_CONNECTED.test(message) || Date.now() >= deadline) {
         return answer({ ok: false, error: 'offline', retry: true, message })
       }
-      await new Promise((resolve) => { const t = setTimeout(resolve, RESUME_STEP_MS); if (typeof t.unref === 'function') t.unref() })
+      await sleep(RESUME_STEP_MS)
     }
   }
 }
@@ -621,13 +799,15 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   player.on('source-changed', (e) => send({ type: 'source-changed', ...e }))
   player.on('feed-changed', (e) => send({ type: 'feed-changed', ...e }))
   player.on('zap-prefetch', (e) => send({ type: 'zap-prefetch', ...e }))
-  // OTA app updates: download progress/outcome relay 1:1 (the check reply is sent by
-  // its own dispatch case — it needs the request's tag).
   // The account material a RECEIVED handover delivered. Fires once, and only on a build
   // that asked for it (remote.keepSignIn — televisions). It NEVER reaches send(): it is
   // consumed here, sealed, and only the sealed box touches the disk. That asymmetry is
   // the point of the whole vault — every other engine event on this list is relayed
   // straight out over the IPC channel, and this is the one that must not be.
+  //
+  // Nothing awaits persistSignIn(), and nothing can: emit() is synchronous and the engine
+  // has already put "signed in" on the screen by the time the key store answers. So the
+  // retry that makes a slow wrap survivable lives inside persistSignIn, not out here.
   player.on('signin-keys', (keys) => { persistSignIn(keys).catch(() => {}) })
   // OTA app updates: download progress/outcome relay 1:1 (the check reply is sent by
   // its own dispatch case — it needs the request's tag).
@@ -700,13 +880,23 @@ IPC.on('data', (data) => {
       // sign-out that cleared one of them would put a set straight back into the account
       // on its next start. One write clears both; the host destroys the Keystore key that
       // sealed the second one at the same time (sdk/react-native clearCredentials).
+      //
+      // The epoch bump comes FIRST: a persist that is mid-flight in the key store must see
+      // it before it writes, or the sign-out is undone a few seconds after it happened.
+      vaultEpoch++
       writePrefs({ ...readPrefs(), creds: null, signin: null })
       sendPrefs()
     } else if (msg.type === 'service-save' && msg.service && /^[0-9a-f]{64}$/.test(msg.service.panelPubKey)) {
       writePrefs({ ...readPrefs(), service: { panelPubKey: msg.service.panelPubKey, ...(typeof msg.service.name === 'string' ? { name: msg.service.name } : {}) } })
       sendPrefs()
     } else if (msg.type === 'service-clear') {
-      writePrefs({ ...readPrefs(), service: null })
+      // Leaving the operator ALSO abandons the sign-in that operator granted: a kept record
+      // names its panel, and a device that has walked away from that panel can never use it
+      // again. It used to be left on the disk until some later boot happened to attempt a
+      // resume and notice — key material outliving the only relationship it meant anything
+      // in. The Keystore key goes with it (sdk/react-native clearService).
+      vaultEpoch++
+      writePrefs({ ...readPrefs(), service: null, signin: null })
       sendPrefs()
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       writePrefs({ ...readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
@@ -793,13 +983,16 @@ IPC.on('data', (data) => {
         ...(typeof msg.tag === 'string' ? { tag: msg.tag } : {})
       }))
     } else if (msg.type === 'vault-reply' && typeof msg.id === 'string') {
-      // The host's answer to a 'vault-request'. ok=false and a missing/!string `data`
-      // both resolve null, which is the caller's "this device cannot keep a sign-in" /
-      // "what it kept cannot be read" — never an error, never a throw.
+      // The host's answer to a 'vault-request'. A failure carries the key store's own code
+      // (sdk/react-native/src/secure-key.ts), and it is carried BECAUSE the unwrap side
+      // erases an account on the strength of it — an ok:false with no reason is treated as
+      // 'unknown', which is retryable, because an answer that says nothing is not evidence.
       const settle = vaultPending.get(msg.id)
       if (settle) {
         vaultPending.delete(msg.id)
-        settle(msg.ok === true && typeof msg.data === 'string' ? msg.data : null)
+        settle(msg.ok === true && typeof msg.data === 'string' && msg.data.length > 0
+          ? { ok: true, data: msg.data }
+          : { ok: false, code: typeof msg.code === 'string' && msg.code ? msg.code : 'unknown' })
       }
     } else if (msg.type === 'parental-verify' && typeof msg.pin === 'string') {
       const rec = readPrefs().parental

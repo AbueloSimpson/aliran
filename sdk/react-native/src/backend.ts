@@ -16,7 +16,7 @@ import type { ReportCategory, ReportError } from './report'
 // The platform key store (Android Keystore). Used for exactly one thing: wrapping the
 // file key that seals a stored phone -> TV sign-in, on behalf of the worklet — which
 // cannot reach a native module from inside Bare. Degrades to null everywhere else.
-import { secureWrap, secureUnwrap, secureReset } from './secure-key'
+import { secureWrap, secureUnwrap, secureReset, type SecureKeyResult } from './secure-key'
 
 declare const require: (id: string) => any // Metro/CJS both provide it; typed locally so hosts need no @types/node
 
@@ -296,13 +296,18 @@ export interface RemoteFeatures {
 
 /** Why a resumeSignIn() did not sign the device in.
  *
- *  Only `offline` and `timeout` are worth retrying — for every other value the worklet has
- *  ALREADY erased what it was holding, and the device needs a fresh sign-in from a phone. */
+ *  READ `retry`, NOT THIS. Only `offline` and `timeout` are worth retrying, and they are
+ *  also the only ones that leave the material in place — everything else means the worklet
+ *  has ALREADY erased what it was holding and the device needs a fresh sign-in from a
+ *  phone. The worklet is deliberately reluctant to reach the erasing values: a key store
+ *  that did not answer, a swarm still dialling and an account record that has not
+ *  replicated to this device yet are all 'offline'. */
 export type ResumeSignInError =
   /** Nothing was stored (the ordinary answer on a device that has never been signed in). */
   | 'none'
-  /** The key store could not open the record: no key for this app any more, or a device
-   *  whose keystore was reset. Erased. */
+  /** The key store said these bytes will never open again: no key for this app any more,
+   *  or a blob it did not produce. NOT a key store that was merely unreachable — that is
+   *  'offline'. Erased. */
   | 'locked'
   /** The stored record is not readable — truncated, or written by another build. Erased. */
   | 'corrupt'
@@ -311,7 +316,8 @@ export type ResumeSignInError =
   /** The panel refused: disabled account, device limit, or a password rotation that
    *  replaced the account's keys. Erased. */
   | 'rejected'
-  /** No engine yet, or the panel was unreachable. KEPT — try again. */
+  /** No engine yet, the panel was unreachable, the key store did not answer, or the
+   *  account record has not replicated to this device yet. KEPT — try again. */
   | 'offline'
   /** The worklet did not answer in time. KEPT — try again. */
   | 'timeout'
@@ -522,7 +528,7 @@ export type BackendMessage =
  * deliberately NOT part of BackendMessage, so it never reaches a host listener.
  *
  * `data` is the file key that seals the stored sign-in — 32 opaque bytes, base64. It is
- * not an account key (those never leave the worklet) but it is still the one secret on
+ * not an account key (those stay in the worklet's heap) but it is still the one secret on
  * this channel, so nothing here may be logged.
  */
 type VaultRequest = { type: 'vault-request'; op: 'wrap' | 'unwrap'; id: string; data: string }
@@ -572,11 +578,12 @@ export interface StartOptions {
   appVersion?: string
   /** Platform label attached to problem reports. Defaults to `${Platform.OS} ${Platform.Version}`. */
   platform?: string
-  /** Cross-device features this build may use (see RemoteFeatures). Both are OFF by
-   *  default and both are BOOT-TIME: by the time a runtime switch could be flipped the
+  /** Cross-device features this build may use (see RemoteFeatures). All are OFF by
+   *  default and all are BOOT-TIME: by the time a runtime switch could be flipped the
    *  login has already happened, so the material is either retained or unrecoverable.
    *  `sendToTv` is required by sendSignIn() and by nothing else — receiving a sign-in
-   *  on a TV needs no flag at all. */
+   *  on a TV needs no flag at all, though KEEPING one across a restart needs
+   *  `keepSignIn`, which must be asked for by name. */
   remote?: RemoteFeatures
   /** console.log every backend message (dev instrumentation — shows in `adb logcat -s ReactNativeJS`). */
   debug?: boolean
@@ -889,8 +896,21 @@ export class AliranBackend {
 
   /** Persist the runtime-entered operator service (keyless public builds; S36). */
   saveService (service: SavedService) { this.service = service; this.send({ type: 'service-save', service }) }
-  /** Forget the runtime service ("Change service…" — never affects a baked key). */
-  clearService () { this.service = null; this.send({ type: 'service-clear' }) }
+  /**
+   * Forget the runtime service ("Change service…" — never affects a baked key).
+   *
+   * A kept phone -> TV sign-in belongs to the operator it was taken from, so leaving THIS
+   * service also abandons it: the worklet erases the record in the same write, and the
+   * Keystore key that sealed it is destroyed here, beside it. Before this, the record sat
+   * on the disk of a device that had walked away from its operator until some later boot
+   * happened to attempt a resume and notice.
+   */
+  clearService () {
+    this.service = null
+    this.signinSaved = false
+    this.send({ type: 'service-clear' })
+    secureReset().catch(() => {})
+  }
   /** Toggle a favorite; the worklet persists and answers with the new prefs. */
   toggleFavorite (streamId: string) {
     const next = this.favorites.includes(streamId)
@@ -1168,13 +1188,25 @@ export class AliranBackend {
    * the result straight back. That is the whole reason this hop exists.
    *
    * ALWAYS ANSWERS. The worklet is blocked on the reply with a timeout of its own, and a
-   * dropped answer would leave a television sitting on a splash screen; a failure is
-   * reported as ok:false, which the worklet reads as "this device cannot keep a sign-in"
-   * (wrap) or "what it kept is unreadable" (unwrap). Both are handled, neither is fatal.
+   * dropped answer would leave a television sitting on a splash screen.
+   *
+   * AND IT ANSWERS WITH THE REASON. A failure carries `code` (secure-key.ts SecureKeyError)
+   * because the worklet's response to an unwrap that cannot be done is to ERASE the account
+   * the television is holding — and only two of the codes are evidence that erasing is
+   * right. A bare ok:false, which is what this hop used to send, made a key store that was
+   * busy for a moment at cold boot look exactly like a key that is gone for good.
    */
   private onVaultRequest (msg: VaultRequest) {
-    const done = (data: string | null) => this.send({ type: 'vault-reply', id: msg.id, ok: data != null, ...(data != null ? { data } : {}) })
-    const run = msg.op === 'wrap' ? secureWrap(msg.data) : msg.op === 'unwrap' ? secureUnwrap(msg.data) : Promise.resolve(null)
-    run.then(done).catch(() => done(null))
+    const done = (r: SecureKeyResult) => this.send(r.ok
+      ? { type: 'vault-reply', id: msg.id, ok: true, data: r.data }
+      : { type: 'vault-reply', id: msg.id, ok: false, code: r.code })
+    const run: Promise<SecureKeyResult> = msg.op === 'wrap'
+      ? secureWrap(msg.data)
+      : msg.op === 'unwrap'
+        ? secureUnwrap(msg.data)
+        // A wrap/unwrap this build does not implement. Not a key-store failure, and
+        // certainly not proof that anything on disk is unreadable.
+        : Promise.resolve({ ok: false, code: 'unknown' } as SecureKeyResult)
+    run.then(done).catch(() => done({ ok: false, code: 'unknown' }))
   }
 }

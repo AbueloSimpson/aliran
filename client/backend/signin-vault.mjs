@@ -24,9 +24,20 @@
 // short IPC lines verbatim into `adb logcat`. The whole `signin-` message family is
 // already excluded from that logger BECAUSE the sign-in code, the compared digits and the
 // typed digits pass through it. With this envelope the only secret that ever crosses is a
-// random file key that is inert without a file the RN layer never sees, and the account's
-// private keys never leave the worklet at all. That is a property that can be stated
-// plainly, which is worth about forty lines of code.
+// random file key that is inert without a file the RN layer never sees.
+//
+// WHAT "THE KEYS NEVER LEAVE THE WORKLET" IS, AND IS NOT. It is not a sandbox. Bare runs on
+// a thread INSIDE the app's own process: same UID, same files, same debugger. The claim is
+// about code organisation and about one wire — the account keys are only ever in this
+// runtime's heap, so they never enter the RN message stream, and therefore never the
+// logger, never a host listener, never a problem report, never a screen's state. That is
+// worth about forty lines of code. It is not a defence against anything running as the app.
+// Nor can any of it be zeroed afterwards: the file key and both account keys are immutable
+// JavaScript strings, and every hop that handles them makes another copy — the engine's
+// payload, the event this file gates, and the record the gate returns. Nothing here can
+// overwrite any of them; they sit in the heap until a garbage collector that owes no
+// promises gets to them, which in practice means for the life of the process. See
+// docs/security-model.md, "Account keys at rest".
 //
 // See docs/security-model.md, "Account keys at rest", for what the Keystore does and
 // does not buy on a television.
@@ -110,20 +121,47 @@ export function openSignIn (fileKey, boxHex) {
   }
 }
 
+/** The prefix sdk/login.js puts in front of whatever the panel's `session` responder
+ *  answered with: `throw new Error('session failed: ' + sres.error)`. */
+const SESSION_FAILED = 'session failed: '
+
+/**
+ * The `session` error codes that are a VERDICT ABOUT THIS ACCOUNT ON THIS DEVICE, and
+ * therefore the only ones behind that prefix that may erase.
+ *
+ * The prefix alone is not a verdict, and reading it as one was a real defect: the same
+ * responder (panel/src/rpc.js) answers 'bad request', 'no session challenge (login
+ * first)', 'missing deviceId' and 'auth failed' — refusals of the REQUEST, produced by a
+ * malformed call, a lost one-shot challenge, or a panel-side record whose authPub does not
+ * decode. None of them is the operator deciding anything about this television, and every
+ * one of them used to erase an account on its first occurrence.
+ *
+ * 'auth failed' is the one worth naming, because it looks like a verdict and is not. A
+ * wrong X25519 key is already caught earlier and by name ('key handover does not match
+ * this account'), and the panel mints BOTH keypairs together on set-password — so a
+ * password rotation shows up there, not here. What is left is a signature that did not
+ * verify against a challenge, which a stale one-shot challenge and an undecodable stored
+ * authPub reach just as easily as a genuinely dead key. Keep, and let the bounded retry
+ * give up on its own.
+ *
+ * tools/signin-vault-test.mjs reads the responder's literals OUT OF panel/src/rpc.js and
+ * fails if a code appears there that this list has never classified.
+ */
+const PANEL_VERDICTS = [
+  'account disabled', // the operator disabled the account
+  'device-limit', //     maxDevices with devicePolicy 'reject'
+  'unknown user' //      the PANEL's own db has no such account (see the note below)
+]
+
 /**
  * Does this refusal mean the stored keys are DEAD — erase them — or only that right now
  * is a bad time to ask?
  *
- * The direction of the default matters. Unknown failures are read as transient, because a
- * device that erases an account over a swarm that had not finished dialling sends a viewer
- * to fetch their phone for nothing. What that default must never swallow is the operator
- * saying no, so every way the PANEL can refuse this device is listed explicitly below:
+ * ERASING IS THE ONLY IRREVERSIBLE ACTION IN THIS DESIGN, and its cost is a viewer walking
+ * to another room for a phone. So the default runs one way: an unknown failure is
+ * transient, and a failure only erases when it is positive evidence that the material can
+ * never work again. The four below are that evidence, plus the panel verdicts above:
  *
- *   'session failed: …'      the panel looked at this account and this device and said no
- *                            — disabled account, device limit, a failed signature. The one
- *                            exception is 'sessions unavailable', which is the panel
- *                            missing its own signing key, not a verdict about anybody.
- *   'unknown user'           the account is gone from the signed record.
  *   'key handover does not   the X25519 key no longer opens this account. THIS IS WHAT A
  *    match this account'     PASSWORD ROTATION LOOKS LIKE FROM HERE: the panel mints a
  *                            fresh keypair on set-password, so an operator who changes a
@@ -132,27 +170,56 @@ export function openSignIn (fileKey, boxHex) {
  *   'panel returned an       the session token does not verify against the signed DB key.
  *    invalid session token'  Whatever this device is talking to, it is not the operator
  *                            these keys belong to.
+ *   'the key handover did    the panel accepted the call and issued no token. The only
+ *    not sign this device    reason to run this path is to be issued one, so a success
+ *    in'                     with no token is a refusal in every way that matters.
  *   'must be N bytes'        our own stored record is malformed (sdk/login.js's length
  *                            guard). It can never succeed, so it can only sit there.
  *
- * COUPLED TO sdk/login.js PROSE. These are substrings of messages that engine writes;
- * tools/signin-vault-test.mjs pins each one so a reworded error cannot quietly turn an
- * operator's revocation into an infinite retry.
+ * NOT HERE, AND DELIBERATELY: a BARE 'unknown user'. sdk/login.js throws it after reading
+ * the account out of the LOCALLY REPLICATED signed record, so on a cold start it means
+ * "this device's copy of the record does not have that account YET" at least as often as
+ * it means the account is gone — the bee is empty for the first moments after the panel
+ * socket comes up. The panel's own authoritative answer arrives with the prefix above
+ * ('session failed: unknown user') and does erase. See accountNotReplicatedYet().
  *
  * @param {Error|string} err
  * @returns {boolean} true = erase the stored material
  */
 export function terminalSignInError (err) {
-  const msg = String((err && err.message) || err || '').toLowerCase()
+  const msg = String((err && err.message) || err || '').toLowerCase().trim()
   if (!msg) return false
-  // A panel that cannot issue sessions at all is broken, not deciding anything.
-  if (msg.includes('sessions unavailable')) return false
+  // Anything the panel's `session` responder said is decided by the code alone — including
+  // 'sessions unavailable', a panel missing its own signing key, which is not a verdict
+  // about anybody and is simply absent from the list.
+  const at = msg.indexOf(SESSION_FAILED)
+  if (at >= 0) {
+    const code = msg.slice(at + SESSION_FAILED.length)
+    return PANEL_VERDICTS.some((v) => code.startsWith(v))
+  }
   return (
-    msg.includes('session failed:') ||
-    msg.includes('unknown user') ||
     msg.includes('key handover does not match this account') ||
     msg.includes('panel returned an invalid session token') ||
     msg.includes('the key handover did not sign this device in') ||
     /\bmust be \d+ bytes\b/.test(msg)
   )
+}
+
+/**
+ * Is this the account record simply not having replicated to this device yet?
+ *
+ * sdk/login.js reads `user/<name>` out of the local hyperbee replica before it proves
+ * anything, and throws a bare 'unknown user' when that read comes back empty. At the first
+ * instant the panel RPC socket is usable the replica can still be EMPTY — the handover
+ * path waits up to 30 s for exactly this (sdk/player.js _applySignIn) and the resume path
+ * has to wait too, or a television erases its account over a cold DHT.
+ *
+ * Matched on the WHOLE message so the panel's authoritative 'session failed: unknown user'
+ * — which comes from the panel's own database and IS a verdict — cannot land here.
+ *
+ * @param {Error|string} err
+ * @returns {boolean} true = wait and ask again; the material stays
+ */
+export function accountNotReplicatedYet (err) {
+  return String((err && err.message) || err || '').toLowerCase().trim() === 'unknown user'
 }
