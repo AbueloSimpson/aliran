@@ -320,6 +320,7 @@
   "sendtv.matchStill": "Dígitos comparados: {digits}",
   "sendtv.pinTitle": "ESCRIBE LOS DÍGITOS DE TU TELÉFONO",
   "sendtv.pinHint": "Tu teléfono muestra cuatro dígitos. Escríbelos aquí. Tienes un intento.",
+  "sendtv.pinRejected": "El inicio de sesión no aceptó estos dígitos. Espera el mensaje siguiente en esta pantalla.",
   "sendtv.pinDelete": "Borrar",
   "sendtv.signedIn": "Este dispositivo tiene la sesión iniciada.",
   "sendtv.startAgain": "Mostrar un código nuevo",

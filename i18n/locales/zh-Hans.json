@@ -317,6 +317,7 @@
   "sendtv.matchStill": "核对的数字：{digits}",
   "sendtv.pinTitle": "请输入手机上的数字",
   "sendtv.pinHint": "手机上会显示四个数字。请在这里输入。只有一次机会。",
+  "sendtv.pinRejected": "登录没有接受这些数字。请等待本屏幕上的下一条消息。",
   "sendtv.pinDelete": "删除",
   "sendtv.signedIn": "本设备已登录。",
   "sendtv.startAgain": "显示新代码",

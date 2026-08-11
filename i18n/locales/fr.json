@@ -320,6 +320,7 @@
   "sendtv.matchStill": "Chiffres comparés : {digits}",
   "sendtv.pinTitle": "SAISISSEZ LES CHIFFRES DE VOTRE TÉLÉPHONE",
   "sendtv.pinHint": "Votre téléphone affiche quatre chiffres. Saisissez-les ici. Vous avez un seul essai.",
+  "sendtv.pinRejected": "La connexion n’a pas accepté ces chiffres. Attendez le message suivant sur cet écran.",
   "sendtv.pinDelete": "Effacer",
   "sendtv.signedIn": "Cet appareil est connecté.",
   "sendtv.startAgain": "Afficher un nouveau code",

@@ -80,6 +80,12 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
   // one screen to a viewer, and re-showing them costs nothing.
   const [sas, setSas] = useState<string | null>(null)
   const [pin, setPin] = useState('')
+  // The engine refused the digits THIS SCREEN just sent. Held here rather than left to
+  // the {state:'failed'} event, because the two do not arrive together: a viewer pressed
+  // OK with four digits in, the boxes emptied, and — in their words — "nothing happened".
+  // The explanation came seconds later, from the other side of the exchange, over a
+  // screen that had already told them nothing. See submit().
+  const [rejected, setRejected] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -150,7 +156,7 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
   // START it may still be holding the handle that caused the refusal — and the cancel
   // clears it before the new code is asked for.
   const restart = () => {
-    setInfo(null); setShown(null); setSas(null); setPin('')
+    setInfo(null); setShown(null); setSas(null); setPin(''); setRejected(false)
     setSubmitted(false); setConfirming(false); setBusy(false); setStartError(null)
     service.current = null
     setAttempt((n) => n + 1)
@@ -223,18 +229,25 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
     const submit = async () => {
       if (busy || pin.length < PIN_LENGTH) return
       setBusy(true)
-      // ONE attempt. A false answer means the engine had nothing waiting any more (the
-      // exchange moved on or ended) — the 'failed' state says why, so nothing is
-      // invented here.
+      setRejected(false)
+      // ONE attempt. A false answer means the engine had nothing waiting any more — the
+      // exchange moved on, or ended.
       const ok = await backend.submitSignInPin(pin)
       setBusy(false)
-      if (ok) setSubmitted(true)
-      else setPin('')
+      if (ok) { setSubmitted(true); return }
+      // SAY SO NOW, and say only this much. Emptying the boxes was the whole of the old
+      // answer, and from across a room it is indistinguishable from a dead button: the
+      // viewer cannot tell a refusal from a remote press that never landed, so they press
+      // again. The WHY belongs to the engine and arrives as {state:'failed'} — inventing
+      // one here would be inventing a reason nobody gave.
+      setPin('')
+      setRejected(true)
     }
     return (
       <Panel heading={t('sendtv.pinTitle')}>
         {!!sas && <Text style={styles.compare}>{t('sendtv.matchStill', { digits: sas })}</Text>}
         <Text style={styles.hint}>{t('sendtv.pinHint')}</Text>
+        {rejected && <Text style={styles.error}>{t('sendtv.pinRejected')}</Text>}
         <View style={styles.slots}>
           {Array.from({ length: PIN_LENGTH }, (_, i) => (
             <Text key={i} style={[styles.slot, pin.length === i && styles.slotNext]}>{pin[i] ?? '–'}</Text>
@@ -247,7 +260,9 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
               label={d}
               wide={false}
               focusFirst={i === 0}
-              onPress={() => setPin((p) => (p.length >= PIN_LENGTH ? p : p + d))}
+              // Typing again clears it: the message is about the digits that were sent,
+              // and it must not sit over a fresh set the viewer is still keying in.
+              onPress={() => { setRejected(false); setPin((p) => (p.length >= PIN_LENGTH ? p : p + d)) }}
             />
           ))}
         </View>

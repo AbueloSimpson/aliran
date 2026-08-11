@@ -320,6 +320,7 @@
   "sendtv.matchStill": "Karşılaştırılan rakamlar: {digits}",
   "sendtv.pinTitle": "TELEFONUNUZDAKİ RAKAMLARI YAZIN",
   "sendtv.pinHint": "Telefonunuz dört rakam gösteriyor. Bunları buraya yazın. Bir hakkınız var.",
+  "sendtv.pinRejected": "Oturum açma bu rakamları kabul etmedi. Bu ekrandaki sonraki mesajı bekleyin.",
   "sendtv.pinDelete": "Sil",
   "sendtv.signedIn": "Bu cihazda oturum açıldı.",
   "sendtv.startAgain": "Yeni kod göster",

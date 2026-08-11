@@ -320,6 +320,7 @@
   "sendtv.matchStill": "Dígitos comparados: {digits}",
   "sendtv.pinTitle": "DIGITE OS DÍGITOS DO SEU TELEFONE",
   "sendtv.pinHint": "O seu telefone mostra quatro dígitos. Digite-os aqui. Você tem uma tentativa.",
+  "sendtv.pinRejected": "A entrada não aceitou estes dígitos. Espere a próxima mensagem nesta tela.",
   "sendtv.pinDelete": "Apagar",
   "sendtv.signedIn": "Este aparelho entrou na conta.",
   "sendtv.startAgain": "Mostrar um código novo",

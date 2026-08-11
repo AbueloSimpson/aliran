@@ -16,6 +16,8 @@ import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
 import { Text, TextInput, StyleSheet, BackHandler } from 'react-native'
 
+import { t } from '@aliran/i18n'
+
 import { ConnectScreen } from '../src/screens/ConnectScreen'
 import { LoginScreen } from '../src/screens/LoginScreen'
 import { SendSignInToTv } from '../src/components/SendSignInToTv'
@@ -325,6 +327,66 @@ test('the OK button is out of the D-pad path until the PIN is complete', async (
   for (const d of ['9', '1']) await press(tree, d)
   expect(ok().props.focusable).toBe(true)
   expect(ok().props.accessibilityState).toMatchObject({ disabled: false })
+})
+
+// THE THIRD ONE FROM THE SAME LIVING ROOM, and the same shape: a control that answers a
+// press with nothing at all. The viewer keyed the four digits in, pressed OK, and — in
+// their words — "nothing happened". The boxes emptied and the screen said no more than
+// that, so from across a room a REFUSAL and a remote press that never landed look
+// identical, and the natural response to both is to press again. The engine's own
+// explanation arrives on the {state:'failed'} event, seconds later and from the other end
+// of the exchange.
+//
+// Asserted through the catalog KEY rather than the sentence: what is on trial is that the
+// screen says something at the moment of the press, not which words it picks.
+async function toPinEntry () {
+  const navigation = { replace: jest.fn() } as any
+  const tree = await mount(<LoginScreen navigation={navigation} route={{} as any} backendReady />)
+  await press(tree, 'Sign in with your phone')
+  await answer('signin-start', 'signin-started', { ok: true, code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+  await pairEvent({ role: 'tv', state: 'code', code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+  await pairEvent({ role: 'tv', state: 'pin-entry', sas: '4821' })
+  for (const d of ['7', '3', '9', '1']) await press(tree, d)
+  return tree
+}
+/** How many of the four boxes are EMPTY. Counted by the en dash an unfilled one draws,
+ *  because the ten keypad keys are single-character <Text> too. */
+function emptySlots (tree: RendererInstance): number {
+  return texts(tree).filter(s => s === '–').length
+}
+
+test('a refused PIN says so, at the moment of the press', async () => {
+  const tree = await toPinEntry()
+  expect(texts(tree)).not.toContain(t('sendtv.pinRejected'))
+  expect(emptySlots(tree)).toBe(0) // four digits are in
+
+  await press(tree, 'OK')
+  // ok:false is the engine saying it has nothing waiting for that answer any more. It is
+  // NOT "those were the wrong digits" — nothing here may claim to know which.
+  await answer('signin-submit-pin', 'signin-ack', { ok: false })
+
+  expect(texts(tree)).toContain(t('sendtv.pinRejected'))
+  // …and the boxes are still cleared, which is the half that was already right — and, on
+  // its own, the whole of what the viewer used to get.
+  expect(emptySlots(tree)).toBe(4)
+})
+
+test('…and it goes as soon as the viewer keys a new digit — it is about the digits that were SENT', async () => {
+  const tree = await toPinEntry()
+  await press(tree, 'OK')
+  await answer('signin-submit-pin', 'signin-ack', { ok: false })
+  expect(texts(tree)).toContain(t('sendtv.pinRejected'))
+
+  await press(tree, '5')
+  expect(texts(tree)).not.toContain(t('sendtv.pinRejected'))
+})
+
+test('an ACCEPTED PIN says nothing of the kind — it waits', async () => {
+  const tree = await toPinEntry()
+  await press(tree, 'OK')
+  await answer('signin-submit-pin', 'signin-ack', { ok: true })
+  expect(texts(tree)).not.toContain(t('sendtv.pinRejected'))
+  expect(texts(tree)).toContain(t('sendtv.working'))
 })
 
 test('BACK closes the sign-in overlay instead of closing the app', async () => {
