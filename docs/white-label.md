@@ -328,6 +328,27 @@ or anywhere else. The operator cannot see them, and neither can you.
 Uninstalling the app, or clearing its data, erases them. If you write
 your own privacy copy, you can state this plainly.
 
+## Send to TV, and the cast receiver
+
+Three cross-device features ship behind build flags rather than brand
+data, so a brand that does not want them simply does not turn them on.
+`remote: { sendToTv }` gives a phone the ability to sign a television in;
+`remote: { control }` gives "play on my TV"; `remote: { keepSignIn }` lets
+a television keep a handed-over sign-in across restarts. All three are off
+unless a build names them, and a build that names none of them joins no
+rendezvous and keeps nothing (the `remote` option in §3 of
+[the SDK guide](sdk-guide.md)).
+Casting is the host app's own decision in the same way: the LAN server
+exists only while the app has asked for a cast session.
+
+**The cast receiver carries Google's branding, not yours.** The shipped
+path uses the stock **Default Media Receiver** (`CC1AD845`), which is why
+an operator needs no Google registration, no fee and no hosted receiver
+page. If you want the "loading" screen on the television to carry your own
+logo, register a receiver application id of your own with Google and give
+it to your sender — the bytes the SDK serves do not change, only the page
+the television shows around them.
+
 ## Keys and credentials
 
 - **`panelPubKey` is public.** It ships inside every APK, like the

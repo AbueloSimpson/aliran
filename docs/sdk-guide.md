@@ -243,8 +243,12 @@ Three things the host app must provide:
    `client/backend/` is the working example.
 2. **Cleartext to loopback** (Android release builds). The engine serves
    HLS on `http://127.0.0.1:<port>`, so release builds need cleartext
-   permitted **for loopback only** (network-security-config). Details
-   are in the [client build guide](client-build.md).
+   permitted for loopback in the network-security-config. That is all
+   the engine itself needs; the shipped app permits more, for a
+   different reason (`http://` provider streams). A network security
+   config governs the app's **outbound** requests only, so it has no
+   effect on the **inbound** LAN server a cast session stands up.
+   Details are in the [client build guide](client-build.md).
 3. **Metro visibility**, when the package lives outside your app root
    (monorepo / `file:` install). Add its path to `metro.config.js`
    `watchFolders`, and map the peers in `tsconfig.json` `paths`. The
@@ -370,6 +374,33 @@ live with `setUploadPolicy()` — the standard pattern is wiring it to the
 platform's metered-network signal. Measured numbers:
 [viewer bandwidth](kb/viewer-bandwidth.md).
 
+### `remote: { sendToTv?, control?, keepSignIn? }` — default all off
+The three "send to TV" features. **Every one is off unless you name it**,
+so a build that omits this object joins no rendezvous, holds no account
+keys and keeps nothing on disk.
+
+| Flag | What it turns on | Cost while on |
+|---|---|---|
+| `sendToTv` | `sendSignIn()` — the **phone** half of a phone→TV sign-in. | Every login keeps the account's two private keys **in memory** for the session. `sendSignIn()` cannot recover them later without it. |
+| `control` | `startRemote()` and the rest of "play on my TV". | The login keeps the account rendezvous secret in memory. With the flag off, no rendezvous topic is ever joined. |
+| `keepSignIn` | The **receiving** half: a `signin-keys` event, so a television can persist the handover and come back through `signInWithKeys()`. | The host is given account private keys to write to a key store. This is a property of the *build*, not of a session. |
+
+`remote: true` is shorthand for **`sendToTv` and `control` only** — the two
+that are about memory. `keepSignIn` is about a disk and has to be asked
+for by name, because a host that wanted `sendSignIn()` on a phone should
+not silently get account keys at rest on a device that has a keyboard and
+a password.
+
+On a television the first two are usually the wrong way round from a
+phone's: `sendToTv` **off** (a set never holds an account it could pass
+on) and `keepSignIn` **on**. Read
+[Account keys at rest](security-model.md#account-keys-at-rest-televisions)
+before you turn `keepSignIn` on.
+
+Casting needs no flag. It needs an injected `os` module (`createPlayer()`
+wires `node:os`; a Bare worklet passes `bare-os`), or an `advertiseHost`
+on every `startCast()` call.
+
 ### `swarm: { maxPeers?, bootstrap? }`
 Tuning for the engine's single Hyperswarm. Ordinary viewers omit the whole object.
 
@@ -407,7 +438,42 @@ channel class, which needs no client config at all.
 | `reconnectActiveFeed()` | Tear down the active feed's peer connections and dial fresh — the wedged-transport escalation; the tune ladder calls it for you. |
 | `checkUpdate({ appId, platform, versionCode })` | OTA: look the running build up in the operator's update manifest → `{ status, entry?, mandatory? }` (`unknown` while the drive is still cold). |
 | `downloadUpdate()` | OTA: fetch + sha256-verify the update the last `available` check found — throttled `update-progress` events, then `update-ready { path, entry }`. Operator side: [App updates](app-updates.md). |
-| `stop()` | Full teardown. |
+| `stop()` | Full teardown. Ends a cast session and leaves the rendezvous first. |
+
+Sign a television in from a phone (§9). All of it reports through the
+`signin-pair` event; three of those states are **questions that block**
+until the host answers.
+
+| Method | Role | What it does |
+|---|---|---|
+| `startSignInPairing({ ttlMs?, pinMs?, payloadMs? })` | TV | Mint a code, announce its rendezvous, and resolve at once with `{ code, expiresAt, done }` to put on screen. Needs no panel connection first — the handover carries the operator key. |
+| `submitSignInPin(pin)` | TV | The four digits the viewer typed on the remote. **One attempt**; a well-formed wrong answer ends the sign-in with the code spent. |
+| `confirmSignInService(ok)` | TV | Answer the `confirm-service` question: sign in as that account, and (when `adopting`) take that operator key. |
+| `cancelSignInPairing()` | TV | Abandon the code on screen. It is spent either way. |
+| `sendSignIn(code, opts?)` | Phone | Sign a TV in with the code it shows. Resolves `{ done }` once the rendezvous is joined. Needs a live session **and** `remote: { sendToTv: true }`. |
+| `confirmSignInMatch(ok)` | Phone | Answer the `match` question: do the four digits on this phone appear on the TV? **This is the check that sees a relay** — never default it, and never let a dismissed dialog answer it. |
+| `cancelSendSignIn()` | Phone | Abandon an in-flight send. |
+| `signInWithKeys(username, { priv, authPriv })` | TV | The same session entered with the account keys instead of a password — the door a television comes back through after a restart. Read the rejection rules below before you call it. |
+
+"Play on my TV" (§10). Needs a live session and `remote: { control: true }`.
+
+| Method | What it does |
+|---|---|
+| `startRemote({ role?, label?, acceptPlay? })` | Join the rendezvous the account's own devices meet on. `'tv'` announces and accepts commands; `'controller'` looks up, never announces, and sends them. |
+| `listRemotes()` | Devices of this account that have **proved** themselves. Build a picker from the ones whose `role` is `'tv'`. |
+| `remotePlay(deviceId, streamId)` | Ask a television to play a channel. Resolves on **acceptance** — what happened arrives as a status push. |
+| `remoteStop(deviceId)` | Ask that television to stop. |
+| `setRemoteAccept(ok)` | TV: the take-over switch. Off refuses `play` **and** `stop`. |
+| `updateRemoteStatus({ state?, position? })` | TV: the two things only a host knows. The engine already publishes the channel and whether it plays. |
+| `stopRemote()` | Leave the rendezvous. Idempotent. |
+
+Cast to a television on the LAN (§11).
+
+| Method | What it does |
+|---|---|
+| `startCast(streamId, { advertiseHost?, receiverHost?, readIdleMs?, reclaim? })` | Stand up a second, LAN-scoped media server for one channel and resolve a `CastSession`. Rejects when this device has no private IPv4. |
+| `stopCast()` | Close the socket, kill the token, unpin the feed, run one reclaim pass. |
+| `castSession()` | The live session, or `null`. |
 
 The login retry pattern every host should use:
 
@@ -489,6 +555,11 @@ custom hosts.
 | `upload-policy` | `{ policy, rejoined }` | Confirmation of a live `setUploadPolicy()`. |
 | `recovered` | `Error` | Corrupt store purged + retried automatically; informational. |
 | `error` | `Error` | Friendly, surfaced failures (e.g. the tune-timeout message). Show, offer retry. |
+| `signin-pair` | `{ role, state, code?, sas?, pin?, username?, panelPubKey?, pairingCode?, adopting?, reason?, message? }` | Progress of a phone→TV sign-in (§9). Three states are **questions and the exchange blocks on them**: `match` (phone → `confirmSignInMatch`), `pin-entry` (TV → `submitSignInPin`), `confirm-service` (TV → `confirmSignInService`). `code`, `sas` and `pin` are live secrets for the length of the exchange — put them on a screen and **never in a log**. |
+| `signin-keys` | `{ username, priv, authPriv, panelPubKey }` | The account keys a **received** handover was given, emitted **once** so a television can persist them and come back through `signInWithKeys()`. Fires only on a build with `remote: { keepSignIn: true }`. `emit()` is synchronous, so any retry of your own write belongs on your side of the listener — there is no second delivery. |
+| `remotes` | `RemotePeer[]` | The account's own other devices on the rendezvous; re-emitted on every change. `deviceId`/`label`/`role` are each device's **own claim** — a handle for a picker, not a credential. |
+| `remote` | `{ role, state, streamId?, restricted?, title?, command?, reason?, from?, status? }` | Role `'tv'`: the commands this device was given. Role `'controller'`: what a television it points at is showing. **`state: 'play'` is a command, not a notification** — the engine checked entitlement and deliberately did not tune, so the host tunes it, and a `restricted` channel **must** go through the same parental-PIN gate a local zap goes through. |
+| `cast` | `{ state: 'ended', streamId, reason }` | A cast session ended **on its own** — the pinned feed was purged, or a retune abandoned or failed. The server is closed and the token is dead; stop showing "Casting". `stopCast()` does **not** emit this. |
 | `fallback`, `source-changed` | see `index.d.ts` | Internal hybrid mode only — production apps never receive them. |
 
 ---
@@ -502,17 +573,39 @@ const backend = new AliranBackend()
 backend.start(bundle, opts /* StartOptions */)
 ```
 
-`StartOptions` = `{ panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch?, swarm?, uploadPolicy?, debug? }`.
+`StartOptions` = `{ panelPubKey, hybrid?, prewarm?, tune?, zapPrefetch?, swarm?, uploadPolicy?, remote?, appVersion?, platform?, debug? }`.
 These are the same knobs as §3, with two differences: `hybrid.cdnUrl`
 must be a **template string**, since functions can't cross the worklet
 IPC, and `debug: true` logs every backend message
-(`adb logcat -s ReactNativeJS`). The worklet owns `storeDir`.
+(`adb logcat -s ReactNativeJS`). The worklet owns `storeDir`. `remote` is
+**boot-time**: by the time a runtime switch could be flipped, the login
+has already happened and the material is either kept or unrecoverable.
 
 Methods: `login(u,p)` · `play(streamId)` · `playRaw(feedKey, encKey)` ·
 `reconnect()` · `setZapPrefetch(v)` · `setNetworkProfile(expensive, cellular?)` ·
 `onMessage(fn)` (returns an unsubscribe) · prefs: `requestPrefs()` /
 `saveCredentials(u,p)` / `clearCredentials()` / `toggleFavorite(id)` /
 `isFavorite(id)`.
+
+Phone→TV sign-in (§9): `startSignIn()` / `submitSignInPin(pin)` /
+`confirmSignInService(ok)` / `cancelSignIn()` on the television, and
+`sendSignIn(code)` / `confirmSignInMatch(ok)` / `cancelSendSignIn()` on
+the phone. `resumeSignIn()` is the next-start door on a build with
+`remote: { keepSignIn: true }`; it answers `{ ok, error?, retry? }`, and
+**`retry` is what decides whether to keep the stored material** — see the
+rejection rules in §9.
+
+`debug: true` **ships in release builds of the reference app**, so the
+logger is production code, not dev instrumentation. It excludes every
+`signin-*` and `vault-*` message by **prefix**. If you add messages that
+carry a code, a PIN, a cast token or key material, exclude them by prefix
+too — not by exact name.
+
+The package also exports `secureKeyStatus()` and `secureReset()` from the
+Android Keystore half. `secureKeyStatus()` **reports rather than finds
+out**: it will not create a key in order to describe one, so a device that
+never kept a sign-in answers `keyPresent: false` with an *unknown*
+security level rather than claiming there is no hardware key store.
 
 Cached state for late-mounting screens — the one-shot replies may land
 before your screen exists: `backend.streams`, `.port`, `.url`, `.source`,
@@ -521,7 +614,11 @@ trust, since one URL serves every channel), `.creds`, `.favorites`.
 
 Messages arrive as the `BackendMessage` union (`streams`, `port`, `status`,
 `error`, `login-error`, `fallback`, `source-changed`, `feed-changed`,
-`zap-prefetch`, `prefs`) — all typed in the package.
+`zap-prefetch`, `prefs`, `signin-pair`, `signin-started`, `signin-sending`,
+`signin-ack`, `signin-resumed`) — all typed in the package. The engine's
+sign-in vocabulary grows and this build's copy of it does not, so check a
+`reason` against `isSigninPairError()` before you switch on it, and always
+keep one sentence for the codes you do not recognise.
 
 ### `<AliranVideo>`
 
@@ -591,9 +688,229 @@ This is cooperative session hygiene, not content protection. Real access
 revocation is grant removal plus stream-key rotation, on the operator
 side ([details](ops-sdk-integration.md#8-what-revocation-really-means)).
 
+**A device that holds a working credential signs itself back in.** That has
+always been true of a saved password, and it is now also true of a television
+that kept a handover (§9). Neither *revoke device* nor *log out all devices*
+stops it. **Changing the password does**, because it re-keys the account. Read
+[the residual-risk register](security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting)
+before you decide what your host app does with a refusal.
+
 ---
 
-## 9. Troubleshooting
+## 9. Sign a television in from a phone
+
+A television has a remote control, not a keyboard. The set shows a
+12-character code, the viewer types it on a phone that is already signed
+in, and the phone hands the account over. The television registers **its
+own device** and takes **its own panel-signed token**, so `maxDevices`,
+the device list and per-device revoke keep working per device. The
+password never crosses.
+
+The operator key crosses with it, so one action both sets the service and
+signs in — a set never types 64 hex characters, or the operator's own
+pairing code, on a remote.
+
+### The two halves
+
+```js
+// TELEVISION
+const { code, expiresAt, done } = await tv.startSignInPairing()
+showOnScreen(code)                       // 12 characters, ~3 minutes
+done.then(streams => enterTheApp(streams)).catch(showFailure)
+
+// PHONE (already signed in, built with remote: { sendToTv: true })
+const { done } = await phone.sendSignIn(codeTheViewerTyped)
+```
+
+Everything else arrives on the `signin-pair` event. **Three states are
+questions, and the exchange stops until you answer them.**
+
+| State | Who sees it | What the host must do |
+|---|---|---|
+| `code` | TV | Show the 12 characters and the countdown. |
+| `match` | **both**; answer on the **phone** | Show the four digits (`sas`). On the phone, ask "does the television show these same four digits?" and answer `confirmSignInMatch(ok)`. |
+| `pin` | phone | Show the four digits (`pin`) for the viewer to type on the television. |
+| `pin-entry` | TV | Ask for four digits and pass them to `submitSignInPin(pin)`. **One attempt.** |
+| `confirm-service` | TV | Show `username`, `panelPubKey` and its printed `pairingCode`, say whether this set is `adopting` a new operator, and answer `confirmSignInService(ok)`. |
+| `signed-in` / `failed` | either | Finish, or show `reason` and `message`. |
+
+### Rules that are not optional
+
+- **Never log `code`, `sas` or `pin`.** All three are live secrets for the
+  length of the exchange. The React Native binding excludes every
+  `signin-*` and `vault-*` message from its debug logger by **prefix** for
+  this reason; if you add messages of your own, exclude by prefix too.
+- **Never default the `match` answer, and never let a dismissed dialog
+  answer it.** That comparison is the only check that sees a peer relaying
+  between the two devices.
+- **Do not describe this flow as phishing-proof, in your UI or your
+  documentation.** The two checks remove a static lure and a silent relay.
+  An attacker who is present in real time defeats both, and so does a
+  viewer who approves without comparing. Say what the viewer must
+  actually check.
+- **Treat a mismatch as final.** Tell the viewer to stop, not to try
+  again on the same network. Each attempt is an independent 1-in-10 000
+  chance for a relay.
+- Every failure **spends the code**. Mint a new one; do not retry with the
+  old one.
+
+### Keeping the sign-in across a restart
+
+Set `remote: { keepSignIn: true }` **by name** and the engine emits
+`signin-keys` **once** after a handover. Put those keys somewhere the
+platform protects — the shipped app seals them under an Android Keystore
+key — and come back through `signInWithKeys(username, keys)` on the next
+start.
+
+**Split the rejections, and let the default run toward keeping.** Erasing
+is the one irreversible act here and it costs a viewer a walk to another
+room for a phone.
+
+| Keep and retry | Erase |
+|---|---|
+| `not connected to panel`, a closed channel, a swarm still dialling | `key handover does not match this account` (what a password rotation looks like from here) |
+| A bare `unknown user` — the account record has not replicated to this device yet | A `session` verdict on the **account**: `account disabled`, `unknown user` |
+| A key store that did not answer, or a host that did not answer in time | A stored record that fails its own integrity check |
+| `device-limit` — the operator's slots are full, which frees itself | The operator this record names is no longer this device's operator |
+
+**"Anything the panel said" is not the rule, and reading it that way
+destroys credentials.** The same responder also answers `bad request`,
+`no session challenge (login first)`, `missing deviceId`, `auth failed`,
+`sessions unavailable` and `device-limit` — a malformed call, a lost
+one-shot challenge, a panel missing its own signing key, an operator
+whose device slots are full. None of those is a judgement on the keys.
+
+**Bound your retries by panel logins, not by seconds.** Every attempt
+that reaches the panel spends a `login` the panel's throttle counts, per
+account and per peer. `not connected to panel` is thrown before anything
+leaves the device, so those cost nothing. A loop that cannot tell the two
+apart locks the account out of the panel it is trying to reach — and the
+first thing it locks out is your own sign-in screen, seconds later, in
+front of a viewer holding the correct password.
+
+---
+
+## 10. Play on my TV
+
+Two devices of one account meet on a rendezvous derived from the account
+key. There is no code and no viewer action. A television announces; a
+controller looks up and never announces.
+
+```js
+await tv.startRemote({ role: 'tv', label: 'Living Room' })
+await phone.startRemote({ role: 'controller', label: 'Ana’s phone' })
+
+phone.on('remotes', peers => renderPicker(peers.filter(p => p.role === 'tv')))
+await phone.remotePlay(deviceId, streamId)
+```
+
+**`state: 'play'` on the `remote` event is a command, not a
+notification.** The engine checks the channel against the receiving
+device's own entitlements and then deliberately **does not tune it**. Your
+host tunes it — which is what keeps your own gates in front of it:
+
+```js
+tv.on('remote', async info => {
+  if (info.role !== 'tv' || info.state !== 'play') return
+  if (info.restricted && !(await yourParentalGate())) return   // NOT optional
+  await tune(info.streamId)
+})
+```
+
+**The parental-PIN gate is your obligation and the SDK cannot enforce
+it.** An engine that tuned for the peer would make "play on my TV" the
+documented way past that PIN. Where the engine cannot read the channel's
+catalog record it refuses the play outright rather than guessing at the
+flag, so it never reports a parental state it did not read — but where it
+can read it, a host that ignores `restricted` has no parental control on
+this path, and the engine cannot tell.
+
+Two more things worth knowing before you build a picker:
+
+- **`deviceId`, `label` and `role` are each device's own claim.** They are
+  authenticated only as far as "some device of this account". The panel's
+  device list is the authority on identity everywhere else.
+- **The rendezvous cannot be revoked for one device.** Only "log out all
+  devices", a password reset or disabling the account move the household
+  to a new rendezvous. `setRemoteAccept(false)` is the per-set opt-out
+  inside the protocol.
+
+`remotePlay()` rejects with a `RemoteControlError`: `unknown` (not on the
+list, or not a television), `unavailable` (it accepted and could not carry
+the command out — a catch-all, most often a catalog record it could not
+read, and **never** "nothing is broadcasting"), and `timeout`, which never
+means the device declined.
+
+---
+
+## 11. Cast to a television
+
+`startCast()` stands up a **second** HTTP server beside the loopback one.
+It exists only while the session does, it binds **one private LAN
+address**, and it serves only `/cast/<token>/…` from **one pinned feed
+drive** — so the receiver keeps the channel it was given while the phone
+zaps somewhere else.
+
+```js
+const s = await player.startCast(streamId, { receiverHost: '192.168.1.128' })
+// s = { url, streamId, source, host, port, token, receiverHost, feedKey,
+//       type, headers?, candidates? }
+sendToReceiver(s.url)
+player.on('cast', e => { if (e.state === 'ended') stopShowingCasting(e.reason) })
+await player.stopCast()
+```
+
+A **redirect channel** casts for free: `source: 'cdn'`, `url` is the
+operator's remote URL, and no local server is stood up. `headers` comes
+with it when the provider checks them — a receiver that cannot send them
+will get a `403`.
+
+### What a host must get right
+
+- **The token is a scope, not a secret the network keeps.** A receiver
+  hands the whole media URL back to any unauthenticated peer that joins
+  its session — measured on a real Google TV, where a process that had
+  never seen the URL read it in full off port 8009. Pass `receiverHost`
+  once you know which device you launched on: it makes the receiver's
+  address part of the boundary. It is **off by default**, because the SDK
+  does not speak the Cast protocol and cannot find that address. A
+  multi-room **group** fetches from every member, so pass every member's
+  address or leave the pin off for groups. An empty array **throws** — it
+  is not a way to say "unpinned".
+- **Treat "unpinned" as a state your UI acknowledges, not a default it
+  inherits.**
+- **Say what casting costs.** The phone becomes the origin server: it
+  decrypts and serves while it does, it must stay awake and on the
+  network, and disk grows by about the channel bitrate for the session
+  (roughly 0.9 GB per hour at 2 Mbit/s), because block reclaim is off for
+  a pinned feed. `stopCast()` reclaims; an app killed mid-cast does not.
+- **Never log the token**, and never put it in an IPC message your debug
+  logger prints.
+- **Offer `candidates`.** `os.networkInterfaces()` cannot tell Wi-Fi from
+  a Hyper-V, WSL or Docker bridge, so the advertised address is a guess.
+  If a receiver never connects, offer another candidate and restart with
+  `{ advertiseHost }`.
+- **`advertiseHost` is the only thing that widens the bind.** An address
+  this device does not own falls back to a bind on every interface, and
+  nothing warns about it.
+
+`startCast()` rejects when this device has no private IPv4 — it will not
+advertise a public address. `readIdleMs` defaults to 12 000 ms here
+(twice the loopback value, which is calibrated to ExoPlayer rather than to
+a television); `0` disables the stalled-read abort.
+
+The receiver application is Google's **stock Default Media Receiver**
+(`CC1AD845`) — no registration, no fee, no hosted page. An operator who
+wants a receiver with their own branding registers an application id of
+their own and gives it to the sender; the bytes this SDK serves are the
+same either way.
+
+Full exposure analysis:
+[the residual-risk register](security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting).
+
+---
+
+## 12. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -604,6 +921,13 @@ side ([details](ops-sdk-integration.md#8-what-revocation-really-means)).
 | Release APK can't play (dev build can) | Cleartext-to-loopback missing — [client build](client-build.md). |
 | `recovered` events after crashes | Normal: the disposable store self-healed. Frequent recoveries = the host is killing the process uncleanly. |
 | First zap slow, later zaps fast | Cold DHT lookup. Enable `prewarm`. |
+| `sendSignIn` throws about a missing feature | The phone build was not constructed with `remote: { sendToTv: true }`. The flag is boot-time — restart the engine with it (§3). |
+| No `signin-keys` event on the television | `remote: { keepSignIn: true }` must be asked for **by name**. `remote: true` is shorthand for the other two flags only (§3). |
+| A television falls back to its sign-in screen on every start | Its stored keys are being erased, or the account is gone. Check your rejection classification against §9 first — treating any panel error as terminal destroys working credentials. A deleted account is kept, not erased, and re-creating the username evicts the set instead of restoring it. |
+| `login failed: locked` on a television nobody is typing at | The restore loop spent the panel's login budget. Bound retries by **panel logins**, not by seconds (§9). Restarting the app clears it — the throttle's peer half is new for each process. |
+| `startCast()` rejects with no private IPv4 | This device has only a public address, or no `os` module was injected. Pass `advertiseHost`. |
+| The receiver plays nothing, or fetches the playlist and no segments | Cross-origin headers or the address. Check the receiver can reach `host`; if not, offer another entry from `candidates` and restart with `{ advertiseHost }`. |
+| "Casting" stays on screen after the session died | Subscribe to the `cast` event: `{ state: 'ended' }` means the server is closed and the token is dead. `stopCast()` does not emit it. |
 
 Deeper playback internals: [playback & client runtime](kb/playback.md) and the
 [feed buffer & tuning](kb/feed-buffer.md) pages.

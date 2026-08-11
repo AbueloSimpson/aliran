@@ -9,8 +9,13 @@ build-time problems, see [Android & React Native builds](android-build.md).
   media and art from `http://127.0.0.1:<port>` (the embedded P2P node), so
   image loaders and ExoPlayer fail *silently*.
 - **Fix:** the app ships a `network_security_config.xml` that permits
-  cleartext **only to loopback** (plus the emulator host aliases for Metro in
-  dev). The manifest references this file. See [Client build](../client-build.md).
+  cleartext, and the manifest references it. The engine only needs
+  `127.0.0.1` (plus the emulator host aliases for Metro in dev), and that
+  is all a third-party host has to permit. The **shipped** app now permits
+  cleartext to every host — a deliberate posture, so that channels a
+  provider serves over plain `http://` can play. That traffic is
+  unencrypted and can be read or changed on the network path; the config
+  file says so in the file itself. See [Client build](../client-build.md).
 - **Diagnostic that isolates it:** run `adb forward tcp:<x> tcp:<port>`, then
   `curl` from the host. If that returns 200 while the app shows nothing, this
   is the cause.
@@ -179,6 +184,101 @@ Check these causes in order of likelihood:
   The worklet also installs a last-resort `uncaughtException` guard that
   reports the error over IPC instead of crashing. If you embed the SDK in
   your own runtime, keep both.
+
+## Signing a television in from a phone fails
+
+> Nothing in this feature has been seen on a television yet. What follows
+> comes from the engine's own behaviour and its test lanes.
+
+- **The phone says it cannot find the television.** Both devices must be on
+  a network that reaches the DHT — this rendezvous is derived from the code,
+  not from the local network, so the two do not have to be on the same
+  Wi-Fi, but each one must reach the internet. Check the code was typed
+  exactly as shown: the alphabet leaves out I, L, O and U on purpose, so
+  nothing on a television screen can be misread as something else.
+- **The code stopped working.** A code lives about three minutes and is
+  **spent by any failure** — a wrong PIN, an abandoned attempt, a peer that
+  claimed it first. Show a new code on the television; do not retry the old
+  one.
+- **The four digits do not match.** Stop. A mismatch means something is
+  between the two devices. Do **not** try again on the same network. Each
+  attempt is an independent chance for a relay, not a better one.
+- **The PIN was refused.** There is one attempt, by design. The exchange
+  ends and the code is spent.
+- **The television is stuck on "enter the digits" and the viewer's phone
+  says "busy".** Somebody else claimed that code first — anyone who can see
+  the screen can. It costs a new code and never costs key material. If it
+  repeats, the screen is visible to somebody who should not see it.
+
+## A television asks to sign in again after every restart
+
+A set that a phone signed in keeps its account material sealed under a key
+in the Android Keystore. It erases what it holds **only on proof** that the
+material can never work again. So a set that falls back to its sign-in
+screen has either been erased on purpose, or never restored.
+
+| What happened | What the set does |
+| --- | --- |
+| Somebody changed the account password | **Erases.** A password reset mints a fresh keypair, so the stored keys stop matching. This is the lever that really evicts a set. |
+| The account was disabled | **Erases.** |
+| "Log out all devices", or the one device was revoked | **Keeps.** It takes a fresh token on its next start. |
+| The device slots are full | **Keeps.** The slots free themselves, and the same keys then work. |
+| The account was **deleted** | **Keeps** — an empty record looks the same as a cold start. The set falls through to its sign-in screen every time and nothing on screen says the account is gone. |
+| Somebody used "Change service…", or signed the set out | **Erases**, both halves. |
+
+**Deleting an account and creating the same username again evicts the set
+rather than restoring it**: the new account has a new keypair, the stored
+key fails, and *that* erases. Change the password before you delete an
+account if you want the television cleaned up.
+
+**"Cannot sign in, try again in 15 minutes" on a set nobody is touching**
+is the panel's login throttle. A set retrying a credential that cannot work
+spends a small budget per start, and the throttle counts per account **and**
+per peer. Restarting the app clears it, because the peer half is new for
+each app process. The lasting fix is the same one: change the password, or
+sign the set out.
+
+## "Play on my TV" shows no devices
+
+- **Both devices must be signed in to the same account.** The rendezvous
+  comes from the account key. Different accounts never meet.
+- **The television must be the one announcing.** A controller looks up and
+  never announces, on purpose, so two phones see each other but two
+  televisions never meet.
+- **The take-over switch may be off** on that set. It refuses `play` and
+  `stop` alike.
+- **The list is not the panel's device list.** A device's name and id there
+  are its own claim. Use the panel's list when you need to know what is
+  really enrolled.
+- **Nothing happens after a viewer picks a channel.** A restricted channel
+  goes through the television's own parental gate first. If the set cannot
+  read the channel's record it refuses the command rather than guessing,
+  and the phone sees `unavailable` — retry it; both causes are temporary.
+
+## Casting to a Chromecast or a Google TV
+
+- **The receiver connects and plays nothing.** The most common cause is the
+  address. A phone can have several private addresses — Wi-Fi, a VPN, a
+  virtual adapter — and the one the app advertised may not be the one the
+  television can reach. The session carries every candidate it found; try
+  the next one.
+- **The picture stops when the phone leaves the network or sleeps.** That
+  is inherent. While casting, the phone **is** the server: it replicates,
+  decrypts and serves the stream. It has to stay awake and on the network.
+- **Storage grows during a long cast.** Block reclaim is off for a channel
+  a cast has pinned, because the phone's copy is the only thing that can
+  still serve a receiver that fell behind. Expect about the channel bitrate
+  per hour (roughly 0.9 GB/hour at 2 Mbit/s). Stopping the cast reclaims it;
+  an app killed in the middle of a cast does not, and the space comes back
+  when the viewer next tunes that channel.
+- **The session ended by itself.** The channel's feed was purged or a
+  retune failed. The server is closed and the URL is dead — start again.
+- **Who else can watch.** Anyone who can reach the television can read the
+  cast URL off it, so on a shared network treat a cast as that one channel
+  extended to that network for the length of the session. This was measured
+  on a real Google TV. Pin the session to the receiver's address where the
+  app offers it, and prefer "play on my TV" on a network you do not trust:
+  a handoff sends no video at all.
 
 ## Reading the app's own diagnostics (dev builds)
 

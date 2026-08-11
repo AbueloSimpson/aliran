@@ -12,11 +12,94 @@ milestone with its verification narrative — lives in
 ## [Unreleased]
 
 The cumulative pre-1.0 state (no version has been cut yet). Every item below is
-implemented, covered by an e2e or unit suite, and — where it touches the runtime —
-verified on real infrastructure (a VPS over the public DHT, a physical Android
-phone + Android TV, and the Windows desktop player).
+implemented and covered by an e2e or unit suite, and — with the exception noted on
+the first three items — everything that touches the runtime is verified on real
+infrastructure (a VPS over the public DHT, a physical Android phone + Android TV,
+and the Windows desktop player). **"Send to TV", "play on my TV" and casting have
+not been on a television yet**; each says so where it is described.
 
 ### Added
+
+- **Sign in a television from a phone ("send to TV").** A set shows a
+  12-character code, the viewer types it on a phone that is already signed in,
+  and the phone hands the account over the connection the two devices share. The
+  password never crosses; the operator key does, so one action both sets the
+  service and signs in — nothing 64 characters long is ever typed on a remote.
+  The television then runs a **full login of its own**: its own `deviceId`, its
+  own panel-signed token, so `maxDevices`, the device list, per-device revoke and
+  the activity feed keep working per device. Two viewer checks gate the payload
+  and they catch **different** attackers — four **compared digits** (a relay holds
+  two connections with two handshake hashes, so its two sets disagree) and an
+  **entered PIN** typed on the set (a code shown with no real television behind it
+  has nowhere to receive it) — with commit–reveal nonces so neither side, and no
+  relay, can choose its half after seeing the other's. A relay's chance is a flat
+  1 in 10 000 per pairing, every failure spends the code, and the PIN gets one
+  attempt. **It is not phishing-proof**: an attacker present in real time defeats
+  both checks, as does a viewer who approves without comparing, and the docs say
+  so. A set with no operator yet shows the account, the key and that key's printed
+  pairing code and waits for a person; a set that already has one refuses a
+  different one without asking. New: `startSignInPairing()`, `sendSignIn()`,
+  `submitSignInPin()`, `confirmSignInMatch()`, `confirmSignInService()`,
+  `signInWithKeys()`, and a `signin-pair` event stream. Lanes:
+  `test:signin-pair`, `test:remote-core`.
+
+  **A handed-over television survives a restart.** With `remote: { keepSignIn }`
+  — off unless asked for **by name** — the engine emits the account keys once, and
+  the app seals them in the Bare worklet under a fresh key per write, wrapped by
+  an AES-256-GCM key in the **Android Keystore**. The set erases what it holds
+  **only on proof** that it can never work (the key store refusing, a record
+  failing its own check, an operator it has left, or a panel verdict on the
+  account); a key store that did not answer, a swarm still dialling and an account
+  record that has not replicated yet all keep and retry. Retries are budgeted in
+  **panel logins** rather than seconds, so a set can never lock its own account —
+  or the sign-in screen a viewer is standing at — out of the panel. **The
+  credential that crosses is permanent, not a session: only a password reset
+  re-keys it**, and that is now written down where an operator will find it.
+  Lanes: `test:signin-vault`, `test:signin-resume`.
+
+- **"Play on my TV" — handoff between two devices of one account.** They meet on
+  a rendezvous derived from the account key: no code, no viewer action, a
+  once-a-day roll, and a controller that looks up without ever announcing, so a
+  phone publishes no address and two televisions never meet. Membership is proved
+  with a MAC over the connection's handshake hash, and nothing about a device is
+  sent until the other side's proof verifies. A phone tells a set what to play and
+  the set pulls P2P itself, so **no video crosses between them**. The engine
+  checks entitlement and then deliberately **does not tune**: it hands the command
+  to the host with `restricted` on it, so a parental PIN stays in front of a
+  restricted channel — and where it cannot read the channel's record it
+  **refuses** rather than guessing at the flag. `setRemoteAccept(false)` is the
+  per-set opt-out. New: `startRemote()`, `listRemotes()`, `remotePlay()`,
+  `remoteStop()`, `setRemoteAccept()`, `updateRemoteStatus()`, `stopRemote()`,
+  plus `remotes` and `remote` events. Lane: `test:remote-control`.
+
+- **Cast a channel to a Chromecast or Google TV.** `startCast()` stands up a
+  **second** media server that exists only while a session does, binds **one
+  private LAN address** (a device whose only address is public is refused, by
+  name), and serves only `/cast/<32-byte token>/…` from **one pinned feed drive**
+  — so the receiver keeps the channel it was given while the phone zaps somewhere
+  else. Everything else 404s, including `/assets/*`, `/epg/*` and
+  `/feedthumb/*`. The loopback server of ordinary playback is unchanged and still
+  refuses `/cast/*`; the one behaviour that did change is that both now answer
+  **405** to methods other than GET and HEAD. Block reclaim is **off** for a
+  pinned feed — a receiver that falls below the live window can only be served
+  from this device's replica — and `stopCast()` runs one reclaim pass itself.
+  Three findings came from real equipment rather than from reasoning: the stock
+  **Default Media Receiver** (`CC1AD845`) plays an `http://` LAN URL, so no Google
+  registration, fee or hosted page is needed; **cross-origin headers are
+  required** (without them the receiver fetched the playlist and zero segments);
+  and **the cast URL is readable off the television by any unauthenticated peer on
+  the network**, which makes the token a session *scope* rather than an access
+  boundary. `startCast({ receiverHost })` pins the session to the receiver's
+  address and is the mitigation; it is off by default, because the SDK does not
+  speak the Cast protocol and cannot discover that address. Redirect channels cast
+  with no local server at all. New: `startCast()`, `stopCast()`, `castSession()`
+  and a `cast` event. Lane: `test:cast`.
+
+  ⚠ **None of these three has been seen on a television.** The engine work is
+  covered by lanes that run on a desktop against a local panel or a local DHT, and
+  the measurements above were taken with a laptop and one set, on firmware it has
+  since replaced. Exposure, measurements and the operator levers are in
+  [docs/security-model.md](docs/security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting).
 
 - **M3U playlist sources + redirect-channel playback headers — carry
   hotlink-protected, token-rotating provider lists (e.g. live-event playlists).**

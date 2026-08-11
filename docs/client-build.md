@@ -264,9 +264,13 @@ Rules that keep this safe:
   are recognized and **ignored**. A copied-but-unfilled block falls
   through to the normal viewer pass-off instead of sending the literals
   to the provider.
-- The app refuses cleartext everywhere here. A non-https `apiBase` is
-  never dialed, and the provider's playable URLs — which embed the token
-  via a `{token}` placeholder — are only completed over https.
+- **The VOD client enforces https on itself**, whatever the platform
+  permits. A non-https `apiBase` is never dialed, and the provider's
+  playable URLs — which embed the token via a `{token}` placeholder — are
+  only completed over https. This is a rule in the app's own code, not a
+  consequence of the network security config: the shipped config permits
+  cleartext broadly (see the manifest notes below), so nothing else stops
+  a token going out in clear.
 
 > **Gradle gotcha:** the release JS-bundling task does not track
 > `client/config/*.json` as an input. After editing `service.json`,
@@ -288,6 +292,19 @@ with a remote or D-pad.
 
 Declare both `LAUNCHER` and `LEANBACK_LAUNCHER` intents. Set
 `android.software.leanback` to **not required**, and set
-`android.hardware.touchscreen` to `required=false`. Allow `127.0.0.1`
-cleartext in the network security config, and add the `INTERNET`
-permission.
+`android.hardware.touchscreen` to `required=false`. Add the `INTERNET`
+permission, and permit cleartext in the network security config.
+
+**How much cleartext, and why.** The engine itself needs only
+`127.0.0.1`, and loopback-only is the right setting for a build that
+carries P2P channels alone. The **shipped** app goes further: its release
+`network_security_config.xml` permits cleartext to **every** host, so that
+redirect and event channels a provider serves over plain `http://` can
+play. That is a deliberate operator decision with a named cost — cleartext
+stream traffic is unencrypted and can be read or changed by anyone on the
+network path — and the panel's own source-scoped `allowCleartext`
+exemption is the half that lets those URLs into the catalog at all. Pick
+the posture your lineup needs; the file carries the reasoning either way.
+Note that a network security config governs the app's **outbound**
+requests only, so it neither permits nor blocks the **inbound** LAN server
+a cast session stands up.

@@ -103,7 +103,8 @@ sequenceDiagram
   C->>C: rwd = unblind(...), wrapKey = Argon2id(rwd, salt)
   C->>DB: read signed user/<username>
   C->>C: verify against record, unwrap stream keys
-  C->>C: seal session in Keystore (long TTL)
+  C->>C: cache the panel-signed session (long TTL)
+  Note over C: a saved password is plaintext at rest; only a television signed in from a phone seals key material in the Android Keystore
 ```
 
 ### Stream join & playback

@@ -186,7 +186,48 @@ following only the docs.
   written into the box `.env` server-side. `test:mcp` in the required lane.
   **Published on npm** — `npx @aliran/mcp` runs it anywhere, with the docs corpus
   bundled at pack time. See [docs/mcp.md](docs/mcp.md)
-- ⬜ **Service pairing code** — a 12-character alias for the panel public key
+- 🚧 **Sign in a television from a phone** — a set shows a 12-character code, the
+  viewer types it on a phone that is already signed in, and the phone hands the
+  account over: no password on a remote control, and no 64-character key either,
+  because the operator key travels with it. The set registers **its own device**
+  and takes **its own panel-signed token**, so `maxDevices`, the device list and
+  per-device revoke keep working per device. Two viewer checks gate the handover
+  and they catch different attackers — **compared digits** (a relay terminates two
+  connections, so its two sets of digits disagree) and an **entered PIN** (a code
+  shown with no real television behind it has nowhere to receive the digits) —
+  with commit–reveal so no side chooses its half last. It is **not phishing-proof
+  and the docs must never say it is**: an attacker present in real time defeats
+  both checks, and so does a viewer who approves without comparing. A television
+  keeps the handover across restarts by sealing the account keys under an Android
+  Keystore key (`remote: { keepSignIn }`, off unless asked for by name), erases
+  them only on proof they can never work, and budgets its retries in panel logins
+  so it can never lock its own account out. **The credential that crosses is
+  permanent: only a password reset re-keys it.** Lanes: `test:signin-pair`,
+  `test:signin-vault`, `test:signin-resume`, `test:remote-core`
+- 🚧 **Play on my TV** — two devices of one account meet on a rendezvous derived
+  from the account key: no code, no viewer action, and a phone that never
+  announces an address. A phone tells a television what to play and the set pulls
+  P2P itself, so no video crosses between them. The engine checks entitlement and
+  then deliberately **does not tune** — it hands the command to the host with a
+  `restricted` flag, so a parental PIN stays in front of a restricted channel, and
+  it refuses outright where it cannot read the channel's record. `setRemoteAccept`
+  is the per-set opt-out. Lane: `test:remote-control`
+- 🚧 **Cast to a Chromecast or Google TV** — a second HTTP server that exists only
+  while a session does, bound to **one private LAN address**, serving one pinned
+  channel behind a per-session path token. The loopback server of ordinary
+  playback is untouched. Measured against real equipment: the stock **Default
+  Media Receiver** works (no Google registration, no fee, no hosted page — a
+  white-label operator registers their own application id if they want their own
+  branding), cross-origin headers are **required**, and **the URL is readable off
+  the television by any unauthenticated peer on the network** — so the token is a
+  session *scope*, not an access boundary, and `receiverHost` pinning is the
+  mitigation. Lane: `test:cast`
+
+  ⚠ All three are **built and reviewed, and none has been seen on a television**.
+  The measurements above were taken with a laptop and one set. Exposure,
+  measurements and operator levers:
+  [docs/security-model.md](docs/security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting)
+- ✅ **Service pairing code** — a 12-character alias for the panel public key
   (`A3K7-9QF2-M4XR`), so a viewer never types 64 hex characters on a phone keyboard
   or a TV remote. The code is **derived** from the key with a memory-hard KDF, so
   there is no registry and nothing to mint: the panel computes its own code at

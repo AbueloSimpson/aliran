@@ -189,6 +189,57 @@ decrypt. Commercial DRM makes the same admission behind more machinery. Operator
 whose licensing demands hardware-enforced DRM or territorial enforcement should
 recognize that this platform is the wrong tool for that content.
 
+## Sending a sign-in from a phone to a television
+
+A television has a remote control, not a keyboard. "Send to TV" lets a phone that
+is already signed in put the same account on the set. The television shows a
+12-character code, the viewer types that code on the phone, and the two devices
+meet on a topic derived from the code. Each side then proves to the other that it
+holds the code.
+
+**What crosses.** The phone sends the account **username**, the account's
+**X25519 private key**, its **Ed25519 private key**, and the **panel public key**
+— inside the Noise connection the two devices already share, which is why nothing
+else on the topic can read it. The password does not cross, and the television
+never learns it. The television then does a full login of its own: it registers
+**its own `deviceId`** and takes **its own panel-signed token**. So `maxDevices`,
+the device list, per-device revoke and the activity feed keep working per device,
+exactly as for a typed login.
+
+Because the panel key travels with the payload, one action does two jobs: it sets
+the service and it signs in. Nobody types 64 hex characters, or the operator's
+12-character pairing code, on a remote control.
+
+**Two viewer checks, and each one catches what the other misses.** Both must pass
+before the payload leaves the phone.
+
+| Check | What the viewer does | What it catches |
+| --- | --- | --- |
+| **Compared digits** | Four digits show on **both** screens. The viewer confirms on the **phone** that the television shows the same four. | A **relay** — a peer that holds one connection to each device. Two connections have two different handshake hashes, so the relay's two sets of digits disagree. Each side commits to its half of the digits before it sees the other half, so no side and no relay can choose last. |
+| **Entered PIN** | Four digits show on the phone. The viewer types them into the television with the remote. | A **static lure** — a code shown on a screen with no real television behind it. The digits go into a set that is not in the exchange, so the exchange stops. |
+
+A relay that guesses gets **1 chance in 10 000** per completed pairing. The number
+is flat: more connections do not improve it, because each side shows exactly one
+set of digits. Every failure **spends the code**, and the PIN gets one attempt
+with no retry. A second pairing is a new, independent 1 in 10 000, so a viewer who
+sees the mismatch warning must stop instead of trying again on the same network.
+The warning says so.
+
+**This is not phishing-proof. Do not write it as if it were.** The two checks
+remove the static lure and the silent relay. They do not remove an attacker who is
+present in real time — a false setup wizard, or a support call that walks the
+viewer through both steps — and they do not remove a viewer who taps "yes" without
+comparing anything. No protocol round closes that. What the checks change is the
+price: a printed code is no longer sufficient, and the attacker must be there at
+the moment of pairing.
+
+**Taking an operator key.** A television with no operator key yet is about to take
+one from the payload. It asks first: it shows the account name, the operator key,
+and that key's printed 12-character pairing code, and it waits for a person to
+approve. A television that **already** has an operator key refuses a different one
+outright, and does not ask. So on a new set the human check is the whole of this
+defence, and on a configured set it is none of it.
+
 ## Account keys at rest (televisions)
 
 A television signed in by a phone ("send to TV") never receives a password — what
@@ -206,7 +257,11 @@ unwrap but cannot read the key itself — and neither can anything that reads th
 app's files. `secureKeyStatus()` reports whether that is true on a given device
 rather than assuming it — and it reports rather than finds out: it will not create
 a key in order to describe one, so a device that has never kept a sign-in answers
-`keyPresent: false` with an *unknown* security level instead of a claim.
+`keyPresent: false` with an *unknown* security level instead of a claim. **No
+shipped screen calls it**, so an operator has no way today to tell a set whose
+wrapping key lives in a TEE from a set where it lives in software. The record is
+kept either way, deliberately: a key held in software is still better than the
+plaintext password beside it.
 
 **What this buys, plainly.** Reading the app's private files is no longer enough:
 the box is inert without the Keystore, and the Keystore only answers this app on
@@ -329,8 +384,284 @@ solely when constructed with `remote: { keepSignIn: true }` — **by name**, sin
 not this one — and the viewer app sets it on televisions and nowhere else. A phone
 signed in by another phone still has a keyboard and a password, so it keeps nothing.
 
+## "Play on my TV" — the account rendezvous
+
+Two devices of one account find each other with no code and no viewer action. The
+topic comes from the account's own private key, so only that account's devices can
+calculate it. It rolls once a day, and a device joins the current day and the
+previous day, which absorbs clock skew. A television announces on it. A phone
+looks up and never announces, so a phone publishes no address, and two televisions
+never meet.
+
+Membership is proved with a MAC over the connection's handshake hash, keyed from
+the account key. Hyperswarm authenticates a peer *keypair*, which says nothing
+about who the account holder is — this proof is what authenticates. A device sends
+nothing about itself until the other side's proof is verified.
+
+**What a controller can do.** Ask a television to play a channel **that television
+is entitled to**, ask it to stop, and read what it shows. The engine checks the
+channel against the receiving device's own entitlements, and then deliberately
+**does not tune it**: it gives the command to the host app with a `restricted`
+flag on it. The host must put a restricted channel through the same parental-PIN
+gate a local zap goes through. An engine that tuned on behalf of the peer would
+make "play on my TV" the documented way past that gate. Where the engine cannot
+read the channel's catalog record, it refuses the command instead of guessing at
+the flag.
+
+`setRemoteAccept(false)` makes a television refuse `play` and `stop`. It is the
+opt-out inside the protocol, per set.
+
+## Casting to a television on the local network
+
+Ordinary playback serves HLS on `127.0.0.1`. Casting cannot: a television is not
+on the phone's loopback interface. So a cast session starts a **second** HTTP
+server, and every property of it is narrower than the first:
+
+- It exists **only while a session exists**.
+- It binds **one private (RFC1918) address**, not all interfaces. A device whose
+  only address is public is **refused**, by name. An address the device has lost
+  by the time the server binds is also refused, because the URL would not have
+  worked and a wider bind for a dead address is worse than a refusal.
+- It serves **only** `/cast/<32-byte token>/…`, from **one pinned feed drive** —
+  that channel's playlist, its segments and its live thumbnail. Everything else is
+  a 404, including `/assets/*`, `/epg/*` and `/feedthumb/*`.
+- The drive is **pinned**, so the television keeps the channel it was given while
+  the phone zaps somewhere else.
+- The token is new for each session, compared in constant time before any drive
+  read, and it is never logged, never emitted and never put in a problem report.
+
+The loopback server of ordinary playback is unchanged, and still refuses
+`/cast/*`. One behaviour of it did change with this work: both servers now answer
+**405** to methods other than `GET` and `HEAD`. Nothing in the apps sends one.
+
+**Cross-origin reads are on because a measurement showed they are necessary**, not
+because they are convenient. The stock receiver page is served from
+`https://www.gstatic.com`, so every media fetch it makes is cross-origin. Without
+`Access-Control-Allow-Origin`, the measured receiver fetched the playlist and
+**zero segments**.
+
+**The receiver application.** The shipped path uses Google's **stock Default Media
+Receiver** (`CC1AD845`). An operator needs no Google registration, no fee and no
+hosted receiver page. A white-label operator who wants a receiver with their own
+branding registers an application id of their own with Google and gives it to the
+sender; the bytes this SDK serves do not change.
+
+**The kill switch, for an operator who does not want these features at all.**
+Each one is off unless the build asks for it by name: `remote: { sendToTv }` for
+the phone half of the sign-in, `remote: { control }` for "play on my TV", and
+`remote: { keepSignIn }` for keeping a handed-over sign-in on disk. A build that
+asks for none of them joins no rendezvous, holds no account keys and keeps
+nothing. Casting is the same kind of decision one level up: the engine starts the
+LAN server only when the app calls `startCast()`, and `stopCast()` removes it
+immediately.
+
+## Residual risks for send to TV, play on my TV, and casting
+
+Accepted, and written down so an operator can plan around them. Items **8** and
+**9** of the register in the hardening pass below also belong to this feature.
+
+Each entry says what is exposed, to whom, for how long, and what an operator can
+do about it. Where a claim is proved by a test lane it says **asserted**; where it
+follows from the code but no lane drives it, it says **reasoned**; where it comes
+from an instrumented run against real equipment it says **measured**.
+
+> ⚠ **None of this has been seen on a television.** The engine work is covered by
+> `test:signin-pair`, `test:remote-control`, `test:signin-vault`,
+> `test:signin-resume`, `test:remote-core` and `test:cast`, all of which run on a
+> desktop against a local panel or a local DHT. The findings below that come from
+> real equipment were taken with a laptop and one Google TV set, on firmware that
+> set has since replaced. Nothing on a phone screen or a television screen has been
+> verified on hardware.
+
+1. **The handover payload is a permanent account credential, not a session.** The
+   account's X25519 private key opens **every** sealed stream key in the account's
+   signed record, straight out of the replica, with **no panel contact at all**.
+   Nothing about that use is visible to the operator: not `maxDevices`, not the
+   device list, not the activity feed. Of the operator's levers, *revoke device*
+   does not re-key, *log out all devices* does not re-key, and *disable the
+   account* does not re-key. **Only a password reset re-keys the account**, because
+   it mints a fresh keypair and re-seals the grants to it. Operator guidance after
+   any suspected bad handover: **reset the password**. (`test:signin-resume`
+   asserts against a real panel that a password change evicts and that "log out all
+   devices" does not; that the key opens the sealed records without the panel is
+   reasoned from `sdk/login.js`, and per-device revoke from `panel/src/ops.js`)
+2. **A television signed in by handover can hand the account onward.** The set
+   holds the same key material a phone holds, so it can be the source of the next
+   handover. An account can spread transitively from a device as low-trust as a
+   shared or hotel television. (reasoned)
+3. **The two viewer checks stop a static lure and a silent relay. They do not stop
+   a live pretext.** An attacker who is present in real time can walk a viewer
+   through the comparison and the entry, and so can a viewer who approves without
+   comparing. The relay's own chance is 1 in 10 000 per completed pairing, flat and
+   not improved by opening more connections; each new pairing is an independent
+   1 in 10 000, so the only bound on repeats is a viewer who heeds the mismatch
+   warning. (the mechanism is asserted — `test:signin-pair` runs the relay attack
+   and shows there is no set of digits to harvest before a claim, and
+   `test:remote-core` pins the commitment binding; the 1 in 10 000 follows from
+   four digits, and the live pretext is a design limit, not a measurement)
+4. **A new television takes an operator key on a human check alone.** The set
+   shows the account, the operator key and that key's printed pairing code, and
+   waits for approval. A viewer who approves without reading adopts whatever panel
+   the payload named, and that panel then supplies the catalog, the redirect URLs
+   and the VOD provider configuration. A television that already has an operator
+   key refuses a different one without asking. (asserted, `test:signin-pair`)
+5. **Anyone who can read the code off the screen can spend it.** A code-holder can
+   claim the exchange and then stall, so the viewer's own phone gets "busy" and
+   the code has to be replaced. It is repeatable and silent. It costs a viewer a
+   new code and never costs key material. It is inherent to a code shown on a
+   screen. (reasoned)
+6. **A kept sign-in is erased only on proof, which means a broken television keeps
+   trying.** The set destroys what it holds when the key store says the bytes will
+   never open, when the sealed record fails its check, when the device has left the
+   operator that granted it, or when the panel gives a verdict on the *account*. A
+   key store that did not answer, a host that did not answer in time, a swarm still
+   dialling, and an account record that has not replicated yet all **keep** what is
+   held and try again. Erasing is the one irreversible act here and it costs a
+   viewer a walk to another room, so the default runs toward keeping.
+   `tools/signin-vault-test.mjs` reads the panel's and the SDK's own error strings
+   off the disk, so this classification cannot drift silently when somebody rewords
+   a message. (asserted, `test:signin-vault` and `test:signin-resume`)
+7. **A deleted account leaves an inert record, and each boot pays a bounded price
+   for it.** "This device has no such account" is what a cold start looks like as
+   well as what a deletion looks like, so the set keeps its keys and retries. The
+   record cannot be revived: creating the username again mints a fresh keypair, the
+   stored key then fails, and *that* erases — so re-creating a deleted viewer
+   evicts the television instead of restoring it. The retries are budgeted in the
+   panel's own units: an attempt that reached the panel ends the restore attempt
+   for that boot, and attempts that never left the device are bounded by a clock
+   instead. A boot therefore spends at most what one resume can spend — three
+   `login` calls against a lockout threshold of ten. **Measured**: the same failure
+   that once spent eighteen and locked the account now spends three. The lockout it
+   protects against is narrower than it sounds and worse than it sounds: the
+   throttle counts per account **and** per peer, and the peer half is random for
+   each app start, so a set can only lock out itself and only until it restarts —
+   but the first thing it locks out is the sign-in screen it falls through to
+   seconds later, in front of a viewer who has the correct password. The lever that
+   cleans the device up is the same as always: **change the password** before
+   deleting the account. (measured, plus asserted by `test:signin-vault`)
+8. **Nothing reports whether a given set's wrapping key is held in hardware.**
+   `secureKeyStatus()` can tell `strongbox`, `tee` and `software` apart, and no
+   shipped screen calls it. On a set with a software key store and no lock screen,
+   "reading the app's private files is not enough" is a much weaker statement than
+   on a set with a TEE, and an operator cannot tell the two apart. (reasoned)
+9. **The account rendezvous cannot be revoked for one device.** The rendezvous
+   secret commits to the account's `tokenVersion`, so a password reset, "log out
+   all devices" and disabling the account each move the whole household to a new
+   rendezvous. *Revoke device* deliberately does not bump `tokenVersion` — the same
+   cooperative-sessions model as item 1 of the register below — so a device revoked
+   on its own keeps calculating the rendezvous secret, keeps meeting the other
+   devices, and keeps being able to change what they show. The lever that removes a
+   device from "play on my TV" is **log out all devices**, not revoke. A per-device
+   rendezvous key would be a protocol change. (reasoned from `panel/src/ops.js`,
+   which is explicit that `revokeDevice` does not bump `tokenVersion`; the
+   derivation and the epoch roll are asserted by `test:remote-core`)
+10. **One compromised device on an account can drive and observe the others.**
+    Membership is knowledge of one account-wide secret. Any device that holds it
+    can change any television's channel to anything that television is entitled
+    to, stop it, list what it is entitled to, and watch what it shows. This is the
+    deliberate shape of the feature: a confirmation prompt on a television would
+    need the remote control the feature exists to avoid. `setRemoteAccept(false)`
+    on a given set is the only mitigation inside the protocol. Per-device
+    authorisation would be a protocol change. (asserted, `test:remote-control`)
+11. **The parental-PIN gate on a remote play is an obligation of the host app.**
+    The engine checks entitlement and then deliberately does not tune. It emits the
+    command with `restricted` on it, and the host must put a restricted channel
+    through the same PIN gate a local zap goes through. Where the engine cannot
+    read the channel's record it refuses the play instead of guessing at the flag,
+    so it never reports a parental state it did not read. Where it *can* read it,
+    nothing enforces the gate at the SDK boundary: a host that ignores `restricted`
+    has no parental control on this path, and the engine cannot tell. (the refusal
+    and the strict flag are asserted by `test:remote-control`; that the gate itself
+    cannot be enforced from here is a property of the boundary, not a test result)
+12. **A device's name on the rendezvous is its own claim.** `deviceId`, `label`
+    and `role` are authenticated only as far as "some device of this account". The
+    proof covers the account secret, not the identity sent after it. Two devices
+    given the same id both answer to it, and a compromised device of the household
+    can present any id or role it likes. The panel's device list is the authority
+    on identity everywhere else. This is a handle for a picker, not a credential.
+    (`test:remote-control` asserts that identity is sent only after a proof and
+    cannot be rewritten later on the same channel; that the values themselves are
+    unbound to a device is reasoned)
+13. **A cast session serves one channel's decrypted content on one private LAN
+    address, for the length of the session.** Anyone who can reach that address and
+    holds the URL can fetch that channel until the session ends. The session ends
+    on `stopCast()`, on engine `stop()`, and on its own if the pinned feed is
+    purged or a retune fails to return a drive — the last three raise a `cast`
+    event with `state: 'ended'`, and `stopCast()` does not, because the caller that
+    asked for it already knows. **On the Bare runtime the listening socket is
+    released only after every connection drains**, so one connection that never
+    settles can hold the port past `stopCast()`. The session, the token and the
+    pinned drive are already gone by then, so such a listener answers 404 to
+    everything — but the port stays open, and the only trace is a breadcrumb that
+    reaches an operator only if the viewer files a problem report. (asserted,
+    `test:cast`; the Bare socket behaviour is reasoned from the installed source)
+14. **The cast session token is a scope, not a secret the network keeps —
+    measured, not assumed.** The URL is given to the receiver as the media
+    `contentId`. On a TCL Google TV running the stock Default Media Receiver, a
+    process that had never seen the URL and presented no credential connected on
+    port 8009, joined the running session, and read `contentId` in full — the whole
+    URL, token included. **On a shared network the default boundary is therefore
+    "anyone who can reach the television"**, not "anyone who holds the token". The
+    token is still the right mechanism (a stock receiver cannot send an
+    authentication header, the token scopes a session to one channel, it dies with
+    the session, and it makes blind scanning useless) but it is not access control
+    on a network you do not trust. `startCast({ receiverHost })` pins the session
+    to the receiver's address and raises the bar to "recover the URL **and** hold a
+    position on the network that answers as the television". It is **off by
+    default**, because the SDK does not speak the Cast protocol and cannot find the
+    address itself; only the app that launched the session knows it. A multi-room
+    group fetches from every member, so pin every member or leave the pin off for
+    groups, and an empty list throws instead of meaning "unpinned". Treat an
+    unpinned session on café or hotel Wi-Fi as **entitlement to that one channel,
+    extended to the local network, for the length of the session**. (measured on
+    one set, on firmware it has since replaced; the refusals are asserted by
+    `test:cast`)
+15. **`advertiseHost` is the only thing that can widen the bind.** An address the
+    SDK picked itself is always one this device owns, and is what the server binds
+    to. An `advertiseHost` the device does **not** own — a hostname, a NAT address,
+    a forwarded address — falls back to a bind on all interfaces: the VPN tunnel,
+    container bridges, mobile data, and a public address if the device has one.
+    That is the caller's explicit request and nothing warns about it. (asserted,
+    `test:cast`)
+16. **The advertised address is a guess.** The operating system's interface list
+    carries no route metric, no gateway and no link state, so Wi-Fi, a Hyper-V,
+    WSL or Docker bridge, and carrier CGNAT are all private addresses and cannot be
+    told apart. The session reports every private candidate in pick order, so a
+    host can offer another one instead of leaving the viewer with a receiver that
+    never connects. (asserted, `test:cast`)
+17. **Cross-origin reads on the cast server are enabled by measurement, not by
+    preference.** The receiver page is served from `https://www.gstatic.com`, so
+    every media fetch it makes is cross-origin: with the header removed, the
+    measured receiver fetched the playlist and **zero segments**. The cost is that
+    `Access-Control-Allow-Origin: *` is on **every** response, including 404, 405
+    and 500, and `OPTIONS` is answered `204` before the token is checked. So the
+    server can be identified positively on the network, and from a browser, with no
+    token. Existence and identity leak; content does not. (the requirement is
+    measured on one set; the header and status behaviour are asserted by
+    `test:cast`)
+18. **Expired-block reclaim is off for a cast-pinned feed, so disk grows by about
+    the channel bitrate for the session** — roughly 0.9 GB per hour at 2 Mbit/s.
+    This is deliberate: blocks below the live window are already unfetchable across
+    the swarm, so this device's replica is the only thing that can still serve a
+    receiver that fell behind. `stopCast()` runs one reclaim pass itself. **An app
+    killed in the middle of a cast never reaches it** and strands about that much —
+    around 2.7 GB for a three-hour cast — until the viewer tunes that channel again
+    or the replica is evicted. (asserted for the normal stop, `test:cast`; the
+    app-kill path is reasoned)
+19. **A revoked grant does not end a live cast session.** Entitlements for P2P
+    channels are read at login, so revocation applies at the next login, exactly as
+    for local playback. The cast surface makes that visible on the LAN instead of
+    only on the device. Grant removal plus stream-key rotation stays the real
+    revocation boundary. (reasoned)
+
 ## What this does NOT protect against
 
+- A **live** pretext during a phone-to-TV sign-in: an attacker who talks to the
+  viewer in real time can walk them through both viewer checks (see above).
+- A peer on the same network reading a **cast URL** off the television and
+  fetching that channel for the length of the session (see above).
+- One compromised device of an account **driving and observing** the other devices
+  of that account over the rendezvous (see above).
 - Blocking peers from *connecting* to a public swarm topic (confidentiality comes
   from encryption, not from connection-gating).
 - Extraction of a television's stored sign-in by code running **as the app** on a
@@ -412,7 +743,9 @@ floor (19 MiB, t=2) and in RFC 9106 territory.
 
 These are inherent to the shipped protocol. Removing them would need a breaking
 change (new player/SDK/app builds), which is explicitly out of scope. They are
-documented rather than implemented:
+documented rather than implemented. The register for "send to TV", "play on my
+TV" and casting is [a separate list above](#residual-risks-for-send-to-tv-play-on-my-tv-and-casting);
+items 8 and 9 here belong to both.
 
 1. **Bearer session tokens are replayable across devices.** The token embeds a
    `deviceId` but is not cryptographically bound to the device — anyone holding a

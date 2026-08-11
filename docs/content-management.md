@@ -47,10 +47,12 @@ Art fields (`poster`, `backdrop`, `logo`) accept **two forms** — hybrid art:
 - **Remote URL passthrough:** set the field to an absolute **`https://` URL**
   (`set-meta` / `PATCH /api/streams/:id` / the dashboard's "url" button). The SDK
   passes it through to clients **unchanged** — viewers fetch it directly from your
-  web host or CDN, and nothing replicates P2P. **https is required**: Android
-  blocks cleartext HTTP off-loopback, so an `http://` poster would fail silently
-  on devices, and the panel rejects it outright. Cache-busting is on you — version
-  the URL when the image changes.
+  web host or CDN, and nothing replicates P2P. **https is required and the panel
+  rejects an `http://` art URL outright.** Art has no per-source cleartext
+  exemption — the one that exists is for stream URLs only — and a build whose
+  network security config blocks cleartext fails an `http://` poster *silently*,
+  with no error anywhere. Cache-busting is on you — version the URL when the
+  image changes.
 
 An empty string clears an art field. The two forms mix freely per stream and per
 kind — for example, a P2P poster with a remote backdrop.

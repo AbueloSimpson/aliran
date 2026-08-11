@@ -188,18 +188,40 @@ Layered, weakest to strongest:
    feedKey rotation alone is *not* revocation: the encryption key is
    unchanged by design, so grants survive it.)
 
+**One lever is stronger than its place in that list suggests: changing the
+password.** It mints a **fresh account keypair** and re-seals the grants to
+it, so every stored copy of the old key stops working. That matters most for
+a device signed in by a phone ("send to TV"), which holds the account's
+private keys rather than a password: the key it holds opens every entitled
+stream key straight out of the replicated record, with **no panel contact
+at all** — invisible to `maxDevices`, the device list and the activity feed.
+Neither *revoke device* nor *log out all devices* re-keys it. After any
+suspected bad handover, **reset the password**. See
+[the residual-risk register](security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting).
+
 ## 9. Security boundaries worth knowing when integrating
 
-- **Viewer apps hold no secrets.** The panel key is public. Accounts are
+- **Viewer apps ship no secrets.** The panel key is public. Accounts are
   the only credential, and the OPRF keeps passwords off the wire. Ship
-  nothing else.
+  nothing else. **One build class holds one at runtime**: a television
+  built with `remote: { keepSignIn: true }` keeps the account's private
+  keys on disk, sealed under an Android Keystore key, because a set signed
+  in from a phone has no password to save. That is off unless the build
+  asks for it by name — see
+  [Account keys at rest](security-model.md#account-keys-at-rest-televisions).
 - **Stream encryption keys never leave the engine.** The display list
   carries metadata plus localhost/absolute art URLs only. `resolve()`
   returns URLs, not keys.
 - **Admin/control tokens are operator-local** (loopback HTTP) and unrelated to
   viewer sessions — never embed them in an app.
-- **The SDK's HTTP server binds 127.0.0.1** with a per-session random
-  port. Media is reachable only on-device.
+- **The SDK's media server binds 127.0.0.1** with a per-session random
+  port, so ordinary playback is reachable only on-device. **A cast session
+  is the one exception**: `startCast()` stands up a *second* server on one
+  private LAN address, for one channel, behind a per-session path token,
+  for as long as the session runs. It cannot be reached by accident — a
+  host has to call it — and the loopback server is unchanged. What that
+  exposes, and to whom, is
+  [in the register](security-model.md#residual-risks-for-send-to-tv-play-on-my-tv-and-casting).
 - The catalog is **panel-signed end to end** — a viewer can't be fed a
   forged lineup by a peer. Broadcasters are authenticated writers via
   `register` only, and enrolling publishers scopes them further.

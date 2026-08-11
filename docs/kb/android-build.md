@@ -80,9 +80,12 @@ crashes Metro on Windows. Start Metro **after** the build finishes.
 - Release builds embed the JS (no Metro) and are signed with the debug
   keystore in dev. This is the reliable way to verify on-device when
   Metro's dev-server download to the emulator is flaky.
-- Cleartext HTTP is blocked in release builds (API 28+) — loopback
-  exceptions come from the app's `network_security_config.xml` (see
-  [playback](playback.md#posters-and-video-silently-fail-to-load-blank-tiles-no-error-anywhere)).
+- Cleartext HTTP is blocked by the platform from API 28 — what a build
+  permits comes from its `network_security_config.xml`. The engine needs
+  only loopback; the shipped app's **release** config permits cleartext
+  broadly, so that `http://` provider streams can play (see
+  [playback](playback.md#posters-and-video-silently-fail-to-load-blank-tiles-no-error-anywhere)
+  and [client build](../client-build.md)).
 - `run-as` doesn't work on release builds (they aren't debuggable) —
   verify via on-screen state and IPC logs, not the filesystem.
 
@@ -176,9 +179,11 @@ crashes Metro on Windows. Start Metro **after** the build finishes.
   cold-start and the bundle fetch, so you lose the race every time.
 - **Fix — serve Metro over the LAN, no tunnel:**
   1. Debug builds ship a debug-only
-     `src/debug/res/xml/network_security_config.xml` permitting cleartext
-     (release keeps loopback-only) — the main config would block a LAN
-     Metro with `CLEARTEXT communication … not permitted`.
+     `src/debug/res/xml/network_security_config.xml` permitting cleartext.
+     It exists because a loopback-only main config blocks a LAN Metro with
+     `CLEARTEXT communication … not permitted`. The shipped release config
+     now permits cleartext broadly too, so the two are the same today; the
+     debug override is kept separate so they can diverge again.
   2. Point the app at your machine (debug builds are debuggable, so
      `run-as` works): write `<string
      name="debug_http_host">YOUR_PC_IP:8081</string>` into the app's
