@@ -504,9 +504,16 @@ const styles = StyleSheet.create({
   },
   // THE PARTS OF THIS COLUMN HAVE TO ADD UP, and once did not: 12 pad + 52 number + 8
   // gap + 82 logo + 4 border came to 158 inside a 150-wide cell, and every station logo
-  // was clipped down its right edge on the set. They all ride theme.px now, so the sum
-  // holds wherever the knob is set: 0.8·(12 + 52 + 96) + 8 = 136, inside the 140 the
-  // ring's 2px border leaves of CH_COL_W.
+  // was clipped down its right edge on the set.
+  //
+  // They all ride theme.px now, so the sum holds as the knob moves — but only down to a
+  // point, because the 8px gap does NOT scale. Writing s for the scale:
+  //
+  //     s·(12 + 52 + 96) + 8  ≤  s·180 − 4        (contents ≤ CH_COL_W less the border)
+  //     s·160 + 12 ≤ s·180   →   s ≥ 0.6
+  //
+  // So any scale from 0.6 up is safe and the logos cannot clip. Below it, widen
+  // CH_COL_W's base or scale the gap too. theme.ts carries the same warning.
   // THE ROW'S OWN "you are here", and the thing that was missing. The focus fill landed
   // on ONE program cell out of the several in a 2 h window, while the channel column —
   // the part a viewer actually reads to know WHERE they are — never changed at all. From

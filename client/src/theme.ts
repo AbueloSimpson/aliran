@@ -25,7 +25,13 @@ const isTV = Platform.isTV
 // took the space out of the name, because the name is the only elastic thing in a row of
 // number + name + LIVE badge + logo. Scaling the whole ramp shrinks the number, the
 // badge, the logo and the lettering together, and the name gets the difference.
-const SCALE = isTV ? 0.8 : 0.68
+// Tuned on the TCL set: 1.0 → 0.8 (names became readable) → 0.72, the operator's call
+// from an actual viewing distance, which is the only place this question can be settled.
+//
+// ⚠ Do not take TV below 0.6 without re-checking the guide's channel column: its parts
+// must keep summing inside CH_COL_W, and that inequality only holds down to 0.6.
+// GuideScreen's chCell comment carries the arithmetic.
+const SCALE = isTV ? 0.72 : 0.68
 const px = (n: number) => Math.round(n * SCALE)
 
 const DEFAULT_COLORS = {
