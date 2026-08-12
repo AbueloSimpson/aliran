@@ -496,20 +496,27 @@ function GuideChip ({ label, active, onPress }: { label: string; active: boolean
   )
 }
 
-// The red NOW pill — live color, border-box focus (the menu-icon grammar).
+// The NOW pill (TV grid header only — the phone grid has its own floating pill).
+//
+// OUTLINED UNTIL IT IS FOCUSED, and that is the point. It used to carry a solid live
+// fill at all times, which made it the most saturated thing on a screen whose focus was
+// somewhere else entirely: a viewer looking for "where am I" was drawn straight to a
+// button they were not on. On this screen a SOLID FILL NOW MEANS FOCUS and nothing
+// else, so the pill states itself in outline and fills in only when the remote is
+// actually on it. It keeps the live colour either way — it is still the NOW control.
 export function NowPill ({ onPress, innerRef }: { onPress: () => void; innerRef?: React.RefObject<any> }) {
   const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
       ref={innerRef}
-      style={[styles.nowPill, focused && styles.chipFocused]}
+      style={[styles.nowPill, !focused && styles.nowPillIdle, focused && styles.chipFocused]}
       accessibilityRole="button"
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={styles.nowPillText}>{t('guide.now')}</Text>
+      <Text style={[styles.nowPillText, !focused && styles.nowPillTextIdle]}>{t('guide.now')}</Text>
     </Pressable>
   )
 }
@@ -543,7 +550,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999, backgroundColor: theme.colors.live,
     borderWidth: Math.max(theme.focusRing, 1), borderColor: 'transparent'
   },
+  // The unfocused TV pill (see NowPill). Applied ON TOP of nowPill, so the filled state
+  // above stays the base — which is what the PHONE's floating pill (styles.nowFloat)
+  // reuses, and it must keep its solid live bed and light text.
+  nowPillIdle: { backgroundColor: 'transparent', borderColor: theme.colors.live },
   nowPillText: { color: theme.colors.onPrimary, fontSize: theme.type.caption, fontWeight: '800', letterSpacing: 1 },
+  nowPillTextIdle: { color: theme.colors.live },
 
   // Time bar (shared — the lead column width comes from the host grid).
   timebar: { flexDirection: 'row', alignItems: 'baseline', marginTop: theme.spacing(0.5), marginBottom: theme.spacing(0.5) },

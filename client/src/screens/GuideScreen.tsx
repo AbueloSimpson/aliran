@@ -24,6 +24,18 @@
 //                    DOWN from the header lands back on the catcher. OK tunes the
 //                    focused row's channel; BACK leaves the header for the grid,
 //                    else pops back to where the viewer came from.
+//
+//                    COLOUR GRAMMAR, and it is load-bearing on a virtual-focus screen:
+//                    there is no native focus ring to fall back on, so focus exists
+//                    only as far as these styles say it does. FOCUS colour (and a solid
+//                    fill) means where the remote is, and nothing else may use it — the
+//                    focused row rings its CHANNEL COLUMN and lights the number, and the
+//                    focused program cell takes the light fill. LIVE red means "on air
+//                    now" (the airing cell's border, the progress hairline). ACCENT
+//                    means the channel being watched (the row's left edge). Those were
+//                    not distinct before: the airing border used ACCENT, which brands
+//                    routinely set equal to focus, so most rows on screen wore the focus
+//                    colour and the real focus was lost among them.
 //   GuidePanel (phone) the same timeline as a touch grid (WS7 — the now/next-only
 //                    list "looked bad" on device): dense ~52px rows, horizontal
 //                    fling pages the window one slot, tap tunes. Lives in
@@ -367,10 +379,14 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
     ? null
     : visible.some((p) => p.start === focusedCellStart) ? focusedCellStart : visible[0]?.start ?? null
 
+  // Does THIS row hold the virtual focus? The channel column answers it, not just the
+  // one program cell the reducer named — see chCellFocused.
+  const rowFocused = focusedCellStart != null
+
   return (
     <View style={[styles.gridRow, playing && styles.rowPlaying]}>
-      <View style={styles.chCell}>
-        <Text style={styles.chNumber}>{formatChannelNumber(number)}</Text>
+      <View style={[styles.chCell, rowFocused && styles.chCellFocused]}>
+        <Text style={[styles.chNumber, rowFocused && styles.chNumberFocused]}>{formatChannelNumber(number)}</Text>
         {stream.logo
           ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
           : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
@@ -378,8 +394,8 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0
           ? (
-            <View style={[styles.cell, styles.cellAtStart, { width: stripW }, focusedCellStart != null && styles.cellFocused]}>
-              <Text style={[styles.cellTitle, styles.cellEmpty, focusedCellStart != null && styles.cellTitleFocused]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
+            <View style={[styles.cell, styles.cellAtStart, { width: stripW }, rowFocused && styles.cellFocused]}>
+              <Text style={[styles.cellTitle, styles.cellEmpty, rowFocused && styles.cellTitleFocused]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
             </View>
             )
           : visible.map((p) => {
@@ -422,7 +438,19 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3, borderLeftColor: 'transparent'
   },
   rowPlaying: { borderLeftColor: theme.colors.accent },
-  chCell: { width: CH_COL_W, flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: theme.spacing(1) },
+  chCell: {
+    width: CH_COL_W, flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: theme.spacing(1),
+    // Reserved so the ring below adds no width — the grid must not shift as focus walks.
+    borderWidth: 2, borderColor: 'transparent', borderRadius: 8
+  },
+  // THE ROW'S OWN "you are here", and the thing that was missing. The focus fill landed
+  // on ONE program cell out of the several in a 2 h window, while the channel column —
+  // the part a viewer actually reads to know WHERE they are — never changed at all. From
+  // a sofa that looked like the window scrolling by itself. A ring plus the lit number
+  // rather than a fill: station logos are transparent PNGs drawn for a dark bed, and a
+  // pale fill behind them erases the white ones.
+  chCellFocused: { borderColor: theme.colors.focus },
+  chNumberFocused: { color: theme.colors.focus, fontWeight: '800' },
   chNumber: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: 52 },
   chLogo: { width: LOGO_W, height: LOGO_H, borderRadius: 4, backgroundColor: theme.colors.surface },
   chLogoFallback: { alignItems: 'center', justifyContent: 'center' },
@@ -434,7 +462,14 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: 'transparent', overflow: 'hidden', justifyContent: 'center'
   },
   cellAtStart: { left: 0 },
-  cellNow: { borderColor: theme.colors.accent },
+  // "This program is on air now" — in the LIVE colour, which is what it means, and
+  // deliberately NOT the accent it used to use. A brand may set accent and focus to the
+  // same value (SolTV sets both to #FBBF24, and the stock theme sets both to #22D3EE),
+  // and this border is drawn on EVERY visible row: the airing ring was therefore
+  // painting five or six rows in the exact colour the app uses for focus, so the one
+  // genuinely focused row had nothing to distinguish it. The red also matches the
+  // progress hairline already running along the bottom of this same cell.
+  cellNow: { borderColor: theme.colors.live },
   cellFocused: { backgroundColor: theme.colors.focusFill },
   cellTitle: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '700' },
   cellTime: { color: theme.colors.textDim, fontSize: theme.type.caption - 1, fontVariant: ['tabular-nums'], marginTop: 1 },
