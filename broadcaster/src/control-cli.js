@@ -9,6 +9,7 @@
 // Touches only DATA_DIR/secrets/admins.json — safe while the broadcaster runs.
 
 import readline from 'readline'
+import fs from 'fs'
 import { Writable } from 'stream'
 import { config } from './config.js'
 import { addAdmin, removeAdmin, listAdmins, setAdminPassword } from './control-auth.js'
@@ -23,7 +24,31 @@ function parseArgs (argv) {
   return { pos, opts }
 }
 
-function promptHidden (query) {
+// Password sources, and why the prompt is the default — see panel/src/admin-cli.js for the
+// full note. Short version: the prompt keeps the password out of argv; a pipe does too and
+// needs no TTY; --password does not. readline with terminal:true on a non-TTY stdin never
+// fires its callback, so this used to exit **0** having created nothing.
+let pipedLines = null
+function nextPipedLine () {
+  if (pipedLines == null) {
+    let raw = ''
+    try { raw = fs.readFileSync(0, 'utf8') } catch { raw = '' } // closed stdin reads as empty
+    pipedLines = raw.split(/\r?\n/)
+  }
+  return pipedLines.shift()
+}
+
+async function promptHidden (query) {
+  if (!process.stdin.isTTY) {
+    const line = nextPipedLine()
+    if (!line) {
+      throw new Error(`No terminal to ask on, and stdin has no line for "${query.trim()}".\n` +
+        `  Pipe it in:  printf '%s\\n' "$PW" | node src/control-cli.js …\n` +
+        '  Or use --password <pw>, which puts the password in argv where `ps` and the\n' +
+        '  shell history show it. Prefer the pipe in automation.')
+    }
+    return line
+  }
   return new Promise((resolve) => {
     let muted = false
     const out = new Writable({ write (c, e, cb) { if (!muted) process.stdout.write(c, e); cb() } })
@@ -33,6 +58,22 @@ function promptHidden (query) {
   })
 }
 
+// This CLI has never taken the password as an argument — it is a FLAG. A positional one
+// landed in pos[1] and was silently dropped. Refuse it and name the real forms. The stray
+// value is never printed back: it is almost certainly the password, and stderr here lands
+// in docker logs, CI logs, and scrollback.
+function needPassword (cmd, name, opts, pos) {
+  if (pos.length > 1) {
+    console.error(`${cmd} takes the password as a flag, not as an argument (got ${pos.length - 1} extra).\n` +
+      `  node src/control-cli.js ${cmd} ${name}                       asks for it here\n` +
+      `  printf '%s\\n' "$PW" | node src/control-cli.js ${cmd} ${name}  reads it from the pipe\n` +
+      `  node src/control-cli.js ${cmd} ${name} --password '<pw>'      puts it in the command\n` +
+      'The last form shows the password in `ps` and in the shell history. Use it only in automation.')
+    process.exit(1)
+  }
+  return opts.password != null && opts.password !== true ? String(opts.password) : promptHidden(`Password for ${name}: `)
+}
+
 async function main () {
   const [cmd, ...rest] = process.argv.slice(2)
   const { pos, opts } = parseArgs(rest)
@@ -40,7 +81,7 @@ async function main () {
 
   if (cmd === 'add-admin') {
     const name = pos[0]; if (!name) return usage()
-    const password = opts.password != null && opts.password !== true ? String(opts.password) : await promptHidden(`Password for ${name}: `)
+    const password = await needPassword('add-admin', name, opts, pos)
     addAdmin(ctx, name, password)
     console.log(`Created control admin "${name}" (credentials in ${config.dataDir}/secrets/admins.json — local-only).`)
     return
@@ -53,7 +94,7 @@ async function main () {
   }
   if (cmd === 'set-admin-password') {
     const name = pos[0]; if (!name) return usage()
-    const password = opts.password != null && opts.password !== true ? String(opts.password) : await promptHidden(`Password for ${name}: `)
+    const password = await needPassword('set-admin-password', name, opts, pos)
     setAdminPassword(ctx, name, password)
     console.log(`Password updated for control admin "${name}" (existing sessions revoked).`)
     return
@@ -72,6 +113,16 @@ function usage () {
   remove-admin <name>                   Delete an admin account
   set-admin-password <name> [--password <pw>]   Rotate an admin password (revokes their sessions)
   list-admins                           List admin accounts
+
+The password is NEVER an argument. Give it in one of three ways — the first keeps it
+out of argv, so use it when you have a terminal:
+
+  node src/control-cli.js add-admin op                       asks for it here (hidden)
+  printf '%s\\n' "$PW" | node src/control-cli.js add-admin op  reads it from the pipe
+  node src/control-cli.js add-admin op --password '<pw>'      puts it in the command
+
+The flag form shows the password in \`ps\` and in the shell history. Use it only in
+automation. With no terminal, use the pipe: \`docker compose run -T --rm broadcaster …\`.
 `)
 }
 

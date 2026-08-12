@@ -18,8 +18,15 @@
 # First-time setup (creates the panel keys, then an admin account):
 #   docker compose build
 #   docker compose run --rm panel node src/admin-cli.js init
-#   docker compose run --rm panel node src/admin-cli.js add-admin <name> <password>
+#   docker compose run --rm panel node src/admin-cli.js add-admin <name>
 #   docker compose up -d
+#
+# add-admin ASKS for the password — it is never an argument. `docker compose run` gives
+# it a terminal, so the line above is all you need, and the password stays out of argv.
+# A script uses -T and has no terminal. Pipe the password in there:
+#   printf '%s\n' "$PW" | docker compose run -T --rm panel node src/admin-cli.js add-admin <name>
+# `--password <pw>` also works, but argv is world-readable in `ps` and lands in the
+# shell history. Use it only where the pipe is impossible.
 #
 # Container logs are BOUNDED below (json-file, 20 MB x 5 per service). Docker's
 # default json-file driver has NO size limit, and a broadcaster that logs a few

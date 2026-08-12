@@ -367,8 +367,13 @@ the tunnel option is documented here.
    (never a human admin's credentials):
 
    ```sh
-   cd panel && node src/admin-cli.js add-admin reseller-svc <password>
+   cd panel && node src/admin-cli.js add-admin reseller-svc
    ```
+
+   The command asks for the password. It is never an argument. Keep the password:
+   step 2 puts it in `PANEL_ADMIN_PASS`. In a script with no terminal, pipe it in
+   (`printf '%s\n' "$PW" | node src/admin-cli.js add-admin reseller-svc`), or use
+   `--password <pw>` — but argv is visible in `ps` and in the shell history.
 
 2. **Configure** `reseller/.env` — `PANEL_ADMIN_URL`,
    `PANEL_ADMIN_USER=reseller-svc`, and `PANEL_ADMIN_PASS`.

@@ -113,6 +113,13 @@ jobs:
         run: npm run test:corrupt
       - name: ffmpeg argument builders (test:args)
         run: npm run test:args
+      # How the four bootstrap CLIs take a password: a stray positional is refused (and
+      # never echoed back — it is the password), a prompt with no terminal reads a pipe,
+      # and neither-TTY-nor-pipe exits NON-ZERO. That last one is the whole point: the
+      # bug this pins exited 0 having created no admin. Spawns each CLI against a
+      # throwaway DATA_DIR — no network, no docker, deterministic.
+      - name: CLI password arguments (test:cli-password)
+        run: npm run test:cli-password
       # Subprocess probes of every service's fail-fast env validation + the
       # LOG_FORMAT=json structured-logging contract. No network — deterministic.
       - name: Config validation + structured logging (test:config)
