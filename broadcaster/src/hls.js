@@ -908,10 +908,17 @@ export async function reconcileStaleEntries (dir, drive, blobs) {
 const STORE_CORRUPT_CODES = new Set([
   'EPARTIALREAD', 'OPLOG_CORRUPT', 'OPLOG_HEADER_OVERFLOW', 'INVALID_OPLOG_VERSION', 'INVALID_CHECKSUM', 'DECODING_ERROR'
 ])
+// ⚠ "Could not load node: <n>" is the SAME truncation, seen from the merkle tree instead of
+// the oplog: the tree references a node the truncated `tree` file no longer holds. It carries
+// no `code` and the word "corrupt" never appears, so it slipped past both checks above and
+// auto-resume gave up instead of self-healing. Measured 2026-08-12: an unclean reboot left 87
+// of 127 channels stranded on exactly this message while the ~10 that happened to surface
+// EPARTIALREAD recovered themselves. Same cause, same fix (rotate a generation), so it must
+// match the same predicate — see channel.js `_openFeed`.
 export function isStoreCorruption (err) {
   if (!err) return false
   if (STORE_CORRUPT_CODES.has(err.code)) return true
-  return /corrupt|could not satisfy length/i.test(String(err.message || err))
+  return /corrupt|could not satisfy length|could not load node/i.test(String(err.message || err))
 }
 
 // Allocated bytes of the append-only `tree` files for the given cores — the merkle

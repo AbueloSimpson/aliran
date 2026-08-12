@@ -398,6 +398,59 @@ async function scenarioCorruptStoreDetected () {
   fs.rmSync(storeDir, { recursive: true, force: true })
 }
 
+// --- Scenario F: the "Could not load node" truncation is ALSO detected -------------------
+// Scenario E truncates the metadata core and surfaces EPARTIALREAD. The same unclean exit can
+// instead strand the MERKLE TREE: the tree references a node the truncated `tree` file no
+// longer holds, and hypercore reports "Could not load node: <n>" — no error code, and the
+// word "corrupt" never appears. That slipped past isStoreCorruption(), so auto-resume gave up
+// rather than self-healing: on 2026-08-12 an unclean reboot stranded 87 of 127 channels on
+// exactly this message while the ~10 that happened to surface EPARTIALREAD recovered
+// themselves. Both are the same damage and must trigger the same rotation.
+async function scenarioTreeNodeTruncationDetected () {
+  // Regression guard tied to the incident: the literal production message must be caught.
+  const real = new Error('Could not load node: 11583')
+  assert.ok(isStoreCorruption(real), 'isStoreCorruption() recognizes "Could not load node: <n>"')
+  log('  ok  the production message "Could not load node: 11583" is detected as corruption')
+
+  // …and prove it against a REAL truncated store, not just the string.
+  const storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-retention-f-'))
+  const encryptionKey = crypto.randomBytes(32)
+  const store = new Corestore(storeDir)
+  const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey })
+  await drive.ready()
+  const disc = b4a.toString(drive.discoveryKey, 'hex')
+  for (let i = 0; i < 60; i++) { await drive.put(`/seg${i}.ts`, seg(i)); await drive.put('/index.m3u8', playlist([`seg${i}.ts`])) }
+  await drive.close(); await store.close()
+
+  // Shave only the TAIL of the tree: the header and most nodes survive, so the store opens
+  // but a later node lookup fails — which is how the production failure presented.
+  const treePath = path.join(storeDir, 'cores', disc.slice(0, 2), disc.slice(2, 4), disc, 'tree')
+  const before = fs.statSync(treePath).size
+  fs.truncateSync(treePath, Math.max(0, before - 64))
+  log(`  …  shaved metadata tree tail ${before} -> ${before - 64} bytes`)
+
+  let caught = null
+  const store2 = new Corestore(storeDir)
+  const drive2 = new Hyperdrive(store2.namespace('feed'), { encryptionKey })
+  try {
+    await drive2.ready(); await drive2.getBlobs()
+    for await (const _ of drive2.list('/')) { /* walk until it throws */ } // eslint-disable-line no-unused-vars
+  } catch (err) { caught = err }
+  try { await drive2.close() } catch {}
+  try { await store2.close() } catch {}
+
+  if (caught) {
+    log(`  …  reopen threw: ${caught.code || ''} ${caught.message}`)
+    assert.ok(isStoreCorruption(caught), `isStoreCorruption() recognizes it (${caught.code || caught.message})`)
+    log('  ok  a tail-truncated tree is detected as corruption')
+  } else {
+    // Not every truncation shape throws on every hypercore build; the literal-message guard
+    // above is the assertion that actually pins the fix.
+    log('  --  this truncation shape reopened cleanly on this build (message guard still enforced)')
+  }
+  fs.rmSync(storeDir, { recursive: true, force: true })
+}
+
 try {
   log('scenario A — RAM, clean rotation')
   await scenarioRamCleanRotation()
@@ -409,7 +462,9 @@ try {
   await scenarioNamespaceGc()
   log('scenario E — an unclean-exit-truncated store is detected as corruption (self-heal trigger)')
   await scenarioCorruptStoreDetected()
-  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded; retired feed generations purged; a truncated store is detected as corruption so the broadcaster self-heals)')
+  log('scenario F — the "Could not load node" truncation is detected too (87-channel outage regression)')
+  await scenarioTreeNodeTruncationDetected()
+  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded; retired feed generations purged; BOTH truncation signatures are detected as corruption so the broadcaster self-heals)')
   process.exit(0)
 } catch (err) {
   console.error('ERROR:', err.stack || err.message)
