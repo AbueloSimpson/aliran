@@ -13,7 +13,17 @@
 //     per-channel playback `headers` (hotlink-protected providers), a `groups` filter
 //     selects which group-titles this source takes, `titleInclude`/`titleExclude` select
 //     inside a group by entry NAME (one mixed "Live Events" group split into a rail per
-//     sport), and the guide pointers are OPT-IN per source (`epg`, default off).
+//     sport), `autoSubcategory` derives that split automatically from each entry's leading
+//     [TAG], and the guide pointers are OPT-IN per source (`epg`, default off).
+//
+// Per-sport rails, the two ways (both m3u): the name filters split one playlist by pointing
+// SEVERAL sources at it, one `titleInclude "[MLB]"` + `category "Live Events/MLB"` each,
+// plus a catch-all on `titleExclude`. That is explicit and it goes STALE — the list
+// refreshes every half hour and the sports in it change through the day. `autoSubcategory`
+// is ONE source that reads the sport off each entry instead, so 'Live Events/MLB' appears
+// when the provider first carries an [MLB] entry and needs no configuration in advance. The
+// two are alternatives, not layers: the flag needs a single-level `category` because it
+// supplies the second level itself. See deriveSubcat for the tag rules and the bounds.
 //
 // The guide of an m3u source (`epg: true`): a playlist DOES declare its program guide —
 // the `#EXTM3U` header carries `url-tvg="…"` (aliases `x-tvg-url` / `tvg-url`) and each
@@ -84,6 +94,13 @@ const GROUPS_MAX = 50
 const TITLE_FILTER_MAX = 64
 const TITLE_FILTERS_MAX = 50
 const ID_MAX = 64 // NAME_RE's ceiling (ops.js) — prefix + slug must fit inside it
+const CAT_MAX = 64 // normSlug's ceiling (ops.js) — 'Parent/Child' must fit inside it whole
+// Distinct subcategories one sync may DERIVE from provider text. The tags come from a
+// third party and cost a rail each, so the count is bounded like every other feed-shaped
+// input here. Overflow is not an error and never costs an operator a channel: the entries
+// beyond the cap land on the parent rail and are counted, which is the same place an
+// untagged entry goes. 50 matches GROUPS_MAX/TITLE_FILTERS_MAX — a day of sport is ~20.
+const SUBCATS_MAX = 50
 
 // ---------------------------------------------------------------- registry
 
@@ -279,6 +296,80 @@ function normTitleFilter (v, what) {
   return out.length ? out : null
 }
 
+// AUTOMATIC PER-SPORT GROUPING. The name filters above split one mixed playlist into a
+// rail per sport by pointing SEVERAL sources at the same url, one `titleInclude` each.
+// That works, and it goes STALE: the list refreshes every half hour and the sports in it
+// change through the day, so a hand-written source-per-sport list silently stops covering
+// what the provider is actually carrying. `autoSubcategory` reads the sport off the entry
+// instead — "[MLB] Boston Red Sox at Toronto Blue Jays" lands in 'Live Events/MLB' with no
+// sport configured anywhere in advance, and a sport that appears at 19:00 gets its rail at
+// 19:00. One source, one prefix, one grant.
+//
+// The LEADING tag only. A name may carry several ("[MLB] [HD] …"); the first is the one
+// the provider leads with and the one an operator reading the playlist would call the
+// sport. Taking more would invent a hierarchy the category field cannot hold anyway.
+//
+// NO SPORT ALLOWLIST, deliberately. The panel cannot know what a sport is, and a list of
+// known ones would go stale exactly the way the source-per-sport list does — the thing
+// this replaces. So any leading tag becomes a rail, and an entry with NO tag (or one that
+// normalises away to nothing) keeps the source's own category: the parent rail is the
+// defined home, and it is where the catch-all source used to point.
+const SUBCAT_TAG_RE = /^\s*\[([^\]\r\n]{1,120})\]/
+// A rail label is a SHORT NAME, not a sentence. Every real sport tag is far inside this
+// ("MLB", "Cricket", "Formula 1"), and the ceiling is what keeps a DESCRIPTIVE bracket —
+// "[Semi-final, leg 2 of 3]", which some providers really do write — from becoming a rail.
+const SUBCAT_MAX = 32
+
+// Provider text, so it is normalised the way normSlug would demand rather than trusted:
+// '/' would forge a THIRD level out of a channel name, control characters and runs of
+// whitespace are display noise, and the result has to fit CAT_MAX with the parent and the
+// separator already spent. Returns null when nothing usable survives — the caller then
+// leaves the entry on the parent rail.
+//
+// NOTHING IS TRUNCATED, deliberately. Cutting an overlong tag down to the budget is what
+// would turn descriptive brackets into rails: they differ from one another, so each would
+// mint its OWN near-unique rail, and fifty of them would exhaust the distinct-rail cap with
+// junk while the real sports queued behind it. Too long to be a label is read as "not a
+// label", and the entry keeps the parent rail — which costs it nothing.
+function deriveSubcat (name, budget) {
+  const m = SUBCAT_TAG_RE.exec(String(name ?? ''))
+  if (!m) return null
+  const tag = m[1]
+    .replace(/[\u0000-\u001f\u007f]/g, ' ') // control characters never reach a rail label
+    .replace(/\//g, ' ') // the separator is ours, not the provider's — two levels, never three
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!tag || tag.length > SUBCAT_MAX) return null
+  // …and it still has to FIT: a long parent leaves less room than SUBCAT_MAX, and normSlug
+  // measures 'Parent/Child' as a whole.
+  return tag.length <= budget ? tag : null
+}
+
+// `autoSubcategory` is m3u-only for the same reason `epg` is (a json feed carries its own
+// prepared shape), and it REFUSES a source whose category is already two-level. That
+// refusal is the load-bearing one: normCategoryLabel is laxer than normSlug and permits a
+// '/' freely, so 'Live Events/MLB' — the category the MANUAL recipe tells operators to
+// write — is a value this field can really hold. Deriving onto it would store three levels,
+// which splitCategory (client/src/catalog.ts) reads as a sub-rail literally named "MLB/NFL".
+// Say no at the door, where the operator can act on it, rather than in the catalog.
+// `asked` is what THIS request sets (null when it does not mention the field) and `effective`
+// is what the source ends up with. The two gates read different ones on purpose:
+//   format   — reads `asked`, so SETTING it on a json source is refused, while switching an
+//              m3u source to json merely CLEARS it. Refusing there would trap an operator
+//              inside the format they are trying to leave; the guide fields behave the same.
+//   category — reads `effective`, so it also catches the edit that does not mention the flag
+//              at all: it is already on, and the CATEGORY is what is being made two-level.
+function checkAutoSubcategory (format, category, asked, effective) {
+  if (asked != null && normBool(asked) && format !== 'm3u') {
+    bad("autoSubcategory applies to m3u sources only — a json feed already carries its own categories (set format to 'm3u')")
+  }
+  if (!effective) return
+  if (category != null && String(category).includes('/')) {
+    bad('autoSubcategory needs a single-level category — it ADDS the second level itself. ' +
+      `Use "${String(category).split('/')[0]}" and let the entry names supply the rest.`)
+  }
+}
+
 function normInterval (v, dflt) {
   if (v == null || v === '') return dflt
   const n = typeof v === 'number' ? v : parseInt(v, 10)
@@ -291,6 +382,8 @@ export function addSource (ctx, name, opts = {}) {
   const sources = loadSources(ctx.dataDir)
   if (hasOwn(sources, name)) exists(`source "${name}" already exists (use set-source to edit)`)
   checkEpgFormat(normFormat(opts.format), opts.epg, opts.epgUrl)
+  checkAutoSubcategory(normFormat(opts.format), opts.category, opts.autoSubcategory,
+    opts.autoSubcategory != null && normBool(opts.autoSubcategory))
   sources[name] = {
     url: normSourceUrl(opts.url),
     format: normFormat(opts.format),
@@ -306,6 +399,10 @@ export function addSource (ctx, name, opts = {}) {
     // epgUrl/epgId to null and nothing about its channels changes.
     epg: opts.epg == null ? false : normBool(opts.epg),
     epgUrl: normEpgOverrideUrl(opts.epgUrl), // the ONLY thing that becomes a channel's epgUrl
+    // Per-sport grouping (see deriveSubcat): OFF by default. An operator whose playlist is
+    // shaped differently must never have their rails rearranged by an upgrade, so this
+    // stays a decision — the same rule `epg` follows, and for the same reason.
+    autoSubcategory: opts.autoSubcategory == null ? false : normBool(opts.autoSubcategory),
     intervalMs: normInterval(opts.intervalMs, scfg(ctx).defaultIntervalMs),
     exclude: normExclude(opts.exclude),
     groups: normGroups(opts.groups),
@@ -337,6 +434,21 @@ export function setSource (ctx, name, fields = {}) {
   // dashboard sends the whole form, so "turn the guide on" and "this is an m3u" can arrive
   // in the same patch, and reading the stored format would refuse a request that is fine.
   checkEpgFormat(fields.format != null ? normFormat(fields.format) : s.format || 'json', fields.epg, fields.epgUrl)
+  // Judged against the state this edit LEAVES BEHIND, for the same reason checkEpgFormat is:
+  // the dashboard posts the whole form, so the format, the category and the switch can all
+  // arrive together. Reading any of them from the stored record would refuse an edit that is
+  // fine — and, worse, would MISS the one that matters, an operator who leaves the switch on
+  // and edits the category to two levels.
+  const nextFormat = fields.format != null ? normFormat(fields.format) : s.format || 'json'
+  checkAutoSubcategory(
+    nextFormat,
+    fields.category != null ? normCategoryLabel(fields.category) : s.category,
+    fields.autoSubcategory,
+    // Leaving m3u clears the flag below, so it is not effective afterwards either — without
+    // this term, switching format on a source whose category is two-level would be refused
+    // for a setting the same request is about to turn off.
+    (fields.autoSubcategory != null ? normBool(fields.autoSubcategory) : !!s.autoSubcategory) && nextFormat === 'm3u'
+  )
   if (fields.url != null) { const u = normSourceUrl(fields.url); if (u !== s.url) { s.url = u; s.etag = null } }
   if (fields.format != null) {
     // A format change is a different PARSE of bytes that may be byte-identical, so the
@@ -347,6 +459,7 @@ export function setSource (ctx, name, fields = {}) {
     // patch that switches format usually carries no guide fields at all), and leaving them
     // set would strand exactly the silent no-op checkEpgFormat exists to prevent.
     if (f !== 'm3u' && (s.epg || s.epgUrl)) { s.epg = false; s.epgUrl = null }
+    if (f !== 'm3u' && s.autoSubcategory) s.autoSubcategory = false // m3u-only, same rule
     s.format = f
   }
   if (fields.category != null) s.category = normCategoryLabel(fields.category)
@@ -394,6 +507,14 @@ export function setSource (ctx, name, fields = {}) {
     // Same reason as exclude: the next sync needs the full body to apply a filter change.
     if (JSON.stringify(next) !== JSON.stringify(s.groups ?? null)) s.etag = null
     s.groups = next
+  }
+  // Per-sport grouping, same dance again — and here it is the whole point of the field: the
+  // bytes are identical, and turning it on is precisely a request to re-read them into
+  // different rails. A 304 would leave every channel on the parent and look like a no-op.
+  if (fields.autoSubcategory != null) {
+    const next = normBool(fields.autoSubcategory)
+    if (next !== !!s.autoSubcategory) s.etag = null
+    s.autoSubcategory = next
   }
   // The two name filters, same dance again: they change how the SAME bytes map, so a
   // cached ETag would answer 304 and skip the re-map the operator just asked for.
@@ -568,7 +689,9 @@ function mapFeed (source, feed, { maxChannels }) {
   // does a manual channel whose hand-assigned epgId matches a provider id.
   //
   // `epgDeclared` is a playlist-header reading, which a json feed has no equivalent of.
-  return { entries, skipped, truncated, excluded, filtered: 0, epgSkipped: 0, epgGuard: false, epgDeclared: null }
+  // `subcats` is null for the same reason as epgDeclared: deriving a rail from a leading
+  // name tag is an m3u-only reading, and a json feed states its categories outright.
+  return { entries, skipped, truncated, excluded, filtered: 0, epgSkipped: 0, epgGuard: false, epgDeclared: null, subcats: null, subcatOverflow: 0 }
 }
 
 // ---------------------------------------------------------------- m3u
@@ -782,6 +905,19 @@ function mapM3U (source, text, { maxChannels }) {
   }
   const wanted = (e) => inGroups(e) && titleOk(e)
   const budget = ID_MAX - String(source.prefix || '').length // room left for the slug
+  // Per-sport grouping (see deriveSubcat): OPT-IN, so a source that never asked for it maps
+  // byte-identically and no upgrade rearranges anybody's rails. `subcatBudget` is what is
+  // left of a category slug once the parent and the '/' are spent, so a derived rail can
+  // never outgrow what normSlug accepts. checkAutoSubcategory has already refused a
+  // two-level parent, so exactly one level is ever added here.
+  const autoSubcat = source.autoSubcategory === true
+  const subcatBudget = CAT_MAX - String(source.category || '').length - 1
+  // lowercase tag -> the casing that RAILS it. A provider writes "[MLB]" on one game and
+  // "[mlb]" on the next; two rails for one sport is precisely the noise this feature is
+  // meant to remove, so casing folds the way it already does for `groups` and the name
+  // filters, and the first spelling of the day is the one viewers see.
+  const subcats = new Map()
+  let subcatOverflow = 0
   const used = new Set()
   let excluded = 0
   let filtered = 0
@@ -841,10 +977,29 @@ function mapM3U (source, text, { maxChannels }) {
     }
     let logo = null
     if (e.logo) { try { logo = normArt(e.logo, 'logo') } catch { logo = null } }
+    // The rail this entry lands on. Derived from the entry's own leading tag when the
+    // source asked for it, and the source's plain category otherwise — which is also where
+    // an untagged entry, an unusable tag, and everything past SUBCATS_MAX go. A channel is
+    // never lost to this: the worst case is the rail the operator configured.
+    //
+    // The cap counts DISTINCT rails, not entries, and admits a tag already seen — so a
+    // sport does not half-appear once the set is full, and the count the operator reads is
+    // the number of entries that were pushed up to the parent.
+    let category = source.category
+    if (autoSubcat) {
+      const sub = deriveSubcat(e.name || e.tvgName, subcatBudget)
+      if (sub) {
+        const k = sub.toLowerCase()
+        if (subcats.has(k) || subcats.size < SUBCATS_MAX) {
+          if (!subcats.has(k)) subcats.set(k, sub)
+          category = source.category + '/' + subcats.get(k)
+        } else subcatOverflow++
+      }
+    }
     entries.set(id, {
       title: String(e.name || e.tvgName || slug).trim().slice(0, TITLE_MAX),
       description: '', // a playlist carries none; operator-owned from here (see applyFeed)
-      category: [source.category],
+      category: [category],
       url,
       headers,
       logo,
@@ -889,7 +1044,21 @@ function mapM3U (source, text, { maxChannels }) {
   // `epgGuard` tells applyFeed whether its half of the duplicate check applies at all: only
   // an m3u source that actually took the guide ids lives on the first-match-wins P2P path
   // (see mapFeed for why a json source must be left alone).
-  return { entries, skipped, truncated, excluded, filtered, epgSkipped, epgGuard: epgOn, epgDeclared }
+  // `subcats` is what an operator actually wants to see after turning this on — the rails
+  // the playlist produced THIS sync, which is also the answer to "did my tag rule work?".
+  // Sorted so a report is comparable between syncs; `subcatOverflow` is 0 unless the cap bit.
+  return {
+    entries,
+    skipped,
+    truncated,
+    excluded,
+    filtered,
+    epgSkipped,
+    epgGuard: epgOn,
+    epgDeclared,
+    subcats: autoSubcat ? [...subcats.values()].sort() : null,
+    subcatOverflow
+  }
 }
 
 // The channels dialog's data: every entry the source knows about — imported ones
@@ -1118,7 +1287,9 @@ async function doSync (ctx, name) {
       // `epgSkipped` rides with `filtered` for the same reason: it measures the BODY, and
       // the body was not re-read, so the last measurement is carried forward instead of
       // blinking to zero on every 304.
-      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, epgSkipped: source.lastReport?.epgSkipped ?? 0, epgDeclared: source.lastReport?.epgDeclared ?? null, emptiedByFilter: false }
+      // `subcats` rides with them too — the derived rails are a reading of the body, and
+      // the channels really are still on them, so a 304 must not report "no sub-rails".
+      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, epgSkipped: source.lastReport?.epgSkipped ?? 0, epgDeclared: source.lastReport?.epgDeclared ?? null, emptiedByFilter: false, subcats: source.lastReport?.subcats ?? null, subcatOverflow: source.lastReport?.subcatOverflow ?? 0 }
     } else {
       // One dispatch, two mappers, one contract — everything downstream (applyFeed, the
       // report, the dashboard) is format-blind.
@@ -1145,7 +1316,13 @@ async function doSync (ctx, name) {
         // the membership. That is correct and must keep working, but it must not be
         // SILENT: this is the one shape where "everything gone" and "filter is wrong" look
         // identical from the outside, so flag it and let the dashboard say it out loud.
-        emptiedByFilter: mapped.entries.size === 0 && applied.removed > 0 && mapped.filtered > 0
+        emptiedByFilter: mapped.entries.size === 0 && applied.removed > 0 && mapped.filtered > 0,
+        // m3u + `autoSubcategory` only: the sub-rails this sync DERIVED from entry names,
+        // and how many entries were pushed back up to the parent because the distinct-rail
+        // cap was already full. null when the source does not derive at all, which is what
+        // separates "off" from "on and the playlist carried no tags".
+        subcats: mapped.subcats,
+        subcatOverflow: mapped.subcatOverflow
       }
     }
     // Grants reconcile on EVERY sync (304 included): users created since the last
@@ -1177,6 +1354,8 @@ async function doSync (ctx, name) {
         epgSkipped: report.epgSkipped, // m3u + epg only: entries that shared a tvg-id, so it was refused
         epgDeclared: report.epgDeclared, // m3u only: the guide url the playlist header declares (information)
         emptiedByFilter: !!report.emptiedByFilter, // the filters matched nothing and the rail was pruned
+        subcats: report.subcats ?? null, // m3u + autoSubcategory only: the sub-rails this sync derived
+        subcatOverflow: report.subcatOverflow ?? 0, // entries pushed to the parent by the distinct-rail cap
         granted: report.granted
       }
       saveSources(ctx.dataDir, fresh)

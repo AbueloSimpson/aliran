@@ -20,6 +20,41 @@ not been on a television yet**; each says so where it is described.
 
 ### Added
 
+- **A rail per sport, derived from the playlist (`autoSubcategory`).** A provider
+  puts every sport of the day inside ONE `group-title` and writes the sport into the
+  entry NAME — `[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed`. Until now the
+  only way to get a rail per sport was to point SEVERAL m3u sources at the same URL,
+  each with its own `titleInclude "[MLB]"`, its own two-level `category`, its own
+  prefix, plus a catch-all on `titleExclude`. That works and it goes STALE: the list
+  refreshes every few minutes and the sports in it change through the day, so a
+  hand-written source-per-sport list stops covering what the provider carries — a
+  source for a finished sport imports nothing, and a sport nobody planned for gets no
+  rail at all.
+
+  `autoSubcategory` (m3u only, default OFF) reads the sport off each entry instead:
+  ONE source, no sport configured anywhere, and `[MLB] …` lands in `Live Events/MLB`
+  the moment the provider first carries it. Only the LEADING tag is read, and casing
+  folds so `[MLB]` and `[mlb]` are one rail rather than two. There is deliberately NO
+  allowlist of known sports — a fixed list would go out of date exactly the way the
+  source list does — so any leading tag becomes a rail.
+
+  Because the tags are third-party text, they are bounded rather than trusted: `/` is
+  stripped (it would forge a third level out of a channel name), control characters
+  and whitespace runs are normalised, a tag over 32 characters is read as a
+  description rather than a label, and at most 50 distinct rails are derived per sync.
+  Every one of those cases keeps the entry on the source's own category, which is also
+  where an untagged entry goes, so the feature can never cost a channel — the worst
+  outcome is the rail the operator configured. The sync report names the rails it
+  derived (`subcats`) and counts what the cap pushed back up (`subcatOverflow`).
+
+  The flag ADDS the second level, so it is refused on a `Parent/Child` category —
+  including on the edit that leaves the flag alone and makes the CATEGORY two-level,
+  since three levels would render in the apps as a rail literally named "MLB/NFL".
+  Turning it on re-stamps existing channels in place (same ids, so grants survive)
+  rather than replacing them. No client change was needed: two-level categories were
+  already drill-in sub-rails, and a `category:Live Events` package selector already
+  covers every child of that rail. Covered by `npm run test:sources` (section L5).
+
 - **Sign in a television from a phone ("send to TV").** A set shows a
   12-character code, the viewer types it on a phone that is already signed in,
   and the phone hands the account over the connection the two devices share. The

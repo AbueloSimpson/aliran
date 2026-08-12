@@ -75,7 +75,7 @@
 //   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
 //   GET    /api/sources                      remote channel sources (S27) + owned-channel counts
 //   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?,format?,groups?,
-//                                             titleInclude?,titleExclude?,allowCleartext?,epg?,epgUrl?}
+//                                             titleInclude?,titleExclude?,autoSubcategory?,allowCleartext?,epg?,epgUrl?}
 //                                            format 'json' (default) | 'm3u'; groups = the m3u group-titles to import
 //                                            (case-insensitive exact match; absent/[] = every entry);
 //                                            titleInclude/titleExclude = m3u name filters — case-insensitive
@@ -85,7 +85,13 @@
 //                                            comma separates entries, so array and comma-string form stay identical
 //                                            through every surface. Several sources over ONE playlist url with disjoint
 //                                            titleInclude, each with its own two-level category ('Live Events/MLB')
-//                                            and prefix, is how one mixed group becomes a rail per sport;
+//                                            and prefix, is how one mixed group becomes a rail per sport BY HAND;
+//                                            autoSubcategory (m3u, default FALSE) does the same split from ONE source
+//                                            by reading the leading [TAG] off each entry name — '[MLB] Red Sox at Blue
+//                                            Jays' lands in 'Live Events/MLB' with no sport configured in advance, so
+//                                            a list whose sports change through the day cannot go stale. It ADDS the
+//                                            second level, so it needs a single-level category and is refused on a
+//                                            'Parent/Child' one; an entry with no usable tag stays on the parent rail;
 //                                            allowCleartext lets this source import http:// (non-loopback) stream urls;
 //                                            epg (m3u, default FALSE) maps each entry's tvg-id to epgId — the field
 //                                            the EPG service matches on. Opt-in because an EVENT playlist shares one
@@ -98,8 +104,8 @@
 //                                            (validated like the feed url: https, or http on loopback for testing);
 //                                            '' clears it. Both are m3u-only and REFUSED on a json source
 //   PATCH  /api/sources/:name                edit any field (incl. exclude:[{id,title}] — deselected feed ids)
-//                                            a format, groups, title-filter, allowCleartext, epg or epgUrl change
-//                                            resets the ETag, so the next sync re-reads the body and re-maps
+//                                            a format, groups, title-filter, autoSubcategory, allowCleartext, epg or
+//                                            epgUrl change resets the ETag, so the next sync re-reads the body and re-maps
 //   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
 //   GET    /api/sources/:name/channels       imported + excluded entries (the channels-dialog data)
 //   GET    /api/categories                   category vocabulary + per-category channel counts

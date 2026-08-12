@@ -307,6 +307,10 @@ async function main () {
       // mixed "Live Events" group is split into a rail per sport.
       titleInclude: opts['title-include'] != null && opts['title-include'] !== true ? String(opts['title-include']) : undefined,
       titleExclude: opts['title-exclude'] != null && opts['title-exclude'] !== true ? String(opts['title-exclude']) : undefined,
+      // The automatic version of that split (m3u): read the sport off each entry's leading
+      // [TAG] instead of naming the sports in advance, so a list that changes through the
+      // day cannot go stale. Adds the second level itself, so --category stays single-level.
+      autoSubcategory: opts['auto-subcategory'] != null ? opts['auto-subcategory'] : undefined,
       // Guide pointers (m3u): --epg keeps each entry's tvg-id as the guide channel id (the
       // EPG service matches on it); --epg-url is the app-format guide address, the only
       // thing that becomes a channel's epgUrl. Off by default — an events playlist shares
@@ -353,6 +357,7 @@ async function main () {
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
       allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // flip the http:// exemption for this source
       epg: opts.epg != null ? opts.epg : undefined, // take the entries' tvg-id as the guide id (m3u)
+      autoSubcategory: opts['auto-subcategory'] != null ? opts['auto-subcategory'] : undefined, // derive the rail from each entry's leading [TAG] (m3u)
       // --epg-url "" clears it, and the channels then carry no guide address at all (there
       // is no fallback to the playlist's own). Same `clearable` shape as the list filters.
       epgUrl: clearable(opts['epg-url']),
@@ -374,8 +379,10 @@ async function main () {
       ((s.titleInclude || []).length ? `, name has: ${s.titleInclude.join(' | ')}` : '') +
       ((s.titleExclude || []).length ? `, name has not: ${s.titleExclude.join(' | ')}` : '') +
       // Guide state only where it means something (m3u); on a json source it is not a
-      // setting at all, and set-source refuses to give it one.
+      // setting at all, and set-source refuses to give it one. Auto-subcategory rides with
+      // it — same format gate, and an operator who just turned it on wants to read it back.
       ((s.format || 'json') === 'm3u' ? `, guide ${s.epg ? 'on' : 'off'}${s.epg && s.epgUrl ? ` (${s.epgUrl})` : ''}` : '') +
+      ((s.format || 'json') === 'm3u' && s.autoSubcategory ? ', rail per [TAG]' : '') +
       '). Changes apply on its next sync.')
     return
   }
@@ -834,7 +841,7 @@ function usage () {
   remove-publisher <name>               Hard-delete a publisher (revoke keeps the audit trail)
   add-source <name> <url> --category <label> [--format json|m3u] [--groups "Live Events,PPV"]
                           [--title-include "[MLB],[NFL]"] [--title-exclude "(WEBCAST),(STRMXHD)"]
-                          [--epg] [--epg-url https://…/guide.json]
+                          [--auto-subcategory] [--epg] [--epg-url https://…/guide.json]
                           [--prefix p.] [--interval-hours N] [--auto-grant false] [--allow-cleartext] [--disabled]
                                         Register a remote channel feed as a category. --format m3u reads an M3U
                                         playlist: ids come from the channel names, #EXTVLCOPT lines import as
@@ -851,6 +858,12 @@ function usage () {
                                         category: --title-include "[MLB]" --category "Live Events/MLB" --prefix mlb.
                                         for one source, "[NFL]" / "Live Events/NFL" / nfl. for the next, and a
                                         catch-all source with --title-exclude "[MLB],[NFL]" for the rest.
+                                        --auto-subcategory does that split with ONE source. The panel reads the
+                                        sport from the start of each entry name, in square brackets, and makes the
+                                        rail from it: "[MLB] Red Sox at Blue Jays" goes to "Live Events/MLB".
+                                        You do not give the sports in advance, so a list that changes through the
+                                        day stays correct. Use a category with ONE level: the panel adds the
+                                        second level. An entry with no name in brackets stays on your category.
                                         --allow-cleartext lets THIS source import http:// (non-TLS) stream urls;
                                         off by default, and manual channels are never affected. http only plays
                                         where the client permits cleartext.

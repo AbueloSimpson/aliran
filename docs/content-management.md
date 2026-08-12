@@ -200,7 +200,8 @@ POST /api/sources {"name":"events","url":"https://provider.example/live.m3u8","f
   reads exactly as written. Each rule is 2–64 characters and may not contain a comma —
   the comma separates rules, and every surface that shows the list joins it with commas.
   Leave both empty for no name filtering; their leftovers land in the same `filtered`
-  count as the group filter's. A filter that matches **nothing** correctly prunes the
+  count as the group filter's. To make a rail per sport *without* naming the sports, see
+  `autoSubcategory` below. A filter that matches **nothing** correctly prunes the
   whole rail (the feed *is* the membership), so the report flags that one shape as
   `emptiedByFilter` — check the rule against the playlist before assuming the provider
   went dark.
@@ -260,6 +261,43 @@ Keep the rules **disjoint**: an entry that two sources both take becomes two cha
 (the prefixes keep the ids apart, so they never fight — you simply get it twice). Add
 dead provider tags such as `(WEBCAST)` to `titleExclude` to drop entries that never
 play.
+
+**A rail per sport, without a list of sports (`autoSubcategory`).** The recipe above
+names every sport in advance, and a live-event list does not hold still: it refreshes
+every few minutes, and the sports in it change through the day. A source for a sport
+the provider stopped carrying imports nothing, and a sport you did not plan for has no
+rail at all. `autoSubcategory` reads the sport from the entry instead — **one** source,
+no sport configured anywhere:
+
+```bash
+POST /api/sources {"name":"events","url":"https://provider.example/all.m3u8","format":"m3u","groups":["Live Events"],"category":"Live Events","autoSubcategory":true,"prefix":"ev."}
+```
+
+The panel takes the name in square brackets at the **start** of each entry and makes
+the child rail from it, so `[MLB] Boston Red Sox at Toronto Blue Jays` goes to
+`Live Events/MLB` and `[NFL] Chicago Bears at Green Bay Packers` to `Live Events/NFL`.
+A sport that starts at 19:00 has its rail at 19:00, and a sport that ends leaves with
+its channels. The sync report lists the rails it made in `subcats`.
+
+Rules to know:
+
+- **Give a category with one level.** The panel adds the second level. It refuses
+  `autoSubcategory` on a `Parent/Child` category, because the apps show two levels.
+- **Only the first name in brackets counts.** `[MLB] [HD] …` gives the rail `MLB`.
+- **An entry with no name in brackets keeps your category** (`Live Events` here), and
+  so does one whose brackets hold more than 32 characters — that is a description, not
+  a label. No entry is ever lost: the worst result is your own rail.
+- **Upper and lower case are the same rail.** `[MLB]` and `[mlb]` are one sport.
+- **There is no list of known sports**, on purpose: a fixed list goes out of date the
+  same way a list of sources does. Any name in brackets makes a rail.
+- **At most 50 rails per sync.** Entries after that keep your category and are counted
+  in the report as `subcatOverflow`.
+- The setting is **off** unless you ask for it, it works only on `format:"m3u"`, and it
+  is not compatible with the name-filter recipe above — use one or the other.
+
+Turning it on moves the channels you already have; it does not replace them, so grants
+stay. Turning it off puts them all back on your category. Either change makes the next
+sync read the whole playlist again.
 
 **Sync policy:**
 

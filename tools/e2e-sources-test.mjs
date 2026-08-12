@@ -1062,6 +1062,198 @@ try {
   await api('DELETE', '/api/sources/jb', undefined, token)
   log('L4: m3u program guide — off by default, tvg-id → epgId when on, the playlist header url is REPORTED (epgDeclared) and never written to a channel, only the operator-set epgUrl reaches one (https-only, the CATALOG rule — loopback refused — and dropped when the guide is off), a tvg-id shared inside the playlist OR already held by another source / a manual channel is refused on the newcomer and counted (epgSkipped, both counts carried over 304s), no tvg-id = no guide, deselection still keyed on the slug, etag reset on both toggles, header alias/bare/multi-url parsing, both fields refused on a json source, and the whole guard held OFF json sources — where two of them over one feed share every id legitimately ✓')
 
+  // ===== Test L5: automatic per-sport rails from the entry's leading [TAG] =====
+  // L3's several-sources-over-one-url recipe works and goes STALE: the list refreshes every
+  // ~30 minutes and the sports in it change through the day, so a hand-written
+  // source-per-sport list stops covering what the provider carries. `autoSubcategory` reads
+  // the sport off each entry instead — ONE source, no sport named in advance.
+  const ownedCats = async (src) => {
+    const out = []
+    for await (const { value } of db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) if (value.source === src) out.push(value.category[0])
+    return out.sort()
+  }
+
+  // (1) OFF BY DEFAULT — the field exists and changes nothing until it is asked for. An
+  // operator whose playlist is shaped differently must not have their rails rearranged by
+  // an upgrade, so this is the assertion that protects every EXISTING source.
+  r = await api('POST', '/api/sources', { name: 'auto', url: mixedUrl, format: 'm3u', category: 'Live Events', groups: ['Live Events'], prefix: 'au.' }, token)
+  assert.strictEqual(r.status, 201, 'add the auto source: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.autoSubcategory, false, 'autoSubcategory defaults to false')
+  await api('POST', '/api/sources/auto/sync', {}, token)
+  assert.deepStrictEqual([...new Set(await ownedCats('auto'))], ['Live Events'],
+    'with the flag off every entry lands on the plain category, exactly as before')
+  const idsBeforeToggle = await ownedKeys('auto')
+
+  // (2) ON — the rails appear, one per leading tag, with no sport configured anywhere.
+  r = await api('PATCH', '/api/sources/auto', { autoSubcategory: true }, token)
+  assert.strictEqual(r.status, 200, 'turn it on: ' + JSON.stringify(r.body))
+  assert.strictEqual(sources.loadSources(dir).auto.etag, null, 'the toggle resets the etag — identical bytes must be re-read into different rails')
+  r = await api('POST', '/api/sources/auto/sync', {}, token)
+  // The fixture's four in-group entries: [MLB], [NFL], [Cricket], and [mlb] on the Mets game.
+  // CASING FOLDS — "[MLB]" and "[mlb]" are ONE sport, and two rails for one sport is exactly
+  // the noise this removes. The first spelling seen is the one viewers get.
+  assert.deepStrictEqual(await ownedCats('auto'),
+    ['Live Events/Cricket', 'Live Events/MLB', 'Live Events/MLB', 'Live Events/NFL'],
+    'one rail per leading tag, and [mlb] joins [MLB] rather than forking a second rail')
+  assert.deepStrictEqual(r.body.subcats, ['Cricket', 'MLB', 'NFL'], 'the report names the rails this sync derived')
+  assert.strictEqual(r.body.subcatOverflow, 0, 'and nothing overflowed')
+  // THE MIGRATION PROPERTY, and the reason turning this on is cheap: applyFeed writes the
+  // category on the UPDATE path and not only on create, so existing channels are re-stamped
+  // WHERE THEY STAND. Same ids, so every grant, secret and device entitlement survives; the
+  // sync is not a delete-and-recreate of the whole rail.
+  assert.deepStrictEqual(await ownedKeys('auto'), idsBeforeToggle, 'turning it on keeps every id — the rails move, the channels do not')
+  assert.strictEqual(r.body.removed, 0, 'nothing was deleted to do it')
+  assert.strictEqual(r.body.added, 0, 'and nothing re-created')
+  assert.strictEqual(r.body.updated, idsBeforeToggle.length, 'every channel was updated in place')
+  // "[Cricket]" is not a sport this panel has ever heard of, and that is the POINT: there is
+  // no allowlist, because a fixed list of sports would go stale exactly the way the manual
+  // source-per-sport list does — the thing this replaces.
+  assert.ok((await ownedCats('auto')).includes('Live Events/Cricket'), 'a tag nobody configured still gets its rail')
+  // The client needs no change for any of this: splitCategory (client/src/catalog.ts) reads
+  // 'Parent/Child' as a drill-in sub-rail already, and a package selector 'category:Live
+  // Events' covers every child by the same self-or-child rule (packages.js catMatch).
+  for (const c of await ownedCats('auto')) {
+    assert.strictEqual(c.split('/').length, 2, `${c} is exactly two levels — three would render as a rail literally named "A/B"`)
+    assert.ok(c.startsWith('Live Events/'), `${c} still sits under the operator's own category, so a parent selector keeps covering it`)
+  }
+
+  // (3) NO TAG, and a tag that normalises away to nothing, both keep the source's own
+  // category. The parent rail is the DEFINED home — the same place the catch-all source of
+  // the manual recipe used to point — so no entry is ever lost to the derivation.
+  texts['/mixed.m3u'] = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="Live Events",[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed (XYZ)',
+    'https://cdn.example/x/mlb1.m3u8',
+    '#EXTINF:-1 group-title="Live Events",Untagged Friendly Match', // no bracket at all
+    'https://cdn.example/x/plain.m3u8',
+    '#EXTINF:-1 group-title="Live Events",[] Empty Tag Game', // brackets with nothing in them
+    'https://cdn.example/x/empty.m3u8',
+    '#EXTINF:-1 group-title="Live Events",[///] Separators Only', // normalises to nothing
+    'https://cdn.example/x/slashes.m3u8',
+    '#EXTINF:-1 group-title="Live Events",Prefix [NFL] Not Leading', // a tag, but not the LEADING one
+    'https://cdn.example/x/notleading.m3u8',
+    ''
+  ].join('\n'); rev++
+  r = await api('POST', '/api/sources/auto/sync', {}, token)
+  assert.deepStrictEqual(await ownedCats('auto'),
+    ['Live Events', 'Live Events', 'Live Events', 'Live Events', 'Live Events/MLB'],
+    'no tag, an empty tag, a tag of separators, and a tag that does not LEAD all stay on the parent rail')
+  assert.deepStrictEqual(r.body.subcats, ['MLB'], 'only the real tag made a rail')
+
+  // (4) PROVIDER TEXT IS UNTRUSTED. A "/" in a tag would forge a THIRD level; control
+  // characters and whitespace runs are display noise; and the whole 'Parent/Child' slug has
+  // to stay inside normSlug's 64-character ceiling however long the provider's tag is.
+  texts['/mixed.m3u'] = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="Live Events",[MLB/Playoffs] Forged Level',
+    'https://cdn.example/x/forge.m3u8',
+    '#EXTINF:-1 group-title="Live Events",[  Spaced   Out  ] Whitespace Runs',
+    'https://cdn.example/x/space.m3u8',
+    `#EXTINF:-1 group-title="Live Events",[${'W'.repeat(80)}] Overlong Tag`,
+    'https://cdn.example/x/long.m3u8',
+    // A DESCRIPTIVE bracket, which providers really do write. This is why an overlong tag
+    // is dropped rather than cut: truncated, each of these would mint its own near-unique
+    // rail and a day of them would exhaust the distinct-rail cap with junk. (A SHORT
+    // descriptive bracket does still become a rail — the ceiling is a length rule, not a
+    // meaning rule — and the operator sees it in the report's `subcats` list.)
+    '#EXTINF:-1 group-title="Live Events",[Semi-final, second leg of three, extra time] Descriptive Bracket',
+    'https://cdn.example/x/desc.m3u8',
+    ''
+  ].join('\n'); rev++
+  r = await api('POST', '/api/sources/auto/sync', {}, token)
+  const hostile = await ownedCats('auto')
+  for (const c of hostile) {
+    assert.strictEqual(c.split('/').length, c === 'Live Events' ? 1 : 2, `${c}: a provider name can never forge a third level`)
+    assert.ok(c.length <= 64, `${c} (${c.length}) stays inside normSlug's 64-character ceiling`)
+    assert.ok(!/[\r\n]/.test(c) && !/\s{2,}/.test(c) && c === c.trim(), `${c} carries no line breaks, whitespace runs or edge padding`)
+  }
+  assert.ok(hostile.includes('Live Events/MLB Playoffs'), 'the "/" became a space rather than a second separator')
+  assert.ok(hostile.includes('Live Events/Spaced Out'), 'whitespace runs collapse and the tag is trimmed')
+  assert.strictEqual(hostile.filter((c) => c === 'Live Events').length, 2,
+    'the 80-character tag and the descriptive bracket are both too long to be labels, so both keep the parent rail')
+  assert.deepStrictEqual(r.body.subcats, ['MLB Playoffs', 'Spaced Out'], 'and neither of them minted a rail')
+
+  // (5) THE DISTINCT-RAIL CAP. The tags are third-party text, so the number of rails one
+  // sync can invent is bounded like every other feed-shaped input here. Overflow is not an
+  // error and costs no channel: those entries land on the parent and are counted.
+  const many = ['#EXTM3U']
+  for (let i = 0; i < 60; i++) {
+    many.push(`#EXTINF:-1 group-title="Live Events",[SPORT${i}] Game ${i}`)
+    many.push(`https://cdn.example/x/g${i}.m3u8`)
+  }
+  texts['/mixed.m3u'] = many.join('\n') + '\n'; rev++
+  // scfg() reads the config live on every sync, and this file pins maxChannels at 5 so that
+  // truncation stays testable — which would cut this playlist long before the rail cap could
+  // bite. Lift it for this one sync only; section G owns the channel-cap assertions.
+  const channelCap = config.sources.maxChannels
+  config.sources.maxChannels = 500
+  r = await api('POST', '/api/sources/auto/sync', {}, token)
+  config.sources.maxChannels = channelCap
+  assert.strictEqual(r.body.subcats.length, 50, 'at most 50 distinct rails are derived per sync')
+  assert.strictEqual(r.body.subcatOverflow, 10, 'and the 10 entries past the cap are counted')
+  const capped = await ownedCats('auto')
+  assert.strictEqual(capped.length, 60, 'every one of the 60 entries is still imported — the cap costs no channel')
+  assert.strictEqual(capped.filter((c) => c === 'Live Events').length, 10, 'the overflow went to the parent rail')
+
+  // (6) WHAT HAPPENS WHEN A TAG CHANGES. The m3u id is slugged from the ENTRY NAME, and the
+  // tag is PART of that name — so re-tagging an event renames it, and a rename has always
+  // been a remove + add on this path (id follows name, pre-dating this feature entirely).
+  // Pin it, because it is the honest answer to "what about a channel whose tag disappears?"
+  // and the reason nothing here depends on an id surviving a re-tag.
+  texts['/mixed.m3u'] = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="Live Events",[MLB] Moving Game',
+    'https://cdn.example/x/move.m3u8',
+    ''
+  ].join('\n'); rev++
+  await api('POST', '/api/sources/auto/sync', {}, token)
+  assert.deepStrictEqual(await ownedKeys('auto'), ['au.MLB-Moving-Game'], 'the id carries the tag, because it is slugged from the whole name')
+  assert.strictEqual((await db.get('catalog/au.MLB-Moving-Game')).value.category[0], 'Live Events/MLB', 'and it starts on the MLB rail')
+  texts['/mixed.m3u'] = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="Live Events",[NFL] Moving Game', // same event text, different sport tag
+    'https://cdn.example/x/move.m3u8',
+    ''
+  ].join('\n'); rev++
+  r = await api('POST', '/api/sources/auto/sync', {}, token)
+  assert.deepStrictEqual(await ownedKeys('auto'), ['au.NFL-Moving-Game'], 'a re-tagged entry is a RENAME, so it lands under a new id')
+  assert.strictEqual(r.body.removed, 1, 'the old id is pruned like any entry that left the feed')
+  assert.strictEqual(r.body.added, 1, 'and the new one is imported like any entry that arrived')
+  assert.strictEqual((await db.get('catalog/au.NFL-Moving-Game')).value.category[0], 'Live Events/NFL', 'on the rail its new tag names')
+  assert.strictEqual(await db.get('catalog/au.MLB-Moving-Game'), null, 'nothing is left behind on the old rail')
+  // The consequence worth stating: an ENTRY whose tag changes churns, but a RAIL never goes
+  // stale — a sub-category exists only while this sync put a channel on it, so a sport that
+  // finishes for the day simply stops being derived and its rail stops being in the catalog.
+  assert.deepStrictEqual(r.body.subcats, ['NFL'], 'the MLB rail is not carried forward once nothing is on it')
+
+  // (7) THE REFUSALS. The load-bearing one is the two-level category: normCategoryLabel is
+  // laxer than normSlug and permits a '/' freely, so 'Live Events/MLB' — the category the
+  // MANUAL recipe tells operators to write — is a value this field really holds. Deriving
+  // onto it would store three levels, which the client renders as a sub-rail named "MLB/NFL".
+  r = await api('POST', '/api/sources', { name: 'twolevel', url: mixedUrl, format: 'm3u', category: 'Live Events/MLB', autoSubcategory: true }, token)
+  assert.strictEqual(r.status, 400, 'a two-level category is refused up front')
+  assert.match(r.body.error, /single-level category/, 'and the message says what to do: ' + r.body.error)
+  assert.match(r.body.error, /Live Events/, 'naming the parent to use')
+  r = await api('POST', '/api/sources', { name: 'jsonauto', url: animeUrl, format: 'json', category: 'X', autoSubcategory: true }, token)
+  assert.strictEqual(r.status, 400, 'm3u-only, like the guide fields — a json feed states its own categories')
+  assert.match(r.body.error, /m3u sources only/, r.body.error)
+  // The one an edit can walk into: the flag is already on, and the CATEGORY is what changes.
+  // Judged against the state the edit LEAVES BEHIND, so it is caught.
+  r = await api('PATCH', '/api/sources/auto', { category: 'Live Events/MLB' }, token)
+  assert.strictEqual(r.status, 400, 'editing the category to two levels under a live flag is refused too')
+  assert.strictEqual(sources.loadSources(dir).auto.category, 'Live Events', 'and the refused edit changed nothing')
+  // Leaving m3u takes the m3u-only field with it, exactly as it takes the guide fields.
+  await api('PATCH', '/api/sources/auto', { format: 'json' }, token)
+  assert.strictEqual(sources.loadSources(dir).auto.autoSubcategory, false, 'switching away from m3u clears it rather than stranding it')
+  await api('PATCH', '/api/sources/auto', { format: 'm3u', autoSubcategory: true }, token)
+  // CLI parity: the same field through setSource directly, and the snapshot round-trip that
+  // a restore depends on — a field missing from SOURCE_FIELDS restores as OFF and silently
+  // flattens every rail the operator built.
+  assert.strictEqual(sources.setSource(ctx, 'auto', { autoSubcategory: false }).autoSubcategory, false, 'set-source turns it off')
+  assert.strictEqual(sources.setSource(ctx, 'auto', { autoSubcategory: true }).autoSubcategory, true, 'and back on')
+  await api('DELETE', '/api/sources/auto', undefined, token)
+  log('L5: automatic per-sport rails — off by default, turning it on re-stamps every channel IN PLACE (same ids, so grants survive), one rail per leading [TAG] with casing folded, no allowlist, untagged/empty/non-leading/overlong tags all stay on the parent, provider text cannot forge a third level or outgrow the 64-char ceiling, 50 distinct rails per sync with the overflow counted and no channel lost, a re-tagged entry is a rename (id follows name) and an empty rail simply stops existing, and two-level category / json are refused while a format switch clears the flag ✓')
+
   // ===== Test M: redirect playback headers over the admin API (Part A) =====
   r = await api('POST', '/api/streams', { id: 'hdr-one', url: 'https://cdn.example/hdr.m3u8', headers: { Referer: 'https://provider.example/', 'USER-AGENT': ' Mozilla/5.0 ' } }, token)
   assert.strictEqual(r.status, 201, 'create a redirect channel with headers: ' + JSON.stringify(r.body))
