@@ -45,6 +45,19 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
     }, 0)
     return () => clearTimeout(timer)
   }, [playingIndex])
+  // …AND PUT THE FOCUS ON IT. The panel used to open with focus nowhere a viewer could
+  // see: this pane and the category rail are both autoFocus TVFocusGuideViews, the rail's
+  // is first in the tree and takes it, and hasTVPreferredFocus on the playing row never
+  // got a look in. Asking for the row explicitly settles it without taking the rail's
+  // autoFocus away — which was tried, and cost LEFT its route INTO the rail.
+  // After a frame: the row has to exist before it can hold anything.
+  const playingRowRef = useRef<any>(null)
+  useEffect(() => {
+    if (!theme.isTV || playingIndex < 0) return
+    const timer = setTimeout(() => { playingRowRef.current?.requestTVFocus?.() }, 0)
+    return () => clearTimeout(timer)
+    // Only on open / when the playing channel changes — not on every catalog push.
+  }, [playingIndex])
   return (
     <View style={styles.panel}>
       <Text style={styles.header} numberOfLines={1}>{heading ?? t('live.channels')}</Text>
@@ -75,6 +88,7 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
             playing={item.id === playingId}
             favorite={favorites.includes(item.id)}
             hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
+            innerRef={item.id === playingId ? playingRowRef : undefined}
             onFocus={onActivity}
             onPress={() => (item.id === playingId && onGuide ? onGuide(item) : onSelect(item))}
             onLongPress={() => onInfo(item)}

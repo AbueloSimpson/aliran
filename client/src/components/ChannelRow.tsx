@@ -39,11 +39,14 @@ export interface ChannelRowProps {
   favorite?: boolean
   hasTVPreferredFocus?: boolean
   onFocus?: () => void
+  /** Handle on the row's Pressable, so a host can place native focus on it directly
+   *  (ChannelListPanel does, for the channel being watched). The NowPill's pattern. */
+  innerRef?: React.RefObject<any>
   onPress: () => void
   onLongPress?: () => void
 }
 
-export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, onFocus, onPress, onLongPress }: ChannelRowProps) {
+export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, innerRef, onFocus, onPress, onLongPress }: ChannelRowProps) {
   const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   // Off-air channel, or a vod title the library took down (S8a: vod records carry no
@@ -68,6 +71,7 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
         // may underdraw the next row; at 1.025 that is imperceptible.
         focused && !prefersReducedMotion() && styles.rowScaled
       ]}
+      ref={innerRef}
       hasTVPreferredFocus={hasTVPreferredFocus}
       onFocus={() => { setFocused(true); onFocus?.() }}
       onBlur={() => setFocused(false)}

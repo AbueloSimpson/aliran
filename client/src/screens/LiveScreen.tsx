@@ -1008,7 +1008,14 @@ export function LiveScreen ({ route, navigation }: Props) {
           {theme.isTV && inDrill && (
             <Pressable style={styles.railExit} onFocus={exitDrill} />
           )}
-          <FocusPane style={[styles.railPane, portrait && styles.railPanePortrait]}>
+          {/* autoFocus STAYS. Taking it off was tried, to stop the rail claiming the
+              focus that belongs to the playing channel — and it also stopped LEFT out of
+              the channel list from reaching the rail at all, which is worse: measured on
+              the set, the press did nothing and the next OK tuned a channel instead of
+              opening a category. The list wins the opening focus by ASKING for it
+              explicitly once mounted (ChannelListPanel), rather than by taking the rail's
+              routing away. */}
+          <FocusPane autoFocus style={[styles.railPane, portrait && styles.railPanePortrait]}>
             <CategoryRail
               items={railItems}
               selected={railSelected}
