@@ -1656,6 +1656,7 @@ async function addSourceDlg () {
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', placeholder: 'Live Events, PPV' },
     { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', placeholder: '[MLB], [NFL]' },
     { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', placeholder: '(WEBCAST), (STRMXHD)' },
+    { name: 'autoSubcategory', label: 'Rail per [TAG] (m3u only) — make the sub-rail from the name at the start of each entry, in square brackets', type: 'checkbox', value: false },
     { name: 'epg', label: 'Program guide (m3u only) — keep the guide id (tvg-id) of each entry', type: 'checkbox', value: false },
     { name: 'epgUrl', label: 'Guide address (m3u only) — for the apps, in the app guide format; leave empty for none', placeholder: 'https://provider.example/guide.json' },
     { name: 'allowCleartext', label: 'Allow cleartext (http) stream URLs', type: 'checkbox', value: false }
@@ -1670,6 +1671,11 @@ async function addSourceDlg () {
            each entry has its own id. Your EPG service uses these ids to give the channels a guide. Keep this setting
            off for a list of events. A provider writes one dummy id on many entries of an event list, and a shared id
            gives every channel the same wrong guide.</p>
+           <p class="muted"><b>Rail per [TAG]</b> makes one sub-rail for each sport in an event list. The panel reads
+           the name at the start of each entry, in square brackets, and puts the channel in a rail with that name:
+           "[MLB] Red Sox at Blue Jays" goes to "Live Events/MLB". You do not give the sports in advance, so a list
+           that changes through the day stays correct. Give a category with ONE level — the panel adds the second
+           level. An entry with no name in brackets stays on your category.</p>
            <details class="footnote"><summary>What the feed must contain</summary>${FEED_FORMAT_HTML}</details>`
   })
   if (!v) return
@@ -1689,6 +1695,7 @@ async function addSourceDlg () {
       // neither, so on a json source they would sit in the record doing nothing.
       epg: v.format === 'm3u' ? v.epg : false,
       epgUrl: v.format === 'm3u' ? v.epgUrl.trim() : '',
+      autoSubcategory: v.format === 'm3u' ? v.autoSubcategory : false, // m3u-only, same reason
       allowCleartext: v.allowCleartext
     })
     toast(`source "${name}" added — pulling the feed…`)
@@ -1861,6 +1868,7 @@ async function editSource (s) {
     { name: 'groups', label: 'Groups (m3u only) — the group-titles to take, comma-separated; empty = every entry', value: (s.groups || []).join(', '), placeholder: 'Live Events, PPV' },
     { name: 'titleInclude', label: 'Name has (m3u only) — take an entry only when its name contains one of these; empty = every name', value: (s.titleInclude || []).join(', '), placeholder: '[MLB], [NFL]' },
     { name: 'titleExclude', label: 'Name has not (m3u only) — drop an entry when its name contains one of these; this wins', value: (s.titleExclude || []).join(', '), placeholder: '(WEBCAST), (STRMXHD)' },
+    { name: 'autoSubcategory', label: 'Rail per [TAG] (m3u only) — make the sub-rail from the name at the start of each entry, in square brackets', type: 'checkbox', value: !!s.autoSubcategory },
     { name: 'epg', label: 'Program guide (m3u only) — keep the guide id (tvg-id) of each entry', type: 'checkbox', value: !!s.epg },
     { name: 'epgUrl', label: 'Guide address (m3u only) — for the apps, in the app guide format; leave empty for none', value: s.epgUrl || '', placeholder: 'https://provider.example/guide.json' },
     { name: 'prefix', label: 'Channel id prefix', value: s.prefix },
@@ -1873,7 +1881,8 @@ async function editSource (s) {
       <p class="muted">Changing the <b>prefix</b> re-creates every entry under new ids on the next sync: the old ids are purged <b>including every user's grants</b>. With auto-grant off nothing re-grants the new ids — you re-grant by hand.</p>
       <p class="muted"><b>Allow cleartext</b> lets this source import plain-http stream URLs, for a provider that serves some streams over http instead of https. It applies to this source only, never to manual channels, and the next sync re-reads the feed to apply it. An http stream plays only where the client permits cleartext.</p>
       <p class="muted"><b>Program guide</b> keeps the guide id (<span class="mono">tvg-id</span>) of each entry on the imported channels. Your EPG service uses these ids to match the guide to the channels. A guide id must be different for each channel, so use this for a playlist of TV channels. A provider writes one dummy id on many entries of an event list: the panel refuses an id it finds more than once, and the sync report counts it.</p>
-      <p class="muted"><b>Guide address</b> is for the apps, which read a guide in the app format over https. The address in the playlist is <b>not</b> in that format, so the panel never uses it: the sync report shows it, and you add it to your EPG service instead. The panel clears this field when <b>Program guide</b> is off.</p>`
+      <p class="muted"><b>Guide address</b> is for the apps, which read a guide in the app format over https. The address in the playlist is <b>not</b> in that format, so the panel never uses it: the sync report shows it, and you add it to your EPG service instead. The panel clears this field when <b>Program guide</b> is off.</p>
+      <p class="muted"><b>Rail per [TAG]</b> makes one sub-rail for each sport in an event list, from the name at the start of each entry, in square brackets: "[MLB] Red Sox at Blue Jays" goes to "Live Events/MLB". You do not give the sports in advance, so a list that changes through the day stays correct. Give a <b>category</b> with one level — the panel adds the second level, and it refuses a category that has two. An entry with no name in brackets stays on your category. The next sync reads the whole feed again to apply the change.</p>`
   })
   if (!v) return
   // Validate here, in the field's own unit — the API's error talks milliseconds.
@@ -1889,6 +1898,7 @@ async function editSource (s) {
     groups: v.format === 'm3u' ? csvField(v.groups) : [],
     titleInclude: v.format === 'm3u' ? csvField(v.titleInclude) : [],
     titleExclude: v.format === 'm3u' ? csvField(v.titleExclude) : [],
+    autoSubcategory: v.format === 'm3u' ? v.autoSubcategory : false,
     epg: v.format === 'm3u' ? v.epg : false,
     epgUrl: v.format === 'm3u' ? v.epgUrl.trim() : '', // '' = the channels carry no guide address
     prefix: v.prefix.trim(),
