@@ -142,6 +142,8 @@
   "live.bar.favorite": "お気に入り",
   "live.bar.report": "報告",
   "live.bar.subtitles": "字幕",
+  "live.hint.channel": "チャンネル",
+  "live.hint.menu": "メニュー",
   "live.search.placeholder": "チャンネル名または番号…",
   "live.search.clear": "検索をクリア",
   "live.search.backspace": "最後の文字を削除",

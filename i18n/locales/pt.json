@@ -143,6 +143,8 @@
   "live.bar.favorite": "Favorito",
   "live.bar.report": "Relatar",
   "live.bar.subtitles": "Legendas",
+  "live.hint.channel": "Canal",
+  "live.hint.menu": "Menu",
   "live.search.placeholder": "Nome ou número do canal…",
   "live.search.clear": "Limpar pesquisa",
   "live.search.backspace": "Apagar o último caractere",

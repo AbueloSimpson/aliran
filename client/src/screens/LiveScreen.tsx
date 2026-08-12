@@ -17,12 +17,25 @@
 // back to fullscreen; BACK from fullscreen exits to Menu; BACK from channel detail
 // returns to the list. Re-entering Live RESUMES the last channel watched this session
 // (lastStreamId) instead of snapping back to the hero.
-// TV: D-pad up/down while fullscreen zaps prev/next across the whole curated channel
-// order (the numbers' order). Zap rides the FOCUS ENGINE (invisible focus strips
-// above/below the select-catcher band) — react-native-tvos on Android does not dispatch
-// HWEvents to useTVEventHandler while a view holds focus, so key handling must be
-// focus-based (the S7 lesson). The bottom menu's touch buttons are phone-only so they
-// stay out of that focus path.
+// TV: the whole D-pad answers while fullscreen, and every direction rides the FOCUS
+// ENGINE — invisible focus strips around a central select-catcher band, because
+// react-native-tvos on Android does not dispatch HWEvents to useTVEventHandler while a
+// view holds focus, so key handling must be focus-based (the S7 lesson). The bottom
+// menu's touch buttons are phone-only so they stay out of that focus path.
+//
+//   UP / DOWN   zap prev/next across the whole curated channel order (the numbers'
+//               order), like a set-top box's CH+/CH-.
+//   OK / LEFT   open the channel list. Left is where every set-top box in the world
+//               puts its channel menu.
+//   RIGHT       channel detail for what is playing — the mirror of LEFT: left browses
+//               everything else, right describes this. BACK from detail entered THIS
+//               way returns to the picture, not to a channel list nobody opened.
+//   BACK        leave for the menu.
+//
+// AND THE BAR NAMES ALL OF IT. None of the above is discoverable on its own — a focus
+// strip is invisible by construction — so the NowPlayingBar carries a legend of key
+// caps on TV. That is not decoration: a viewer on a TCL set pressed left and right,
+// got silence, and reported channel changing as broken when it had worked all along.
 // VOD (S8a): library titles play on this same surface — the bottom bar grows a
 // seek/pause transport (phone), the SDK's live self-heal disarms itself (port
 // recordType), and CH+/CH- stays a live-only ring: zapping from a title lands on
@@ -100,12 +113,26 @@ const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGui
 
 // The left menu (browse overlay) has no manual close control — it auto-hides this long
 // after the last interaction, fading back to clean fullscreen video.
-const MENU_IDLE_MS = 6000
+//
+// FAR LONGER ON A TELEVISION, because 6 s is measurably wrong there. A phone viewer
+// interacts continuously — a scroll bumps the timer every few hundred ms — but a remote
+// viewer READS the list and then presses a key, and 6 s of reading is ordinary. The
+// overlay going away mid-read does not read as "back to the picture"; it reads as "it
+// lost my place". Every D-pad move inside the list already bumps this (ChannelRow's
+// onFocus → onActivity), so what is really being timed is a viewer who has stopped
+// pressing keys entirely — and BACK is still the instant way out.
+const MENU_IDLE_MS = theme.isTV ? 20000 : 6000
 
 // The bottom now-playing bar (phone) fades away this long after it appears / the last
 // interaction, for an unobstructed picture; a touch in the bottom reveal zone brings it
 // back. TV keeps the bar always-on (it lives in the D-pad path, not a touch surface).
 const BAR_IDLE_MS = 5000
+
+// The TV remote legend fades this long after it appears. It needs a timer of its OWN
+// precisely because the bar it rides on has none (armBarHide returns early on TV): a
+// legend on the bar's fade would stand over the picture for the whole session. Long
+// enough to read four short items without hurrying.
+const HINT_IDLE_MS = 9000
 
 // Last channel watched THIS session. Module-level so it survives leaving Live for the
 // Menu and coming back (the native stack unmounts the screen in between): re-entering
@@ -207,6 +234,14 @@ export function LiveScreen ({ route, navigation }: Props) {
   const [barShown, setBarShown] = useState(true)
   const barIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   const barOpacity = useRef(new Animated.Value(1)).current
+  // The TV remote legend (NowPlayingBar): raised on the same two triggers as the bar —
+  // arriving at fullscreen, and every channel change — then fading on its own timer.
+  const [hintShown, setHintShown] = useState(theme.isTV)
+  const hintIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hintOpacity = useRef(new Animated.Value(1)).current
+  // How channel detail was entered: RIGHT from fullscreen, or the channel list. Only
+  // the BACK handler reads it — see openInfo().
+  const infoFromFullscreen = useRef(false)
   // vod transport (S8a): playhead position (whole seconds — one re-render per second,
   // not per progress tick), runtime (player-reported on load, catalog durationSec until
   // then), and the app-owned pause. Live channels ignore all three.
@@ -221,6 +256,17 @@ export function LiveScreen ({ route, navigation }: Props) {
   const videoHandle = useRef<AliranVideoHandle | null>(null)
   // In-app volume (QA round 3): rn-video's volume/muted props, session-local — the
   // OS keeps hardware volume, this is the trim on top. Phone-only control (S7).
+  //
+  // AND IT STAYS PHONE-ONLY. Cable-box volume and mute were asked for on the television
+  // build, then MEASURED on the operator's TCL set (Android 14, a real television —
+  // ro.build.characteristics=tv, leanback_only) with this app in the foreground:
+  // VOLUME_UP/DOWN moved the REAL system volume (6→7→8→7 of 0..100), VOLUME_MUTE set the
+  // real mute, and the set drew its OWN volume scale over our picture. The box IS the
+  // television, so those keys already reach the speakers the viewer wants louder.
+  // Claiming them — an onKeyDown hook in MainActivity returning true for
+  // KEYCODE_VOLUME_UP/DOWN/MUTE — stops the system ever seeing them again and leaves an
+  // in-app attenuator that cannot get PAST whatever the set's own level happens to be.
+  // That trades a working control for a worse one, so there is nothing to build here.
   const [volume, setVolume] = useState(1)
   const [muted, setMuted] = useState(false)
 
@@ -395,11 +441,12 @@ export function LiveScreen ({ route, navigation }: Props) {
   // Bottom bar: reveal + re-arm the fade whenever fullscreen (re)appears or the channel
   // changes (so a zap flashes the new now-playing), then it fades out on its own.
   useEffect(() => {
-    if (overlay === 'none') showBar()
-    else clearBarIdle()
+    if (overlay === 'none') { showBar(); showHint() }
+    else { clearBarIdle(); clearHintIdle() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlay, playingId])
   useEffect(() => clearBarIdle, [])
+  useEffect(() => clearHintIdle, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
   const model = useMemo(() => categoryModel(streams), [streams])
@@ -549,6 +596,30 @@ export function LiveScreen ({ route, navigation }: Props) {
     Animated.timing(barOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start()
     armBarHide()
   }
+  function clearHintIdle () { if (hintIdle.current) { clearTimeout(hintIdle.current); hintIdle.current = null } }
+  // Reveal the TV remote legend and arm its fade. A no-op on phone, which teaches
+  // itself: every action the legend names is a labelled button on this same bar.
+  function showHint () {
+    if (!theme.isTV) return
+    clearHintIdle()
+    hintOpacity.stopAnimation()
+    setHintShown(true)
+    Animated.timing(hintOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start()
+    hintIdle.current = setTimeout(() => {
+      Animated.timing(hintOpacity, { toValue: 0, duration: 350, useNativeDriver: true })
+        .start(({ finished }) => { if (finished) setHintShown(false) })
+    }, HINT_IDLE_MS)
+  }
+
+  // The ONE way into channel detail, so that every entry records where BACK should
+  // return to. Detail is normally reached from the channel list and goes back to it;
+  // RIGHT reaches it from fullscreen, which never passed through a list at all.
+  function openInfo (s: Stream, { fromFullscreen = false }: { fromFullscreen?: boolean } = {}) {
+    infoFromFullscreen.current = fromFullscreen
+    setInfoStream(s)
+    setOverlay('info')
+  }
+
   // The manual half of the locked-fullscreen tap toggle (S22 round 5): fade the bar
   // out now instead of waiting for the idle timer.
   function hideBar () {
@@ -615,7 +686,15 @@ export function LiveScreen ({ route, navigation }: Props) {
         if (!theme.isTV && portraitRef.current) return false
         setOverlay('none'); return true // landscape guide mode → fullscreen
       }
-      if (overlayRef.current === 'info') { setOverlay('list'); return true }
+      if (overlayRef.current === 'info') {
+        // Detail reached from the channel list goes back to it. Reached by RIGHT on
+        // fullscreen it never passed through a list, and dropping the viewer into one
+        // they never opened takes them further FROM the picture, not back to it.
+        const toFullscreen = infoFromFullscreen.current
+        infoFromFullscreen.current = false
+        setOverlay(toFullscreen ? 'none' : 'list')
+        return true
+      }
       if (overlayRef.current === 'list') {
         // Unwind the category drill before the overlay: sub selected -> back to sub-select;
         // drilled (no sub) -> back to the top-level rail; else hide the left menu.
@@ -725,6 +804,17 @@ export function LiveScreen ({ route, navigation }: Props) {
                   a set-top box viewer expects. No bounce back to the catcher: opening the
                   overlay unmounts this whole block, and the overlay takes focus itself. */}
               <Pressable style={styles.menuLeft} onFocus={() => setOverlay('list')} />
+              {/* RIGHT opens channel detail for what is playing: the mirror of LEFT —
+                  left browses everything ELSE, right describes THIS — and the last
+                  direction on the pad that answered to nothing at all. Guarded on
+                  `playing` because with nothing tuned there is no channel to describe,
+                  and the press should stay silent rather than raise an empty panel. */}
+              {playing && (
+                <Pressable
+                  style={styles.menuRight}
+                  onFocus={() => openInfo(playing, { fromFullscreen: true })}
+                />
+              )}
             </>
           )}
           {playing && barShown && (
@@ -750,7 +840,7 @@ export function LiveScreen ({ route, navigation }: Props) {
                 clock={clockText(now)}
                 favorite={favorites.includes(playing.id)}
                 onSearch={() => setOverlay('search')}
-                onInfo={() => { setInfoStream(playing); setOverlay('info') }}
+                onInfo={() => openInfo(playing)}
                 onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
                 onReport={() => { showBar(); setReportOpen(true) }}
                 hasTracks={textTracks.length > 0 || audioTracks.length > 1}
@@ -782,6 +872,9 @@ export function LiveScreen ({ route, navigation }: Props) {
                 // fullscreen overlay and fades on a timer, so the standing chip below is
                 // what a viewer in the guide (portrait's resting state) actually sees.
                 sendingToTv={sendTv.sending}
+                // The remote legend (TV only, the bar gates it on theme.isTV itself).
+                hint={hintShown}
+                hintOpacity={hintOpacity}
               />
             </Animated.View>
           )}
@@ -892,7 +985,7 @@ export function LiveScreen ({ route, navigation }: Props) {
                 playingId={playingId}
                 favorites={favorites}
                 onSelect={(s) => play(s, { collapse: true })}
-                onInfo={(s) => { setInfoStream(s); setOverlay('info') }}
+                onInfo={(s) => openInfo(s)}
                 // Two-tier OK — but NOT while a playback error is up: play() honors
                 // re-selecting the SAME channel as the retry the error message
                 // promises (see play()'s 2026-07-16 outage note), and routing that
@@ -1026,15 +1119,19 @@ const styles = StyleSheet.create({
   // Portrait guide: the transparent tap target over the video strip (expand to
   // portrait fullscreen). Same inline height as the strip itself.
   stripTap: { position: 'absolute', top: 0, left: 0, right: 0 },
-  // Left inset makes room for menuLeft. The catcher must not span to x=0 or there is
-  // nothing for the focus engine to find when the viewer presses LEFT.
-  catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 80, right: 0 },
+  // Insets on BOTH sides make room for menuLeft/menuRight. The catcher must not span to
+  // either edge or there is nothing for the focus engine to find on a sideways press.
+  catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 80, right: 80 },
   // The LEFT strip: same trick as the zap strips, for the surface a viewer reaches for
   // first. Measured on a TCL set — up/down zapped and OK opened the channel list, but
   // LEFT and RIGHT did nothing at all, and left is where every set-top box in the world
   // puts its channel menu. A viewer pressed left, got silence, and reported that channel
   // changing was broken when it had been working the whole time.
   menuLeft: { position: 'absolute', top: 80, bottom: 80, left: 0, width: 80 },
+  // …and the RIGHT strip, which was the other half of that same silence: channel detail
+  // for what is playing. With this the whole pad answers, and the legend on the bar
+  // says so.
+  menuRight: { position: 'absolute', top: 80, bottom: 80, right: 0, width: 80 },
   // Full-screen wrapper so the NowPlayingBar's own absolute positioning still anchors
   // to the bottom while we fade the whole thing; box-none lets non-button taps reach
   // the catcher beneath. The bottom reveal zone re-shows the faded bar on touch.

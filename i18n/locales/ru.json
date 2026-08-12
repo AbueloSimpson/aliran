@@ -144,6 +144,8 @@
   "live.bar.favorite": "Избранное",
   "live.bar.report": "Проблема",
   "live.bar.subtitles": "Субтитры",
+  "live.hint.channel": "Канал",
+  "live.hint.menu": "Меню",
   "live.search.placeholder": "Название или номер канала…",
   "live.search.clear": "Очистить поиск",
   "live.search.backspace": "Удалить последний символ",

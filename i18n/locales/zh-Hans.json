@@ -142,6 +142,8 @@
   "live.bar.favorite": "收藏",
   "live.bar.report": "报告",
   "live.bar.subtitles": "字幕",
+  "live.hint.channel": "频道",
+  "live.hint.menu": "菜单",
   "live.search.placeholder": "频道名称或编号…",
   "live.search.clear": "清除搜索",
   "live.search.backspace": "删除最后一个字符",

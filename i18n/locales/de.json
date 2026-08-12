@@ -143,6 +143,8 @@
   "live.bar.favorite": "Favorit",
   "live.bar.report": "Melden",
   "live.bar.subtitles": "Untertitel",
+  "live.hint.channel": "Sender",
+  "live.hint.menu": "Menü",
   "live.search.placeholder": "Sendername oder -nummer…",
   "live.search.clear": "Suche löschen",
   "live.search.backspace": "Letztes Zeichen löschen",

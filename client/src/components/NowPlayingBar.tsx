@@ -16,8 +16,21 @@
 // transport row — play/pause, elapsed / runtime, and a scrubbable seek bar (tap or
 // drag; pure JS, no native slider dep). Phone-only interactivity for the same S7
 // reason; TV renders the row display-only (position + runtime, no focusables).
+//
+// REMOTE LEGEND (TV only): a line of key caps under the identity row naming what the
+// D-pad does here — ▲▼ changes channel, ◀/OK open the channel list, ▶ opens channel
+// info, BACK leaves for the menu. It exists because none of that was DISCOVERABLE: the
+// keys are answered by invisible focus strips (the S7 focus engine), so nothing on
+// screen ever named them, and a viewer who pressed a key that did nothing had no way
+// to find the ones that did. One measured on a TCL set pressed LEFT and RIGHT, got
+// silence, and reported channel changing as broken when it had worked the whole time.
+//
+// The caps are display-only Text — never focusables, which is the S7 rule the whole
+// screen is built around. The host fades them on their own timer rather than the bar's:
+// the TV bar never auto-hides (see armBarHide), so a legend riding only `barOpacity`
+// would sit over the picture forever.
 import React, { useRef, useState } from 'react'
-import { View, Text, Image, Pressable, StyleSheet, PanResponder } from 'react-native'
+import { View, Text, Image, Pressable, StyleSheet, PanResponder, Animated } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
 import { formatChannelNumber, formatDuration } from '../catalog'
@@ -71,9 +84,14 @@ export interface NowPlayingBarProps {
   /** A send is running — light the button. Casting leaves the local picture playing, so
    *  this is the only sign on the screen that the phone is serving a television. */
   sendingToTv?: boolean
+  /** TV only: render the remote legend (see the file header). Ignored on phone, which
+   *  teaches itself — every action there is a labelled button on this same bar. */
+  hint?: boolean
+  /** The legend's own fade, owned by the host (LiveScreen) alongside the bar's. */
+  hintOpacity?: Animated.Value
 }
 
-export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume, onSendToTv, sendingToTv }: NowPlayingBarProps) {
+export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onInfo, onToggleFavorite, onReport, hasTracks, onTracks, vod, onTogglePause, onSeek, volume, muted, onVolume, onSendToTv, sendingToTv, hint, hintOpacity }: NowPlayingBarProps) {
   const { t } = useI18n()
   // What's on NOW from the program guide (S27) — the airing program is more useful on
   // the bar than the channel synopsis. Falls back to the description ("via demotv")
@@ -115,6 +133,23 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onIn
             )}
             <SeekBar position={vod.position} duration={vod.duration} onSeek={onSeek} />
           </View>
+        )}
+
+        {/* The remote legend — TV only, display-only, on its own fade (file header). */}
+        {theme.isTV && hint && (
+          <Animated.View
+            style={[styles.legend, hintOpacity ? { opacity: hintOpacity } : null]}
+            pointerEvents="none"
+          >
+            <LegendKey caps="▲ ▼" label={t('live.hint.channel')} />
+            {/* Two markings, one action: OK and LEFT both open the channel list. */}
+            <LegendKey caps="◀ OK" label={t('live.bar.channels')} />
+            <LegendKey caps="▶" label={t('live.bar.info')} />
+            {/* The one cap that is TRANSLATED. Remotes print OK and the arrows the same
+                way everywhere, so those are markings rather than prose; the back key is
+                a WORD, and it is the word in the language the viewer set. */}
+            <LegendKey caps={t('common.back')} label={t('live.hint.menu')} />
+          </Animated.View>
         )}
 
         {/* Touch controls — phone only (see file header). */}
@@ -178,6 +213,18 @@ function SeekBar ({ position, duration, onSeek }: { position: number; duration: 
   )
 }
 
+// One legend entry: the cap printed on the remote, beside what that key does here.
+// Plain Text on both counts — a Pressable would put the legend in the D-pad path and
+// break the very zap engine it is there to explain (the S7 lesson).
+function LegendKey ({ caps, label }: { caps: string; label: string }) {
+  return (
+    <View style={styles.legendItem}>
+      <Text style={styles.legendCap}>{caps}</Text>
+      <Text style={styles.legendLabel}>{label}</Text>
+    </View>
+  )
+}
+
 function BarButton ({ glyph, label, active, onPress }: { glyph: string; label: string; active?: boolean; onPress: () => void }) {
   return (
     <Pressable style={({ pressed }) => [styles.btn, (pressed || active) && styles.btnActive]} onPress={onPress}>
@@ -206,6 +253,18 @@ const styles = StyleSheet.create({
   clock: { color: theme.colors.text, fontSize: theme.type.title, fontWeight: '700', fontVariant: ['tabular-nums'] },
   // wrap: the row holds 4-6 controls — portrait phones are too narrow for one line.
   buttons: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing(1), marginTop: theme.spacing(1) },
+  // The remote legend (TV). Wraps like the button row above it, for the locales whose
+  // words are long enough to run past one line at 10-foot type.
+  legend: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: theme.spacing(1.25), marginTop: theme.spacing(0.75) },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  // A key CAP: outlined rather than filled, so the legend never competes with a real
+  // focus highlight. overflow:hidden is what actually clips the radius on Android.
+  legendCap: {
+    color: theme.colors.text, fontSize: theme.type.caption, fontWeight: '800',
+    paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6, overflow: 'hidden',
+    borderWidth: 1, borderColor: theme.colors.textDim
+  },
+  legendLabel: { color: theme.colors.textDim, fontSize: theme.type.caption, fontWeight: '700' },
   transport: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1), marginTop: theme.spacing(1) },
   playBtn: { paddingHorizontal: theme.spacing(1.25), paddingVertical: 6, borderRadius: 10, backgroundColor: theme.colors.overlay },
   playGlyph: { color: theme.colors.text, fontSize: theme.type.body, fontWeight: '700', width: 22, textAlign: 'center' },

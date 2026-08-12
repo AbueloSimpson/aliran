@@ -80,3 +80,18 @@ test('the bar shows only the station logo — thumbBase never probes, nothing ro
   expect(images[0].props.source.uri).toBe(LOGO)
   expect(images[0].props.resizeMode).toBe('contain')
 })
+
+// --- the remote legend is TELEVISION ONLY ---
+// This suite runs at jest's default, which is a PHONE (Platform.isTV false), so it is
+// the natural place to pin the negative half. The positive half — every direction of
+// the pad named on screen — is TvRemoteLegend.test.tsx, which fakes isTV before load.
+// A phone needs no legend: the actions the legend names are labelled BUTTONS on this
+// very bar, and a row of key caps beside them would be noise about keys it has none of.
+
+test('a phone renders no remote legend, even when the host asks for one', async () => {
+  const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'via demotv' }
+  const shown = texts(await createTree(<NowPlayingBar stream={stream} {...props} hint />))
+  expect(shown).not.toContain('◀ OK')
+  expect(shown).not.toContain('▲ ▼')
+  expect(shown).toContain('via demotv') // …and the bar itself is untouched
+})

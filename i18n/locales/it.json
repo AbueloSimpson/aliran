@@ -143,6 +143,8 @@
   "live.bar.favorite": "Preferito",
   "live.bar.report": "Segnala",
   "live.bar.subtitles": "Sottotitoli",
+  "live.hint.channel": "Canale",
+  "live.hint.menu": "Menu",
   "live.search.placeholder": "Nome o numero del canale…",
   "live.search.clear": "Cancella la ricerca",
   "live.search.backspace": "Cancella l'ultimo carattere",

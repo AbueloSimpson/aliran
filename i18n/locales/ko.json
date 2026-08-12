@@ -142,6 +142,8 @@
   "live.bar.favorite": "즐겨찾기",
   "live.bar.report": "신고",
   "live.bar.subtitles": "자막",
+  "live.hint.channel": "채널",
+  "live.hint.menu": "메뉴",
   "live.search.placeholder": "채널 이름 또는 번호…",
   "live.search.clear": "검색 지우기",
   "live.search.backspace": "마지막 글자 삭제",

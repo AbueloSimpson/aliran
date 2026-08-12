@@ -143,6 +143,8 @@
   "live.bar.favorite": "Favorito",
   "live.bar.report": "Reportar",
   "live.bar.subtitles": "Subtítulos",
+  "live.hint.channel": "Canal",
+  "live.hint.menu": "Menú",
   "live.search.placeholder": "Nombre o número del canal…",
   "live.search.clear": "Borrar búsqueda",
   "live.search.backspace": "Borrar el último carácter",

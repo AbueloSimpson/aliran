@@ -142,6 +142,8 @@
   "live.bar.favorite": "รายการโปรด",
   "live.bar.report": "แจ้งปัญหา",
   "live.bar.subtitles": "คำบรรยาย",
+  "live.hint.channel": "ช่อง",
+  "live.hint.menu": "เมนู",
   "live.search.placeholder": "ชื่อช่องหรือหมายเลข…",
   "live.search.clear": "ล้างการค้นหา",
   "live.search.backspace": "ลบตัวอักษรสุดท้าย",
