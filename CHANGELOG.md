@@ -1345,6 +1345,20 @@ not been on a television yet**; each says so where it is described.
   theme block (the theme seam, wired up); without a favicon file the tab dot
   follows the accent. Full manual (variables, image formats/sizes, what each
   token paints): docs/white-label.md.
+- **English and Spanish dashboard.** A `Language` control on the login card and
+  in Settings retranslates the whole surface live, dates and number formats
+  included. The choice is per browser (`localStorage`), which is what lets the
+  *sign-in card* be translated — before sign-in there is no principal to hold a
+  preference — and it costs no API route, no store write and no env variable.
+  With nothing stored it follows the browser and falls back to English. It is
+  independent of white-labeling: brand headings, `/branding.json` and
+  `/branding.css` are never touched. Data stays as it is (account and principal
+  names, ledger notes, channel titles), as does text the service composes.
+  The catalog is one dependency-free script, `reseller/control-ui/i18n.js` —
+  **not** `@aliran/i18n`, which is TypeScript for a bundler this dashboard does
+  not have. `test:i18n` grew a section for it: key and placeholder parity, the
+  `[[code token]]`s held identical across locales, a usage scan of the two
+  files that consume it, and the runtime itself executed under a stub DOM.
 - **Automated credit top-ups**: `WEBHOOK_SECRET` enables
   `POST /api/webhooks/credits` — HMAC-SHA256-signed (`"<ts>.<raw body>"`,
   constant-time compare, ±300 s replay window), **idempotent by event id**

@@ -17,5 +17,5 @@
   "engines": {
     "node": ">=20"
   },
-  "comment": "Ships TypeScript source with NO build step — both viewer apps consume it directly (Metro reads it through client/metro.config.js watchFolders, esbuild bundles TS+JSON natively for the desktop renderer), the same arrangement as sdk/react-native. Operator surfaces (panel/ broadcaster/ reseller/ library/) stay English and must NOT depend on this package."
+  "comment": "Ships TypeScript source with NO build step — both viewer apps consume it directly (Metro reads it through client/metro.config.js watchFolders, esbuild bundles TS+JSON natively for the desktop renderer), the same arrangement as sdk/react-native. Operator surfaces (panel/ broadcaster/ reseller/ library/) must NOT depend on this package: they are plain no-build dashboards with no bundler to read TypeScript. The reseller dashboard is translated, and carries its OWN self-contained catalog in reseller/control-ui/i18n.js for exactly that reason; tools/i18n-test.mjs guards both."
 }

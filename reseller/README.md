@@ -55,6 +55,21 @@ node src/reseller-cli.js add-admin <name>        Seed THE root admin (refused if
 Everything past bootstrap happens through the dashboard/API, where the role
 gates live.
 
+## Dashboard language
+
+The dashboard reads in **English or Spanish**. The `Language` control is on the
+login card and in Settings, and the choice is kept per browser
+(`localStorage`) — the login card needs a language before there is a principal
+to hold a preference, so no API route or env variable is involved.
+
+The catalog is `control-ui/i18n.js`: a plain script, no build step, no
+dependency. It is deliberately separate from the viewer apps' `@aliran/i18n`
+— that package is TypeScript for a bundler this dashboard does not have, and
+`control-server.js` serves a flat `.html`/`.js`/`.css` whitelist. To add a
+language, extend `LOCALES`, copy the `CATALOG.en` block, translate it and run
+`npm run test:i18n` (section 6 guards this catalog). Details:
+[docs/reseller-panel.md → Language](../docs/reseller-panel.md#language).
+
 ## Data (`DATA_DIR`, default `./data`)
 
 ```

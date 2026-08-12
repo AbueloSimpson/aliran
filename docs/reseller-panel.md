@@ -54,7 +54,9 @@ and on phones the accounts table reflows into stacked cards:
 
 The whole surface white-labels from env — name, logo, favicon, login backdrop,
 and the full colour theme; see
-[the rebrand manual](white-label.md#reseller-panel-dashboard).
+[the rebrand manual](white-label.md#reseller-panel-dashboard). It also reads in
+**English or Spanish**, selected on the login card or in Settings — see
+[Language](#language).
 
 ## Roles
 
@@ -208,6 +210,51 @@ byte-identical block the theme test enforces is untouched.
 **The full manual — every variable, image formats and sizes, and what each of
 the 11 colour tokens paints — is in
 [White-label branding → Reseller panel dashboard](white-label.md#reseller-panel-dashboard).**
+
+## Language
+
+The dashboard is available in **English** and **Spanish**. A `Language`
+control is on the login card and in **Settings**. The text changes
+immediately. You do not have to sign in again.
+
+The choice belongs to the **browser**, not to the principal, and it is kept in
+`localStorage`. Two things make that the correct place:
+
+- The sign-in card needs a language too, and before sign-in there is no
+  principal to hold a preference.
+- It needs no API route, no store write and no env variable. Nothing on the
+  box changes when a reseller selects a different language.
+
+If there is no stored choice, the dashboard follows the browser's language.
+If it does not have that language, it uses English.
+
+Language and white-labeling do not touch each other. A translation never
+changes the brand headings, `/branding.json` or `/branding.css`. `BRAND_NAME`
+and your logo stay the same in each language.
+
+Some text stays in English on purpose:
+
+| Text | Why |
+| --- | --- |
+| Account names, principal names, ledger notes, channel titles | This is your data. The dashboard shows it as it is. |
+| API error messages | The service writes them, and it also writes them to its log. |
+| The `why` and `assumes` lines on the Backup card | `@aliran/core` writes them, and four services share that code. |
+
+### To add a language
+
+The catalog is `reseller/control-ui/i18n.js`: one plain script, no build step
+and no dependency. The viewer apps' `@aliran/i18n` package does not apply here
+— this dashboard has no bundler, and the control server sends a flat list of
+`.html`, `.js` and `.css` files only.
+
+1. Add the code and the autonym (the language's name in its own language) to
+   `LOCALES`.
+2. Copy the `CATALOG.en` block and translate the values.
+3. Run `npm run test:i18n`.
+
+The test fails if a key is absent or empty, if a `{placeholder}` is not in the
+translation, if a `[[code token]]` was translated, or if the dashboard uses a
+key that no catalog has.
 
 ## Trials
 

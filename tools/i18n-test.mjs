@@ -33,10 +33,19 @@
 //   5  USAGE SCAN. Every key a t()/tn() call site names — literal, or a literal prefix
 //      with a runtime tail like t('report.category.' + c) — exists in en. Unused
 //      catalog keys are a warning, never a failure: en grows one screen at a time.
+//   6  THE RESELLER DASHBOARD. reseller/control-ui/i18n.js is a SECOND, independent
+//      catalog: that UI has no bundler and could not consume this package (see the
+//      header of that file). It gets the same treatment — parity, placeholders, a
+//      usage scan over app.js + index.html — plus the checks its own mechanism needs:
+//      the [[mono]] tokens are code and must be identical across locales, and a value
+//      carrying markup must never be rendered through the plain-text path. Its runtime
+//      is EXECUTED here rather than pattern-matched, so t()/tOr()/tNodes() are proven,
+//      not assumed.
 //
 // Run: node tools/i18n-test.mjs   (npm run test:i18n)
 import fs from 'node:fs'
 import path from 'node:path'
+import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -321,6 +330,167 @@ const unused = Object.keys(en).filter((k) => !covered.has(k)).sort()
 if (unused.length) warn(`${unused.length} en key(s) not referenced by either app — ${some(unused, 8)}`)
 else ok('every en key is referenced by at least one call site')
 
+// ---- 6. the reseller dashboard catalog -------------------------------------------------
+//
+// A separate catalog for a separate deployable. The dashboard is plain scripts served by
+// reseller/src/control-server.js, whose static whitelist is flat .html/.js/.css — it has
+// no way to load this package's TypeScript or its locale JSON. So the guard travels to it
+// instead of the other way round.
+
+console.log('\n6. reseller dashboard (reseller/control-ui)')
+const RS_DIR = path.join(root, 'reseller', 'control-ui')
+const RS_RUNTIME = path.join(RS_DIR, 'i18n.js')
+const RS_APP = path.join(RS_DIR, 'app.js')
+const RS_HTML = path.join(RS_DIR, 'index.html')
+
+// Run the browser IIFE under a stub DOM. Executing it proves the runtime as well as the
+// data — a catalog that parses but whose t() drops a placeholder still fails here.
+function loadResellerRuntime () {
+  const sandbox = {
+    console,
+    window: {},
+    navigator: { languages: ['en-US'] },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    document: {
+      documentElement: {},
+      querySelectorAll: () => [],
+      createElement: (tag) => ({ tag, className: '', textContent: '' }),
+      createTextNode: (text) => ({ tag: '#text', textContent: text })
+    }
+  }
+  vm.runInContext(fs.readFileSync(RS_RUNTIME, 'utf8'), vm.createContext(sandbox), { filename: 'reseller/control-ui/i18n.js' })
+  if (!sandbox.window.i18n) throw new Error('reseller/control-ui/i18n.js did not publish window.i18n')
+  return sandbox.window
+}
+
+const rsWin = loadResellerRuntime()
+const rsCatalogs = rsWin.i18n.CATALOG
+const rsCodes = rsWin.i18n.LOCALES.map((l) => l.code)
+const rsEn = rsCatalogs.en
+console.log(`   ${rsCodes.length} locales (${rsCodes.join(' ')}), ${Object.keys(rsEn).length} keys in en`)
+
+// -- 6a. every offered language has a catalog, with exactly en's keys and no blanks
+check(rsCodes[0] === 'en', 'en is the first locale offered (the source catalog)')
+check(rsCodes.every((c) => rsWin.i18n.LOCALES.find((l) => l.code === c).name.trim()),
+  'every locale in the picker carries a non-empty autonym')
+const rsEnKeys = new Set(Object.keys(rsEn))
+for (const code of rsCodes) {
+  const cat = rsCatalogs[code]
+  if (!cat) { fail(`${code}: the picker offers this language but CATALOG.${code} does not exist`); continue }
+  const actual = new Set(Object.keys(cat))
+  const missing = sorted(rsEnKeys).filter((k) => !actual.has(k))
+  const extra = sorted(actual).filter((k) => !rsEnKeys.has(k))
+  const empty = sorted(actual).filter((k) => typeof cat[k] !== 'string' || cat[k].trim() === '')
+  if (missing.length) fail(`${code}: ${missing.length} key(s) missing — ${some(missing)}`)
+  if (extra.length) fail(`${code}: ${extra.length} key(s) en does not have — ${some(extra)}`)
+  if (empty.length) fail(`${code}: ${empty.length} empty value(s) — ${some(empty)}`)
+  if (!missing.length && !extra.length && !empty.length) ok(`${code}: ${actual.size} keys, all present and non-empty`)
+}
+// A catalog nobody can pick is dead weight the guard would otherwise never mention.
+for (const code of Object.keys(rsCatalogs)) {
+  if (!rsCodes.includes(code)) fail(`CATALOG.${code} exists but LOCALES does not offer it — nobody can select this language`)
+}
+
+// -- 6b. placeholders, and the [[mono]] tokens, which are CODE and never translated
+const monoTokens = (s) => new Set([...String(s).matchAll(/\[\[([^\]]+)\]\]/g)].map((m) => m[1]))
+const boldCount = (s) => [...String(s).matchAll(/\*\*([^*]+)\*\*/g)].length
+let rsMarkupBad = 0
+for (const code of rsCodes) {
+  const cat = rsCatalogs[code]
+  if (!cat || code === 'en') continue
+  for (const key of rsEnKeys) {
+    if (cat[key] === undefined) continue
+    if (!sameSet(placeholders(rsEn[key]), placeholders(cat[key]))) {
+      fail(`${code}: ${key} placeholders {${sorted(placeholders(cat[key]))}} != en {${sorted(placeholders(rsEn[key]))}}`)
+      rsMarkupBad++
+    }
+    if (!sameSet(monoTokens(rsEn[key]), monoTokens(cat[key]))) {
+      fail(`${code}: ${key} [[mono]] tokens ${sorted(monoTokens(cat[key]))} != en ${sorted(monoTokens(rsEn[key]))} — those are code, copy them across`)
+      rsMarkupBad++
+    }
+    if (boldCount(rsEn[key]) !== boldCount(cat[key])) {
+      fail(`${code}: ${key} has ${boldCount(cat[key])} **bold** span(s), en has ${boldCount(rsEn[key])}`)
+      rsMarkupBad++
+    }
+  }
+}
+if (!rsMarkupBad) ok(`${rsEnKeys.size} key(s) carry the same placeholders, [[mono]] tokens and **bold** spans in every locale`)
+
+// -- 6c. usage scan over the two files that consume the catalog
+const rsApp = fs.readFileSync(RS_APP, 'utf8')
+const rsHtml = fs.readFileSync(RS_HTML, 'utf8')
+
+// A key literal is recognised by SHAPE, not by the call around it — the dashboard picks
+// keys with ternaries (t(off ? 'a.b' : 'c.d')) that no call-site regex would see.
+const NAMESPACES = new Set([...rsEnKeys].map((k) => k.split('.')[0]))
+const KEYISH = /'([a-z][A-Za-z0-9]*(?:\.[A-Za-z0-9_-]+)+)'/g
+// The leading group keeps `obj.t(` and `format(` out while still admitting the spread
+// form `...tNodes(` — which is how the one rich call site in app.js is written.
+const CALLER = '(?:^|[^$\\w.]|\\.\\.\\.)'
+const RS_PREFIX = new RegExp(CALLER + "(?:t|tOr|tNodes)\\s*\\(\\s*'([^'\\n]*)'\\s*\\+", 'gm')
+const RS_RICH = new RegExp(CALLER + "tNodes\\s*\\(\\s*'([^'\\n]*)'", 'gm')
+
+const rsPrefixes = new Set([...rsApp.matchAll(RS_PREFIX)].map((m) => m[1]))
+const rsRich = new Set([...rsApp.matchAll(RS_RICH)].map((m) => m[1]))
+for (const m of rsHtml.matchAll(/data-i18n-rich="([^"]+)"/g)) rsRich.add(m[1])
+
+const rsPlain = new Set()
+for (const m of rsApp.matchAll(KEYISH)) {
+  if (NAMESPACES.has(m[1].split('.')[0]) && !rsRich.has(m[1])) rsPlain.add(m[1])
+}
+for (const m of rsHtml.matchAll(/data-i18n(?:-ph|-title|-aria)?="([^"]+)"/g)) {
+  if (!rsRich.has(m[1])) rsPlain.add(m[1])
+}
+
+const rsUnknown = sorted(new Set([...rsPlain, ...rsRich])).filter((k) => !rsEnKeys.has(k))
+if (rsUnknown.length) fail(`${rsUnknown.length} key(s) used but not in the en catalog — ${some(rsUnknown)}`)
+else ok(`${rsPlain.size + rsRich.size} key(s) named by app.js / index.html all resolve in en`)
+
+for (const p of rsPrefixes) {
+  if (![...rsEnKeys].some((k) => k.startsWith(p))) fail(`t('${p}' + …) matches no en key`)
+}
+if (rsPrefixes.size) ok(`${rsPrefixes.size} runtime-tail prefix(es) resolve — ${some(sorted(rsPrefixes))}`)
+
+// -- 6d. markup can only travel the path that renders it
+// A [[mono]] or **bold** value assigned through textContent shows its brackets to the
+// operator; a plain value sent through tNodes() is harmless but points at a mistake.
+const richMarkup = (k) => monoTokens(rsEn[k]).size > 0 || boldCount(rsEn[k]) > 0
+const leaked = sorted(rsPlain).filter((k) => rsEnKeys.has(k) && richMarkup(k))
+if (leaked.length) fail(`${leaked.length} key(s) carry markup but are rendered as plain text — use tNodes()/data-i18n-rich: ${some(leaked)}`)
+else ok('every key carrying **bold**/[[mono]] is rendered through tNodes()/data-i18n-rich')
+
+const rsCovered = new Set([...rsPlain, ...rsRich])
+for (const p of rsPrefixes) for (const k of rsEnKeys) if (k.startsWith(p)) rsCovered.add(k)
+const rsUnused = sorted(rsEnKeys).filter((k) => !rsCovered.has(k))
+if (rsUnused.length) warn(`${rsUnused.length} reseller key(s) referenced by neither file — ${some(rsUnused, 8)}`)
+else ok('every reseller key is referenced')
+
+// -- 6e. the runtime itself
+// t() must substitute, tOr() must echo an enum it does not know (a new ledger type shows
+// through instead of turning into a missing-key string), and tNodes() must split markup.
+const rsT = rsWin.t
+const rsSample = [...rsEnKeys].find((k) => placeholders(rsEn[k]).size > 0)
+const rsVar = [...placeholders(rsEn[rsSample])][0]
+check(rsT(rsSample, { [rsVar]: 'XYZZY' }).includes('XYZZY') && !rsT(rsSample, { [rsVar]: 'XYZZY' }).includes(`{${rsVar}}`),
+  `t() substitutes {${rsVar}} in ${rsSample}`)
+check(rsWin.tOr('ledger.type.NOT_A_REAL_TYPE', 'NOT_A_REAL_TYPE') === 'NOT_A_REAL_TYPE',
+  'tOr() echoes a server enum the catalog does not carry')
+const richKey = sorted(rsEnKeys).find((k) => monoTokens(rsEn[k]).size > 0)
+const richNodes = rsWin.tNodes(richKey)
+check(richNodes.some((n) => n.tag === 'span' && n.className === 'mono' && monoTokens(rsEn[richKey]).has(n.textContent)),
+  `tNodes() renders [[mono]] in ${richKey} as a span.mono`)
+check(rsWin.tNodes('accounts.ownerChip', { owner: '<script>' }).some((n) => n.tag === 'b' && n.textContent === '<script>'),
+  'tNodes() puts interpolated data in a text node, never in markup')
+
+// -- 6f. wiring the dashboard depends on
+check(rsHtml.indexOf('src="i18n.js"') !== -1 && rsHtml.indexOf('src="i18n.js"') < rsHtml.indexOf('src="app.js"'),
+  'index.html loads i18n.js before app.js (app.js calls t() as it parses)')
+// The brand headings belong to white-label branding (docs/white-label.md) — applyBranding()
+// rewrites them from branding.json, so a translation attribute there would fight it.
+const brandLines = rsHtml.split('\n').filter((l) => l.includes('class="brand"'))
+check(brandLines.length > 0 && brandLines.every((l) => !l.includes('data-i18n')),
+  `the ${brandLines.length} .brand heading(s) carry no translation attribute (white-label owns them)`)
+
 // ---- result ---------------------------------------------------------------------------
 
 console.log('')
@@ -328,4 +498,4 @@ if (failures) {
   console.error(`RESULT: FAIL ❌  ${failures} failure(s)`)
   process.exit(1)
 }
-console.log(`RESULT: PASS ✅  (key parity; placeholders; plural forms; report pins; usage scan)${warnings ? `  — ${warnings} warning(s)` : ''}`)
+console.log(`RESULT: PASS ✅  (key parity; placeholders; plural forms; report pins; usage scan; reseller dashboard)${warnings ? `  — ${warnings} warning(s)` : ''}`)
