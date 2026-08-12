@@ -105,6 +105,17 @@ export function loadConfig (file, { logger = (m) => process.stderr.write(m + '\n
     if (cfg[svc] && !cfg[svc].url && !cfg.ssh) {
       throw new ConfigError(`"${svc}" has no "url" and there is no "ssh" block to tunnel through — add a url (e.g. a Caddy TLS endpoint) or an ssh block`)
     }
+    // Resolve `sshHost` HERE rather than at tunnel-open time: a typo'd box name is a
+    // config mistake, and finding it at load names the file the operator must fix
+    // instead of failing later inside one tool call with the rest of them working.
+    const named = cfg[svc] && cfg[svc].sshHost
+    if (named) {
+      if (cfg[svc].url) throw new ConfigError(`"${svc}" has both a "url" and an "sshHost" — a url is reached directly, so the box name would be ignored; drop one`)
+      const known = cfg.ssh && cfg.ssh.hosts
+      if (!known || !known[named]) {
+        throw new ConfigError(`"${svc}.sshHost" names "${named}" but "ssh.hosts" has no such entry (configured: ${known ? Object.keys(known).join(', ') : 'none — add an "ssh.hosts" map of named boxes'})`)
+      }
+    }
   }
   return cfg
 }
@@ -124,7 +135,17 @@ function normalizeBearer (name, v) {
     localPort = Number(v.localPort)
     if (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535) throw new ConfigError(`"${name}.localPort" must be a port number between 1 and 65535`)
   }
-  return { name, url, localPort, username: String(username), password: String(password), timeoutMs: v.timeoutMs || 15000 }
+  // Which BOX this service's tunnel lands on: an "ssh.hosts" name, or unset for the
+  // default box. A control plane and the boxes it drives are routinely separate
+  // machines — the panel on one, a broadcaster's loopback admin API on another — and
+  // before this every service tunnelled to the one default host, so such a
+  // deployment could only ever reach half of itself.
+  let sshHost = null
+  if (v.sshHost != null) {
+    if (typeof v.sshHost !== 'string' || !v.sshHost) throw new ConfigError(`"${name}.sshHost" must be the name of an "ssh.hosts" entry`)
+    sshHost = v.sshHost
+  }
+  return { name, url, localPort, sshHost, username: String(username), password: String(password), timeoutMs: v.timeoutMs || 15000 }
 }
 
 function normalizeSsh (v) {

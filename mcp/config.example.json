@@ -5,6 +5,8 @@
 
   "_comment_multi_host": "More than one box (repeater appliances, scale-out broadcasters)? Name them inside ssh: \"ssh\": { \"host\": \"<default box>\", \"user\": \"root\", \"keyPath\": \"...\", \"hosts\": { \"edge-1\": { \"host\": \"203.0.113.20\", \"user\": \"root\", \"keyPath\": \"~/.ssh/aliran_deploy_ed25519\", \"repoDir\": \"/opt/aliran\" } } }. Every server_* tool, repeater_status and panel_add_publisher then take host:\"edge-1\" (omitted = the default box). Per-entry keyPath/port/repoDir are optional. A hosts-only shape works too: \"hosts\" plus \"default\": \"<name>\" and no top-level host.",
 
+  "_comment_split_control_plane": "Is a service on a DIFFERENT box from the default one? Give its block an \"sshHost\": \"<ssh.hosts name>\" and its tunnel lands there instead. This is the normal shape once the panel and the broadcasters are separate machines: the panel runs on the control-plane box, each broadcaster's admin API is loopback on the box that runs THAT broadcaster, and the broadcasters reach the panel over P2P rather than over this tunnel. E.g. \"broadcaster\": { \"user\": \"admin\", \"pass\": \"...\", \"sshHost\": \"bc-1\" }. Omit it and the service tunnels to the default box, exactly as before. A block with a \"url\" is reached directly, so it must not also carry \"sshHost\".",
+
   "panel": {
     "url": "https://panel.example.com",
     "user": "admin",

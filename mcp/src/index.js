@@ -132,15 +132,22 @@ async function main () {
     // A pinned `localPort` makes recovery predictable — the operator repairs the
     // forward by hand with a port they already know, instead of reading one out of
     // an error message. Unset keeps the old behaviour: any free port.
+    // A service may live on a DIFFERENT box from the default one: `sshHost` names an
+    // ssh.hosts entry. That is the split control plane — the panel on the box that
+    // runs it, a broadcaster's loopback admin API on the box that runs THAT — and it
+    // is why this resolves per service instead of reusing the one default executor.
+    // The name is checked at config load, so sshFor cannot throw here.
+    const svcSsh = svc.sshHost ? sshFor(svc.sshHost) : ssh
+    const svcHost = svc.sshHost ? config.ssh.hosts[svc.sshHost].host : config.ssh.host
     const localPort = svc.localPort || await freePort()
-    const where = `127.0.0.1:${localPort} -> ${config.ssh.host}:${remotePort}`
+    const where = `127.0.0.1:${localPort} -> ${svcHost}:${remotePort}`
     let tunnel = null
     let opening = null
 
     // Single-flight, so concurrent first calls share one open attempt.
     const open = () => {
       if (!opening) {
-        opening = ssh.openTunnel({ localPort, remotePort })
+        opening = svcSsh.openTunnel({ localPort, remotePort })
           .then((t) => { tunnel = t; tunnels.push(t); logerr(`opened SSH tunnel ${where} for ${svc.name}`); return true })
           .finally(() => { opening = null })
       }
@@ -154,7 +161,7 @@ async function main () {
     }
 
     const reachability = {
-      describe: `through the SSH tunnel to ${config.ssh.host}:${remotePort}`,
+      describe: `through the SSH tunnel to ${svcHost}:${remotePort}`,
       repair: async () => {
         if (!tunnel) return open() // never came up at startup: open it now
         const rebuilt = await tunnel.repair()

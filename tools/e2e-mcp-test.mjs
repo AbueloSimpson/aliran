@@ -1788,6 +1788,34 @@ try {
       assert.throws(() => loadConfig(cfgWith(bad), quiet), /localPort/, `a localPort of ${JSON.stringify(bad)} is refused at load, not at tunnel-open time`)
     }
 
+    // A service can name the BOX its tunnel lands on. Without this every service
+    // tunnelled to the one default host, so a deployment whose panel and whose
+    // broadcaster admin API live on different machines could only reach half of
+    // itself — pointing the default at the panel's box silently took the
+    // broadcaster tools down with it.
+    const hostCfgFile = path.join(dirs.mcp, 'svc-host-config.json')
+    const cfgHost = (svcExtra, ssh) => {
+      fs.writeFileSync(hostCfgFile, JSON.stringify({
+        panel: { user: 'a', pass: 'b' },
+        broadcaster: { user: 'a', pass: 'b', ...svcExtra },
+        ssh: ssh ?? { host: 'panel.example', user: 'root', hosts: { vps: { host: 'bc.example', user: 'root' } } }
+      }))
+      return hostCfgFile
+    }
+    assert.strictEqual(loadConfig(cfgHost({ sshHost: 'vps' }), quiet).broadcaster.sshHost, 'vps',
+      'a service may name an ssh.hosts entry as its own box')
+    assert.strictEqual(loadConfig(cfgHost({}), quiet).broadcaster.sshHost, null,
+      'and is null when unset, so it keeps tunnelling to the default box')
+    assert.throws(() => loadConfig(cfgHost({ sshHost: 'nope' }), quiet), /sshHost.*nope.*no such entry/s,
+      'a box name with no ssh.hosts entry is refused AT LOAD, naming the configured boxes')
+    assert.throws(() => loadConfig(cfgHost({ sshHost: 'vps' }, { host: 'panel.example', user: 'root' }), quiet), /sshHost/,
+      'and refused when there is no ssh.hosts map at all')
+    assert.throws(() => loadConfig(cfgHost({ sshHost: 'vps', url: 'https://bc.example' }), quiet), /both a "url" and an "sshHost"/,
+      'a url plus a box name is refused rather than silently ignoring the box')
+    for (const bad of ['', 5, {}]) {
+      assert.throws(() => loadConfig(cfgHost({ sshHost: bad }), quiet), /sshHost/, `an sshHost of ${JSON.stringify(bad)} is refused at load`)
+    }
+
     // A tunnel that dies must say WHY. Rejecting on 'exit' raced ssh's stderr and
     // produced "ssh tunnel exited (code 255): " with the reason discarded — the
     // one failure an operator cannot diagnose, seen live behind a Claude Desktop
