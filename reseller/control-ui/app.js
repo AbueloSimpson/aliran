@@ -2,7 +2,11 @@
    /api (which fronts the panel admin API server-side); the token lives in
    sessionStorage and any 401 drops back to the login view. Sections are shown/
    hidden by the signed-in principal's role. Row actions follow the business-tool
-   pattern: one quick action (the everyday op) + a kebab menu for the rest. */
+   pattern: one quick action (the everyday op) + a kebab menu for the rest.
+
+   Every user-facing string comes from t() / tOr() / tNodes(), defined by i18n.js
+   (loaded first). Text that is DATA — account and principal names, ledger notes,
+   channel titles, API error messages — is echoed as it arrives and never looked up. */
 
 const $ = (s, r = document) => r.querySelector(s)
 const $$ = (s, r = document) => [...r.querySelectorAll(s)]
@@ -11,8 +15,10 @@ const el = (tag, props = {}, kids = []) => {
   for (const k of [].concat(kids)) if (k != null) n.append(k)
   return n
 }
-const fmtDays = (d) => d == null ? '—' : d < 0 ? `${-d}d ago` : d === 0 ? 'today' : `${d}d`
-const fmtDate = (ts) => ts ? new Date(ts).toLocaleDateString() : '—'
+// Dates and numbers follow the chosen language too, not just the words around them.
+const fmtDays = (d) => d == null ? '—' : d < 0 ? t('fmt.daysAgo', { n: -d }) : d === 0 ? t('fmt.today') : t('fmt.days', { n: d })
+const fmtDate = (ts) => ts ? new Date(ts).toLocaleDateString(i18n.locale) : '—'
+const fmtDateTime = (ts) => new Date(ts).toLocaleString(i18n.locale)
 const fmtBytes = (n) => {
   if (n == null) return '—'
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -27,7 +33,11 @@ const fmtDur = (s) => {
   if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
   return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
 }
-const fmtAgo = (ts) => ts == null ? 'never' : fmtDur((Date.now() - ts) / 1000) + ' ago'
+const fmtAgo = (ts) => ts == null ? t('common.never') : t('fmt.ago', { d: fmtDur((Date.now() - ts) / 1000) })
+// A status or ledger type is a server-side enum: translate the ones we ship, echo
+// anything newer rather than showing a missing-key string.
+const statusText = (s) => tOr('status.' + s, s)
+const ledgerTypeText = (ty) => tOr('ledger.type.' + ty, ty)
 const CAN_MANAGE = new Set(['admin', 'co-admin', 'super'])
 const IS_ADMIN = (r) => r === 'admin' || r === 'co-admin'
 
@@ -61,7 +71,7 @@ function toast (msg, isErr) {
 const guard = (fn) => async (...a) => { try { return await fn(...a) } catch (e) { toast(e.message, true) } }
 
 // ---- dialog ----
-function dialog (title, rows, onOk, { okLabel = 'OK', danger = false } = {}) {
+function dialog (title, rows, onOk, { okLabel = t('common.ok'), danger = false } = {}) {
   $('#dlg-title').textContent = title
   const body = $('#dlg-body')
   body.replaceChildren(...rows)
@@ -201,18 +211,29 @@ $('#login-form').onsubmit = guard(async (e) => {
 })
 
 // ---- navigation ----
+let currentView = 'overview'
 function showView (name) {
   closeRowMenu(false)
   clearInterval(sysTimer) // the system poller runs only while Overview is open
+  currentView = name
   $$('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.view === name))
   $$('.view').forEach((v) => { v.hidden = v.dataset.view !== name })
-  $('#view-title').textContent = { overview: 'Overview', accounts: 'Accounts', resellers: 'Resellers', ledger: 'Ledger', settings: 'Settings' }[name]
+  $('#view-title').textContent = t('nav.' + name)
   $('#app-view').classList.remove('side-open')
   const loaders = { overview: loadOverview, accounts: loadAccounts, resellers: loadPrincipals, ledger: () => loadLedger(true), settings: () => { if (me && IS_ADMIN(me.role)) loadBackup().catch((e) => toast(e.message, true)) } }
   if (loaders[name]) loaders[name]()
 }
 $$('.nav-item').forEach((n) => { n.onclick = () => showView(n.dataset.view) })
 $('#side-toggle').onclick = () => $('#app-view').classList.toggle('side-open')
+
+// A language change re-renders everything the catalog touches. i18n.js has already
+// re-applied the static markup; this redraws what app.js built. Signed out, there is
+// nothing but the login card, and that is static.
+i18n.onChange(() => {
+  if (!me) return
+  $('#acct-devices-note').textContent = t('accounts.devicesNote', { n: me.maxDevicesLimit })
+  showView(currentView)
+})
 
 // ---- boot ----
 async function boot () {
@@ -233,7 +254,7 @@ async function boot () {
   $('#acct-devices-label').hidden = !IS_ADMIN(me.role)
   $('#acct-devices-note').hidden = IS_ADMIN(me.role)
   if (IS_ADMIN(me.role)) $('#acct-devices').value = me.maxDevicesLimit
-  else $('#acct-devices-note').textContent = `devices per account: ${me.maxDevicesLimit} (set by your admin)`
+  else $('#acct-devices-note').textContent = t('accounts.devicesNote', { n: me.maxDevicesLimit })
   setupPrincipalForm()
   showView('overview')
 }
@@ -242,15 +263,15 @@ async function boot () {
 async function loadOverview () {
   const s = await api('GET', '/status')
   const tiles = [
-    ['Balance', s.balance, ''],
-    ['Active accounts', s.accountsActive ?? 0, ''],
-    ['Expiring ≤ 7d', s.accountsExpiring7d ?? 0, s.accountsExpiring7d ? 'warn' : ''],
-    ['Trials active', s.trialsActive ?? 0, ''],
-    ['Disabled', s.accountsDisabled ?? 0, '']
+    [t('overview.tile.balance'), s.balance, ''],
+    [t('overview.tile.activeAccounts'), s.accountsActive ?? 0, ''],
+    [t('overview.tile.expiring7d'), s.accountsExpiring7d ?? 0, s.accountsExpiring7d ? 'warn' : ''],
+    [t('overview.tile.trialsActive'), s.trialsActive ?? 0, ''],
+    [t('overview.tile.disabled'), s.accountsDisabled ?? 0, '']
   ]
   if (IS_ADMIN(me.role)) {
-    tiles.push(['Principals', s.principals ?? 0, ''])
-    tiles.push(['Outstanding credits', s.outstandingCredits ?? 0, ''])
+    tiles.push([t('overview.tile.principals'), s.principals ?? 0, ''])
+    tiles.push([t('overview.tile.outstanding'), s.outstandingCredits ?? 0, ''])
   }
   $('#tiles').replaceChildren(...tiles.map(([k, v, cls]) =>
     el('div', { className: 'tile' + (cls ? ' ' + cls : '') }, [
@@ -263,18 +284,34 @@ async function loadOverview () {
   if (s.panel) {
     const up = s.panel.reachable
     banner.className = 'banner ' + (up === false ? 'err' : up ? 'ok' : '')
-    banner.textContent = up === false ? 'panel unreachable' : up ? 'panel reachable' : 'panel state unknown'
-    if (s.reconcile) banner.textContent += ` · last reconcile: ${s.reconcile.orphanPanel + s.reconcile.missingPanel + s.reconcile.statusFixed + (s.reconcile.packagesFixed || 0)} finding(s), ${s.reconcile.errors} error(s)`
+    banner.textContent = up === false ? t('overview.panelUnreachable') : up ? t('overview.panelReachable') : t('overview.panelUnknown')
+    if (s.reconcile) {
+      banner.textContent += t('overview.reconcileLine', {
+        findings: s.reconcile.orphanPanel + s.reconcile.missingPanel + s.reconcile.statusFixed + (s.reconcile.packagesFixed || 0),
+        errors: s.reconcile.errors
+      })
+    }
   } else {
     banner.className = 'banner'
-    banner.textContent = `${s.accountsActive ?? 0} active account(s) · ${s.accountsExpiring7d ?? 0} expiring ≤ 7d · balance ${s.balance}`
+    banner.textContent = t('overview.resellerBanner', {
+      active: s.accountsActive ?? 0,
+      expiring: s.accountsExpiring7d ?? 0,
+      balance: s.balance
+    })
   }
   const rc = $('#reconcile-card')
   if (s.reconcile) {
     rc.hidden = false
     const r = s.reconcile
-    $('#reconcile-summary').textContent =
-      `${new Date(r.ts).toLocaleString()} — checked ${r.checked}, orphans ${r.orphanPanel}, missing ${r.missingPanel}, status fixed ${r.statusFixed}, packages fixed ${r.packagesFixed ?? 0}, errors ${r.errors}`
+    $('#reconcile-summary').textContent = t('overview.reconcileSummary', {
+      when: fmtDateTime(r.ts),
+      checked: r.checked,
+      orphans: r.orphanPanel,
+      missing: r.missingPanel,
+      status: r.statusFixed,
+      packages: r.packagesFixed ?? 0,
+      errors: r.errors
+    })
   } else rc.hidden = true
   // Admin tiers get the system diagnostics on the same landing view — one ops
   // dashboard on login. (Non-admins never call /api/system: it would 403.)
@@ -323,11 +360,13 @@ function renderAccounts () {
   const tb = $('#acct-table tbody')
   tb.replaceChildren(...acctRows.map(accountRow))
   const filtered = !!(acctQuery.q || acctQuery.filter || acctQuery.owner)
-  $('#acct-empty').textContent = filtered ? 'No matches.' : 'No accounts yet.'
+  $('#acct-empty').textContent = filtered ? t('accounts.noMatches') : t('accounts.empty')
   $('#acct-empty').hidden = acctRows.length > 0
 
   const start = acctQuery.page * PAGE
-  $('#acct-count').textContent = acctTotal ? `${start + 1}–${start + acctRows.length} of ${acctTotal}` : ''
+  $('#acct-count').textContent = acctTotal
+    ? t('accounts.countRange', { from: start + 1, to: start + acctRows.length, total: acctTotal })
+    : ''
   $('#acct-count').hidden = acctTotal === 0
 
   // Pager: prev/next + a jump-to-page combo (rebuilt when the page count moves).
@@ -350,7 +389,8 @@ function renderAccounts () {
 
   const chip = $('#acct-owner-chip')
   chip.hidden = !acctQuery.owner
-  if (acctQuery.owner) chip.innerHTML = `owner <b>${acctQuery.owner}</b> ✕`
+  // Built as nodes, not innerHTML: the owner name is panel data, not a repo constant.
+  if (acctQuery.owner) chip.replaceChildren(...tNodes('accounts.ownerChip', { owner: acctQuery.owner }))
   $$('#acct-table th[data-col="owner"]').forEach((h) => { h.style.display = IS_ADMIN(me.role) || me.role === 'super' ? '' : 'none' })
 }
 
@@ -363,40 +403,40 @@ function drillOwner (owner) {
 const statusEl = (cls, text) => el('span', { className: 'status ' + cls, title: text }, [el('span', { className: 'dot' }), text])
 function accountRow (r) {
   const status = r.status === 'active'
-    ? (r.expiresInDays <= 7 ? statusEl('warn', 'expiring') : statusEl('ok', 'active'))
-    : statusEl('err', r.status)
-  const kindBadge = r.kind === 'trial' ? el('span', { className: 'badge trial', textContent: 'trial' }) : null
+    ? (r.expiresInDays <= 7 ? statusEl('warn', t('status.expiring')) : statusEl('ok', t('status.active')))
+    : statusEl('err', statusText(r.status))
+  const kindBadge = r.kind === 'trial' ? el('span', { className: 'badge trial', textContent: t('accounts.trialBadge') }) : null
   // One quick action (Renew — the everyday op on a subscription clock) + the
   // rest behind a kebab. Suspend/Resume stays contextual to the row's state.
   const menuItems = [
     r.status === 'active'
-      ? { label: 'Suspend', onClick: guard(() => accountStatus(r, 'disabled')) }
-      : (r.expiresInDays > 0 ? { label: 'Resume', onClick: guard(() => accountStatus(r, 'active')) } : null),
-    { label: 'Channels & packages…', onClick: guard(() => channelsDialog(r)) },
-    { label: 'Manage packages…', onClick: guard(() => managePackagesDialog(r)) },
-    { label: 'Devices…', onClick: guard(() => devicesDialog(r)) },
-    { label: 'Log out all devices', onClick: guard(async () => { await api('POST', `/accounts/${encodeURIComponent(r.account)}/logout-all`); toast(`${r.account}: every session token revoked`) }) },
-    { label: 'Change password…', onClick: () => passwordDialog(r) },
+      ? { label: t('accounts.menu.suspend'), onClick: guard(() => accountStatus(r, 'disabled')) }
+      : (r.expiresInDays > 0 ? { label: t('accounts.menu.resume'), onClick: guard(() => accountStatus(r, 'active')) } : null),
+    { label: t('accounts.menu.channels'), onClick: guard(() => channelsDialog(r)) },
+    { label: t('accounts.menu.packages'), onClick: guard(() => managePackagesDialog(r)) },
+    { label: t('accounts.menu.devices'), onClick: guard(() => devicesDialog(r)) },
+    { label: t('accounts.menu.logoutAll'), onClick: guard(async () => { await api('POST', `/accounts/${encodeURIComponent(r.account)}/logout-all`); toast(t('accounts.toast.logoutAll', { account: r.account })) }) },
+    { label: t('common.menu.changePassword'), onClick: () => passwordDialog(r) },
     '-',
-    { label: 'Delete…', danger: true, onClick: () => deleteAccountDialog(r) }
+    { label: t('common.menu.delete'), danger: true, onClick: () => deleteAccountDialog(r) }
   ].filter(Boolean)
   const actions = el('div', { className: 'row-actions' }, [
-    btn('Renew', () => renewDialog(r)),
-    kebabBtn(`More actions — ${r.account}`, menuItems)
+    btn(t('accounts.renew'), () => renewDialog(r)),
+    kebabBtn(t('common.moreActions', { name: r.account }), menuItems)
   ])
   const ownerLink = (cls) => el('span', {
     className: cls + (canDrillOwner() ? ' owner-link' : ''),
     textContent: r.owner,
     onclick: canDrillOwner() ? () => drillOwner(r.owner) : null,
-    title: canDrillOwner() ? `Show only ${r.owner}'s accounts` : ''
+    title: canDrillOwner() ? t('accounts.showOnlyOwner', { owner: r.owner }) : ''
   })
   // data-l labels surface as "expires: 31d" prefixes in the phone card layout,
   // where the column headers are hidden.
   const tdExpires = el('td', { className: 'num', textContent: fmtDays(r.expiresInDays) })
-  tdExpires.dataset.l = 'expires'
+  tdExpires.dataset.l = t('accounts.mobile.expires')
   const tdCreated = el('td', { className: 'num hide-mobile', textContent: fmtDate(r.createdAt) })
   const tdDevices = el('td', { className: 'num', textContent: r.maxDevices })
-  tdDevices.dataset.l = 'devices'
+  tdDevices.dataset.l = t('accounts.mobile.devices')
   return el('tr', {}, [
     el('td', { className: 'cell-main' }, el('div', { className: 'cell-name' }, [
       el('span', { className: 't mono', textContent: r.account }),
@@ -471,7 +511,9 @@ const coveringPackages = (names, id) =>
     const p = (pkgCatalog || []).find((x) => x.name === n)
     return p && Array.isArray(p.resolved) && p.resolved.includes(id)
   })
-const pkgBadge = (name) => el('span', { className: 'badge pkg', textContent: '▣ ' + name, title: `package ${name}` })
+const pkgBadge = (name) => el('span', { className: 'badge pkg', textContent: '▣ ' + name, title: t('accounts.chan.pkgTitle', { name }) })
+// "<name> · 12 ch", plus "· default" when the panel marks the package a default.
+const pkgSub = (p) => t(p.default ? 'accounts.pkgSubDefault' : 'accounts.pkgSub', { name: p.name, count: (p.resolved || []).length })
 
 // One checkbox row (shared by the activate pickers and the manage dialog).
 function pickRow ({ value, checked, main, sub }) {
@@ -497,15 +539,15 @@ async function loadAcctPickers () {
           value: p.name,
           checked: p.default === true,
           main: p.label || p.name,
-          sub: `${p.name} · ${(p.resolved || []).length} ch${p.default ? ' · default' : ''}`
+          sub: pkgSub(p)
         }))
-      : [el('span', { className: 'muted', textContent: 'No packages on the panel yet.' })]))
+      : [el('span', { className: 'muted', textContent: t('accounts.noPackages') })]))
     const streams = streamCatalog || []
     exBox.replaceChildren(...(streams.length
       ? streams.map((s) => pickRow({ value: s.id, main: s.title || s.id, sub: s.id }))
-      : [el('span', { className: 'muted', textContent: 'No channels on the panel yet.' })]))
+      : [el('span', { className: 'muted', textContent: t('accounts.noChannels') })]))
   } catch (e) {
-    const note = () => el('span', { className: 'muted', textContent: `Unavailable (${e.message})` })
+    const note = () => el('span', { className: 'muted', textContent: t('common.unavailable', { error: e.message }) })
     pkgBox.replaceChildren(note())
     exBox.replaceChildren(note())
   }
@@ -534,7 +576,9 @@ $('#account-form').onsubmit = guard(async (e) => {
     ...(IS_ADMIN(me.role) ? { maxDevices: +$('#acct-devices').value } : {})
   }
   const r = await api('POST', '/accounts', body)
-  toast(`Activated ${r.account} (${r.expiresInDays}d${r.packages && r.packages.length ? ' · ' + r.packages.join(', ') : ''})`)
+  toast(r.packages && r.packages.length
+    ? t('accounts.toast.activatedWithPackages', { account: r.account, days: r.expiresInDays, packages: r.packages.join(', ') })
+    : t('accounts.toast.activated', { account: r.account, days: r.expiresInDays }))
   $('#account-form').reset()
   if (IS_ADMIN(me.role)) $('#acct-devices').value = me.maxDevicesLimit
   guard(loadAcctPickers)() // reset unchecked everything — restore the default pre-checks
@@ -542,13 +586,13 @@ $('#account-form').onsubmit = guard(async (e) => {
 })
 $('#acct-trial-btn').onclick = guard(async () => {
   const name = $('#acct-name').value
-  if (!name) return toast('Enter a name first', true)
+  if (!name) return toast(t('accounts.toast.nameFirst'), true)
   const r = await api('POST', '/trials', {
     name,
     password: $('#acct-pass').value || 'trial-' + Math.random().toString(36).slice(2, 10),
     ...(IS_ADMIN(me.role) ? { maxDevices: +$('#acct-devices').value } : {})
   })
-  toast(`Trial ${r.account} started`)
+  toast(t('accounts.toast.trialStarted', { account: r.account }))
   $('#account-form').reset()
   if (IS_ADMIN(me.role)) $('#acct-devices').value = me.maxDevicesLimit
   await loadAccounts(acctQuery.page)
@@ -556,26 +600,26 @@ $('#acct-trial-btn').onclick = guard(async () => {
 
 function renewDialog (r) {
   const months = inputEl({ type: 'number', min: '1', max: '120', value: '1' })
-  dialog(`Renew ${r.account}`, [
-    field('Months (1 credit each)', months),
-    el('p', { className: 'dlg-note', textContent: r.kind === 'trial' ? 'This converts the trial to a paid account.' : '' })
+  dialog(t('accounts.renewTitle', { account: r.account }), [
+    field(t('accounts.monthsField'), months),
+    el('p', { className: 'dlg-note', textContent: r.kind === 'trial' ? t('accounts.trialConvertNote') : '' })
   ], async () => {
     const out = await api('POST', `/accounts/${encodeURIComponent(r.account)}/renew`, { months: +months.value })
-    toast(`Renewed to ${out.expiresInDays}d`)
+    toast(t('accounts.toast.renewed', { days: out.expiresInDays }))
     await Promise.all([loadAccounts(acctQuery.page), refreshBalance()])
-  }, { okLabel: 'Renew' })
+  }, { okLabel: t('accounts.renew') })
 }
 async function accountStatus (r, status) {
   await api('POST', `/accounts/${encodeURIComponent(r.account)}/status`, { status })
-  toast(`${r.account} ${status === 'disabled' ? 'suspended' : 'resumed'}`)
+  toast(t(status === 'disabled' ? 'accounts.toast.suspended' : 'accounts.toast.resumed', { account: r.account }))
   await loadAccounts(acctQuery.page)
 }
 function passwordDialog (r) {
   const pw = inputEl({ type: 'password', minLength: 8 })
-  dialog(`Password for ${r.account}`, [field('New password', pw)], async () => {
+  dialog(t('accounts.passwordTitle', { account: r.account }), [field(t('common.newPassword'), pw)], async () => {
     await api('POST', `/accounts/${encodeURIComponent(r.account)}/password`, { password: pw.value })
-    toast('Password changed')
-  }, { okLabel: 'Change' })
+    toast(t('common.toast.passwordChanged'))
+  }, { okLabel: t('common.change') })
 }
 // Devices are SELF-ENROLLED: the viewer app registers itself at sign-in (id +
 // label), the panel stamps the dates and enforces the slot cap there. So this
@@ -584,39 +628,38 @@ function passwordDialog (r) {
 async function devicesDialog (r) {
   const list = await api('GET', `/accounts/${encodeURIComponent(r.account)}/devices`)
   const active = () => list.filter((d) => !d.revoked && !d.expired).length
-  const slots = el('p', {
-    className: 'dlg-note',
-    textContent: `${active()} of ${r.maxDevices} device slot${r.maxDevices === 1 ? '' : 's'} in use — devices enroll themselves when the viewer signs in; a new device past the cap evicts the oldest.`
-  })
+  const slotText = () => t('accounts.devices.slots', { active: active(), max: r.maxDevices })
+  const slots = el('p', { className: 'dlg-note', textContent: slotText() })
   const rows = [slots]
   if (!list.length) {
-    rows.push(el('p', { className: 'muted', textContent: 'No devices enrolled — nobody has signed in to this account yet.' }))
+    rows.push(el('p', { className: 'muted', textContent: t('accounts.devices.none') }))
   } else {
     for (const d of list) {
-      const sub = d.expired
-        ? `enrolled ${fmtDate(d.issuedAt)} · session expired ${fmtDate(d.expiresAt)} — not signed in since`
-        : `enrolled ${fmtDate(d.issuedAt)} · session live until ${fmtDate(d.expiresAt)} (renews at sign-in)`
+      const sub = t(d.expired ? 'accounts.devices.subExpired' : 'accounts.devices.subLive', {
+        enrolled: fmtDate(d.issuedAt),
+        expires: fmtDate(d.expiresAt)
+      })
       const row = el('div', { className: 'dlg-list-row' }, [
         el('div', { className: 'meta' }, [
           el('div', { className: 'dev-top' }, [
-            statusEl(d.expired ? '' : 'ok', d.label || 'unnamed device'),
+            statusEl(d.expired ? '' : 'ok', d.label || t('accounts.devices.unnamed')),
             el('span', { className: 'mono muted dev-id', textContent: d.deviceId.slice(0, 12) + (d.deviceId.length > 12 ? '…' : ''), title: d.deviceId })
           ]),
           el('div', { className: 'muted dev-sub', textContent: sub })
         ]),
-        btn('Revoke', guard(async () => {
+        btn(t('common.revoke'), guard(async () => {
           await api('DELETE', `/accounts/${encodeURIComponent(r.account)}/devices/${encodeURIComponent(d.deviceId)}`)
           d.revoked = true
           row.remove()
-          slots.textContent = slots.textContent.replace(/^\d+/, String(active()))
-          toast('Device revoked — the slot is free; the app signs out on its next check')
+          slots.textContent = slotText() // re-rendered, not patched: the count is not always first
+          toast(t('accounts.devices.toastRevoked'))
         }), 'danger')
       ])
       rows.push(row)
     }
-    rows.push(el('p', { className: 'dlg-note', textContent: 'Revoke is cooperative — it frees the slot and a well-behaved app drops to login. To cut access hard, use Log out all devices (kills every session token) or suspend the account.' }))
+    rows.push(el('p', { className: 'dlg-note', textContent: t('accounts.devices.note') }))
   }
-  dialog(`Devices — ${r.account}`, rows, () => {}, { okLabel: 'Done' })
+  dialog(t('accounts.devices.title', { account: r.account }), rows, () => {}, { okLabel: t('common.done') })
 }
 // The account's entitlement view: package chips, then every live channel with
 // its provenance (▣ package / one-off / dashed auto), a Revoke on the rows the
@@ -633,32 +676,38 @@ async function channelsDialog (r) {
     const live = acct.live
     if (!live) {
       body.replaceChildren(
-        el('p', { className: 'dlg-note warn', textContent: 'Panel unreachable — live channel state unavailable. Showing the local registry only.' }),
-        el('p', { className: 'muted', textContent: `Assigned packages: ${(acct.packages || []).join(', ') || 'none'} · one-offs: ${(acct.extraGrants || []).join(', ') || 'none'}` })
+        el('p', { className: 'dlg-note warn', textContent: t('accounts.chan.panelDown') }),
+        el('p', {
+          className: 'muted',
+          textContent: t('accounts.chan.localOnly', {
+            packages: (acct.packages || []).join(', ') || t('common.none'),
+            oneOffs: (acct.extraGrants || []).join(', ') || t('common.none')
+          })
+        })
       )
       return
     }
     const rows = []
     // -- packages --
     rows.push(el('div', { className: 'dlg-sect' }, [
-      el('span', { className: 'dlg-sect-title', textContent: 'Packages' }),
-      btn('Manage…', () => managePackagesDialog(r, { back: true }))
+      el('span', { className: 'dlg-sect-title', textContent: t('accounts.chan.packages') }),
+      btn(t('accounts.chan.manage'), () => managePackagesDialog(r, { back: true }))
     ]))
     rows.push(el('div', { className: 'chips' },
       live.packages && live.packages.length
         ? live.packages.map(pkgBadge)
-        : [el('span', { className: 'muted', textContent: 'No packages assigned.' })]))
+        : [el('span', { className: 'muted', textContent: t('accounts.chan.noPackages') })]))
     // -- channels --
     rows.push(el('div', { className: 'dlg-sect' }, [
-      el('span', { className: 'dlg-sect-title', textContent: `Channels (${(live.grants || []).length})` })
+      el('span', { className: 'dlg-sect-title', textContent: t('accounts.chan.channels', { count: (live.grants || []).length }) })
     ]))
     const manual = new Set(live.manualGrants || [])
     for (const id of (live.grants || [])) {
       const covering = coveringPackages(live.packages, id)
       const tags = [
         ...covering.map(pkgBadge),
-        manual.has(id) ? el('span', { className: 'badge dim', textContent: 'one-off' }) : null,
-        !covering.length && !manual.has(id) ? el('span', { className: 'badge auto', textContent: 'auto' }) : null
+        manual.has(id) ? el('span', { className: 'badge dim', textContent: t('accounts.chan.oneOff') }) : null,
+        !covering.length && !manual.has(id) ? el('span', { className: 'badge auto', textContent: t('accounts.chan.auto') }) : null
       ].filter(Boolean)
       // Pure-auto grants come from the panel's autoGrant sources ("everyone
       // gets this") — a revoke here would flap back on the next source sync,
@@ -673,13 +722,13 @@ async function channelsDialog (r) {
           el('div', { className: 'chips chan-tags' }, tags)
         ]),
         revocable
-          ? btn('Revoke', guard(async () => {
+          ? btn(t('common.revoke'), guard(async () => {
               const out = await api('DELETE', `/accounts/${encodeURIComponent(r.account)}/grants/${encodeURIComponent(id)}`)
               if (out.stillGranted) {
                 const via = coveringPackages(live.packages, id)
-                toast(`Removed the one-off — still granted via package ${via.join(', ') || '(bouquet)'}`)
+                toast(t('accounts.chan.toastStillGranted', { packages: via.join(', ') || t('accounts.chan.bouquet') }))
               } else {
-                toast(`${streamTitle(id)} revoked`)
+                toast(t('accounts.chan.toastRevoked', { channel: streamTitle(id) }))
               }
               await render()
             }), 'danger')
@@ -692,13 +741,13 @@ async function channelsDialog (r) {
       const sel = el('select', { className: 'chan-add-sel' },
         options.map((s) => el('option', { value: s.id, textContent: (s.title || s.id) + ` (${s.id})` })))
       rows.push(el('div', { className: 'dlg-sect' }, [
-        el('span', { className: 'dlg-sect-title', textContent: 'Add extra channel (one-off)' })
+        el('span', { className: 'dlg-sect-title', textContent: t('accounts.chan.addTitle') })
       ]))
       rows.push(el('div', { className: 'chan-add' }, [
         sel,
-        btn('Add', guard(async () => {
+        btn(t('common.add'), guard(async () => {
           await api('POST', `/accounts/${encodeURIComponent(r.account)}/grants`, { streamId: sel.value })
-          toast(`${streamTitle(sel.value)} granted`)
+          toast(t('accounts.chan.toastGranted', { channel: streamTitle(sel.value) }))
           await render()
         }))
       ]))
@@ -706,7 +755,7 @@ async function channelsDialog (r) {
     body.replaceChildren(...rows)
   }
   await render()
-  dialog(`Channels — ${r.account}`, [body], () => {}, { okLabel: 'Done' })
+  dialog(t('accounts.chan.title', { account: r.account }), [body], () => {}, { okLabel: t('common.done') })
 }
 
 // Replace the account's bouquets: every package the panel knows, current ones
@@ -718,9 +767,9 @@ async function managePackagesDialog (r, { back = false } = {}) {
   ])
   const current = new Set((acct.live && acct.live.packages) || acct.packages || [])
   if (!pkgs.length) {
-    dialog(`Packages — ${r.account}`, [
-      el('p', { className: 'muted', textContent: 'No packages defined on the panel yet — the operator creates them in the panel dashboard.' })
-    ], () => {}, { okLabel: 'Done' })
+    dialog(t('accounts.pkg.title', { account: r.account }), [
+      el('p', { className: 'muted', textContent: t('accounts.pkg.none') })
+    ], () => {}, { okLabel: t('common.done') })
     return
   }
   const box = el('div', { className: 'picker dlg-picker' },
@@ -728,31 +777,31 @@ async function managePackagesDialog (r, { back = false } = {}) {
       value: p.name,
       checked: current.has(p.name),
       main: p.label || p.name,
-      sub: `${p.name} · ${(p.resolved || []).length} ch${p.default ? ' · default' : ''}`
+      sub: pkgSub(p)
     })))
-  dialog(`Packages — ${r.account}`, [
+  dialog(t('accounts.pkg.title', { account: r.account }), [
     box,
-    el('p', { className: 'dlg-note', textContent: 'Sets WHAT the account gets — the subscription clock (credits) is unchanged. One-off channels stay as they are.' })
+    el('p', { className: 'dlg-note', textContent: t('accounts.pkg.note') })
   ], async () => {
     const out = await api('POST', `/accounts/${encodeURIComponent(r.account)}/packages`, { packages: pickedValues(box) })
-    toast(`Packages set: ${out.packages.length ? out.packages.join(', ') : 'none'}`)
+    toast(t('accounts.pkg.toastSet', { packages: out.packages.length ? out.packages.join(', ') : t('common.none') }))
     pkgCatalog = null // holder counts moved
     if (back) setTimeout(() => guard(channelsDialog)(r), 0)
-  }, { okLabel: 'Save' })
+  }, { okLabel: t('common.save') })
 }
 
 function deleteAccountDialog (r) {
   const confirm = inputEl({ placeholder: r.account })
   const refund = IS_ADMIN(me.role) ? 0 : Math.max(0, Math.floor(r.expiresInDays / 31))
-  dialog(`Delete ${r.account}`, [
-    el('p', { className: 'dlg-note warn', textContent: IS_ADMIN(me.role) ? 'Admin deletes refund nothing.' : `Refund on delete: ~${refund} credit(s).` }),
-    field('Type the account name to confirm', confirm)
+  dialog(t('accounts.delete.title', { account: r.account }), [
+    el('p', { className: 'dlg-note warn', textContent: IS_ADMIN(me.role) ? t('accounts.delete.adminNote') : t('accounts.delete.refundNote', { n: refund }) }),
+    field(t('accounts.delete.confirmField'), confirm)
   ], async () => {
-    if (confirm.value !== r.account) { toast('Name does not match', true); return false }
+    if (confirm.value !== r.account) { toast(t('accounts.delete.mismatch'), true); return false }
     const out = await api('DELETE', `/accounts/${encodeURIComponent(r.account)}`)
-    toast(`Deleted (refunded ${out.refunded})`)
+    toast(t('accounts.delete.toast', { n: out.refunded }))
     await Promise.all([loadAccounts(acctQuery.page), refreshBalance()])
-  }, { okLabel: 'Delete', danger: true })
+  }, { okLabel: t('common.delete'), danger: true })
 }
 
 // ---- principals ----
@@ -774,16 +823,16 @@ async function loadPrincipals () {
 }
 function principalRow (p) {
   const menuItems = [
-    can('credits:transfer') ? { label: 'Reclaim credits…', onClick: () => reclaimDialog(p) } : null,
-    { label: 'Limits…', onClick: () => limitsDialog(p) },
-    { label: p.status === 'active' ? 'Suspend…' : 'Resume…', onClick: () => suspendDialog(p) },
-    { label: 'Change password…', onClick: () => principalPasswordDialog(p) },
+    can('credits:transfer') ? { label: t('resellers.menu.reclaim'), onClick: () => reclaimDialog(p) } : null,
+    { label: t('resellers.menu.limits'), onClick: () => limitsDialog(p) },
+    { label: t(p.status === 'active' ? 'resellers.menu.suspend' : 'resellers.menu.resume'), onClick: () => suspendDialog(p) },
+    { label: t('common.menu.changePassword'), onClick: () => principalPasswordDialog(p) },
     '-',
-    { label: 'Delete…', danger: true, onClick: () => deletePrincipalDialog(p) }
+    { label: t('common.menu.delete'), danger: true, onClick: () => deletePrincipalDialog(p) }
   ].filter(Boolean)
   const actions = el('div', { className: 'row-actions' }, [
-    CAN_MANAGE.has(me.role) && can('credits:transfer') ? btn('Fund', () => transferDialog(p)) : null,
-    kebabBtn(`More actions — ${p.name}`, menuItems)
+    CAN_MANAGE.has(me.role) && can('credits:transfer') ? btn(t('resellers.fund'), () => transferDialog(p)) : null,
+    kebabBtn(t('common.moreActions', { name: p.name }), menuItems)
   ].filter(Boolean))
   return el('tr', {}, [
     el('td', {}, el('div', { className: 'cell-name' }, [
@@ -793,7 +842,7 @@ function principalRow (p) {
     el('td', { textContent: p.parent || '—' }),
     el('td', { className: 'num', textContent: p.balance }),
     el('td', { className: 'num', textContent: p.accounts }),
-    el('td', {}, statusEl(p.status === 'active' ? 'ok' : 'err', p.status)),
+    el('td', {}, statusEl(p.status === 'active' ? 'ok' : 'err', statusText(p.status))),
     el('td', {}, actions)
   ])
 }
@@ -807,80 +856,84 @@ $('#principal-form').onsubmit = guard(async (e) => {
   e.preventDefault()
   const body = { username: $('#p-name').value, password: $('#p-pass').value, role: $('#p-role').value }
   await api('POST', '/principals', body)
-  toast(`Created ${body.username}`)
+  toast(t('resellers.toast.created', { name: body.username }))
   $('#principal-form').reset(); setupPrincipalForm()
   await loadPrincipals()
 })
 function transferDialog (p) {
   const amt = inputEl({ type: 'number', min: '1', value: '1' })
-  dialog(`Fund ${p.name}`, [field(`Credits (you have ${me.balance})`, amt)], async () => {
+  dialog(t('resellers.fund.title', { name: p.name }), [field(t('resellers.fund.field', { balance: me.balance }), amt)], async () => {
     await api('POST', '/credits/transfer', { to: p.name, amount: +amt.value })
-    toast(`Sent ${amt.value} to ${p.name}`); await Promise.all([loadPrincipals(), refreshBalance()])
-  }, { okLabel: 'Send' })
+    toast(t('resellers.fund.toast', { amount: amt.value, name: p.name })); await Promise.all([loadPrincipals(), refreshBalance()])
+  }, { okLabel: t('common.send') })
 }
 function reclaimDialog (p) {
   const amt = inputEl({ type: 'number', min: '1', value: '1' })
-  dialog(`Reclaim from ${p.name}`, [field(`Credits (they hold ${p.balance})`, amt)], async () => {
+  dialog(t('resellers.reclaim.title', { name: p.name }), [field(t('resellers.reclaim.field', { balance: p.balance }), amt)], async () => {
     const out = await api('POST', '/credits/reclaim', { from: p.name, amount: +amt.value })
-    toast(`Reclaimed ${out.amount}`); await Promise.all([loadPrincipals(), refreshBalance()])
-  }, { okLabel: 'Reclaim' })
+    toast(t('resellers.reclaim.toast', { amount: out.amount })); await Promise.all([loadPrincipals(), refreshBalance()])
+  }, { okLabel: t('resellers.reclaim.ok') })
 }
 function limitsDialog (p) {
   const trial = inputEl({ type: 'number', min: '0', value: p.trialDailyCap })
   // The device policy is admin-set + inherited: supers see it read-only and can
   // only tune the trial cap; admins set an explicit value or blank = inherit.
   if (!IS_ADMIN(me.role)) {
-    dialog(`Limits — ${p.name}`, [
-      el('p', { className: 'dlg-note', textContent: `Devices per account: ${p.maxDevicesLimit}${p.maxDevicesLimitInherited ? ' (inherited)' : ''} — set by the admin.` }),
-      field('Trials per day', trial)
+    dialog(t('resellers.limits.title', { name: p.name }), [
+      el('p', {
+        className: 'dlg-note',
+        textContent: t(p.maxDevicesLimitInherited ? 'resellers.limits.readOnlyInherited' : 'resellers.limits.readOnly', { n: p.maxDevicesLimit })
+      }),
+      field(t('resellers.limits.trialsPerDay'), trial)
     ], async () => {
       await api('POST', `/principals/${encodeURIComponent(p.name)}/limits`, { trialDailyCap: +trial.value })
-      toast('Limits updated'); await loadPrincipals()
-    }, { okLabel: 'Save' })
+      toast(t('resellers.limits.toast')); await loadPrincipals()
+    }, { okLabel: t('common.save') })
     return
   }
   const dev = inputEl({
     type: 'number',
     min: '1',
     value: p.maxDevicesLimitInherited ? '' : p.maxDevicesLimit,
-    placeholder: `inherit (${p.maxDevicesLimitIfInherited})`
+    placeholder: t('resellers.limits.inheritPlaceholder', { n: p.maxDevicesLimitIfInherited })
   })
-  dialog(`Limits — ${p.name}`, [
-    field('Devices per account — blank = inherit' + (p.parent ? ` from ${p.parent}` : ''), dev),
-    el('p', { className: 'dlg-note', textContent: 'Inherited by every principal under this one; their new accounts receive this device count.' }),
-    field('Trials per day', trial)
+  dialog(t('resellers.limits.title', { name: p.name }), [
+    field(p.parent ? t('resellers.limits.devicesFieldFrom', { parent: p.parent }) : t('resellers.limits.devicesField'), dev),
+    el('p', { className: 'dlg-note', textContent: t('resellers.limits.note') }),
+    field(t('resellers.limits.trialsPerDay'), trial)
   ], async () => {
     await api('POST', `/principals/${encodeURIComponent(p.name)}/limits`, {
       maxDevicesLimit: dev.value === '' ? null : +dev.value,
       trialDailyCap: +trial.value
     })
-    toast('Limits updated'); await loadPrincipals()
-  }, { okLabel: 'Save' })
+    toast(t('resellers.limits.toast')); await loadPrincipals()
+  }, { okLabel: t('common.save') })
 }
 function suspendDialog (p) {
   const next = p.status === 'active' ? 'suspended' : 'active'
+  const off = next === 'suspended'
   const withAccts = inputEl({ type: 'checkbox' })
-  dialog(`${next === 'suspended' ? 'Suspend' : 'Resume'} ${p.name}`, [
-    el('label', { className: 'radio-row' }, [withAccts, 'Also ' + (next === 'suspended' ? 'disable' : 'enable') + ' their viewer accounts on the panel'])
+  dialog(t(off ? 'resellers.suspend.title' : 'resellers.resume.title', { name: p.name }), [
+    el('label', { className: 'radio-row' }, [withAccts, t(off ? 'resellers.suspend.alsoDisable' : 'resellers.suspend.alsoEnable')])
   ], async () => {
     await api('POST', `/principals/${encodeURIComponent(p.name)}/status`, { status: next, mode: withAccts.checked ? 'with-accounts' : 'panel-only' })
-    toast(`${p.name} ${next}`); await loadPrincipals()
-  }, { okLabel: next === 'suspended' ? 'Suspend' : 'Resume', danger: next === 'suspended' })
+    toast(t(off ? 'resellers.suspend.toast' : 'resellers.resume.toast', { name: p.name })); await loadPrincipals()
+  }, { okLabel: t(off ? 'common.suspend' : 'common.resume'), danger: off })
 }
 function principalPasswordDialog (p) {
   const pw = inputEl({ type: 'password', minLength: 8 })
-  dialog(`Password for ${p.name}`, [field('New password', pw)], async () => {
+  dialog(t('resellers.password.title', { name: p.name }), [field(t('common.newPassword'), pw)], async () => {
     await api('POST', `/principals/${encodeURIComponent(p.name)}/password`, { password: pw.value })
-    toast('Password changed (their sessions revoked)')
-  }, { okLabel: 'Change' })
+    toast(t('resellers.password.toast'))
+  }, { okLabel: t('common.change') })
 }
 function deletePrincipalDialog (p) {
-  dialog(`Delete ${p.name}`, [
-    el('p', { className: 'dlg-note', textContent: 'Blocked while they have child principals or accounts. Any remaining balance is reclaimed to you.' })
+  dialog(t('resellers.delete.title', { name: p.name }), [
+    el('p', { className: 'dlg-note', textContent: t('resellers.delete.note') })
   ], async () => {
     await api('DELETE', `/principals/${encodeURIComponent(p.name)}`)
-    toast(`Deleted ${p.name}`); await Promise.all([loadPrincipals(), refreshBalance()])
-  }, { okLabel: 'Delete', danger: true })
+    toast(t('resellers.delete.toast', { name: p.name })); await Promise.all([loadPrincipals(), refreshBalance()])
+  }, { okLabel: t('common.delete'), danger: true })
 }
 
 // ---- ledger ----
@@ -903,8 +956,8 @@ function ledgerRow (tx) {
   const other = tx.entries.map((e) => e.principal).filter((n) => n !== me.name).join(', ') || tx.actor
   return el('tr', {}, [
     el('td', { className: 'num muted', textContent: tx.seq }),
-    el('td', { textContent: new Date(tx.ts).toLocaleString() }),
-    el('td', {}, el('span', { className: 'badge dim', textContent: tx.type })),
+    el('td', { textContent: fmtDateTime(tx.ts) }),
+    el('td', {}, el('span', { className: 'badge dim', textContent: ledgerTypeText(tx.type), title: tx.type })),
     el('td', { className: 'num' }, el('span', {
       className: 'delta' + (delta > 0 ? ' pos' : delta < 0 ? ' neg' : ''),
       textContent: delta > 0 ? '+' + delta : (delta || '')
@@ -919,7 +972,7 @@ $('#ledger-more').onclick = guard(() => loadLedger(false))
 $('#mint-form').onsubmit = guard(async (e) => {
   e.preventDefault()
   await api('POST', '/credits/mint', { to: $('#mint-to').value || undefined, amount: +$('#mint-amount').value, note: $('#mint-note').value })
-  toast('Minted'); $('#mint-form').reset(); await Promise.all([loadLedger(true), refreshBalance()])
+  toast(t('ledger.toast.minted')); $('#mint-form').reset(); await Promise.all([loadLedger(true), refreshBalance()])
 })
 
 // ---- system diagnostics (admin tiers) — the Overview's System section: panel
@@ -954,15 +1007,15 @@ async function loadSystem () {
   const disk = h.disk
 
   const tiles = [
-    ['Panel link',
-      p ? (p.reachable === false ? 'down' : p.latencyMs != null ? `${p.latencyMs} ms` : '—') : 'n/a',
-      p && p.reachable === false ? 'unreachable' : 'round-trip',
+    [t('system.tile.panelLink'),
+      p ? (p.reachable === false ? t('system.down') : p.latencyMs != null ? `${p.latencyMs} ms` : '—') : t('system.na'),
+      p && p.reachable === false ? t('system.unreachable') : t('system.roundTrip'),
       p ? (p.reachable === false ? 'err' : p.latencyMs != null ? 'ok' : '') : ''],
-    ['Host memory', fmtBytes(memUsed), `of ${fmtBytes(h.totalMemBytes)}`,
+    [t('system.tile.hostMemory'), fmtBytes(memUsed), t('system.of', { total: fmtBytes(h.totalMemBytes) }),
       memUsed / h.totalMemBytes > 0.9 ? 'warn' : ''],
-    ['Load (1m)', hasLoad ? h.loadavg[0].toFixed(2) : '—', `${h.cpuCount} core${h.cpuCount === 1 ? '' : 's'}`,
+    [t('system.tile.load1m'), hasLoad ? h.loadavg[0].toFixed(2) : '—', t('system.cores', { n: h.cpuCount }),
       hasLoad && h.loadavg[0] > h.cpuCount ? 'warn' : ''],
-    ['Disk free', disk ? fmtBytes(disk.freeBytes) : '—', disk ? `of ${fmtBytes(disk.totalBytes)}` : 'unavailable',
+    [t('system.tile.diskFree'), disk ? fmtBytes(disk.freeBytes) : '—', disk ? t('system.of', { total: fmtBytes(disk.totalBytes) }) : t('system.unavailable'),
       disk && disk.freeBytes / disk.totalBytes < 0.1 ? 'warn' : '']
   ]
   $('#sys-tiles').replaceChildren(...tiles.map(([k, v, sub, cls]) =>
@@ -974,60 +1027,60 @@ async function loadSystem () {
 
   const panelRows = p
     ? [
-        ['State', statusEl(p.reachable === false ? 'err' : p.reachable ? 'ok' : '', p.reachable === false ? 'unreachable' : p.reachable ? 'reachable' : 'unknown')],
+        [t('system.state'), statusEl(p.reachable === false ? 'err' : p.reachable ? 'ok' : '', p.reachable === false ? t('system.unreachable') : p.reachable ? t('system.reachable') : t('system.unknown'))],
         ['URL', p.url, { mono: true }],
-        ['Latency', p.latencyMs != null ? `${p.latencyMs} ms` : '—'],
-        ['Last OK', fmtAgo(p.lastOkAt)],
-        ['Last error', p.lastError || p.error || '—', { title: p.lastError || p.error || '' }],
+        [t('system.latency'), p.latencyMs != null ? `${p.latencyMs} ms` : '—'],
+        [t('system.lastOk'), fmtAgo(p.lastOkAt)],
+        [t('system.lastError'), p.lastError || p.error || '—', { title: p.lastError || p.error || '' }],
         ...(p.stats
           ? [
-              ['Viewer users', p.stats.users],
-              ['Streams', `${p.stats.streams} (${p.stats.live} live)`],
-              ['Panel admins', p.stats.admins],
-              ['Panel key', `${String(p.stats.panelKey).slice(0, 16)}…`, { mono: true, title: p.stats.panelKey }]
+              [t('system.viewerUsers'), p.stats.users],
+              [t('system.streams'), t('system.streamsValue', { total: p.stats.streams, live: p.stats.live })],
+              [t('system.panelAdmins'), p.stats.admins],
+              [t('system.panelKey'), `${String(p.stats.panelKey).slice(0, 16)}…`, { mono: true, title: p.stats.panelKey }]
             ]
           : [])
       ]
-    : [['State', 'no panel configured']]
+    : [[t('system.state'), t('system.noPanel')]]
   $('#sys-panel').replaceChildren(...kvRows(panelRows))
 
   const sv = s.service
   $('#sys-service').replaceChildren(...kvRows([
     ['Node', sv.node],
     ['PID', sv.pid],
-    ['Uptime', fmtDur(sv.uptimeSec)],
-    ['Memory (RSS)', fmtBytes(sv.rssBytes)],
-    ['Heap used', fmtBytes(sv.heapUsedBytes)],
-    ['Data dir', sv.dataDir, { mono: true }],
-    ...(sv.ledger ? [['Ledger', statusEl(sv.ledger.invariantOk ? 'ok' : 'err', `seq ${sv.ledger.seq} · ${sv.ledger.invariantOk ? 'consistent' : 'INVARIANT BROKEN'}`)]] : []),
-    ...(sv.sweeps ? [['Last sweep', fmtAgo(sv.sweeps.lastRunAt)]] : []),
-    ...(sv.webhook ? [['Top-up webhook', sv.webhook.enabled ? 'enabled' : 'disabled']] : [])
+    [t('system.uptime'), fmtDur(sv.uptimeSec)],
+    [t('system.memRss'), fmtBytes(sv.rssBytes)],
+    [t('system.heapUsed'), fmtBytes(sv.heapUsedBytes)],
+    [t('system.dataDir'), sv.dataDir, { mono: true }],
+    ...(sv.ledger ? [[t('system.ledger'), statusEl(sv.ledger.invariantOk ? 'ok' : 'err', t('system.ledgerValue', { seq: sv.ledger.seq, state: t(sv.ledger.invariantOk ? 'system.consistent' : 'system.invariantBroken') }))]] : []),
+    ...(sv.sweeps ? [[t('system.lastSweep'), fmtAgo(sv.sweeps.lastRunAt)]] : []),
+    ...(sv.webhook ? [[t('system.webhook'), t(sv.webhook.enabled ? 'system.enabled' : 'system.disabled')]] : [])
   ]))
 
   $('#sys-host').replaceChildren(...kvRows([
-    ['Hostname', h.hostname],
+    [t('system.hostname'), h.hostname],
     ['OS', `${h.platform} ${h.release} (${h.arch})`],
     ['CPU', `${h.cpuModel} × ${h.cpuCount}`],
-    ['Load avg', hasLoad ? h.loadavg.map((x) => x.toFixed(2)).join(' / ') : '—'],
-    ['Memory', `${fmtBytes(memUsed)} / ${fmtBytes(h.totalMemBytes)}`],
-    ['Disk', disk ? `${fmtBytes(disk.totalBytes - disk.freeBytes)} / ${fmtBytes(disk.totalBytes)}` : '—'],
-    ['Uptime', fmtDur(h.uptimeSec)]
+    [t('system.loadAvg'), hasLoad ? h.loadavg.map((x) => x.toFixed(2)).join(' / ') : '—'],
+    [t('system.memory'), `${fmtBytes(memUsed)} / ${fmtBytes(h.totalMemBytes)}`],
+    [t('system.disk'), disk ? `${fmtBytes(disk.totalBytes - disk.freeBytes)} / ${fmtBytes(disk.totalBytes)}` : '—'],
+    [t('system.uptime'), fmtDur(h.uptimeSec)]
   ]))
 
-  $('#sys-updated').textContent = `updated ${new Date(s.now).toLocaleTimeString()}`
+  $('#sys-updated').textContent = t('system.updated', { time: new Date(s.now).toLocaleTimeString(i18n.locale) })
 }
 
 // ---- settings ----
 $('#pw-form').onsubmit = guard(async (e) => {
   e.preventDefault()
   await api('POST', '/me/password', { password: $('#pw-new').value })
-  toast('Password changed — sign in again')
+  toast(t('settings.toast.passwordChanged'))
   setTimeout(logout, 900)
 })
-$('#op-sweep').onclick = guard(async () => { const r = await api('POST', '/ops/sweep'); toast(`Sweep: ${r.disabled} disabled, ${r.errors.length} errors`) })
+$('#op-sweep').onclick = guard(async () => { const r = await api('POST', '/ops/sweep'); toast(t('settings.toast.sweep', { disabled: r.disabled, errors: r.errors.length })) })
 $('#op-reconcile').onclick = guard(async () => {
   const r = await api('POST', '/ops/reconcile')
-  dialog('Reconcile report', [el('pre', { className: 'report-box', textContent: JSON.stringify(r, null, 2) })], () => {}, { okLabel: 'Close' })
+  dialog(t('settings.reconcileReport'), [el('pre', { className: 'report-box', textContent: JSON.stringify(r, null, 2) })], () => {}, { okLabel: t('common.close') })
 })
 
 async function refreshBalance () {
@@ -1056,23 +1109,23 @@ const bkEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;',
 
 function bkAge (h) {
   if (h == null) return '—'
-  if (h < 1) return Math.round(h * 60) + ' min'
-  if (h < 48) return h.toFixed(1) + ' h'
-  return Math.round(h / 24) + ' days'
+  if (h < 1) return t('backup.minutes', { n: Math.round(h * 60) })
+  if (h < 48) return t('backup.hours', { n: h.toFixed(1) })
+  return t('backup.days', { n: Math.round(h / 24) })
 }
 
 function bkCmd (label, cmd, danger) {
   if (!cmd) return ''
   return '<div class="cmd-block"><label>' + bkEsc(label) + '</label><div class="cmd-row' +
     (danger ? ' force' : '') + '"><code>' + bkEsc(cmd) + '</code>' +
-    '<button class="btn small" data-copy="' + bkEsc(cmd) + '">Copy</button></div></div>'
+    '<button class="btn small" data-copy="' + bkEsc(cmd) + '">' + bkEsc(t('common.copy')) + '</button></div></div>'
 }
 
 async function loadBackup () {
   const [caps, snaps, arch] = await Promise.all([
     api('GET', '/config'), api('GET', '/config/snapshots'), api('GET', '/backups')
   ])
-  $('#bk-snap-dir').textContent = 'Snapshots are stored in ' + caps.snapshotDir + ' on the box.'
+  $('#bk-snap-dir').textContent = t('backup.snapDir', { dir: caps.snapshotDir })
 
   const tb = $('#bk-snap-table tbody')
   tb.innerHTML = snaps.snapshots.length
@@ -1080,76 +1133,78 @@ async function loadBackup () {
       // A damaged snapshot is shown, never hidden: an operator must not believe they hold
       // a reference copy that cannot be read.
       if (s.unreadable) {
-        return '<tr><td class="mono">' + bkEsc(s.id) + '</td><td colspan="3">damaged — ' + bkEsc(s.unreadable) + '</td>' +
-          '<td><button class="btn small danger" data-bkdel="' + bkEsc(s.id) + '">Delete</button></td></tr>'
+        return '<tr><td class="mono">' + bkEsc(s.id) + '</td><td colspan="3">' + bkEsc(t('backup.damaged', { reason: s.unreadable })) + '</td>' +
+          '<td><button class="btn small danger" data-bkdel="' + bkEsc(s.id) + '">' + bkEsc(t('common.delete')) + '</button></td></tr>'
       }
       const m = s.meta || {}
-      return '<tr><td>' + bkEsc(new Date(s.createdAt).toLocaleString()) + '<div class="muted mono">' + bkEsc(s.id) + '</div></td>' +
+      return '<tr><td>' + bkEsc(fmtDateTime(s.createdAt)) + '<div class="muted mono">' + bkEsc(s.id) + '</div></td>' +
         '<td>' + bkEsc(s.note || '—') + '</td>' +
-        '<td class="muted">' + (m.principals || 0) + ' principals · ' + (m.accounts || 0) + ' accounts</td>' +
+        '<td class="muted">' + bkEsc(t('backup.contents', { principals: m.principals || 0, accounts: m.accounts || 0 })) + '</td>' +
         '<td class="muted">' + fmtBytes(s.bytes) + '</td>' +
-        '<td><button class="btn small danger" data-bkdel="' + bkEsc(s.id) + '">Delete</button></td></tr>'
+        '<td><button class="btn small danger" data-bkdel="' + bkEsc(s.id) + '">' + bkEsc(t('common.delete')) + '</button></td></tr>'
     }).join('')
-    : '<tr><td colspan="5" class="muted">No snapshot yet.</td></tr>'
+    : '<tr><td colspan="5" class="muted">' + bkEsc(t('backup.noSnapshot')) + '</td></tr>'
 
   const ab = $('#bk-arch-table tbody')
+  // arch.why and c.assumes are composed by the SERVER (@aliran/core/config-routes.js,
+  // shared by four services) and stay in English — translating them belongs with core.
   $('#bk-arch-note').textContent = arch.available
-    ? 'Found in ' + arch.dir + ' on the box.'
-    : 'The reseller cannot see the archive directory: ' + arch.reason + '. Your archives can still exist. This dashboard cannot read them.'
+    ? t('backup.archFound', { dir: arch.dir })
+    : t('backup.archUnavailable', { reason: arch.reason })
   $('#bk-arch-why').textContent = arch.why || ''
   ab.innerHTML = (arch.available && arch.archives.length)
     ? arch.archives.map((a) =>
-      '<tr><td class="mono">' + bkEsc(a.name) + (a.legacyName ? ' <span class="muted">(old name format)</span>' : '') + '</td>' +
-      '<td>' + bkAge(a.ageHours) + '</td><td class="muted">' + fmtBytes(a.bytes) + '</td>' +
-      '<td>' + (a.newest ? '<span class="freshness newest">newest — restore this one</span> ' : '') +
-      '<span class="freshness ' + a.freshness + '">' + a.freshness + '</span></td></tr>').join('')
-    : '<tr><td colspan="4" class="muted">' + (arch.available ? 'No archive found. Run the backup command below.' : 'Nothing to show.') + '</td></tr>'
+      '<tr><td class="mono">' + bkEsc(a.name) + (a.legacyName ? ' <span class="muted">' + bkEsc(t('backup.oldNameFormat')) + '</span>' : '') + '</td>' +
+      '<td>' + bkEsc(bkAge(a.ageHours)) + '</td><td class="muted">' + fmtBytes(a.bytes) + '</td>' +
+      '<td>' + (a.newest ? '<span class="freshness newest">' + bkEsc(t('backup.newest')) + '</span> ' : '') +
+      '<span class="freshness ' + bkEsc(a.freshness) + '">' + bkEsc(tOr('backup.freshness.' + a.freshness, a.freshness)) + '</span></td></tr>').join('')
+    : '<tr><td colspan="4" class="muted">' + bkEsc(t(arch.available ? 'backup.noArchive' : 'backup.nothingToShow')) + '</td></tr>'
 
   const c = arch.commands || {}
   $('#bk-arch-cmds').innerHTML =
     (c.assumes ? '<p class="hint muted">' + bkEsc(c.assumes) + '</p>' : '') +
-    bkCmd('Make an archive now (on the box)', c.backup) +
-    bkCmd('Make one every hour (crontab -e)', c.cron) +
-    bkCmd('Restore the newest archive', c.restore) +
-    bkCmd('Only if the volume already holds data — this DELETES the contents first', c.restoreForce, true)
+    bkCmd(t('backup.cmd.backup'), c.backup) +
+    bkCmd(t('backup.cmd.cron'), c.cron) +
+    bkCmd(t('backup.cmd.restore'), c.restore) +
+    bkCmd(t('backup.cmd.restoreForce'), c.restoreForce, true)
 
   $$('[data-copy]').forEach((b) => {
     b.onclick = async () => {
-      try { await navigator.clipboard.writeText(b.dataset.copy); toast('command copied') } catch { toast('copy failed — select the text instead', true) }
+      try { await navigator.clipboard.writeText(b.dataset.copy); toast(t('backup.toast.copied')) } catch { toast(t('backup.toast.copyFailed'), true) }
     }
   })
   $$('[data-bkdel]').forEach((b) => { b.onclick = () => bkDelete(b.dataset.bkdel) })
 }
 
 function bkDelete (id) {
-  dialog('Delete this snapshot?', [
+  dialog(t('backup.delete.title'), [
     el('p', { className: 'mono', textContent: id }),
-    el('p', { className: 'hint muted', textContent: 'You cannot undo this. It is the only copy of the config at that moment.' })
+    el('p', { className: 'hint muted', textContent: t('backup.delete.note') })
   ], async () => {
     await api('DELETE', '/config/snapshots/' + encodeURIComponent(id))
-    toast('snapshot deleted')
+    toast(t('backup.delete.toast'))
     await loadBackup()
-  }, { okLabel: 'Delete', danger: true })
+  }, { okLabel: t('common.delete'), danger: true })
 }
 
 $('#bk-snap-take').onclick = () => {
-  const note = inputEl({ placeholder: 'why you took this one', maxLength: 200 })
-  dialog('Take a snapshot', [field('Note (optional)', note)], async () => {
+  const note = inputEl({ placeholder: t('backup.take.placeholder'), maxLength: 200 })
+  dialog(t('backup.take.title'), [field(t('backup.take.field'), note)], async () => {
     const r = await api('POST', '/config/snapshots', { note: note.value })
-    toast('snapshot ' + r.id + ' taken (' + fmtBytes(r.bytes) + ')')
+    toast(t('backup.take.toast', { id: r.id, size: fmtBytes(r.bytes) }))
     await loadBackup()
-  }, { okLabel: 'Take snapshot' })
+  }, { okLabel: t('backup.take.ok') })
 }
 
 $('#bk-tpl-download').onclick = guard(async () => {
   const tpl = await api('GET', '/config/template')
   // Belt and braces on the client too: never write a file that says it holds secrets.
-  if (tpl.contains !== 'no-secrets') { toast('refused: this file is not a secret-free template', true); return }
+  if (tpl.contains !== 'no-secrets') { toast(t('backup.tpl.refused'), true); return }
   const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([JSON.stringify(tpl, null, 2)], { type: 'application/json' }))
   a.download = 'reseller-template-' + stamp + '.json'
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 5000)
-  toast('template downloaded — it holds no password material')
+  toast(t('backup.tpl.toast'))
 })

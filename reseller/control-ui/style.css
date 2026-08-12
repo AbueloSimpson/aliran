@@ -106,6 +106,12 @@ body {
 .login-card label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
 .login-card .btn { margin-top: 4px; padding: 9px 12px; }
 
+/* Language switch — the same control in two places (the login card and Settings).
+   It has to sit on the login card too: the choice is per browser, so there is no
+   principal to hold it before sign-in. See reseller/control-ui/i18n.js. */
+.lang-select { min-width: 150px; }
+.login-card .lang-row { border-top: 1px solid var(--line); padding-top: 13px; margin-top: 2px; }
+
 /* ---- app shell ---- */
 #app-view { display: grid; grid-template-columns: var(--side-w) 1fr; min-height: 100vh; }
 

@@ -11,18 +11,26 @@
 </head>
 <body>
 
+<!-- Every user-facing string below carries a data-i18n* attribute; i18n.js fills it
+     from the catalog for the chosen language. The text kept inline is the English
+     source — it is what shows if the script ever fails to load. The .brand headings
+     are deliberately untouched: they belong to white-label branding. -->
+
 <!-- ============ login ============ -->
 <div id="login-view" hidden>
   <form id="login-form" class="card login-card">
     <h1 class="brand">Aliran <span>reseller</span></h1>
-    <label>Username
+    <label data-i18n="login.username">Username
       <input id="login-user" autocomplete="username" required>
     </label>
-    <label>Password
+    <label data-i18n="login.password">Password
       <input id="login-pass" type="password" autocomplete="current-password" required>
     </label>
-    <button class="btn primary" id="login-btn" type="submit">Sign in</button>
+    <button class="btn primary" id="login-btn" type="submit" data-i18n="login.submit">Sign in</button>
     <p id="login-error" class="error" hidden></p>
+    <label class="lang-row" data-i18n="lang.label">Language
+      <select id="login-lang" class="lang-select"></select>
+    </label>
   </form>
 </div>
 
@@ -32,16 +40,16 @@
   <aside id="sidebar">
     <h1 class="brand">Aliran <span>reseller</span></h1>
     <nav class="side-nav">
-      <a class="nav-item active" data-view="overview">Overview</a>
-      <a class="nav-item" data-view="accounts">Accounts</a>
-      <a class="nav-item" data-view="resellers" data-cap="manage" hidden>Resellers</a>
-      <a class="nav-item" data-view="ledger">Ledger</a>
-      <a class="nav-item" data-view="settings">Settings</a>
+      <a class="nav-item active" data-view="overview" data-i18n="nav.overview">Overview</a>
+      <a class="nav-item" data-view="accounts" data-i18n="nav.accounts">Accounts</a>
+      <a class="nav-item" data-view="resellers" data-cap="manage" hidden data-i18n="nav.resellers">Resellers</a>
+      <a class="nav-item" data-view="ledger" data-i18n="nav.ledger">Ledger</a>
+      <a class="nav-item" data-view="settings" data-i18n="nav.settings">Settings</a>
     </nav>
     <!-- Account block: identity + balance as aligned text rows (no chip pills). -->
     <div class="side-foot">
       <div class="side-balance">
-        <span class="k">Credits</span>
+        <span class="k" data-i18n="side.credits">Credits</span>
         <span class="v" id="bal"></span>
       </div>
       <div class="side-user" id="who">
@@ -51,13 +59,13 @@
           <div class="r" id="who-role"></div>
         </div>
       </div>
-      <button class="btn ghost small block" id="logout-btn">Sign out</button>
+      <button class="btn ghost small block" id="logout-btn" data-i18n="side.signOut">Sign out</button>
     </div>
   </aside>
 
   <div id="content">
     <header class="topbar">
-      <button class="btn ghost small" id="side-toggle" aria-label="Toggle navigation">☰</button>
+      <button class="btn ghost small" id="side-toggle" aria-label="Toggle navigation" data-i18n-aria="side.toggleNav">☰</button>
       <div>
         <h2 id="view-title">Overview</h2>
         <div id="banner" class="banner">&nbsp;</div>
@@ -70,29 +78,29 @@
       <section class="view" data-view="overview">
         <div class="tiles" id="tiles"></div>
         <div id="sys-block" hidden>
-          <h3 class="section-head">System</h3>
+          <h3 class="section-head" data-i18n="overview.system">System</h3>
           <div class="tiles" id="sys-tiles"></div>
           <div class="sys-grid">
             <div class="card pad sys-card">
-              <h3>Panel connection</h3>
+              <h3 data-i18n="system.panelConnection">Panel connection</h3>
               <div class="kv" id="sys-panel"></div>
             </div>
             <div class="card pad sys-card">
-              <h3>Service process</h3>
+              <h3 data-i18n="system.serviceProcess">Service process</h3>
               <div class="kv" id="sys-service"></div>
             </div>
             <div class="card pad sys-card">
-              <h3>Host machine</h3>
+              <h3 data-i18n="system.hostMachine">Host machine</h3>
               <div class="kv" id="sys-host"></div>
             </div>
           </div>
           <p class="hint muted sys-foot">
-            <span id="sys-updated"></span> · refreshes every 5 s while open
-            <button class="btn ghost small" id="sys-refresh">Refresh now</button>
+            <span id="sys-updated"></span> <span data-i18n="system.refreshNote">· refreshes every 5 s while open</span>
+            <button class="btn ghost small" id="sys-refresh" data-i18n="system.refreshNow">Refresh now</button>
           </p>
         </div>
         <div class="card table-card" id="reconcile-card" hidden>
-          <div class="table-toolbar"><h3>Last reconcile</h3></div>
+          <div class="table-toolbar"><h3 data-i18n="overview.lastReconcile">Last reconcile</h3></div>
           <div class="pad" id="reconcile-summary"></div>
         </div>
       </section>
@@ -100,20 +108,20 @@
       <!-- Accounts -->
       <section class="view" data-view="accounts" hidden>
         <details class="card add-panel" id="acct-add-panel">
-          <summary>Add account</summary>
+          <summary data-i18n="accounts.add">Add account</summary>
           <form class="row-form" id="account-form">
-            <label>Name
+            <label data-i18n="accounts.name">Name
               <input id="acct-name" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" placeholder="alice">
             </label>
-            <label>Password
+            <label data-i18n="common.password">Password
               <input id="acct-pass" type="password" required minlength="8">
             </label>
-            <label>Months
+            <label data-i18n="accounts.months">Months
               <input id="acct-months" type="number" min="1" max="120" value="1" style="width:80px">
             </label>
             <!-- Admin tiers only — everyone else's accounts inherit the admin-set
                  device policy (the note below shows the effective value). -->
-            <label id="acct-devices-label" hidden>Max devices
+            <label id="acct-devices-label" hidden data-i18n="accounts.maxDevices">Max devices
               <input id="acct-devices" type="number" min="1" value="1" style="width:90px">
             </label>
             <!-- S45: what the account GETS. Packages (bouquets) are the product
@@ -121,68 +129,68 @@
                  Credits stay time-only — a package never changes the price. -->
             <div class="picker-wrap">
               <fieldset class="picker-block">
-                <legend>Packages</legend>
-                <div class="picker" id="acct-packages"><span class="muted">Loading…</span></div>
-                <p class="picker-note muted">What the account gets — months set for how long. Packages don't change the price.</p>
+                <legend data-i18n="accounts.packages">Packages</legend>
+                <div class="picker" id="acct-packages"><span class="muted" data-i18n="common.loading">Loading…</span></div>
+                <p class="picker-note muted" data-i18n="accounts.packagesNote">What the account gets — months set for how long. Packages don't change the price.</p>
               </fieldset>
               <fieldset class="picker-block">
-                <legend>Extra channels (one-offs)</legend>
-                <input type="search" class="picker-filter" id="acct-extra-filter" placeholder="Filter channels…" autocomplete="off">
-                <div class="picker" id="acct-extra"><span class="muted">Loading…</span></div>
+                <legend data-i18n="accounts.extraChannels">Extra channels (one-offs)</legend>
+                <input type="search" class="picker-filter" id="acct-extra-filter" placeholder="Filter channels…" data-i18n-ph="accounts.filterChannels" autocomplete="off">
+                <div class="picker" id="acct-extra"><span class="muted" data-i18n="common.loading">Loading…</span></div>
               </fieldset>
             </div>
-            <button class="btn primary" type="submit">Activate</button>
-            <button class="btn" type="button" id="acct-trial-btn">Start trial</button>
+            <button class="btn primary" type="submit" data-i18n="accounts.activate">Activate</button>
+            <button class="btn" type="button" id="acct-trial-btn" data-i18n="accounts.startTrial">Start trial</button>
             <span class="form-note muted" id="acct-devices-note" hidden></span>
           </form>
         </details>
         <div class="card table-card">
           <div class="table-toolbar">
-            <input type="search" id="acct-search" placeholder="Search name or owner…">
+            <input type="search" id="acct-search" placeholder="Search name or owner…" data-i18n-ph="accounts.search">
             <div class="segmented" id="acct-filter">
-              <button class="active" data-f="all">All</button>
-              <button data-f="active">Active</button>
-              <button data-f="expiring">Expiring</button>
-              <button data-f="disabled">Disabled</button>
-              <button data-f="trial">Trials</button>
+              <button class="active" data-f="all" data-i18n="common.all">All</button>
+              <button data-f="active" data-i18n="accounts.filter.active">Active</button>
+              <button data-f="expiring" data-i18n="accounts.filter.expiring">Expiring</button>
+              <button data-f="disabled" data-i18n="accounts.filter.disabled">Disabled</button>
+              <button data-f="trial" data-i18n="accounts.filter.trial">Trials</button>
             </div>
-            <span id="acct-owner-chip" class="chip owner-chip" title="Clear owner filter" hidden></span>
+            <span id="acct-owner-chip" class="chip owner-chip" title="Clear owner filter" data-i18n-title="accounts.clearOwnerFilter" hidden></span>
             <span class="spacer"></span>
-            <select id="acct-sort" title="Sort">
-              <option value="name:asc">Name A→Z</option>
-              <option value="name:desc">Name Z→A</option>
-              <option value="expires:asc">Expiring soonest</option>
-              <option value="expires:desc">Expiring latest</option>
-              <option value="created:desc">Newest created</option>
-              <option value="created:asc">Oldest created</option>
-              <option value="status:asc">Active first</option>
-              <option value="status:desc">Inactive first</option>
+            <select id="acct-sort" title="Sort" data-i18n-title="common.sort">
+              <option value="name:asc" data-i18n="accounts.sort.nameAsc">Name A→Z</option>
+              <option value="name:desc" data-i18n="accounts.sort.nameDesc">Name Z→A</option>
+              <option value="expires:asc" data-i18n="accounts.sort.expiresAsc">Expiring soonest</option>
+              <option value="expires:desc" data-i18n="accounts.sort.expiresDesc">Expiring latest</option>
+              <option value="created:desc" data-i18n="accounts.sort.createdDesc">Newest created</option>
+              <option value="created:asc" data-i18n="accounts.sort.createdAsc">Oldest created</option>
+              <option value="status:asc" data-i18n="accounts.sort.statusAsc">Active first</option>
+              <option value="status:desc" data-i18n="accounts.sort.statusDesc">Inactive first</option>
             </select>
             <span id="acct-count" class="count" hidden></span>
-            <button class="btn small" id="acct-refresh">Refresh</button>
+            <button class="btn small" id="acct-refresh" data-i18n="common.refresh">Refresh</button>
           </div>
           <div class="table-wrap">
             <table id="acct-table">
               <thead><tr>
-                <th class="sortable sorted-asc" data-k="name">Account</th>
-                <th class="sortable" data-k="owner" data-col="owner">Owner</th>
-                <th class="sortable" data-k="status">Status</th>
-                <th class="sortable num" data-k="expires">Expires</th>
-                <th class="sortable num" data-k="created">Created</th>
-                <th class="num">Devices</th>
+                <th class="sortable sorted-asc" data-k="name" data-i18n="accounts.col.account">Account</th>
+                <th class="sortable" data-k="owner" data-col="owner" data-i18n="accounts.col.owner">Owner</th>
+                <th class="sortable" data-k="status" data-i18n="accounts.col.status">Status</th>
+                <th class="sortable num" data-k="expires" data-i18n="accounts.col.expires">Expires</th>
+                <th class="sortable num" data-k="created" data-i18n="accounts.col.created">Created</th>
+                <th class="num" data-i18n="accounts.col.devices">Devices</th>
                 <th class="actions-col"></th>
               </tr></thead>
               <tbody></tbody>
             </table>
           </div>
-          <div class="empty" id="acct-empty" hidden>No accounts yet.</div>
+          <div class="empty" id="acct-empty" hidden data-i18n="accounts.empty">No accounts yet.</div>
           <div class="table-foot pager" id="acct-pager" hidden>
-            <button class="btn small" id="acct-prev">‹ Prev</button>
-            <label class="pager-jump">Page
+            <button class="btn small" id="acct-prev" data-i18n="common.prev">‹ Prev</button>
+            <label class="pager-jump"><span data-i18n="common.page">Page</span>
               <select id="acct-page"></select>
-              of <span id="acct-pages"></span>
+              <span data-i18n="common.pageOf">of</span> <span id="acct-pages"></span>
             </label>
-            <button class="btn small" id="acct-next">Next ›</button>
+            <button class="btn small" id="acct-next" data-i18n="common.next">Next ›</button>
           </div>
         </div>
       </section>
@@ -190,35 +198,35 @@
       <!-- Resellers -->
       <section class="view" data-view="resellers" hidden>
         <details class="card add-panel">
-          <summary>Create reseller</summary>
+          <summary data-i18n="resellers.create">Create reseller</summary>
           <form class="row-form" id="principal-form">
-            <label>Username
+            <label data-i18n="common.username">Username
               <input id="p-name" required pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
             </label>
-            <label>Password
+            <label data-i18n="common.password">Password
               <input id="p-pass" type="password" required minlength="8">
             </label>
-            <label>Role
+            <label data-i18n="resellers.role">Role
               <select id="p-role"></select>
             </label>
-            <button class="btn primary" type="submit">Create</button>
+            <button class="btn primary" type="submit" data-i18n="common.create">Create</button>
           </form>
         </details>
         <div class="card table-card">
           <div class="table-toolbar">
-            <input type="search" id="p-search" placeholder="Filter principals…">
+            <input type="search" id="p-search" placeholder="Filter principals…" data-i18n-ph="resellers.filter">
             <span class="spacer"></span>
-            <button class="btn small" id="p-refresh">Refresh</button>
+            <button class="btn small" id="p-refresh" data-i18n="common.refresh">Refresh</button>
           </div>
           <div class="table-wrap">
             <table id="p-table">
               <thead><tr>
-                <th class="sortable" data-k="name">Name</th>
-                <th>Role</th>
-                <th data-col="parent">Parent</th>
-                <th class="num">Balance</th>
-                <th class="num">Accounts</th>
-                <th>Status</th>
+                <th class="sortable" data-k="name" data-i18n="resellers.col.name">Name</th>
+                <th data-i18n="resellers.col.role">Role</th>
+                <th data-col="parent" data-i18n="resellers.col.parent">Parent</th>
+                <th class="num" data-i18n="resellers.col.balance">Balance</th>
+                <th class="num" data-i18n="resellers.col.accounts">Accounts</th>
+                <th data-i18n="resellers.col.status">Status</th>
                 <th class="actions-col"></th>
               </tr></thead>
               <tbody></tbody>
@@ -230,44 +238,45 @@
       <!-- Ledger -->
       <section class="view" data-view="ledger" hidden>
         <details class="card add-panel" id="mint-panel" hidden>
-          <summary>Mint / adjust credits</summary>
+          <summary data-i18n="ledger.mintPanel">Mint / adjust credits</summary>
           <form class="row-form" id="mint-form">
-            <label>To
-              <input id="mint-to" placeholder="principal (default: you)">
+            <label data-i18n="ledger.to">To
+              <input id="mint-to" placeholder="principal (default: you)" data-i18n-ph="ledger.toPlaceholder">
             </label>
-            <label>Amount
+            <label data-i18n="ledger.amount">Amount
               <input id="mint-amount" type="number" min="1" value="1" style="width:100px">
             </label>
-            <label>Note
-              <input id="mint-note" placeholder="optional">
+            <label data-i18n="ledger.note">Note
+              <input id="mint-note" placeholder="optional" data-i18n-ph="common.optional">
             </label>
-            <button class="btn primary" type="submit">Mint</button>
+            <button class="btn primary" type="submit" data-i18n="ledger.mint">Mint</button>
           </form>
         </details>
         <div class="card table-card">
           <div class="table-toolbar">
-            <h3>Transactions</h3>
+            <h3 data-i18n="ledger.transactions">Transactions</h3>
             <div class="segmented" id="ledger-filter">
-              <button class="active" data-t="">All</button>
-              <button data-t="MINT">Mint</button>
-              <button data-t="TRANSFER">Transfer</button>
-              <button data-t="ACTIVATE">Activate</button>
-              <button data-t="RENEW">Renew</button>
-              <button data-t="REFUND">Refund</button>
-              <button data-t="TRIAL">Trial</button>
+              <button class="active" data-t="" data-i18n="common.all">All</button>
+              <button data-t="MINT" data-i18n="ledger.type.MINT">Mint</button>
+              <button data-t="TRANSFER" data-i18n="ledger.type.TRANSFER">Transfer</button>
+              <button data-t="ACTIVATE" data-i18n="ledger.type.ACTIVATE">Activate</button>
+              <button data-t="RENEW" data-i18n="ledger.type.RENEW">Renew</button>
+              <button data-t="REFUND" data-i18n="ledger.type.REFUND">Refund</button>
+              <button data-t="TRIAL" data-i18n="ledger.type.TRIAL">Trial</button>
             </div>
           </div>
           <div class="table-wrap">
             <table id="ledger-table">
               <thead><tr>
-                <th class="num">#</th><th>When</th><th>Type</th>
-                <th class="num">Δ</th><th>Counterparty</th><th>Account</th><th>Note</th>
+                <th class="num">#</th><th data-i18n="ledger.col.when">When</th><th data-i18n="ledger.col.type">Type</th>
+                <th class="num">Δ</th><th data-i18n="ledger.col.counterparty">Counterparty</th>
+                <th data-i18n="ledger.col.account">Account</th><th data-i18n="ledger.col.note">Note</th>
               </tr></thead>
               <tbody></tbody>
             </table>
           </div>
           <div class="table-foot">
-            <button class="btn small" id="ledger-more">Load more</button>
+            <button class="btn small" id="ledger-more" data-i18n="common.loadMore">Load more</button>
           </div>
         </div>
       </section>
@@ -275,63 +284,82 @@
       <!-- Settings -->
       <section class="view" data-view="settings" hidden>
         <div class="card pad settings-card">
-          <h3>Change your password</h3>
+          <h3 data-i18n="settings.changePassword">Change your password</h3>
           <form class="row-form" id="pw-form">
-            <label>New password
+            <label data-i18n="common.newPassword">New password
               <input id="pw-new" type="password" required minlength="8">
             </label>
-            <button class="btn primary" type="submit">Update</button>
+            <button class="btn primary" type="submit" data-i18n="common.update">Update</button>
           </form>
         </div>
-        <div class="card pad settings-card" id="ops-card" hidden>
-          <h3>Operations</h3>
-          <div class="chips">
-            <button class="btn small" id="op-sweep">Run expiry sweep now</button>
-            <button class="btn small" id="op-reconcile">Run reconcile now</button>
+
+        <!-- Language. Per browser, not per principal: the sign-in card needs a language
+             before there is anyone to hold a preference. See reseller/control-ui/i18n.js. -->
+        <div class="card pad settings-card">
+          <h3 data-i18n="lang.title">Language</h3>
+          <div class="row-form">
+            <label class="lang-row" data-i18n="lang.label">Language
+              <select id="settings-lang" class="lang-select"></select>
+            </label>
           </div>
-          <p class="hint muted">The expiry sweep disables lapsed accounts on the panel. Reconcile diffs the panel against local records (repairs apply only when <span class="mono">RECONCILE_REPAIR=1</span>).</p>
+          <p class="hint muted" data-i18n="lang.hint">This changes the dashboard text only. Account names, notes and channel titles come from your panel.</p>
+        </div>
+
+        <div class="card pad settings-card" id="ops-card" hidden>
+          <h3 data-i18n="settings.operations">Operations</h3>
+          <div class="chips">
+            <button class="btn small" id="op-sweep" data-i18n="settings.runSweep">Run expiry sweep now</button>
+            <button class="btn small" id="op-reconcile" data-i18n="settings.runReconcile">Run reconcile now</button>
+          </div>
+          <p class="hint muted" data-i18n-rich="settings.opsHint">The expiry sweep disables lapsed accounts on the panel. Reconcile diffs the panel against local records (repairs apply only when <span class="mono">RECONCILE_REPAIR=1</span>).</p>
         </div>
 
         <!-- Backup. Admin tier only: these artifacts show the WHOLE principal hierarchy,
              including branches a super or a reseller can never otherwise see. The reseller
              is export-only by design — see reseller/src/config-snapshot.js. -->
         <div class="card pad settings-card" id="bk-card" hidden>
-          <h3>Backup &amp; restore</h3>
-          <p class="warn-line"><b>You put a reseller back with a volume restore, not a config restore.</b>
+          <h3 data-i18n="backup.title">Backup &amp; restore</h3>
+          <p class="warn-line" data-i18n-rich="backup.warnLine"><b>You put a reseller back with a volume restore, not a config restore.</b>
             The credit ledger is the record of record, and no config file holds it. This card gives you a snapshot for
             reference and a template for a second site. It cannot write either one back.</p>
-          <p class="hint muted">Two reasons, and they are different. A principal record carries the session counter that a
+          <p class="hint muted" data-i18n="backup.whyHint">Two reasons, and they are different. A principal record carries the session counter that a
             password change increases. To write an old copy back would give revoked sessions their access again. And an
             account balance comes from the ledger, so an account map that moves back in time disagrees with the ledger
             that funds it.</p>
 
-          <h4 class="bk-h">Config snapshots <span class="muted">(principals and accounts, on the box)</span></h4>
+          <h4 class="bk-h"><span data-i18n="backup.snapshotsHead">Config snapshots</span> <span class="muted" data-i18n="backup.snapshotsHeadSub">(principals and accounts, on the box)</span></h4>
           <div class="chips">
-            <button class="btn small" id="bk-snap-take">Take a snapshot now</button>
-            <button class="btn small" id="bk-tpl-download">Download the template</button>
+            <button class="btn small" id="bk-snap-take" data-i18n="backup.takeSnapshot">Take a snapshot now</button>
+            <button class="btn small" id="bk-tpl-download" data-i18n="backup.downloadTemplate">Download the template</button>
           </div>
           <p class="hint muted" id="bk-snap-dir"></p>
           <div class="table-wrap">
             <table id="bk-snap-table">
-              <thead><tr><th>Taken</th><th>Note</th><th>Contents</th><th>Size</th><th></th></tr></thead>
+              <thead><tr>
+                <th data-i18n="backup.snapCol.taken">Taken</th><th data-i18n="backup.snapCol.note">Note</th>
+                <th data-i18n="backup.snapCol.contents">Contents</th><th data-i18n="backup.snapCol.size">Size</th><th></th>
+              </tr></thead>
               <tbody></tbody>
             </table>
           </div>
-          <p class="hint muted">The template holds the shape of the hierarchy: each name, role and parent. It holds no
+          <p class="hint muted" data-i18n-rich="backup.templateHint">The template holds the shape of the hierarchy: each name, role and parent. It holds no
             password material, and no customer accounts. Use it to build the same structure on a second site with
             <span class="mono">reseller-cli</span>.</p>
 
-          <h4 class="bk-h">Recovery archives <span class="muted">(the whole data volume)</span></h4>
+          <h4 class="bk-h"><span data-i18n="backup.archivesHead">Recovery archives</span> <span class="muted" data-i18n="backup.archivesHeadSub">(the whole data volume)</span></h4>
           <p class="hint muted" id="bk-arch-note"></p>
           <div class="table-wrap">
             <table id="bk-arch-table">
-              <thead><tr><th>Archive</th><th>Age</th><th>Size</th><th>State</th></tr></thead>
+              <thead><tr>
+                <th data-i18n="backup.archCol.archive">Archive</th><th data-i18n="backup.archCol.age">Age</th>
+                <th data-i18n="backup.archCol.size">Size</th><th data-i18n="backup.archCol.state">State</th>
+              </tr></thead>
               <tbody></tbody>
             </table>
           </div>
           <p class="warn-line" id="bk-arch-why"></p>
           <div id="bk-arch-cmds"></div>
-          <p class="hint muted"><b>Always restore the newest archive you have.</b> The restore command refuses to write
+          <p class="hint muted" data-i18n-rich="backup.restoreHint"><b>Always restore the newest archive you have.</b> The restore command refuses to write
             over a volume that holds data. It also refuses an archive whose name does not match the service. Do not add
             <span class="mono">--force</span> to get past these two refusals unless you know what the volume holds.
             No archive holds a <span class="mono">.env</span> file — those live on the host, outside the volumes.</p>
@@ -345,13 +373,14 @@
   <h2 id="dlg-title"></h2>
   <div id="dlg-body"></div>
   <div class="dlg-buttons">
-    <button class="btn" id="dlg-cancel" type="button">Cancel</button>
-    <button class="btn primary" id="dlg-ok" type="button">OK</button>
+    <button class="btn" id="dlg-cancel" type="button" data-i18n="common.cancel">Cancel</button>
+    <button class="btn primary" id="dlg-ok" type="button" data-i18n="common.ok">OK</button>
   </div>
 </dialog>
 
 <div id="toast" hidden></div>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
