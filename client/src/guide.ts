@@ -24,9 +24,12 @@ export const GUIDE_WINDOW_MS = GUIDE_SLOTS * SLOT_MS
 export const GUIDE_PAST_MS = 6 * 3600_000
 export const GUIDE_FUTURE_MS = 48 * 3600_000
 
-// Fixed TV grid row height (thumb 54 + padding, + the 2px row gap) — the FlatList
-// getItemLayout unit, same exact-height discipline as CHANNEL_ROW_H / VOD_ROW_H.
-export const GUIDE_ROW_INNER_H = 62
+// Fixed TV grid row height — the FlatList getItemLayout unit, same exact-height
+// discipline as CHANNEL_ROW_H / VOD_ROW_H. Trimmed ~15% from the original 62 (the
+// old logo-box height + padding) after the grid read too large on a real set: the
+// type scale is the 10-foot legibility budget and stays, so the density comes out of
+// the geometry instead, and the same panel now carries roughly two more channels.
+export const GUIDE_ROW_INNER_H = 53
 export const GUIDE_ROW_MB = 2
 export const GUIDE_ROW_H = GUIDE_ROW_INNER_H + GUIDE_ROW_MB
 

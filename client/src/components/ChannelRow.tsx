@@ -25,7 +25,10 @@ import { theme } from '../theme'
 // guide UI (WS1) around a doubled art box (now the logo box — WS11 kept the size when
 // the thumb left the rows). Phone side re-tightened ~0.85 (S22 round 3: the side
 // panel read too large in landscape) — TV keeps the 10-foot metrics untouched.
-const ROW_INNER_H = theme.isTV ? 80 : 54
+// TV trimmed ~15% from 80 (measured on a TCL set — the left menu read too large): the
+// type scale is the 10-foot legibility budget and stays, so the density comes out of
+// the geometry, and the panel carries roughly two more channels for it.
+const ROW_INNER_H = theme.isTV ? 68 : 54
 const ROW_MB = 2
 /** One list row + the gap under it — the getItemLayout unit. */
 export const CHANNEL_ROW_H = ROW_INNER_H + ROW_MB
@@ -119,7 +122,7 @@ const styles = StyleSheet.create({
   textDimOnFill: { color: theme.colors.focusFillText, opacity: 0.7 },
   // 16:9 art box (phone 72×40 / TV 112×63) — kept from the thumb era so the row
   // geometry (CHANNEL_ROW_H, getItemLayout) never moved when the logo took it over.
-  logo: { width: theme.isTV ? 112 : 72, height: theme.isTV ? 63 : 40, borderRadius: 4 },
+  logo: { width: theme.isTV ? 95 : 72, height: theme.isTV ? 54 : 40, borderRadius: 4 },
   logoFallback: { backgroundColor: theme.colors.surface, alignItems: 'center', justifyContent: 'center' },
   logoInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' }
 })

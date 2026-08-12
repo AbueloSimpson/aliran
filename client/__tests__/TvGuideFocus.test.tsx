@@ -134,6 +134,62 @@ test('"on air now" is drawn in the live colour, so it can never impersonate focu
   expect(theme.colors.live).not.toBe(theme.colors.focus)
 })
 
+// --- the header must not be a one-way trap ---
+// UP off the top row hands native focus to the header chips, and the four D-pad strips
+// unmount while it is up there. Nothing then stood between the chips and the grid, so a
+// DOWN press had nowhere to land: focus left the pill, the grid never got it, and
+// because `headerFocus` stayed true the strips stayed unmounted — after ONE up press the
+// whole guide stopped answering the remote. Reproduced on a TCL set before this fix.
+
+/** The rig's focus strips, told apart by the geometry each is pinned to. The CATCHER is
+ *  deliberately excluded: it is the wide middle band that holds native focus and it stays
+ *  mounted throughout — it is the strips around it that come and go. */
+function strips (tree: RendererInstance) {
+  const all = tree.root.findAllByType(View)
+    .filter((n: any) => typeof n.props?.onFocus === 'function' && flat(n).position === 'absolute')
+    .filter((n: any) => flat(n).height === 64 || flat(n).width === 64) // a strip, not the catcher
+  const spansFullWidth = (n: any) => flat(n).left === 0 && flat(n).right === 0
+  return {
+    dpad: all.filter((n: any) => !spansFullWidth(n)),   // the grid's four, inset from the edges
+    headerExit: all.filter(spansFullWidth)              // the header's way back down
+  }
+}
+
+test('leaving the grid upward always leaves a way back down', async () => {
+  const tree = await grid()
+  const before = strips(tree)
+  expect(before.dpad.length).toBeGreaterThan(0)
+  expect(before.headerExit).toHaveLength(0) // nothing in the grid's own geometry
+
+  // UP from row 0 — the reducer's "exit" — hands focus to the header.
+  const up = before.dpad.find((n: any) => flat(n).top === 0 && flat(n).height === 64)!
+  await ReactTestRenderer.act(async () => { up.props.onFocus() })
+
+  const after = strips(tree)
+  expect(after.dpad).toHaveLength(0)          // the grid's strips stand down, as before
+  expect(after.headerExit).toHaveLength(1)    // …but DOWN now has somewhere to land
+})
+
+test('coming back down re-arms the grid, so the remote keeps working', async () => {
+  const tree = await grid()
+  const up = strips(tree).dpad.find((n: any) => flat(n).top === 0 && flat(n).height === 64)!
+  await ReactTestRenderer.act(async () => { up.props.onFocus() })
+  await ReactTestRenderer.act(async () => { strips(tree).headerExit[0].props.onFocus() })
+  // The four D-pad strips are back — without this the guide was dead after one UP.
+  expect(strips(tree).dpad.length).toBeGreaterThan(0)
+  expect(strips(tree).headerExit).toHaveLength(0)
+})
+
+test('the grid drops its focus marks while the header holds focus', async () => {
+  const tree = await grid()
+  expect(flat(channelNumber(tree, '001')).color).toBe(theme.colors.focus)
+  const up = strips(tree).dpad.find((n: any) => flat(n).top === 0 && flat(n).height === 64)!
+  await ReactTestRenderer.act(async () => { up.props.onFocus() })
+  // Two things looking focused at once is the same confusion the colour grammar above
+  // exists to end. The row is remembered, not shown.
+  expect(flat(channelNumber(tree, '001')).color).toBe(theme.colors.textDim)
+})
+
 test('the NOW pill states itself in outline until the remote is actually on it', async () => {
   // It used to carry a solid live fill at all times, which made it the most saturated
   // thing on a screen whose focus was somewhere else entirely. On this grid a solid

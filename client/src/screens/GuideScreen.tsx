@@ -51,7 +51,7 @@
 // Guide-less channels show one honest full-width "No program information" cell
 // (D2 — no fake data), and vod titles have no schedule, so they stay out entirely.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { View, Text, Image, Pressable, FlatList, StyleSheet, Platform, BackHandler, TVFocusGuideView, useWindowDimensions } from 'react-native'
+import { View, Text, Image, Pressable, FlatList, StyleSheet, BackHandler, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { useI18n } from '@aliran/i18n'
@@ -59,6 +59,7 @@ import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { channelNumbers, categoryModel, splitCategory, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpgPrograms, type EpgProgram } from '@aliran/react-native'
+import { loadServiceDescriptor } from '../config'
 import { ProgressHairline } from '../components/ProgressHairline'
 import { SectionLoading } from '../components/SectionLoading'
 import { GuidePanel, GuidePreviewCard, CategoryChips, TimeBar, CELL_GAP, hhmm } from '../components/GuidePanel'
@@ -71,18 +72,28 @@ import { theme } from '../theme'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Guide'>
 
-// On phone TVFocusGuideView is just a View; on TV autoFocus restores focus memory (S7).
-const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGuideView
+// No TVFocusGuideView on this screen any more. Its autoFocus is what made the header a
+// one-way trap (see the chips row), and every other focus move here is explicit: the
+// reducer places the virtual focus, and requestTVFocus places the native one.
 
-// TV channel column: number (52, the ChannelRow width) + 96×54 logo box + padding
-// (the box kept the thumb era's size, so the grid geometry never moved — WS11).
-const CH_COL_W = 176
-const LOGO_W = 96
-const LOGO_H = 54
+// TV channel column: number + logo box + padding. Trimmed ~15% with the row height
+// (see GUIDE_ROW_INNER_H) — every pixel taken off this column is timeline the schedule
+// gets back, which is the part of the grid a viewer is actually reading.
+const CH_COL_W = 150
+const LOGO_W = 82
+const LOGO_H = 46
 
 // The focus-engine rig (TV): invisible edge strips around a central catcher, laid
 // out INSIDE the grid body so the header chips stay out of the strip geometry.
 const STRIP = 64
+
+// The operator's mark for the guide's top-left corner (the same descriptor logo the
+// splash uses). Read once at module load — it cannot change while the app runs. Brands
+// without one fall back to the word GUIDE, which is what this corner used to carry.
+const brandLogo = (() => {
+  const uri = loadServiceDescriptor()?.branding?.logo
+  return uri ? { uri } : null
+})()
 
 export function GuideScreen (props: Props) {
   // theme.isTV is fixed for the app's lifetime, so the branch never flips mid-mount.
@@ -275,14 +286,15 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
 
   return (
     <View style={styles.container}>
-      <View style={styles.headerRow}>
-        <Text style={styles.header}>{t('guide.header')}</Text>
-        <FocusPane autoFocus style={styles.chipsPane}>
-          <CategoryChips model={model} activeKey={activeKey} onSelect={onSelectCategory} onNow={jumpToNow} nowPillRef={nowPillRef} />
-        </FocusPane>
-        {/* Upper-right preview pane — display-only (no focusables, so the focus rig
-            never sees it) and INSIDE the header row, so the reserved width/height
-            keep it clear of the time bar and the grid below. */}
+      {/* THE PREVIEW CARD SITS ABOVE THE CATEGORIES, not beside them. Inline in the
+          chips row it took the right-hand third of the header and pushed the category
+          chips off the screen edge — on a real lineup you could not see the categories
+          past the fourth. Its own row above gives the chips the full width, and the
+          brand mark takes the corner the word GUÍA used to hold. */}
+      <View style={styles.brandRow}>
+        {brandLogo
+          ? <Image source={brandLogo} style={styles.brandLogo} resizeMode="contain" accessibilityLabel={t('guide.header')} />
+          : <Text style={styles.header}>{t('guide.header')}</Text>}
         {previewStream && (
           <GuidePreviewCard
             stream={previewStream}
@@ -291,6 +303,19 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
             program={previewProgram}
           />
         )}
+      </View>
+      <View style={styles.chipsRow}>
+        {/* A PLAIN View, not the autoFocus FocusPane it used to be. TVFocusGuideView's
+            autoFocus redirects focus back INTO its own bounds, which is what made this
+            header a one-way trap on a TCL set: UP reached the chips and then DOWN could
+            never leave — focus was pulled back among them, the grid never regained it,
+            and because `headerFocus` stayed true the strips below stayed unmounted, so
+            the whole guide stopped answering the D-pad after a single UP press. Focus is
+            placed here explicitly (nowPillRef.requestTVFocus) so nothing is lost by
+            dropping it. */}
+        <View style={styles.chipsPane}>
+          <CategoryChips model={model} activeKey={activeKey} onSelect={onSelectCategory} onNow={jumpToNow} nowPillRef={nowPillRef} />
+        </View>
       </View>
 
       <TimeBar windowStart={focus.windowStart} nowMs={nowMs} pxPerMin={pxPerMin} leadW={CH_COL_W} />
@@ -321,7 +346,11 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
               stripW={stripW}
               pxPerMin={pxPerMin}
               nowMs={nowMs}
-              focusedCellStart={index === focus.focusRow ? focus.focusCellStart : null}
+              // Nothing on the grid wears the focus marks while the HEADER holds focus:
+              // two things looking focused at once is the same confusion the colour work
+              // above set out to end. The row is remembered, not shown — coming back down
+              // lands exactly where it left.
+              focusedCellStart={index === focus.focusRow && !headerFocus ? focus.focusCellStart : null}
               onPrograms={reportPrograms}
             />
           )}
@@ -345,6 +374,16 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
             <Pressable style={styles.stripLeft} onFocus={() => dispatchMove('left')} />
             <Pressable style={styles.stripRight} onFocus={() => dispatchMove('right')} />
           </>
+        )}
+        {/* THE WAY BACK DOWN. While the header holds focus the four strips are gone, so
+            without this there is no focusable between the chips and the grid and a DOWN
+            press had nowhere to land — the guide simply stopped responding. A full-width
+            band across the top of the grid body catches that press and hands focus back
+            to the catcher, which re-arms the strips through its own onFocus. It exists
+            ONLY while the header has focus, so it can never sit in the grid's own
+            geometry and steal an UP press meant for the reducer. */}
+        {headerFocus && (
+          <Pressable style={styles.headerExit} onFocus={() => { setHeaderFocus(false); bounceToGrid() }} />
         )}
       </View>
     </View>
@@ -421,8 +460,13 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.background, paddingHorizontal: theme.safeX, paddingVertical: theme.safeY },
-  header: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginBottom: theme.spacing(1) },
-  headerRow: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing(1.5) },
+  header: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2 },
+  // Brand mark left, preview card right, on their OWN row above the categories — the
+  // card used to sit inline beside the chips and pushed most of them off screen.
+  brandRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: theme.spacing(1.5), marginBottom: theme.spacing(0.5) },
+  brandLogo: { width: 150, height: 44 },
+  // The categories now get the full width to themselves.
+  chipsRow: { flexDirection: 'row', alignItems: 'flex-start' },
   chipsPane: { flex: 1 },
 
   // Grid body + the focus rig (TV).
@@ -432,6 +476,8 @@ const styles = StyleSheet.create({
   stripDown: { position: 'absolute', bottom: 0, left: STRIP, right: STRIP, height: STRIP },
   stripLeft: { position: 'absolute', left: 0, top: 0, bottom: 0, width: STRIP },
   stripRight: { position: 'absolute', right: 0, top: 0, bottom: 0, width: STRIP },
+  // The header's way back down (mounted only while the header holds focus).
+  headerExit: { position: 'absolute', top: 0, left: 0, right: 0, height: STRIP },
 
   gridRow: {
     flexDirection: 'row', alignItems: 'center', height: GUIDE_ROW_INNER_H, marginBottom: GUIDE_ROW_MB,

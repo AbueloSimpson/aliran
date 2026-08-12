@@ -26,9 +26,9 @@
 // silence, and reported channel changing as broken when it had worked the whole time.
 //
 // The caps are display-only Text — never focusables, which is the S7 rule the whole
-// screen is built around. The host fades them on their own timer rather than the bar's:
-// the TV bar never auto-hides (see armBarHide), so a legend riding only `barOpacity`
-// would sit over the picture forever.
+// screen is built around. The host fades them on a timer of their OWN, shorter than the
+// bar's: the legend is for learning the keys and stops earning its space long before the
+// channel identity does, so it clears first and the bar outlives it.
 import React, { useRef, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, PanResponder, Animated } from 'react-native'
 import type { Stream } from '../worklet'

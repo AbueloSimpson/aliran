@@ -24,7 +24,18 @@ export interface CategoryRailProps {
   selected: string
   /** When drilled into a parent, its name + a back action, pinned above the scroll. */
   parentHeader?: { label: string; onBack: () => void }
+  /**
+   * SCOPE the channel list to this category — fired by moving the D-pad focus onto it
+   * (TV). It must never enter/drill: walking the focus down the rail has to be able to
+   * pass a parent that has sub-categories.
+   */
   onSelect: (key: string) => void
+  /**
+   * ENTER this category — fired by OK (and by a tap on phone, which has no focus step).
+   * Drilling into a parent's sub-categories is this, and only this. Defaults to
+   * onSelect when the host has nothing extra to do.
+   */
+  onActivate?: (key: string) => void
   /** Fired on user interaction (item focus / press / scroll) to defer the auto-hide timer. */
   onActivity?: () => void
 }
@@ -33,7 +44,7 @@ export interface CategoryRailProps {
 // operator's own category name in the operator's language. There is no casing rule that
 // is right for both, so the whole rail follows the VIEWER's locale (S56f decision) —
 // a Turkish viewer's "i" upper-cases to "İ" everywhere on the surface, consistently.
-export function CategoryRail ({ items, selected, parentHeader, onSelect, onActivity }: CategoryRailProps) {
+export function CategoryRail ({ items, selected, parentHeader, onSelect, onActivate, onActivity }: CategoryRailProps) {
   return (
     <View style={styles.rail}>
       {parentHeader && (
@@ -47,6 +58,7 @@ export function CategoryRail ({ items, selected, parentHeader, onSelect, onActiv
             hasChildren={it.hasChildren}
             active={it.key === selected}
             onSelect={() => onSelect(it.key)}
+            onActivate={() => (onActivate ?? onSelect)(it.key)}
             onActivity={onActivity}
           />
         ))}
@@ -69,17 +81,23 @@ function BackHeader ({ label, onBack, onActivity }: { label: string; onBack: () 
   )
 }
 
-function RailItem ({ label, hasChildren, active, onSelect, onActivity }: { label: string; hasChildren?: boolean; active: boolean; onSelect: () => void; onActivity?: () => void }) {
+function RailItem ({ label, hasChildren, active, onSelect, onActivate, onActivity }: { label: string; hasChildren?: boolean; active: boolean; onSelect: () => void; onActivate: () => void; onActivity?: () => void }) {
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
       style={styles.item}
-      // Focus-selects is the TV D-pad behavior ONLY. On phone, Android's touch-mode
-      // focus lands on a rail item right after a tap elsewhere in the rail and would
-      // instantly revert the tapped selection.
+      // FOCUS SCOPES, OK ENTERS — and the split is the whole point. Focus used to call
+      // the host's select, which DRILLED into any category that had sub-categories, so
+      // simply walking the D-pad down the rail teleported the viewer into the first
+      // parent it passed: they could not reach the categories below it, and could not
+      // stay on the parent either. Measured on a TCL set going down from All.
+      //
+      // Focus-selects at all is TV-only. On phone, Android's touch-mode focus lands on a
+      // rail item right after a tap elsewhere in the rail and would instantly revert the
+      // tapped selection — so phone goes through onPress alone.
       onFocus={() => { setFocused(true); onActivity?.(); if (Platform.isTV) onSelect() }}
       onBlur={() => setFocused(false)}
-      onPress={() => { onActivity?.(); onSelect() }}
+      onPress={() => { onActivity?.(); onActivate() }}
     >
       <View style={styles.itemRow}>
         <Text style={[styles.label, (active || focused) && styles.labelActive]} numberOfLines={1}>
@@ -101,9 +119,10 @@ const styles = StyleSheet.create({
   // without this, the rail's last item scrolls flush to the glass curve and cannot be
   // tapped. The pad lets the list scroll one item-height past the end, clear of it.
   scrollContent: { paddingBottom: theme.spacing(6) },
-  back: { paddingVertical: theme.isTV ? 10 : 7, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
+  // TV paddings trimmed ~15% with the rest of the left menu (see LiveScreen.railPane).
+  back: { paddingVertical: theme.isTV ? 8 : 7, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
   backText: { color: theme.colors.accent, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '800', letterSpacing: 1 },
-  item: { paddingVertical: theme.isTV ? 10 : 7, paddingHorizontal: theme.spacing(1) },
+  item: { paddingVertical: theme.isTV ? 8 : 7, paddingHorizontal: theme.spacing(1) },
   itemRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   label: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '700', letterSpacing: 1, flexShrink: 1 },
   chevron: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '800' },
