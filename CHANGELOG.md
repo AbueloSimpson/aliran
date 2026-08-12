@@ -194,6 +194,35 @@ not been on a television yet**; each says so where it is described.
 
 ### Fixed
 
+- **The documented first-time bootstrap command reported success and created no
+  admin.** `docker-compose.yml` and `docs/reseller-panel.md` documented
+  `add-admin <name> <password>`, but every CLI takes the password as a **flag**.
+  The positional argument was parsed and silently dropped, and the CLI fell through
+  to its hidden prompt. With a terminal, the operator was asked for a password they
+  believed they had already given, and the account ended up with whatever they
+  typed — not the value in the command. With no terminal (a script, CI, or
+  `docker compose run -T`), it was worse: `readline` with `terminal: true` on a
+  non-TTY stdin never fires its question callback, so the promise never settled,
+  the event loop drained, and node exited **0** having written nothing. A bootstrap
+  line like `… add-admin bob "$PW" && echo ok` printed `ok` with no admin created.
+  A silent false success, at first-time setup, on all four CLIs
+  (`panel/admin-cli.js`, `broadcaster/control-cli.js`, `library/library-cli.js`,
+  `reseller/reseller-cli.js`).
+
+  The password verbs now refuse a stray positional argument and name the three real
+  forms, and the refusal never echoes the stray value back — it is almost certainly
+  the password, and stderr here lands in docker logs, CI logs and scrollback.
+  `reseller mint <name> <amount>` still takes its two positionals, so the check
+  lives in the password verbs rather than in the argument parser. A prompt with no
+  terminal now fails loudly instead of exiting 0, and — so that automation is not
+  pushed onto the flag, which puts the password in argv where `ps` and the shell
+  history show it — a prompt with no terminal reads the secret from a **pipe**:
+  `printf '%s\n' "$PW" | … add-admin bob`. Successive prompts consume successive
+  lines, so `export-escrow`, which asks twice, is scriptable the same way for the
+  first time. The docs now lead with the plain prompting form (`docker compose run`
+  allocates a terminal by default) and give the pipe for scripts. New regression
+  lane `npm run test:cli-password` pins the exit codes, not only the messages.
+
 - **A crash mid-write could truncate a JSON registry, including the ones holding
   keys** — every registry write was a plain `writeFileSync` straight onto the live
   path, which truncates the file to zero before refilling it. An OOM kill, a

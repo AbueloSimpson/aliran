@@ -34,8 +34,12 @@ npm start                     # control API + dashboard on 127.0.0.1:3330
 On the **panel** host, create the dedicated admin this service signs in as:
 
 ```sh
-node src/admin-cli.js add-admin reseller-svc <password>   # in panel/
+node src/admin-cli.js add-admin reseller-svc   # in panel/ — asks for the password
 ```
+
+The password is never an argument. Put the same password in `PANEL_ADMIN_PASS`. With
+no terminal, pipe it in: `printf '%s\n' "$PW" | node src/admin-cli.js add-admin
+reseller-svc`.
 
 Then open `http://127.0.0.1:3330`, sign in as the root admin, and create
 co-admins, super resellers, and resellers. From there they can mint credits and

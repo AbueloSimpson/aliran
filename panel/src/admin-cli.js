@@ -33,7 +33,39 @@ function parseArgs (argv) {
   return { pos, opts }
 }
 
-function promptHidden (query) {
+// A secret comes from ONE of three places, and the prompt is the default because it
+// is the only one that keeps the secret out of argv:
+//   the terminal    a hidden prompt — nothing in argv, nothing in the shell history
+//   a pipe          `printf '%s\n' "$PW" | … add-admin bob` — for automation with no TTY
+//   --password <pw> also automation, but argv is world-readable in `ps`
+//
+// ⚠ The pipe branch is not a convenience, it is a BUG FIX. readline with terminal:true
+// on a non-TTY stdin never fires its question callback: the promise never settled, the
+// event loop drained, and node exited **0** having done nothing at all. So
+// `docker compose run -T … add-admin bob pw && echo ok` printed "ok" and created NO
+// admin — a silent false success during first-time bootstrap. Read the pipe instead,
+// and when there is neither a TTY nor a pipe, say so and exit non-zero.
+let pipedLines = null
+function nextPipedLine () {
+  if (pipedLines == null) {
+    let raw = ''
+    try { raw = fs.readFileSync(0, 'utf8') } catch { raw = '' } // closed stdin (</dev/null) reads as empty
+    pipedLines = raw.split(/\r?\n/)
+  }
+  return pipedLines.shift() // successive prompts consume successive lines (export-escrow asks twice)
+}
+
+async function promptHidden (query) {
+  if (!process.stdin.isTTY) {
+    const line = nextPipedLine()
+    if (!line) {
+      throw new Error(`No terminal to ask on, and stdin has no line for "${query.trim()}".\n` +
+        `  Pipe it in:  printf '%s\\n' "$SECRET" | node src/admin-cli.js …\n` +
+        '  Or use the matching flag (--password / --passphrase). A flag puts the secret in\n' +
+        '  argv, where `ps` and the shell history show it. Prefer the pipe in automation.')
+    }
+    return line
+  }
   return new Promise((resolve) => {
     let muted = false
     const out = new Writable({ write (c, e, cb) { if (!muted) process.stdout.write(c, e); cb() } })
@@ -43,8 +75,24 @@ function promptHidden (query) {
   })
 }
 
-async function needPassword (username, opts) {
-  return opts.password != null && opts.password !== true ? String(opts.password) : promptHidden(`Password for ${username}: `)
+// docker-compose.yml and docs/reseller-panel.md used to document `add-admin <name> <password>`,
+// which this CLI has never accepted — the password is a FLAG. The positional was parsed into
+// pos[1] and silently dropped, so the operator either got an unexpected prompt (and ended up
+// with a password different from the one they typed in the command) or, with no TTY, the
+// silent exit-0 above. Refuse the extra argument and name the three real forms.
+//
+// The stray value is never printed back: it is almost certainly the password, and stderr here
+// lands in docker logs, CI logs, and scrollback.
+function needPassword (cmd, name, opts, pos) {
+  if (pos.length > 1) {
+    console.error(`${cmd} takes the password as a flag, not as an argument (got ${pos.length - 1} extra).\n` +
+      `  node src/admin-cli.js ${cmd} ${name}                       asks for it here\n` +
+      `  printf '%s\\n' "$PW" | node src/admin-cli.js ${cmd} ${name}  reads it from the pipe\n` +
+      `  node src/admin-cli.js ${cmd} ${name} --password '<pw>'      puts it in the command\n` +
+      'The last form shows the password in `ps` and in the shell history. Use it only in automation.')
+    process.exit(1)
+  }
+  return opts.password != null && opts.password !== true ? String(opts.password) : promptHidden(`Password for ${name}: `)
 }
 
 function requireKeys () {
@@ -232,7 +280,7 @@ async function main () {
   // (and no ELOCKED when the panel is running).
   if (cmd === 'add-admin') {
     const name = pos[0]; if (!name) return usage()
-    ops.addAdmin({ config, keys, dataDir: config.dataDir }, name, await needPassword(name, opts))
+    ops.addAdmin({ config, keys, dataDir: config.dataDir }, name, await needPassword('add-admin', name, opts, pos))
     console.log(`Created admin "${name}" (credentials in ${config.dataDir}/secrets/admins.json — panel-private).`)
     return
   }
@@ -244,7 +292,7 @@ async function main () {
   }
   if (cmd === 'set-admin-password') {
     const name = pos[0]; if (!name) return usage()
-    ops.setAdminPassword({ config, keys, dataDir: config.dataDir }, name, await needPassword(name, opts))
+    ops.setAdminPassword({ config, keys, dataDir: config.dataDir }, name, await needPassword('set-admin-password', name, opts, pos))
     console.log(`Password updated for admin "${name}" (existing admin sessions revoked).`)
     return
   }
@@ -476,7 +524,7 @@ async function main () {
   switch (cmd) {
     case 'create-user': {
       const username = pos[0]; if (!username) return usage(await done())
-      await ops.createUser(ctx, username, await needPassword(username, opts))
+      await ops.createUser(ctx, username, await needPassword('create-user', username, opts, pos))
       const autoGranted = await sources.grantSourcesToUser(ctx, username).catch(() => 0) // best-effort (S27); next sync reconciles
       // Default packages (S44) — best-effort like the source hook; the next reconcile converges any miss.
       const withDefaults = await packages.applyDefaultPackages(ctx, username).catch(() => null)
@@ -487,7 +535,7 @@ async function main () {
 
     case 'set-password': {
       const username = pos[0]; if (!username) return usage(await done())
-      const u = await ops.setPassword(ctx, username, await needPassword(username, opts))
+      const u = await ops.setPassword(ctx, username, await needPassword('set-password', username, opts, pos))
       console.log(`Password updated for "${username}" (re-sealed ${u.grants.length} grant(s)).`)
       break
     }
@@ -917,6 +965,16 @@ function usage () {
   test-notify                           Send a synthetic ops notification through the configured
                                         webhook / Telegram targets (report verbs work beside a
                                         running panel; they touch only DATA_DIR/reports/)
+
+Passwords: the commands above NEVER read the password as an argument. Give it in one of
+three ways — the first keeps it out of argv, so use it when you have a terminal:
+
+  node src/admin-cli.js add-admin bob                       asks for it here (hidden)
+  printf '%s\\n' "$PW" | node src/admin-cli.js add-admin bob  reads it from the pipe
+  node src/admin-cli.js add-admin bob --password '<pw>'      puts it in the command
+
+The flag form shows the password in \`ps\` and in the shell history. Use it only in
+automation. With no terminal, use the pipe: \`docker compose run -T --rm panel …\`.
 `)
 }
 
