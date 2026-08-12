@@ -1190,11 +1190,17 @@ const styles = StyleSheet.create({
   zapDown: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 80 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   panels: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', paddingVertical: theme.safeY, paddingLeft: theme.safeX / 2 },
-  // TV panes trimmed ~15% (the left menu read too large on a real set) — narrower
-  // furniture leaves more of the picture playing behind it, which is the point of
-  // browsing over live video rather than on a page of its own.
+  // The RAIL is trimmed on TV (it read too large on a real set) — narrower furniture
+  // leaves more of the picture playing behind it, which is the point of browsing over
+  // live video rather than on a page of its own.
   railPane: { width: theme.isTV ? '17%' : '20%', backgroundColor: theme.colors.overlayStrong, borderRadius: 12, paddingVertical: theme.spacing(1), marginRight: 2 },
-  listPane: { width: theme.isTV ? '33%' : '52%' },
+  // The CHANNEL LIST is not trimmed with it, and that is a measured decision rather
+  // than an oversight. Narrowing it to 33% was tried and reverted: a row is number +
+  // name + LIVE badge + logo, so the name is the only elastic thing in it, and the five
+  // points came almost entirely out of the name — "A&E TV" became "A…" on the set. A
+  // channel list whose channels cannot be read is not smaller, it is broken. The size
+  // win here comes from the row HEIGHT instead (ChannelRow.ROW_INNER_H).
+  listPane: { width: theme.isTV ? '38%' : '52%' },
   // Portrait (phone): the landscape percentages leave the rail/list unreadably
   // narrow on a ~360dp-wide screen — spread the two panes across the full width.
   railPanePortrait: { width: '30%' },

@@ -122,7 +122,9 @@ const styles = StyleSheet.create({
   textDimOnFill: { color: theme.colors.focusFillText, opacity: 0.7 },
   // 16:9 art box (phone 72×40 / TV 112×63) — kept from the thumb era so the row
   // geometry (CHANNEL_ROW_H, getItemLayout) never moved when the logo took it over.
-  logo: { width: theme.isTV ? 95 : 72, height: theme.isTV ? 54 : 40, borderRadius: 4 },
+  // TV trimmed with the row height — and every pixel off it is name, which is the one
+  // elastic thing in the row and the reason a viewer is reading the list at all.
+  logo: { width: theme.isTV ? 88 : 72, height: theme.isTV ? 50 : 40, borderRadius: 4 },
   logoFallback: { backgroundColor: theme.colors.surface, alignItems: 'center', justifyContent: 'center' },
   logoInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' }
 })

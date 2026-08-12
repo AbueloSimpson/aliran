@@ -80,8 +80,8 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Guide'>
 // (see GUIDE_ROW_INNER_H) — every pixel taken off this column is timeline the schedule
 // gets back, which is the part of the grid a viewer is actually reading.
 const CH_COL_W = 150
-const LOGO_W = 82
-const LOGO_H = 46
+const LOGO_W = 80
+const LOGO_H = 45
 
 // The focus-engine rig (TV): invisible edge strips around a central catcher, laid
 // out INSIDE the grid body so the header chips stay out of the strip geometry.
@@ -253,6 +253,11 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
   // Follow the virtual focus: keep the focused row around the middle third (the
   // ChannelListPanel scroll discipline — exact rows, so the jump is one frame).
   useEffect(() => {
+    // …except row 0, which has nowhere to sit a third of the way down. Asking anyway
+    // left the FIRST row clipped along its top edge on entry, and entry is exactly when
+    // the guide lands on row 0 (it opens on whatever Live was watching, usually 001).
+    // Pin the list to the top for it instead.
+    if (focus.focusRow === 0) { listRef.current?.scrollToOffset({ offset: 0, animated: false }); return }
     try { listRef.current?.scrollToIndex({ index: focus.focusRow, animated: false, viewPosition: 0.35 }) } catch {}
   }, [focus.focusRow])
 
@@ -489,6 +494,10 @@ const styles = StyleSheet.create({
     // Reserved so the ring below adds no width — the grid must not shift as focus walks.
     borderWidth: 2, borderColor: 'transparent', borderRadius: 8
   },
+  // These four have to ADD UP, and they did not after the column was trimmed: 12 pad +
+  // 52 number + 8 gap + 82 logo + 4 border came to 158 inside a 150-wide cell, so every
+  // station logo was clipped down its right edge on the set. 12 + 44 + 8 + 80 = 144,
+  // inside the 146 the border leaves, with 2px to spare.
   // THE ROW'S OWN "you are here", and the thing that was missing. The focus fill landed
   // on ONE program cell out of the several in a 2 h window, while the channel column —
   // the part a viewer actually reads to know WHERE they are — never changed at all. From
@@ -497,7 +506,7 @@ const styles = StyleSheet.create({
   // pale fill behind them erases the white ones.
   chCellFocused: { borderColor: theme.colors.focus },
   chNumberFocused: { color: theme.colors.focus, fontWeight: '800' },
-  chNumber: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: 52 },
+  chNumber: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: 44 },
   chLogo: { width: LOGO_W, height: LOGO_H, borderRadius: 4, backgroundColor: theme.colors.surface },
   chLogoFallback: { alignItems: 'center', justifyContent: 'center' },
   chInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' },
