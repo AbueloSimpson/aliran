@@ -54,6 +54,7 @@ const { LiveScreen } = require('../src/screens/LiveScreen')
 const { ChannelInfoPanel } = require('../src/components/ChannelInfoPanel')
 const { backend } = require('../src/worklet')
 const { t } = require('@aliran/i18n')
+const { theme } = require('../src/theme')
 
 afterAll(() => { Object.defineProperty(Platform, 'isTV', realIsTV) })
 
@@ -204,6 +205,28 @@ test('the channel panel carries subtitles and search on a television', async () 
   ))
   expect(shown).toContain(t('live.bar.subtitles'))
   expect(shown).toContain(t('menu.search'))
+})
+
+test('every action label is readable on the bed it actually sits on', async () => {
+  // THE BUG THIS PINS: all labels used `onPrimary` — the colour for text sitting ON a
+  // primary fill (SolTV: #201204). Only ONE button has that fill; the rest are on
+  // `surface`, so they were near-black on near-black. They worked when pressed and
+  // looked disabled, and the operator reported them as disabled.
+  const tree = await createTree(
+    <ChannelInfoPanel {...infoProps} hasTracks onSubtitles={jest.fn()} onSearch={jest.fn()} onReport={jest.fn()} />
+  )
+  const buttons = tree.root.findAll((n: any) => n.props?.accessibilityRole === 'button' || typeof n.props?.onPress === 'function')
+    .filter((n: any) => n.findAllByType(Text).length > 0 && flat(n).borderRadius === 8)
+  expect(buttons.length).toBeGreaterThan(1)
+  for (const b of buttons) {
+    const bed = flat(b).backgroundColor
+    const label = b.findAllByType(Text)[0]
+    const ink = flat(label).color
+    // onPrimary is reserved for the button that HAS the primary bed. Anywhere else it
+    // is the same colour family as the surface behind it.
+    if (bed !== theme.colors.primary) expect(ink).not.toBe(theme.colors.onPrimary)
+    else expect(ink).toBe(theme.colors.onPrimary)
+  }
 })
 
 test('no subtitle button when the stream has no tracks to choose between', async () => {

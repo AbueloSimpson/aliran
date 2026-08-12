@@ -87,6 +87,7 @@ import type { RootStackParamList } from '../App'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { setOrientation } from '../orientation'
+import { onChannelKey } from '../channelKeys'
 import { useMountDeferred } from '../defer'
 import { autoTunable, blockedWithoutPin, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
@@ -681,6 +682,17 @@ export function LiveScreen ({ route, navigation }: Props) {
     requestAnimationFrame(() => (catcherRef.current as any)?.requestTVFocus?.())
   }
 
+  // …and the remote's own CHANNEL keys, which are what those buttons are FOR. They reach
+  // no focus strip (a strip is only found by a key that moves focus), so they arrive from
+  // the Activity instead — see channelKeys.ts. Only while fullscreen: with a panel up the
+  // viewer is browsing, and zapping the picture out from under them is not what the key
+  // means there.
+  useEffect(() => onChannelKey((direction) => {
+    if (overlayRef.current !== 'none') return
+    zap(direction === 'up' ? 1 : -1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [streams, playingId])
+
   // BACK: channel detail → list; the left menu → fullscreen (collapse, hiding it);
   // then the ladder splits by orientation (phone, S22 round 3). LANDSCAPE keeps the
   // original order: guide → fullscreen, fullscreen → default (pop to Menu).
@@ -987,7 +999,16 @@ export function LiveScreen ({ route, navigation }: Props) {
 
       {(overlay === 'list' || overlay === 'info') && (
         <View style={styles.panels} onTouchStart={bumpMenuIdle}>
-          <FocusPane autoFocus style={[styles.railPane, portrait && styles.railPanePortrait]}>
+          {/* LEFT OUT OF A DRILLED RAIL GOES BACK UP to the top-level categories. Without
+              it the only way out was to walk the focus up to the "‹ Parent" header and
+              press OK — a detour the viewer has to discover, for the one direction that
+              already means "back" everywhere else in this app. Mounted only while
+              drilled, so at the top level LEFT stays what it was: nothing to the left of
+              the rail, and the press is simply ignored. */}
+          {theme.isTV && inDrill && (
+            <Pressable style={styles.railExit} onFocus={exitDrill} />
+          )}
+          <FocusPane style={[styles.railPane, portrait && styles.railPanePortrait]}>
             <CategoryRail
               items={railItems}
               selected={railSelected}
@@ -1189,11 +1210,18 @@ const styles = StyleSheet.create({
   zapUp: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
   zapDown: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 80 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
-  panels: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', paddingVertical: theme.safeY, paddingLeft: theme.safeX / 2 },
+  // The left inset moved from this container's PADDING to the rail's margin, so that the
+  // gutter it leaves is real screen space OUTSIDE the rail — an absolutely-positioned
+  // child at left:0 then sits strictly to the LEFT of the rail, which is the whole
+  // requirement for the focus engine to find it on a LEFT press (see railExit). Padding
+  // could not do that: an absolute child positions against the padding edge, so `left: 0`
+  // landed exactly on the rail rather than beside it.
+  panels: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', paddingVertical: theme.safeY },
+  railExit: { position: 'absolute', left: 0, top: 0, bottom: 0, width: theme.isTV ? theme.safeX : theme.safeX / 2 },
   // The RAIL is trimmed on TV (it read too large on a real set) — narrower furniture
   // leaves more of the picture playing behind it, which is the point of browsing over
   // live video rather than on a page of its own.
-  railPane: { width: theme.isTV ? '17%' : '20%', backgroundColor: theme.colors.overlayStrong, borderRadius: 12, paddingVertical: theme.spacing(1), marginRight: 2 },
+  railPane: { width: theme.isTV ? '17%' : '20%', backgroundColor: theme.colors.overlayStrong, borderRadius: 12, paddingVertical: theme.spacing(1), marginRight: 2, marginLeft: theme.isTV ? theme.safeX : theme.safeX / 2 },
   // The CHANNEL LIST is not trimmed with it, and that is a measured decision rather
   // than an oversight. Narrowing it to 33% was tried and reverted: a row is number +
   // name + LIVE badge + logo, so the name is the only elastic thing in it, and the five

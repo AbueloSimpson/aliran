@@ -11,7 +11,7 @@
 // (sdk/index.d.ts is explicit that it must not be stored) — so a device signed in this
 // way comes back to this screen after a restart and does the handover again.
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator } from 'react-native'
+import { View, Text, TextInput, Pressable, StyleSheet, ActivityIndicator, Image } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { useI18n } from '@aliran/i18n'
@@ -120,7 +120,13 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{service.name}</Text>
+      {/* THE OPERATOR'S MARK, on the one screen that had only their name in plain text.
+          This is the first thing a viewer sees on a new device and the place a brand is
+          least optional — the splash carries it, and then sign-in dropped it. Brands
+          without a logo keep the name, which is what this screen always showed. */}
+      {service.branding?.logo
+        ? <Image source={{ uri: service.branding.logo }} style={styles.brandLogo} resizeMode="contain" accessibilityLabel={service.name} />
+        : <Text style={styles.title}>{service.name}</Text>}
       <TextInput
         style={[styles.input, focused === 'user' && styles.focused]}
         placeholder={t('common.username')}
@@ -194,6 +200,10 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.background, alignItems: 'center', justifyContent: 'center', padding: 24 },
   title: { color: theme.colors.text, fontSize: theme.isTV ? 56 : 40, fontWeight: '800', marginBottom: 32 },
+  // Sized to the space the name occupied, so a brand with a logo and one without lay the
+  // rest of the form out identically. contain, because an operator's mark can be any
+  // aspect and cropping someone's logo is not a thing to do to them.
+  brandLogo: { width: theme.isTV ? 420 : 260, height: theme.isTV ? 92 : 64, marginBottom: 32 },
   input: { width: theme.isTV ? 480 : 300, backgroundColor: theme.colors.surface, color: theme.colors.text, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 14, fontSize: 18, borderWidth: theme.focusRing, borderColor: 'transparent' },
   button: { marginTop: 8, backgroundColor: theme.colors.primary, borderRadius: 10, paddingHorizontal: 32, paddingVertical: 14, minWidth: 200, alignItems: 'center', borderWidth: theme.focusRing, borderColor: 'transparent' },
   focused: { borderColor: theme.colors.focus },

@@ -57,7 +57,9 @@ import type { RootStackParamList } from '../App'
 import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
-import { channelNumbers, categoryModel, splitCategory, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
+// No formatChannelNumber here any more: the grid's rows carry the station's NAME, and
+// the numbers this screen still derives are for the preview card alone.
+import { channelNumbers, categoryModel, splitCategory, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpgPrograms, type EpgProgram } from '@aliran/react-native'
 import { loadServiceDescriptor } from '../config'
 import { ProgressHairline } from '../components/ProgressHairline'
@@ -65,9 +67,10 @@ import { SectionLoading } from '../components/SectionLoading'
 import { GuidePanel, GuidePreviewCard, CategoryChips, TimeBar, CELL_GAP, hhmm } from '../components/GuidePanel'
 import {
   GUIDE_ROW_INNER_H, GUIDE_ROW_MB, GUIDE_WINDOW_MS, GUIDE_WINDOW_MIN, GUIDE_SLOTS,
-  MIN_CELL_W, cellRect, visiblePrograms, moveFocus, snapToNow,
+  MIN_CELL_W, cellRect, visiblePrograms, moveFocus, moveRows, snapToNow,
   type GuideFocus, type GuideDir
 } from '../guide'
+import { onChannelKey } from '../channelKeys'
 import { theme } from '../theme'
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Guide'>
@@ -84,10 +87,12 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Guide'>
 const ROW_INNER_H = theme.px(GUIDE_ROW_INNER_H)
 const ROW_H = ROW_INNER_H + GUIDE_ROW_MB
 
-// TV channel column: number + logo box + padding. Every pixel taken off it is timeline
-// the schedule gets back, which is the part of the grid a viewer is actually reading.
-// These four have to ADD UP inside CH_COL_W, and once did not — see chCell.
-const CH_COL_W = theme.px(180)
+// TV channel column: logo box + the station NAME beside it (the number is gone — see
+// the row's identity comment). Wider than the number-and-logo version it replaces,
+// because a name needs room to be a name; the ~70px it takes from the timeline is about
+// 4% of a 2-hour window, which costs the schedule far less than an unreadable channel
+// costs the viewer.
+const CH_COL_W = theme.px(280)
 const LOGO_W = theme.px(96)
 const LOGO_H = theme.px(54)
 
@@ -226,6 +231,14 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
   const listRef = useRef<FlatList<Stream>>(null)
   const catcherRef = useRef<React.ComponentRef<typeof Pressable> | null>(null)
   const nowPillRef = useRef<any>(null)
+  // How many rows a CHANNEL-key page moves: a screenful of the grid body, less one row
+  // kept as overlap so the viewer can see where they came from. Measured rather than
+  // assumed, because the row height rides the theme scale and the body is what is left
+  // after the header — both move. In a ref: the key listener registers once.
+  const pageRef = useRef(5)
+  function measurePage (height: number) {
+    pageRef.current = Math.max(1, Math.floor(height / ROW_H) - 1)
+  }
 
   function bounceToGrid () {
     requestAnimationFrame(() => (catcherRef.current as any)?.requestTVFocus?.())
@@ -249,14 +262,36 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
     bounceToGrid()
   }
 
-  // BACK from the header returns to the grid; from the grid, default (pop away).
+  // BACK WALKS UP THE HIERARCHY: grid → categories → leave the guide. It used to run the
+  // other way (header → grid, and BACK in the grid popped the screen), which put the
+  // viewer in the position of being deep in the grid with no way back to the categories
+  // except a key that threw them out of the guide altogether. Down IS deeper here, so
+  // BACK goes up — and from the categories, where there is nothing above, it leaves.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (headerFocusRef.current) { setHeaderFocus(false); bounceToGrid(); return true }
-      return false
+      if (headerFocusRef.current) return false // already at the top — BACK leaves
+      // Move native focus off the strips BEFORE unmounting them (the dispatchMove
+      // 'exit' lesson): otherwise the unmount dumps focus on the catcher, whose
+      // onFocus would undo this immediately.
+      nowPillRef.current?.requestTVFocus?.()
+      setHeaderFocus(true)
+      return true
     })
     return () => sub.remove()
   }, [])
+
+  // CHANNEL UP / DOWN page the grid a screenful at a time — the remote's own answer to
+  // "I do not want to walk 200 channels one press at a time". The keys arrive from the
+  // Activity (see channelKeys.ts); the D-pad cannot reach them, because the focus-strip
+  // rig only sees keys that move focus.
+  useEffect(() => onChannelKey((direction) => {
+    // Meaningless while the header holds focus — that is a row of chips, not a list.
+    if (headerFocusRef.current) return
+    const rows = list.map((s) => programsRef.current.get(s.id) ?? [])
+    setFocus((f) => moveRows(f, direction === 'up' ? -pageRef.current : pageRef.current, { rows, now: Date.now() }))
+    bounceToGrid()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [list])
 
   // Follow the virtual focus: keep the focused row around the middle third (the
   // ChannelListPanel scroll discipline — exact rows, so the jump is one frame).
@@ -333,7 +368,7 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
 
       <TimeBar windowStart={focus.windowStart} nowMs={nowMs} pxPerMin={pxPerMin} leadW={CH_COL_W} />
 
-      <View style={styles.body}>
+      <View style={styles.body} onLayout={(e) => measurePage(e.nativeEvent.layout.height)}>
         <FlatList
           ref={listRef}
           data={list}
@@ -353,7 +388,6 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
           renderItem={({ item, index }) => (
             <GuideRowTV
               stream={item}
-              number={numbers.get(item.id)}
               playing={item.id === playingId}
               windowStart={focus.windowStart}
               stripW={stripW}
@@ -407,9 +441,8 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
 // thumb; that belongs to the header's preview card, WS11) + the window's program
 // cells, absolutely positioned from cellRect. Only MOUNTED rows fetch
 // (useEpgPrograms lives here, so a 300-row lineup costs only the visible window).
-function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, nowMs, focusedCellStart, onPrograms }: {
+function GuideRowTV ({ stream, playing, windowStart, stripW, pxPerMin, nowMs, focusedCellStart, onPrograms }: {
   stream: Stream
-  number?: number
   playing: boolean
   windowStart: number
   stripW: number
@@ -437,11 +470,19 @@ function GuideRowTV ({ stream, number, playing, windowStart, stripW, pxPerMin, n
 
   return (
     <View style={[styles.gridRow, playing && styles.rowPlaying]}>
+      {/* IDENTITY IS THE LOGO AND THE NAME — the channel NUMBER is not here.
+          It bought nothing on this grid: without a number pad there is no jump-to-
+          channel, so the number was only ever saying "this row is the Nth", which the
+          order already says. The space it held is worth far more as the station's name,
+          because a logo alone is not identification — plenty are wordmarks a viewer
+          cannot read at a glance, and some channels have no logo at all. The number
+          still lives where it can be acted on: the channel list, and the preview card
+          above. */}
       <View style={[styles.chCell, rowFocused && styles.chCellFocused]}>
-        <Text style={[styles.chNumber, rowFocused && styles.chNumberFocused]}>{formatChannelNumber(number)}</Text>
         {stream.logo
           ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
           : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+        <Text style={[styles.chName, rowFocused && styles.chNameFocused]} numberOfLines={2}>{stream.title}</Text>
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0
@@ -506,14 +547,9 @@ const styles = StyleSheet.create({
   // gap + 82 logo + 4 border came to 158 inside a 150-wide cell, and every station logo
   // was clipped down its right edge on the set.
   //
-  // They all ride theme.px now, so the sum holds as the knob moves — but only down to a
-  // point, because the 8px gap does NOT scale. Writing s for the scale:
-  //
-  //     s·(12 + 52 + 96) + 8  ≤  s·180 − 4        (contents ≤ CH_COL_W less the border)
-  //     s·160 + 12 ≤ s·180   →   s ≥ 0.6
-  //
-  // So any scale from 0.6 up is safe and the logos cannot clip. Below it, widen
-  // CH_COL_W's base or scale the gap too. theme.ts carries the same warning.
+  // That cannot happen again, because the NAME now takes whatever is left instead of the
+  // parts being fixed widths that had to add up by hand: whatever the padding, logo and
+  // gap consume, chName flexes into the remainder, and a remainder is never negative.
   // THE ROW'S OWN "you are here", and the thing that was missing. The focus fill landed
   // on ONE program cell out of the several in a 2 h window, while the channel column —
   // the part a viewer actually reads to know WHERE they are — never changed at all. From
@@ -521,11 +557,11 @@ const styles = StyleSheet.create({
   // rather than a fill: station logos are transparent PNGs drawn for a dark bed, and a
   // pale fill behind them erases the white ones.
   chCellFocused: { borderColor: theme.colors.focus },
-  chNumberFocused: { color: theme.colors.focus, fontWeight: '800' },
-  // On the scale ramp with the column that holds it — the pad, number, gap and logo all
-  // have to keep adding up inside CH_COL_W (see chCell), and they only do at every
-  // setting of the knob if they all ride it.
-  chNumber: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: theme.px(52) },
+  // The station's NAME, taking the rest of the column (see chCell). Two lines, because
+  // an operator lineup is full of names that do not fit one at 10-foot type and half a
+  // name identifies nothing.
+  chName: { flex: 1, color: theme.colors.text, fontSize: theme.type.label, fontWeight: '700' },
+  chNameFocused: { color: theme.colors.focus },
   chLogo: { width: LOGO_W, height: LOGO_H, borderRadius: 4, backgroundColor: theme.colors.surface },
   chLogoFallback: { alignItems: 'center', justifyContent: 'center' },
   chInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' },

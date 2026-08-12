@@ -46,7 +46,7 @@ jest.mock('react-native/Libraries/Lists/FlatList', () => {
 // before anything that reaches it is required. ES imports are hoisted; these are not.
 // (Ordered require()s rather than jest.isolateModules: an isolated registry hands screen
 // tests a SECOND React and hooks then throw — AcceptRemoteToggle's lesson.)
-const { Platform } = require('react-native')
+const { Platform, BackHandler } = require('react-native')
 const realIsTV = Object.getOwnPropertyDescriptor(Platform, 'isTV')!
 Object.defineProperty(Platform, 'isTV', { get: () => true, configurable: true })
 const { GuideScreen } = require('../src/screens/GuideScreen')
@@ -83,7 +83,20 @@ function screen () {
   return <GuideScreen navigation={navigation} route={route} />
 }
 
+// The screen's hardware-BACK handlers, captured as it registers them (the spy has to be
+// in place BEFORE the mount that registers one).
+let backHandlers: Array<() => boolean> = []
+function pressBack (): boolean {
+  if (!backHandlers.length) throw new Error('no BACK handler registered')
+  return backHandlers[backHandlers.length - 1]()
+}
+
 async function grid (): Promise<RendererInstance> {
+  backHandlers = []
+  jest.spyOn(BackHandler, 'addEventListener').mockImplementation(((_e: string, h: () => boolean) => {
+    backHandlers.push(h)
+    return { remove () {} }
+  }) as any)
   const now = Date.now()
   // Every row is airing something — which is the ordinary case, and precisely the one
   // that used to paint the whole screen in the focus colour.
@@ -95,20 +108,22 @@ async function grid (): Promise<RendererInstance> {
   return createTree(screen())
 }
 
-/** The channel-number Text of a row, found by the number it prints. */
-function channelNumber (tree: RendererInstance, printed: string) {
+/** The station-name Text in a row's channel column, found by the name it prints. An
+ *  EXACT match, so it cannot accidentally pick up the preview card, which prints the
+ *  number and the title together in one node. */
+function channelName (tree: RendererInstance, printed: string) {
   const node = tree.root.findAllByType(Text)
     .find((n: any) => [n.props.children].flat(9).map(String).join('') === printed)
-  if (!node) throw new Error(`no channel number "${printed}" on the grid`)
+  if (!node) throw new Error(`no channel name "${printed}" on the grid`)
   return node
 }
 
 test('the focused row is marked on its CHANNEL COLUMN, not only on one program cell', async () => {
   const tree = await grid()
-  // The number a viewer reads to know where they are goes to the focus colour…
-  expect(flat(channelNumber(tree, '001')).color).toBe(theme.colors.focus)
-  // …and the row below it, which is NOT focused, keeps the dim identity treatment.
-  expect(flat(channelNumber(tree, '002')).color).toBe(theme.colors.textDim)
+  // The name a viewer reads to know where they are goes to the focus colour…
+  expect(flat(channelName(tree, 'Moon Cat')).color).toBe(theme.colors.focus)
+  // …and the row below it, which is NOT focused, keeps the ordinary treatment.
+  expect(flat(channelName(tree, 'Shop TV')).color).toBe(theme.colors.text)
 })
 
 test('the focus colour marks the focused row and nothing else on the grid', async () => {
@@ -182,12 +197,53 @@ test('coming back down re-arms the grid, so the remote keeps working', async () 
 
 test('the grid drops its focus marks while the header holds focus', async () => {
   const tree = await grid()
-  expect(flat(channelNumber(tree, '001')).color).toBe(theme.colors.focus)
+  expect(flat(channelName(tree, 'Moon Cat')).color).toBe(theme.colors.focus)
   const up = strips(tree).dpad.find((n: any) => flat(n).top === 0 && flat(n).height === 64)!
   await ReactTestRenderer.act(async () => { up.props.onFocus() })
   // Two things looking focused at once is the same confusion the colour grammar above
   // exists to end. The row is remembered, not shown.
-  expect(flat(channelNumber(tree, '001')).color).toBe(theme.colors.textDim)
+  expect(flat(channelName(tree, 'Moon Cat')).color).toBe(theme.colors.text)
+})
+
+// --- BACK walks UP the hierarchy ---
+// It used to run the other way: BACK in the header returned to the grid, and BACK in the
+// grid popped the whole screen. That left a viewer deep in the grid with no way back to
+// the categories except a key that threw them out of the guide entirely. Down is deeper
+// here, so BACK goes up.
+
+test('BACK in the grid goes up to the categories instead of leaving', async () => {
+  const tree = await grid()
+  let consumed = false
+  await ReactTestRenderer.act(async () => { consumed = pressBack() })
+  expect(consumed).toBe(true) // consumed = the screen did NOT pop
+  // The grid stood down — which is what "the header has it now" looks like.
+  expect(strips(tree).dpad).toHaveLength(0)
+  expect(strips(tree).headerExit).toHaveLength(1)
+})
+
+test('BACK from the categories leaves — there is nothing above them', async () => {
+  const tree = await grid()
+  await ReactTestRenderer.act(async () => { pressBack() }) // grid -> categories
+  let consumed = true
+  await ReactTestRenderer.act(async () => { consumed = pressBack() })
+  expect(consumed).toBe(false) // unconsumed = navigation pops the screen
+})
+
+// --- the channel column is logo + NAME ---
+// The number bought nothing on this grid: with no number pad there is no jump-to-channel,
+// so it only said "this row is the Nth", which the order already says. A logo alone is
+// not identification either — plenty are wordmarks that do not read at a glance.
+
+test('the channel column names the station, and does not spend the space on a number', async () => {
+  const tree = await grid()
+  const shown = tree.root.findAllByType(Text)
+    .map((n: any) => [n.props.children].flat(9).map(String).join(''))
+  expect(shown).toContain('Moon Cat')
+  expect(shown).toContain('Shop TV')
+  // The derived channel numbers ('001'/'002') belong to the channel LIST and the preview
+  // card above, where they can still be read — not to a row of the grid.
+  expect(shown).not.toContain('001')
+  expect(shown).not.toContain('002')
 })
 
 test('the NOW pill states itself in outline until the remote is actually on it', async () => {
