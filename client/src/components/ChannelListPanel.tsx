@@ -45,6 +45,19 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
     }, 0)
     return () => clearTimeout(timer)
   }, [playingIndex])
+  // …AND PUT THE FOCUS ON IT. The panel used to open with focus nowhere a viewer could
+  // see: this pane and the category rail are both autoFocus TVFocusGuideViews, the rail's
+  // is first in the tree and takes it, and hasTVPreferredFocus on the playing row never
+  // got a look in. Asking for the row explicitly settles it without taking the rail's
+  // autoFocus away — which was tried, and cost LEFT its route INTO the rail.
+  // After a frame: the row has to exist before it can hold anything.
+  const playingRowRef = useRef<any>(null)
+  useEffect(() => {
+    if (!theme.isTV || playingIndex < 0) return
+    const timer = setTimeout(() => { playingRowRef.current?.requestTVFocus?.() }, 0)
+    return () => clearTimeout(timer)
+    // Only on open / when the playing channel changes — not on every catalog push.
+  }, [playingIndex])
   return (
     <View style={styles.panel}>
       <Text style={styles.header} numberOfLines={1}>{heading ?? t('live.channels')}</Text>
@@ -55,6 +68,15 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
         getItemLayout={(_, index) => ({ length: CHANNEL_ROW_H, offset: CHANNEL_ROW_H * index, index })}
         initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
         onScrollBeginDrag={onActivity}
+        // THE MOUNTED-WINDOW DISCIPLINE, and this list needed it most of all. Every
+        // ChannelRow runs its own EPG fetch (useEpg, for the now-playing subline), so
+        // each mounted row is a request — and at FlatList's defaults a lineup of ~900
+        // channels mounted enough of them at once that opening this panel was visibly
+        // slower than the guide, which has carried these three props from the start.
+        // Keep the numbers here and the guide's in step: same rows, same cost.
+        windowSize={5}
+        initialNumToRender={12}
+        removeClippedSubviews
         onScrollToIndexFailed={(info) => {
           listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
           setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
@@ -66,6 +88,7 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
             playing={item.id === playingId}
             favorite={favorites.includes(item.id)}
             hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
+            innerRef={item.id === playingId ? playingRowRef : undefined}
             onFocus={onActivity}
             onPress={() => (item.id === playingId && onGuide ? onGuide(item) : onSelect(item))}
             onLongPress={() => onInfo(item)}

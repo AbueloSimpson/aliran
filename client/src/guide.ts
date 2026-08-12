@@ -24,8 +24,10 @@ export const GUIDE_WINDOW_MS = GUIDE_SLOTS * SLOT_MS
 export const GUIDE_PAST_MS = 6 * 3600_000
 export const GUIDE_FUTURE_MS = 48 * 3600_000
 
-// Fixed TV grid row height (thumb 54 + padding, + the 2px row gap) — the FlatList
-// getItemLayout unit, same exact-height discipline as CHANNEL_ROW_H / VOD_ROW_H.
+// TV grid row height at FULL 10-foot scale — a BASE, not the rendered height. This file
+// is pure (no theme, so the reducer tests stay free of react-native), and the theme's
+// scale ramp is applied where it is used: GuideScreen runs it through theme.px once and
+// feeds that to both the styles and getItemLayout, which must agree exactly.
 export const GUIDE_ROW_INNER_H = 62
 export const GUIDE_ROW_MB = 2
 export const GUIDE_ROW_H = GUIDE_ROW_INNER_H + GUIDE_ROW_MB
@@ -128,22 +130,40 @@ function cellIndex (programs: EpgProgram[], focusCellStart: number, windowStart:
  *  current one in the next row); row 0 + up exits to the header. A guide-less row
  *  has one placeholder cell spanning the window — left/right page the window under
  *  it. Always returns a value, never throws: an impossible move returns `state`. */
+/**
+ * Move the focus by `delta` ROWS, keeping the time position — the one place that rule
+ * lives, so the D-pad's single steps and the CHANNEL keys' page jumps cannot drift apart.
+ *
+ * CLAMPS rather than exits: running off either end holds at the first/last row. That is
+ * the difference between the two callers — a single UP off row 0 leaves for the header
+ * (moveFocus decides that before calling here), but a PAGE up is a scroll, and a scroll
+ * that threw the viewer out of the grid would be a trap.
+ */
+export function moveRows (state: GuideFocus, delta: number, ctx: GuideMoveCtx): GuideFocus {
+  const { rows } = ctx
+  const { windowStart } = state
+  const last = Math.max(rows.length - 1, 0)
+  const target = Math.min(Math.max(state.focusRow + delta, 0), last)
+  if (target === state.focusRow) return state
+  const programs = rows[target] ?? []
+  // Keep the time position: the anchor is where the focused cell is VISIBLE (a clipped
+  // cell's real start sits off-window — the viewer is looking at its in-window part).
+  const anchor = Math.max(state.focusCellStart, windowStart)
+  const hit = programs.find((p) => p.start <= anchor && anchor < p.stop) ??
+    programs.find((p) => p.stop > windowStart && p.start < windowStart + GUIDE_WINDOW_MS)
+  return { focusRow: target, focusCellStart: hit ? hit.start : windowStart, windowStart }
+}
+
 export function moveFocus (state: GuideFocus, dir: GuideDir, ctx: GuideMoveCtx): GuideMove {
   const { rows, now } = ctx
   const { focusRow, windowStart } = state
 
   if (dir === 'up' || dir === 'down') {
     const nextRow = dir === 'up' ? focusRow - 1 : focusRow + 1
+    // Walking off the TOP leaves for the header; off the bottom simply stops.
     if (nextRow < 0) return { exit: 'header' }
     if (nextRow >= rows.length) return state
-    const programs = rows[nextRow] ?? []
-    // Keep the time position: the anchor is where the focused cell is VISIBLE (a
-    // clipped cell's real start sits off-window — the viewer is looking at its
-    // in-window part).
-    const anchor = Math.max(state.focusCellStart, windowStart)
-    const hit = programs.find((p) => p.start <= anchor && anchor < p.stop) ??
-      programs.find((p) => p.stop > windowStart && p.start < windowStart + GUIDE_WINDOW_MS)
-    return { focusRow: nextRow, focusCellStart: hit ? hit.start : windowStart, windowStart }
+    return moveRows(state, dir === 'up' ? -1 : 1, ctx)
   }
 
   const programs = rows[focusRow] ?? []

@@ -6,7 +6,7 @@
 
 import {
   SLOT_MS, GUIDE_WINDOW_MS, MIN_CELL_W, GUIDE_PAST_MS, GUIDE_FUTURE_MS,
-  cellRect, visiblePrograms, moveFocus, snapToNow, windowFloor, windowCeil,
+  cellRect, visiblePrograms, moveFocus, moveRows, snapToNow, windowFloor, windowCeil,
   type GuideFocus
 } from '../src/guide'
 import type { EpgProgram } from '@aliran/react-native'
@@ -207,4 +207,44 @@ test('row 0 + up exits to the header zone', () => {
 test('down at the last row is a no-op', () => {
   const rows = [[p('a', N, N + H)]]
   expect(moveFocus(state(0, N, N), 'down', { rows, now: N })).toEqual(state(0, N, N))
+})
+
+// --- moveRows: the CHANNEL keys' page jump -----------------------------------
+// The remote's CHANNEL UP/DOWN page the grid a screenful at a time, so a viewer is not
+// walking a 200-channel lineup one press at a time. It shares moveRows with the D-pad's
+// single steps, so the "keep the time position" rule cannot drift between them.
+
+test('moveRows keeps the time position across a multi-row jump, like a single step', () => {
+  const rows = [
+    [p('a', N, N + 30 * MIN)],
+    [p('x', N, N + H)],
+    [p('y', N, N + H)],
+    [p('b', N - H, N + 2 * H)]
+  ]
+  // Jumping three rows lands on the program COVERING the anchor in row 3 — the same
+  // rule a one-row step follows, and b's real start sits before the window.
+  expect(moveRows(state(0, N, N), 3, { rows, now: N })).toEqual(state(3, N - H, N))
+})
+
+test('moveRows CLAMPS at both ends — a page is a scroll, never an exit', () => {
+  const rows = [[p('a', N, N + H)], [p('b', N, N + H)], [p('c', N, N + H)]]
+  // Past the bottom: hold at the last row.
+  expect(moveRows(state(1, N, N), 10, { rows, now: N })).toEqual(state(2, N, N))
+  // Past the top: hold at the first. A single UP off row 0 leaves for the header, but a
+  // PAGE up must not — being thrown out of the grid by a scroll key is a trap.
+  const top = moveRows(state(1, N, N), -10, { rows, now: N })
+  expect(top).toEqual(state(0, N, N))
+  expect('exit' in top).toBe(false)
+})
+
+test('moveRows is a no-op when it cannot move — already at the end', () => {
+  const rows = [[p('a', N, N + H)], [p('b', N, N + H)]]
+  const at = state(1, N, N)
+  expect(moveRows(at, 5, { rows, now: N })).toBe(at) // same object: nothing re-rendered
+})
+
+test('the D-pad still exits upward off row 0, which moveRows alone would not do', () => {
+  const rows = [[p('a', N, N + H)], [p('b', N, N + H)]]
+  expect(moveFocus(state(0, N, N), 'up', { rows, now: N })).toEqual({ exit: 'header' })
+  expect(moveRows(state(0, N, N), -1, { rows, now: N })).toEqual(state(0, N, N))
 })

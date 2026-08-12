@@ -71,14 +71,35 @@ export function castSupported (): boolean {
 }
 
 /**
- * Does this device actually have the Cast framework? getPlayServicesState() answers
- * 'success' | 'missing' | 'updating' | 'updateRequired' | 'disabled' | 'invalid', and
- * only the first one means "cast is possible here". Anything else — including a null
- * from a platform that does not implement the probe — hides the button.
+ * PARKED — 2026-08-11, by the operator's decision, and this is the whole switch.
+ *
+ * Casting to a Chromecast does not work on this fleet yet. Measured across three receivers
+ * from two makers: the session is established, the receiver launches, and the media either
+ * never plays or renders one frame and stalls. Two candidate causes are on the table (the
+ * receiver pin, and the manifest the receiver fetches) and neither is settled, so the half
+ * that fails is switched off rather than left in front of viewers.
+ *
+ * ONLY THE CHROMECAST HALF. The HANDOFF half — sending a channel to another Aliran device
+ * signed in to the same account — is a different mechanism that serves nothing from this
+ * phone, and it stays. See sendToTv.ts for why the two are not one feature.
+ *
+ * Everything below is intact and tested. Turn this back to `true` to restore the feature;
+ * nothing else was removed.
+ */
+export const CAST_ENABLED = false
+
+/**
+ * Should this build offer casting at all? Two questions in one, deliberately: whether the
+ * feature is switched on (above), and whether this device actually has the Cast framework.
+ * getPlayServicesState() answers 'success' | 'missing' | 'updating' | 'updateRequired' |
+ * 'disabled' | 'invalid', and only the first one means "cast is possible here". Anything
+ * else — including a null from a platform that does not implement the probe — hides the
+ * button, which is the same outcome the parked flag produces.
  *
  * Never rejects.
  */
 export async function castAvailable (): Promise<boolean> {
+  if (!CAST_ENABLED) return false
   if (!castSupported()) return false
   try {
     return (await castContext()?.getPlayServicesState?.()) === 'success'
@@ -262,13 +283,31 @@ export function isLanAddress (addr: string): boolean {
   return false
 }
 
+// How long a receiver has to produce a session. A set that is asleep has to wake, join
+// the network and launch the receiver application before it can answer, so this is sized
+// like a cold start rather than a local call — the picker shows a spinner on the row the
+// whole time. It is a ceiling, not a wait: the ordinary answer is an event in under a
+// second, and this only decides how long a television that says NOTHING may hold the sheet.
+const SESSION_START_MS = 30000
+// …and how often the current session is re-read while waiting. See awaitSession: the
+// events are the answer, and this catches the two things they cannot report.
+const SESSION_POLL_MS = 500
+
 /**
- * Connect to a receiver. Resolves false when the framework says the session did not
- * start.
+ * Connect to a receiver: resolves once a Cast SESSION really exists, or false.
  *
- * Lenient about the shape of "yes" and strict about "no": only an explicit false is
- * treated as a refusal, because a session that started and then cannot take the media
- * fails again at loadMedia — which tears both halves down anyway.
+ * startSession() DOES NOT MEAN THAT, and believing it did is what broke casting on every
+ * channel and every television. The bridge (RNGCSessionManager.java) looks the device up
+ * in the MediaRouter's route list, calls `router.selectRoute(routeInfo)` and resolves
+ * true — and selectRoute is fire-and-forget. Its promise means "a matching route was
+ * selected", never "a session exists": the session is established asynchronously
+ * afterwards and reported through onSessionStarted / onSessionStartFailed. So the flow
+ * went straight on to stand a LAN origin server up and hand the media URL to a session
+ * that was not there yet, every attempt failed, and the sheet blamed the URL. Measured
+ * with a castv2 probe against two sets: no Default Media Receiver session existed at all.
+ *
+ * Lenient about the shape of "yes" and strict about "no": an explicit false from
+ * startSession means no route matched, and there is nothing to wait for.
  */
 export async function connect (deviceId: string): Promise<boolean> {
   if (!castSupported()) return false
@@ -280,8 +319,97 @@ export async function connect (deviceId: string): Promise<boolean> {
     // was never asked anything.
     const manager = castContext()?.getSessionManager?.()
     if (typeof manager?.startSession !== 'function') return false
-    return (await manager.startSession(deviceId)) !== false
+    // WHAT WAS ALREADY THERE, read before anything is asked for. It answers the
+    // already-connected case outright, and it is what lets the wait below recognise a
+    // session as OURS without depending on the platform reporting a device id (see
+    // awaitSession — that dependency cost a working feature once already).
+    const before = await currentSession(manager)
+    if (before?.deviceId && before.deviceId === deviceId) return true
+    // SUBSCRIBED FIRST. A receiver that is already awake answers in a few hundred
+    // milliseconds, and a listener attached after the request is a listener attached
+    // after the event it exists for.
+    const session = awaitSession(manager, deviceId, before)
+    let selected
+    try { selected = await manager.startSession(deviceId) } catch (err) { session.cancel(); throw err }
+    if (selected === false) { session.cancel(); return false }
+    return await session.settled
   } catch { return false }
+}
+
+/** The framework's current session, as {id, deviceId} — either field may be null when the
+ *  platform will not say. Null when there is no session at all. */
+async function currentSession (manager: any): Promise<{ id: string | null; deviceId: string | null } | null> {
+  try {
+    const s = await manager.getCurrentCastSession?.()
+    if (!s) return null
+    let deviceId: string | null = null
+    try { deviceId = (await s.getCastDevice?.())?.deviceId ?? null } catch { /* will not say */ }
+    return { id: s.id ?? null, deviceId }
+  } catch { return null }
+}
+
+/**
+ * Wait for the session the request above asked for: true when one starts, false when the
+ * framework says it will not, false when the television simply never answers.
+ *
+ * THE POLL IS NOT BELT-AND-BRACES. Two real cases produce no event at all, and both of
+ * them would otherwise hold the sheet for the full ceiling and then report a failure over
+ * a session that is up and working:
+ *
+ *   the route is ALREADY selected   the viewer casts a second channel to the set they are
+ *                                   already casting to. selectRoute() has nothing to
+ *                                   change, so no session STARTS — there is one already.
+ *   a build with no events          the native side of this library attaches its session
+ *                                   listener on host resume; a shape that does not emit
+ *                                   still answers getCurrentCastSession().
+ *
+ * AND THE POLL MUST NOT LEAN ON THE DEVICE ID. Matching the current session's device
+ * against the one that was picked reads as the obvious check, and it is a trap: where the
+ * platform will not report a device id — which is a thing that happens, and which the
+ * events cannot rescue because a build whose event stream is silent is exactly the build
+ * that needs the poll — nothing ever matches and every cast fails on the ceiling with "the
+ * TV did not accept the connection". Measured across three receivers from two makers.
+ *
+ * So the discriminator is the SESSION, not the device: `before` is what existed when the
+ * request went out, and a session that was not there a moment ago is the one just asked
+ * for. The device id is still honoured when it IS reported, because it is the stronger
+ * answer — a viewer moving a channel from one set to another has a live session throughout,
+ * and accepting that unchanged session would hand this channel to the wrong room.
+ */
+function awaitSession (manager: any, deviceId: string, before: { id: string | null; deviceId: string | null } | null): { settled: Promise<boolean>; cancel: () => void } {
+  const subs: { remove?: () => void }[] = []
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let poll: ReturnType<typeof setInterval> | null = null
+  let answer: ((ok: boolean) => void) | null = null
+  const finish = (ok: boolean) => {
+    if (!answer) return
+    const done = answer
+    answer = null
+    if (timer) { clearTimeout(timer); timer = null }
+    if (poll) { clearInterval(poll); poll = null }
+    for (const s of subs) { try { s?.remove?.() } catch { /* already gone */ } }
+    subs.length = 0
+    done(ok)
+  }
+  const settled = new Promise<boolean>((resolve) => { answer = resolve })
+  try {
+    const started = manager.onSessionStarted?.(() => finish(true))
+    if (started) subs.push(started)
+    const failed = manager.onSessionStartFailed?.(() => finish(false))
+    if (failed) subs.push(failed)
+  } catch { /* a library shape without the events — the poll is then the whole answer */ }
+  timer = setTimeout(() => finish(false), SESSION_START_MS)
+  poll = setInterval(() => {
+    currentSession(manager).then((now) => {
+      if (!now) return
+      // The platform naming the set we asked for: the strongest answer there is.
+      if (now.deviceId && now.deviceId === deviceId) return finish(true)
+      // …otherwise a session that did not exist when the request went out. We have just
+      // asked for one, so this is it.
+      if (!before || (now.id && now.id !== before.id)) return finish(true)
+    }).catch(() => {})
+  }, SESSION_POLL_MS)
+  return { settled, cancel: () => finish(false) }
 }
 
 /**
@@ -324,30 +452,96 @@ export async function sessionDeviceName (): Promise<string | null> {
   } catch { return null }
 }
 
-/** Hand the receiver a URL to play. `live` picks the stream type — a live channel has no
- *  duration, and the television's own controls must not offer a seek bar for one. */
+// How long the receiver has to get from "load accepted" to "playing". Sized like a cold
+// tune on a set that has to fetch a playlist and fill a buffer, not like a local call.
+const MEDIA_PLAY_MS = 20000
+
+/**
+ * Hand the receiver a URL to play, and resolve only once it IS playing. `live` picks the
+ * stream type — a live channel has no duration, and the television's own controls must not
+ * offer a seek bar for one.
+ *
+ * loadMedia() ON ITS OWN MEANS "THE RECEIVER ACCEPTED THE REQUEST", which is the same
+ * promise-means-accepted trap as startSession() one screen up, and it cost the same thing:
+ * the app declared the cast a success, the sheet put "Sending to TV" on screen, and the
+ * television sat on a Chromecast logo with `playerState: NONE, buffered: 0`. Measured on a
+ * TCL set — the receiver took the load, fetched once, and never played. The viewer was told
+ * nothing at all, which is worse than an error.
+ *
+ * So the answer here is the receiver's own media status: PLAYING is the only success.
+ * `loading` and `buffering` are progress, not arrival — a stalled cast sits in `buffering`
+ * for ever, which is precisely the state that used to be reported as working.
+ */
 export async function loadMedia (url: string, opts: { title?: string; live?: boolean; image?: string } = {}): Promise<boolean> {
   if (!castSupported()) return false
   try {
     const session = await castContext()?.getSessionManager?.()?.getCurrentCastSession?.()
     const client = session?.client ?? session?.getClient?.()
     if (!client?.loadMedia) return false
-    await client.loadMedia({
-      mediaInfo: {
-        contentUrl: url,
-        // HLS. The receiver refuses to guess, and gets it wrong when it tries.
-        contentType: 'application/x-mpegURL',
-        streamType: opts.live === false ? 'buffered' : 'live',
-        metadata: {
-          type: 'generic',
-          title: opts.title ?? '',
-          ...(opts.image ? { images: [{ url: opts.image }] } : {})
-        }
-      },
-      autoplay: true
-    })
-    return true
+    // Subscribed BEFORE the load, for the same reason the session listener is: a receiver
+    // that starts quickly reports it quickly.
+    const playing = awaitPlayback(client)
+    try {
+      await loadRequest(client, url, opts)
+    } catch (err) { playing.cancel(); throw err }
+    playing.armFailure() // …only now may an `idle` be OUR media rather than the last one's
+    return await playing.settled
   } catch { return false }
+}
+
+/**
+ * Resolve true when the receiver reports it is PLAYING, false when it reports it went idle
+ * because of an error, false when it never gets there at all.
+ *
+ * THE FAILURE VERDICT IS ARMED LATE, and that is not a detail: the status stream carries
+ * the PREVIOUS media too. A receiver that was idle a moment ago — which is every receiver
+ * that has just been connected to — would otherwise answer for a load that has not even
+ * been sent yet, and every cast would fail instantly.
+ */
+function awaitPlayback (client: any): { settled: Promise<boolean>; cancel: () => void; armFailure: () => void } {
+  const subs: { remove?: () => void }[] = []
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let answer: ((ok: boolean) => void) | null = null
+  let armed = false
+  const finish = (ok: boolean) => {
+    if (!answer) return
+    const done = answer
+    answer = null
+    if (timer) { clearTimeout(timer); timer = null }
+    for (const s of subs) { try { s?.remove?.() } catch { /* already gone */ } }
+    subs.length = 0
+    done(ok)
+  }
+  const settled = new Promise<boolean>((resolve) => { answer = resolve })
+  try {
+    const sub = client.onMediaStatusUpdated?.((status: { playerState?: string; idleReason?: string } | null) => {
+      const state = status?.playerState
+      if (state === 'playing') return finish(true)
+      // The receiver saying, in its own words, that it could not play what it was given.
+      if (armed && state === 'idle' && status?.idleReason === 'error') return finish(false)
+    })
+    if (sub) subs.push(sub)
+  } catch { /* a library shape without the status stream — the ceiling is then the answer */ }
+  timer = setTimeout(() => finish(false), MEDIA_PLAY_MS)
+  return { settled, cancel: () => finish(false), armFailure: () => { armed = true } }
+}
+
+/** The load call itself, kept separate so the wait above reads as one thing. */
+async function loadRequest (client: any, url: string, opts: { title?: string; live?: boolean; image?: string }): Promise<void> {
+  await client.loadMedia({
+    mediaInfo: {
+      contentUrl: url,
+      // HLS. The receiver refuses to guess, and gets it wrong when it tries.
+      contentType: 'application/x-mpegURL',
+      streamType: opts.live === false ? 'buffered' : 'live',
+      metadata: {
+        type: 'generic',
+        title: opts.title ?? '',
+        ...(opts.image ? { images: [{ url: opts.image }] } : {})
+      }
+    },
+    autoplay: true
+  })
 }
 
 /**

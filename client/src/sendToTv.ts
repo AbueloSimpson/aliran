@@ -76,12 +76,22 @@ export interface ActiveSend {
   candidates?: string[]
 }
 
-/** Why a send did not happen. The sheet turns these into sentences (tvplay.error.*);
- *  anything not on the list falls back to the generic one. */
+/**
+ * Why a send did not happen. The sheet turns these into sentences (tvplay.error.*);
+ * anything not on the list falls back to the generic one.
+ *
+ * THE THREE CAST CODES ARE THREE DIFFERENT PLACES TO LOOK, which is the whole reason
+ * they are three codes — and for a while they were not. `cast.connect()` resolved on the
+ * Cast framework merely SELECTING a route, so it practically never answered no: every
+ * failure to establish a session fell through to loadMedia() and reported 'cast-load',
+ * which sends the next person debugging it to the origin server the phone stands up
+ * instead of to the session that was never there. A code that can only ever be right by
+ * accident is worse than no code.
+ */
 export type SendFailure =
-  | 'cast-connect'    // the television refused the session, or never answered
+  | 'cast-connect'    // NO SESSION: the television refused one, or never produced one
   | 'cast-serve'      // the engine would not stand the server up
-  | 'cast-load'       // the session is up and the television would not take the URL
+  | 'cast-load'       // a session IS up and the television would not take the URL
   | 'refused'         // handoff: remote control is switched off there
   | 'unentitled'      // handoff: that account cannot show this channel
   | 'unavailable'     // handoff: it took the command and could not carry it out
@@ -312,6 +322,12 @@ function normalizeRemoteError (code: string | undefined): SendFailure {
  * Every failure after the session connects tears down what the earlier steps built. A
  * cast session left up with no media, or an origin server left running for a television
  * that never took the URL, are both this phone awake and serving for nobody.
+ *
+ * AND THE ORDER OF THE THREE STEPS IS LOAD-BEARING, because each one costs something the
+ * one before it does not: the session is free to abandon, the server is this phone awake
+ * and decrypting, and the URL is a live token on the network. cast.connect() therefore
+ * has to mean a session EXISTS before the server is asked for — which for a while it did
+ * not, and every cast on every channel and every set failed as a result.
  */
 export async function sendCast (target: CastTarget, stream: Stream): Promise<SendFailure | null> {
   const pin = target.address && !target.isGroup ? target.address : null
@@ -320,6 +336,9 @@ export async function sendCast (target: CastTarget, stream: Stream): Promise<Sen
   // exists. Never blocks the cast — see askNotificationPermission.
   await cast.askNotificationPermission()
 
+  // WAITS FOR THE SESSION, not for a route to be selected — see cast.connect(). Nothing
+  // below this line is worth doing without one, and doing it anyway is what made the
+  // feature fail everywhere while reporting the wrong half as the cause.
   if (!(await cast.connect(target.deviceId))) return 'cast-connect'
 
   const started = await backend.startCast(stream.id, pin ? { receiverHost: pin } : {})
@@ -346,6 +365,15 @@ export async function sendCast (target: CastTarget, stream: Stream): Promise<Sen
   // echo the field, and then it reads "unpinned" on a session that is pinned: the
   // warning overstates the exposure rather than hiding it.
   const pinnedTo = started.session.receiverHost
+  // WHERE THE TELEVISION WAS SENT, minus the one thing that must never be logged. A cast
+  // that connects and then plays nothing is indistinguishable, from the outside, from a
+  // cast that was never asked for — and the three facts that separate them are the address
+  // the server bound, the port, and the pin the engine applied. The URL carries the session
+  // token and is deliberately absent: host and port are what a viewer's network can be
+  // debugged from, and neither is a secret (anything on the LAN can see both).
+  console.log('[cast]', `serving ${started.session.source} from ${started.session.host ?? '?'}:${started.session.port ?? '?'}` +
+    ` pin=${Array.isArray(pinnedTo) && pinnedTo.length ? pinnedTo.join(',') : 'none'}` +
+    ` asked=${pin ?? 'none'} target=${target.address ?? 'no-address'}${target.isGroup ? ' group' : ''}`)
   active = {
     kind: 'cast',
     deviceId: target.deviceId,

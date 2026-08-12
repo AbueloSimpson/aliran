@@ -77,6 +77,12 @@ async function appVersion (): Promise<string> {
   return info?.versionName || APP_VERSION
 }
 
+// Both boot paths below are called ONCE PER REACT ROOT, not once per app run, and on a
+// television that is the difference between a working app and a dead one: Android
+// recreates the activity when the viewer leaves for the launcher and comes back, the RN
+// root re-runs over a process — and a Bare worklet — that never stopped, and this class
+// is booted a second time. AliranBackend.start() re-attaches for exactly that reason
+// (see its docstring); nothing here has to detect it.
 class Backend extends AliranBackend {
   async boot (panelPubKey: string, hybrid?: HybridConfig) {
     // debug: every backend message hits `adb logcat -s ReactNativeJS` — this

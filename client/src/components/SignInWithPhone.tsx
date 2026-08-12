@@ -80,6 +80,12 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
   // one screen to a viewer, and re-showing them costs nothing.
   const [sas, setSas] = useState<string | null>(null)
   const [pin, setPin] = useState('')
+  // The engine refused the digits THIS SCREEN just sent. Held here rather than left to
+  // the {state:'failed'} event, because the two do not arrive together: a viewer pressed
+  // OK with four digits in, the boxes emptied, and — in their words — "nothing happened".
+  // The explanation came seconds later, from the other side of the exchange, over a
+  // screen that had already told them nothing. See submit().
+  const [rejected, setRejected] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -150,7 +156,7 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
   // START it may still be holding the handle that caused the refusal — and the cancel
   // clears it before the new code is asked for.
   const restart = () => {
-    setInfo(null); setShown(null); setSas(null); setPin('')
+    setInfo(null); setShown(null); setSas(null); setPin(''); setRejected(false)
     setSubmitted(false); setConfirming(false); setBusy(false); setStartError(null)
     service.current = null
     setAttempt((n) => n + 1)
@@ -223,34 +229,54 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
     const submit = async () => {
       if (busy || pin.length < PIN_LENGTH) return
       setBusy(true)
-      // ONE attempt. A false answer means the engine had nothing waiting any more (the
-      // exchange moved on or ended) — the 'failed' state says why, so nothing is
-      // invented here.
+      setRejected(false)
+      // ONE attempt. A false answer means the engine had nothing waiting any more — the
+      // exchange moved on, or ended.
       const ok = await backend.submitSignInPin(pin)
       setBusy(false)
-      if (ok) setSubmitted(true)
-      else setPin('')
+      if (ok) { setSubmitted(true); return }
+      // SAY SO NOW, and say only this much. Emptying the boxes was the whole of the old
+      // answer, and from across a room it is indistinguishable from a dead button: the
+      // viewer cannot tell a refusal from a remote press that never landed, so they press
+      // again. The WHY belongs to the engine and arrives as {state:'failed'} — inventing
+      // one here would be inventing a reason nobody gave.
+      setPin('')
+      setRejected(true)
     }
     return (
       <Panel heading={t('sendtv.pinTitle')}>
         {!!sas && <Text style={styles.compare}>{t('sendtv.matchStill', { digits: sas })}</Text>}
         <Text style={styles.hint}>{t('sendtv.pinHint')}</Text>
+        {rejected && <Text style={styles.error}>{t('sendtv.pinRejected')}</Text>}
         <View style={styles.slots}>
           {Array.from({ length: PIN_LENGTH }, (_, i) => (
             <Text key={i} style={[styles.slot, pin.length === i && styles.slotNext]}>{pin[i] ?? '–'}</Text>
           ))}
         </View>
-        <View style={styles.keys}>
-          {DIGITS.map((d, i) => (
-            <Button
-              key={d}
-              label={d}
-              wide={false}
-              focusFirst={i === 0}
-              onPress={() => setPin((p) => (p.length >= PIN_LENGTH ? p : p + d))}
-            />
-          ))}
-        </View>
+        {/* TWO ROWS OF FIVE, LAID OUT BY HAND — not ten keys left to wrap.
+            Wrapping put `0` alone on a second line, centred, with no key above it, and
+            Android TV navigates by GEOMETRY: down from most of the top row had nothing
+            defined to land on, so focus left the keypad and could not be brought back.
+            A viewer reported it with three of four digits typed and one attempt allowed,
+            stranded on the last one until the code expired — a dead end that costs the
+            whole sign-in, on the screen where there is no second try.
+            Five and five means every key has a neighbour directly above or below it, so
+            up and down are always defined and always reversible. */}
+        {[DIGITS.slice(0, 5), DIGITS.slice(5)].map((rowKeys, r) => (
+          <View key={r} style={styles.keys}>
+            {rowKeys.map((d, i) => (
+              <Button
+                key={d}
+                label={d}
+                wide={false}
+                focusFirst={r === 0 && i === 0}
+                // Typing again clears it: the message is about the digits that were sent,
+                // and it must not sit over a fresh set the viewer is still keying in.
+                onPress={() => { setRejected(false); setPin((p) => (p.length >= PIN_LENGTH ? p : p + d)) }}
+              />
+            ))}
+          </View>
+        ))}
         <Row>
           <Button label={t('sendtv.pinDelete')} onPress={() => setPin((p) => p.slice(0, -1))} />
           <Button label={t('common.ok')} onPress={submit} primary disabled={pin.length < PIN_LENGTH || busy} />
@@ -298,10 +324,23 @@ export function SignInWithPhone ({ onClose, onSignedIn }: SignInWithPhoneProps) 
 
 // An overlay, not a Modal: on TV a Modal is its own focus container and swallows the
 // remote (the SortMenu / TrackMenu / LanguageMenu lesson).
+//
+// AND AN OVERLAY DOES NOT TAKE WHAT IS UNDER IT OUT OF THE FOCUS PATH, which is the price
+// of that choice and cost a viewer a whole sign-in. The screen behind this panel — the
+// login form, with its username field, password field and two buttons — stays focusable
+// while the panel covers it. Pressing down off the keypad moved focus onto a real, working
+// control that is invisible under the panel: not a lost cursor, a cursor somewhere the
+// viewer cannot see, which is worse and has no way back. Measured with `uiautomator dump`
+// on a TCL set — six focusable nodes on screen, four of them the hidden form.
+//
+// So focus is TRAPPED in all four directions for as long as the panel is up. That is what
+// TVFocusGuideView's trap props are for, and it is the whole fix: nothing inside changes,
+// nothing outside can be reached. The panel always holds at least one focusable control
+// (there is a Cancel or a Close on every branch), so trapping cannot strand anyone.
 function Panel ({ heading, children }: { heading: string; children: React.ReactNode }) {
   return (
     <View style={styles.overlay}>
-      <FocusPane autoFocus style={styles.panel}>
+      <FocusPane autoFocus trapFocusUp trapFocusDown trapFocusLeft trapFocusRight style={styles.panel}>
         <Text style={styles.heading}>{heading}</Text>
         {children}
       </FocusPane>
@@ -397,7 +436,10 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: 'transparent'
   },
   slotNext: { borderColor: theme.colors.focus },
-  keys: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: theme.spacing(0.5), marginTop: theme.spacing(0.5) },
+  // ONE ROW OF FIVE, AND IT MUST NEVER WRAP: the columns are what make up and down
+  // defined on a D-pad, and a row that re-wraps on a narrow panel puts a key somewhere
+  // with nothing above it again. Five single-character keys fit on both form factors.
+  keys: { flexDirection: 'row', flexWrap: 'nowrap', justifyContent: 'center', gap: theme.spacing(0.5), marginTop: theme.spacing(0.5) },
   row: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: theme.spacing(0.75), marginTop: theme.spacing(1) },
   btn: {
     minWidth: theme.isTV ? 72 : 52, alignItems: 'center', borderRadius: 10,

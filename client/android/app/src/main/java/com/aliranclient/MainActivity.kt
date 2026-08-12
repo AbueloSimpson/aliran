@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -11,6 +12,7 @@ import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.google.android.gms.cast.framework.CastContext
 
 class MainActivity : ReactActivity() {
@@ -70,6 +72,46 @@ class MainActivity : ReactActivity() {
     }
   }
 
+  /**
+   * CHANNEL UP / DOWN from the remote, forwarded to JS.
+   *
+   * IT HAS TO BE DONE HERE. react-native-tvos' key bridge does not carry these — its
+   * Android helper maps the D-pad, ENTER and the media transport keys and nothing else —
+   * and the app's own focus-strip rig cannot catch them either, because a strip is only
+   * ever reached by a key that MOVES FOCUS, and these do not move it anywhere.
+   *
+   * SAFE TO CONSUME, and measured so before this was written: with this app in the
+   * foreground the system publishes keycodes 166/167 straight to our own ViewRootImpl
+   * (`InputDispatcher: publishKeyEvent(... com.aliranclient/.MainActivity ...)`) and acts
+   * on them nowhere else, so claiming them takes nothing away from the viewer. That is
+   * the opposite of the VOLUME keys, which drive the set's real speakers and must be
+   * left alone — see the note beside the in-app volume state in LiveScreen.
+   */
+  override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+    val direction =
+        when (keyCode) {
+          KeyEvent.KEYCODE_CHANNEL_UP -> "up"
+          KeyEvent.KEYCODE_CHANNEL_DOWN -> "down"
+          else -> null
+        }
+    if (direction != null) {
+      emitChannelKey(direction)
+      return true
+    }
+    return super.onKeyDown(keyCode, event)
+  }
+
+  /**
+   * Fire-and-forget. Before the JS context exists there is no screen listening anyway, so
+   * a missing context is a no-op rather than an error.
+   */
+  private fun emitChannelKey(direction: String) {
+    val context = (application as? MainApplication)?.reactHost?.currentReactContext ?: return
+    context
+        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit(CHANNEL_KEY_EVENT, direction)
+  }
+
   /** Re-hide the bars after a transient reveal (edge swipe) or a dialog/keyboard. */
   override fun onWindowFocusChanged(hasFocus: Boolean) {
     super.onWindowFocusChanged(hasFocus)
@@ -102,4 +144,9 @@ class MainActivity : ReactActivity() {
    */
   override fun createReactActivityDelegate(): ReactActivityDelegate =
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+
+  companion object {
+    /** Mirrored in client/src/channelKeys.ts — the two names must stay identical. */
+    const val CHANNEL_KEY_EVENT = "aliranChannelKey"
+  }
 }

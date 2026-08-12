@@ -10,12 +10,28 @@ import { loadServiceDescriptor, type ServiceDescriptor } from './config'
 
 const isTV = Platform.isTV
 
-// Phone GUI scale: the 10-foot type/spacing ramp reads a touch large up close, so trim
-// the PHONE by this factor (TV keeps full 10-foot sizing). Applied to type, spacing,
-// safe margins and card sizes below — one knob to tune the overall density.
-// Tuned on the S22 across three rounds: 0.85 → 0.80 → 0.68 (a further 15% cut —
-// the lettering still read too large on device).
-const SCALE = isTV ? 1 : 0.68
+// GUI scale — ONE KNOB per form factor, applied to type, spacing, safe margins, card
+// sizes, and (via theme.px) the components' own geometry. Scaling everything by a single
+// factor is the only way to shrink a 10-foot UI without wrecking its internal balance:
+// trim a row height on its own and the type inside it simply overflows.
+//
+// PHONE: the 10-foot ramp reads a touch large up close. Tuned on the S22 across three
+// rounds: 0.85 → 0.80 → 0.68 (the lettering still read too large on device).
+//
+// TELEVISION: full 10-foot sizing is Google's guidance for a living-room set, and on the
+// operator's 1080p panel it measured GIANT — the channel list could not fit a channel
+// NAME, which is the one thing that list exists to show ("[Amistos…", "[Argentin…").
+// Piecemeal trims were tried first and were the wrong lever: shaving the panel width
+// took the space out of the name, because the name is the only elastic thing in a row of
+// number + name + LIVE badge + logo. Scaling the whole ramp shrinks the number, the
+// badge, the logo and the lettering together, and the name gets the difference.
+// Tuned on the TCL set: 1.0 → 0.8 (names became readable) → 0.72, the operator's call
+// from an actual viewing distance, which is the only place this question can be settled.
+//
+// ⚠ Do not take TV below 0.6 without re-checking the guide's channel column: its parts
+// must keep summing inside CH_COL_W, and that inequality only holds down to 0.6.
+// GuideScreen's chCell comment carries the arithmetic.
+const SCALE = isTV ? 0.72 : 0.68
 const px = (n: number) => Math.round(n * SCALE)
 
 const DEFAULT_COLORS = {
@@ -50,6 +66,10 @@ export function makeTheme (descriptor?: Pick<ServiceDescriptor, 'branding'>) {
   }
   return {
     colors,
+    // The scale ramp itself, for the fixed geometry components own (row heights, logo
+    // boxes, column widths). Those are 10-foot numbers too, so they have to ride the
+    // same knob as the type inside them or the two drift apart the moment it moves.
+    px,
     // D-pad focus ring for the 10-foot UI (invisible border keeps layout stable on phone).
     focusRing: isTV ? 3 : 0,
     // Focused-row scale lift (10-foot polish) — 1 on phone, where touch has no focus

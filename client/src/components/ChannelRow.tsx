@@ -25,7 +25,9 @@ import { theme } from '../theme'
 // guide UI (WS1) around a doubled art box (now the logo box — WS11 kept the size when
 // the thumb left the rows). Phone side re-tightened ~0.85 (S22 round 3: the side
 // panel read too large in landscape) — TV keeps the 10-foot metrics untouched.
-const ROW_INNER_H = theme.isTV ? 80 : 54
+// Both ride theme.px, so the row follows the same one knob as the type inside it (see
+// theme.ts SCALE). The TV number is the original 10-foot 80.
+const ROW_INNER_H = theme.isTV ? theme.px(80) : 54
 const ROW_MB = 2
 /** One list row + the gap under it — the getItemLayout unit. */
 export const CHANNEL_ROW_H = ROW_INNER_H + ROW_MB
@@ -37,11 +39,14 @@ export interface ChannelRowProps {
   favorite?: boolean
   hasTVPreferredFocus?: boolean
   onFocus?: () => void
+  /** Handle on the row's Pressable, so a host can place native focus on it directly
+   *  (ChannelListPanel does, for the channel being watched). The NowPill's pattern. */
+  innerRef?: React.RefObject<any>
   onPress: () => void
   onLongPress?: () => void
 }
 
-export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, onFocus, onPress, onLongPress }: ChannelRowProps) {
+export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, innerRef, onFocus, onPress, onLongPress }: ChannelRowProps) {
   const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   // Off-air channel, or a vod title the library took down (S8a: vod records carry no
@@ -66,6 +71,7 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
         // may underdraw the next row; at 1.025 that is imperceptible.
         focused && !prefersReducedMotion() && styles.rowScaled
       ]}
+      ref={innerRef}
       hasTVPreferredFocus={hasTVPreferredFocus}
       onFocus={() => { setFocused(true); onFocus?.() }}
       onBlur={() => setFocused(false)}
@@ -105,7 +111,7 @@ const styles = StyleSheet.create({
   rowPlaying: { borderLeftColor: theme.colors.accent },
   rowFocused: { backgroundColor: theme.colors.focusFill },
   rowScaled: { transform: [{ scale: theme.focusScale }], zIndex: 1 },
-  number: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontVariant: ['tabular-nums'], width: theme.isTV ? 52 : 34 },
+  number: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontVariant: ['tabular-nums'], width: theme.isTV ? theme.px(52) : 34 },
   main: { flex: 1, marginRight: theme.spacing(1) },
   titleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: theme.colors.text, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '700', flexShrink: 1 },
@@ -119,7 +125,10 @@ const styles = StyleSheet.create({
   textDimOnFill: { color: theme.colors.focusFillText, opacity: 0.7 },
   // 16:9 art box (phone 72×40 / TV 112×63) — kept from the thumb era so the row
   // geometry (CHANNEL_ROW_H, getItemLayout) never moved when the logo took it over.
-  logo: { width: theme.isTV ? 112 : 72, height: theme.isTV ? 63 : 40, borderRadius: 4 },
+  // On the scale ramp, and a notch under the original 112×63 besides: every pixel off
+  // this box becomes NAME, which is the one elastic thing in the row and the reason a
+  // viewer is reading the list at all.
+  logo: { width: theme.isTV ? theme.px(96) : 72, height: theme.isTV ? theme.px(54) : 40, borderRadius: 4 },
   logoFallback: { backgroundColor: theme.colors.surface, alignItems: 'center', justifyContent: 'center' },
   logoInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' }
 })

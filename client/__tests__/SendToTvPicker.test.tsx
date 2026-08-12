@@ -23,14 +23,33 @@ import { Platform, Text } from 'react-native'
 // this factory takes precedence over that file for this suite. NOT `{ virtual: true }`:
 // see the mock file for the resolver-cache race that spelling lost, which took the eight
 // cast cases below down as a block on about one run in three.
+//
+// AND THE SESSION IS TWO STEPS HERE TOO. startSession() only means the MediaRouter
+// selected a matching route; whether a Cast session exists is reported afterwards through
+// onSessionStarted / onSessionStartFailed, and cast.connect() waits for it. The gap is
+// modelled rather than skipped — see SendToTvCast.test.ts, where it is what is on trial.
 const mockCast: any = {
   devices: [] as any[],
   playServices: 'success',
   deviceName: 'Kitchen display',
-  startSession: jest.fn(async () => true),
-  endCurrentSession: jest.fn(async () => {}),
+  sessionStartedListeners: [] as any[],
+  sessionStartFailedListeners: [] as any[],
+  session: null as string | null,
+  mediaStatusListeners: [] as any[],
+  endCurrentSession: jest.fn(async () => { mockCast.session = null }),
   loadMedia: jest.fn(async () => {})
 }
+function selectRoute () {
+  return jest.fn(async (deviceId: string) => {
+    // Reported on a LATER turn, never in the same one — selectRoute is fire-and-forget.
+    Promise.resolve().then(() => {
+      mockCast.session = deviceId
+      for (const fn of [...mockCast.sessionStartedListeners]) fn({})
+    })
+    return true
+  })
+}
+mockCast.startSession = selectRoute()
 jest.mock('react-native-google-cast', () => ({
   CastContext: {
     getPlayServicesState: async () => mockCast.playServices,
@@ -39,12 +58,26 @@ jest.mock('react-native-google-cast', () => ({
       onDevicesUpdated: () => ({ remove: () => {} })
     }),
     getSessionManager: () => ({
-      startSession: mockCast.startSession,
+      startSession: (id: string) => mockCast.startSession(id),
       endCurrentSession: mockCast.endCurrentSession,
-      getCurrentCastSession: async () => ({
-        client: { loadMedia: mockCast.loadMedia },
-        getCastDevice: async () => ({ friendlyName: mockCast.deviceName })
-      }),
+      getCurrentCastSession: async () => (mockCast.session
+        ? {
+            client: {
+              // A receiver that plays what it is given: the load is accepted, and the
+              // status that proves it played follows on a later turn (see cast.ts).
+              loadMedia: async (req: unknown) => {
+                await mockCast.loadMedia(req)
+                Promise.resolve().then(() => {
+                  for (const fn of [...mockCast.mediaStatusListeners]) fn({ playerState: 'playing' })
+                })
+              },
+              onMediaStatusUpdated: (fn: unknown) => { mockCast.mediaStatusListeners.push(fn); return { remove: () => {} } }
+            },
+            getCastDevice: async () => ({ deviceId: mockCast.session, friendlyName: mockCast.deviceName })
+          }
+        : null),
+      onSessionStarted: (fn: unknown) => { mockCast.sessionStartedListeners.push(fn); return { remove: () => {} } },
+      onSessionStartFailed: (fn: unknown) => { mockCast.sessionStartFailedListeners.push(fn); return { remove: () => {} } },
       onSessionEnded: () => ({ remove: () => {} })
     })
   }
@@ -54,6 +87,17 @@ jest.mock('react-native-google-cast', () => ({
 // java.net.InetAddress ('hostname/1.2.3.4'), and a group is marked in `capabilities`.
 const CHROMECAST = { deviceId: 'cc-1', friendlyName: 'Kitchen display', modelName: 'Chromecast', ipAddress: '/192.168.1.77', capabilities: ['VideoOut'] }
 const SPEAKER_GROUP = { deviceId: 'cc-1', friendlyName: 'Whole house', ipAddress: '/192.168.1.77', capabilities: ['AudioOut', 'MultizoneGroup'] }
+
+// CASTING IS PARKED IN THIS BUILD (src/cast.ts CAST_ENABLED), so castAvailable() answers no
+// and the sheet draws no cast section at all. This suite is about what the sheet DOES with
+// receivers, and that behaviour is the thing worth keeping under test while the feature
+// waits — so it opts back in here, with the same probe the real one uses minus the flag.
+// The parked decision itself is pinned in SendToTvCast.test.ts, against the real module.
+jest.mock('../src/cast', () => ({
+  ...jest.requireActual('../src/cast'),
+  CAST_ENABLED: true,
+  castAvailable: async () => mockCast.playServices === 'success'
+}))
 
 import { SendToTvSheet } from '../src/components/SendToTvSheet'
 import { NowPlayingBar } from '../src/components/NowPlayingBar'
@@ -112,9 +156,13 @@ beforeEach(() => {
   mockCast.devices = []
   mockCast.playServices = 'success'
   mockCast.deviceName = 'Kitchen display'
-  mockCast.startSession = jest.fn(async () => true)
-  mockCast.endCurrentSession = jest.fn(async () => {})
+  mockCast.startSession = selectRoute()
+  mockCast.endCurrentSession = jest.fn(async () => { mockCast.session = null })
   mockCast.loadMedia = jest.fn(async () => {})
+  mockCast.session = null
+  mockCast.sessionStartedListeners = []
+  mockCast.sessionStartFailedListeners = []
+  mockCast.mediaStatusListeners = []
   offPeers = watchPeers()
 })
 afterEach(async () => {

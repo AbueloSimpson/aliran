@@ -41,9 +41,22 @@ export interface ChannelInfoPanelProps {
   onWatch: () => void
   onToggleFavorite: () => void
   onReport?: () => void
+  /**
+   * TV ONLY — the subtitle/audio picker, and the reason it lives HERE. Those controls
+   * are buttons on the phone's NowPlayingBar, and that row cannot exist on a television:
+   * a focusable over the video captures the D-pad and the up/down zap strips never see
+   * the press (the S7 lesson). So on TV the set had no route to subtitles at all. This
+   * panel is already outside the zap path and is already one key away (RIGHT), so the
+   * controls the bar cannot carry are gathered here instead. Absent, or no tracks in the
+   * stream, means no button.
+   */
+  onSubtitles?: () => void
+  hasTracks?: boolean
+  /** TV only, same reasoning: jump to the channel search. */
+  onSearch?: () => void
 }
 
-export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite, onReport }: ChannelInfoPanelProps) {
+export function ChannelInfoPanel ({ stream, number, favorite, playing, source, peers, onWatch, onToggleFavorite, onReport, onSubtitles, hasTracks, onSearch }: ChannelInfoPanelProps) {
   const { t, tn } = useI18n()
   // CURATED art only (S22 round 4 thumbnail policy): live thumbs live in the guide's
   // preview card and the Menu hero — everywhere else channel identity is the curated
@@ -101,6 +114,11 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
         <View style={styles.actions}>
           <ActionButton label={playing ? t('live.watching') : t('live.watch')} primary onPress={onWatch} hasTVPreferredFocus />
           <ActionButton label={favorite ? t('live.removeFavorite') : t('live.addFavorite')} onPress={onToggleFavorite} />
+          {/* The controls a television's bottom bar cannot carry (see onSubtitles).
+              Subtitles appear only when the stream really has tracks to choose between:
+              an empty picker is worse than no button. */}
+          {hasTracks && onSubtitles && <ActionButton label={'CC  ' + t('live.bar.subtitles')} onPress={onSubtitles} />}
+          {onSearch && <ActionButton label={'⌕  ' + t('menu.search')} onPress={onSearch} />}
           {/* Report rides the info panel only for the channel BEING WATCHED — the
               engine attaches the active stream to the report, so offering it on a
               merely-browsed channel would report the wrong one (S51). */}
@@ -236,7 +254,7 @@ function ActionButton ({ label, primary, hasTVPreferredFocus, onPress }: { label
       onBlur={() => setFocused(false)}
       onPress={onPress}
     >
-      <Text style={styles.buttonText}>{label}</Text>
+      <Text style={[styles.buttonText, primary && styles.buttonTextPrimary]}>{label}</Text>
     </Pressable>
   )
 }
@@ -297,5 +315,12 @@ const styles = StyleSheet.create({
   button: { backgroundColor: theme.colors.surface, borderRadius: 8, paddingHorizontal: 18, paddingVertical: 10, borderWidth: theme.focusRing, borderColor: 'transparent' },
   buttonPrimary: { backgroundColor: theme.colors.primary },
   buttonFocused: { borderColor: theme.colors.focus },
-  buttonText: { color: theme.colors.onPrimary, fontSize: theme.type.label, fontWeight: '700' }
+  // THE ORDINARY BUTTONS READ AS DISABLED, and this line was why: every label used
+  // onPrimary — the colour for text sitting ON a primary fill, which SolTV sets to
+  // #201204. Only the primary button HAS that fill; the rest are on `surface`, so they
+  // were near-black text on a near-black bed. They worked when pressed and looked dead,
+  // which is the worst combination a control can offer. onPrimary now belongs to the one
+  // button that earns it.
+  buttonText: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '700' },
+  buttonTextPrimary: { color: theme.colors.onPrimary }
 })

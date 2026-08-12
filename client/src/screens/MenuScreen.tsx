@@ -44,6 +44,17 @@ interface MenuItem {
 // a vertical background wash (transparent top → grounded bottom, under the hero text)
 // and a horizontal surface wash (left edge → transparent), giving the composite a
 // subtle diagonal drift toward the rail.
+// Menu icon size, trimmed on device. TWO ROUNDS OF 15%, the same way the phone's overall
+// density knob was tuned (theme.ts SCALE: 0.85 → 0.80 → 0.68) — the glyphs read too large
+// on both a phone and a television.
+//
+// ⚠ These glyphs do NOT go through theme's px()/SCALE ramp, which is almost certainly why
+// they looked oversized on the phone in the first place: every other piece of type there is
+// cut to 0.68 and the icons stayed at their raw size. This factor is deliberately separate
+// from that ramp rather than folded into it, so the two decisions stay legible — but if the
+// phone still reads heavy, running these through px() as well is the next lever.
+const ICON_SCALE = 0.85 * 0.85
+
 const WASH_BANDS = 16
 const washStops = Array.from({ length: WASH_BANDS }, (_, i) => (i / (WASH_BANDS - 1)) ** 2)
 
@@ -269,7 +280,7 @@ const styles = StyleSheet.create({
     borderRadius: 12, borderWidth: 3, borderColor: 'transparent'
   },
   entryFocused: { borderColor: theme.colors.accent, backgroundColor: theme.colors.overlay },
-  glyph: { fontSize: theme.isTV ? 34 : 26 },
+  glyph: { fontSize: Math.round((theme.isTV ? 34 : 26) * ICON_SCALE) },
   label: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginTop: 8 },
   labelFocused: { color: theme.colors.accent },
   footer: { position: 'absolute', left: theme.safeX, bottom: theme.safeY + theme.spacing(1) },
@@ -285,7 +296,7 @@ const styles = StyleSheet.create({
     borderRadius: 12, borderWidth: 2, borderColor: 'transparent'
   },
   railEntryActive: { borderColor: theme.colors.accent, backgroundColor: theme.colors.overlayStrong },
-  railGlyph: { fontSize: 24 },
+  railGlyph: { fontSize: Math.round(24 * ICON_SCALE) },
   railLabel: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 1.5, marginTop: 6, textAlign: 'center' },
   railLabelActive: { color: theme.colors.accent },
   // alignItems flex-end anchors the wordmark/hero lines to the LOWER-RIGHT corner

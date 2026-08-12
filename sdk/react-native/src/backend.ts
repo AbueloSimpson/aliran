@@ -823,6 +823,14 @@ export class AliranBackend {
   signinSaved = false
   prefsLoaded = false
   /**
+   * The engine has reported {type:'ready'} — it is on its panel and will take a login.
+   *
+   * Cached for the same reason `streams` and `signinTv` are: it is a ONE-SHOT message, so
+   * a screen (or a whole RN root) that starts after it fired can never see it. Read this
+   * at mount instead of waiting for a message that has already been and gone.
+   */
+  engineReady = false
+  /**
    * The last step of a phone -> TV sign-in, per role — so a screen that mounts (or
    * REmounts) mid-exchange paints the step the engine is actually waiting on instead of
    * a blank one. The exchange lives in the worklet and survives a screen unmount; its
@@ -852,6 +860,10 @@ export class AliranBackend {
   castSession: CastSessionInfo | null = null
 
   private worklet: WorkletInstance | null = null
+  // Whether worklet.start() has already run on THIS instance. See start()'s re-attach
+  // branch — the worklet outlives the RN root, so a second start() is an ordinary event
+  // and not a host mistake.
+  private started = false
   // Flips when start() finds no engine in this build/device: every later send()
   // becomes a silent no-op (nothing queues, nothing throws, no listener ever fires).
   private inactive = false
@@ -883,6 +895,17 @@ export class AliranBackend {
    * intact; the filename extension must be `.bundle`. Omit opts.panelPubKey to boot
    * WITHOUT connecting — prefs are readable right away, and connect() dials the panel
    * once the host knows which one (persisted runtime service, or the Connect screen).
+   *
+   * SAFE TO CALL AGAIN, and on Android it WILL be called again. The engine outlives the
+   * React root: Android recreates the ACTIVITY — leaving the app for the launcher and
+   * coming back to it on a television, a locale or a display change — while the process,
+   * the JS runtime and the Bare worklet inside it all survive. The RN root then re-runs,
+   * the host boots the module singleton a second time, and the worklet refuses to start
+   * twice ('Worklet has already been started'). Measured on a TCL Android TV set-top box.
+   *
+   * So a second call RE-ATTACHES instead of throwing — see reattach(), which is the half
+   * that matters: an error swallowed here would leave the host waiting for a {type:'ready'}
+   * that fired before its listener existed, which is the same wedge wearing a quieter face.
    */
   start (bundle: string | Uint8Array, opts: StartOptions) {
     if (!engineAvailable()) { this.inactive = true; this.pending = []; return } // no engine here — stay silent
@@ -901,17 +924,64 @@ export class AliranBackend {
       // start re-identifying a pseudonymous reporter.
       platform: opts.platform ?? `${Platform.OS} ${Platform.Version}`
     }
+    if (this.started) { this.reattach(); return }
     const bytes = typeof bundle === 'string' ? b4a.from(bundle, 'base64') : bundle
     if (!this.worklet) {
       if (probeWorklet) { this.worklet = probeWorklet; probeWorklet = null } // reuse the probe's handle
       else this.worklet = new (require('react-native-bare-kit').Worklet as WorkletCtor)()
     }
     this.worklet.start('/app.bundle', bytes as any)
+    // AFTER the start, so a start that threw for any OTHER reason is still retryable —
+    // the flag says "this worklet is running", not "start() was attempted".
+    this.started = true
     this.ipc = this.worklet.IPC
     this.ipc.on('data', (d: Uint8Array) => this.onData(b4a.toString(d)))
     if (opts.panelPubKey) this.connect(opts.panelPubKey)
     const queued = this.pending; this.pending = []
     for (const m of queued) this.send(m)
+  }
+
+  /**
+   * A fresh React root over an engine that never stopped.
+   *
+   * WHAT IS NOT DONE HERE, AND WHY EACH ONE WOULD BE A BUG.
+   *
+   *   worklet.start()  is the throw this whole branch exists to avoid.
+   *   ipc.on('data')   the handler wired by the first start() is still attached to the
+   *                    same IPC stream. A second one would parse every line twice, so
+   *                    every reply would fire its listeners twice and every tagged
+   *                    request would resolve on its own duplicate.
+   *   connect()        the engine is already on its panel. Sending {panelPubKey} again
+   *                    re-runs the engine's _openPanel(): a second Hyperbee over the same
+   *                    core, a second swarm join, and fresh catalog/EPG/grant watchers
+   *                    that ORPHAN the live ones. Nothing about this is a reconnect.
+   *
+   * WHAT IS DONE is the state a listener created a moment ago has no way to learn,
+   * because the engine reported it once and will not report it again:
+   *
+   *   ready    a single event per engine, and the one the host gates its screens on. This
+   *            is the actual wedge: without it "Connecting…" is permanent and only a
+   *            force-stop clears it.
+   *   streams  the catalog this session already logged in for.
+   *   prefs    NOT replayed but RE-READ. It is a local file the worklet owns, the read is
+   *            cheap, and a host routes on `creds`/`service`/`signinSaved` — so the fresh
+   *            answer is worth more than this layer's mirror of an older one.
+   *
+   * Delivered on a microtask, so a host that subscribes on the line after start() still
+   * catches it. A host that subscribes later than that reads the same facts off
+   * `engineReady` / `streams`, which is what they are cached for.
+   */
+  private reattach () {
+    // Its OWN word, not a message type: this is state being handed back, and a log line
+    // that said 'ready' would read as an engine event that never happened. It is also the
+    // line somebody will grep for on a device — the failure it replaces was an error in
+    // `adb logcat`, and silence would be a worse trade than a breadcrumb.
+    if (this.debug) console.log('[backend]', `re-attach (ready=${this.engineReady}, streams=${this.streams.length})`)
+    Promise.resolve().then(() => {
+      if (this.engineReady) this.deliver({ type: 'ready' })
+      if (this.streams.length > 0) this.deliver({ type: 'streams', streams: this.streams, ...(this.vod ? { vod: this.vod } : {}) })
+      this.requestPrefs()
+    })
   }
 
   /** Connect (or re-connect) the engine to a panel. With the engine already on a
@@ -1522,6 +1592,9 @@ export class AliranBackend {
         // platform key store, and no host listener has any business seeing the file key
         // that goes with it.
         if (msg.type === 'vault-request') { this.onVaultRequest(msg); continue }
+        // One event per engine. Latched so a React root that starts after it — an Android
+        // activity restart over a live worklet — can still be told; see reattach().
+        if (msg.type === 'ready') this.engineReady = true
         if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.remoteAccept = msg.remoteAccept ?? null; this.signinSaved = msg.signinSaved === true; this.prefsLoaded = true }
         if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
         if (msg.type === 'port') {
@@ -1553,9 +1626,15 @@ export class AliranBackend {
         // Clearing here is what keeps a re-mounting sheet from painting "Casting" over a
         // server that is already closed and a token that is already dead.
         if (msg.type === 'cast-ended') this.castSession = null
-        this.listeners.forEach(fn => fn(msg as BackendMessage))
+        this.deliver(msg as BackendMessage)
       } catch { /* ignore partial/invalid */ }
     }
+  }
+
+  /** Hand one message to every host listener. The single delivery path, so a REPLAYED
+   *  message (reattach) reaches a host exactly the way the engine's own does. */
+  private deliver (msg: BackendMessage) {
+    this.listeners.forEach(fn => fn(msg))
   }
 
   /**

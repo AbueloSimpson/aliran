@@ -14,7 +14,9 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text, TextInput, StyleSheet, BackHandler } from 'react-native'
+import { Text, TextInput, View, StyleSheet, BackHandler } from 'react-native'
+
+import { t } from '@aliran/i18n'
 
 import { ConnectScreen } from '../src/screens/ConnectScreen'
 import { LoginScreen } from '../src/screens/LoginScreen'
@@ -325,6 +327,110 @@ test('the OK button is out of the D-pad path until the PIN is complete', async (
   for (const d of ['9', '1']) await press(tree, d)
   expect(ok().props.focusable).toBe(true)
   expect(ok().props.accessibilityState).toMatchObject({ disabled: false })
+})
+
+// THE THIRD ONE FROM THE SAME LIVING ROOM, and the same shape: a control that answers a
+// press with nothing at all. The viewer keyed the four digits in, pressed OK, and — in
+// their words — "nothing happened". The boxes emptied and the screen said no more than
+// that, so from across a room a REFUSAL and a remote press that never landed look
+// identical, and the natural response to both is to press again. The engine's own
+// explanation arrives on the {state:'failed'} event, seconds later and from the other end
+// of the exchange.
+//
+// Asserted through the catalog KEY rather than the sentence: what is on trial is that the
+// screen says something at the moment of the press, not which words it picks.
+async function toPinEntry () {
+  const navigation = { replace: jest.fn() } as any
+  const tree = await mount(<LoginScreen navigation={navigation} route={{} as any} backendReady />)
+  await press(tree, 'Sign in with your phone')
+  await answer('signin-start', 'signin-started', { ok: true, code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+  await pairEvent({ role: 'tv', state: 'code', code: 'A3K79QF2M4XR', expiresAt: Date.now() + 60000 })
+  await pairEvent({ role: 'tv', state: 'pin-entry', sas: '4821' })
+  for (const d of ['7', '3', '9', '1']) await press(tree, d)
+  return tree
+}
+/** How many of the four boxes are EMPTY. Counted by the en dash an unfilled one draws,
+ *  because the ten keypad keys are single-character <Text> too. */
+function emptySlots (tree: RendererInstance): number {
+  return texts(tree).filter(s => s === '–').length
+}
+
+test('a refused PIN says so, at the moment of the press', async () => {
+  const tree = await toPinEntry()
+  expect(texts(tree)).not.toContain(t('sendtv.pinRejected'))
+  expect(emptySlots(tree)).toBe(0) // four digits are in
+
+  await press(tree, 'OK')
+  // ok:false is the engine saying it has nothing waiting for that answer any more. It is
+  // NOT "those were the wrong digits" — nothing here may claim to know which.
+  await answer('signin-submit-pin', 'signin-ack', { ok: false })
+
+  expect(texts(tree)).toContain(t('sendtv.pinRejected'))
+  // …and the boxes are still cleared, which is the half that was already right — and, on
+  // its own, the whole of what the viewer used to get.
+  expect(emptySlots(tree)).toBe(4)
+})
+
+test('…and it goes as soon as the viewer keys a new digit — it is about the digits that were SENT', async () => {
+  const tree = await toPinEntry()
+  await press(tree, 'OK')
+  await answer('signin-submit-pin', 'signin-ack', { ok: false })
+  expect(texts(tree)).toContain(t('sendtv.pinRejected'))
+
+  await press(tree, '5')
+  expect(texts(tree)).not.toContain(t('sendtv.pinRejected'))
+})
+
+// A DEAD END ON THE ONE SCREEN THAT ALLOWS NO SECOND TRY, reported from a living room:
+// three of the four digits typed, down pressed to reach `0`, and focus left the keypad
+// with no way back — so the code expired with the sign-in one keypress from done.
+//
+// The cause was layout, not focus code. Ten keys in a wrapping, centre-justified row put
+// `0` alone on a second line with no key above it, and Android TV navigates by GEOMETRY:
+// down from most of the top row had nothing defined to land on. Five and five gives every
+// key a neighbour directly above or below, so up and down are always defined and always
+// reversible — which is why this test pins the SHAPE and not any focus property.
+// THE ACTUAL CAUSE, and it was not the keypad. This panel is an overlay rather than a
+// Modal (a Modal swallows the remote on TV), and an overlay does not take what is under it
+// out of the focus path — so the login form behind it stayed focusable and down off the
+// keypad landed on an invisible username field with no way back. `uiautomator dump` on the
+// set showed six focusable nodes with the panel up, four of them the covered form.
+//
+// Asserted as PROPS because focus is a platform behaviour jest cannot exercise: what this
+// guards is that somebody does not quietly drop the trap and hand the bug back.
+test('the panel traps focus, so the screen underneath cannot be reached', async () => {
+  const tree = await toPinEntry()
+  const panes = tree.root.findAll((n) => n.props?.trapFocusUp !== undefined)
+  expect(panes.length).toBeGreaterThan(0)
+  for (const p of panes) {
+    expect([p.props.trapFocusUp, p.props.trapFocusDown, p.props.trapFocusLeft, p.props.trapFocusRight])
+      .toEqual([true, true, true, true])
+  }
+})
+
+test('the keypad is a 5x5 grid, so every digit has one above or below it', async () => {
+  const tree = await toPinEntry()
+  // HOST nodes only (`type` a string): the label rides the Button component, its Pressable
+  // and the host view alike, so an unfiltered search counts each key three times.
+  const isDigit = (n: { type?: unknown; props?: Record<string, unknown> }) =>
+    typeof n.type === 'string' &&
+    typeof n.props?.accessibilityLabel === 'string' && /^[0-9]$/.test(n.props.accessibilityLabel as string)
+
+  // Every digit is on screen…
+  expect(tree.root.findAll(isDigit)).toHaveLength(10)
+  // …in exactly two groups of five. The single wrapped row that stranded the viewer would
+  // give NONE, because its one container holds all ten. (Ancestors hold ten too, which is
+  // why the count of five is the assertion and the count of ten is not.)
+  const groupsOfFive = tree.root.findAllByType(View).filter((v) => v.findAll(isDigit).length === 5)
+  expect(groupsOfFive).toHaveLength(2)
+})
+
+test('an ACCEPTED PIN says nothing of the kind — it waits', async () => {
+  const tree = await toPinEntry()
+  await press(tree, 'OK')
+  await answer('signin-submit-pin', 'signin-ack', { ok: true })
+  expect(texts(tree)).not.toContain(t('sendtv.pinRejected'))
+  expect(texts(tree)).toContain(t('sendtv.working'))
 })
 
 test('BACK closes the sign-in overlay instead of closing the app', async () => {

@@ -17,12 +17,25 @@
 // back to fullscreen; BACK from fullscreen exits to Menu; BACK from channel detail
 // returns to the list. Re-entering Live RESUMES the last channel watched this session
 // (lastStreamId) instead of snapping back to the hero.
-// TV: D-pad up/down while fullscreen zaps prev/next across the whole curated channel
-// order (the numbers' order). Zap rides the FOCUS ENGINE (invisible focus strips
-// above/below the select-catcher band) — react-native-tvos on Android does not dispatch
-// HWEvents to useTVEventHandler while a view holds focus, so key handling must be
-// focus-based (the S7 lesson). The bottom menu's touch buttons are phone-only so they
-// stay out of that focus path.
+// TV: the whole D-pad answers while fullscreen, and every direction rides the FOCUS
+// ENGINE — invisible focus strips around a central select-catcher band, because
+// react-native-tvos on Android does not dispatch HWEvents to useTVEventHandler while a
+// view holds focus, so key handling must be focus-based (the S7 lesson). The bottom
+// menu's touch buttons are phone-only so they stay out of that focus path.
+//
+//   UP / DOWN   zap prev/next across the whole curated channel order (the numbers'
+//               order), like a set-top box's CH+/CH-.
+//   OK / LEFT   open the channel list. Left is where every set-top box in the world
+//               puts its channel menu.
+//   RIGHT       channel detail for what is playing — the mirror of LEFT: left browses
+//               everything else, right describes this. BACK from detail entered THIS
+//               way returns to the picture, not to a channel list nobody opened.
+//   BACK        leave for the menu.
+//
+// AND THE BAR NAMES ALL OF IT. None of the above is discoverable on its own — a focus
+// strip is invisible by construction — so the NowPlayingBar carries a legend of key
+// caps on TV. That is not decoration: a viewer on a TCL set pressed left and right,
+// got silence, and reported channel changing as broken when it had worked all along.
 // VOD (S8a): library titles play on this same surface — the bottom bar grows a
 // seek/pause transport (phone), the SDK's live self-heal disarms itself (port
 // recordType), and CH+/CH- stays a live-only ring: zapping from a title lands on
@@ -74,6 +87,7 @@ import type { RootStackParamList } from '../App'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { setOrientation } from '../orientation'
+import { onChannelKey } from '../channelKeys'
 import { useMountDeferred } from '../defer'
 import { autoTunable, blockedWithoutPin, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
@@ -100,12 +114,30 @@ const FocusPane = (Platform.isTV ? TVFocusGuideView : View) as typeof TVFocusGui
 
 // The left menu (browse overlay) has no manual close control — it auto-hides this long
 // after the last interaction, fading back to clean fullscreen video.
-const MENU_IDLE_MS = 6000
+//
+// FAR LONGER ON A TELEVISION, because 6 s is measurably wrong there. A phone viewer
+// interacts continuously — a scroll bumps the timer every few hundred ms — but a remote
+// viewer READS the list and then presses a key, and 6 s of reading is ordinary. The
+// overlay going away mid-read does not read as "back to the picture"; it reads as "it
+// lost my place". Every D-pad move inside the list already bumps this (ChannelRow's
+// onFocus → onActivity), so what is really being timed is a viewer who has stopped
+// pressing keys entirely — and BACK is still the instant way out.
+const MENU_IDLE_MS = theme.isTV ? 20000 : 6000
 
-// The bottom now-playing bar (phone) fades away this long after it appears / the last
-// interaction, for an unobstructed picture; a touch in the bottom reveal zone brings it
-// back. TV keeps the bar always-on (it lives in the D-pad path, not a touch surface).
-const BAR_IDLE_MS = 5000
+// The bottom now-playing bar fades away this long after it appears / the last
+// interaction, for an unobstructed picture; on phone a touch in the bottom reveal zone
+// brings it back. IT NOW FADES ON TELEVISION TOO — it used to stand there for the whole
+// session, which is what a viewer means by "the rest of the bottom menu never goes
+// away". A set-top box shows its banner on a channel change and then clears the picture,
+// and that is exactly what the zap already does here: every zap changes playingId, and
+// the effect below re-reveals the bar. Longer than the phone's, and deliberately longer
+// than HINT_IDLE_MS, so the legend fades first and the bar it sits on outlives it.
+const BAR_IDLE_MS = theme.isTV ? 12000 : 5000
+
+// The TV remote legend fades this long after it appears — a timer of its own, and
+// SHORTER than the bar's above: the legend teaches the keys and stops earning its space
+// well before the channel identity does. Long enough to read four short items unhurried.
+const HINT_IDLE_MS = 9000
 
 // Last channel watched THIS session. Module-level so it survives leaving Live for the
 // Menu and coming back (the native stack unmounts the screen in between): re-entering
@@ -207,6 +239,14 @@ export function LiveScreen ({ route, navigation }: Props) {
   const [barShown, setBarShown] = useState(true)
   const barIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
   const barOpacity = useRef(new Animated.Value(1)).current
+  // The TV remote legend (NowPlayingBar): raised on the same two triggers as the bar —
+  // arriving at fullscreen, and every channel change — then fading on its own timer.
+  const [hintShown, setHintShown] = useState(theme.isTV)
+  const hintIdle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hintOpacity = useRef(new Animated.Value(1)).current
+  // How channel detail was entered: RIGHT from fullscreen, or the channel list. Only
+  // the BACK handler reads it — see openInfo().
+  const infoFromFullscreen = useRef(false)
   // vod transport (S8a): playhead position (whole seconds — one re-render per second,
   // not per progress tick), runtime (player-reported on load, catalog durationSec until
   // then), and the app-owned pause. Live channels ignore all three.
@@ -221,6 +261,17 @@ export function LiveScreen ({ route, navigation }: Props) {
   const videoHandle = useRef<AliranVideoHandle | null>(null)
   // In-app volume (QA round 3): rn-video's volume/muted props, session-local — the
   // OS keeps hardware volume, this is the trim on top. Phone-only control (S7).
+  //
+  // AND IT STAYS PHONE-ONLY. Cable-box volume and mute were asked for on the television
+  // build, then MEASURED on the operator's TCL set (Android 14, a real television —
+  // ro.build.characteristics=tv, leanback_only) with this app in the foreground:
+  // VOLUME_UP/DOWN moved the REAL system volume (6→7→8→7 of 0..100), VOLUME_MUTE set the
+  // real mute, and the set drew its OWN volume scale over our picture. The box IS the
+  // television, so those keys already reach the speakers the viewer wants louder.
+  // Claiming them — an onKeyDown hook in MainActivity returning true for
+  // KEYCODE_VOLUME_UP/DOWN/MUTE — stops the system ever seeing them again and leaves an
+  // in-app attenuator that cannot get PAST whatever the set's own level happens to be.
+  // That trades a working control for a worse one, so there is nothing to build here.
   const [volume, setVolume] = useState(1)
   const [muted, setMuted] = useState(false)
 
@@ -318,7 +369,13 @@ export function LiveScreen ({ route, navigation }: Props) {
   // tuneKey) is undisturbed.
   useEffect(() => {
     const id = route.params?.streamId
-    if (!id || id === playingIdRef.current) return
+    if (!id) return
+    // Picking the channel that is ALREADY playing is NOT a no-op here, and treating it as
+    // one was a bug: the viewer chose that row in the Guide, and this screen answered by
+    // showing them whatever overlay it had been left on — usually the channel list, which
+    // they never opened. The tune has nothing to do, but the INTENT was "watch this", so
+    // collapse to the picture either way.
+    if (id === playingIdRef.current) { setOverlay('none'); return }
     const s = backend.streams.find(x => x.id === id)
     if (s) play(s, { collapse: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -395,11 +452,12 @@ export function LiveScreen ({ route, navigation }: Props) {
   // Bottom bar: reveal + re-arm the fade whenever fullscreen (re)appears or the channel
   // changes (so a zap flashes the new now-playing), then it fades out on its own.
   useEffect(() => {
-    if (overlay === 'none') showBar()
-    else clearBarIdle()
+    if (overlay === 'none') { showBar(); showHint() }
+    else { clearBarIdle(); clearHintIdle() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlay, playingId])
   useEffect(() => clearBarIdle, [])
+  useEffect(() => clearHintIdle, [])
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
   const model = useMemo(() => categoryModel(streams), [streams])
@@ -499,17 +557,28 @@ export function LiveScreen ({ route, navigation }: Props) {
     if (collapse) setOverlay('none')
   }
 
-  // Rail tap. Top-level: a parent WITH sub-categories drills in (rail then shows its subs,
-  // list shows all of that parent); a leaf category just scopes the list. Drilled: tapping
-  // a sub scopes the list; tapping the already-selected sub deselects it (back to the
-  // sub-select, showing all of the parent). Any pick shows the channel LIST — from the
-  // channel-detail (info) overlay this leaves detail (else the tap looked like it did nothing).
+  // Rail FOCUS (TV) — scope the channel list to this category and nothing more. It must
+  // NOT drill, and that is a fix rather than a preference: this used to be the same
+  // function as the one below, so moving the D-pad focus down the rail entered the first
+  // parent that had sub-categories. The viewer could not reach the categories past it,
+  // and could not stay on the parent either. Any pick shows the channel LIST — from the
+  // channel-detail overlay that leaves detail (else the press looked like it did nothing).
   function selectRail (key: string) {
-    if (drillParent == null) {
-      if ((model.subs[key]?.length ?? 0) > 0) { setDrillParent(key); setSelected(key) } // drill into a parent
-      else setSelected(key)
+    setSelected(key)
+    setOverlay('list')
+  }
+
+  // Rail OK (and a phone tap, which has no focus step): ENTER the category. A top-level
+  // parent with sub-categories drills in — the rail then shows its subs under a pinned
+  // "‹ Parent" header. Re-picking the already-selected sub goes back to the whole parent.
+  // A leaf is just the scope the focus already gave it.
+  function activateRail (key: string) {
+    if (drillParent == null && (model.subs[key]?.length ?? 0) > 0) {
+      setDrillParent(key); setSelected(key)
+    } else if (drillParent != null && key === selected) {
+      setSelected(drillParent) // re-pick the selected sub -> all of the parent
     } else {
-      setSelected(key === selected ? drillParent : key) // re-tap selected sub -> back to sub-select
+      setSelected(key)
     }
     setOverlay('list')
   }
@@ -535,7 +604,6 @@ export function LiveScreen ({ route, navigation }: Props) {
   function clearBarIdle () { if (barIdle.current) { clearTimeout(barIdle.current); barIdle.current = null } }
   function armBarHide () {
     clearBarIdle()
-    if (theme.isTV) return // TV: the bar is always on (D-pad model, not touch)
     if (vodPausedRef.current) return // paused vod: the bar (and its play control) stays up
     barIdle.current = setTimeout(() => {
       Animated.timing(barOpacity, { toValue: 0, duration: 350, useNativeDriver: true })
@@ -549,6 +617,30 @@ export function LiveScreen ({ route, navigation }: Props) {
     Animated.timing(barOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start()
     armBarHide()
   }
+  function clearHintIdle () { if (hintIdle.current) { clearTimeout(hintIdle.current); hintIdle.current = null } }
+  // Reveal the TV remote legend and arm its fade. A no-op on phone, which teaches
+  // itself: every action the legend names is a labelled button on this same bar.
+  function showHint () {
+    if (!theme.isTV) return
+    clearHintIdle()
+    hintOpacity.stopAnimation()
+    setHintShown(true)
+    Animated.timing(hintOpacity, { toValue: 1, duration: 160, useNativeDriver: true }).start()
+    hintIdle.current = setTimeout(() => {
+      Animated.timing(hintOpacity, { toValue: 0, duration: 350, useNativeDriver: true })
+        .start(({ finished }) => { if (finished) setHintShown(false) })
+    }, HINT_IDLE_MS)
+  }
+
+  // The ONE way into channel detail, so that every entry records where BACK should
+  // return to. Detail is normally reached from the channel list and goes back to it;
+  // RIGHT reaches it from fullscreen, which never passed through a list at all.
+  function openInfo (s: Stream, { fromFullscreen = false }: { fromFullscreen?: boolean } = {}) {
+    infoFromFullscreen.current = fromFullscreen
+    setInfoStream(s)
+    setOverlay('info')
+  }
+
   // The manual half of the locked-fullscreen tap toggle (S22 round 5): fade the bar
   // out now instead of waiting for the idle timer.
   function hideBar () {
@@ -590,6 +682,17 @@ export function LiveScreen ({ route, navigation }: Props) {
     requestAnimationFrame(() => (catcherRef.current as any)?.requestTVFocus?.())
   }
 
+  // …and the remote's own CHANNEL keys, which are what those buttons are FOR. They reach
+  // no focus strip (a strip is only found by a key that moves focus), so they arrive from
+  // the Activity instead — see channelKeys.ts. Only while fullscreen: with a panel up the
+  // viewer is browsing, and zapping the picture out from under them is not what the key
+  // means there.
+  useEffect(() => onChannelKey((direction) => {
+    if (overlayRef.current !== 'none') return
+    zap(direction === 'up' ? 1 : -1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [streams, playingId])
+
   // BACK: channel detail → list; the left menu → fullscreen (collapse, hiding it);
   // then the ladder splits by orientation (phone, S22 round 3). LANDSCAPE keeps the
   // original order: guide → fullscreen, fullscreen → default (pop to Menu).
@@ -615,7 +718,15 @@ export function LiveScreen ({ route, navigation }: Props) {
         if (!theme.isTV && portraitRef.current) return false
         setOverlay('none'); return true // landscape guide mode → fullscreen
       }
-      if (overlayRef.current === 'info') { setOverlay('list'); return true }
+      if (overlayRef.current === 'info') {
+        // Detail reached from the channel list goes back to it. Reached by RIGHT on
+        // fullscreen it never passed through a list, and dropping the viewer into one
+        // they never opened takes them further FROM the picture, not back to it.
+        const toFullscreen = infoFromFullscreen.current
+        infoFromFullscreen.current = false
+        setOverlay(toFullscreen ? 'none' : 'list')
+        return true
+      }
       if (overlayRef.current === 'list') {
         // Unwind the category drill before the overlay: sub selected -> back to sub-select;
         // drilled (no sub) -> back to the top-level rail; else hide the left menu.
@@ -721,6 +832,21 @@ export function LiveScreen ({ route, navigation }: Props) {
             <>
               <Pressable style={styles.zapUp} onFocus={() => bounceZap(1)} />
               <Pressable style={styles.zapDown} onFocus={() => bounceZap(-1)} />
+              {/* LEFT opens the channel list — the same surface OK opens, reached the way
+                  a set-top box viewer expects. No bounce back to the catcher: opening the
+                  overlay unmounts this whole block, and the overlay takes focus itself. */}
+              <Pressable style={styles.menuLeft} onFocus={() => setOverlay('list')} />
+              {/* RIGHT opens channel detail for what is playing: the mirror of LEFT —
+                  left browses everything ELSE, right describes THIS — and the last
+                  direction on the pad that answered to nothing at all. Guarded on
+                  `playing` because with nothing tuned there is no channel to describe,
+                  and the press should stay silent rather than raise an empty panel. */}
+              {playing && (
+                <Pressable
+                  style={styles.menuRight}
+                  onFocus={() => openInfo(playing, { fromFullscreen: true })}
+                />
+              )}
             </>
           )}
           {playing && barShown && (
@@ -746,7 +872,7 @@ export function LiveScreen ({ route, navigation }: Props) {
                 clock={clockText(now)}
                 favorite={favorites.includes(playing.id)}
                 onSearch={() => setOverlay('search')}
-                onInfo={() => { setInfoStream(playing); setOverlay('info') }}
+                onInfo={() => openInfo(playing)}
                 onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
                 onReport={() => { showBar(); setReportOpen(true) }}
                 hasTracks={textTracks.length > 0 || audioTracks.length > 1}
@@ -778,6 +904,9 @@ export function LiveScreen ({ route, navigation }: Props) {
                 // fullscreen overlay and fades on a timer, so the standing chip below is
                 // what a viewer in the guide (portrait's resting state) actually sees.
                 sendingToTv={sendTv.sending}
+                // The remote legend (TV only, the bar gates it on theme.isTV itself).
+                hint={hintShown}
+                hintOpacity={hintOpacity}
               />
             </Animated.View>
           )}
@@ -870,12 +999,29 @@ export function LiveScreen ({ route, navigation }: Props) {
 
       {(overlay === 'list' || overlay === 'info') && (
         <View style={styles.panels} onTouchStart={bumpMenuIdle}>
+          {/* LEFT OUT OF A DRILLED RAIL GOES BACK UP to the top-level categories. Without
+              it the only way out was to walk the focus up to the "‹ Parent" header and
+              press OK — a detour the viewer has to discover, for the one direction that
+              already means "back" everywhere else in this app. Mounted only while
+              drilled, so at the top level LEFT stays what it was: nothing to the left of
+              the rail, and the press is simply ignored. */}
+          {theme.isTV && inDrill && (
+            <Pressable style={styles.railExit} onFocus={exitDrill} />
+          )}
+          {/* autoFocus STAYS. Taking it off was tried, to stop the rail claiming the
+              focus that belongs to the playing channel — and it also stopped LEFT out of
+              the channel list from reaching the rail at all, which is worse: measured on
+              the set, the press did nothing and the next OK tuned a channel instead of
+              opening a category. The list wins the opening focus by ASKING for it
+              explicitly once mounted (ChannelListPanel), rather than by taking the rail's
+              routing away. */}
           <FocusPane autoFocus style={[styles.railPane, portrait && styles.railPanePortrait]}>
             <CategoryRail
               items={railItems}
               selected={railSelected}
               parentHeader={inDrill ? { label: drillParent!, onBack: exitDrill } : undefined}
               onSelect={selectRail}
+              onActivate={activateRail}
               onActivity={bumpMenuIdle}
             />
           </FocusPane>
@@ -888,7 +1034,7 @@ export function LiveScreen ({ route, navigation }: Props) {
                 playingId={playingId}
                 favorites={favorites}
                 onSelect={(s) => play(s, { collapse: true })}
-                onInfo={(s) => { setInfoStream(s); setOverlay('info') }}
+                onInfo={(s) => openInfo(s)}
                 // Two-tier OK — but NOT while a playback error is up: play() honors
                 // re-selecting the SAME channel as the retry the error message
                 // promises (see play()'s 2026-07-16 outage note), and routing that
@@ -911,6 +1057,15 @@ export function LiveScreen ({ route, navigation }: Props) {
                     onWatch={() => play(streams.find(s => s.id === infoStream.id) ?? infoStream, { collapse: true })}
                     onToggleFavorite={() => backend.toggleFavorite(infoStream.id)}
                     onReport={() => setReportOpen(true)}
+                    // The controls the TELEVISION's bottom bar cannot carry, because a
+                    // focusable over the video would swallow the D-pad zap (S7). This
+                    // panel is already out of that path and one key away (RIGHT), so it
+                    // is where they live. Tracks belong to the channel being WATCHED —
+                    // they were read off the running player — so they are not offered on
+                    // a merely-browsed row. Phone keeps them on the bar and passes none.
+                    hasTracks={theme.isTV && infoStream.id === playingId && (textTracks.length > 0 || audioTracks.length > 1)}
+                    onSubtitles={theme.isTV ? () => setShowTracks(true) : undefined}
+                    onSearch={theme.isTV ? () => navigation.navigate('Search') : undefined}
                   />
                 )}
               </View>
@@ -1022,7 +1177,19 @@ const styles = StyleSheet.create({
   // Portrait guide: the transparent tap target over the video strip (expand to
   // portrait fullscreen). Same inline height as the strip itself.
   stripTap: { position: 'absolute', top: 0, left: 0, right: 0 },
-  catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 0, right: 0 },
+  // Insets on BOTH sides make room for menuLeft/menuRight. The catcher must not span to
+  // either edge or there is nothing for the focus engine to find on a sideways press.
+  catcherTV: { position: 'absolute', top: 80, bottom: 80, left: 80, right: 80 },
+  // The LEFT strip: same trick as the zap strips, for the surface a viewer reaches for
+  // first. Measured on a TCL set — up/down zapped and OK opened the channel list, but
+  // LEFT and RIGHT did nothing at all, and left is where every set-top box in the world
+  // puts its channel menu. A viewer pressed left, got silence, and reported that channel
+  // changing was broken when it had been working the whole time.
+  menuLeft: { position: 'absolute', top: 80, bottom: 80, left: 0, width: 80 },
+  // …and the RIGHT strip, which was the other half of that same silence: channel detail
+  // for what is playing. With this the whole pad answers, and the legend on the bar
+  // says so.
+  menuRight: { position: 'absolute', top: 80, bottom: 80, right: 0, width: 80 },
   // Full-screen wrapper so the NowPlayingBar's own absolute positioning still anchors
   // to the bottom while we fade the whole thing; box-none lets non-button taps reach
   // the catcher beneath. The bottom reveal zone re-shows the faded bar on touch.
@@ -1050,8 +1217,24 @@ const styles = StyleSheet.create({
   zapUp: { position: 'absolute', top: 0, left: 0, right: 0, height: 80 },
   zapDown: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 80 },
   center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
-  panels: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', paddingVertical: theme.safeY, paddingLeft: theme.safeX / 2 },
-  railPane: { width: '20%', backgroundColor: theme.colors.overlayStrong, borderRadius: 12, paddingVertical: theme.spacing(1), marginRight: 2 },
+  // The left inset moved from this container's PADDING to the rail's margin, so that the
+  // gutter it leaves is real screen space OUTSIDE the rail — an absolutely-positioned
+  // child at left:0 then sits strictly to the LEFT of the rail, which is the whole
+  // requirement for the focus engine to find it on a LEFT press (see railExit). Padding
+  // could not do that: an absolute child positions against the padding edge, so `left: 0`
+  // landed exactly on the rail rather than beside it.
+  panels: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', paddingVertical: theme.safeY },
+  railExit: { position: 'absolute', left: 0, top: 0, bottom: 0, width: theme.isTV ? theme.safeX : theme.safeX / 2 },
+  // The RAIL is trimmed on TV (it read too large on a real set) — narrower furniture
+  // leaves more of the picture playing behind it, which is the point of browsing over
+  // live video rather than on a page of its own.
+  railPane: { width: theme.isTV ? '17%' : '20%', backgroundColor: theme.colors.overlayStrong, borderRadius: 12, paddingVertical: theme.spacing(1), marginRight: 2, marginLeft: theme.isTV ? theme.safeX : theme.safeX / 2 },
+  // The CHANNEL LIST is not trimmed with it, and that is a measured decision rather
+  // than an oversight. Narrowing it to 33% was tried and reverted: a row is number +
+  // name + LIVE badge + logo, so the name is the only elastic thing in it, and the five
+  // points came almost entirely out of the name — "A&E TV" became "A…" on the set. A
+  // channel list whose channels cannot be read is not smaller, it is broken. The size
+  // win here comes from the row HEIGHT instead (ChannelRow.ROW_INNER_H).
   listPane: { width: theme.isTV ? '38%' : '52%' },
   // Portrait (phone): the landscape percentages leave the rail/list unreadably
   // narrow on a ~360dp-wide screen — spread the two panes across the full width.
