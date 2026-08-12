@@ -119,10 +119,10 @@ const styles = StyleSheet.create({
   // without this, the rail's last item scrolls flush to the glass curve and cannot be
   // tapped. The pad lets the list scroll one item-height past the end, clear of it.
   scrollContent: { paddingBottom: theme.spacing(6) },
-  // TV paddings trimmed ~15% with the rest of the left menu (see LiveScreen.railPane).
-  back: { paddingVertical: theme.isTV ? 8 : 7, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
+  // TV paddings ride the scale ramp with everything else (theme.ts SCALE).
+  back: { paddingVertical: theme.isTV ? theme.px(10) : 7, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
   backText: { color: theme.colors.accent, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '800', letterSpacing: 1 },
-  item: { paddingVertical: theme.isTV ? 8 : 7, paddingHorizontal: theme.spacing(1) },
+  item: { paddingVertical: theme.isTV ? theme.px(10) : 7, paddingHorizontal: theme.spacing(1) },
   itemRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   label: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '700', letterSpacing: 1, flexShrink: 1 },
   chevron: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '800' },

@@ -610,12 +610,12 @@ const styles = StyleSheet.create({
     borderRadius: 10, padding: theme.spacing(0.75),
     // A constant footprint (art + padding tall): the TV header must not breathe as
     // the focus walks rows, and the phone card must not resize between guided and
-    // guide-less channels. TV trimmed ~15% with the rest of the grid.
-    width: theme.isTV ? 357 : 300, height: theme.isTV ? 92 : 80
+    // guide-less channels. TV rides the scale ramp (theme.ts SCALE) at its 10-foot base.
+    width: theme.isTV ? theme.px(420) : 300, height: theme.isTV ? theme.px(108) : 80
   },
   // 16:9 — the frames the broadcaster rolls into the feed (logo letterboxes in the
   // same box, so thumb→logo fallback never moves the card's text).
-  previewArt: { width: theme.isTV ? 136 : 96, height: theme.isTV ? 76 : 54, borderRadius: 6, backgroundColor: theme.colors.surface },
+  previewArt: { width: theme.isTV ? theme.px(160) : 96, height: theme.isTV ? theme.px(90) : 54, borderRadius: 6, backgroundColor: theme.colors.surface },
   previewArtFallback: { alignItems: 'center', justifyContent: 'center' },
   previewInitial: { color: theme.colors.textDim, fontSize: theme.type.title, fontWeight: '800' },
   previewInfo: { flex: 1 },

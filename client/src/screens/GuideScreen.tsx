@@ -64,7 +64,7 @@ import { ProgressHairline } from '../components/ProgressHairline'
 import { SectionLoading } from '../components/SectionLoading'
 import { GuidePanel, GuidePreviewCard, CategoryChips, TimeBar, CELL_GAP, hhmm } from '../components/GuidePanel'
 import {
-  GUIDE_ROW_H, GUIDE_ROW_INNER_H, GUIDE_ROW_MB, GUIDE_WINDOW_MS, GUIDE_WINDOW_MIN, GUIDE_SLOTS,
+  GUIDE_ROW_INNER_H, GUIDE_ROW_MB, GUIDE_WINDOW_MS, GUIDE_WINDOW_MIN, GUIDE_SLOTS,
   MIN_CELL_W, cellRect, visiblePrograms, moveFocus, snapToNow,
   type GuideFocus, type GuideDir
 } from '../guide'
@@ -76,12 +76,20 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Guide'>
 // one-way trap (see the chips row), and every other focus move here is explicit: the
 // reducer places the virtual focus, and requestTVFocus places the native one.
 
-// TV channel column: number + logo box + padding. Trimmed ~15% with the row height
-// (see GUIDE_ROW_INNER_H) — every pixel taken off this column is timeline the schedule
-// gets back, which is the part of the grid a viewer is actually reading.
-const CH_COL_W = 150
-const LOGO_W = 80
-const LOGO_H = 45
+// Every fixed number on this screen rides theme.px, so the grid follows the same one
+// knob as the type inside it (theme.ts SCALE). These are the 10-foot base values.
+//
+// The ROW HEIGHT is scaled HERE rather than in guide.ts, which stays pure: the styles
+// and getItemLayout must agree exactly, so both read these.
+const ROW_INNER_H = theme.px(GUIDE_ROW_INNER_H)
+const ROW_H = ROW_INNER_H + GUIDE_ROW_MB
+
+// TV channel column: number + logo box + padding. Every pixel taken off it is timeline
+// the schedule gets back, which is the part of the grid a viewer is actually reading.
+// These four have to ADD UP inside CH_COL_W, and once did not — see chCell.
+const CH_COL_W = theme.px(180)
+const LOGO_W = theme.px(96)
+const LOGO_H = theme.px(54)
 
 // The focus-engine rig (TV): invisible edge strips around a central catcher, laid
 // out INSIDE the grid body so the header chips stay out of the strip geometry.
@@ -330,10 +338,10 @@ function GuideGrid ({ model, activeKey, onSelectCategory, list, numbers, playing
           ref={listRef}
           data={list}
           keyExtractor={(s) => s.id}
-          getItemLayout={(_, index) => ({ length: GUIDE_ROW_H, offset: GUIDE_ROW_H * index, index })}
+          getItemLayout={(_, index) => ({ length: ROW_H, offset: ROW_H * index, index })}
           initialScrollIndex={initialIndex > 0 ? initialIndex : undefined}
           onScrollToIndexFailed={(info) => {
-            listRef.current?.scrollToOffset({ offset: GUIDE_ROW_H * info.index, animated: false })
+            listRef.current?.scrollToOffset({ offset: ROW_H * info.index, animated: false })
             setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
           }}
           extraData={[focus, nowMs, stripW]}
@@ -469,7 +477,7 @@ const styles = StyleSheet.create({
   // Brand mark left, preview card right, on their OWN row above the categories — the
   // card used to sit inline beside the chips and pushed most of them off screen.
   brandRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: theme.spacing(1.5), marginBottom: theme.spacing(0.5) },
-  brandLogo: { width: 150, height: 44 },
+  brandLogo: { width: theme.px(150), height: theme.px(44) },
   // The categories now get the full width to themselves.
   chipsRow: { flexDirection: 'row', alignItems: 'flex-start' },
   chipsPane: { flex: 1 },
@@ -485,7 +493,7 @@ const styles = StyleSheet.create({
   headerExit: { position: 'absolute', top: 0, left: 0, right: 0, height: STRIP },
 
   gridRow: {
-    flexDirection: 'row', alignItems: 'center', height: GUIDE_ROW_INNER_H, marginBottom: GUIDE_ROW_MB,
+    flexDirection: 'row', alignItems: 'center', height: ROW_INNER_H, marginBottom: GUIDE_ROW_MB,
     borderLeftWidth: 3, borderLeftColor: 'transparent'
   },
   rowPlaying: { borderLeftColor: theme.colors.accent },
@@ -494,10 +502,11 @@ const styles = StyleSheet.create({
     // Reserved so the ring below adds no width — the grid must not shift as focus walks.
     borderWidth: 2, borderColor: 'transparent', borderRadius: 8
   },
-  // These four have to ADD UP, and they did not after the column was trimmed: 12 pad +
-  // 52 number + 8 gap + 82 logo + 4 border came to 158 inside a 150-wide cell, so every
-  // station logo was clipped down its right edge on the set. 12 + 44 + 8 + 80 = 144,
-  // inside the 146 the border leaves, with 2px to spare.
+  // THE PARTS OF THIS COLUMN HAVE TO ADD UP, and once did not: 12 pad + 52 number + 8
+  // gap + 82 logo + 4 border came to 158 inside a 150-wide cell, and every station logo
+  // was clipped down its right edge on the set. They all ride theme.px now, so the sum
+  // holds wherever the knob is set: 0.8·(12 + 52 + 96) + 8 = 136, inside the 140 the
+  // ring's 2px border leaves of CH_COL_W.
   // THE ROW'S OWN "you are here", and the thing that was missing. The focus fill landed
   // on ONE program cell out of the several in a 2 h window, while the channel column —
   // the part a viewer actually reads to know WHERE they are — never changed at all. From
@@ -506,13 +515,16 @@ const styles = StyleSheet.create({
   // pale fill behind them erases the white ones.
   chCellFocused: { borderColor: theme.colors.focus },
   chNumberFocused: { color: theme.colors.focus, fontWeight: '800' },
-  chNumber: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: 44 },
+  // On the scale ramp with the column that holds it — the pad, number, gap and logo all
+  // have to keep adding up inside CH_COL_W (see chCell), and they only do at every
+  // setting of the knob if they all ride it.
+  chNumber: { color: theme.colors.textDim, fontSize: theme.type.label, fontVariant: ['tabular-nums'], width: theme.px(52) },
   chLogo: { width: LOGO_W, height: LOGO_H, borderRadius: 4, backgroundColor: theme.colors.surface },
   chLogoFallback: { alignItems: 'center', justifyContent: 'center' },
   chInitial: { color: theme.colors.textDim, fontSize: theme.type.label, fontWeight: '800' },
-  strip: { height: GUIDE_ROW_INNER_H, overflow: 'hidden' },
+  strip: { height: ROW_INNER_H, overflow: 'hidden' },
   cell: {
-    position: 'absolute', top: 0, height: GUIDE_ROW_INNER_H, borderRadius: 6,
+    position: 'absolute', top: 0, height: ROW_INNER_H, borderRadius: 6,
     backgroundColor: theme.colors.surface, paddingHorizontal: 10, paddingVertical: 6,
     borderWidth: 2, borderColor: 'transparent', overflow: 'hidden', justifyContent: 'center'
   },
