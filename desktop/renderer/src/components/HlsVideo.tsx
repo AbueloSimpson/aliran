@@ -96,8 +96,22 @@ export interface HlsVideoProps {
 
 // The localhost server always serves index.m3u8; redirect channels are operator URLs
 // that may (rarely) be direct files — those go to native <video> playback.
-function isHlsUrl (url: string) {
-  return /\.m3u8(\?|$)/i.test(url)
+//
+// An EXTENSION-LESS url counts as HLS. Chromium plays no HLS of its own, so the native
+// branch is only ever right for a direct media file, and a url that names no container
+// is not one: in practice it is a streaming shortlink. Every Samsung TV Plus KR channel
+// arrives as https://jmp2.uk/stvp-<id> — no extension — and all 177 fell to the native
+// branch and span forever on the retry ladder (2026-08-13). The wire was fine
+// throughout (Content-Type: application/x-mpegURL); the container was simply decided
+// before the request. Pluto's shortlinks carry .m3u8, which is why only Korea broke.
+//
+// Left deliberately narrow: a url that DOES name a container keeps the old answer, so
+// .mp4/.webm still go native. (.mpd is academic here — hls.js is HLS-only and Chromium
+// has no native DASH either, so a DASH redirect has never played on desktop.)
+export function isHlsUrl (url: string) {
+  if (/\.m3u8(\?|$)/i.test(url)) return true
+  const path = url.split(/[?#]/)[0]
+  return !/\.[a-z0-9]{1,5}$/i.test(path.slice(path.lastIndexOf('/') + 1))
 }
 
 /** hls.js track descriptors -> the flat-index shape TrackMenu renders. Exported for

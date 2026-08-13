@@ -35,7 +35,7 @@ import { useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import { formatDuration } from '../catalog'
 import { TrackMenu } from '../components/TrackMenu'
-import { trackList, type MediaTrack } from '../components/HlsVideo'
+import { trackList, isHlsUrl, type MediaTrack } from '../components/HlsVideo'
 import { VolumeControl, loadVolume, saveVolume } from '../components/VolumeControl'
 import type { VodHistoryEntry } from '../types'
 
@@ -225,7 +225,7 @@ export function VodPlayerScreen ({ url, title, durationSec, id, kind, seriesId, 
     video.addEventListener('ended', onEnded)
 
     let hls: Hls | null = null
-    if (/\.m3u8(\?|$)/i.test(url) && Hls.isSupported()) {
+    if (isHlsUrl(url) && Hls.isSupported()) {
       hls = new Hls({ maxBufferLength: 30 })
       hlsRef.current = hls
       hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}) })

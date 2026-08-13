@@ -24,7 +24,10 @@ export type { CastSessionInfo, CastEndedReason, CastStartResult, RemoteIdentity,
 // src/secure-key.ts and docs/security-model.md, "Account keys at rest".
 export { secureKeyStatus, secureReset } from './secure-key'
 export type { SecureKeyStatus } from './secure-key'
-export { AliranVideo, SelectedTrackType } from './AliranVideo'
+// sourceType: the container hint a redirect url needs when it does not name its own
+// (see AliranVideo.tsx). Exported so the VOD screen, which drives react-native-video
+// directly instead of going through <AliranVideo>, classifies urls the same way.
+export { AliranVideo, SelectedTrackType, sourceType } from './AliranVideo'
 export type { AliranVideoProps, AliranVideoHandle, TuneEvent, TunePhase, SelectedTrack, AudioTrack, TextTrack, BufferConfig } from './AliranVideo'
 // Ready-made "engine can't run here" screen for single-APK builds: render in the
 // !AliranBackend.isSupported() branch; the optional action button is the host's

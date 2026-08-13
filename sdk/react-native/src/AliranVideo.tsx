@@ -90,6 +90,27 @@ function headersSig (h: Record<string, string> | null | undefined) {
   return h ? Object.keys(h).sort().map((k) => k + '=' + h[k]).join('&') : ''
 }
 
+// What container is at `url`? react-native-video passes `source.type` to ExoPlayer as
+// overrideExtension; with no type ExoPlayer infers from the url's LAST PATH SEGMENT
+// (Util.inferContentType) and an EXTENSION-LESS one falls through to CONTENT_TYPE_OTHER
+// -> ProgressiveMediaSource, which feeds an HLS text playlist to the mp4/mkv extractors
+// and dies with UnrecognizedInputFormatException.
+//
+// The localhost server always serves index.m3u8, so this only ever bites REDIRECT
+// channels — operator urls under no obligation to describe themselves. Every Samsung
+// TV Plus KR channel arrives as https://jmp2.uk/stvp-<id> with no extension at all, and
+// all 177 of them failed this way (2026-08-13); the wire was fine the whole time
+// (Content-Type: application/x-mpegURL), the container was just decided before the
+// request. Pluto's shortlinks carry .m3u8, which is why only Korea broke.
+//
+// A url that DOES name its container is left alone (undefined = infer), so a .mpd
+// redirect still opens DASH instead of being forced to HLS.
+export function sourceType (url: string) {
+  const path = url.split(/[?#]/)[0]
+  const segment = path.slice(path.lastIndexOf('/') + 1)
+  return /\.[a-z0-9]{1,5}$/i.test(segment) ? undefined : 'm3u8'
+}
+
 export type TunePhase = 'start' | 'retune' | 'reconnect' | 'playing'
 
 // Imperative surface (React ref): seek, for vod transport UI. The handle survives the
@@ -365,7 +386,7 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
     <Video
       key={url + ':' + sig + ':' + attempt}
       ref={videoRef}
-      source={{ uri: url, headers: headers ?? undefined, bufferConfig: { ...BUFFER_CONFIG, ...bufferConfig } }}
+      source={{ uri: url, type: sourceType(url), headers: headers ?? undefined, bufferConfig: { ...BUFFER_CONFIG, ...bufferConfig } }}
       style={style ?? StyleSheet.absoluteFill}
       controls={controls}
       paused={paused}

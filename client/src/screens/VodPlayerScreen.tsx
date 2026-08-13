@@ -29,7 +29,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Pressable, StyleSheet, PanResponder, ActivityIndicator, Animated, BackHandler, Platform } from 'react-native'
 import Video, { type VideoRef } from 'react-native-video'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
-import { SelectedTrackType, type AudioTrack, type SelectedTrack, type TextTrack, type VodHistoryEntry } from '@aliran/react-native'
+import { SelectedTrackType, sourceType, type AudioTrack, type SelectedTrack, type TextTrack, type VodHistoryEntry } from '@aliran/react-native'
 import type { RootStackParamList } from '../App'
 import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
@@ -201,7 +201,7 @@ export function VodPlayerScreen ({ route, navigation }: Props) {
       {!failed && (
         <Video
           ref={player}
-          source={{ uri: url }}
+          source={{ uri: url, type: sourceType(url) }}
           style={StyleSheet.absoluteFill}
           resizeMode="contain"
           controls={false}
