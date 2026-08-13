@@ -21,7 +21,7 @@ import RAM from 'random-access-memory'
 import Hyperdrive from 'hyperdrive'
 import crypto from 'hypercore-crypto'
 import b4a from 'b4a'
-import { mirrorDirToDrive, reclaimExpiredBlobs, feedTreeBytes, isStoreCorruption } from '../broadcaster/src/hls.js'
+import { mirrorDirToDrive, reclaimExpiredBlobs, feedTreeBytes, isStoreCorruption, MIRROR_BLOCK_SIZE } from '../broadcaster/src/hls.js'
 import { purgeStaleCores } from '@aliran/core/store-gc.js'
 
 const log = (...a) => console.log(...a)
@@ -451,6 +451,67 @@ async function scenarioTreeNodeTruncationDetected () {
   fs.rmSync(storeDir, { recursive: true, force: true })
 }
 
+// --- Scenario G: the mirror's block size stays on the right side of its trade-off --------
+// The mirror overrides hyperblobs' 64 KiB default because the PER-BLOCK bookkeeping around
+// each put (merkle node, oplog record, streamx write, buffer copy) is what saturates the
+// broadcaster's single main thread — a 127-channel box measured 88.7 % busy on one thread
+// while 22 of its 24 hardware threads idled, and mirroring ~44 MB/s of segments accounted
+// for essentially all of it. Fewer, bigger blocks is the cheapest lever on that.
+//
+// But it is a TRADE, and this scenario pins both ends of it, because both failure modes are
+// silent. Too small and the saving evaporates. Too big — one block per segment, which is
+// measurably the fastest — and sdk/serve.js has nothing to stream progressively: a viewer
+// joining a channel would wait for a whole ~1 MB segment before its first byte, and no test
+// in the suite would notice, because serve-progressive-test builds its own drive at the
+// stock size rather than through the mirror.
+async function scenarioMirrorBlockSizing () {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-retention-g-'))
+  const store = new Corestore(RAM)
+  const drive = new Hyperdrive(store.namespace('feed'), { encryptionKey: crypto.randomBytes(32) })
+  await drive.ready()
+  const stop = mirrorDirToDrive(dir, drive, { interval: 40 })
+
+  // The production fleet's MEAN segment (measured across 2140 live segments: p50 622 KB,
+  // mean 978 KB, p90 2510 KB). A fake 96 KB segment would not exercise the trade at all.
+  const REAL_SEGMENT = 978 * 1024
+  const body = crypto.randomBytes(REAL_SEGMENT)
+  fs.writeFileSync(path.join(dir, 'seg0.ts'), body)
+  fs.writeFileSync(path.join(dir, 'index.m3u8'), playlist(['seg0.ts']))
+  await waitFor(async () => !!(await drive.entry('/seg0.ts')), 5000, 'realistic segment mirrored')
+
+  const blocks = (await drive.entry('/seg0.ts')).value.blob.blockLength
+  const stockBlocks = Math.ceil(REAL_SEGMENT / 65536)
+  log(`  …  a ${(REAL_SEGMENT / 1024).toFixed(0)} KB segment lands in ${blocks} block(s); hyperblobs' own default would use ${stockBlocks}`)
+
+  assert.ok(blocks > 1,
+    `a production-sized segment must span MORE than one block (got ${blocks}) — sdk/serve.js streams a segment's blocks to the player as they replicate, and a single-block segment makes a late joiner wait for the whole blob before its first byte`)
+  assert.ok(blocks * 2 <= stockBlocks,
+    `the mirror must cut the block count materially below hyperblobs' 64 KiB default (got ${blocks} vs ${stockBlocks}) — per-block work is what bounds channels per box`)
+
+  // Chunking is a write-side choice only: the bytes must come back exactly.
+  const back = await drive.get('/seg0.ts')
+  assert.ok(back && back.equals(body), 'the segment reads back byte-identical whatever the block size')
+  log(`  ok  block sizing keeps progressive delivery (>1 block) AND cuts per-block work (${blocks} <= ${stockBlocks / 2}); bytes round-trip intact`)
+
+  // The knob the operator actually turns, honoured end to end.
+  const drive2 = new Hyperdrive(store.namespace('feed2'), { encryptionKey: crypto.randomBytes(32) })
+  await drive2.ready()
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'aliran-retention-g2-'))
+  const stop2 = mirrorDirToDrive(dir2, drive2, { interval: 40, blockSize: 512 * 1024 })
+  fs.writeFileSync(path.join(dir2, 'seg0.ts'), body)
+  await waitFor(async () => !!(await drive2.entry('/seg0.ts')), 5000, 'segment mirrored at an overridden block size')
+  const blocks2 = (await drive2.entry('/seg0.ts')).value.blob.blockLength
+  assert.strictEqual(blocks2, Math.ceil(REAL_SEGMENT / (512 * 1024)), `an explicit blockSize is honoured (got ${blocks2})`)
+  assert.notStrictEqual(blocks2, blocks, 'the override actually changed the chunking (the default is not being silently reused)')
+  log(`  ok  FEED_BLOCK_SIZE_KB reaches hyperblobs: 512 KiB gave ${blocks2} blocks vs ${blocks} at the ${MIRROR_BLOCK_SIZE / 1024} KiB default`)
+
+  stop(); stop2()
+  await drive.close(); await drive2.close()
+  await store.close()
+  fs.rmSync(dir, { recursive: true, force: true })
+  fs.rmSync(dir2, { recursive: true, force: true })
+}
+
 try {
   log('scenario A — RAM, clean rotation')
   await scenarioRamCleanRotation()
@@ -464,7 +525,9 @@ try {
   await scenarioCorruptStoreDetected()
   log('scenario F — the "Could not load node" truncation is detected too (87-channel outage regression)')
   await scenarioTreeNodeTruncationDetected()
-  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded; retired feed generations purged; BOTH truncation signatures are detected as corruption so the broadcaster self-heals)')
+  log('scenario G — the mirror\'s block size keeps BOTH ends of its trade (density vs progressive delivery)')
+  await scenarioMirrorBlockSizing()
+  log('\nRESULT: PASS ✅  (rolling window mirrors; storage O(window) even with a stuck entry; restart reclaims the backlog; bee caches bounded; retired feed generations purged; BOTH truncation signatures are detected as corruption so the broadcaster self-heals; mirror block sizing stays inside its trade-off)')
   process.exit(0)
 } catch (err) {
   console.error('ERROR:', err.stack || err.message)

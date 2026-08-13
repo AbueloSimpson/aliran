@@ -924,7 +924,7 @@ class Channel {
     const workDir = config.workDir || os.tmpdir()
     fs.mkdirSync(workDir, { recursive: true })
     const outDir = fs.mkdtempSync(path.join(workDir, 'aliran-hls-'))
-    const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500 })
+    const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500, blockSize: config.feedBlockSizeKb * 1024 })
     const now = Date.now()
     const run = {
       store,
@@ -1399,7 +1399,7 @@ class Channel {
       await newDrive.getBlobs()
       // Mirror the SAME live window into the new generation (ffmpeg is untouched).
       if (this.run !== run) return // stopped mid-rotate — finally cleans up newDrive
-      newStopMirror = mirrorDirToDrive(run.outDir, newDrive, { interval: 500 })
+      newStopMirror = mirrorDirToDrive(run.outDir, newDrive, { interval: 500, blockSize: this.manager.config.feedBlockSizeKb * 1024 })
 
       // Announce the new topic BEFORE swapping so it is discoverable the moment viewers
       // learn the new feedKey. join()/flush() can race a concurrent stop() — guard after.

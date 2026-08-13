@@ -936,13 +936,40 @@ export function feedTreeBytes (storeDir, discoveryKeys) {
   return total
 }
 
+// How many bytes of a mirrored file go into ONE hypercore block.
+//
+// This is the single biggest lever on how many channels one broadcaster PROCESS can carry,
+// because hyperdrive.put() hands every file to hyperblobs at its 64 KiB default and hyperdrive
+// exposes no option for it — so the fleet's average ~1 MB segment becomes ~16 blocks. The
+// per-BYTE work (blake2b over the block, then the block cipher) is unavoidable; the per-BLOCK
+// work wrapped around it — a merkle node, an oplog record, a streamx write, a buffer copy — is
+// paid once per block, and that is what actually bounds a box.
+//
+// Measured on the production Xeon L5639 @2.13GHz against the live fleet's real segment sizes
+// (p50 622 KB, mean 978 KB, p90 2510 KB over 2140 sampled segments):
+//     622 KB segment:  10 blocks 21.1 cpu-ms/MB | 4 blocks 17.8 | 2 blocks 15.5 | 1 block 14.4
+//     978 KB segment:  16 blocks 15.3 cpu-ms/MB | 4 blocks 13.4 | 2 blocks 14.0 | 1 block 12.2
+// A 127-channel box mirrors ~44 MB/s, so every cpu-ms/MB is ~4.4 % of the ONE thread that also
+// serves the control API — which is why that box measured 88.7 % main-thread busy while 22 of
+// its 24 hardware threads sat idle.
+//
+// ⚠ DELIBERATELY NOT "one block per segment", which is both the cheapest and the simplest
+// option. sdk/serve.js streams a segment's blocks to the player AS THEY REPLICATE, so a
+// late-joining viewer gets first bytes without waiting for the whole blob
+// (tools/serve-progressive-test.mjs scenario A pins exactly that). A single-block segment has
+// nothing to deliver progressively: the player would wait for the full ~1 MB before its first
+// byte. That is zap latency paid by every viewer to save CPU on one box. 256 KiB keeps every
+// real segment at two or more blocks while cutting the block count ~4x, and an operator who
+// would rather have the density can raise FEED_BLOCK_SIZE_KB.
+export const MIRROR_BLOCK_SIZE = 256 * 1024
+
 // Poll a directory and mirror changes into a Hyperdrive: put new/changed files, delete files
 // ffmpeg has rotated out, and free each blob's blocks AS IT ROTATES so the feed is an
 // EPHEMERAL rolling buffer (O(window) storage) instead of an ever-growing log. Clearing at
 // rotation time — rather than only sweeping below a global watermark — is deliberate: it
 // keeps reclaim working even when a stuck low entry would otherwise pin the watermark and
 // leak the whole history above it. Returns a stop() function.
-export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
+export function mirrorDirToDrive (dir, drive, { interval = 500, blockSize = MIRROR_BLOCK_SIZE } = {}) {
   const known = new Map() // name -> mtimeMs:size signature
   let stopped = false
   let blobs = null
@@ -1006,6 +1033,13 @@ export function mirrorDirToDrive (dir, drive, { interval = 500 } = {}) {
   async function boot () {
     try {
       blobs = await drive.getBlobs()
+      // Resize BEFORE the first put. hyperblobs reads this field on every put (streaming and
+      // batch alike), so setting it once here covers every file this mirror ever writes; if
+      // getBlobs() throws below, the drive keeps hyperblobs' own default and we lose the
+      // saving rather than the channel. Block size is a WRITE-side choice only — an entry
+      // records its own blockOffset/blockLength, so readers (and every blob already written,
+      // including a feed mid-rotation) are unaffected and no migration exists.
+      if (blockSize > 0) blobs.blockSize = blockSize
       if (stopped) return
       await reconcileStaleEntries(dir, drive, blobs)
       if (stopped) return

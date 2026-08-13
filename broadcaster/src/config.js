@@ -3,6 +3,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
+// The default lives next to the measurements that chose it, not here.
+import { MIRROR_BLOCK_SIZE } from './hls.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -95,6 +97,13 @@ export const config = {
   // per entry, one entry per append) — the long-uptime RSS leak. 8192 entries ≈ 10-15 MB
   // ceiling and is plenty of working set for 15+ channels; raise it only on a big box.
   feedCacheMax: int(process.env.FEED_CACHE_MAX, 8192),
+  // KiB per hypercore block when a segment is mirrored into the feed. THE per-process
+  // channel-density knob: the mirror's per-block bookkeeping, not its per-byte crypto, is
+  // what saturates the one thread that also serves this API. See MIRROR_BLOCK_SIZE in
+  // hls.js for the measurements and for why the default stops short of one block per
+  // segment (progressive delivery to a late-joining viewer). Raising it trades a little
+  // zap latency for channels per box; lowering it does the reverse.
+  feedBlockSizeKb: int(process.env.FEED_BLOCK_SIZE_KB, MIRROR_BLOCK_SIZE / 1024),
   // Recycle a channel's RUNNING ffmpeg once its memory (VmRSS+VmSwap from /proc) crosses
   // this cap (MB). Long-running live-HLS pulls slowly accumulate demuxer state on some
   // upstreams (SSAI ad insertion; observed ~100+ MB after days vs the 13–30 MB a fresh one
@@ -291,6 +300,10 @@ chkInt('FEED_ROTATE_HOURS', config.feedRotate.hours, 0)
 chkInt('FEED_ROTATE_TREE_MB', config.feedRotate.treeMb, 0)
 chkInt('FEED_ROTATE_GRACE_MS', config.feedRotate.graceMs, 0)
 chkInt('FEED_CACHE_MAX', config.feedCacheMax, 256)
+// Floor 64 KiB: hyperblobs' own default, below which the per-block bookkeeping this knob
+// exists to reduce only grows. Ceiling 8192 KiB: protomux batches at 8 MiB, so a block
+// beyond that would be a replication message no peer is framed to carry.
+chkInt('FEED_BLOCK_SIZE_KB', config.feedBlockSizeKb, 64, 8192)
 chkInt('FFMPEG_MAX_RSS_MB', config.ffmpegMaxRssMb, 0)
 chkInt('SLATE_AFTER', config.slate.after, 1)
 chkInt('SLATE_RETRY_MS', config.slate.retryMs, 1000)
