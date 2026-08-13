@@ -969,7 +969,12 @@ export const MIRROR_BLOCK_SIZE = 256 * 1024
 // rotation time — rather than only sweeping below a global watermark — is deliberate: it
 // keeps reclaim working even when a stuck low entry would otherwise pin the watermark and
 // leak the whole history above it. Returns a stop() function.
-export function mirrorDirToDrive (dir, drive, { interval = 500, blockSize = MIRROR_BLOCK_SIZE } = {}) {
+//
+// `mirrored` (optional) is a caller-owned Set kept in step with the names this mirror has
+// actually landed in the drive. It exists so the control API can answer "did the playlist
+// flow end to end" for EVERY channel without an awaited drive.entry() per channel — see
+// channel.js status() for the measurement that made that necessary.
+export function mirrorDirToDrive (dir, drive, { interval = 500, blockSize = MIRROR_BLOCK_SIZE, mirrored = null } = {}) {
   const known = new Map() // name -> mtimeMs:size signature
   let stopped = false
   let blobs = null
@@ -1004,6 +1009,7 @@ export function mirrorDirToDrive (dir, drive, { interval = 500, blockSize = MIRR
           if (name === THUMB_FILENAME && !isCompleteJpeg(buf)) continue
           await drive.put(p, buf)
           known.set(name, sig)
+          if (mirrored) mirrored.add(name) // only AFTER the put resolved — see the option's note
           if (prev) await clearBlob(blobs, prev.value && prev.value.blob)
           changed = true
         }
@@ -1019,6 +1025,7 @@ export function mirrorDirToDrive (dir, drive, { interval = 500, blockSize = MIRR
           await clearBlob(blobs, e && e.value && e.value.blob)
         } catch {}
         known.delete(name)
+        if (mirrored) mirrored.delete(name)
         changed = true
       }
     }

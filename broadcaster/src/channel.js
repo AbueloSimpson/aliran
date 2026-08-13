@@ -924,7 +924,10 @@ class Channel {
     const workDir = config.workDir || os.tmpdir()
     fs.mkdirSync(workDir, { recursive: true })
     const outDir = fs.mkdtempSync(path.join(workDir, 'aliran-hls-'))
-    const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500, blockSize: config.feedBlockSizeKb * 1024 })
+    // What the mirror has actually landed in the drive, kept in memory so the aggregate
+    // status API never has to ask the store — see status() for why that matters.
+    const mirrored = new Set()
+    const stopMirror = mirrorDirToDrive(outDir, drive, { interval: 500, blockSize: config.feedBlockSizeKb * 1024, mirrored })
     const now = Date.now()
     const run = {
       store,
@@ -932,6 +935,7 @@ class Channel {
       swarm,
       egress,
       stopMirror,
+      mirrored,
       outDir,
       feedKey: feedKeyHex,
       encryptionKey: b4a.toString(encryptionKey, 'hex'),
@@ -1391,6 +1395,7 @@ class Channel {
     run.rotating = true
     let newDrive = null
     let newStopMirror = null
+    let newMirrored = null
     try {
       const encryptionKey = loadOrCreateEncryptionKey(this.storeDir)
       const newGen = (this.meta.feedGen || 0) + 1
@@ -1399,7 +1404,11 @@ class Channel {
       await newDrive.getBlobs()
       // Mirror the SAME live window into the new generation (ffmpeg is untouched).
       if (this.run !== run) return // stopped mid-rotate — finally cleans up newDrive
-      newStopMirror = mirrorDirToDrive(run.outDir, newDrive, { interval: 500, blockSize: this.manager.config.feedBlockSizeKb * 1024 })
+      // A fresh set for a fresh generation: the new drive genuinely holds nothing until this
+      // mirror has re-put the window, and status() must say so rather than inherit the
+      // retired generation's answer. (drive.entry() on the new drive reported the same.)
+      newMirrored = new Set()
+      newStopMirror = mirrorDirToDrive(run.outDir, newDrive, { interval: 500, blockSize: this.manager.config.feedBlockSizeKb * 1024, mirrored: newMirrored })
 
       // Announce the new topic BEFORE swapping so it is discoverable the moment viewers
       // learn the new feedKey. join()/flush() can race a concurrent stop() — guard after.
@@ -1414,6 +1423,7 @@ class Channel {
       const newFeedKeyHex = b4a.toString(newDrive.key, 'hex')
       run.drive = newDrive
       run.stopMirror = newStopMirror
+      run.mirrored = newMirrored
       run.feedKey = newFeedKeyHex
       run.lastRotateAt = Date.now()
       run.drainMirrors.push({ stopMirror: oldStopMirror })
@@ -1568,11 +1578,20 @@ class Channel {
     const thumb = run ? run.thumb : resolveThumb(this.meta, this.manager.config)
     if (thumb) out.thumbs.interval = thumb.intervalSeconds
     if (run) {
-      try {
-        out.playlist = !!(await run.drive.entry('/index.m3u8'))
-        out.driveVersion = run.drive.version
-      } catch {}
-      if (thumb) { try { out.thumbs.present = !!(await run.drive.entry('/' + THUMB_FILENAME)) } catch {} }
+      // Read the MIRROR's record of what it put, never the drive. This used to be two
+      // awaited drive.entry() lookups, which is fine for one channel and pathological for
+      // the list: GET /api/channels calls status() for every channel in sequence, so it was
+      // 2N round trips through an event loop already ~90 % occupied mirroring segments.
+      // Measured on a 127-channel box: GET /api/channels/:id answered in 1-230 ms while GET
+      // /api/channels and /api/status never returned at all (>180 s, zero bytes) — the box
+      // was streaming perfectly and yet unmanageable through its own API. The mirror records
+      // a name only after its drive.put resolved and drops it when the file rotates out, so
+      // this is the same end-to-end "it flowed" signal the lookup was, at zero I/O.
+      // Same contract as renderMetrics() in control-server.js: an aggregate endpoint reads
+      // memory, never live store objects.
+      out.playlist = run.mirrored.has('index.m3u8')
+      out.driveVersion = run.drive.version
+      if (thumb) out.thumbs.present = run.mirrored.has(THUMB_FILENAME)
     }
     return out
   }
