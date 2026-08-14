@@ -49,6 +49,17 @@
 //   L  PROBE RETRY ACCOUNTING — an inconclusive probe is re-run, bounded by PROBE_MAX_TRIES
 //      and at most once per reclaim tick, and falls back to budget-ACTIVE meanwhile; a
 //      measured verdict is never re-run at all. Read off reclaimStatus().punchTries.
+//   M  THE TRIGGER RIDES RANGED SERVES — a playlist requested with a Range header still
+//      fires read-ahead, reclaim, the budget and the probe (the 206 branch used to fire
+//      NOTHING, so the whole disk bound depended on clients not Ranging manifests). And the
+//      reclaim floor comes from the WHOLE playlist re-read out of the drive, never from the
+//      served slice: a suffix slice that lost the oldest listed line must not raise the
+//      floor and eat a still-listed segment's blocks.
+//   N  THE WIDE-PUNCH STAGE — an addon that truncates punch lengths mod 2^32 (size_t on a
+//      32-bit ABI, observed in the wild) passes the small punch honestly, so a one-stage
+//      probe latched the budget OFF while real below-window clears freed nothing. The
+//      second stage punches > 4 GiB across a block parked above 2^32 and must refuse the
+//      verdict: MEASURED cannot-punch, budget stays armed.
 //
 // Exits 0 on PASS.
 
@@ -76,6 +87,18 @@ async function waitFor (fn, ms, label) {
 function httpGet (port, p) {
   return new Promise((resolve, reject) => {
     http.get({ host: '127.0.0.1', port, path: p, agent: false }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }))
+    }).on('error', reject)
+  })
+}
+
+// The same GET with a Range header — scenario M serves playlists exclusively through the
+// 206 branch, which is the branch the trigger chain was once absent from.
+function httpGetRange (port, p, range) {
+  return new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: p, headers: { Range: range }, agent: false }, (res) => {
       const chunks = []
       res.on('data', (c) => chunks.push(c))
       res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }))
@@ -208,6 +231,16 @@ const failStat = (code) => (file) => { file._stat = (req) => req.callback(errno(
 // refuses an allocation that GREW, and both hold. Scenario K probes this host's real storage
 // alongside and REPORTS its verdict, so a host that cannot punch is still visible to whoever
 // runs the lane.
+//
+// ⚠ ONE NARROWING since the wide probe stage (sdk/serve.js runWideProbe): a SIMULATED confirm
+// still runs that stage's truncates and its above-4-GiB write against the REAL filesystem
+// under the temp dir. On POSIX that costs nothing anywhere (files are sparse by nature); on
+// Windows it additionally needs random-access-file's sparse flag, i.e. fs-native-extensions
+// present — without it an NTFS ftruncate to ~5 GiB allocates five real GiB and the stage
+// reads inconclusive, failing J/K(5)/N here. Every Windows box this lane targets has the
+// addon (it is RAF's own optional dep, and the measured punch numbers quoted in sdk/serve.js
+// were taken with it); production is unaffected either way, because without a WORKING small
+// punch the wide stage is unreachable by construction.
 const truncPunch = () => (file) => {
   const del = file._del
   file._del = function (req) { if (req.size === Infinity) return del.call(this, req); return this._truncate(req) }
@@ -245,6 +278,29 @@ const playlist = (names, { end = false } = {}) =>
   '#EXTM3U\n#EXT-X-TARGETDURATION:2\n' +
   names.map((n) => `#EXTINF:2,\n${n}`).join('\n') + '\n' +
   (end ? '#EXT-X-ENDLIST\n' : '')
+
+// ONE PROBE AGAINST ONE THROWAWAY STORE — the harness scenarios K and N read verdicts
+// through. A real core is put through the real factory first, as in production; `litter` is
+// whatever the probe left in the store root. The probe TRUNCATES and then unlinks, and
+// corestore builds the factory with rmdir:true, so its directory goes with it. Nothing in
+// this repo sweeps punch-probe-*, and the file is 512 KiB (~5 GiB LOGICAL once the wide
+// stage has run), so litter here is a real (if small) disk leak on the platform least able
+// to afford one.
+const probeCase = async (patch) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-reclaim-probe-'))
+  let s = new Corestore(d)
+  if (patch) s = probeStore(s, patch)
+  await s.ready()
+  const dr = new Hyperdrive(s.namespace('feed'))
+  await dr.ready()
+  await dr.put('/seg1.ts', seg(1)) // a real core through the real factory, as in production
+  const r = await probeHolePunch(dr)
+  const litter = fs.readdirSync(d).filter((n) => n.startsWith('punch-probe-'))
+  await dr.close()
+  await s.close()
+  try { fs.rmSync(d, { recursive: true, force: true }) } catch {}
+  return { r, litter }
+}
 
 log('A: live reclaim (blocks below the window are cleared after rotation)')
 {
@@ -794,8 +850,9 @@ log('J: the punch gate — where the storage CAN hole-punch, the budget is switc
   await waitFor(() => hasNone(jBlobs.core, jRef), 10000, 'the reclaim pass to run')
   await waitFor(() => jHandler.reclaimStatus().punch !== null, 10000, 'the capability probe to answer')
   const jSt = jHandler.reclaimStatus()
-  // reclaimStatus() surfaces ok/canPunch/reason/freed and deliberately not the raw before/after
-  // — `freed` is the number that decided the verdict and the one an operator needs in a log.
+  // reclaimStatus() surfaces ok/canPunch/reason/freed/wideFreed and deliberately not the raw
+  // before/after pairs — freed (and, when the wide stage ran, wideFreed) are the numbers that
+  // decided the verdict and the ones an operator needs in a log.
   assert(jSt.punch.ok === true && jSt.punch.canPunch === true,
     `the probe MEASURED that this storage frees bytes on a punch (reason "${jSt.punch.reason}", freed ${jSt.punch.freed})`)
   assert(jSt.budgetActive === false, 'so the budget is switched OFF for the life of the handler (reclaimStatus().budgetActive)')
@@ -836,26 +893,8 @@ log('K: probe verdict classification — only the punch itself may produce a VER
   //
   // Each case imposes ONE storage behaviour on the probe's own scratch file (probeStore) and
   // asserts the whole shape of the answer — whether it is a verdict, which way it fell, and
-  // the reason string an operator reads out of reclaimStatus().
-  const probeCase = async (patch) => {
-    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-reclaim-probe-'))
-    let s = new Corestore(d)
-    if (patch) s = probeStore(s, patch)
-    await s.ready()
-    const dr = new Hyperdrive(s.namespace('feed'))
-    await dr.ready()
-    await dr.put('/seg1.ts', seg(1)) // a real core through the real factory, as in production
-    const r = await probeHolePunch(dr)
-    // The probe TRUNCATES and then unlinks, and corestore builds the factory with rmdir:true,
-    // so its directory goes with it. Nothing in this repo sweeps punch-probe-*, and the file
-    // is 512 KiB, so litter here is a real (if small) disk leak on the platform least able to
-    // afford one.
-    const litter = fs.readdirSync(d).filter((n) => n.startsWith('punch-probe-'))
-    await dr.close()
-    await s.close()
-    try { fs.rmSync(d, { recursive: true, force: true }) } catch {}
-    return { r, litter }
-  }
+  // the reason string an operator reads out of reclaimStatus(). probeCase (top of file) is
+  // the harness; scenario N runs the wide-stage case through the same one.
 
   // (1) THE 32-BIT ANDROID ABI: fs-native-extensions is absent, random-access-file's _del is
   // `if (!fsext) return req.callback(null)` and the punch frees zero bytes. A VERDICT — this
@@ -997,11 +1036,145 @@ log('L: probe retry accounting — an inconclusive answer is retried, a verdict 
   try { fs.rmSync(mDir, { recursive: true, force: true }) } catch {}
 }
 
+log('M: the trigger chain rides RANGED playlist serves — a Range header cannot opt a client out of the bound')
+{
+  // THE GAP THIS PINS. prefetchAfter (read-ahead + reclaim + budget + probe) used to be
+  // wired only into the non-Range 200 branch, whose stream mirror is what fed it — the 206
+  // branch pumped without mirroring and fired NOTHING. An HLS player that requests its
+  // manifests with `Range:` therefore got no reclaim, no budget check and no probe: the
+  // whole disk bound existed only by the grace of client politeness. (ExoPlayer does not
+  // Range manifests — measured on-device — which is the only reason production never hit
+  // it.)
+  //
+  // AND THE FIX HAS A HAZARD OF ITS OWN, asserted here too: the floor must come from the
+  // WHOLE playlist, never from the served slice. A suffix range that cuts off the OLDEST
+  // listed line would RAISE the floor (reclaimBelowWindow takes the minimum blob offset
+  // over the URIs it can see) and the clear would eat a still-listed segment's blocks — so
+  // the live request below is exactly that slice, and seg3 keeping its blocks is the
+  // assertion that the trigger re-read the playlist from the drive instead of trusting it.
+  const mDrive = new Hyperdrive(store.namespace('ranged'))
+  await mDrive.ready()
+  for (let i = 1; i <= 5; i++) await mDrive.put(`/seg${i}.ts`, seg(i))
+  const mRef = {}
+  for (let i = 1; i <= 5; i++) mRef[i] = (await mDrive.entry(`/seg${i}.ts`)).value.blob
+  const mBlobs = await mDrive.getBlobs()
+  const mServer = http.createServer(driveHandler(mDrive, { reclaim: true, reclaimIntervalMs: 0 }))
+  await new Promise((resolve) => mServer.listen(0, '127.0.0.1', resolve))
+  const mPort = mServer.address().port
+
+  // (1) RANGED VOD FIRST — the ENDLIST invariant (scenario B) must hold on this branch
+  // too, and it has to be shown BEFORE the live serve below legitimately clears seg1/seg2.
+  const mVod = playlist(['seg4.ts', 'seg5.ts'], { end: true })
+  await mDrive.put('/vod.m3u8', Buffer.from(mVod))
+  const rVod = await httpGetRange(mPort, '/vod.m3u8', 'bytes=0-')
+  assert(rVod.status === 206 && rVod.body.toString() === mVod, 'a ranged VOD playlist serves as a 206')
+  await sleep(400)
+  assert(await hasAll(mBlobs.core, mRef[1]), 'and reclaims NOTHING — the ENDLIST branch holds on ranged serves too')
+
+  // (2) A RANGED LIVE SERVE, sliced to drop the oldest listed line.
+  const mWin = playlist(['seg3.ts', 'seg4.ts', 'seg5.ts'])
+  await mDrive.put('/live.m3u8', Buffer.from(mWin))
+  const cut = mWin.indexOf('seg4.ts') // the slice begins at the seg4 line: seg3's is gone from it
+  const rLive = await httpGetRange(mPort, '/live.m3u8', `bytes=${cut}-`)
+  assert(rLive.status === 206 && rLive.body.toString() === mWin.slice(cut), 'a ranged live playlist serves the requested slice')
+  assert(!rLive.body.toString().includes('seg3.ts'), 'fixture: the served slice really has LOST the oldest listed segment')
+  await waitFor(() => hasNone(mBlobs.core, mRef[1]), 10000, 'reclaim to run off a ranged serve')
+  assert(await hasNone(mBlobs.core, mRef[2]), 'blocks below the window are freed off a RANGED playlist serve')
+  assert(await hasAll(mBlobs.core, mRef[3]),
+    'seg3 — still listed, but MISSING from the served slice — keeps every block: the floor came from the whole playlist, not the slice')
+  assert((await hasAll(mBlobs.core, mRef[4])) && (await hasAll(mBlobs.core, mRef[5])), 'and the rest of the window is intact as always')
+  mServer.close()
+  await mDrive.close()
+
+  // (3) AND THE BUDGET RIDES IT TOO. E proves serve -> probe -> measure -> onOverBudget on
+  // the 200 branch; this is the same crippled-storage shape reached ONLY through 206es, so
+  // the whole chain — not merely the clear — is shown to fire without one non-Range serve.
+  const bDir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-reclaim-ranged-'))
+  const bStore = noTrimStore(new Corestore(bDir))
+  await bStore.ready()
+  const bDrive = new Hyperdrive(bStore.namespace('feed'))
+  await bDrive.ready()
+  for (let i = 1; i <= 11; i++) await bDrive.put(`/seg${i}.ts`, seg(i))
+  await bDrive.put('/seg12.ts', Buffer.alloc(8 * 1024, 12)) // the one-segment window — E says why
+  const bRef1 = (await bDrive.entry('/seg1.ts')).value.blob
+  const bBlobs = await bDrive.getBlobs()
+  const bWin = playlist(['seg12.ts'])
+  await bDrive.put('/live.m3u8', Buffer.from(bWin))
+  const bCalls = []
+  const bHandler = driveHandler(bDrive, {
+    reclaim: true, reclaimIntervalMs: 0, reclaimBudgetBytes: 64 * 1024, onOverBudget: (d, info) => bCalls.push(info)
+  })
+  const bServer = http.createServer(bHandler)
+  await new Promise((resolve) => bServer.listen(0, '127.0.0.1', resolve))
+  const rBudget = await httpGetRange(bServer.address().port, '/live.m3u8', 'bytes=10-')
+  assert(rBudget.status === 206, 'the crippled replica serves its playlist as a 206')
+  await waitFor(() => hasNone(bBlobs.core, bRef1), 10000, 'the reclaim pass to run off the ranged serve')
+  await waitFor(() => bCalls.length > 0, 10000, 'onOverBudget off the ranged serve')
+  const bSt = bHandler.reclaimStatus()
+  assert(bSt.punch && bSt.punch.ok === true && bSt.punch.canPunch === false,
+    'the capability probe ran and MEASURED off a ranged serve — no 200 was ever needed')
+  assert(bCalls.length === 1 && bCalls[0].bytes > 64 * 1024,
+    'and the budget verdict fired, with the replica over the configured number')
+  bServer.close()
+  await bDrive.close()
+  await bStore.close()
+  try { fs.rmSync(bDir, { recursive: true, force: true }) } catch {}
+}
+
+log('N: the wide-punch stage — an addon that casts punch lengths to 32 bits is caught at runtime')
+{
+  // THE CLASS THIS PINS WAS OBSERVED IN THE WILD (2026-08-13, the fs-native-extensions
+  // android-arm rebuild — aliran-ops/fsext-fixed holds the evidence). The addon's C API
+  // declared punch lengths as size_t: 32 bits on armeabi-v7a, so hypercore's below-window
+  // clear — ONE punch of [0, floor), measured at 64,792,842,531 bytes on a long-lived feed
+  // — truncated mod 4 GiB and freed nothing while returning success. The probe's own
+  // 256 KiB punch fits in 32 bits and honestly worked: a one-stage probe MEASURED
+  // canPunch: true and latched the budget OFF, i.e. the broken build (ba823ca8…) disarmed
+  // the rotation safety net on the exact device whose real clears freed zero — strictly
+  // worse than shipping no addon at all. That build never deployed (ccc8e363…, uint64_t
+  // lengths, is what ships), but the probe must catch the CLASS at runtime rather than
+  // trust addon correctness forever: sdk/serve.js runWideProbe punches a > 2^32 length
+  // across one block parked above the 4 GiB line, and this scenario is that stage's
+  // red/green.
+  //
+  // Simulated at the same layer as every other storage behaviour in this lane — the del
+  // request — and NOT by stubbing the probe: the probe takes its real path end to end and
+  // only the arithmetic a size_t cast performs is imposed on it.
+  const modPunch = () => (file) => {
+    const del = file._del
+    file._del = function (req) {
+      if (req.size === Infinity) return del.call(this, req) // ftruncate, not a punch — leave it real
+      // The cast, exactly: the LENGTH arrives mod 2^32; the offset is untouched (off_t was
+      // 64-bit in both builds — the defect was the length parameter alone).
+      if (req.size % 2 ** 32 === req.size) return this._truncate(req) // fits 32 bits: a real, freeing punch (truncPunch's trick)
+      // Lengths past 2^32: the real broken addon punches only [offset, offset + len mod
+      // 2^32). Across the wide stage's file that range is hole from end to end — the one
+      // allocated block sits above 4 GiB by construction — so the faithful truncated punch
+      // frees zero bytes, and succeeding without touching the file is allocation-identical
+      // to it on every host this lane runs on, with or without a native addon of its own.
+      req.callback(null)
+    }
+  }
+  const wide = await probeCase(modPunch())
+  assert(wide.r.ok === true && wide.r.canPunch === false,
+    'a punch that truncates its lengths mod 2^32 is a MEASURED cannot-punch')
+  assert(wide.r.reason === 'wide-measured', `decided by the WIDE stage, and the reason says so (${wide.r.reason})`)
+  // ⚠ NON-VACUITY. The small punch must have PASSED, or this scenario has quietly collapsed
+  // into E/K(1) — the addon-less class — and the wide stage proved nothing at all.
+  assert(wide.r.freed >= 256 * 1024 / 2,
+    `the SMALL punch really freed (${wide.r.freed} bytes) — stage two, not stage one, refused this addon`)
+  assert(wide.r.wideFreed === 0,
+    `while the > 4 GiB punch freed nothing (${wide.r.wideFreed}) — it never reached the block above 2^32`)
+  assert(wide.litter.length === 0, 'and the ~5 GiB-LOGICAL scratch file was truncated and unlinked like any other')
+}
+
 log('\nRESULT: PASS ✅  live reclaim after rotation, VOD untouched, opt-in only, live thumbnail survives,')
 log('              a no-op trim is caught by the byte budget, a healthy replica never trips it,')
 log('              the idle sweep honours all three branches, and the drain surface settles both ways;')
 log('              the budget scales to the OBSERVED live window, a punchable store switches it off')
-log('              outright, and the capability probe tells a verdict from an inconclusive answer')
+log('              outright, and the capability probe tells a verdict from an inconclusive answer;')
+log('              the trigger chain rides RANGED playlist serves off the whole-playlist floor, and')
+log('              a punch that truncates its lengths mod 2^32 is refused by the wide probe stage')
 await drive.close()
 await store.close()
 try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}

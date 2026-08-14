@@ -234,6 +234,13 @@ const NO_CORS = {}
 // window sizes stop existing for that device.
 const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3, readIdleMs: 6000, reclaimIntervalMs: 30000, reclaimBudgetBytes: 512 * 1024 * 1024 }
 
+// The most playlist text the after-serve trigger will ever hold or fetch — the 200 branch's
+// stream mirror and the ranged branch's whole-playlist re-read both cap here. A real
+// playlist is a few KB; this is not a tuning knob, it is the guard that keeps a mis-typed
+// huge file served as .m3u8 from ballooning the worklet heap. ONE constant on purpose:
+// two inline literals here would drift exactly the way the THUMB_PATH note above warns.
+const PLAYLIST_TEXT_CAP = 262144
+
 // Parse segment/media URIs out of an HLS playlist body (everything that isn't a
 // tag or blank), normalized to absolute drive paths. Tiny by design — enough for
 // the read-ahead's "newest N segments", not a general M3U8 parser.
@@ -425,7 +432,9 @@ function bounded (promise, ms, onTimeout = TIMED_OUT) {
 //
 // ⚠ AND *THEN* IT IS GATED ON A MEASURED CAPABILITY PROBE. Before the budget may fire even
 // once, probeHolePunch answers the question the clear path cannot — CAN this store's
-// filesystem punch a hole? — by punching one and measuring. If it can, _budgetOff latches
+// filesystem punch a hole? — by punching one and measuring; and, since the size_t addon
+// class was observed in the wild, it refuses to certify the CAN side until a > 4 GiB punch
+// has landed too (runWideProbe). If it can, _budgetOff latches
 // and onOverBudget is dead for the life of the handler, exactly the way _unmeasurable
 // latches. The probe is deliberately platform-AGNOSTIC: it catches exFAT, FAT32 and network
 // mounts, where the punch fails for reasons that have nothing to do with the 32-bit ABI
@@ -730,7 +739,10 @@ class Reclaim {
       // re-probed, so tries > 1 with punch.ok false says "this device kept failing to
       // answer", and tries === PROBE_MAX_TRIES says it has stopped asking.
       punchTries: this._punchTries,
-      punch: this._punch ? { ok: this._punch.ok, canPunch: this._punch.canPunch, reason: this._punch.reason, freed: this._punch.freed } : null
+      // wideFreed is undefined until (and unless) the wide stage ran — see runWideProbe.
+      // Next to `freed` it is what tells the size_t addon class apart from the addon-less
+      // one in a log: the small punch freed, the wide one did not.
+      punch: this._punch ? { ok: this._punch.ok, canPunch: this._punch.canPunch, reason: this._punch.reason, freed: this._punch.freed, wideFreed: this._punch.wideFreed } : null
     }
   }
 }
@@ -788,13 +800,16 @@ const PROBE_ALLOC_POLL_MS = 50
 // The probe is a handful of local fs syscalls, but it runs on the reclaim path, and this
 // file's rule is that nothing on that path may be awaited without a bound. A wedged open on
 // a dying network mount is exactly the case this exists to detect. Must stay comfortably
-// above PROBE_ALLOC_WAIT_MS, which is spent inside it.
-const PROBE_TIMEOUT_MS = 5000
+// above 3 × PROBE_ALLOC_WAIT_MS, which can be spent inside it: the small stage settles its
+// allocation once, and the wide stage (runWideProbe) twice — a drain and a charge.
+const PROBE_TIMEOUT_MS = 10000
 
 // CAN THIS STORE'S FILESYSTEM ACTUALLY HOLE-PUNCH? Measured, never assumed. Never throws.
 //
 //   { ok: true,  canPunch: true|false, reason, before, after, freed }   a verdict
 //   { ok: false, canPunch: false, reason, ... }                        inconclusive
+//   (wideBefore/wideAfter/wideFreed ride along whenever the WIDE stage ran — see
+//   runWideProbe. canPunch: true is never granted without that stage.)
 //
 // WHY THIS EXISTS. `hypercore.clear()` returns success whether or not the storage layer
 // freed a single byte (the full account is in the Reclaim header), so no amount of watching
@@ -824,6 +839,11 @@ const PROBE_TIMEOUT_MS = 5000
 //   · allocated size is `st.blocks * 512` off the SAME stat() hypercore's own Info.storage
 //     uses (lib/info.js), so the probe and the budget it gates agree on what a byte is, and
 //     it is POLLED until the write is charged to it — see PROBE_ALLOC_WAIT_MS.
+//   · a small punch that works buys NO verdict by itself: canPunch: true additionally
+//     requires a punch LONGER THAN 2^32 bytes to land (runWideProbe). The failure class
+//     that stage closes is an addon whose C API took size_t lengths — it punched the
+//     256 KiB scratch hole perfectly and truncated hypercore's real below-window clears
+//     mod 4 GiB, so a one-stage probe latched the budget OFF on the device that needed it.
 //   · the file is TRUNCATED and then unlinked at the end, through RAF's own calls — unlink
 //     closes the fd first and, because corestore builds the factory with rmdir:true, removes
 //     the probe's directory too. MEASURED on Windows/NTFS 2026-08-13 with the shipped
@@ -836,8 +856,10 @@ const PROBE_TIMEOUT_MS = 5000
 // drive, no storage factory, a store already closing, a factory that hands back something
 // without write/stat/del/truncate, anything that threw ANYWHERE except the punch itself, a
 // stat with no st.blocks (the same platform class _unmeasurable latches on), an allocation
-// that never settled, or the whole thing timing out. The caller decides what to do with it —
-// Reclaim._budgetApplies falls back to budget-active and records the reason.
+// that never settled, every wide-* step the second stage can fail at (its truncates, its
+// write, its stats, its two settle loops), or the whole thing timing out. The caller
+// decides what to do with it — Reclaim._budgetApplies falls back to budget-active and
+// records the reason.
 export async function probeHolePunch (drive) {
   const store = drive && drive.corestore
   if (!store || typeof store.storage !== 'function') return { ok: false, canPunch: false, reason: 'no-storage-factory' }
@@ -908,9 +930,10 @@ const probeDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // ONE probe attempt. Never throws.
 //
-// ⚠⚠ ONLY A REJECTION FROM THE PUNCH ITSELF MAY PRODUCE A VERDICT (ok: true). EVERY OTHER
-// THROW IS INCONCLUSIVE. That is why this reads as a sequence of individually-guarded steps
-// rather than one try block, and the shape must not be collapsed back.
+// ⚠⚠ ONLY A REJECTION FROM A PUNCH ITSELF MAY PRODUCE A VERDICT (ok: true) — either
+// stage's; runWideProbe holds itself to the same rule. EVERY OTHER THROW IS INCONCLUSIVE.
+// That is why this reads as a sequence of individually-guarded steps rather than one try
+// block, and the shape must not be collapsed back.
 //
 // It used to be one try whose catch returned { ok: true, canPunch: false, reason:
 // 'punch-threw' } — so ANY throw anywhere latched session-lifetime policy ("this device
@@ -969,9 +992,9 @@ async function runProbe (call, closing = () => false) {
     await probeDelay(PROBE_ALLOC_POLL_MS)
   }
 
-  // THE ONE STATEMENT WHOSE REJECTION IS A VERDICT. A punch that REJECTS (EOPNOTSUPP on
-  // exFAT, ENOTSUP on a network mount) is not an inconclusive probe — it is the clearest
-  // possible "cannot punch" there is.
+  // THE ONE STATEMENT IN THIS STAGE WHOSE REJECTION IS A VERDICT. A punch that REJECTS
+  // (EOPNOTSUPP on exFAT, ENOTSUP on a network mount) is not an inconclusive probe — it is
+  // the clearest possible "cannot punch" there is.
   try {
     await call('del', PROBE_HOLE_OFFSET, PROBE_HOLE_BYTES)
   } catch (err) {
@@ -996,7 +1019,162 @@ async function runProbe (call, closing = () => false) {
   // drop keeps an unrelated one-cluster fluctuation from latching canPunch — the failure
   // direction that silently switches the budget off on a device that needs it. And "no
   // change at all" lands squarely on cannot-punch, which is the addon-less case.
-  return { ok: true, canPunch: freed >= PROBE_HOLE_BYTES / 2, reason: 'measured', before, after, freed }
+  if (!(freed >= PROBE_HOLE_BYTES / 2)) return { ok: true, canPunch: false, reason: 'measured', before, after, freed }
+
+  // A SMALL PUNCH THAT WORKED IS NECESSARY AND NOT SUFFICIENT. The addon class runWideProbe
+  // exists for passes this test HONESTLY — its 256 KiB scratch punch really does free
+  // 256 KiB — while truncating every length past 2^32 to `len mod 2^32` and freeing none of
+  // what hypercore actually clears. canPunch: true is the verdict that LATCHES THE BUDGET
+  // OFF for the session, so it is not granted on the small punch alone: a length no 32-bit
+  // cast can carry has to land too. The wide stage's refusals and errors speak for
+  // themselves (wide-* reasons); its confirmation folds back into the one verdict shape
+  // every caller already reads, with the wide numbers alongside for reclaimStatus().
+  const wide = await runWideProbe(call, closing)
+  if (wide.ok && wide.canPunch) {
+    return { ok: true, canPunch: true, reason: 'measured', before, after, freed, wideBefore: wide.wideBefore, wideAfter: wide.wideAfter, wideFreed: wide.wideFreed }
+  }
+  // A wide REFUSAL (a verdict) or a wide failure (inconclusive) IS the probe's answer. The
+  // stage-1 numbers ride along so a log shows the small punch really did pass — which is
+  // what tells this addon class apart from the addon-less one at a glance.
+  return { ...wide, before, after, freed }
+}
+
+// THE WIDE STAGE'S GEOMETRY. One punch, longer than 2^32 bytes, over a file that holds ONE
+// allocated block parked ABOVE the 4 GiB line — near-zero real I/O, because on every
+// filesystem that can reach this stage the ~5 GiB length is LOGICAL only (see the ordering
+// note at runWideProbe).
+//
+//   the punch, 5 GiB:  a size_t cast on a 32-bit ABI keeps 5 GiB mod 2^32 = 1 GiB of it;
+//   the block, at 2^32 + 128 KiB:  above the largest length ANY mod-2^32 punch from offset
+//     0 can reach, so the truncating addon must miss it and a healthy one must free it;
+//   the file, 5 GiB + 128 KiB long:  the hole stops short of EOF — the same "the hole is
+//     interior to the file" discipline PROBE_HOLE_OFFSET buys the small stage.
+// The block itself is PROBE_HOLE_BYTES long and 64 KiB-aligned at both ends, so the NTFS
+// sparse-unit arithmetic recorded at PROBE_BYTES applies to it unchanged.
+const PROBE_WIDE_HOLE = 5 * 1024 * 1024 * 1024
+const PROBE_WIDE_DATA_OFFSET = 4 * 1024 * 1024 * 1024 + PROBE_HOLE_OFFSET
+const PROBE_WIDE_LEN = PROBE_WIDE_HOLE + PROBE_HOLE_OFFSET
+
+// THE WIDE (SECOND) STAGE: a punch longer than 2^32 bytes, run ONLY after the small punch
+// already proved itself. It exists because the small punch can be honestly right while the
+// punches that matter are silently wrong — and that is not a hypothetical:
+//
+// OBSERVED IN THE WILD, 2026-08-13, during the fs-native-extensions android-arm rebuild
+// (aliran-ops/fsext-fixed — the README there holds the evidence chain). The addon's C API
+// declared punch lengths as size_t, which is 32 BITS on armeabi-v7a. hypercore's
+// below-window clear arrives as ONE punch of [0, floor) — 64,792,842,531 bytes on the
+// long-lived feed it was measured on — so the length truncated mod 4 GiB and the call
+// freed (nearly) nothing while returning success. The probe's own 256 KiB scratch punch
+// fits in 32 bits and genuinely worked, so the one-stage probe MEASURED canPunch: true and
+// LATCHED THE BUDGET OFF — disarming the rotation safety net on the exact device whose
+// real clears freed zero bytes. Strictly worse than no addon at all: addon-less, the small
+// punch frees nothing and the budget stays armed. That build (ba823ca8…) was never
+// deployed; the fixed one (ccc8e363…, lengths widened to uint64_t) is what ships. This
+// stage is what keeps the CLASS from ever being trusted on addon say-so again.
+//
+// HOW, in near-zero real I/O: truncate the scratch to nothing (stage 1's leftover
+// allocation must not be able to masquerade as the high block — see the drain loop), then
+// out to ~5 GiB LOGICAL, write ONE PROBE_HOLE_BYTES block above the 4 GiB line, punch
+// [0, 5 GiB), re-stat. A healthy addon frees the high block and the allocation drops; a
+// length-truncating one punches [0, 1 GiB) — which on this file is hole from end to end —
+// and frees nothing.
+//
+// ⚠⚠ ORDERING IS LOAD-BEARING: THIS RUNS ONLY AFTER THE SMALL PUNCH SUCCEEDED. On exFAT
+// and FAT32 there is no sparse support, so the 5 GiB ftruncate would ALLOCATE five real
+// GiB (and FAT32 caps files at 4 GiB besides) — write amplification a probe on a DISK
+// BOUND must never commit. Those filesystems cannot reach this stage: their small punch
+// REJECTS (no FALLOC_FL_PUNCH_HOLE, no FSCTL_SET_ZERO_DATA) and the probe has its verdict
+// one stage earlier. Same discipline as stage 1 for everything else: only the punch call
+// itself may produce a verdict; every other failure here is INCONCLUSIVE (wide-* reasons,
+// so an operator can see WHICH stage could not answer), retryable, and falls back to
+// budget-armed — the safe side.
+//
+// THE REJECTED ALTERNATIVE was reading the punched range back and requiring zeros. It
+// discriminates WHERE the punch landed, but a punch can zero without freeing (NTFS
+// FSCTL_SET_ZERO_DATA on an unsparse file writes zeros and releases nothing), so "reads
+// as zeros" does not mean "the disk went down" — and allocated bytes are the budget's
+// whole currency, so the probe stays on the one instrument the thing it gates is measured
+// in. Pinning the fixed addon's build id was rejected too: that answers "which build is
+// this", and the question is "does THIS storage free bytes at the lengths hypercore
+// actually punches".
+async function runWideProbe (call, closing = () => false) {
+  // PRNG-filled for the same reason stage 1's payload is — a compressing filesystem must
+  // really allocate the high block or the drop below would be invisible. Different seed
+  // salt, same cheap LCG.
+  let data
+  try {
+    data = new Uint8Array(PROBE_HOLE_BYTES)
+    let s = (Date.now() ^ 0x2545f491) >>> 0
+    for (let i = 0; i < data.length; i++) { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; data[i] = (s >>> 24) & 0xff }
+  } catch (err) { return inconclusive('wide-alloc-threw', err) }
+
+  if (closing()) return inconclusive('wide-store-closing')
+  // Truncate to ZERO before truncating out. ftruncate needs no addon on any platform (the
+  // cleanup note in probeHolePunch), and it is what evicts stage 1's leftover ~256 KiB:
+  // without this, that leftover could satisfy the charge loop below BEFORE the high write
+  // is charged, and a punch that then freed only the leftover would read as a healthy
+  // drop — a false canPunch, in the one direction this stage must never fail.
+  try { await call('truncate', 0) } catch (err) { return inconclusive('wide-truncate-threw', err) }
+  try { await call('truncate', PROBE_WIDE_LEN) } catch (err) { return inconclusive('wide-truncate-threw', err) }
+
+  // THE DRAIN LOOP: the baseline must be provably LOW before the high block goes in, for
+  // the same reason stage 1's charge loop must reach the full written size — an allocation
+  // still moving between the two stats reads as a drop (or a growth) the punch never
+  // caused. Half the block rather than zero: platforms round allocation up (NTFS charges
+  // sparse files in 64 KiB units) and a stray unit of metadata must not wedge the stage.
+  let deadline = Date.now() + PROBE_ALLOC_WAIT_MS
+  while (true) {
+    let st
+    try { st = await call('stat') } catch (err) { return inconclusive('wide-stat-threw', err) }
+    const alloc = allocatedBytes(st)
+    if (alloc === null) return { ok: false, canPunch: false, reason: 'stat-has-no-blocks' }
+    if (alloc < PROBE_HOLE_BYTES / 2) break
+    if (Date.now() >= deadline) return { ok: false, canPunch: false, reason: 'wide-baseline-not-settled' }
+    await probeDelay(PROBE_ALLOC_POLL_MS)
+  }
+
+  if (closing()) return inconclusive('wide-store-closing')
+  try { await call('write', PROBE_WIDE_DATA_OFFSET, data) } catch (err) { return inconclusive('wide-write-threw', err) }
+  if (closing()) return inconclusive('wide-store-closing')
+
+  // THE CHARGE LOOP — stage 1's, for stage 1's reasons: take wideBefore only once the
+  // write is fully charged, so later writeback has nothing left to move between the stats.
+  let wideBefore = null
+  deadline = Date.now() + PROBE_ALLOC_WAIT_MS
+  while (true) {
+    let st
+    try { st = await call('stat') } catch (err) { return inconclusive('wide-stat-threw', err) }
+    wideBefore = allocatedBytes(st)
+    if (wideBefore === null) return { ok: false, canPunch: false, reason: 'stat-has-no-blocks' }
+    if (wideBefore >= PROBE_HOLE_BYTES) break
+    if (Date.now() >= deadline) return { ok: false, canPunch: false, reason: 'wide-allocation-not-settled', wideBefore }
+    await probeDelay(PROBE_ALLOC_POLL_MS)
+  }
+
+  // THE WIDE PUNCH — the one statement in THIS stage whose rejection is a verdict, exactly
+  // as in stage 1. A del that carried 256 KiB and rejects 5 GiB is not a transient:
+  // whatever sits under this store cannot punch at the lengths hypercore actually clears,
+  // and that is the budget's whole question.
+  try {
+    await call('del', 0, PROBE_WIDE_HOLE)
+  } catch (err) {
+    return { ok: true, canPunch: false, reason: 'wide-punch-threw: ' + ((err && err.code) || (err && err.message) || 'error'), wideBefore }
+  }
+
+  let wideAfter = null
+  try { wideAfter = allocatedBytes(await call('stat')) } catch (err) { return inconclusive('wide-stat-threw', err) }
+  if (wideAfter === null) return { ok: false, canPunch: false, reason: 'stat-has-no-blocks', wideBefore }
+  // Same belt and braces as stage 1: a punch can only lower the allocation, so growth
+  // means something else was still charging blocks and no verdict may be taken from the
+  // pair.
+  if (wideAfter > wideBefore) return { ok: false, canPunch: false, reason: 'wide-allocation-still-growing', wideBefore, wideAfter }
+  const wideFreed = wideBefore - wideAfter
+  // Half the high block — the margin stage 1 demands, for stage 1's reasons. A truncating
+  // addon lands at wideFreed ≈ 0 here (its [0, 1 GiB) punch crosses nothing allocated),
+  // and 'wide-measured' is the reason string that tells an operator WHICH stage refused
+  // the verdict — reclaimStatus() surfaces it next to the small stage's freed.
+  if (wideFreed >= PROBE_HOLE_BYTES / 2) return { ok: true, canPunch: true, wideBefore, wideAfter, wideFreed }
+  return { ok: true, canPunch: false, reason: 'wide-measured', wideBefore, wideAfter, wideFreed }
 }
 
 // st.blocks * 512 — the allocated size, in the same units and off the same stat() hypercore's
@@ -1759,6 +1937,38 @@ export function createDriveHandler (resolveTarget, opts = {}) {
         const wanted = end - start + 1
         res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': String(wanted) })
         if (req.method === 'HEAD') return res.end() // never counted — track() returned null for it
+        if (prefetchAfter && size <= PLAYLIST_TEXT_CAP) {
+          // THE TRIGGER MUST NOT DEPEND ON THE CLIENT NOT SENDING Range. This branch used to
+          // serve its 206 and fire nothing — so a player that Ranges its manifests got NO
+          // read-ahead, NO reclaim, NO budget check and NO capability probe: the entire disk
+          // bound quietly did not exist for it, on any ABI. ExoPlayer does not Range
+          // manifests (measured on-device — the only reason production never hit this), but
+          // the bound has to be a property of the SERVER, not of client politeness.
+          //
+          // ⚠⚠ AND THE SLICED BODY MUST NEVER BE WHAT FIRES IT. reclaimBelowWindow's floor
+          // is the MINIMUM blob offset over the URIs it can see, and playlistUris over a
+          // slice has lost lines. Lose the OLDEST listed line and the floor RISES — the
+          // clear then eats blocks a still-listed segment owns: a refetch at the live edge,
+          // mid-playback. (The TIMED_OUT abandon inside reclaimBelowWindow is no help
+          // there — it protects against a READ that failed, not against a line that was
+          // never in the text.) So the rejected alternative — mirror the response stream
+          // exactly as the 200 branch below does — is rejected precisely because here the
+          // mirror IS the slice. The trigger re-reads the WHOLE playlist from the drive
+          // instead: a few KB whose blocks this very request just proved mostly warm.
+          // Fire-and-forget, and BOUNDED like the one other body read of a rolling blob
+          // (reclaimIdleFeed's — see IDLE_READ_MS): a superseded playlist blob's get()
+          // never settles, and TIMED_OUT is truthy, so it is checked by identity like every
+          // other bounded() caller. Skipped past PLAYLIST_TEXT_CAP for the same worklet-heap
+          // reason the 200 branch caps its mirror; skipped for HEAD by position (the return
+          // above), as the 200 branch skips it by never creating the stream.
+          bounded(drive.get(p), IDLE_READ_MS)
+            .then((buf) => { if (buf && buf !== TIMED_OUT) prefetchAfter(buf.toString()) })
+            // Nothing else will ever look at this promise, and an unhandled rejection
+            // SIGABRTs the Bare worklet — same rule as the queued truncate in
+            // probeHolePunch. bounded() never rejects and prefetchAfter guards both its
+            // arms, so this arm is a backstop, not a code path.
+            .catch(() => {})
+        }
         // pump's onDone IS this request's release, so the slot taken before waitEntry is
         // handed to the exit path that owns the rest of the request's life. (It is the same
         // idempotent function; the earlier returns above call it directly.)
@@ -1776,7 +1986,7 @@ export function createDriveHandler (resolveTarget, opts = {}) {
           let text = ''
           let fired = false
           const fire = () => { if (!fired) { fired = true; prefetchAfter(text) } }
-          rs.on('data', (c) => { if (text.length < 262144) text += c.toString() })
+          rs.on('data', (c) => { if (text.length < PLAYLIST_TEXT_CAP) text += c.toString() })
           rs.on('end', fire)
           rs.on('close', fire)
         }
