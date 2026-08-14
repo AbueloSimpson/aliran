@@ -271,6 +271,14 @@ sign the set out.
   per hour (roughly 0.9 GB/hour at 2 Mbit/s). Stopping the cast reclaims it;
   an app killed in the middle of a cast does not, and the space comes back
   when the viewer next tunes that channel.
+  **On a 32-bit Android build neither remedy frees a byte.** Both are
+  clears, and a clear frees nothing on the `armeabi-v7a` and `x86` ABIs
+  (see [viewer bandwidth](viewer-bandwidth.md#disk)). There the space comes
+  back only when the replica is deleted — when the feed rotates past its
+  byte budget, when the warm cache passes its cap, or when the store is
+  deleted by hand. A cast-pinned feed is never rotated, so on those devices
+  a long cast is bounded by nothing until the cast ends and the feed goes
+  idle.
 - **The session ended by itself.** The channel's feed was purged or a
   retune failed. The server is closed and the URL is dead — start again.
 - **Who else can watch.** Anyone who can reach the television can read the

@@ -156,6 +156,37 @@ export interface PlayerOptions {
   panelPubKey?: string
   /** Disposable replica cache directory (default './aliran-store'). */
   storeDir?: string
+  /**
+   * Ceiling on the WATCHED feed's replica on disk, past which the engine purges and
+   * re-opens it (default 512 MiB; 0 disables). VALUES ARE REFUSED, NOT CLAMPED: a
+   * non-number throws, and so does anything above 0 but below 64 MiB — 32 MiB is
+   * rejected at construction rather than silently raised, because a budget that small
+   * rotates on almost every reclaim pass and reads as a broken stream in the field.
+   * This exists because `hypercore.clear()` frees bytes only where the filesystem can
+   * hole-punch: on the 32-bit Android ABIs the app ships without `fs-native-extensions`,
+   * so the clear reports success and frees NOTHING, and an unrotated replica grows
+   * ~1x bitrate for the whole watch session. Unlink needs no hole punching, so rotation
+   * is the bound that works there.
+   *
+   * This value is a FLOOR. The ceiling applied is max(reclaimBudgetBytes, 3 x the
+   * observed live window), because `hls_list_size` x `hls_time` reaches 1920 s, where
+   * one HEALTHY window at 2 Mbit/s is 458 MiB — 90% of the 512 MiB default — and any
+   * channel above ~2.24 Mbit/s passes that default outright. A flat ceiling rotated
+   * healthy replicas in a loop. Rotation is additionally rate-limited to one per five
+   * minutes.
+   *
+   * The budget is also gated on a real capability probe rather than on the platform:
+   * the engine punches a scratch file and re-measures allocated size, and where the
+   * punch works the budget is switched off and rotation is unreachable. A 64-bit device
+   * on exFAT/FAT32 (where punching also fails) is still bounded. The two mechanisms are
+   * independent on purpose — a healthy replica is under the ceiling even if the probe
+   * is wrong.
+   *
+   * Two things this does NOT do: only the SERVED feed is measured against it (idle
+   * cached replicas are bounded separately by a store-wide cap), and lowering it also
+   * lowers that cap, which is 4x this value.
+   */
+  reclaimBudgetBytes?: number
   hybrid?: HybridConfig
   /** Warm entitled feeds after login: false (default) | true (all) | integer cap. */
   prewarm?: boolean | number
@@ -396,7 +427,33 @@ export interface PlayerEvents {
    * login.
    */
   streams: [streams: Stream[]]
-  status: [status: { state: 'feed:open' | 'feed:ready' | 'feed:retune' | 'feed:reconnect' }]
+  /**
+   * Tuning / self-heal progress. 'feed:rotate' is the viewer-disk rotation: the engine
+   * purged and re-opened the ACTIVE replica because it passed reclaimBudgetBytes. It is
+   * designed to be invisible (requests park across the swap), so treat it as telemetry,
+   * NOT as a cue to show a spinner.
+   *
+   * THREE SHAPES, discriminated by `durationMs`/`skipped`/`failed` — NOT by `bytes`:
+   *   success  `durationMs` set, `bytes` set but possibly null (unmeasurable replica),
+   *            no `skipped`, no `failed`. On this shape none of the other two is set,
+   *            and `bytes` alone does not identify it.
+   *   refused  `skipped: 'cast-pinned'` only — nothing was rotated.
+   *   failed   `failed: true` only — the re-open died; the engine retries at once.
+   *
+   * `durationMs` times the WHOLE rotation, and the drain (<=6 s) and the measurement
+   * (<=5 s) both run BEFORE the park is armed — so a value over 2500 is necessary but
+   * NOT sufficient evidence that the park expired. A rotation can also cost the viewer
+   * a remount and still report success: a purge past 1.5 s pushes the re-open past the
+   * park, the parked requests 404, and the re-open then succeeds anyway.
+   *
+   * `bytes` is NOT bytes freed. It is the replica's measured size BEFORE the purge,
+   * taken up to one reclaim tick plus the drain earlier — an approximation of what the
+   * replica held, after which it re-downloads a live window.
+   */
+  status: [status:
+    | { state: 'feed:open' | 'feed:ready' | 'feed:retune' | 'feed:reconnect' | 'feed:rescan' }
+    | { state: 'feed:rotate', streamId: string, message: string, bytes?: number | null, durationMs?: number, skipped?: 'cast-pinned', failed?: true }
+  ]
   /** Peer count of the served feed, every 3 s while serving. */
   peers: [count: number]
   /** Corrupt store purged + operation retried (argument = the corruption error). */
@@ -409,9 +466,13 @@ export interface PlayerEvents {
   /** Watched stream's feedKey rotated; served feed swapped behind the SAME url — reload the player. */
   'feed-changed': [info: { streamId: string; feedKey: string; url: string }]
   /**
-   * The cast session ended ON ITS OWN — the pinned feed was purged by the tune ladder
-   * ('feed-evicted'), closed by a retune a zap abandoned ('retune-abandoned'), or closed by
-   * a retune whose re-open then failed or never landed ('retune-failed'). The server is
+   * The cast session ended ON ITS OWN — the pinned feed was purged by the tune ladder or
+   * by a viewer-disk rotation that found the feed pinned only after it had committed to
+   * the purge ('feed-evicted'), closed by a retune a zap abandoned ('retune-abandoned'),
+   * or closed by a retune whose re-open then failed or never landed ('retune-failed').
+   * A rotation normally REFUSES a cast-pinned feed outright and emits no cast event at
+   * all; this reason covers the narrow race where the pin appeared mid-rotation. The
+   * server is
    * closed and the token is dead; stop showing "Casting". stopCast() does NOT emit this —
    * the caller that asked for the stop already knows.
    */
@@ -582,6 +643,15 @@ export class AliranPlayer {
   /**
    * End the cast session: sockets hung up, server closed, token forgotten, feed unpinned
    * and given ONE expired-block reclaim pass (it ran with reclaim off for the session).
+   *
+   * THAT PASS FREES NOTHING ON A 32-BIT ANDROID BUILD — it is a clear(), and clear()
+   * frees no bytes wherever the storage layer cannot hole-punch. There the pinned feed
+   * had no disk bound at all while the pin lasted: reclaim was off by policy, rotation
+   * refuses a cast-pinned feed, and the store cap counts it as held. The bytes come back
+   * only once the pin is released and the replica is unlinked — by cache eviction, by
+   * the store cap once it is evictable again, or by the stale-namespace sweep on the
+   * next run.
+   *
    * Does not emit 'cast'.
    */
   stopCast(): Promise<boolean>

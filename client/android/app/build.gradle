@@ -165,8 +165,42 @@ android {
     //   random-access-file/index.js  `try { fsext = require(...) } catch {}`, then guards
     //                                every use — lock, sparse and trim are simply skipped.
     //   crc-universal/index.js       falls back to its own JS crc32 implementation.
-    // So a 32-bit build loses file locking and gets a slower CRC, and runs. Both are the
-    // right trade against an engine that does not start at all.
+    // So a 32-bit build loses file locking and block reclaim, gets a slower CRC, and runs.
+    // Both are the right trade against an engine that does not start at all.
+    //
+    // BUT THE SKIPPED trim IS NOT FREE — IT IS HOW hypercore's clear() ACTUALLY FREES DISK.
+    // random-access-file `_del()` answers `req.callback(null)` when fsext is missing: a
+    // SILENT SUCCESS THAT FREES ZERO BYTES. So on armeabi-v7a and x86 every reclaim pass
+    // reports done while the file keeps every block, and the active live replica grows for
+    // the WHOLE watch session (~0.9 GB/hour at 2 Mbit/s) on hardware that often has 2-4 GB
+    // of free flash. Viewer disk on these two ABIs is therefore bounded NOT by clear() but
+    // by the byte-budgeted replica ROTATION in sdk/serve.js + sdk/player.js: the SDK reads
+    // each replica's real allocated size and, past `reclaimBudgetBytes` (default 512 MiB),
+    // purges the feed and reopens it — unlink is the one reclaim that needs no hole
+    // punching.
+    // (`sparse` costs nothing here: fs-native-extensions short-circuits it off Windows
+    // anyway, so what these two ABIs really give up is `lock` and `trim`.)
+    //
+    // DO NOT ARGUE "INERT ON 64-BIT" FROM THE 512 MiB NUMBER. An earlier version of this
+    // comment ended "A 64-bit build never reaches that budget, so it never rotates". That
+    // claim is RETIRED in sdk/serve.js (the DEFAULTS note) and must not come back here. The
+    // budget is a flat number; the live window it is compared against is OPERATOR-SETTABLE up
+    // to 64 x 30 s = 1920 s, where ONE healthy window at 2 Mbit/s is 458 MiB — 90% of the
+    // budget — and any channel over ~2.24 Mbit/s is over it OUTRIGHT, on an arm64 phone with
+    // nothing wrong with it. Two MEASURED mechanisms are what actually keep a 64-bit build
+    // from rotating, and neither is this number:
+    //   probeHolePunch    writes a scratch file, punches its middle and re-measures the
+    //                     allocated size. Where the punch FREES BYTES, Reclaim._budgetOff
+    //                     latches and the budget is dead for the life of the handler — no
+    //                     measurement, no callback, no rotation.
+    //   _effectiveBudget  the ceiling actually applied is max(reclaimBudgetBytes, 3 x the
+    //                     OBSERVED live window), so a replica holding ~one window is under
+    //                     budget BY CONSTRUCTION at any hls_time x hls_list_size and any
+    //                     bitrate — on BOTH sides of the probe.
+    // So the honest statement is about CAPABILITY, not word size: a store whose filesystem
+    // can punch holes does not rotate. A 64-bit build on exFAT, FAT32 or a network mount
+    // DOES arm the budget, and correctly — the punch REJECTS there (EOPNOTSUPP/ENOTSUP)
+    // rather than lying about success the way the missing addon does above.
     //
     // 64-bit builds are UNTOUCHED and keep both addons — this is scoped to the two 32-bit
     // ABIs on purpose, so the common case pays nothing.

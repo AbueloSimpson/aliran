@@ -431,6 +431,57 @@ not been on a television yet**; each says so where it is described.
   plus metadata. VOD titles are never cleared. Covered by the new
   `test:reclaim` lane.
 
+  **Correction, later in this cycle: the entry above holds only where the
+  filesystem can punch holes.** The automatic clear is `hypercore.clear()`, and
+  the Android build ships without `fs-native-extensions` on the 32-bit ABIs
+  (`armeabi-v7a`, `x86`), because that addon aborts the P2P engine at startup
+  there. Without it the underlying delete reports success and frees **zero
+  bytes**. So "steady state is about one live window per cached feed" was never
+  platform-wide: on those ABIs the watched replica kept growing at ~1x bitrate
+  for the whole session, roughly 0.9 GB per hour at 2 Mbps. A 64-bit device
+  whose store sits on exFAT, FAT32 or a network mount is in the same position —
+  there the punch rejects outright rather than lying about success. The entry
+  below is the bound that holds on every platform.
+
+- **A byte budget bounds the viewer's disk where a clear cannot** — the half the
+  entry above assumed away. Unlink frees bytes on every platform, so the engine
+  now measures each replica's real allocated size and deletes rather than clears.
+  Five parts:
+
+  - **`reclaimBudgetBytes` (default 512 MiB, `0` disables).** When the *watched*
+    feed's replica passes it, the engine purges and re-opens that feed in place,
+    behind a request park so the host player sees a short pause instead of a 404
+    storm. Values are **refused, not clamped**: a non-number throws, and so does
+    anything above `0` but below 64 MiB. The ceiling actually applied is
+    `max(reclaimBudgetBytes, 3 x the observed live window)`, so a replica holding
+    about one live window is under budget by construction — an operator may set a
+    window of 1920 s, where one healthy window at 2 Mbps is 458 MiB (90% of the
+    default) and a channel above ~2.24 Mbps passes it outright, so a flat ceiling
+    rotated healthy replicas in a loop. Rotation is rate-limited to one per five
+    minutes, and is switched off for good on any store whose filesystem passes a
+    live hole-punch probe. Neither shipped app forwards the option; it is for
+    direct SDK embedders.
+  - **A `feed:rotate` status event.** Three shapes, told apart by
+    `durationMs` / `skipped` / `failed`. `bytes` is the size measured *before* the
+    purge, not a count of bytes freed, and is `null` where the platform cannot
+    measure. Before this the reclaim path logged nothing at all and a full disk
+    could not be attributed.
+  - **A store-wide byte cap** — four times the per-feed budget, 2 GiB by default —
+    which deletes idle cached feeds oldest first. It is deliberately **not** a hard
+    ceiling: it applies to the evictable bytes only, after the protected feeds
+    (active, cast-pinned, VOD) have taken their share, and it never trims the warm
+    cache below one feed's budget. One held feed can hold the store above the cap
+    until the pin is released; a `store-cap` breadcrumb says so when it happens.
+  - **An idle-feed sweep.** Reclaim had only ever run for the feed being *served*,
+    so the other cached feeds — prewarmed, zapped through, opened for a thumbnail —
+    were never reclaimed once in the life of a session.
+  - **The 32-bit limitation, stated as a limitation.** Rotation bounds a long watch
+    there, but a **cast-pinned** feed still has no disk bound at all while the pin
+    lasts: `stopCast()`'s reclaim pass frees nothing, rotation refuses a pinned
+    feed, and the store cap counts it as held. Read
+    [viewer bandwidth](docs/kb/viewer-bandwidth.md#disk) before shipping on a
+    2-4 GB box.
+
 - **Encrypted key escrow: a supported way to get the panel identity off the
   box** — `DATA_DIR/keys/` is the only thing in a deployment with no replacement
   cost, because it has no replacement: every installed app pins the panel public

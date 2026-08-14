@@ -668,8 +668,21 @@ from an instrumented run against real equipment it says **measured**.
     receiver that fell behind. `stopCast()` runs one reclaim pass itself. **An app
     killed in the middle of a cast never reaches it** and strands about that much —
     around 2.7 GB for a three-hour cast — until the viewer tunes that channel again
-    or the replica is evicted. (asserted for the normal stop, `test:cast`; the
-    app-kill path is reasoned)
+    or the replica is evicted.
+
+    **On a 32-bit Android build that reclaim pass frees nothing, so the normal stop
+    is no better than the app kill.** The pass is a `clear()`, and `clear()` frees no
+    bytes where the storage layer cannot hole-punch (see the viewer-disk section of
+    [viewer bandwidth](kb/viewer-bandwidth.md#disk)). While the pin lasts, a
+    cast-pinned feed on that platform has **no disk bound at all**: reclaim is off by
+    policy, the byte-budgeted rotation refuses a cast-pinned feed outright, and the
+    store cap counts it as held and cannot evict it. The bytes come back only when
+    the pin is released and the replica is unlinked — by cache eviction, by the store
+    cap once the feed is evictable again, or by the stale-namespace sweep on the next
+    run. A long cast on a 2-4 GB box is therefore genuinely unbounded until it ends.
+    This is a known limit, not an oversight. (asserted for the normal stop on a
+    hole-punching filesystem, `test:cast`; the app-kill and 32-bit paths are
+    reasoned from the shipped code)
 19. **A revoked grant does not end a live cast session.** Entitlements for P2P
     channels are read at login, so revocation applies at the next login, exactly as
     for local playback. The cast surface makes that visible on the LAN instead of

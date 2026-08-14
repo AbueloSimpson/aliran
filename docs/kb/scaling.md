@@ -446,7 +446,11 @@ profile isn't optional here — it's what saves the SD card:
   disk-reclaim (`fs-native-extensions`) native modules ship
   **`linux-arm64` prebuilds only** — no 32-bit `linux-arm`. On 32-bit
   Raspberry Pi OS the broadcaster won't even start. Use **arm64 Raspberry
-  Pi OS / Ubuntu** (Pi 4 or 5).
+  Pi OS / Ubuntu** (Pi 4 or 5). The **Android viewer** meets the same
+  module from the other side: its 32-bit ABIs drop it on purpose and keep
+  running, so there `clear()` reports success and frees nothing, and the
+  SDK rotates the replica against a byte budget instead — see
+  [viewer bandwidth](viewer-bandwidth.md#disk).
 - **tmpfs is essential.** An SD card has terrible random IOPS *and* wears
   out from constant small writes — exactly what an HLS window is. Always
   run the scale profile (`HLS_WORK_DIR` on tmpfs + `FEED_BUFFER=ram`) so

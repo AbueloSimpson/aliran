@@ -313,6 +313,98 @@ Place it in platform cache storage — for the RN worklet, the app files
 dir; for Node, any writable path. Deleting it while stopped is always
 safe; you lose only warm replicas.
 
+### `reclaimBudgetBytes: number` — default 512 MiB
+The ceiling on the **watched** feed's replica **on disk**. The engine
+measures real allocated size, not logical length. When the feed being
+served passes the budget, the engine **rotates** it: the replica is
+purged and the feed is opened again. Deleting the files is the one
+reclaim that needs no hole punching, so it frees bytes on every platform
+— including the 32-bit Android ABIs, where the addon that punches the
+holes is not shipped (it aborts the engine at startup there) and
+`clear()` therefore reports success and frees nothing.
+
+Three things this option does **not** do, each of which has surprised
+someone already:
+
+- **Only the served feed is measured against it.** An idle cached
+  replica is never rotated, however large it is. Idle feeds are bounded
+  separately, by the store cap below.
+- **It silently moves a second bound.** The warm-cache cap is four times
+  this value (2 GiB by default). Lowering `reclaimBudgetBytes` for a
+  small device also lowers the cap, and idle feeds start being deleted
+  sooner. `0` disables rotation and leaves the cap at its default.
+  That cap is **not a hard ceiling on the store**: it is applied to the
+  bytes this pass can actually evict, after the protected feeds (active,
+  cast-pinned, VOD) have taken their share, and the warm cache is never
+  trimmed below one feed's budget. One held feed alone can therefore hold
+  the store above the cap for as long as the pin lasts, by design — the
+  alternative purges the whole warm cache every minute and still never
+  gets under. Size the device for the cap **plus** the largest feed it
+  may hold.
+- **Neither shipped app forwards it.** `client/backend/backend.mjs` and
+  the desktop engine both construct the player from an explicit option
+  list that omits it, so the Android and desktop builds always use the
+  512 MiB default. The option is real for direct SDK embedders only.
+
+Values are checked, and the check **throws** rather than clamps: a
+non-number throws, and so does any value above `0` but below 64 MiB. A
+32 MiB budget is refused at construction, not raised to 64 MiB — the
+misconfiguration has to surface where you can see it, because a tiny
+budget rotates the served feed on almost every reclaim pass, which looks
+exactly like a broken stream. `0` is the documented "do not rotate"
+switch and is always accepted.
+
+Requests park during the swap instead of failing, so a rotation is
+**designed** to be invisible — but it is not guaranteed, and it can cost
+the viewer a gap in two ways:
+
+- **The park expires.** It is bounded at 2.5 s; past that a parked
+  request falls back to a 404. That is the same black gap as before this
+  bound existed, **delayed by up to the length of the park** — any park
+  that can end in a failure shifts the player's retry ladder by its own
+  length, and only not parking would avoid it.
+- **The rotation reports success and the viewer still ate a remount.**
+  The delete draws on the park's budget first, and the re-open then keeps
+  a 1 s floor whatever is left of it. So once the delete passes 1.5 s the
+  re-open runs past the end of the park: the parked requests wake to a
+  feed that is not open yet, take the 404, and the player remounts — and
+  *then* the re-open succeeds. Nothing throws, no recovery arms, and the
+  `feed:rotate` event that follows reports a normal rotation. It was
+  normal, for the disk. On the hardware this budget exists for (32-bit
+  Android on low-end flash, unlinking a several-hundred-MB replica) this
+  is uncommon but routine over a multi-hour session, not a corner case.
+
+**This value is a floor, not the ceiling.** The ceiling actually applied
+is `max(reclaimBudgetBytes, 3 x observed live window)`, where the window
+is measured from the playlist the reclaim pass already parsed. A flat
+ceiling was wrong: `hls_list_size` x `hls_time` reaches 1920 s, where one
+**healthy** live window at 2 Mbit/s is 458 MiB — 90% of the 512 MiB
+default — and any channel above ~2.24 Mbit/s passes that default
+outright. A flat budget therefore rotated healthy replicas in a loop.
+Rotation is also rate-limited to one per five minutes per engine.
+
+**A viewer whose filesystem can punch holes does not rotate at all**,
+enforced rather than assumed. The guarantee is about that capability, not
+about the ABI. Before the budget is applied the engine probes the store:
+it writes a scratch file, punches its middle, and re-measures allocated
+size. If the punch frees bytes the budget is switched off and rotation is
+unreachable.
+
+So a 64-bit viewer is not exempt for being 64-bit. On exFAT, FAT32 or a
+network mount the punch does not silently no-op — it **rejects**
+(`EOPNOTSUPP` / `ENOTSUP`), the reclaim pass catches and frees nothing,
+and the probe measures that. The budget stays armed there and the device
+rotates, which is correct: a clear frees no bytes on those filesystems
+either. **Silent** failure is the *other* case — the 32-bit Android
+build, where the missing addon makes the delete report success and free
+zero bytes. The engine has to treat the two differently: a rejecting
+punch is proof the filesystem cannot reclaim, so the budget is checked
+even when the pass did not complete; where nothing is proved either way,
+it withholds and retries. An inconclusive probe (a transient I/O error,
+or an allocation that has not settled) leaves the budget armed and is
+retried — only a measured verdict is permanent.
+Measured disk behavior: [viewer bandwidth](kb/viewer-bandwidth.md#disk).
+
 ### `prewarm: boolean | number` — default `false`
 Open entitled feeds' DHT topics right after login, so the **first** zap
 to a channel skips the cold lookup. `true` warms all entitled feeds; an
@@ -472,7 +564,7 @@ Cast to a television on the LAN (§11).
 | Method | What it does |
 |---|---|
 | `startCast(streamId, { advertiseHost?, receiverHost?, readIdleMs?, reclaim? })` | Stand up a second, LAN-scoped media server for one channel and resolve a `CastSession`. Rejects when this device has no private IPv4. |
-| `stopCast()` | Close the socket, kill the token, unpin the feed, run one reclaim pass. |
+| `stopCast()` | Close the socket, kill the token, unpin the feed, run one reclaim pass. On a 32-bit Android build that pass frees no bytes — the store shrinks when the replica rotates or is evicted (`reclaimBudgetBytes`, §3). |
 | `castSession()` | The live session, or `null`. |
 
 The login retry pattern every host should use:
@@ -548,7 +640,8 @@ custom hosts.
 |---|---|---|
 | `ready` | — | `connect()` finished; safe to `login()`. |
 | `streams` | `Stream[]` | Render the lineup. Fires at login **and live** on any panel catalog edit (title/art/isLive/order/categories) — no polling, no re-login. A newly *granted* stream still needs the next login. |
-| `status` | `{ state: 'feed:open' \| 'feed:ready' \| 'feed:retune' \| 'feed:reconnect' }` | Drive a tuning indicator: `open` means a cold tune started, `ready` means playable, and `retune`/`reconnect` mean self-heal in progress. Say "reconnecting…" — don't freeze a spinner at a fake percentage. |
+| `status` | `{ state: 'feed:open' \| 'feed:ready' \| 'feed:retune' \| 'feed:reconnect' \| 'feed:rescan' }` | Drive a tuning indicator: `open` means a cold tune started, `ready` means playable, and `retune`/`reconnect`/`rescan` mean self-heal in progress. Say "reconnecting…" — don't freeze a spinner at a fake percentage. |
+| `status` | `{ state: 'feed:rotate', streamId, message, bytes?, durationMs?, skipped?, failed? }` | The viewer-disk rotation (§3, `reclaimBudgetBytes`): the engine purged and re-opened the active replica to free disk. Three shapes, told apart by **`durationMs` / `skipped` / `failed`** — not by `bytes`. **Success**: `durationMs` set, and `bytes` set but possibly `null`. **Refused**: `skipped: 'cast-pinned'`, no rotation happened. **Failed**: `failed: true`, the re-open died; the engine retries immediately and falls back to the tune ladder only if that also fails, so it is recoverable but worth logging. On success **do not show a spinner** — requests parked across the swap and it is emitted *after* the swap anyway, so it is telemetry, not a cue. `durationMs` times the **whole** rotation, and the drain (≤6 s) and the measurement (≤5 s) both run *before* the park is armed, so a value above 2500 is **necessary but not sufficient** evidence that the park expired: a 3 s drain plus a 200 ms swap reports ~3200 ms with nothing ever parked. Treat it as a reason to investigate, not as a count of viewer-visible gaps — and note that a rotation can cost the viewer a remount while still reporting success (§3). `bytes` is **not** bytes freed: it is the replica's measured size *before* the purge, taken up to one reclaim tick plus the drain earlier, and `null` where the platform could not measure. Read it as an approximation of what the replica held; the feed re-downloads a live window straight afterwards. |
 | `peers` | `number` | Peer count of the served feed, every 3 s while serving. |
 | `feed-changed` | `{ streamId, feedKey, url }` | The watched stream's feedKey rotated (broadcaster restart/rotation). The engine already re-resolved and swapped the served feed behind the **same** `url`. Reload or remount the player to flush the stale playlist. No re-login, no `resolve()` call needed. |
 | `zap-prefetch` | `{ enabled? }` or `{ state: 'suspended' \| 'resumed', reason: 'metered' \| 'stall' \| 'thin' }` | Reflect the Smooth-zapping toggle / adaptive gate in UI if you surface it. |
@@ -893,6 +986,15 @@ will get a `403`.
   network, and disk grows by about the channel bitrate for the session
   (roughly 0.9 GB per hour at 2 Mbit/s), because block reclaim is off for
   a pinned feed. `stopCast()` reclaims; an app killed mid-cast does not.
+  That is the same growth `reclaimBudgetBytes` bounds for an ordinary
+  feed (§3), but a cast feed is pinned by design — so on a hole-punching
+  filesystem `stopCast()` is the reclaim that ends it. **On 32-bit
+  Android that pass frees nothing**, and a cast-pinned feed there has no
+  disk bound at all while the pin lasts: rotation refuses a pinned feed
+  and the store cap counts it as held. The bytes come back only after the
+  pin is released and the replica is unlinked. Read
+  [viewer bandwidth](kb/viewer-bandwidth.md#disk) before you ship casting
+  on a 2-4 GB box.
 - **Never log the token**, and never put it in an IPC message your debug
   logger prints.
 - **Offer `candidates`.** `os.networkInterfaces()` cannot tell Wi-Fi from

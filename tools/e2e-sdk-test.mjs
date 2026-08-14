@@ -57,6 +57,20 @@
 // is symmetric with admission, so a P2P grant survives the panel's two-put
 // revoke->reconcile. tools/e2e-live-entitlement-test.mjs covers the same ground on a
 // LOCAL testnet (deterministic) — keep the two in step.
+// Then the VIEWER-DISK ROTATION of the ACTIVE feed — a different thing entirely from the
+// broadcaster feedKey rotation above (that is a CATALOG event; this is a DISK bound). Where
+// hypercore's clear() frees zero bytes — 32-bit Android, where `fs-native-extensions` is
+// excluded and random-access-file's `_del` reports success and frees nothing — unlink is the
+// only reclaim there is, so the engine purges the ACTIVE replica and re-opens it empty under
+// the live play. The section drives it through _onFeedOverBudget, the callback sdk/serve.js's
+// Reclaim really invokes, and proves the whole contract: the swap is invisible (same port,
+// same source(), no 'feed-changed', playlist advancing again, and the replica genuinely
+// UNLINKED rather than closed); a media request fired mid-swap PARKS and then serves 200
+// instead of taking the instant 404 that costs a ~5.5 s remount; the rotation is single-flight
+// and releases its mutex on success, on refusal, on failure and on stop(); _evictFeed and
+// _retuneActive both stand down on the cache slot it owns; a cast-pinned feed is refused
+// before the mutex is even taken AND again after the drain; a re-open that misses its bound
+// recovers; and stop() mid-rotation rebuilds no store, swarm or server behind itself.
 // Runs on a LOCAL DHT testnet (never the public DHT), like every other e2e lane here.
 // Requires ffmpeg/ffprobe on PATH. Exits 0 on PASS.
 import Corestore from 'corestore'
@@ -101,6 +115,24 @@ function httpGet (port, p, headers = {}) {
     }).on('error', reject)
   })
 }
+// waitFor's 300 ms poll is right for waiting on the NETWORK. It is wrong for a window this
+// test opened on purpose and is going to close itself — a feed rotation's park budget is
+// 2500 ms in total, so a 300 ms poll can burn a third of it just noticing the window is open.
+async function spinFor (fn, ms, label) {
+  const t = Date.now()
+  for (;;) {
+    try { const v = fn(); if (v) return v } catch {}
+    if (Date.now() - t >= ms) throw new Error('timeout: ' + label)
+    await sleep(10)
+  }
+}
+// The synchronous sibling of assertRejects, for construction-time refusals.
+function assertThrows (fn, re, label) {
+  let msg = null
+  try { fn() } catch (e) { msg = String(e.message) }
+  if (msg === null) throw new Error(label + ' must throw, but it returned')
+  if (!re.test(msg)) throw new Error(label + ' threw the wrong error: ' + msg)
+}
 // resolve() must always return promptly — a hang here is the re-zap regression (opening
 // a duplicate Hyperdrive over a still-open store namespace), so bound it rather than
 // letting a stall wedge the whole test.
@@ -114,7 +146,7 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), cliU: tmp('e2es-cliU-'), cliC: tmp('e2es-cliC-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), cliU: tmp('e2es-cliU-'), cliC: tmp('e2es-cliC-'), cliD: tmp('e2es-cliD-'), out: tmp('e2es-hls-') }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -1101,11 +1133,384 @@ try {
   const redirectProven = true
   log('redirect: zap p2p↔redirect clean — watchdog armed on news, cleared on promo; hybrid machinery untouched')
 
+  // ===== VIEWER-DISK ROTATION of the ACTIVE feed (the 32-bit reclaim path) =====
+  // Not to be confused with the broadcaster feedKey rotation above: that one is a CATALOG
+  // event (a new feed identity to follow). This one is a DISK bound. On 32-bit Android ABIs
+  // `fs-native-extensions` is excluded from the build, so random-access-file's `_del` reports
+  // success and frees ZERO bytes — hypercore's clear() runs, says it worked, and the replica
+  // keeps growing at ~1× bitrate for the whole session. Unlink is the only operation that
+  // returns the bytes there, so the engine PURGES the active replica and re-opens it empty
+  // behind a request park (sdk/player.js _rotateActiveFeed).
+  //
+  // HOW IT IS TRIGGERED HERE, and why not by real growth. The trigger is sdk/serve.js's
+  // Reclaim, which hard-disables the budget for the life of the handler the moment its
+  // capability probe (probeHolePunch) proves the filesystem CAN hole-punch — which is every
+  // CI box and every dev machine this lane runs on. Waiting for real bytes would therefore
+  // wait forever, and the floor under reclaimBudgetBytes (64 MiB) is far above anything a
+  // 2-minute test replica reaches anyway. _onFeedOverBudget IS the callback Reclaim invokes,
+  // with the same info payload, so calling it is the deepest honest entry point on a 64-bit
+  // host; everything past it is the real path, end to end. tools/serve-reclaim-test.mjs owns
+  // the other half — that the probe, the arithmetic and the callback fire correctly.
+  //
+  // TWO WINDOWS ARE HELD OPEN DELIBERATELY, because the interesting states are ~20 ms long:
+  //   the DRAIN (step 1) is held with a REAL in-flight media read — the serving core takes its
+  //     in-flight slot at target bind, so a request for a segment that will never exist keeps
+  //     handler.inflight() at 1 and the rotation's own drain waits on exactly that;
+  //   the PURGE (step 4) is held by wrapping drive.purge(), which is a slow unlink — the
+  //     routine case on the low-end 32-bit flash this whole feature exists for, not a
+  //     contrivance.
+  const MiB = 1024 * 1024
+  const holdPurge = (drive) => {
+    const real = drive.purge.bind(drive)
+    let release = null; const gate = new Promise((r) => { release = r })
+    let entered = false
+    drive.purge = () => { entered = true; return gate.then(() => real()) }
+    return { release: () => release(), get entered () { return entered }, restore: () => { delete drive.purge } }
+  }
+  const holdDrain = (port, p) => {
+    const req = http.get({ host: '127.0.0.1', port, path: p, agent: false }, (res) => { res.resume() })
+    req.on('error', () => {})
+    return { release: () => { try { req.destroy() } catch {} } }
+  }
+  // A request whose settlement TIME is observable — a park is only a park if the request is
+  // still open when the assertion runs.
+  const pendingGet = (port, p) => {
+    const st = { done: false, status: null, body: null, startedAt: Date.now(), ms: null }
+    st.promise = httpGet(port, p).then(
+      (r) => { st.done = true; st.status = r.status; st.body = r.body.toString(); st.ms = Date.now() - st.startedAt; return r },
+      (e) => { st.done = true; st.status = 'ERR ' + e.message; st.ms = Date.now() - st.startedAt })
+    return st
+  }
+  const playableAt = async (port) => { const r = await httpGet(port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') ? r.body.toString() : null }
+  const driveUsable = async (d) => { if (!d) return false; try { await d.entry('/index.m3u8'); return true } catch { return false } }
+
+  // The budget is a byte COUNT with a hard floor, and a misconfiguration has to surface at
+  // construction. `Number('512')` is 512, so a string used to be accepted as a 512-BYTE budget
+  // — a stream that swaps its own drive out from under the player continuously, which reaches
+  // the field as unexplained rebuffering rather than as a smaller disk.
+  assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, reclaimBudgetBytes: '536870912' }), /non-negative NUMBER/, 'a STRING reclaimBudgetBytes')
+  assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, reclaimBudgetBytes: true }), /non-negative NUMBER/, 'a BOOLEAN reclaimBudgetBytes')
+  assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, reclaimBudgetBytes: 8 * MiB }), /at least/, 'a reclaimBudgetBytes under the floor')
+
+  const evD = { status: [], rotate: [], errors: [], feedChanged: [], swapVersion: [] }
+  // ⚠ THE ZERO-PEER RESCAN IS DISABLED FOR THIS PLAYER (tune.rescanMs: 0), and that is the
+  // point of the section rather than a convenience. A purged replica does not re-attach to the
+  // connection that was carrying it — the rotation has to hang up on the feed's peers and get a
+  // FRESH dial, and the question this section has to be able to answer is whether that dial
+  // takes ON ITS OWN. It could not answer it before: _checkFeedPeers force-relookups after
+  // tune.rescanMs of zero peers, so a rotation whose dial never took still came back ~10 s later
+  // and the lane went green. That is a false pass worth naming — 10 s is four times the park
+  // budget, i.e. the viewer sits on a black screen through a swap the event stream called a
+  // success. With the rescan off, nothing downstream can rescue the dial inside the bounds
+  // asserted below (the tune watchdog's first rung is 30 s away), so the assertions measure the
+  // dial itself.
+  const playerD = createPlayer({ panelPubKey, storeDir: dirs.cliD, swarm: { bootstrap }, reclaimBudgetBytes: 64 * MiB, tune: { rescanMs: 0 } })
+  playerD.on('status', (s) => {
+    evD.status.push(s.state)
+    if (s.state !== 'feed:rotate') return
+    evD.rotate.push(s)
+    // The swapped-in replica's version, sampled INSIDE the success emit — the only instant at
+    // which "the rotation handed back an EMPTY replica" is still observable. A second later it
+    // has re-replicated and a purge is indistinguishable from a close.
+    if (s.durationMs != null) evD.swapVersion.push(playerD._feedDrive ? playerD._feedDrive.version : null)
+  })
+  playerD.on('error', (e) => evD.errors.push(String((e && e.message) || e)))
+  playerD.on('feed-changed', (e) => evD.feedChanged.push(e))
+  cleanups.push(() => playerD.stop())
+  if (playerD._feedBudgetBytes !== 64 * MiB) throw new Error('reclaimBudgetBytes did not reach the engine: ' + playerD._feedBudgetBytes)
+
+  await playerD.connect()
+  let streamsD = null
+  const deadlineD = Date.now() + 60000
+  while (!streamsD) {
+    if (Date.now() > deadlineD) throw new Error('timeout: disk-rotation SDK login')
+    try {
+      const s = await playerD.login('alice', PASSWORD)
+      if (s.length >= 4) streamsD = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streamsD) await sleep(1500)
+  }
+  const rDsk = await resolveWithin(playerD, 'news', 20000)
+  const portD = rDsk.port
+  await waitFor(() => playableAt(portD), 40000, 'disk-rotation: news playback before any rotation')
+  const cacheKeyD = playerD._activeFeedKey
+  const feedKeyD = cacheKeyD.slice(0, cacheKeyD.indexOf(':'))
+  if (feedKeyD !== rotKeyHex) throw new Error('disk-rotation: expected news to be on the rotated feed by now, got ' + feedKeyD.slice(0, 16))
+  const rotOk = () => evD.rotate.filter((e) => e.durationMs != null)
+  const rotSkipped = () => evD.rotate.filter((e) => e.skipped === 'cast-pinned')
+  const rotFailed = () => evD.rotate.filter((e) => e.failed)
+
+  // ----- (1) A rotation while watching is INVISIBLE -----
+  // The feature's whole promise: the replica is thrown away and rebuilt under a live play and
+  // the host player is never told anything happened. Same port, same source(), no
+  // 'feed-changed' (that event means the CATALOG re-keyed the channel — conflating the two
+  // would make a host re-zap on every disk bound), no error, no 'feed:retune'.
+  const driveD1 = playerD._feedDrive
+  const plD1 = await playableAt(portD)
+  const verD1 = driveD1.version
+  const fcD1 = evD.feedChanged.length
+  const stD1 = evD.status.length
+  playerD._onFeedOverBudget(driveD1, { bytes: 700 * MiB, blobs: 690 * MiB, meta: 10 * MiB, budgetBytes: 64 * MiB })
+  const rotEv1 = await waitFor(() => rotOk()[0], 20000, "disk-rotation: 'feed:rotate' success event")
+  if (rotEv1.streamId !== 'news') throw new Error('the rotation event named the wrong stream: ' + rotEv1.streamId)
+  if (rotEv1.bytes !== 700 * MiB) throw new Error("the trigger's measured bytes did not reach the event: " + rotEv1.bytes)
+  if (!Number.isFinite(rotEv1.durationMs)) throw new Error('the rotation event carries no durationMs — a rotation nobody can attribute')
+  if (!playerD._feedDrive) throw new Error('the rotation left the engine with no served drive')
+  if (playerD._feedDrive === driveD1) throw new Error('nothing was rotated: _feedDrive is still the over-budget replica')
+  if (b4a.toString(playerD._feedDrive.key, 'hex') !== feedKeyD) throw new Error('the rotation re-opened a DIFFERENT feed')
+  if (playerD._activeFeedKey !== cacheKeyD) throw new Error('the rotation moved the active cache key')
+  if (playerD.source().url !== rDsk.localUrl || playerD.source().source !== 'p2p') throw new Error('source() moved across the rotation: ' + JSON.stringify(playerD.source()))
+  if (playerD._server.address().port !== portD) throw new Error('the served port changed across the rotation')
+  if (evD.feedChanged.length !== fcD1) throw new Error("a DISK rotation must not emit 'feed-changed' — that event means the catalog re-keyed the channel")
+  if (evD.errors.length) throw new Error('a healthy rotation must not surface an error: ' + JSON.stringify(evD.errors))
+  if (evD.status.slice(stD1).includes('feed:retune')) throw new Error('a healthy rotation must not look like a tune failure')
+  if (playerD._feedRotate !== null) throw new Error('the mutex survived a completed rotation — no channel could rotate again for the life of the process')
+  if (await driveUsable(driveD1)) throw new Error('the over-budget replica was never purged (the old drive still answers)')
+  // …and it was UNLINKED, not merely closed. A close re-opens onto the same storage and frees
+  // nothing, which on the platform this exists for is the entire failure being fixed; the only
+  // way to tell them apart from outside is that a purge hands back an EMPTY replica.
+  if (!(verD1 > 1)) throw new Error('test setup: the pre-rotation replica should be well past version 1, got ' + verD1)
+  if (!(evD.swapVersion[0] < verD1)) throw new Error(`the re-opened replica is not EMPTY (version ${evD.swapVersion[0]} vs ${verD1} before) — the storage was closed, not unlinked, so no bytes came back`)
+  const t0D = Date.now()
+  // THE ASSERTION THE WHOLE FEATURE IS FOR, in two halves, because "playback came back" is not
+  // the same claim as "the rotation's own recovery worked" and conflating them is what let a
+  // broken swap pass.
+  //
+  // HALF ONE — THE RE-OPENED REPLICA MUST GAIN A PEER, PROMPTLY AND BY ITSELF. A purged core
+  // never re-attaches to the connection that was carrying it, so the rotation hangs up on the
+  // feed's peers and forces a fresh dial; this is the only assertion that says whether that dial
+  // TOOK. It is bounded far under tune.rescanMs — which is disabled for this player anyway (see
+  // createPlayer above) — so a run that limps back on some later recovery FAILS here instead of
+  // going green. Measured: a fire-and-forget dial recovered in tens of ms most runs and then
+  // took 10078 ms on one, which is exactly rescanMs: the dial had not taken at all and the
+  // zero-peer rescan was what rescued the channel, four times the park budget later. The old
+  // 30 s playback-only bound could not tell those two runs apart.
+  const REDIAL_BUDGET_MS = 3000
+  let peerMsD1
+  try {
+    peerMsD1 = await waitFor(async () => {
+      const d = playerD._feedDrive
+      return (d && d.core && d.core.peers.length > 0) ? Date.now() - t0D : null
+    }, REDIAL_BUDGET_MS, 'disk-rotation: the re-opened replica gains a peer')
+  } catch (e) {
+    const connsD1 = playerD._swarm ? playerD._swarm.connections.size : 0
+    throw new Error(`${e.message} within ${REDIAL_BUDGET_MS} ms — ZERO peers across ${connsD1} LIVE connection(s). ` +
+      'The rotation hung up on this feed’s peers and dialled back, and the dial did not take. A core whose storage ' +
+      'was purged does NOT re-attach to an ALREADY-ESTABLISHED protomux (close()+re-open resumes at once; ' +
+      'purge()+re-open never does, at any delay and under any namespace), so a fresh connection is the only ' +
+      'recovery — and nothing else can supply one here: the zero-peer rescan is disabled for this player and the ' +
+      "tune watchdog's first rung is 30 s away. Do not raise this bound to make it pass: a rotation that needs " +
+      'seconds to re-dial is a rotation the viewer watches as a black screen.')
+  }
+  // …and it must not have been a recovery in disguise. Both of these fire on the paths that
+  // would otherwise mask a dead dial.
+  if (evD.status.slice(stD1).includes('feed:rescan')) throw new Error('the replica was rescued by the zero-peer rescan, not by the rotation’s own re-dial')
+  if (evD.status.slice(stD1).includes('feed:retune')) throw new Error('the replica was rescued by the tune ladder, not by the rotation’s own re-dial')
+  // HALF TWO — and the viewer actually has a picture again. Bounded generously on purpose: once
+  // the replica has a peer this is the broadcaster's playlist-rewrite interval, not the SDK's.
+  let plD1b
+  try {
+    plD1b = await waitFor(async () => { const pl = await playableAt(portD); return pl && pl !== plD1 ? pl : null }, 20000, 'disk-rotation: the live edge advances again on the fresh replica')
+  } catch (e) {
+    const peersD1 = playerD._feedDrive ? playerD._feedDrive.core.peers.length : '(no drive)'
+    const connsD1 = playerD._swarm ? playerD._swarm.connections.size : 0
+    throw new Error(`${e.message} — the re-opened replica has ${peersD1} peer(s) across ${connsD1} LIVE connection(s). ` +
+      'A core whose storage was purged does NOT re-attach to an ALREADY-ESTABLISHED protomux. Measured on plain ' +
+      'corestore/hyperdrive/hyperswarm with no SDK involved: close()+re-open over the same namespace resumes ' +
+      'replication immediately; purge()+re-open never resumes, with or without a delay, and re-opening under a ' +
+      'different namespace does not help either (the discovery key, and so the channel, is the same); destroying ' +
+      "the connection so the swarm re-dials recovers it at once. Step 7's comment — \"a freshly opened replica has " +
+      'ZERO peers by construction UNTIL corestore re-adds the core on the existing swarm connections" — is the ' +
+      'assumption that does not hold, and the tune ladder cannot save it: the rung that would (feed:reconnect, ' +
+      'destroy the wedged connection) is skipped precisely because the symptom is zero peers, so the play dies with ' +
+      "a 'tune timeout' ~60 s later and never returns.")
+  }
+  // The re-dial number is reported, not just asserted, because it is the number the design hangs
+  // on — and it is a LOCAL-TESTNET FLOOR, not a prediction. There is no real DHT lookup and no
+  // holepunch here; a phone on a carrier NAT pays for both. Read it as "the mechanism takes on
+  // its own", never as "the swap is invisible on a device".
+  log(`disk-rotate: over-budget → purge + re-open swapped the replica in ${rotEv1.durationMs} ms; same port, same source(), no feed-changed; re-dial took ${peerMsD1} ms to put a peer back on the fresh replica (testnet FLOOR — no DHT lookup, no holepunch); live edge advancing again ${Date.now() - t0D} ms later (${plD1b.split('\n').filter(l => l.trim().endsWith('.ts')).length} segs)`)
+
+  // ----- (2) A media request PARKS across the swap, and is never instantly 404'd -----
+  // This one behaviour is the difference between an invisible rotation and a ~5.5 s black
+  // remount: the serving core answers a NULL target with an instant 404, and ExoPlayer turns
+  // that into 3 retries, an onError and a remount. The same window is where _evictFeed must
+  // refuse the slot — eviction PURGES whatever a cache slot settles to, and during a rotation
+  // that is the replica it has just OPENED, not the one it threw away. Three blind callers can
+  // land here (the tune ladder's last rung, _openFeedWithin's timeout, _trimFeeds after a zap).
+  const driveD2 = playerD._feedDrive
+  const gateD2 = holdPurge(driveD2)
+  playerD._onFeedOverBudget(driveD2, { bytes: 800 * MiB, budgetBytes: 64 * MiB })
+  await spinFor(() => gateD2.entered && playerD._feedSwap && playerD._feedDrive === null, 15000, 'disk-rotation: the purge window (handles dropped, park armed)')
+  const slotD2 = playerD._feeds.get(cacheKeyD)
+  if (!slotD2) throw new Error('the rotation left no cache entry under its key — a concurrent open would build a SECOND drive over a namespace being purged')
+  if (slotD2.settled !== undefined) throw new Error('the rotation must park a promise every synchronous reader sees as COLD')
+  if (playerD._thumbTarget('news') !== null) throw new Error('a synchronous reader resolved a target while the replica was purged')
+  playerD._evictFeed(cacheKeyD)
+  if (playerD._feeds.get(cacheKeyD) !== slotD2) throw new Error('_evictFeed took the slot the rotation owns — it would orphan and unlink the replica the rotation is opening')
+  const parkedD2 = pendingGet(portD, '/index.m3u8')
+  await sleep(400)
+  if (parkedD2.done) throw new Error(`a media request did not park during the swap (status ${parkedD2.status} after ${parkedD2.ms} ms) — this is the instant 404 the park exists to replace`)
+  if (!playerD._feedSwap) throw new Error('the park gate was released while the replica was still purged')
+  gateD2.release()
+  await parkedD2.promise
+  gateD2.restore()
+  if (parkedD2.status !== 200 || !/\.ts/.test(parkedD2.body || '')) throw new Error('the parked request did not succeed on the other side of the swap: ' + parkedD2.status)
+  if (!(parkedD2.ms >= 400)) throw new Error('the request was answered before the swap finished — it never parked at all')
+  await spinFor(() => playerD._feedSwap === null && playerD._feedRotate === null, 10000, 'disk-rotation: the park and the mutex are both released')
+  if (rotOk().length !== 2) throw new Error('expected exactly 2 successful rotations by now, got ' + rotOk().length)
+  log(`disk-rotate: a media request fired while the replica was purged PARKED ${parkedD2.ms} ms and then served 200 — no 404, no remount; _evictFeed refused the claimed slot`)
+
+  // ----- (3) Single-flight, and the mutex is released on every exit -----
+  // The over-budget callback fires once per throttled reclaim pass while the replica is over
+  // budget, so a second one arriving mid-rotation is the ordinary case rather than a race to
+  // imagine. The observable window is the DRAIN, because _feedDrive is still published there —
+  // a request arriving during it is served the real drive, and the park is armed later on
+  // purpose — so a second rotation that got past the mutex would have everything it needs.
+  const driveD3 = playerD._feedDrive
+  const probeD3 = holdDrain(portD, '/never-lands-' + Date.now() + '.ts')
+  await spinFor(() => playerD._handler.inflight(driveD3) >= 1, 10000, 'disk-rotation: the drain probe holds an in-flight read')
+  playerD._onFeedOverBudget(driveD3, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
+  const rotTokD3 = playerD._feedRotate
+  if (!rotTokD3) throw new Error('the rotation did not take the mutex before its first await')
+  if (playerD._feedDrive !== driveD3) throw new Error('the drain must run in FRONT of the swap — requests arriving during it are served the real drive')
+  if (playerD._feedSwap) throw new Error('the park must not be armed across the drain: a 6 s drain would spend the whole 2.5 s park budget before the only phase that needs it')
+  const secondD3 = await playerD._rotateActiveFeed(playerD._active, { bytes: 950 * MiB })
+  if (secondD3 !== false) throw new Error('a second rotation started while one was in flight')
+  if (playerD._feedRotate !== rotTokD3) throw new Error('a second rotation took the mutex from the one in flight')
+  playerD._onFeedOverBudget(driveD3, { bytes: 950 * MiB, budgetBytes: 64 * MiB }) // …and again through the real hook
+  await sleep(150)
+  if (playerD._feedRotate !== rotTokD3) throw new Error('a second over-budget callback displaced the in-flight rotation')
+  if (playerD._feedDrive !== driveD3) throw new Error('a second rotation purged the drive out from under the first')
+  probeD3.release()
+  await waitFor(() => rotOk().length === 3, 20000, 'disk-rotation: the drained rotation completes')
+  await sleep(300)
+  if (rotOk().length !== 3) throw new Error('the refused rotations ran after all: ' + rotOk().length)
+  if (playerD._feedRotate !== null) throw new Error('the mutex survived a completed rotation')
+  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback after the drained rotation')
+  log('disk-rotate: single-flight held across the drain (2 further triggers refused, mutex kept), and released on completion')
+
+  // ----- (4) A cast-pinned feed is never rotated -----
+  // Purging the replica a receiver is reading deletes the only copy of every block below the
+  // live window — they are unfetchable swarm-wide, the broadcaster cleared them at rotation —
+  // so the refusal is checked TWICE: once up front, and again after the drain, because
+  // _doStartCast can resolve this very drive and publish its session inside that window.
+  const driveD4 = playerD._feedDrive
+  playerD._castFeedKey = cacheKeyD // what _doStartCast pins, before it publishes _cast
+  // Called, not awaited: everything up to the first await has already run by the time this
+  // returns, which is what makes "was the mutex taken?" answerable. The up-front refusal has to
+  // be FREE — a pinned channel that takes the mutex and the cache-slot claim first blocks every
+  // other rotation, and makes its slot un-evictable, for the length of a drain (up to 6 s) on a
+  // rotation that was always going to refuse. The re-check after the drain does not cover that.
+  const refusingD4 = playerD._rotateActiveFeed(playerD._active, { bytes: 900 * MiB })
+  const mutexTakenD4 = playerD._feedRotate !== null
+  const refusedD4 = await refusingD4
+  playerD._castFeedKey = null
+  if (refusedD4 !== false) throw new Error('a cast-pinned feed was rotated')
+  if (mutexTakenD4) throw new Error('a cast-pinned feed must be refused BEFORE the mutex is taken, not after the drain')
+  if (rotSkipped().length !== 1) throw new Error('the refusal left no breadcrumb — "why did this device fill up?" becomes unanswerable')
+  if (playerD._feedDrive !== driveD4) throw new Error('the pinned replica was swapped anyway')
+  if (playerD._feedRotate !== null) throw new Error('the up-front refusal leaked the mutex')
+  // …and the same pin arriving DURING the drain, which is the one the up-front check cannot see.
+  const probeD4 = holdDrain(portD, '/never-lands-cast-' + Date.now() + '.ts')
+  await spinFor(() => playerD._handler.inflight(driveD4) >= 1, 10000, 'disk-rotation: the cast-window drain probe')
+  playerD._onFeedOverBudget(driveD4, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
+  if (!playerD._feedRotate) throw new Error('the rotation did not start')
+  playerD._castFeedKey = cacheKeyD // a session appears while the rotation drains
+  probeD4.release()
+  await waitFor(() => rotSkipped().length === 2, 20000, 'disk-rotation: the mid-drain pin is caught by the re-check')
+  playerD._castFeedKey = null
+  if (playerD._feedDrive !== driveD4) throw new Error('the rotation purged a replica a cast session had just pinned')
+  if (!(await driveUsable(driveD4))) throw new Error('the pinned replica was purged despite the refusal')
+  if (playerD._feedRotate !== null) throw new Error('the mid-drain refusal leaked the mutex')
+  if (rotOk().length !== 3) throw new Error('a refused rotation reported success')
+  if (!(await playableAt(portD))) throw new Error('the refused rotation disturbed playback')
+  log('disk-rotate: a cast pin refuses the rotation both up front and after the drain — the pinned replica survives, mutex released on both')
+
+  // ----- (5) A retune overlapping a rotation must not publish a CLOSED drive -----
+  // _retuneActive's whole method is delete → await → close → re-open, and the value it would
+  // await during a rotation is the drive the rotation is a microtask away from publishing:
+  // closing it makes _feedDrive a closed handle and every media request for the rest of the
+  // play resolves to it. Reachable in production rather than synthetic — the tune ladder fires
+  // this on a schedule, and the rotation restarts that very watchdog in its step 7.
+  const driveD5 = playerD._feedDrive
+  const gateD5 = holdPurge(driveD5)
+  playerD._onFeedOverBudget(driveD5, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
+  await spinFor(() => gateD5.entered && playerD._feedDrive === null, 15000, 'disk-rotation: the purge window (retune overlap)')
+  const retuneD5 = playerD._retuneActive(playerD._active).catch(() => {})
+  gateD5.release()
+  await retuneD5
+  gateD5.restore()
+  await spinFor(() => playerD._feedRotate === null, 15000, 'disk-rotation: the overlapped rotation finishes')
+  await sleep(500)
+  if (!playerD._feedDrive) throw new Error('the overlap left the engine with no served drive')
+  if (!(await driveUsable(playerD._feedDrive))) throw new Error('_retuneActive published a CLOSED drive as _feedDrive — every media request errors from here')
+  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback survives a retune overlapping a rotation')
+  log('disk-rotate: a retune landing inside a rotation stood down — a LIVE drive stayed published and playback kept serving')
+
+  // ----- (6) A rotation whose re-open FAILS recovers -----
+  // The old replica is already unlinked when the re-open misses its bound, so without the
+  // recovery every media request 404s until the tune ladder's first rung 30 s later — and on a
+  // hybrid build nothing arms at all. One re-open is starved (it never settles, so the bound is
+  // what ends it, which is the common shape on a slow device) and the very next one is real.
+  const driveD6 = playerD._feedDrive
+  const realOpenD6 = playerD._openFeed
+  let starveD6 = true
+  playerD._openFeed = function (fk, ek) {
+    if (starveD6) { starveD6 = false; return new Promise(() => {}) }
+    return realOpenD6.call(this, fk, ek)
+  }
+  const failedD6 = rotFailed().length
+  playerD._onFeedOverBudget(driveD6, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
+  await waitFor(() => rotFailed().length > failedD6, 20000, 'disk-rotation: the failed rotation says so')
+  const failEvD6 = rotFailed().pop()
+  if (!/re-opening/.test(String(failEvD6.message))) throw new Error('the failure breadcrumb does not promise a re-open: ' + failEvD6.message)
+  await spinFor(() => playerD._feedRotate === null, 10000, 'disk-rotation: the mutex is released on the FAILURE path')
+  await spinFor(() => playerD._feedSwap === null, 10000, 'disk-rotation: the park is released on the FAILURE path')
+  await waitFor(() => playerD._feedDrive && playerD._feedDrive !== driveD6, 20000, 'disk-rotation: the recovery re-opened the replica')
+  if (rotFailed().some((e) => /recovery failed/.test(String(e.message)))) throw new Error('the recovery itself failed: ' + JSON.stringify(rotFailed().map((e) => e.message)))
+  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback returns after a failed rotation')
+  playerD._openFeed = realOpenD6
+  // …and the disk bound is not permanently off afterwards. A mutex stuck by a failure is
+  // rotation switched off for the life of the process, i.e. on a 32-bit build no disk bound at
+  // all — which is exactly the state this whole feature exists to prevent.
+  const okBeforeD6 = rotOk().length
+  playerD._onFeedOverBudget(playerD._feedDrive, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
+  await waitFor(() => rotOk().length > okBeforeD6, 20000, 'disk-rotation: a rotation after a failed one still runs')
+  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback after the post-failure rotation')
+  log('disk-rotate: a re-open that missed its bound recovered (playback returned) and left the mutex free — a later rotation still ran')
+
+  // ----- (7) stop() during a rotation leaves nothing behind -----
+  // A rotation is the longest-lived piece of work in the engine and it holds a store, a swarm
+  // and a joined topic. Resuming past a teardown is how a Corestore gets rebuilt over a
+  // directory that is being deleted, and how a topic stays announced on a destroyed swarm.
+  const driveD7 = playerD._feedDrive
+  const gateD7 = holdPurge(driveD7)
+  playerD._onFeedOverBudget(driveD7, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
+  await spinFor(() => gateD7.entered && playerD._feedSwap && playerD._feedDrive === null, 15000, 'disk-rotation: the purge window (stop overlap)')
+  await playerD.stop()
+  if (playerD._feedRotate !== null) throw new Error('stop() left the rotation mutex set — a resumed rotation would clear it, but one wedged behind a purge never does, and rotation is then off for the life of the process')
+  if (playerD._feedSwap !== null) throw new Error('stop() left media requests parked on a socket that is already going away')
+  gateD7.release()
+  await sleep(2500)
+  gateD7.restore()
+  if (playerD._store !== null) throw new Error('the rotation rebuilt a Corestore after stop() returned')
+  if (playerD._swarm !== null) throw new Error('the rotation rebuilt a Hyperswarm (and joined a topic) after stop() returned')
+  if (playerD._server !== null) throw new Error('a listening server outlived stop()')
+  if (playerD._feeds.size !== 0) throw new Error('the rotation re-populated the feed cache after stop(): ' + playerD._feeds.size)
+  let connRefusedD7 = false
+  try { await httpGet(portD, '/index.m3u8') } catch { connRefusedD7 = true }
+  if (!connRefusedD7) throw new Error('the localhost server is still accepting connections after stop()')
+  const diskRotationProven = true
+  log('disk-rotate: stop() inside a rotation released the mutex and the park, and nothing was rebuilt behind it')
+
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
-    meteredGated && directionalProven && stallGated && clientOnlyProven && redirectProven && liveEntitlementProven)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) verified)' : 'FAIL ❌')
+    meteredGated && directionalProven && stallGated && clientOnlyProven && redirectProven && liveEntitlementProven && diskRotationProven)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) + VIEWER-DISK rotation of the active feed (invisible swap, request park, single-flight, cast pin, retune overlap, failed re-open, stop() overlap) verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

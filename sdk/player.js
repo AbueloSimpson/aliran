@@ -22,7 +22,15 @@
 //                        (title/isLive/art/... — no polling, no re-login)
 //   'status'  ({state})  breadcrumbs: 'feed:open' | 'feed:ready' | 'feed:retune';
 //                        'net:tuned' also carries {message} — the swarm socket-buffer
-//                        tuning outcome, same text the server components log ([net])
+//                        tuning outcome, same text the server components log ([net]).
+//                        'feed:rotate' is the viewer-disk rotation (see the VIEWER DISK
+//                        BUDGET note below) and carries {streamId, bytes, durationMs}:
+//                        what the purged replica was holding, and how long the served
+//                        drive was actually swapped for. durationMs is the field that
+//                        decides whether this stayed invisible in the field, which is
+//                        why it rides the event rather than a log line. A rotation that
+//                        was REFUSED instead carries {skipped:<reason>} and neither
+//                        number; one that FAILED carries {failed:true}.
 //   'peers'   (count)    feed-health ticker while a stream is being served
 //   'recovered' (err)    a corrupt store was purged and the operation retried
 //   'error'   (err)      background failures that have no caller to throw to
@@ -74,8 +82,10 @@
 //                        these carry another household device's LABEL, and a report is
 //                        pseudonymous on purpose.
 //   'cast' ({state,streamId,reason})  the cast session ENDED ON ITS OWN — state 'ended'.
-//                        reason 'feed-evicted' (the tune ladder ran out and purged the
-//                        pinned replica) | 'retune-abandoned' (a zap landed mid-retune
+//                        reason 'feed-evicted' (the pinned replica was PURGED out from
+//                        under the session — the tune ladder ran out, or a rotation
+//                        published a session onto the very drive it was unlinking)
+//                        | 'retune-abandoned' (a zap landed mid-retune
 //                        and the pinned feed was closed without a replacement). Both used
 //                        to leave a zombie: drive nulled, everything 404ing forever, the
 //                        socket still bound and castSession() still handing out a url and
@@ -163,7 +173,11 @@ import {
 // 64 hex characters are not something a viewer checks against an operator's card.
 import { pairingCode } from '@aliran/core'
 import { isCorruptionError, withRecovery } from './recover.js'
-import { createDriveHandler, playlistUris, reclaimBelowWindow, THUMB_PATH } from './serve.js'
+// measureDriveBytes / reclaimIdleFeed are the disk half of the serving core (see the
+// VIEWER DISK BUDGET note below): measureDriveBytes answers "what is this replica
+// actually costing on disk" and returns null where the platform cannot say, and
+// reclaimIdleFeed runs one below-window reclaim pass on a drive nobody is serving.
+import { createDriveHandler, playlistUris, reclaimBelowWindow, measureDriveBytes, reclaimIdleFeed, THUMB_PATH } from './serve.js'
 import { REPORT_CATEGORIES, REPORT_TEXT_MAX, REPORT_EVENT_LIMIT, REPORT_EVENT_DETAIL_MAX, REPORT_COOLDOWN_MS } from './report.js'
 // The runtime-agnostic half of core/net-tune.js — no fs import (a node:fs edge in this
 // graph would become a `builtin:` ref the Bare worklet cannot load); the /proc ceiling
@@ -267,6 +281,32 @@ function normalizePrewarm (v) {
   const n = Number(v)
   if (!Number.isInteger(n) || n < 0) throw new Error('prewarm must be a boolean or a non-negative integer')
   return n
+}
+
+// reclaimBudgetBytes: the ceiling on ONE feed's replica on disk, past which the engine
+// ROTATES it (purge + fresh open — see _rotateActiveFeed and the VIEWER DISK BUDGET note).
+// Undefined takes the default; 0 switches rotation off entirely, which is a real choice on
+// a 64-bit device with room to spare (the budget is never reached there anyway) and a bad
+// one on a 32-bit Android build, where it is the only bound there is.
+//
+// TYPE-CHECKED AND FLOORED, not coerced — and the comment that used to stand here claimed
+// the opposite of what the code did. It said a budget of `"512"` was "rejected rather than
+// coerced" because it "would rotate the feed on every playlist serve, which looks exactly
+// like a broken stream". But the check was `Number(v)`, and `Number("512")` is 512: the
+// string was ACCEPTED as a 512-BYTE budget and produced precisely the rotation storm the
+// comment believed it had prevented. `Number(true)` is 1 — a one-byte budget. Only
+// `"512MB"` was ever caught, by NaN. So: reject anything that is not a number, and floor
+// what is (see FEED_ROTATE_BUDGET_MIN_BYTES) with a message that names the floor.
+function normalizeReclaimBudget (v) {
+  if (v == null) return FEED_ROTATE_BUDGET_BYTES
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+    throw new Error('reclaimBudgetBytes must be a non-negative NUMBER of bytes (0 disables the per-feed rotation) — strings and booleans are not coerced')
+  }
+  if (v === 0) return 0 // the documented "do not rotate" switch, not a tiny budget
+  if (v < FEED_ROTATE_BUDGET_MIN_BYTES) {
+    throw new Error(`reclaimBudgetBytes must be at least ${FEED_ROTATE_BUDGET_MIN_BYTES} bytes (${Math.round(FEED_ROTATE_BUDGET_MIN_BYTES / 1048576)} MiB), or exactly 0 to disable the per-feed rotation — a smaller budget rotates the served feed on almost every playlist serve, which looks like a broken stream rather than a disk bound`)
+  }
+  return v
 }
 
 // zapPrefetch: while a stream plays, keep the NEWEST segment of the adjacent
@@ -514,6 +554,212 @@ const CAST_RECLAIM_READ_MS = 3000
 // outright. Reclaim exists to bound accumulated watch HISTORY; a cast session is one
 // channel with an explicit end, and the crash case falls back to eviction.
 
+// VIEWER DISK BUDGET — what actually bounds a viewer's disk, and where this file's old
+// answer was wrong.
+//
+// The serving core frees a live replica's blob blocks below the served window on every
+// playlist serve (EXPIRED-BLOCK RECLAIM, serve.js), and _requestHandler used to claim
+// that this made the viewer's disk "hold ~one live window per feed instead of growing
+// ~1× bitrate forever", "safe by construction". That is true on exactly the platforms
+// where a hypercore can HOLE-PUNCH its own storage file.
+//
+// ⚠ 32-BIT ANDROID ABIs CANNOT. The Android build EXCLUDES the `fs-native-extensions`
+// addon on armeabi-v7a and x86 — it crashes the engine at startup there, and dropping it
+// is the supported path because random-access-file guards every use of it (the reasoning
+// is written out in full in client/android/app/build.gradle). Without it `_del` is a
+// silent no-op: it answers its callback with success and frees ZERO bytes. So
+// `blobs.core.clear()` there updates the bitfield, leaves every byte on disk, and the
+// ACTIVE feed keeps growing at ~1× bitrate — ≈0.9 GB/hour at 2 Mbps — for the whole watch
+// session, on boxes that often have 2-4 GB of free flash. 64-bit ABIs (arm64-v8a, x86_64)
+// and desktop punch holes properly and do settle at ~one live window, as the old comment
+// said. Measured behaviour and the viewer-facing version: docs/kb/viewer-bandwidth.md.
+//
+// UNLINK IS THE ONLY MECHANISM THAT FREES BYTES ON EVERY PLATFORM. Verified against the
+// shipped hyper stack, so the alternatives are recorded here rather than re-litigated:
+// there is no compaction / rewrite / relocation API anywhere in hypercore's storage
+// layer; `core.truncate()` is a WRITER operation and throws on a replica; and
+// `block-store.clear(offset, -1)` truncates from the offset to EOF — it drops the NEWEST
+// blocks, which is exactly backwards for a live window. That leaves `drive.purge()`
+// (close + delete both cores' storage), which is what the rotation below is built out of.
+//
+// Hence three bounds, all INDEPENDENT of the count bound (_feedLimit, 12 feeds):
+//
+//   ROTATION (_rotateActiveFeed) — when the ACTIVE feed's replica crosses the per-feed
+//   budget (`reclaimBudgetBytes`, default FEED_ROTATE_BUDGET_BYTES), purge it and re-open
+//   it empty IN PLACE, behind a request park so the host player sees a short pause instead
+//   of a 404 storm. On a 32-bit build this is the only thing that bounds a long watch.
+//
+//   STORE CAP (_trimFeedBytes) — bound the warm feed cache by BYTES as well as by count:
+//   purge inactive feeds oldest-first until the store is under _storeBudgetBytes. A count
+//   bound says nothing about disk — 12 cached feeds that each ran an hour on a 32-bit
+//   build is ~11 GB, and the SDK had no byte budget anywhere before this.
+//
+//   IDLE SWEEP (_sweepIdleFeeds) — the cheap 64-bit win, and the one nobody was getting:
+//   reclaim has only ever run for the feed being SERVED (it triggers off a live playlist
+//   serve of a `media: true` target, and only _feedDrive is ever marked media:true), so
+//   the other ~11 cached feeds — prewarmed, zapped through, opened by a /feedthumb — had
+//   never been reclaimed once in the life of a session.
+
+// The per-feed budget's default, and the host-facing option that overrides it
+// (`reclaimBudgetBytes`, passed straight to the serving core, which is what measures).
+// 512 MiB ≈ 35 minutes of a 2 Mbps feed.
+const FEED_ROTATE_BUDGET_BYTES = 512 * 1024 * 1024
+// …and the FLOOR under a host-supplied one (see normalizeReclaimBudget). A rotation purges
+// and re-opens the drive the player is reading, behind a request park, so it has to be rare
+// relative to the live window to stay invisible: at 2 Mbps a 64 MiB budget is already one
+// rotation every ~4 minutes, and anything under it is a stream that swaps its own drive out
+// from under the player continuously. That is not a smaller disk bound, it is a broken
+// channel — hence a hard refusal rather than a clamp, so the misconfiguration surfaces at
+// construction instead of as unexplained rebuffering in the field.
+const FEED_ROTATE_BUDGET_MIN_BYTES = 64 * 1024 * 1024
+// The store-wide cap, in units of the per-feed budget IN FORCE: the rotating active feed
+// plus ~3 more feeds' worth of history. Expressed as a multiple rather than as a second
+// option because the two numbers have to move together — an operator who halves what one
+// feed may hold has halved what a browsing session may hold, and a store cap that stayed
+// put would just start evicting the warm cache for no stated reason.
+const FEED_STORE_BUDGET_FEEDS = 4
+
+// How long a media request may PARK while the active feed rotates (see _rotateActiveFeed
+// and _armFeedSwap). The alternative is what the code did before: hand the serving core a
+// null target, which it answers with an INSTANT 404 — no availability wait, no peer
+// lookup — and ExoPlayer turns that into 3 retries, an onError and a remount 2.5 s later,
+// ≈5.5 s of black screen for a swap that takes a few hundred ms.
+//
+// Parking is safe on this stack because there is NO client-side read timeout to trip:
+// react-native-video builds its OkHttp client with readTimeout(0). The bound exists for
+// the PLAYER's benefit, not the socket's.
+//
+// ⚠ WHAT AN EXPIRED PARK ACTUALLY COSTS. The comment that used to stand here made two
+// claims and both were false in a load-bearing way, so they are recorded and corrected
+// rather than quietly replaced:
+//
+//   It claimed "4 s of park plus the serving core's own 6 s availability wait is ≈10 s
+//   worst case". That sum never happens. The 6 s availability wait is what the serving
+//   core does with a target it HAS; a park expires into a NULL target — there is no drive,
+//   which is the entire reason for the park — and a null target is the instant 404 above.
+//   The two numbers are alternatives, never terms of one worst case.
+//
+//   It claimed "the park expiring falls back to null, i.e. today's behavior, so this is
+//   never worse". Also false, and the arithmetic is the whole point: unparked, the 404
+//   lands at t≈0 and the player is remounted ≈5.5 s later; parked, the SAME 404 lands at
+//   t=PARK and the remount at PARK+5.5 s. An expired park is strictly WORSE than not
+//   parking, by the length of the park.
+//
+// Parking is therefore a BET, and what follows is built to keep the bet honest instead of
+// restating the false claim. The gate is armed only across the window where _feedDrive is
+// genuinely null (the purge and the reopen — the drain and the measure now run in FRONT of
+// it, where they used to bill against this budget and leave ≤2.5 s for the only phase that
+// needs it); the reopen is bounded by what is LEFT of this budget, so the rotation's own
+// failure path ends the park rather than a blind timer; and a failed rotation re-opens
+// immediately instead of leaving the feed null until something else notices. What remains
+// is the residual — a rotation that cannot re-open costs the viewer this much black screen
+// before the player's own recovery starts — and 2500 ms (it was 4000) is that residual:
+// under half of one ExoPlayer failure cycle, and well inside the live-offset buffer
+// (targetOffsetMs: 10000) against which the viewer is rebuffering either way.
+const FEED_SWAP_PARK_MS = 2500
+// Floor on the reopen's share of that budget. A slow purge must not hand the reopen zero
+// milliseconds: it would fail every rotation whose unlink ran long and then re-open on the
+// recovery path anyway — churn that frees nothing and costs the viewer a park.
+//
+// ⚠ AND THE FLOOR IS ALLOWED TO RUN PAST PARK EXPIRY, which is the one rotation failure
+// nothing reports. Once the purge has taken more than FEED_SWAP_PARK_MS - this (1500 ms),
+// what is left of the park is under the floor, so the reopen gets the floor instead: the
+// park timer fires while the reopen is still running, the parked requests wake to a null
+// _feedDrive, 404 and cost the viewer a full remount — and then the reopen SUCCEEDS, so
+// nothing throws, no recovery arms, and the feed:rotate event that follows says the rotation
+// went fine. It did, for the disk; the viewer still ate the remount. On the device class this
+// whole budget exists for (32-bit Android on low-end flash, where an unlink of a
+// several-hundred-MiB replica is genuinely slow) that is uncommon but routine over a
+// multi-hour session, not a corner case. The floor stays anyway: the alternative — failing
+// the rotation the moment the purge runs long — costs the same remount AND re-opens on the
+// recovery path, i.e. it is the worse half of the same trade.
+const FEED_REOPEN_FLOOR_MS = 1000
+// The bound on the RECOVERY re-open after a rotation failed. Deliberately NOT the park's
+// budget: nobody is parked on it any more (the gate was released when the rotation gave
+// up), so this one may take the time an open of a cold replica actually needs. It is what
+// makes a failed rotation recover in seconds rather than at the tune watchdog's first rung
+// 30 s later — and that watchdog was never a recovery arm to rely on anyway, since
+// _startTuneWatchdog() returns immediately unless the play is p2p-only, p2p and non-VOD.
+const FEED_REOPEN_MS = 5000
+// Bound on ONE measureDriveBytes call (see _measureFeed). measuring reaches
+// drive.getBlobs(), which on a replica whose blobs header never replicated — an off-air but
+// entitled channel opened by a /feedthumb grid request, any peerless prewarmed feed — never
+// settles at all. Unbounded, that single await wedges whichever caller it is under: the
+// maintenance tick (both disk bounds, for the rest of the session) or step 2 of a rotation
+// (which then holds the mutex and the park). sdk/serve.js bounds its own probe; this is the
+// caller-side belt to that braces, because the cost of being wrong here is a silent
+// permanent stall and the cost of the bound is one skipped measurement.
+const FEED_MEASURE_MS = 5000
+// How long the rotation waits for in-flight reads of the OLD drive to finish before it
+// purges anyway. drive.purge() closes the drive, so a read still running when it lands
+// errors and its response is destroyed — which the player already handles routinely (it
+// aborts in-flight requests itself). It runs BEFORE the park is armed (nothing has been
+// taken away yet, so a request served during the drain gets the real drive), which is why
+// it is no longer a slice of the park budget.
+//
+// ⚠ IT MUST COVER sdk/serve.js's waitMs (6000), AND IT USED TO BE 1500. The serving core
+// takes its in-flight slot at TARGET BIND — before waitEntry, not before the pump — for the
+// express purpose of letting this drain SEE a request parked waiting for a segment to
+// replicate. A bound shorter than waitMs threw that away again: a request that entered more
+// than 1500 ms earlier was still counted, the drain gave up on it, the purge unlinked its
+// drive, and it then polled a dead drive for the remaining 4.5 s before 404ing — the exact
+// "strictly worse than an instant 404" outcome the slot accounting was moved to fix.
+//
+// Raising the drain is the fix rather than teaching that request to fail fast, for two
+// reasons: failing fast is the serving core's half of the contract (this file cannot reach
+// inside waitEntry), and the wait is nearly free HERE — it happens before the park is armed,
+// so nothing has been taken away from anyone while it runs; the only cost is the replica
+// staying over budget for a few more seconds. On a healthy stream the drain settles in a few
+// hundred ms and this bound is never reached at all.
+//
+// Residual, stated rather than implied: a request already piping a large body can still
+// outlast this, and its response is destroyed exactly as an abort would destroy it. That is
+// the case the original comment describes and it is unchanged.
+const FEED_DRAIN_MS = 6000
+// The backstop on drive.purge(), the rotation's one deliberately unbounded await.
+//
+// It stays "unbounded" in the sense that matters — nothing carries on WITHOUT it, because
+// re-opening a namespace whose delete is still in flight is the overlap the single-flight
+// feed cache exists to prevent. What this bounds is the rotation's own liveness, and the
+// reason it has to exist is that a purge that never settles used to be permanently
+// unrecoverable rather than merely degraded: the mutex was never cleared (so NO channel could
+// rotate again for the life of the process — on a 32-bit ABI that is the only disk bound
+// there is), and the cache kept a placeholder that never resolved and that _evictFeed
+// correctly refuses to touch, so every later tune of that channel failed with 'tune timeout'
+// forever. Past this bound the rotation gives up: it drops the mutex and the cache slot,
+// says so on the status stream and hands recovery to the tune ladder.
+//
+// A MINUTE, not seconds, because the cost of being wrong in each direction is asymmetric. Too
+// long merely delays a recovery on a device that is already broken; too short declares a
+// legitimately slow unlink dead and lets something re-open over a delete that is still
+// running — the very overlap the unbounded await was protecting. An unlink of a
+// several-hundred-MiB replica on low-end flash is seconds, not a minute, so this is far past
+// any honest purge and still bounded.
+//
+// Residual, stated rather than implied: once this fires, the pending purge is still pending,
+// and the next open of that feed can therefore build a drive over a namespace whose delete
+// eventually lands. That is a real hazard and it is the lesser one — the alternative is the
+// channel, and the whole rotation mechanism, staying dead until the app restarts.
+const FEED_PURGE_MS = 60000
+// Hard cap on a cache-slot claim held over an open still IN FLIGHT — see _claimSlot. A claim
+// normally lifts when the open settles; an open that NEVER settles would otherwise hold it
+// forever, and a permanently claimed slot is a permanently un-evictable one, i.e. exactly the
+// poisoning this file has already had to fix twice. Past the cap the claim lifts and the
+// ordinary eviction path may act, which is the honest reading of an open this old anyway
+// (2× the default tune timeout, and 6× the recovery re-open's bound).
+const FEED_CLAIM_MS = 30000
+// Feed-cache maintenance tick: the idle reclaim sweep + the store byte cap. Nothing that
+// is not being served GROWS quickly (an idle replica only gains bytes through the
+// zap-prefetch neighbour warm), so this is a housekeeping interval, not a control loop —
+// the serving core's own per-drive reclaim throttle is 30 s for the feed being watched.
+const FEED_SWEEP_MS = 60000
+// …and the backstop on ONE tick of it. The tick is busy-guarded so a slow sweep cannot
+// overlap itself, and that guard is a single boolean with no way back if the pass never
+// settles: BOTH disk bounds then die silently for the rest of the session. Four ticks is
+// far longer than any honest pass (a full 12-feed sweep is metadata reads) and short enough
+// that a wedged pass costs minutes, not the session.
+const FEED_SWEEP_STUCK_MS = 4 * FEED_SWEEP_MS
+
 // Constant-time string compare for the cast token. The realistic attack surface is small
 // (a 256-bit random hex path segment, on a LAN, and a receiver hands the whole URL to any
 // peer that asks it — see the note above), but a byte-by-byte early return in front of
@@ -673,7 +919,7 @@ function signinFacingMessage (err) {
 }
 
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._remote = normalizeRemote(remote) // see normalizeRemote — default: hold nothing
@@ -732,6 +978,68 @@ export class AliranPlayer extends Emitter {
     // (zapPrefetch warms neighbours either side), small enough that browsing a 300-channel
     // catalogue cannot leave hundreds of drives + swarm topics open. See _trimFeeds.
     this._feedLimit = 12
+    // …and the BYTE bound the count above cannot express (see the VIEWER DISK BUDGET note).
+    this._feedBudgetBytes = normalizeReclaimBudget(reclaimBudgetBytes) // per-feed: over this, the ACTIVE feed ROTATES (0 = off)
+    // Store-wide: over this, inactive feeds are purged oldest-first. Floored at the
+    // DEFAULT budget when rotation is switched off, because `reclaimBudgetBytes: 0` means
+    // "do not rotate", not "hold no warm cache" — deriving 0 × 4 from it would evict every
+    // cached feed on the first sweep, which is the opposite of what that option asks for.
+    this._storeBudgetBytes = FEED_STORE_BUDGET_FEEDS * (this._feedBudgetBytes || FEED_ROTATE_BUDGET_BYTES)
+    this._storeHeldWarned = false // the store cap could not be enforced (see _trimFeedBytes) — recorded once per engine
+    // cacheKey -> consecutive _trimFeedBytes passes that could not measure that feed. Rebuilt
+    // from scratch every pass, so a feed that leaves the cache (or answers again) drops out on
+    // its own and this can never grow past the cache. A feed stuck here is invisible to the
+    // store cap — see the skip branch in _trimFeedBytes.
+    this._measureSkips = new Map()
+    this._measureSkipWarned = false // …said once per engine, like _storeHeldWarned
+    // The PARK GATE, or null: { done, release, timer, startedAt }. While it is set, media
+    // requests PARK on `done` instead of resolving a null drive — see _armFeedSwap /
+    // _mediaTarget. It is a property of the SERVING side and four callers that know nothing
+    // about any rotation may release it (the park timer, serveFeed on a zap, stop(),
+    // _purgeAndRebuild) — which is exactly why it is no longer also the rotation's mutex.
+    this._feedSwap = null
+    // The rotation MUTEX, and NOTHING ELSE: the in-flight _rotateActiveFeed's token, or null.
+    // Cleared by that rotation's own finally, and — see stop()/_purgeAndRebuild — by a
+    // teardown, because the rotation's one deliberately unbounded await (drive.purge()) is
+    // exactly what a store deleted underneath it can leave pending forever, and a mutex left
+    // set switches rotation off for the life of the process. It used to be the same field as
+    // the park gate above, and that
+    // conflation was a live hazard rather than a tidiness point: any of the four park
+    // releasers took the single-flight guard down mid-rotation, leaving the interval between
+    // drive.purge() and the reopen unguarded — the one interval where a second rotation
+    // would build a second Hyperdrive over a namespace that is being deleted, which is the
+    // deadlock the single-flight feed cache exists to prevent.
+    //
+    // It also used to carry the rotation's CACHE SLOT (`{ cacheKey, slot }`), so that
+    // _evictFeed could refuse to evict what the rotation was working on. That was the same
+    // conflation one layer down and it failed the same way: a mutex's lifetime is the
+    // function's, and the moment this finally cleared it, an open the rotation had put in the
+    // cache and was still going to serve was unprotected. Slot ownership is a property of the
+    // SLOT now — see _claimSlot — so it lasts exactly as long as the open it protects, and no
+    // path that touches the cache has to know a rotation exists.
+    this._feedRotate = null
+    // TEARDOWN GENERATION. Bumped by stop() and by _purgeAndRebuild(), i.e. by everything
+    // that invalidates the store, the swarm and the feed cache at once. Long-running work
+    // captures it and re-checks after EVERY await: `this._active !== a` only says the
+    // viewer zapped, and a rotation that passed that check could still reach _ensureStore()
+    // afterwards and build a NEW Corestore + Hyperswarm and join a topic after stop() had
+    // returned — or, under _purgeAndRebuild, hand the rebuilt engine a store rooted in a
+    // directory that was just rmSync'd.
+    this._epoch = 0
+    // …and the PREVENTIVE half of that, because the epoch alone is only ever checked AFTER
+    // the fact. INVARIANT: while this is true, the store and the swarm are gone or going and
+    // NOTHING may build new ones — _openFeed refuses rather than calling _ensureStore(), which
+    // is the one path that would otherwise create a fresh Corestore in a directory
+    // _purgeAndRebuild is about to rmSync, or join a swarm stop() has destroyed. Set by both
+    // teardowns; cleared by _purgeAndRebuild once the delete is done and it is rebuilding (a
+    // corruption purge is a RECOVERY — the retry _recover fires afterwards must be allowed to
+    // open on the fresh store), never cleared by stop(), which is terminal.
+    this._storeDown = false
+    // The loopback server's request handler, kept so the rotation can reach its
+    // whenDrained()/inflight() accounting (createDriveHandler hangs them on the returned
+    // function). _ensureServer passes the same object to http.createServer.
+    this._handler = null
+    this._feedMaintTimer = null // feed-cache maintenance tick (idle reclaim sweep + store byte cap)
     this._feedDiscovery = null
     this._feeds = new Map() // feedKey:encKey -> Promise<{ drive, discovery }> — opened feeds (single-flight), reused across resolve()s
     // streamId -> newest feedKey seen in the replicated catalog (fed by _currentChannel).
@@ -2029,6 +2337,18 @@ export class AliranPlayer extends Emitter {
       this._clearHybridTimers()
       this._clearTuneTimer()
       this._clearZapPrefetch() // no neighbor warming while off P2P — the gate needs an active playlist
+      // …AND LET GO OF THE PREVIOUS CHANNEL'S FEED. These two fields are what every disk path
+      // reads as "the feed being watched, never touch it" (_trimFeeds on the key,
+      // _sweepIdleFeeds and _trimFeedBytes on both), and they were assigned in two places and
+      // cleared in NONE. Zapping from a P2P channel to a redirect one therefore left the feed
+      // just left behind pinned as `held` for the rest of the session: exempt from the idle
+      // sweep, uncounted against the store cap by being unevictable, and eating the cap's
+      // budget while nothing served a single byte from it. Both halves have to go — clearing
+      // only the key leaves the drive-identity guards pinning it just as hard. The replica
+      // stays in the warm cache and a zap back is still instant; it is merely evictable again.
+      this._activeFeedKey = null
+      this._feedDrive = null
+      this._feedDiscovery = null
       this._active = { streamId, feedKey: null, localUrl: null, cdnUrl: chan.url, source: 'cdn', lastSig: null, lastAdvance: 0 }
       // `headers` rides with the url and ONLY here: it is the provider's hotlink check
       // (Referer/Origin/User-Agent), so it means nothing on a localhost or CDN-template
@@ -2584,7 +2904,21 @@ export class AliranPlayer extends Emitter {
   // Cast request handler: a SECOND createDriveHandler instance whose resolveTarget serves
   // only /cast/<token>/… off the pinned drive. Everything else — /assets/*, /epg/*,
   // /feedthumb/*, a bare /index.m3u8, a stale token, a request after stopCast() — is null,
-  // which the serving core answers 404. Synchronous by contract, like _thumbTarget.
+  // which the serving core answers 404.
+  //
+  // Synchronous BY CHOICE, like _thumbTarget. The serving core now AWAITS resolveTarget —
+  // the loopback handler parks media requests on it while the active feed rotates (see
+  // _mediaTarget) — so "synchronous by contract" is no longer true of the factory. It is
+  // still true of this resolver and must stay true: every branch here is a refusal, and
+  // there is nothing to wait for, because a cast session's pinned feed is never rotated
+  // out from under the receiver — _rotateActiveFeed refuses a pinned feed twice, before and
+  // after its drain, and if a session is published onto the drive inside the remaining
+  // window it ends that session (_castLostDrive) rather than serving it a purged replica.
+  //
+  // ⚠ ALSO SEPARATE FROM THE LOOPBACK HANDLER'S READ ACCOUNTING. This is a second
+  // createDriveHandler, so it owns a second InFlight: handler.inflight/whenDrained here are
+  // NOT the ones the rotation drains. That is only safe while the refusals above hold, and
+  // step 1 of _rotateActiveFeed says so at the drain itself.
   _castRequestHandler ({ readIdleMs, reclaim }) {
     return createDriveHandler((p, req) => {
       const cast = this._cast
@@ -2728,7 +3062,14 @@ export class AliranPlayer extends Emitter {
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
     this._activeFeedKey = feedKeyHex + ':' + encKeyHex // the one feed _trimFeeds must never evict
+    // A zap that lands while the previous channel is mid-ROTATION ends the park right
+    // here: the drive the parked requests were waiting for has arrived (a different one,
+    // but they re-read _feedDrive — see _mediaTarget), and spending the rest of the park
+    // budget on the channel the viewer just LEFT would put the rotation's cost on the zap.
+    // The rotation itself carries on and purges its old drive; that drive is not this one.
+    if (this._feedSwap) this._releaseFeedSwap(this._feedSwap)
     this._trimFeeds()
+    this._startFeedMaintenance() // idle reclaim + store byte cap, armed on first play (see there)
     this.emit('status', { state: 'feed:ready' })
     const port = await this._ensureServer()
     // Feed-health ticker for player overlays: how many peers serve the CURRENT feed.
@@ -2755,11 +3096,23 @@ export class AliranPlayer extends Emitter {
     if (!feed) {
       feed = (async () => {
         const drive = await this._recover(async () => {
+          // The teardown guard that used to be duplicated here now lives INSIDE
+          // _ensureStore(), in front of its own early return — one enforcement point for the
+          // one function that builds a Corestore and a Hyperswarm, rather than a check each
+          // caller has to remember. It throws a plain Error, which withRecovery does not treat
+          // as corruption, so it propagates here exactly as this line did.
           await this._ensureStore()
           const d = new Hyperdrive(this._store.namespace('replica:' + feedKeyHex), b4a.from(feedKeyHex, 'hex'), { encryptionKey: b4a.from(encKeyHex, 'hex') })
           await d.ready()
           return d
         })
+        // …and again once the drive is ready: ready() is where a teardown lands most often,
+        // and joining a topic on a swarm that stop() destroyed (or that the rebuild just
+        // created, with a drive from the store it replaced) is the leak the epoch exists for.
+        if (this._storeDown || !this._swarm) {
+          try { const p = drive.close(); if (p && p.catch) p.catch(() => {}) } catch {}
+          throw new Error('the store was torn down while this feed opened')
+        }
         this._trackReplica(feedKeyHex) // hint file for the stale-namespace sweep (see _sweepStaleReplicas)
         // pull always; announce (re-seed to other viewers) only under 'reseed' policy
         const discovery = this._swarm.join(drive.discoveryKey, { server: this._uploadPolicy !== 'client-only', client: true })
@@ -2767,10 +3120,15 @@ export class AliranPlayer extends Emitter {
       })()
       this._feeds.set(cacheKey, feed)
       // The settled value, hung on the promise itself: /feedthumb resolves SYNCHRONOUSLY
-      // (createDriveHandler never awaits resolveTarget), so it needs to tell an open drive
+      // (createDriveHandler CAN await a resolveTarget now — the media branch parks on one
+      // during a rotation — but _thumbTarget deliberately does not use that: a thumbnail
+      // must never park a request behind a DHT lookup), so it needs to tell an open drive
       // from an open still in flight without awaiting. Kept here rather than in a parallel
       // map because it then dies with the cache entry — one fewer thing every eviction
-      // path must remember to clear.
+      // path must remember to clear. It is also what makes an ACTIVE ROTATION read as
+      // "cold" to every synchronous reader: _rotateActiveFeed parks a bare promise in this
+      // cache while the drive is purged, and a promise with no `settled` is exactly the
+      // "an open is in flight, serve nothing yet" case this field already described.
       feed.then((f) => { feed.settled = f }, () => {})
       feed.catch(() => { if (this._feeds.get(cacheKey) === feed) this._feeds.delete(cacheKey) }) // drop a failed open so a retry re-opens
     }
@@ -2779,6 +3137,14 @@ export class AliranPlayer extends Emitter {
 
   // _openFeed bounded by a timeout: null on expiry, after evicting the cached promise
   // so the NEXT attempt re-opens fresh instead of awaiting the same wedged open.
+  //
+  // …unless the slot is CLAIMED, in which case _evictFeed refuses and the next attempt ADOPTS
+  // the same open with a fresh bound. That is the better outcome, not a degraded one: the
+  // claimant is going to serve what this open settles to, and building a second Hyperdrive
+  // over the namespace it is opening is the deadlock the single-flight cache exists to
+  // prevent. It is also why this expiry is safe to leave pointed at a rotation's re-open —
+  // its timeout semantics are cache MAINTENANCE, and maintenance does not get to act on a
+  // slot somebody else is holding.
   async _openFeedWithin (feedKeyHex, encKeyHex, ms) {
     let timer
     const expiry = new Promise((resolve) => { timer = setTimeout(() => resolve(null), ms) })
@@ -2804,6 +3170,12 @@ export class AliranPlayer extends Emitter {
   // Bandwidth cost is small (the range is gone), but each lingering topic occupies a slot
   // in that channel's SWARM_MAX_PEERS budget (64 by default), so browse traffic can crowd
   // out actual viewers. Evict oldest-first; the Map preserves insertion order.
+  //
+  // COUNT ONLY — the byte bound is _trimFeedBytes, deliberately a separate, independent
+  // trigger. Twelve feeds is a statement about swarm topics and open sessions, which is
+  // what this bound was built for and what it is still right about; it says nothing at
+  // all about disk (see the VIEWER DISK BUDGET note), and conflating the two would mean
+  // a byte-driven purge had to argue with a topic-driven one.
   _trimFeeds () {
     if (this._feeds.size <= this._feedLimit) return
     for (const key of [...this._feeds.keys()]) {
@@ -2817,10 +3189,74 @@ export class AliranPlayer extends Emitter {
     }
   }
 
+  // --- cache-slot ownership ---
+  //
+  // A CLAIM is one fact hung on the cache slot ITSELF: somebody has this open in flight and is
+  // going to use what it settles to, so no other path may take it out of the cache. Two places
+  // enforce it — _evictFeed and _retuneActive, the only two that delete a slot they did not
+  // create — and neither of them has to know who the claimant is or what it is doing.
+  //
+  // IT REPLACES A ROTATION-SCOPED TOKEN, and the change is one of SHAPE rather than a better
+  // guard. `_feedRotate.slot` had the rotation's lifetime: the instant _rotateActiveFeed's
+  // finally ran, an open it had put in the cache and was still going to serve became naked,
+  // and every path that had to honour the token had to know a rotation existed. A claim lives
+  // exactly as long as the thing it protects, which is the property that was missing.
+  //
+  // TWO RELEASE MODES, because the two slots a rotation claims have different lifetimes:
+  //   - explicit only, for an ALREADY-SETTLED entry (the live feed, held across the drain and
+  //     the measure — a settle-driven release would fire on the next microtask and protect
+  //     nothing);
+  //   - on settle, for an open still IN FLIGHT — which is what lets the claim outlive the
+  //     function that took it, capped by FEED_CLAIM_MS so a wedged open cannot poison the slot
+  //     forever. The cap's timer is unref'd: nothing awaits it, so it is housekeeping in
+  //     sdk/serve.js's sense (contrast bounded() there, whose timer is the only thing that can
+  //     settle the promise its caller is awaiting).
+  //
+  // Refcounted rather than a boolean so that two claims on one slot cannot release each
+  // other's; the returned release is idempotent and safe to call from a finally.
+  _claimSlot (promise, untilSettled = false) {
+    if (!promise) return () => {}
+    let timer = null
+    let released = false
+    promise.claims = (promise.claims || 0) + 1
+    const release = () => {
+      if (released) return
+      released = true
+      promise.claims--
+      if (timer) { clearTimeout(timer); timer = null }
+    }
+    if (untilSettled) {
+      timer = setTimeout(release, FEED_CLAIM_MS)
+      timer.unref?.()
+      promise.then(release, release)
+    }
+    return release
+  }
+
   _evictFeed (cacheKey) {
     const feed = this._feeds.get(cacheKey)
     if (!feed) return
+    // ⚠ A CLAIMED SLOT IS NOT THIS FUNCTION'S TO TAKE — see _claimSlot. Somebody has an open
+    // in flight under this key and will serve what it settles to; deleting the entry orphans
+    // that drive and the purge below unlinks it, which is a served-drive-less play plus a
+    // deleted replica. Reachable from every blind caller: the tune watchdog's last rung,
+    // _openFeedWithin's timeout, _trimFeeds once a zap has moved _activeFeedKey off the
+    // rotating channel, and the two callers that grab a rotation's placeholder and react to
+    // the null it settles to (_doStartCast, serveFeed). Refusing is not a lost eviction — the
+    // claimant releases when its open settles, and whatever sent us here comes round again.
+    if (feed.claims) return
     this._feeds.delete(cacheKey)
+    // ⚠ PURGE ONLY WHAT WE HAVE ALREADY SEEN SETTLE, and that is the invariant rather than a
+    // precaution. purge() deletes storage BY PATH and a namespace's path is deterministic
+    // (corestore 'replica:<feedKey>'), so arming one on an open that is STILL IN FLIGHT means
+    // the unlink lands at an unknown later time — possibly after some other caller has opened
+    // a SECOND drive over the same namespace and is serving it, at which point the viewer is
+    // watching a drive whose files have been deleted underneath it. That is the exact failure
+    // this file has now been round twice. A pending open is therefore CLOSED, never purged:
+    // close drops handles and is harmless to a successor, and the bytes forgone are those of a
+    // replica that never finished opening — near zero, since a feed only grows once it is
+    // being served.
+    const settled = !!feed.settled
     Promise.resolve(feed).then((f) => {
       if (!f || !f.drive) return
       if (this._feedDrive === f.drive) { this._feedDrive = null; this._feedDiscovery = null }
@@ -2847,8 +3283,261 @@ export class AliranPlayer extends Emitter {
       // _closeFeeds deliberately do NOT purge — a normal app restart must keep its
       // warm caches; only eviction pays the cold-restart cost. Never throws: a
       // refused purge falls back to the old plain close.
+      if (!settled) { try { f.drive.close().catch(() => {}) } catch {} return } // see above
       f.drive.purge().catch(() => { try { f.drive.close().catch(() => {}) } catch {} })
     }).catch(() => {})
+  }
+
+  // --- feed-cache maintenance: idle reclaim sweep + store byte cap ---
+
+  // One periodic tick for everything that bounds DISK rather than topics. Armed on the
+  // first serveFeed() (the _statusTimer pattern) rather than on the first _openFeed():
+  // playback is what fills a replica, and a session that only ever prewarmed connections
+  // has nothing to sweep. Cleared by stop() and by a corruption purge, re-armed by the
+  // next play. Idempotent — every caller may just call it.
+  //
+  // unref'd: this is housekeeping, and housekeeping must never be the reason a Node host
+  // (or a test) fails to exit. The 3 s peers ticker is not unref'd because a host that
+  // stops consuming 'peers' has stopped playing anyway; this one outlives playback.
+  // ⚠ THE BUSY GUARD IS ITSELF BOUNDED, and that is not defensive tidiness. A single await
+  // in this pass that never settles used to switch BOTH disk bounds off for the rest of the
+  // session, silently: `busy` stayed true, every later tick returned at the first line, and
+  // nothing anywhere reported it. The wedge is real and cheap to reach — _measureFeed ->
+  // measureDriveBytes -> drive.getBlobs() does not settle on a replica whose blobs header
+  // never replicated (an off-air but entitled channel that a /feedthumb grid request
+  // opened; any prewarmed feed with no peer). The awaits are bounded individually now
+  // (FEED_MEASURE_MS here, the read bound inside reclaimIdleFeed, and sdk/serve.js's own
+  // probe bound), but "the tick can never wedge permanently" must not depend on having
+  // enumerated every await correctly — so the guard also expires on its own.
+  _startFeedMaintenance () {
+    if (this._feedMaintTimer) return
+    let busy = false
+    this._feedMaintTimer = setInterval(() => {
+      if (busy) return // a sweep over 12 replicas can outlast the interval on a slow disk
+      busy = true
+      let released = false
+      const release = () => { if (!released) { released = true; busy = false } }
+      // Whichever comes first: the pass finishing, or the backstop. A pass that outlives the
+      // backstop keeps running (there is nothing safe to cancel mid-purge) — it just stops
+      // owning the guard, so the NEXT tick may run. That risks two overlapping passes, which
+      // is survivable: every operation in them is idempotent, _evictFeed is a no-op on a key
+      // already gone, and the alternative is both bounds dead until the app restarts.
+      const stuck = setTimeout(release, FEED_SWEEP_STUCK_MS)
+      stuck.unref?.() // housekeeping must never hold a host process open
+      ;(async () => {
+        await this._sweepIdleFeeds() // frees bytes where the platform can hole-punch…
+        await this._trimFeedBytes() // …and unlinks whole replicas where it cannot
+      })()
+        .catch(() => { /* housekeeping is best-effort by construction */ })
+        .then(() => { clearTimeout(stuck); release() })
+    }, FEED_SWEEP_MS)
+    this._feedMaintTimer.unref?.()
+  }
+
+  _stopFeedMaintenance () {
+    if (this._feedMaintTimer) { clearInterval(this._feedMaintTimer); this._feedMaintTimer = null }
+  }
+
+  // IDLE-FEED RECLAIM. Reclaim has only ever reached the feed being SERVED: it hangs off a
+  // live playlist serve for a `media: true` target, and _feedDrive is the only drive this
+  // engine ever marks media:true. Everything else in the cache — the prewarm lineup, every
+  // channel zapped through, every feed a /feedthumb opened — has therefore never had a
+  // single block freed in the life of a session, even on a platform that hole-punches
+  // perfectly. That is the main 64-bit win and it costs one metadata pass per feed.
+  //
+  // reclaimIdleFeed reads the drive's OWN /index.m3u8 to find the window (there is no
+  // serve to hand it one) and skips VOD, which has no rolling window to be below. It never
+  // throws, and its read is bounded — a superseded playlist blob no peer holds would
+  // otherwise wedge this whole sweep, not just its own pass.
+  //
+  // WHAT IT COSTS, stated plainly because standing bandwidth is why zapPrefetch is off by
+  // default: that read may fetch a few KB of playlist per idle feed per tick — ~30 KB/min
+  // for a full cache, ~2 MB/hour. Sequential, not parallel: this runs off every critical
+  // path and 12 concurrent metadata reads in the Bare worklet buy nothing. Mostly it is
+  // idempotent no-op work — an idle replica is not growing, so the pass that follows the
+  // one that freed its blocks finds nothing left to free.
+  //
+  // NEVER THE SERVED FEED, and the skip is written three ways on purpose: the two cache
+  // keys (which is what _trimFeeds skips on) plus drive IDENTITY, because a rotation
+  // replaces the drive behind a key and a cast can be pinned to a drive whose key moved
+  // (see _recastFeed). Reclaiming the drive a receiver is reading is the one thing in this
+  // file that turns a recoverable lag into a permanent stall — see CAST RECLAIM POLICY.
+  async _sweepIdleFeeds () {
+    for (const [key, feed] of [...this._feeds]) {
+      if (key === this._activeFeedKey || key === this._castFeedKey) continue
+      const f = feed.settled // an open still in flight has no drive to sweep; it will be here next tick
+      if (!f || !f.drive) continue
+      if (f.drive === this._feedDrive) continue
+      if (this._cast && this._cast.drive === f.drive) continue
+      await reclaimIdleFeed(f.drive)
+    }
+  }
+
+  // STORE BYTE CAP — the second, independent bound on the feed cache (_trimFeeds is the
+  // first and stays: this one never lets the cache grow past the count). Purge inactive
+  // feeds oldest-first until the measured store is back under _storeBudgetBytes.
+  //
+  // Measured, not estimated: measureDriveBytes answers what a replica actually costs on
+  // disk, which is the only number that means anything on a platform where clear() frees
+  // nothing (the whole reason this exists). It returns null where no honest number is
+  // available, and nothing may ever be purged on a guess.
+  //
+  // ⚠ AN UNMEASURABLE FEED SKIPS THAT FEED, NOT THE PASS. This used to read `if (!m) return`,
+  // which sounds like the same caution and is not: measureDriveBytes merges "this PLATFORM
+  // cannot report sizes" with "this ONE replica did not answer", and the second is neither
+  // rare nor exotic — sdk/serve.js bounds its own probe precisely because drive.getBlobs()
+  // NEVER SETTLES on a replica whose blobs header did not replicate (an off-air but entitled
+  // channel a /feedthumb grid request opened; any prewarmed feed with no peer), and it
+  // deliberately reports that as transient rather than latching its budget off. Abandoning
+  // the whole pass on it did the equivalent one level up: one such feed in the cache killed
+  // the store cap on every 60 s tick, for the rest of the session, silently.
+  //
+  // Skipping is also what keeps "never purge on a guess" true, with no second mechanism
+  // needed: a skipped feed contributes to neither `held` nor `cached` and is not in
+  // `evictable`, so it can never be evicted and never pushes another feed over the line. On a
+  // genuinely unmeasurable PLATFORM every feed skips, `cached` stays 0, and the pass returns
+  // having done nothing — exactly the old bail-out, arrived at by arithmetic instead of by a
+  // special case. What is lost is only the skipped feed's bytes going uncounted, which is why
+  // a feed that keeps skipping leaves a breadcrumb (see _measureSkips).
+  //
+  // WHAT IS PROTECTED, and it is written FOUR ways, matching _sweepIdleFeeds rather than
+  // _trimFeeds. Guarding by cache key alone was wrong here, and the root cause was not in
+  // this function: _maybeReresolveActiveFeed moves _feedDrive and a.feedKey when a
+  // broadcaster restarts a channel onto a new feedKey, but _activeFeedKey is assigned in
+  // exactly one place (serveFeed), so after any catalog rotation the key guard named a DEAD
+  // feed and the drive actually being watched was unprotected — this pass would hand it to
+  // _evictFeed, which purges. (_maybeReresolveActiveFeed keeps the key in sync now; the
+  // drive-identity checks are the belt to that braces, and they also cover a cast pinned to
+  // a drive whose key moved — see _recastFeed.)
+  //
+  //   - VOD is EXEMPT, like every other disk path in this engine (the Reclaim class in
+  //     serve.js, reclaimIdleFeed, the rotation). A title's replica is a legitimate SEEK
+  //     CACHE that grows to the full title — 2 h at 2 Mbit/s ≈ 1.7 GiB — so without the
+  //     exemption watching one film puts the store over the 2 GiB cap and this pass purges
+  //     every other cached feed, every 60 s, for the rest of the film.
+  //
+  // THE ACCOUNTING, which was the second defect and the worse one. `total` summed EVERY
+  // settled feed, protected ones included, while the eviction loop skipped past those
+  // without subtracting them — so once the protected set alone exceeded the cap the exit
+  // condition became unreachable and the loop purged the entire warm cache on every tick,
+  // forever, while the feed actually over budget was never touched. The cap is therefore
+  // applied to what this pass can actually EVICT, against what is left of the budget after
+  // the protected feeds have taken their share.
+  async _trimFeedBytes () {
+    if (!this._feeds.size) return
+    const vod = this._vodCacheKeys()
+    const evictable = []
+    const skips = new Map() // this pass's unmeasurable feeds; replaces _measureSkips at the end
+    let held = 0 // bytes in feeds this pass may not touch
+    let cached = 0 // bytes it may
+    for (const [key, feed] of [...this._feeds]) {
+      const f = feed.settled
+      if (!f || !f.drive) continue
+      const m = await this._measureFeed(f.drive)
+      if (!m) { skips.set(key, (this._measureSkips.get(key) || 0) + 1); continue } // see above
+      const pinned = key === this._activeFeedKey || key === this._castFeedKey ||
+        f.drive === this._feedDrive || (this._cast && this._cast.drive === f.drive) ||
+        vod.has(key)
+      if (pinned) { held += m.bytes; continue }
+      cached += m.bytes
+      evictable.push({ key, bytes: m.bytes })
+    }
+    // A feed that answers again, or leaves the cache, drops out of the ledger by construction
+    // — this map is built fresh every pass and only carries forward what skipped again.
+    this._measureSkips = skips
+    // …and say so once, for the same reason the store-cap breadcrumb below exists: a replica
+    // that is invisible to the cap is holding disk nothing in this engine can account for, and
+    // "why is this device full when the cap says otherwise" has to be answerable. Three passes
+    // (~3 minutes) rather than one, because a single miss is ordinary — a drive closing under
+    // the measurement, a momentarily busy core.
+    if (!this._measureSkipWarned) {
+      for (const [key, n] of skips) {
+        if (n < 3) continue
+        this._measureSkipWarned = true
+        this._recordEvent('store-cap', `feed ${key.slice(0, 8)} has not been measurable for ${n} passes — its bytes are not counted against the ${Math.round(this._storeBudgetBytes / 1048576)} MiB store cap and the cap cannot evict it`)
+        break
+      }
+    }
+    // What the warm cache may hold: the cap minus what the protected feeds are already
+    // holding — but never less than one feed's budget. That floor is the anti-livelock, and
+    // it is a deliberate trade rather than an oversight: the protected set has members with
+    // no bound of their own (a cast-pinned replica; a VOD title; the active feed when
+    // rotation is switched off), and when one of those alone exceeds the cap, purging the
+    // cache frees bytes that the next tick immediately re-purges without ever bringing the
+    // store under. Overshooting the cap by one feed's budget is the lesser harm against
+    // deleting every warm replica a viewer has, once a minute, to no effect.
+    const floor = this._feedBudgetBytes || FEED_ROTATE_BUDGET_BYTES
+    const budget = Math.max(this._storeBudgetBytes - held, floor)
+    // …and say so ONCE, because "the cap is not being enforced" is exactly the kind of thing
+    // that must not be silent when an operator is asking why a device filled up. Once per
+    // engine: this runs every 60 s and would otherwise flush the breadcrumb ring.
+    //
+    // ⚠ THE TRIGGER IS THE FLOOR ENGAGING, NOT `held >= cap`, and the difference was a blind
+    // band, not a rounding detail. The floor takes over the moment `cap - held < floor` — at
+    // the defaults, held > 1.5 GiB — while this breadcrumb used to wait for held >= 2 GiB. In
+    // between, the warm cache was already being trimmed to one feed's budget and nothing said
+    // so: precisely the "why did my cache vanish" question this line exists to answer.
+    if (this._storeBudgetBytes - held < floor && !this._storeHeldWarned) {
+      this._storeHeldWarned = true
+      this._recordEvent('store-cap', `${Math.round(held / 1048576)} MiB is held by feeds this pass cannot evict (active / cast-pinned / VOD) against a ${Math.round(this._storeBudgetBytes / 1048576)} MiB cap — the warm cache is being trimmed to ${Math.round(floor / 1048576)} MiB, and the store cannot be brought under the cap until that feed is released`)
+    }
+    if (cached <= budget) return
+    for (const e of evictable) { // insertion order = oldest first, same as _trimFeeds
+      if (cached <= budget) break
+      this._evictFeed(e.key) // purges the replica's storage — that is the point here
+      // _evictFeed is fire-and-forget (the purge rides the settled open), so this is the
+      // POST-eviction figure, not a confirmed one. The next tick re-measures; over-purging
+      // on a stale number costs a re-zap, under-purging costs one more tick.
+      cached -= e.bytes
+    }
+  }
+
+  // The feed cache keys that belong to VOD titles, as a Set. Built per pass rather than
+  // kept as state: _entitled is the login snapshot and _feedKeyLive is the catalog view, so
+  // BOTH spellings of a title's key can be in the cache at once (a re-ingest moves the
+  // feedKey while the old replica is still open), and a Set built now cannot go stale.
+  _vodCacheKeys () {
+    const keys = new Set()
+    for (const [streamId, k] of this._entitled) {
+      if (!k || k.type !== 'vod' || !k.encryptionKey) continue
+      if (k.feedKey) keys.add(k.feedKey + ':' + k.encryptionKey)
+      const live = this._feedKeyLive.get(streamId)
+      if (live) keys.add(live + ':' + k.encryptionKey)
+    }
+    return keys
+  }
+
+  // measureDriveBytes, tolerantly: null for "no honest number available" — an unmeasurable
+  // platform, a drive closing under the measurement, anything at all. Every caller treats
+  // null as "do not act", so a failure to measure can never cause a purge.
+  //
+  // BOUNDED (FEED_MEASURE_MS): the measurement reaches drive.getBlobs(), which never
+  // settles on a replica whose blobs header never replicated — see the constant. Both
+  // callers are on paths where a permanently pending await is far worse than a missing
+  // number: the maintenance tick (which would lose both disk bounds for the session) and
+  // step 2 of a rotation (which would hold the mutex and the park indefinitely).
+  //
+  // BOUNDING THIS IS ONLY HALF THE FIX, and the other half is at the call site, not here:
+  // _trimFeedBytes must skip the one feed rather than abandon the pass, or the wedge simply
+  // moves from "this await never returns" to "this pass never gets past feed #3". See there.
+  //
+  // The loser of the race needs no handler of its own: Promise.race attaches its own
+  // resolve/reject to EVERY element, so a measurement that rejects after the timer won is
+  // already handled and cannot reach the worklet's unhandledRejection (which does SIGABRT —
+  // that rule is real, it just does not bite here). Verified rather than assumed.
+  //
+  // ⚠ AND THE TIMER IS NOT unref'd, for sdk/serve.js's bounded() reason: when the wrapped
+  // measurement never settles — the case this bound exists for — this timer is the ONLY thing
+  // that can settle the promise the caller is awaiting, and an unref'd one on a host whose
+  // loop is otherwise empty simply never fires (Node reports an unsettled top-level await and
+  // exits). Immaterial inside the app, which always has a socket or an interval keeping the
+  // loop alive; it can hang a tool host mid-rotation, which is where this is actually run.
+  async _measureFeed (drive) {
+    let timer = null
+    try {
+      const bounded = new Promise((resolve) => { timer = setTimeout(() => resolve(null), FEED_MEASURE_MS) })
+      return (await Promise.race([measureDriveBytes(drive), bounded])) || null
+    } catch { return null } finally { if (timer) clearTimeout(timer) }
   }
 
   // --- viewer disk bound: replica namespace tracking + stale-namespace sweep ---
@@ -3003,6 +3692,21 @@ export class AliranPlayer extends Emitter {
     // that slipped through mid-teardown would call _ensureServer() and leave a NEW
     // listening server behind after stop() had already closed the old one.
     this._username = null
+    // Same reasoning, one level deeper. Long-running work that captured the epoch (the feed
+    // rotation and its recovery) re-checks it after every await and abandons everything it
+    // was going to do — because "the viewer zapped" and "the engine is gone" are different
+    // questions, and only the second one makes _ensureStore() build a fresh Corestore and
+    // Hyperswarm and join a topic after this function has returned.
+    this._epoch++
+    this._storeDown = true // …and the preventive half: no new store, no new swarm join (see _openFeed)
+    // The rotation MUTEX, which the epoch does not cover. A rotation normally clears it in
+    // its own finally, but that finally sits behind the one await the design leaves
+    // deliberately unbounded — drive.purge() — and a store torn down underneath a purge is
+    // plausibly exactly what leaves it pending forever. The mutex would then stay set for the
+    // life of the process, i.e. rotation permanently OFF, which on a 32-bit build removes the
+    // only remaining bound on disk growth. Identity-checked when the rotation does resume, so
+    // clearing it here cannot clobber a newer one.
+    this._feedRotate = null
     this._clearHybridTimers()
     this._clearTuneTimer()
     this._clearZapPrefetch()
@@ -3025,6 +3729,12 @@ export class AliranPlayer extends Emitter {
     this._active = null
     this._zapDir = 0
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
+    this._stopFeedMaintenance()
+    // Release any parked media requests before the server closes under them. They resolve
+    // to null (no _feedDrive) and 404, which is the honest answer for a stopped engine —
+    // leaving the gate armed would hold each one until its own timer, on a socket that is
+    // already going away.
+    if (this._feedSwap) this._releaseFeedSwap(this._feedSwap)
     await this.stopCast() // the LAN socket must not outlive the engine that fed it
     const server = this._server; this._server = null
     if (server) { try { await new Promise((resolve) => server.close(resolve)) } catch {} }
@@ -3208,18 +3918,124 @@ export class AliranPlayer extends Emitter {
   // the only peer). peer.stream is the raw swarm socket protomux rides on; destroying
   // it makes hyperswarm redial (the topic stays joined) and corestore re-replicates
   // everything on the fresh connection automatically.
-  _teardownFeedPeers () {
-    const drive = this._feedDrive
-    if (!drive || !drive.core || !this._swarm) return 0
-    const seen = new Set()
-    for (const peer of [...drive.core.peers]) {
-      const stream = peer && peer.stream
-      if (!stream || seen.has(stream)) continue
-      seen.add(stream)
-      try { stream.destroy() } catch {}
-    }
-    return seen.size
+  //
+  // SPLIT IN TWO, because the rotation needs the halves at different instants (see
+  // _rotateActiveFeed step 4a): the peers can only be READ off a drive that is still open, and
+  // they must not be HUNG UP ON until the replica's storage is gone. The ladder's own use is
+  // unchanged — both halves back to back, on the active drive, with no re-dial.
+  _teardownFeedPeers (drive = this._feedDrive, redial = false) {
+    return this._hangUpOnPeers(this._feedPeerKeys(drive), redial)
   }
+
+  // The PUBLIC KEYS of the peers carrying this feed, deduplicated. Readable only while the
+  // drive is OPEN: drive.purge() closes before it unlinks (hyperdrive 11 — `await this.close()`,
+  // then core.purge()), hypercore's last-session close calls replicator.destroy(), and that
+  // closes every peer channel and empties replicator.peers. A closed or purged drive answers
+  // with an empty list, and so does a freshly re-opened replica — it has no peers of its own,
+  // which is the defect step 4a exists for.
+  //
+  // ⚠ KEYS, NOT THE SOCKETS THEMSELVES, and that is a bug fix rather than a style choice. A
+  // socket captured here can be gone by the time a caller acts on it: MEASURED across an e2e
+  // run, three of six rotations reached their hang-up with the captured stream ALREADY
+  // destroyed, so a 'close' hook armed on it never fired and the re-dial never ran. What has to
+  // be hung up on is whatever connection to that PEER is live at that moment, which may be a
+  // different socket than the one the drive was reading.
+  _feedPeerKeys (drive = this._feedDrive) {
+    if (!drive || !drive.core || !this._swarm) return []
+    const seen = new Map()
+    for (const peer of [...drive.core.peers]) {
+      const key = peer && peer.stream && peer.stream.remotePublicKey
+      if (key) seen.set(b4a.toString(key, 'hex'), key)
+    }
+    return [...seen.values()]
+  }
+
+  // Hang up on each of these peers — one socket usually carries all of a peer's channels, so
+  // this is per PEER, not per feed — and return how many live connections were destroyed. With
+  // `redial`, dial each of them straight back instead of waiting out hyperswarm's backoff; see
+  // _redialPeer for why that is not the same thing as doing nothing, and _rotateActiveFeed
+  // step 4b for the caller that cannot afford the difference.
+  //
+  // The dial is armed on the connection's own 'close' because joinPeer() no-ops while the old
+  // connection is still in _allConnections, and hyperswarm's close handler (registered when the
+  // connection was made, so it runs first) is what removes it. A peer with NO live connection is
+  // dialled at once instead: there is nothing to wait for, and a hang-up that found nothing to
+  // hang up on is exactly the case where the swarm may already have given up on it.
+  _hangUpOnPeers (keys, redial = false) {
+    const swarm = this._swarm
+    if (!swarm || !keys.length) return 0
+    let n = 0
+    for (const key of keys) {
+      let live = null
+      for (const conn of swarm.connections) {
+        if (conn.remotePublicKey && b4a.equals(conn.remotePublicKey, key)) { live = conn; break }
+      }
+      if (!live) {
+        if (redial) this._redialPeer(swarm, key)
+        continue
+      }
+      n++
+      if (redial) live.once('close', () => this._redialPeer(swarm, key))
+      try { live.destroy() } catch {}
+    }
+    return n
+  }
+
+  // Dial a peer we deliberately hung up on, NOW, rather than at hyperswarm's failure backoff.
+  //
+  // ⚠ THE BACKOFF IS THE WHOLE PROBLEM, and it is not a tuning preference: hyperswarm cannot
+  // tell a recycle from a failure, so our own teardown runs peerInfo._disconnected() and walks
+  // the peer up the ladder — attempts 0/1 → ~1-1.5 s, 2 → ~5-6 s, 3 → ~15-17 s, past 3 → NO
+  // retry timer at all and the peer is garbage-collected (hyperswarm lib/retry-timer.js
+  // _selectRetryTimer, index.js _maybeDeletePeer). attempts only resets when a connection
+  // lived MIN_CONNECTION_TIME (15 s) before it dropped, so a feed that is torn down twice
+  // inside that window is already at the 5-6 s rung — longer than the serving core's whole
+  // availability wait (waitMs 6000), i.e. the parked media request 404s and the viewer is
+  // remounted. MEASURED: with the dial left to the backoff, one e2e run recovered in 18 ms and
+  // the next in 1270 ms, and the rotation after that never made it inside waitMs at all.
+  //
+  // The lookup path is not a fix either, which is why this does not just call
+  // discovery.refresh(): PeerDiscovery.refresh() returns the in-flight _currentRefresh when
+  // there is one, so the "fresh" lookup a re-open triggers can be a query that already ran and
+  // already delivered its peers.
+  //
+  // joinPeer/leavePeer as a PAIR is the public API that says "connect to this peer now"
+  // without the lasting consequences of an explicit peer (never GC'd, retried forever at
+  // BACKOFF_X): joinPeer re-creates a GC'd PeerInfo, caps a de-prioritised one at attempts 3
+  // so _updatePriority stops refusing it, and enqueues — and hyperswarm's queue drain has no
+  // cooloff, so the dial starts synchronously. leavePeer immediately after only clears the
+  // explicit flag; _maybeDeletePeer then finds the pending connection and keeps the peer.
+  //
+  // ⚠ IT IS NOT GUARANTEED TO PRODUCE A DIAL, and nothing here may pretend otherwise. joinPeer
+  // no-ops whenever _allConnections already holds anything for that key (a socket whose close
+  // has not landed, or a dial started before we hung up), and a dial that does go out can still
+  // lose the duplicate-connection tie-break at the far end (hyperswarm _handleServerConnection,
+  // ERR_DUPLICATE) and land the peer back on the very backoff this exists to avoid. Both are why
+  // the caller hangs up on the LIVE connection to the peer first (_hangUpOnPeers) and arms this
+  // on that connection's own 'close' — with the old socket gone, joinPeer's early return cannot
+  // fire and the far end has nothing to tie-break against.
+  _redialPeer (swarm, publicKey) {
+    if (!swarm || swarm !== this._swarm || swarm.destroyed || !publicKey) return
+    try { swarm.joinPeer(publicKey); swarm.leavePeer(publicKey) } catch {}
+  }
+
+  // ⚠ THERE IS DELIBERATELY NO RETRY LOOP BEHIND THIS, and the history is worth keeping because
+  // the obvious fix was the wrong one. A dial that did not take was observed once as a 10078 ms
+  // recovery — exactly tune.rescanMs, i.e. the dial had failed silently and _checkFeedPeers'
+  // zero-peer rescan rescued the channel ten seconds later, four times the park budget. The
+  // first response was a bounded re-dial chase (dial, re-check, dial again). The actual cause
+  // was upstream of it: the teardown was arming its re-dial on a SOCKET captured before the
+  // purge, and by the time it ran, three rotations in six had a captured socket that was already
+  // destroyed — so the 'close' hook never fired and no dial was ever attempted. Keying the
+  // hang-up on the PEER instead (_feedPeerKeys, _hangUpOnPeers) fixed it at the source, the
+  // chase became a loop that never ran a second pass, and it was removed rather than left in as
+  // insurance against a bug that no longer exists.
+  //
+  // What guards it now is the e2e lane, which asserts the re-opened replica gains a peer inside
+  // 3 s WITH THE RESCAN DISABLED — so a dial that stops taking fails loudly instead of being
+  // masked by a recovery ten seconds later, which is what a retry loop here would also have
+  // done. If that assertion ever starts flaking, the answer is to find the next root cause, not
+  // to re-add the chase.
 
   // Public escalation hook for hosts (the <AliranVideo> stall ladder): when a remount/
   // resync did not restore playback, tear down the active feed's connections and dial
@@ -3332,6 +4148,17 @@ export class AliranPlayer extends Emitter {
     if (!keys || !keys.encryptionKey) return
     const cacheKey = a.feedKey + ':' + keys.encryptionKey
     const pending = this._feeds.get(cacheKey)
+    // ⚠ NOT IF SOMEBODY ELSE OWNS THIS SLOT — see _claimSlot, and note that _evictFeed is NOT
+    // the only path that has to honour a claim, which is why the check lives on the slot
+    // rather than inside that function. This one's whole method is delete → await → close →
+    // re-open, and during a rotation the value it would await is the drive the rotation has
+    // just opened and is a microtask away from publishing: closing it makes _feedDrive a
+    // CLOSED handle, and every media request for the rest of the play resolves to it. Narrow
+    // but reachable — the tune ladder fires this on a schedule over a multi-hour session.
+    //
+    // Standing down costs the ladder nothing: a rotation is itself re-opening this exact feed
+    // (which is what a retune wanted), and the rung after this one fires either way.
+    if (pending && pending.claims) return
     this._feeds.delete(cacheKey)
     let castUnpointed = false // this retune left a pinned cast holding no drive
     try {
@@ -3391,6 +4218,815 @@ export class AliranPlayer extends Emitter {
     this._feedDiscovery = feed.discovery
     a.lastSig = null
     a.lastAdvance = Date.now()
+  }
+
+  // --- active-feed rotation (the viewer disk bound where clear() frees nothing) ---
+
+  // PURGE the active feed's replica and re-open it empty, in place, without the host
+  // player losing the channel. This is the bound of last resort from the VIEWER DISK
+  // BUDGET note: on a 32-bit Android ABI the serving core's below-window reclaim frees
+  // ZERO bytes, so a watch session grows ~0.9 GB/hour with nothing else to stop it, and
+  // unlink is the only operation that actually returns the bytes.
+  //
+  // Modelled closely on _retuneActive — the precedent for swapping the served drive out
+  // from under a live play — with four differences, each of which is a hazard rather than
+  // a preference:
+  //
+  //   1. A CAST-PINNED FEED IS NEVER ROTATED. _retuneActive can drop the pinned drive and
+  //      re-point the session because it CLOSES the drive and re-opens the same content;
+  //      this purges it. Purging the feed a receiver is reading deletes, from under it,
+  //      the only copy of every block below the live window (they are unfetchable
+  //      swarm-wide — see CAST RECLAIM POLICY), i.e. exactly the hazard _trimFeeds
+  //      documents where it refuses to evict _castFeedKey. Disk is the lesser problem, so
+  //      this refuses and says so.
+  //
+  //      ⚠ AND THEN A CAST-PINNED FEED HAS NO DISK BOUND AT ALL WHILE THE PIN LASTS. The
+  //      earlier version of this line said "let stopCast()'s own reclaim pass bound it
+  //      later", which is not true on the platform this whole feature exists for: that pass
+  //      is _reclaimCastFeed -> reclaimBelowWindow -> clear(), and clear() is the no-op that
+  //      frees ZERO bytes wherever the storage layer cannot hole-punch. So on a 32-bit ABI
+  //      the honest statement is: reclaim is off for the pinned feed by policy, rotation
+  //      refuses it, _trimFeedBytes counts it as held and cannot evict it, and stopCast()
+  //      frees nothing. The bytes come back when the pin is RELEASED and the replica is
+  //      unlinked — by an eviction, by the store cap once it is evictable again, or by the
+  //      stale-namespace sweep on the next run. A long cast on a small device is therefore
+  //      genuinely unbounded until it ends, and that is a known limit, not an oversight.
+  //   2. REQUESTS PARK instead of 404ing. _retuneActive's reopen leaves _feedDrive null
+  //      for a few hundred ms and the serving core answers a null target with an INSTANT
+  //      404 — no availability wait, no peer lookup — which costs ExoPlayer 3 retries, an
+  //      onError and a 2.5 s remount. A retune is rare and reactive (playback is already
+  //      broken); a rotation fires on a HEALTHY stream, so it may not spend that. The park
+  //      is a bet with a real downside when it is lost — see FEED_SWAP_PARK_MS, which
+  //      states the arithmetic, and _armFeedSwap / _mediaTarget.
+  //   3. IN-FLIGHT READS ARE DRAINED first. drive.purge() closes the drive; a segment read
+  //      still running when it lands dies mid-body. Bounded (FEED_DRAIN_MS) — past the
+  //      bound the purge happens anyway and those responses are destroyed, which is the
+  //      same thing an abort already does to them. The drain runs BEFORE the park is armed:
+  //      nothing has been taken away yet, so requests arriving during it are served the real
+  //      drive, and the park budget is spent only on the phase that needs it.
+  //   4. THE OLD SWARM SESSION IS DESTROYED (in the finally, on every exit — see
+  //      _retireDiscovery). _retuneActive leaks one per retune, and a recurring rotation
+  //      would make that leak a growth curve; so would a rotation that only retired the
+  //      session on the path where it SUCCEEDED, which is what this used to do.
+  //   5. THE FEED'S PEERS ARE HUNG UP ON AND DIALLED STRAIGHT BACK (steps 4a/4b).
+  //      _retuneActive needs nothing of the sort — it CLOSES the drive, and a closed core
+  //      re-attaches to its existing connections on re-open immediately. A PURGED one never
+  //      does, at any delay and under any namespace, so a rotation that skipped this handed
+  //      back a peerless replica and killed the channel for the session. Step 4a carries the
+  //      measurement table; it is the difference on this list that the feature does not work
+  //      without.
+  //
+  // Re-opening over the SAME corestore namespace is safe here for a reason worth stating,
+  // because it is the opposite of what the single-flight cache warns about: the old drive
+  // is fully GONE (purge = close + delete both cores' storage) before the new open starts,
+  // so there is no second drive and no deadlock. A rotation that OVERLAPPED its old and new
+  // drives would deadlock exactly as the cache's comment says — which is why this is strictly
+  // sequential and refuses to start a second rotation. What "fully gone" does NOT buy is the
+  // REPLICATION side: the new core does not take over the old one's protomux channel, which
+  // is difference 5 above and step 4a's whole subject.
+  //
+  // EVERY AWAIT HERE IS BOUNDED, and the one that is interesting is drive.purge(). Nothing may
+  // PROCEED without it — reopening a namespace whose delete is still in flight is precisely
+  // the overlap above — so its bound is a WATCHDOG rather than a timeout: past FEED_PURGE_MS
+  // this function abandons the rotation entirely instead of carrying on. That distinction is
+  // the whole design. Unbounded, a purge that never settled took the rotation mechanism and
+  // this channel's cache slot down permanently, which is strictly worse than the black screen
+  // the watchdog costs.
+  //
+  // THE CACHE SLOT UNDER cacheKey IS CLAIMED from the moment the mutex is taken until this
+  // rotation's re-open has SETTLED — through the live entry, the placeholder and the re-open
+  // in turn, with no gap between them. That interval deliberately outlives this function: the
+  // re-open is still in flight on the failure path, and it is _recoverFailedRotation that
+  // finishes the job. See _claimSlot; the two paths that must honour it are _evictFeed and
+  // _retuneActive.
+  //
+  // Returns true when the drive was actually swapped. Never throws.
+  async _rotateActiveFeed (a, info = null) {
+    if (!a || this._active !== a) return false
+    // ONE AT A TIME — see the sequential note above. This used to read `if (this._feedSwap)`,
+    // i.e. the single-flight guard and the park gate were the SAME field, and that was a
+    // live hazard rather than an aesthetic one: _releaseFeedSwap clears _feedSwap and FOUR
+    // callers that know nothing about a rotation call it while one is still running (the
+    // park timer, serveFeed() on any zap, stop(), _purgeAndRebuild()). From that moment the
+    // guard was DOWN, including across the interval between drive.purge() and the reopen —
+    // exactly the interval this function's own comment says a second rotation would deadlock
+    // in. The mutex below is set here and cleared in this function's finally, by nothing
+    // else, so it is still true when a second over-budget callback arrives.
+    if (this._feedRotate) return false
+    // vod (S8a): a title's replica is a SEEK CACHE, not a rolling buffer. Purging it
+    // mid-film throws away everything behind the playhead that the viewer may scrub back
+    // to, and the "it grows forever" premise does not hold — a finished title is a
+    // bounded download. Every other disk path in this engine skips VOD for the same
+    // reason (see the Reclaim class in serve.js); this one does too.
+    if (a.vod) return false
+    const keys = this._entitled.get(a.streamId)
+    if (!keys || !keys.encryptionKey) return false
+    const cacheKey = a.feedKey + ':' + keys.encryptionKey
+    const pending = this._feeds.get(cacheKey)
+    const drive = this._feedDrive
+    if (!pending || !drive) return false
+    // The cache entry must BE the served drive. If a rotation-follow or a retune has moved
+    // _feedDrive to a drive this key no longer names, purging by key would delete a replica
+    // nobody asked about and leave the one that is growing. Also: `settled` (not `await`)
+    // keeps this synchronous — an open still in flight is not a feed that is over budget.
+    const f = pending.settled
+    if (!f || f.drive !== drive) return false
+    // ⚠ THE PIN CHECK IS NOT GATED ON this._cast. It used to read
+    // `this._cast && (this._cast.drive === drive || this._castFeedKey === cacheKey)`, which
+    // made the KEY half dead code whenever _cast was null — and _cast is null in two windows
+    // where the feed is very much still pinned: _doStopCast() sets `this._cast = null` while
+    // _castFeedKey still holds the pin (it is only re-pointed at the end), and _doStartCast()
+    // publishes this._cast LAST, after an async LAN socket bind, while _castFeedKey was
+    // pinned before it. The three sibling guards (_trimFeeds, _sweepIdleFeeds,
+    // _trimFeedBytes) all test the key on its own; this now matches them.
+    if (this._castPins(drive, cacheKey)) {
+      // The only "log" this file has is the status stream, which is also the problem-report
+      // breadcrumb ring (_recordEmit) — i.e. the surface an operator can actually read back
+      // from a viewer's device. A refusal that left no trace would make "why did this
+      // device fill up?" unanswerable.
+      this.emit('status', { state: 'feed:rotate', streamId: a.streamId, skipped: 'cast-pinned', message: 'not rotated: a cast session is pinned to this feed' })
+      return false
+    }
+
+    const startedAt = Date.now()
+    // TAKE THE MUTEX (see the top of this function) and capture the teardown generation:
+    // `this._active !== a` says only that the viewer zapped, and every await below is a
+    // place where stop() or _purgeAndRebuild() can have destroyed the store and the swarm
+    // underneath this. Without the epoch check a rotation that got past the drain would
+    // still reach _ensureStore() and build a NEW Corestore + Hyperswarm and join a topic
+    // AFTER stop() returned, or hand the rebuilt engine a store over a just-deleted
+    // directory. Checked after each await, including inside the recovery path.
+    const epoch = this._epoch
+    const rot = { cacheKey }
+    this._feedRotate = rot
+    // CLAIM THE CACHE SLOT — from HERE, not from the moment the placeholder goes in. The
+    // mutex has to be taken before the drain (a second over-budget callback would otherwise
+    // start a second drain and a second purge of the same drive), and that left ~11 s of drain
+    // + measure in which the slot was unowned while the cache entry still held the LIVE feed:
+    // an _evictFeed in there — the tune ladder's last rung is the reachable one — purged the
+    // drive being watched, and this rotation then re-installed a placeholder over a key it had
+    // just evicted and purged an already-purging drive. The claim covers the whole critical
+    // section instead, moving from the settled entry to the placeholder to the re-open, so
+    // there is no instant between the mutex and the new drive in which the slot is anyone
+    // else's. `pending` is already settled, so this claim is explicit-release only — the
+    // finally lets it go on every path, including the four that back out before the purge.
+    let releaseSlot = this._claimSlot(pending)
+    let swap = null // the park gate, armed at step 3 — NOT here (see FEED_SWAP_PARK_MS)
+    let settle = null
+    const placeholder = new Promise((resolve) => { settle = resolve })
+    let installed = false // the placeholder is the cache entry for cacheKey
+    let opening = null // the re-open, kept in scope so the finally can chain the old session on it
+    let oldDiscovery = null // the purged feed's swarm session, retired in the finally (see step 6)
+    let reopened = null
+    let purged = false // the old replica's storage is gone — nothing may be pointed at it
+    let bytes = info && Number.isFinite(info.bytes) ? info.bytes : null
+    let done = null // the success payload, emitted OUTSIDE the try (see below)
+    let swapped = false
+    try {
+      // 1. DRAIN. Parked requests are not in flight — resolveTarget has not returned for
+      //    them — so they cannot deadlock this wait; only reads already piping bytes can.
+      //
+      //    ⚠ THIS CANNOT SEE CAST READS, and it is worth saying so rather than implying a
+      //    coverage it does not have: handler.inflight/whenDrained belong to the LOOPBACK
+      //    handler's InFlight instance, and _castRequestHandler is a SECOND
+      //    createDriveHandler with its own. A rotation of a cast-pinned feed is refused
+      //    outright (twice — before and after this drain), so the only way a cast read can
+      //    touch this drive is a session that publishes during the awaits below, which the
+      //    re-check at step 3 and _castLostDrive after the purge exist to catch. If this
+      //    function ever stops refusing a pinned feed, this drain has to be taught about the
+      //    cast handler first.
+      const h = this._handler
+      if (h && h.whenDrained) { try { await h.whenDrained(drive, FEED_DRAIN_MS) } catch {} }
+      if (this._epoch !== epoch) return false // the engine was stopped or purged under us
+      if (this._active !== a) return false // zapped away mid-drain; that resolve() owns the slot now
+      // 2. MEASURE, while the drive still exists — an unlinked one cannot answer. The
+      //    trigger already measured to decide, so this pass is only paid for when the
+      //    caller did not carry a number (and null, "unmeasurable", is a fine answer: it
+      //    costs the event a field, not the rotation). Bounded inside _measureFeed.
+      if (bytes === null) { const m = await this._measureFeed(drive); bytes = m ? m.bytes : null }
+      if (this._epoch !== epoch || this._active !== a) return false
+      // 3a. RE-CHECK THE PIN. The check at the top is ~1.5 s of awaits old by now, and
+      //     _doStartCast can resolve THIS drive (it reuses the cache through
+      //     _openFeedWithin) and publish its session inside that window. Rotating then
+      //     purges the replica the receiver is reading — the exact hazard the refusal at the
+      //     top exists to prevent, arrived a moment later. This is the last point at which
+      //     backing out is free.
+      if (this._castPins(drive, cacheKey)) {
+        this.emit('status', { state: 'feed:rotate', streamId: a.streamId, skipped: 'cast-pinned', message: 'not rotated: a cast session was pinned to this feed while it drained' })
+        return false
+      }
+      // 3b. ARM THE PARK — here, not at the top. It used to be armed before the drain, back
+      //     when the drain was 1500 ms and the park 4000: the two of them plus the measure
+      //     billed against that one budget and left ≤2.5 s for the reopen, which is the ONLY
+      //     phase in which _feedDrive is null and therefore the only phase the park is for.
+      //     Both numbers have since moved (FEED_DRAIN_MS is 6000, FEED_SWAP_PARK_MS 2500) and
+      //     they no longer share a budget at all — which is the whole point of arming here.
+      //     From this line to the finally below, a media request waits for the new drive
+      //     instead of resolving a null one.
+      swap = this._armFeedSwap()
+      // 3c. DROP THE HANDLES synchronously, so nothing can start a fresh read of a drive
+      //    that is about to be unlinked — and park the CACHE ENTRY in the same breath,
+      //    which is a different hazard with the same shape. The window between "the drive
+      //    is gone" and "the new one is open" is exactly when another caller can ask for
+      //    this feed: /feedthumb on the channel being watched falls through to the cache
+      //    the moment _feedDrive is null, and startCast/prewarm can want the same key.
+      //    _openFeed would then build a SECOND Hyperdrive over a namespace that is being
+      //    purged. A promise with no `settled` is already this cache's "an open is in
+      //    flight" state — every synchronous reader treats it as cold, and every awaiting
+      //    caller is handed the drive this rotation opens. Installed HERE rather than at
+      //    the top so that an abandoned rotation (the checks above) leaves the cache exactly
+      //    as it found it; from here on the whole sequence is committed and the next await
+      //    is the purge itself.
+      if (this._feedDrive === drive) { this._feedDrive = null; this._feedDiscovery = null }
+      this._feeds.set(cacheKey, placeholder) // set(), not delete+set: the entry keeps its LRU position
+      // The claim moves with the slot — released off the settled entry, taken on the
+      // placeholder, with no gap between the two. `untilSettled` so it also lifts by itself if
+      // this function somehow leaves without releasing it.
+      releaseSlot()
+      releaseSlot = this._claimSlot(placeholder, true)
+      installed = true
+      // 4a. FORCE A FRESH DIAL. Without this the rotation completes, reports success, hands
+      //    back a replica with ZERO peers — and the channel is dead for the rest of the
+      //    session. On a 32-bit build that is EVERY rotation, i.e. the feature trades a full
+      //    disk for a dead channel. This is the most load-bearing fact about the whole
+      //    mechanism, so it is recorded here rather than left to be re-derived:
+      //
+      //    ⚠ A CORE WHOSE STORAGE WAS PURGED DOES NOT RE-ATTACH TO AN ALREADY-ESTABLISHED
+      //    PROTOMUX. Measured on plain corestore 6.18.4 / hyperdrive 11.13.4 /
+      //    hypercore 10.38.2 / hyperswarm 4.17.0 / protomux 3.11.0, with no SDK involved:
+      //      close() + re-open, same namespace ................ replication resumes at once
+      //      purge() + re-open, same namespace ................ NEVER resumes (15/30/60 s+)
+      //      purge() + 5 s delay + re-open .................... NEVER — so it is not a race
+      //      purge() + re-open under a DIFFERENT namespace .... NEVER — the discovery key is
+      //        the same, so it is the same protomux channel either way
+      //      purge() + re-open + destroy the connection ....... resumes at once
+      //    (hypercore's last-session close does call replicator.destroy(), which closes each
+      //    peer channel — so a closed channel is not the whole story. Whatever the remaining
+      //    state is, only a fresh socket clears it. A fresh dial is REQUIRED.)
+      //
+      //    AND THE TUNE LADDER CANNOT RESCUE IT, which is why this is not left to recovery:
+      //    the rung that would fix it is 'feed:reconnect' — this same teardown — and it is
+      //    skipped precisely BECAUSE the symptom is zero peers (_startTuneWatchdog only
+      //    reconnects when there is a peer to tear down; with none it goes straight to the
+      //    friendly error). Observed after one rotation before this line existed: 404s
+      //    throughout, a 'feed:retune' at ~36 s (a close+reopen — no help, the channel is
+      //    already poisoned), the friendly error at ~61 s, _feedDrive nulled, dead for the
+      //    session.
+      //
+      //    THE CAPTURE HAS TO BE HERE AND THE HANG-UP HAS TO BE LATER, which is the one part
+      //    of this that is not free to choose:
+      //
+      //      CAPTURE now, because this is the last instant the feed's peers are readable at
+      //      all. They hang off drive.core.peers, purge() closes before it unlinks, and that
+      //      close empties the list (see _feedPeerKeys). The re-opened replica cannot supply
+      //      them either — it has no peers, which is the defect itself. Both later positions
+      //      would need this list stashed from exactly here, so "capture at 4a" is forced. It
+      //      is the peers' KEYS that are captured, not their sockets: see _feedPeerKeys for
+      //      the measurement that made that distinction load-bearing.
+      //
+      //      HANG UP AFTER THE PURGE (step 4b), because the dial that follows is IMMEDIATE
+      //      (_redialPeer, not hyperswarm's backoff) and a fresh socket arriving while the old
+      //      cores are still open would have corestore attach THEM to it — and then the purge
+      //      would poison the new connection exactly as it poisoned the old one. That window is
+      //      a close() against a localhost dial: single-digit milliseconds on both sides, i.e.
+      //      a coin toss. Ordering it after the purge closes the window completely and costs
+      //      only that the dial no longer overlaps the unlink.
+      //
+      //      AND BEFORE THE RE-OPEN — MEASURED, not reasoned. The isolation table's passing row
+      //      is purge → re-open → destroy, so hanging up FIRST was an untested ordering and was
+      //      run as an experiment against the e2e lane, three runs each with the zero-peer
+      //      rescan disabled so nothing could mask the result:
+      //        before the re-open (this) ... peer back in 306 / 1 / 302 ms, picture in 449 / 25 / 357 ms
+      //        after the re-open ........... peer back in 310 / 309 / 302 ms, picture in 1960 / 1587 / 2073 ms
+      //      The dial itself takes equally well either way — the ordering is NOT what decides
+      //      whether it lands. What decides it is the FAILURE path, and that is why this one
+      //      ships: after the re-open, the hang-up is gated on the re-open having SUCCEEDED, so
+      //      a re-open that misses its bound hands _recoverFailedRotation a connection that can
+      //      never carry this feed, and the channel stays dead. That is not a theory — the third
+      //      "after" run failed the lane's own recovery case ("playback returns after a failed
+      //      rotation"), the case section 6 exists for. Doing it here also happens to get the
+      //      picture back sooner (the fresh socket is up before the core starts downloading),
+      //      but correctness on the failure path is the reason, not the speed.
+      //
+      //      Every downstream path therefore inherits a healthy connection: the abandoned-purge
+      //      watchdog, the epoch and catalog bails, and the recovery. Nothing above step 3c
+      //      reaches any of this — the cast-pinned refusals, the vod refusal and the
+      //      _active/epoch bails all return earlier — and a re-dial is not a cost to pay for a
+      //      rotation that never purged.
+      //
+      //    IT COSTS THE PARK NOTHING, so FEED_SWAP_PARK_MS stays 2500. Both halves are
+      //    synchronous — a capture, then a destroy plus a joinPeer — and nothing here waits on
+      //    the socket's 'close' or on the dial, so the park (armed at 3b, released in the
+      //    finally) still covers purge + re-open and only those; the re-open does not wait on a
+      //    peer either (_openFeed is ready() + join()). What the dial spends is the SERVING
+      //    core's availability wait, not the park: a parked request wakes to a real drive and
+      //    then sits in waitEntry for up to waitMs (6000, sdk/serve.js), which is a wait rather
+      //    than a 404. MEASURED end to end on the e2e lane, over the rotation the park exists
+      //    for: swap 54-99 ms, live edge advancing again 650-957 ms later — and most of THAT is
+      //    waiting for the broadcaster's next playlist rewrite, not for the socket. Against the
+      //    real DHT the dial is one holepunch to a peer we were connected to a moment ago (no
+      //    lookup — see _redialPeer), which leaves the 6000 ms budget with room to spare.
+      //    Raising the park would not help any of this and would only delay the 404 it exists
+      //    to avoid (arithmetic there).
+      //
+      //    ⚠ AND IT IS THE PARK THAT STAYS PUT, NOT THE DIAL THAT IS FREE. Left to hyperswarm's
+      //    own backoff this does NOT fit the availability wait — that is what _redialPeer is
+      //    for, and the measurement that forced it is recorded there.
+      //
+      //    RESIDUALS, stated rather than implied. (a) One socket carries ALL of a peer's
+      //    channels, so this also interrupts the prewarmed neighbours and every other cached
+      //    feed replicating from the same broadcaster; they re-replicate automatically on the
+      //    fresh connection and they are prefetch, not playback, so the trade is a moment of
+      //    their download against this channel surviving at all. (b) A purge that DEGRADES to a
+      //    plain close (the fallback below) would not have needed a dial, and there is no way
+      //    to know that before calling it — one wasted re-dial on a path that already failed to
+      //    free any bytes. (c) A catalog re-key that landed during the drain has already opened
+      //    the new feed, quite possibly on this very socket, and it eats the same re-dial.
+      const feedPeerKeys = this._feedPeerKeys(drive)
+      // 4. PURGE. Same fallback as _evictFeed: a refused purge degrades to a plain close,
+      //    which frees no bytes but leaves the namespace re-openable, so the rotation still
+      //    completes and the next one retries.
+      //
+      //    ⚠ THE ONE AWAIT NOTHING MAY PROCEED WITHOUT — and therefore the one that needs a
+      //    WATCHDOG rather than a bound. Re-opening a namespace whose delete is still in
+      //    flight is the overlap this function's header calls a deadlock, so a timeout here
+      //    cannot mean "carry on": it means GIVE UP. Without one, a purge that never settles
+      //    was not degraded but permanently fatal — the mutex was never cleared, so no channel
+      //    could rotate again for the life of the process (on a 32-bit ABI, the only disk bound
+      //    there is, gone), and the cache kept a placeholder that never resolved and that
+      //    _evictFeed correctly refuses to touch, so every later tune of this channel threw
+      //    'tune timeout' forever. stop() and _purgeAndRebuild release the mutex for exactly
+      //    this reason; a hung purge with no teardown behind it had no escape at all.
+      let purgeTimer = null
+      const purging = drive.purge().catch(() => { try { return drive.close().catch(() => {}) } catch {} })
+      purged = await Promise.race([
+        purging.then(() => true, () => true),
+        new Promise((resolve) => { purgeTimer = setTimeout(() => resolve(false), FEED_PURGE_MS) })
+      ])
+      clearTimeout(purgeTimer)
+      // 4b. HANG UP AND DIAL STRAIGHT BACK — the other half of step 4a, placed here because
+      //    the storage is gone by this line and a fresh socket can therefore only ever pick up
+      //    the replica this rotation is about to open. It resolves the LIVE connection to each
+      //    captured peer rather than reusing a socket captured at 4a, because the one the drive
+      //    was reading may already be gone by now (_feedPeerKeys carries that measurement); the
+      //    invariant it buys is that whatever connection carries the re-opened replica was
+      //    established AFTER the purge. Run on BOTH purge outcomes: `purged` false means the
+      //    UNLINK is still running, and close() — which is what leaves the connection unable to
+      //    carry this feed again — has long since happened, so abandoning the rotation into an
+      //    unrecoverable connection would just hand the tune ladder the same dead channel.
+      //    (Residual: if it were close() itself that hung, the cores are still open and the
+      //    fresh socket inherits them. That is a device where nothing works anyway, and the
+      //    alternative — leaving the peer wedged — is not better.)
+      const redialing = this._hangUpOnPeers(feedPeerKeys, true)
+      // The old drive is closed either way — close is the first thing purge() does — so its
+      // swarm session goes with it on both outcomes. Retired in the finally, once whatever
+      // replaces it has landed; see step 6.
+      oldDiscovery = f.discovery
+      // A cast that published onto THIS drive between step 3a and here is now pointed at a
+      // replica that no longer exists: every read 500s or 404s behind a still-bound LAN
+      // socket while castSession() keeps handing out a live url, which is the zombie-cast
+      // shape _evictFeed and _retuneActive were both rewritten to eliminate. This was the
+      // one purge path in the file with no _endCast. (Nothing usually happens here: the
+      // window is small and the two pin checks cover the rest of it.)
+      //
+      // 'feed-evicted' rather than a new 'feed-rotated': the reason strings are a declared
+      // union in sdk/index.d.ts and widening a public union belongs with that file's edit,
+      // not this one. It is also the honest label — from the session's side the pinned
+      // replica was purged out from under it, which is exactly what 'feed-evicted' means
+      // everywhere else it is used.
+      this._castLostDrive(drive, 'feed-evicted')
+      // The watchdog fired: the unlink is still running and re-opening over it is the one
+      // thing this function must not do. Drop the slot (so the channel can be tuned again
+      // rather than awaiting a placeholder that never resolves) and the mutex (the finally
+      // does that), say so — this is otherwise a silent, total loss of the disk bound — and
+      // hand recovery to the ladder that owns it, WITHOUT a re-open of our own.
+      if (!purged) {
+        this._dropPlaceholder(cacheKey, placeholder)
+        installed = false
+        this.emit('status', { state: 'feed:rotate', streamId: a.streamId, failed: true, message: `rotation abandoned: the replica purge did not settle within ${FEED_PURGE_MS} ms — falling back to the tune ladder` })
+        if (!this._tuneTimer) this._startTuneWatchdog()
+        return false
+      }
+      if (this._epoch !== epoch) { this._dropPlaceholder(cacheKey, placeholder); installed = false; return false }
+      // …and one thing can have moved under all of that: the CATALOG can rotate this
+      // channel onto a new feedKey while the purge runs (_maybeReresolveActiveFeed, a
+      // broadcaster restart). Then the drive just unlinked was the DEAD one — still the
+      // right thing to unlink — the follow has already opened and served its replacement,
+      // and _feedDrive was left pointing at it by the identity check above. Re-opening
+      // a.feedKey here would open the NEW feed under the OLD cache key and hand
+      // _recastFeed a pin naming a feed that no longer exists. Stop instead.
+      if (a.feedKey + ':' + keys.encryptionKey !== cacheKey) { this._dropPlaceholder(cacheKey, placeholder); installed = false; return false }
+      // 5. RE-OPEN, BOUNDED. Hand the single-flight slot to the real open ATOMICALLY:
+      //    _openFeed reads the cache and installs its own entry before it awaits anything,
+      //    so no other caller can slip in between these two statements.
+      //
+      //    ⚠ THE BOUND IS THE POINT — AND IT MUST NOT BE _openFeedWithin. An open that never
+      //    settles left the park to expire into a null _feedDrive, every media request 404ing
+      //    for the rest of the session, the `finally` never running (so the mutex and the
+      //    cache placeholder were held forever) and — worst for diagnosis — NO feed:rotate
+      //    event ever emitted. So this is bounded. But the OBVIOUS way to bound it was worse
+      //    than the unbounded version it replaced: _openFeedWithin's expiry calls
+      //    _evictFeed(cacheKey), and _evictFeed used to schedule a purge() on whatever that
+      //    still-pending open eventually settled to. On a slow reopen that was:
+      //      the bound expires -> a purge is armed on the in-flight open of replica #1 ->
+      //      this throws -> _recoverFailedRotation opens replica #2 over the SAME
+      //      `replica:<feedKey>` namespace while #1 is still opening (the overlap this
+      //      function's header says deadlocks) -> #1 settles -> its purge unlinks the storage
+      //      #2 is using, which the recovery has just assigned to _feedDrive.
+      //    _openFeedWithin's timeout semantics are cache MAINTENANCE, and maintenance has no
+      //    business acting on a slot somebody is holding. Both halves of that are fixed at the
+      //    source now rather than avoided here — _evictFeed never purges an unsettled open,
+      //    and it refuses a CLAIMED slot outright — but the plain race stays: it is still the
+      //    right bound for a caller that manages its own slot.
+      //
+      //    Leaving the pending open in the cache on expiry is the point, not an oversight:
+      //    the recovery's _openFeedWithin is single-flight through the same entry, so it
+      //    ADOPTS this open with a longer bound instead of building a second drive. The
+      //    losing race arm needs no handler — _openFeed already attaches two to the promise.
+      //
+      //    ⚠ AND THE TIMER IS NOT unref'd, per the rule sdk/serve.js states at bounded(): when
+      //    the open never settles this timer is the ONLY thing that can settle the promise
+      //    being awaited here, and an unref'd one on a host whose loop is otherwise empty never
+      //    fires. Immaterial in the app; it can hang a tool host mid-rotation.
+      this._dropPlaceholder(cacheKey, placeholder)
+      installed = false
+      const reopenMs = Math.max(FEED_REOPEN_FLOOR_MS, swap.startedAt + FEED_SWAP_PARK_MS - Date.now())
+      opening = this._openFeed(a.feedKey, keys.encryptionKey)
+      // …AND THE CLAIM MOVES ONE LAST TIME, ONTO SOMETHING THAT OUTLIVES THIS FUNCTION. This
+      // is where the rotation-scoped token failed: on the common failure — a slow device, the
+      // race timer winning — the throw below runs the finally, the token was dropped there,
+      // and the open still in the cache was left naked for _recoverFailedRotation's own expiry
+      // (and for _doStartCast and serveFeed, which grab the placeholder and react to the null
+      // it settles to) to evict and purge, while the recovery was about to build replica #2
+      // over the same namespace. A claim released ON SETTLE covers exactly the interval that
+      // matters, whether or not this function is still running.
+      releaseSlot()
+      releaseSlot = null
+      this._claimSlot(opening, true)
+      let reopenTimer = null
+      try {
+        reopened = await Promise.race([opening, new Promise((resolve) => {
+          reopenTimer = setTimeout(() => resolve(null), reopenMs)
+        })])
+      } finally { clearTimeout(reopenTimer) }
+      if (!reopened) throw new Error(`the replica did not re-open within ${reopenMs} ms`)
+      if (this._epoch !== epoch) {
+        // Stopped or purged while the replica re-opened. _closeFeeds() ran before this cache
+        // entry existed, so nothing else will ever close this drive.
+        this._abandonFeed(cacheKey, reopened)
+        reopened = null // parked callers must be handed null, not a closing drive
+        return false
+      }
+      // 6. SWARM SESSION HYGIENE — done in the finally, by _retireDiscovery, for EVERY exit
+      //    rather than only this one. _openFeed joined the topic again, and hyperswarm's
+      //    join() returns a SESSION on the topic's shared PeerDiscovery (hyperswarm 4.17
+      //    index.js: an existing, undestroyed discovery answers with discovery.session()).
+      //    PeerDiscovery only calls swarm.leave() when its session list reaches ZERO
+      //    (_destroyMaybe), so destroying the old session AFTER the new join lands takes
+      //    the count 1 → 2 → 1: the topic is never actually left, no unannounce is sent and
+      //    no DHT round trip is paid. Nothing in this file has ever destroyed a discovery —
+      //    every open/reopen leaks one session for the life of the process, and
+      //    _retuneActive leaks one per retune. A rotation recurs, so it must not.
+      //    (_evictFeed's identical leak is left alone deliberately: out of scope here.)
+      //
+      //    ⚠ IT USED TO BE A STATEMENT HERE, which is the half of the path that never fails.
+      //    The race timer winning throws two lines up, and the epoch checks return, and on all
+      //    of those the OLD session was never destroyed while the in-flight open went on to
+      //    join the topic anyway — one leaked session per failed rotation, on a device where
+      //    failure is the common outcome. Moving it to the finally is why there is nothing
+      //    left to do at this line.
+      // 7. SWAP THE STATE. _recastFeed before the _active check, for _retuneActive's
+      //    reason: a cast is pinned to the CHANNEL, and a zap during the reopen has no
+      //    bearing on whether this channel's feed is open again. (A cast pinned to THIS
+      //    drive was refused at the top; this covers a session pinned to the same channel
+      //    through a different key.)
+      //
+      //    ⚠ RE-CHECKED, not merely checked before step 5. The catalog can rotate this channel
+      //    onto a new feedKey DURING the re-open just as it can during the purge, and
+      //    _maybeReresolveActiveFeed does the whole follow itself: it opens the new feed,
+      //    publishes it as _feedDrive and moves a.feedKey AND _activeFeedKey onto it. Step 7
+      //    would then overwrite _feedDrive with this replica of the OLD key while
+      //    _activeFeedKey names the new one — a dead feed served under a guard that protects a
+      //    different one, which is precisely the mismatch _maybeReresolveActiveFeed's own
+      //    _activeFeedKey line exists to prevent. The purge still counts (the bytes came back
+      //    and the event says so); only the publish is wrong.
+      const moved = a.feedKey + ':' + keys.encryptionKey !== cacheKey
+      if (!moved) this._recastFeed(a.streamId, cacheKey, reopened.drive)
+      if (!moved && this._active === a) {
+        this._feedDrive = reopened.drive
+        this._feedDiscovery = reopened.discovery
+        // The replica is EMPTY and its playlist has not landed yet, so everything that
+        // watches for "this feed is not advancing" is about to fire at a drive that is doing
+        // nothing wrong. Three clocks, and the comment here used to name only the first two
+        // and then claim they reset the tune watchdog "exactly as _retuneActive does" —
+        // which was wrong about which clock the watchdog reads:
+        //   - a.lastSig / a.lastAdvance are read by the HYBRID probes (_startStallWatchdog
+        //     and the CDN recovery probe), not by the tune watchdog;
+        //   - _peersLostAt is _checkFeedPeers' clock, and a freshly opened replica holds ZERO
+        //     peers until the dial step 4b forced lands (tens of ms on the e2e testnet; one
+        //     holepunch against the real DHT), so leaving it set escalates a healthy feed to
+        //     'feed:rescan';
+        //
+        //     ⚠ AND THE REASON IT HAS ZERO PEERS IS NOT WHAT THIS COMMENT USED TO SAY. It
+        //     claimed they were zero "by construction until corestore re-adds the core on the
+        //     existing swarm connections" — i.e. that the existing connections would pick the
+        //     new replica up on their own. THEY NEVER DO. A core whose storage was purged does
+        //     not re-attach to an already-established protomux: not after a delay, not under a
+        //     different namespace, never. A fresh dial is REQUIRED, which is why steps 4a/4b
+        //     hang up on this feed's peers and dial them straight back — the full measurement
+        //     table, the ordering and the costs are there. Left as written, that assumption cost the
+        //     channel the rest of the session: zero peers forever, and the tune ladder's one
+        //     rung that would have fixed it skipped for being exactly that symptom.
+        //   - the tune watchdog's clock is the `started` local inside _startTuneWatchdog's
+        //     closure, which nothing outside that closure can reach. Restarting the timer is
+        //     the only way to reset it, and it is only correct to do so while one is already
+        //     running (it is armed exclusively in p2p-only mode, so the guard also keeps
+        //     this from arming live machinery anywhere else).
+        a.lastSig = null
+        a.lastAdvance = Date.now()
+        this._peersLostAt = null
+        if (this._tuneTimer) this._startTuneWatchdog()
+      }
+      done = { bytes, durationMs: Date.now() - startedAt, redialing }
+      swapped = !moved && this._active === a
+    } catch (err) {
+      if (installed) this._dropPlaceholder(cacheKey, placeholder)
+      // The old drive is gone and the new open did not land: _feedDrive is null and every
+      // media request 404s until something re-opens. That "something" used to be named as
+      // the tune watchdog — but _startTuneWatchdog() returns immediately unless the play is
+      // p2p-only AND p2p AND non-VOD, so on a hybrid build nothing armed at all, and where
+      // it did arm the first rung is 30 s away. A rotation fires on a HEALTHY stream, so
+      // 30 s of black screen (or none at all) is not an acceptable recovery for it: re-open
+      // now, bounded, and fall back to the watchdog only if that also fails.
+      this._recoverFailedRotation(a, cacheKey, keys.encryptionKey, epoch, err)
+      return false
+    } finally {
+      // Hand every awaiting caller the new feed — or null, which the cache's readers
+      // already treat as a failed open (_openFeedWithin returns null, _retuneActive tests
+      // `f && f.drive`, prewarm ignores it). NEVER a rejection: an unhandled one aborts the
+      // Bare worklet, and this promise may legitimately have no handlers at all.
+      settle(reopened || null)
+      // Let the cache slot go — a no-op once the claim has moved onto the re-open, which
+      // releases itself when it settles. Every path that backs out before that (the drain and
+      // measure checks, the pin re-check, a throw) passes through here, so the live feed can
+      // never be left permanently un-evictable by a rotation that gave up.
+      if (releaseSlot) releaseSlot()
+      // LAST LOOK AT THE CAST, and only once the replica really was purged (`purged` — on an
+      // abandoned rotation this same drive is alive and well, and ending a legitimately
+      // pinned session would be the bug, not the fix). _doStartCast resolves its drive and
+      // THEN awaits a LAN socket bind before publishing this._cast, so a session that read
+      // the old drive before step 3a can still appear after the _endCast above ran. By here
+      // every re-pointing has happened (_recastFeed in step 7), so a session still holding
+      // this drive is holding a replica that no longer exists. Idempotent: a no-op unless
+      // that is exactly the case.
+      if (purged) this._castLostDrive(drive, 'feed-evicted')
+      // STEP 6, for every exit rather than the one that succeeded — see there. `opening` is
+      // what makes the ordering right on the failure paths too: the session is destroyed only
+      // once the re-open that replaces it has landed, so the topic is never actually left. A
+      // rotation that gave up before step 5 has no replacement coming and passes null, which
+      // destroys it at once — the honest reading of a topic with no drive behind it.
+      if (oldDiscovery) { this._retireDiscovery(oldDiscovery, opening); oldDiscovery = null }
+      // Release the park BEFORE the mutex: a request waking to find _feedDrive already set
+      // is the whole point, and the mutex is what keeps a second rotation out until this one
+      // has finished tidying up. `swap` is null when the rotation was abandoned before the
+      // purge — nothing was ever parked, so there is nothing to release.
+      if (swap) this._releaseFeedSwap(swap)
+      // The MUTEX only. It no longer carries the cache slot, so dropping it here — which is
+      // required, or a wedged rotation switches rotation off for the whole process — does not
+      // expose the open this rotation is still going to serve: that is the claim's job, and
+      // the claim outlives this function.
+      if (this._feedRotate === rot) this._feedRotate = null
+    }
+    // OUTSIDE THE TRY, deliberately. The success emit used to sit next to the return inside
+    // it, so anything that threw out of emit() — the _recordEmit breadcrumb ring is on that
+    // path — would be caught by the rotation's own catch and turn a rotation that had
+    // ALREADY SWAPPED THE DRIVE into `failed: true`, arming a recovery on a perfectly
+    // healthy feed. (Emitter.emit wraps each listener in its own try/catch, so a host
+    // listener cannot actually reach it today; the point is that the success path must not
+    // be inside the failure handler's scope for a future edit to make it reachable again.)
+    //
+    // The event is the whole reason the rotation is observable: durationMs says whether the
+    // park covered the swap or the viewer saw it, and bytes is what the purge returned to
+    // the filesystem (null when the platform could not measure). Before it, the reclaim path
+    // logged NOTHING — three nested empty catches and no way to attribute a full disk.
+    if (done) {
+      // The re-dial count rides in the MESSAGE rather than as a field of its own: the status
+      // shapes are a declared union in sdk/index.d.ts and widening a public one belongs with
+      // that file's edit. It earns its place in the breadcrumb ring anyway — "the picture came
+      // back two seconds after the swap" is otherwise unattributable, and a 0 here on a feed
+      // that then goes quiet says the peer was already gone before the rotation touched it.
+      this.emit('status', { state: 'feed:rotate', streamId: a.streamId, bytes: done.bytes, durationMs: done.durationMs, message: `rotated ${a.streamId}: ${done.bytes == null ? 'unmeasured' : Math.round(done.bytes / 1048576) + ' MiB'} freed in ${done.durationMs} ms; ${done.redialing} peer connection(s) re-dialling` })
+    }
+    return swapped
+  }
+
+  // Is this feed pinned by a cast session? Drive identity OR cache key, and the key check is
+  // NOT conditional on this._cast — see the call site at the top of _rotateActiveFeed for
+  // the two windows in which _cast is null while the pin is live.
+  _castPins (drive, cacheKey) {
+    if (cacheKey && this._castFeedKey === cacheKey) return true
+    return !!(drive && this._cast && this._cast.drive === drive)
+  }
+
+  // A cast session whose pinned drive has just been purged/closed out from under it. Drops
+  // the handle synchronously (so requests 404 instead of reading a dead drive) and then
+  // actually ENDS the session — _endCast closes the LAN socket, kills the token, unpins and
+  // tells the host. Returns whether there was one. No-op when the session was already
+  // re-pointed at a live drive (_recastFeed ran first).
+  _castLostDrive (drive, reason) {
+    const c = this._cast
+    if (!c || !drive || c.drive !== drive) return false
+    c.drive = null
+    this._endCast(reason)
+    return true
+  }
+
+  // Remove the rotation's cache placeholder — but only if it is still the entry under that
+  // key. A teardown (stop/_purgeAndRebuild clears _feeds) or another caller can have put a
+  // REAL open there in the meantime, and an unconditional delete would evict a live feed
+  // nobody asked about.
+  _dropPlaceholder (cacheKey, placeholder) {
+    if (this._feeds.get(cacheKey) === placeholder) this._feeds.delete(cacheKey)
+  }
+
+  // A feed that finished opening after a teardown, on either of the two paths that can reach
+  // one (the rotation's post-reopen epoch check and its recovery's). Nothing else will ever
+  // close it — _closeFeeds ran before this cache entry existed — and CLOSE is the only safe
+  // verb: purge deletes storage BY PATH, and after a _purgeAndRebuild those paths belong to
+  // the store the rebuild just created.
+  //
+  // The DISCOVERY goes with it, which neither branch used to do: _openFeed joins the topic,
+  // so abandoning the drive alone leaked one swarm session per teardown-during-rotation — in
+  // the very function whose step 6 exists to stop the rotation leaking exactly that.
+  // Destroy a swarm session whose drive is gone — but not before its REPLACEMENT join has
+  // landed, when one is on its way. hyperswarm's join() returns a session on the topic's
+  // shared PeerDiscovery, and PeerDiscovery only calls swarm.leave() when its session count
+  // reaches zero, so retiring the old one after the new join takes the count 1 → 2 → 1: the
+  // topic is never actually left and no unannounce or DHT round trip is paid. `opening` is
+  // that replacement — pass the in-flight open and this waits for it, whatever the caller did
+  // in the meantime and whether or not the caller is still running.
+  //
+  // Null `opening` means "nothing is replacing this", and then destroying at once is right:
+  // the alternative is a joined topic with no drive behind it for the life of the process.
+  // Never throws, and a re-open that was handed back the SAME session (an undestroyed
+  // discovery answers join() with discovery.session()) is left alone.
+  _retireDiscovery (discovery, opening = null) {
+    if (!discovery) return
+    const kill = (next) => {
+      if (next && next.discovery === discovery) return
+      try { const p = discovery.destroy(); if (p && p.catch) p.catch(() => {}) } catch {}
+    }
+    if (opening && opening.then) opening.then(kill, () => kill(null))
+    else kill(null)
+  }
+
+  _abandonFeed (cacheKey, feed) {
+    if (!feed || !feed.drive) return
+    const q = this._feeds.get(cacheKey)
+    if (q && q.settled === feed) this._feeds.delete(cacheKey)
+    try { const p = feed.drive.close(); if (p && p.catch) p.catch(() => {}) } catch {}
+    try { const p = feed.discovery && feed.discovery.destroy(); if (p && p.catch) p.catch(() => {}) } catch {}
+  }
+
+  // Recovery after a rotation failed with the old replica already purged. Fire-and-forget
+  // and never throws. One bounded re-open (FEED_REOPEN_MS — not the park's budget: nothing
+  // is parked any more, the gate was released when the rotation gave up), then the tune
+  // watchdog as the last resort, which is what the failure path used to rely on ALONE.
+  //
+  // IT INHERITS STEP 4b's FRESH DIAL, and it has to: a purged replica cannot replicate over
+  // the connection that was carrying it, so a recovery that re-opened into that connection
+  // would hand back exactly the peerless drive the rotation would have. Nothing here needs to
+  // repeat the hang-up — the rotation does it the instant the purge settles, which is upstream
+  // of every way this function can be reached — but nothing here may re-establish one either,
+  // and a future edit that moved it onto the rotation's success path would silently poison
+  // this one.
+  //
+  // Every branch re-checks the teardown epoch and the active tune: this runs after the
+  // rotation returned, so a stop(), a purge or a zap can land at any point in it, and
+  // assigning _feedDrive on a stopped engine or for a channel the viewer has left is how a
+  // dead drive gets served.
+  //
+  // THE COMMON FAILURE IS A SLOW RE-OPEN, NOT A DEAD ONE, so the single-flight cache is the
+  // point of this path rather than an incidental: _openFeedWithin ADOPTS the open the rotation
+  // left in flight with a longer bound instead of building a second Hyperdrive over a
+  // namespace that one is already opening. That adoption used to be undermined by
+  // _openFeedWithin's own expiry, which evicted (and so purged) the very open it had just
+  // adopted; it cannot now, because the rotation's claim on that slot outlives the rotation —
+  // see _claimSlot.
+  //
+  // Residual, stated: if this bound ALSO expires and the open lands afterwards, nothing here
+  // publishes it. It stays in the cache as a warm, correctly-claimed entry, so a re-zap serves
+  // it instantly and the tune ladder's retune picks it up once the claim lifts — a slower
+  // recovery than this one, not a lost feed.
+  _recoverFailedRotation (a, cacheKey, encKeyHex, epoch, err) {
+    this.emit('status', { state: 'feed:rotate', streamId: a.streamId, failed: true, message: 'rotation failed: ' + ((err && err.message) || err) + ' — re-opening' })
+    const feedKeyHex = cacheKey.slice(0, cacheKey.indexOf(':'))
+    Promise.resolve()
+      .then(() => this._openFeedWithin(feedKeyHex, encKeyHex, FEED_REOPEN_MS))
+      .then((feed) => {
+        if (this._epoch !== epoch) {
+          this._abandonFeed(cacheKey, feed) // drive AND swarm session — see there
+          return
+        }
+        if (this._active !== a) return
+        if (feed && feed.drive) {
+          this._recastFeed(a.streamId, cacheKey, feed.drive)
+          // Only if nothing else has already taken the slot: a zap's serveFeed, a catalog
+          // follow or a later rotation may have set a drive while this open was in flight,
+          // and that one is the current truth.
+          if (!this._feedDrive) {
+            this._feedDrive = feed.drive
+            this._feedDiscovery = feed.discovery
+            a.lastSig = null
+            a.lastAdvance = Date.now()
+            this._peersLostAt = null
+            this.emit('status', { state: 'feed:ready' })
+          }
+          if (this._tuneTimer) this._startTuneWatchdog() // the replica is empty — same reset as step 7
+          return
+        }
+        // Still nothing. Say so (the first emit promised a re-open; silence here would make
+        // the breadcrumb ring lie) and hand recovery to the ladder that owns it: the tune
+        // watchdog in p2p-only mode, the hybrid stall watchdog otherwise — the latter needs
+        // no arming and already treats a null _feedDrive as a stalled playlist, which is its
+        // trigger for falling back to the CDN.
+        this.emit('status', { state: 'feed:rotate', streamId: a.streamId, failed: true, message: 'rotation recovery failed: the replica did not re-open — falling back to the tune ladder' })
+        if (!this._tuneTimer) this._startTuneWatchdog()
+      })
+      .catch(() => {})
+  }
+
+  // The park gate — and ONLY the park gate. It used to double as the rotation's
+  // single-flight guard, which is why four unrelated callers releasing it was a correctness
+  // bug and not just a naming problem; the mutex is _feedRotate now (see the constructor and
+  // the top of _rotateActiveFeed), and this field is free to be released by anyone whose
+  // business is "stop parking requests": the timer below, serveFeed() on a zap, stop() and
+  // _purgeAndRebuild().
+  //
+  // ONE timer for the whole rotation rather than one per parked request: the bound is a
+  // property of the swap, not of any request, and this way a request that arrives late waits
+  // only for what is left of the budget. Releasing it clears _feedSwap, so the very next
+  // request takes the ordinary synchronous path.
+  //
+  // The timer is USUALLY a backstop rather than the normal exit — and the stronger claim
+  // that used to stand here ("in every failure it can see, the rotation's finally is what
+  // wakes the parked requests; the timer only covers a drive.purge() that never settles") was
+  // overstated, so it is corrected rather than quietly dropped. Two things end the park:
+  //
+  //   the rotation's finally, in every case where the reopen's own bound is what is LEFT of
+  //   this budget — the common one; and
+  //
+  //   this timer, in every case where the purge alone took more than
+  //   FEED_SWAP_PARK_MS - FEED_REOPEN_FLOOR_MS. Past that the reopen is bounded by the FLOOR,
+  //   which runs past park expiry: the timer fires, the parked requests wake to a null
+  //   _feedDrive and 404, and the reopen then succeeds — so the rotation reports success and
+  //   the lost park is not reported anywhere. See FEED_REOPEN_FLOOR_MS, which carries the
+  //   arithmetic and why the floor stays. On 32-bit Android with a slow unlink that is
+  //   uncommon but routine over a multi-hour session.
+  //
+  // (The rotation's longest await is drive.purge(), which nothing may proceed without —
+  // reopening a namespace whose delete is in flight is the deadlock the single-flight cache
+  // exists to prevent. This timer is what covers the viewer for it. FEED_PURGE_MS covers the
+  // ENGINE for it, and only in the pathological case: it is a watchdog on a purge that never
+  // settles at all, an order of magnitude past this park, and it abandons the rotation rather
+  // than releasing it to carry on.)
+  //
+  // A swap NEVER rejects and always releases — the rotation's finally, this timer, or a
+  // zap landing in serveFeed, whichever comes first. Leaving one armed would park every
+  // media request for the rest of the session, which is far worse than the 404 it exists
+  // to avoid.
+  _armFeedSwap () {
+    let release = null
+    const done = new Promise((resolve) => { release = resolve })
+    const swap = { done, release, timer: null, startedAt: Date.now() }
+    swap.timer = setTimeout(() => this._releaseFeedSwap(swap), FEED_SWAP_PARK_MS)
+    swap.timer.unref?.() // a rotation must never hold a host process open
+    this._feedSwap = swap
+    return swap
+  }
+
+  // Idempotent, and identity-checked so a late timer cannot clear a NEWER swap.
+  _releaseFeedSwap (swap) {
+    if (!swap) return
+    if (swap.timer) { clearTimeout(swap.timer); swap.timer = null }
+    if (this._feedSwap === swap) this._feedSwap = null
+    swap.release()
+  }
+
+  // The serving core's over-budget hook (see _requestHandler): it measured the drive it is
+  // serving and the replica is past _feedBudgetBytes. Only the ACTIVE tune rotates — a
+  // cached feed nobody is serving is the byte cap's business (_trimFeedBytes), and an
+  // identity check is what keeps the two from acting on each other's drives.
+  //
+  // Fires repeatedly by construction (once per throttled reclaim pass while the replica is
+  // over budget), which is what makes _rotateActiveFeed's mutex load-bearing rather than
+  // theoretical: during a rotation _feedDrive is null, so this returns at the line below —
+  // but the instant the new drive is published, another over-budget callback for the OLD
+  // drive can still be in flight, and the mutex is what refuses it.
+  _onFeedOverBudget (drive, info) {
+    const a = this._active
+    if (!a || !drive || drive !== this._feedDrive) return
+    this._rotateActiveFeed(a, info).catch(() => {}) // never throws; the catch is belt and braces
   }
 
   // --- hybrid internals ---
@@ -3507,6 +5143,22 @@ export class AliranPlayer extends Emitter {
   // --- internals (extracted 1:1 from the worklet backend) ---
 
   async _ensureStore () {
+    // ⚠ THE _storeDown INVARIANT IS ENFORCED HERE, and here is the ONE place it can be
+    // enforced completely: this is the only function that builds a Corestore and a Hyperswarm,
+    // and every path that wants either arrives through it. It used to be checked in _openFeed
+    // alone, which left the other four callers (prewarm, the two sign-in rendezvous paths,
+    // _openPanel) able to create a fresh store in a directory _purgeAndRebuild was about to
+    // rmSync, or join a topic on a swarm stop() had destroyed.
+    //
+    // IN FRONT OF THE EARLY RETURN, not after it: between _purgeAndRebuild setting the flag
+    // and its `this._store = null`, the OLD store is still hanging on this object, and handing
+    // it out is handing out a store whose directory is about to be deleted.
+    //
+    // A FLAG RATHER THAN AN EPOCH COMPARISON, on purpose: a corruption purge bumps the epoch
+    // ITSELF, so `this._epoch !== captured` would also refuse the retry _recover fires after
+    // the rebuild — it would break the self-heal it is standing next to. See the field's
+    // declaration for the full invariant.
+    if (this._storeDown) throw new Error('the store is being torn down')
     if (this._store) return
     // ONE bounded cache budget shared by every bee this store opens (panel catalog +
     // each feed's metadata bee — feeds/assets are namespaced off this store, so the
@@ -3867,6 +5519,15 @@ export class AliranPlayer extends Emitter {
     if (this._active !== a) return
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
+    // …AND THE CACHE KEY THAT NAMES IT. This line was missing, and it was not cosmetic:
+    // _activeFeedKey is what every disk path uses to mean "never touch the feed being
+    // watched" (_trimFeeds, _sweepIdleFeeds, _trimFeedBytes), and it is assigned in exactly
+    // one other place — serveFeed(). So after ANY broadcaster feedKey rotation the guard
+    // named a feed that no longer exists, the drive actually being served was unprotected,
+    // and _trimFeedBytes would hand it to _evictFeed, which purges the replica out from
+    // under the viewer. (The disk paths grew drive-identity checks as well; this is the
+    // root cause those checks are the belt to.)
+    this._activeFeedKey = feedKey + ':' + keys.encryptionKey
     // A cast on this channel follows the rotation too: the OLD feedKey is dead (the
     // broadcaster restarted onto a new one), so a pin left behind would serve a feed that
     // never advances again.
@@ -3899,7 +5560,30 @@ export class AliranPlayer extends Emitter {
   }
 
   async _purgeAndRebuild () {
+    // The store directory is about to be deleted and rebuilt, so every piece of in-flight
+    // work that holds a drive, a namespace or a cache key from the OLD store is invalid from
+    // here. A rotation is the sharp case: past its drain it would re-open through
+    // _ensureStore() and leave the rebuilt engine sharing a store rooted in a directory this
+    // function just rmSync'd. Bumping the epoch is what makes it abandon at its next await —
+    // but only at an await it actually reaches, so the store-building path is refused up
+    // front instead (see _openFeed and the _storeDown invariant).
+    this._epoch++
+    // The generation THIS purge owns. Everything below re-reads it before touching shared
+    // teardown state, because a purge is not the only teardown and it is not the last word:
+    // see the _storeDown line near the end.
+    const gen = this._epoch
+    this._storeDown = true
+    // …and release the rotation mutex, for the reason stop() states at greater length: the
+    // rotation's finally sits behind an unbounded drive.purge(), and the rmSync below is the
+    // most likely thing in this file to leave one pending forever. A mutex never cleared is
+    // rotation switched off for the life of the process.
+    this._feedRotate = null
     if (this._statusTimer) { clearInterval(this._statusTimer); this._statusTimer = null }
+    // The maintenance tick measures and purges feeds on a store that is about to be
+    // deleted out from under it; the next play re-arms it on the rebuilt one. Same for a
+    // rotation's park gate: the drive it was waiting for is not coming.
+    this._stopFeedMaintenance()
+    if (this._feedSwap) this._releaseFeedSwap(this._feedSwap)
     const watcher = this._catalogWatcher; this._catalogWatcher = null
     if (watcher) { try { await watcher.close() } catch {} } // corrupt bees may refuse; bee close below retries
     const grantWatcher = this._grantWatcher; this._grantWatcher = null
@@ -3927,6 +5611,23 @@ export class AliranPlayer extends Emitter {
     if (this._swarm) { const s = this._swarm; this._swarm = null; try { await s.destroy() } catch {} }
     for (const c of closing) { if (c) { try { await c.close() } catch {} } } // corrupt cores may refuse to close
     try { this._fs.rmSync(this._storeDir, { recursive: true, force: true }) } catch {}
+    // The delete is done; from here this function is REBUILDING, and everything below (and
+    // the _recover retry that called us) must be allowed to open on the fresh store. Nothing
+    // between the flag going up and this line can throw — every step is wrapped — so the
+    // engine cannot be left refusing to open feeds forever.
+    //
+    // ⚠ ONLY IF THIS PURGE STILL OWNS THE FLAG. _storeDown has two writers with opposite
+    // lifetimes: stop() sets it TERMINALLY and by design never clears it, while this function
+    // sets and clears it. Clearing unconditionally meant a purge parked on `await s.destroy()`
+    // or a `c.close()` above could let stop() run to completion underneath it and then, on
+    // resuming, re-open the door stop() had just shut — _ensureStore() building a fresh
+    // Corestore and Hyperswarm, re-creating the directory this function had rmSync'd, and
+    // joining the panel topic AFTER stop() returned. The epoch is what tells the two apart
+    // (stop() bumps it too, and _recover's retry sees the fresh store either way), so the
+    // rebuild below is CLAIMED rather than assumed. If it moved, there is nothing to rebuild:
+    // stop() is terminal and the engine is finished.
+    if (this._epoch !== gen) return
+    this._storeDown = false
     if (this._panelKey) {
       await this._openPanel()
       this._openAssets().catch(() => {}) // posters re-replicate in the background once the panel reconnects
@@ -4337,9 +6038,11 @@ export class AliranPlayer extends Emitter {
     return this._server.address().port
   }
 
-  // Resolve /feedthumb/<streamId> against the feed cache. SYNCHRONOUS by contract —
-  // createDriveHandler calls resolveTarget without awaiting it — which is what makes
-  // every rule below a "serve it now or 404" decision instead of a wait:
+  // Resolve /feedthumb/<streamId> against the feed cache. SYNCHRONOUS — and now by
+  // CHOICE, not by contract: createDriveHandler awaits resolveTarget (the media branch
+  // parks on it while the active feed rotates, see _mediaTarget), so this route could
+  // wait and deliberately does not. That is what makes every rule below a "serve it now
+  // or 404" decision instead of a wait, and it is the right answer for a grid cell:
   //
   //   ENTITLEMENT — the id must be in _entitled. Thumbnails live INSIDE the encrypted
   //     feed, so an unentitled channel has nothing to serve and no key to try with; a
@@ -4388,13 +6091,35 @@ export class AliranPlayer extends Emitter {
     return null
   }
 
+  // The ACTIVE feed as a serving target, or null. Split out of the resolver below because
+  // two paths now reach it — a request that arrives while nothing is happening, and one
+  // that PARKED through a rotation and is asking again on the other side.
+  //
+  // Cast-pinned feed: opt this target out of the expired-block reclaim. The phone is
+  // expected to stop local playback while it casts (so these serves should not happen at
+  // all), but nothing in the engine ENFORCES that — a host that keeps the phone playing
+  // the cast channel would otherwise free, from under the receiver, the one remaining copy
+  // of every block below the live window. Decided here, with the exact drive in hand,
+  // because the handler awaits before reclaiming and a zap can swap _feedDrive in that
+  // window. (A cast-pinned feed is never ROTATED either — _rotateActiveFeed refuses — so
+  // the two disk paths agree about the pin.)
+  _mediaTarget (p) {
+    if (!this._feedDrive) return null
+    const pinned = this._cast && this._cast.drive === this._feedDrive
+    return { drive: this._feedDrive, path: p, media: true, ...(pinned ? { reclaim: false } : {}) }
+  }
+
   // Request handler for HLS players (and poster art): the shared progressive
   // serving core (sdk/serve.js) — availability wait, block-progressive bodies with
   // Range support, live-edge read-ahead, abort tolerance (a player aborts requests
   // routinely, and an unhandled stream error SIGABRTs the Bare worklet). Targets
   // resolve PER REQUEST so a retune/rotation swaps the served feed live.
+  //
+  // The handler object is KEPT (_handler): createDriveHandler hangs its per-drive
+  // read accounting on the returned function — inflight(drive) and
+  // whenDrained(drive, ms) — and the rotation has to drain a drive before it unlinks it.
   _requestHandler () {
-    return createDriveHandler((p) => {
+    const handler = createDriveHandler((p) => {
       // /assets/* is served from the panel's assets drive (posters/art) — a genuine
       // miss must 404 immediately (media: false), not hold the request open.
       if (p.startsWith('/assets/') && this._assetsDrive) {
@@ -4417,16 +6142,30 @@ export class AliranPlayer extends Emitter {
       // loopback server answer differently, and a bug that pointed a receiver at 127.0.0.1
       // must fail loudly instead of half-working.
       if (p.startsWith(CAST_PREFIX)) return null
-      if (!this._feedDrive) return null
-      // Cast-pinned feed: opt this target out of the expired-block reclaim below. The
-      // phone is expected to stop local playback while it casts (so these serves should
-      // not happen at all), but nothing in the engine ENFORCES that — a host that keeps
-      // the phone playing the cast channel would otherwise free, from under the receiver,
-      // the one remaining copy of every block below the live window. Decided here, with
-      // the exact drive in hand, because the handler awaits before reclaiming and a zap
-      // can swap _feedDrive in that window.
-      const pinned = this._cast && this._cast.drive === this._feedDrive
-      return { drive: this._feedDrive, path: p, media: true, ...(pinned ? { reclaim: false } : {}) }
+      // MEDIA — the only branch that may WAIT. While the active feed rotates (its replica
+      // is purged and re-opened, see _rotateActiveFeed) there is deliberately no drive to
+      // resolve, and the serving core turns a null target into an INSTANT 404: no
+      // availability wait, no peer lookup, just "not found". ExoPlayer answers that with 3
+      // retries, an onError and a remount 2.5 s later — ≈5.5 s of black screen for a swap
+      // that takes a few hundred ms. So park instead: return a promise that resolves once
+      // the rotation releases (or its bound expires — see FEED_SWAP_PARK_MS), and resolve
+      // the target THEN.
+      //
+      // ⚠ AN EXPIRED PARK IS WORSE THAN NOT PARKING, by the length of the park. The claim
+      // that used to close this paragraph — "the park expiring falls back to null, i.e. to
+      // exactly today's behavior, so this is never worse than not parking" — is false: the
+      // fallback value is the same, but it arrives FEED_SWAP_PARK_MS later, which moves the
+      // player's whole recovery ladder along with it (404 at t=PARK, remount at PARK+5.5 s,
+      // instead of t≈0 and 5.5 s). FEED_SWAP_PARK_MS carries the full arithmetic and the
+      // three structural changes that keep the downside small; what matters here is only
+      // that this branch is a bet with a real cost when it is lost, not a free improvement.
+      //
+      // The parked branch re-reads _feedDrive rather than closing over the swap's result:
+      // a zap can land mid-rotation, and the drive a request should be served from is
+      // whatever is active when it wakes, not whatever the rotation ended up opening.
+      const swap = this._feedSwap
+      if (swap) return swap.done.then(() => this._mediaTarget(p))
+      return this._mediaTarget(p)
     }, {
       // Churn headroom: replicate the ACTIVE stream's whole live window on-device
       // (not just the newest 3 segments), so an upstream peer's death cannot take
@@ -4435,17 +6174,34 @@ export class AliranPlayer extends Emitter {
       // metered network the burst cost of a zap (one window × bitrate) is real
       // money, so fall back to the serve-core default there.
       liveReadAhead: () => (this._netExpensive ? 3 : Infinity),
-      // Disk bound (the flip side of the full-window read-ahead above): clear the
-      // blob blocks below the live window as playlists serve, so the viewer's disk
-      // holds ~one live window per feed instead of growing ~1× bitrate forever
-      // (≈0.9 GB/hour at 2 Mbps). Safe by construction: the cleared blocks are
-      // already unfetchable swarm-wide — the broadcaster cleared them at rotation.
-      // Feed target only (media: true) and live playlists only; VOD is never
-      // reclaimed (see the Reclaim class in serve.js).
+      // Disk bound (the flip side of the full-window read-ahead above): clear the blob
+      // blocks below the live window as playlists serve. Nothing that could have been
+      // served is lost — the cleared blocks are already unfetchable swarm-wide, because
+      // the broadcaster cleared them at rotation. Feed target only (media: true) and live
+      // playlists only; VOD is never reclaimed (see the Reclaim class in serve.js).
+      //
+      // ⚠ THIS IS NOT A DISK BOUND ON EVERY PLATFORM, and the claim that used to stand
+      // here — that the viewer's disk "holds ~one live window per feed instead of growing
+      // ~1× bitrate forever (≈0.9 GB/hour at 2 Mbps)", "safe by construction" — was the
+      // load-bearing wrong sentence in this file. It is true exactly where the platform
+      // can hole-punch a storage file. On 32-bit Android ABIs the `fs-native-extensions`
+      // addon is excluded from the build, random-access-file's `_del` reports success and
+      // frees ZERO bytes, and so clear() bounds the BITFIELD while the file keeps growing
+      // at ~1× bitrate for the whole watch session. What bounds disk there is the byte
+      // budget below plus rotation (unlink) — see the VIEWER DISK BUDGET note at the top
+      // of this file. Reclaim stays on: where it works it is nearly free and it keeps the
+      // rotation budget from being reached at all.
       reclaim: true,
+      // The rotation trigger. The serving core measures the drive it is serving and calls
+      // this when the replica crosses the budget; only the ACTIVE tune acts on it (see
+      // _onFeedOverBudget), and a cast-pinned or VOD feed is refused inside the rotation.
+      reclaimBudgetBytes: this._feedBudgetBytes,
+      onOverBudget: (drive, info) => this._onFeedOverBudget(drive, info),
       // Corruption can also surface at read time (the blobs core opens lazily): heal
       // in the background; the host player's retry re-opens the feed on the fresh store.
       onError: (err) => { if (isCorruptionError(err)) this._purge().catch(() => {}) }
     })
+    this._handler = handler
+    return handler
   }
 }
