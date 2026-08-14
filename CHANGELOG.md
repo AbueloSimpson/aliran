@@ -229,6 +229,36 @@ not been on a television yet**; each says so where it is described.
 
 ### Fixed
 
+- **A wedged player remounted itself until Android killed the app.** `<AliranVideo>`'s
+  stall ladder had no upper bound: while the playhead sat still it remounted every 12
+  seconds forever, and each remount tears down and rebuilds an ExoPlayer and its
+  MediaCodec pair. On a 32-bit Android TV box this ran for at least three minutes in a
+  captured log — fifteen rebuilds at an exact 12-second cadence — and the process died
+  27 minutes later with `JNI DETECTED ERROR IN APPLICATION: ... could not create
+  MediaCodec.BufferInfo object`, roughly 150 rebuilds in. Codec instances were **not**
+  leaking: their lifetimes are strictly serial in the log, each released about a second
+  before the next was created. The unbounded churn itself was the problem.
+
+  The feed was healthy the whole time — one peer throughout, and the replica grew at the
+  full live bitrate straight through the outage — which is exactly why nothing stopped
+  the loop. The engine's tune watchdog does have a bounded ladder ending in a friendly
+  error at three times its timeout, and `backend.reconnect()` re-arms it on every rung.
+  But its stand-down test is "the playlist advanced and is servable", which a healthy
+  feed passes within a second or two, so it stood down and cleared its timer every
+  cycle: **the countdown to that error restarted every 12 seconds and could never
+  finish.** The engine measures the engine, and the component that was stuck was the
+  player.
+
+  The ladder is now bounded where the failure is. Each consecutive resync that fails to
+  restore playback waits twice as long as the last — 12 s, 24 s, 48 s, 96 s — and the
+  fourth stops remounting and fires `onError` at about three minutes. Both proven rungs
+  are untouched: the first resync is still a plain remount at 12 s, the second still adds
+  the transport teardown. Three remounts are attempted instead of ~150, the swarm is no
+  longer re-dialled faster than a fresh dial can replicate, and the viewer gets an error
+  with a retry instead of a tuning indicator that restarts forever. A spent ladder is
+  re-armed only by real playback, so a host's retry has to unmount the component and
+  mount a fresh one — which is what re-selecting a channel already does.
+
 - **A channel the viewer came back to could stay dead for the rest of the session.**
   The feed cache keeps the last 12 watched channels warm and PURGES the replica it
   drops — the bound that stops a browsing session filling a phone's disk. But a
@@ -432,6 +462,35 @@ not been on a television yet**; each says so where it is described.
   report lands after re-arm).
 
 ### Changed
+
+- **The Android app sizes its viewer cache for the device it actually runs on.** The
+  SDK's defaults — 512 MiB per feed, a store cap of four times that, twelve feeds kept
+  warm — were sized for hardware where an idle replica settles at about one live window
+  because the filesystem can hole-punch. A lot of TV boxes are the opposite case: a
+  32-bit ABI, where the app ships without the hole-punching addon and `clear()` frees
+  nothing, attached to 4 GB of flash in total. A 2 GiB viewer cache is most of that
+  device.
+
+  The app now passes `reclaimBudgetBytes: 128 MiB`, deriving a 512 MiB store cap. This
+  is set on **every** platform and needs no ABI test, because one already runs
+  underneath it: the capability probe punches a scratch file and switches the budget off
+  where the punch works, so on a 64-bit phone or the desktop the number is unreachable
+  rather than merely unused. Note that the budget is a floor — a replica is judged
+  against the larger of it and three times the observed live window — so a channel with
+  a very long window is still protected from rotating in a loop, and will not show the
+  full saving.
+
+  Two further caps **are** gated on the ABI, because nothing else gates them and both
+  are pure regressions on capable hardware: on a 32-bit build the warm-feed limit drops
+  to 3 and `prewarm` is capped to 3. An unknown architecture is treated as capable, so
+  the shipped behaviour survives anything that cannot be positively identified.
+
+- **`feedLimit` is now a host option** (new; default 12, unchanged). It bounds open
+  drives and swarm topics — handles, not bytes — and is worth lowering only where a
+  cached replica is not nearly free. Values below 2 are refused at construction rather
+  than clamped: the active feed and a cast-pinned feed are the two slots eviction may
+  never take. Eviction purges, and a purged replica needs a full hang-up and re-dial, so
+  too small a value costs a dead zap-back rather than a slow one.
 
 - **Viewers now hold ~10 s of churn headroom** — a live viewer keeps enough
   media on the device to play through the loss of the peer it pulls from. Three

@@ -187,6 +187,23 @@ export interface PlayerOptions {
    * lowers that cap, which is 4x this value.
    */
   reclaimBudgetBytes?: number
+  /**
+   * How many feeds may stay open at once (default 12). This bounds HANDLES — open drives
+   * and swarm topics — so that browsing a large catalogue cannot leave hundreds of both
+   * open; it is not a disk bound, because prewarm's opens are connections only and it is
+   * playback that fills a replica.
+   *
+   * Worth lowering only where a cached replica is NOT nearly free: where the platform can
+   * hole-punch, an idle feed settles at ~one live window, but on the 32-bit Android ABIs
+   * every byte a zapped-through feed replicated survives until eviction unlinks it.
+   *
+   * REFUSED BELOW 2, not clamped: the active feed and a cast-pinned feed are the two slots
+   * eviction must never take, so 1 cannot hold both and 0 leaves a tune's in-flight open
+   * protected only by its cache-slot claim. Eviction PURGES, and a purged replica does not
+   * re-attach to an established protomux — it needs a full hang-up and re-dial — so too
+   * small a value costs a dead zap-back rather than a slow one.
+   */
+  feedLimit?: number
   hybrid?: HybridConfig
   /** Warm entitled feeds after login: false (default) | true (all) | integer cap. */
   prewarm?: boolean | number

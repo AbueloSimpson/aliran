@@ -283,6 +283,24 @@ function normalizePrewarm (v) {
   return n
 }
 
+// feedLimit: how many feeds may stay open at once (default 12 — see the cache bound in the
+// constructor). Worth lowering only where a warm replica is NOT nearly free, i.e. where the
+// platform cannot hole-punch and every cached byte survives until eviction unlinks it.
+//
+// REFUSED BELOW 2, not clamped, in the same spirit as normalizeReclaimBudget. _trimFeeds
+// protects exactly two slots — the ACTIVE feed and a cast-pinned one — so a limit of 1
+// cannot hold both, and a limit of 0 leaves a tune's in-flight open resting entirely on the
+// cache-slot claim to not be purged out from under it. Eviction PURGES, and a purged replica
+// does not re-attach to an established protomux (it needs a full hang-up and re-dial), so
+// getting this wrong is not a slower zap, it is a dead one. 2 is the floor that keeps the
+// invariant; 3 is the smallest value with any room to spare.
+function normalizeFeedLimit (v) {
+  if (v == null) return 12
+  const n = Number(v)
+  if (!Number.isInteger(n) || n < 2) throw new Error('feedLimit must be an integer >= 2 (the active feed and a cast-pinned feed both need a slot)')
+  return n
+}
+
 // reclaimBudgetBytes: the ceiling on ONE feed's replica on disk, past which the engine
 // ROTATES it (purge + fresh open — see _rotateActiveFeed and the VIEWER DISK BUDGET note).
 // Undefined takes the default; 0 switches rotation off entirely, which is a real choice on
@@ -582,7 +600,8 @@ const CAST_RECLAIM_READ_MS = 3000
 // blocks, which is exactly backwards for a live window. That leaves `drive.purge()`
 // (close + delete both cores' storage), which is what the rotation below is built out of.
 //
-// Hence three bounds, all INDEPENDENT of the count bound (_feedLimit, 12 feeds):
+// Hence three bounds, all INDEPENDENT of the count bound (_feedLimit, 12 feeds by default —
+// a host on hardware that cannot hole-punch may lower it, see normalizeFeedLimit):
 //
 //   ROTATION (_rotateActiveFeed) — when the ACTIVE feed's replica crosses the per-feed
 //   budget (`reclaimBudgetBytes`, default FEED_ROTATE_BUDGET_BYTES), purge it and re-open
@@ -919,7 +938,7 @@ function signinFacingMessage (err) {
 }
 
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
+  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, feedLimit, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._remote = normalizeRemote(remote) // see normalizeRemote — default: hold nothing
@@ -977,7 +996,14 @@ export class AliranPlayer extends Emitter {
     // Cache bound. Big enough that surfing a category and coming back is still instant
     // (zapPrefetch warms neighbours either side), small enough that browsing a 300-channel
     // catalogue cannot leave hundreds of drives + swarm topics open. See _trimFeeds.
-    this._feedLimit = 12
+    //
+    // This is a bound on HANDLES — open drives and swarm topics — and it was never a disk
+    // answer: prewarm's opens are connections only (~free), and playback is what fills a
+    // replica. Where the platform hole-punches, a cached feed settles at ~one live window
+    // and 12 costs almost nothing. Where it CANNOT (32-bit Android ABIs), every byte a
+    // zapped-through feed replicated survives until eviction unlinks it, so a host on that
+    // hardware can lower this — see normalizeFeedLimit and the VIEWER DISK BUDGET note.
+    this._feedLimit = normalizeFeedLimit(feedLimit)
     // …and the BYTE bound the count above cannot express (see the VIEWER DISK BUDGET note).
     this._feedBudgetBytes = normalizeReclaimBudget(reclaimBudgetBytes) // per-feed: over this, the ACTIVE feed ROTATES (0 = off)
     // Store-wide: over this, inactive feeds are purged oldest-first. Floored at the

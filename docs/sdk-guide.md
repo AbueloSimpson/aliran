@@ -341,10 +341,15 @@ someone already:
   alternative purges the whole warm cache every minute and still never
   gets under. Size the device for the cap **plus** the largest feed it
   may hold.
-- **Neither shipped app forwards it.** `client/backend/backend.mjs` and
-  the desktop engine both construct the player from an explicit option
-  list that omits it, so the Android and desktop builds always use the
-  512 MiB default. The option is real for direct SDK embedders only.
+- **The Android app now forwards it; the desktop engine does not.**
+  `client/backend/backend.mjs` passes **128 MiB** (deriving a 512 MiB
+  store cap), unconditionally and on every platform — it needs no ABI
+  test because the hole-punch probe already switches the budget off where
+  punching works, so on a 64-bit phone the value is unreachable rather
+  than merely unused. The reason is the TV boxes: a 32-bit ABI cannot
+  punch, so nothing shrinks a replica in place, and those are the same
+  devices that ship 4 GiB of flash in total. The desktop engine still
+  omits it and uses the 512 MiB default.
 
 Values are checked, and the check **throws** rather than clamps: a
 non-number throws, and so does any value above `0` but below 64 MiB. A
@@ -413,12 +418,43 @@ or an allocation that has not settled) leaves the budget armed and is
 retried — only a measured verdict is permanent.
 Measured disk behavior: [viewer bandwidth](kb/viewer-bandwidth.md#disk).
 
+### `feedLimit: number` — default 12
+How many feeds may stay **open** at once. This bounds *handles* — open
+drives and swarm topics — so browsing a 300-channel catalogue cannot
+leave hundreds of both open. It is **not** a disk bound, and reading it
+as one is the common mistake: `prewarm` opens *connections*, and it is
+playback that fills a replica, so a prewarmed channel nobody watched
+holds essentially nothing.
+
+Lower it only where a cached replica is **not** nearly free. Where the
+filesystem can hole-punch, an idle feed settles at about one live window
+and 12 of them cost almost nothing. On the 32-bit Android ABIs nothing
+shrinks a replica in place, so every byte a *zapped-through* feed
+replicated survives until eviction unlinks it — and there, fewer slots
+genuinely means less disk.
+
+The cost is paid on zap-back. Eviction **purges**, and a purged replica
+does not re-attach to an already-established protomux: it needs a full
+hang-up and re-dial, not just a re-download. A small limit turns
+"flip between two channels" into that round trip every time.
+
+Values below **2** are refused at construction rather than clamped. Two
+slots can never be evicted — the active feed and a cast-pinned one — so
+`1` cannot hold both, and `0` would leave a tune's in-flight open
+protected only by its cache-slot claim. `3` is the smallest value with
+any room to spare, and is what `client/backend/backend.mjs` passes on a
+32-bit ABI (where it also caps `prewarm` to 3).
+
 ### `prewarm: boolean | number` — default `false`
 Open entitled feeds' DHT topics right after login, so the **first** zap
 to a channel skips the cold lookup. `true` warms all entitled feeds; an
 integer warms that many, lowest curated `order` first. This is
 bandwidth-cheap, since it warms *connections*, not downloads. Also
 callable later as `player.prewarm()`.
+
+On a 32-bit ABI the Android app caps this to **3** (see `feedLimit`
+above). Warming more than the cache can hold is self-defeating anyway:
+the opens past the limit are trimmed straight back out.
 
 ### `tune: { timeoutMs?, relookupMinMs?, relookupMaxMs?, rescanMs? }` — defaults 30 000 / 5 000 / (backoff) / 10 000
 The tune self-heal ladder's knobs. One tune attempt is bounded by

@@ -905,10 +905,52 @@ let basePolicy = 'reseed'
 // swarm, bee and every feed it cached.
 let adoptingKey = null
 
+// VIEWER DISK ON A SMALL BOX. The shipped SDK defaults — 512 MiB per feed, a store cap of
+// 4x that (2 GiB), 12 warm feeds — were sized for hardware where a cached replica settles at
+// ~one live window because the filesystem can hole-punch. The TV boxes this app targets are
+// frequently the opposite case: a 32-bit ABI (so the app ships without fs-native-extensions
+// and hypercore's clear() frees ZERO bytes — see the VIEWER DISK BUDGET note in
+// sdk/player.js) attached to 4 GiB of flash TOTAL. A 2 GiB viewer cache is then most of the
+// device, which is not a budget so much as a promise to fill it.
+//
+// TWO ADJUSTMENTS, deliberately gated differently:
+//
+//   reclaimBudgetBytes is set UNCONDITIONALLY. It needs no platform test because one
+//   already runs underneath it: sdk/serve.js probeHolePunch punches a scratch file and
+//   latches the budget OFF where the punch works, so on arm64 and desktop this value is
+//   unreachable rather than merely unused. And it is a FLOOR, not the budget — a replica is
+//   judged against max(this, 3x the OBSERVED live window) — so a channel with a genuinely
+//   large window still cannot be rotated in a loop by a number chosen here. Lowering the
+//   floor binds only where it should: an ordinary window (16-24 s) is a few MiB, nowhere
+//   near 128 MiB, so the floor is what a leaking 32-bit replica trips on. 128 MiB is ~8.5
+//   min of a 2 Mbps feed and derives a 512 MiB store cap.
+//
+//   prewarm and feedLimit are gated on the ABI, because nothing else gates them and both
+//   are pure regressions on capable hardware — fewer channels pre-connected, and warm
+//   replicas evicted (which PURGES, forcing a full re-dial on zap-back) where they would
+//   have cost almost nothing. Unknown arch is treated as capable: that keeps the shipped
+//   behaviour on anything we cannot positively identify as narrow, and the budget above
+//   still applies there.
+const NARROW_ABI = (() => {
+  try { const a = os && typeof os.arch === 'function' && os.arch(); return a === 'arm' || a === 'ia32' } catch { return false }
+})()
+const NARROW_FEED_LIMIT = 3
+const NARROW_PREWARM = 3
+const VIEWER_FEED_BUDGET_BYTES = 128 * 1024 * 1024
+
+// CAPPED, not replaced: a build that already asks for fewer keeps its own number, and one
+// that asks for `true` (every entitled feed) is the case this exists to stop.
+function narrowPrewarm (prewarm) {
+  if (!NARROW_ABI) return prewarm
+  if (prewarm === true) return NARROW_PREWARM
+  if (typeof prewarm === 'number') return Math.min(prewarm, NARROW_PREWARM)
+  return prewarm // false / undefined — already off
+}
+
 function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform, remote) {
   if (player) return player
   if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, remote, deviceId: ensureDeviceId(), appVersion, platform })
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm: narrowPrewarm(prewarm), tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes: VIEWER_FEED_BUDGET_BYTES, feedLimit: NARROW_ABI ? NARROW_FEED_LIMIT : undefined, remote, deviceId: ensureDeviceId(), appVersion, platform })
   player.on('ready', () => send({ type: 'ready' }))
   // `vod` (S53) rides the streams message only when the panel enabled a provider —
   // the field is absent otherwise, so the UI's "no VOD section" is the default.
