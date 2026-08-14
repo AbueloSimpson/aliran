@@ -95,6 +95,22 @@ Check these causes in order of likelihood:
   the wedged connections down on its second expiry (`feed:reconnect`) so the
   swarm dials fresh. The `test:sdk` wedged-connection section reproduces the
   exact signature with a paused socket.
+- **Persistent spinner with zero peers, on a channel you watched earlier in
+  the same session:** this is the **deleted replica** class. The engine keeps
+  the last 12 feeds warm. It deletes a feed's data from disk when that feed
+  leaves the cache (see `docs/kb/viewer-bandwidth.md`). A feed whose data was
+  deleted never replicates again over the connection it was deleted on. One
+  connection carries every channel of a broadcaster. A later tune to that
+  channel therefore re-opens over the same live connection, and finds no
+  peer. The tune self-heal above cannot recover it. Its connection teardown
+  step needs a peer to tear down, and this failure has none — so the tune
+  ends at the friendly `tune timeout` error. **Fix (shipped):** the engine
+  records which connections each deleted feed used. It destroys those
+  connections when you tune that channel again, and the swarm dials fresh
+  (`feed:reconnect`). The other channels on that connection replicate again
+  by themselves. A connection that was already replaced stays up. The
+  `test:sdk` evicted-feed section reproduces the failure with one seeder that
+  serves two channels over one connection.
 - A **redirect channel** never hits this failure class at all — there is no
   P2P feed behind it. The host player fetches the operator's URL directly
   and owns its own errors. (P2P channels have no CDN failover by design —

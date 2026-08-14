@@ -420,7 +420,10 @@ replication-dead) and dials fresh. Only then does a friendly `error`
 surface (≤ ~90 s with defaults). While a tune is incomplete, forced DHT
 re-lookups are paced between `relookupMinMs` and `relookupMaxMs`. Raise
 `timeoutMs` only for genuinely slow networks — the ladder usually beats
-waiting.
+waiting. The engine also emits `feed:reconnect` outside this ladder. It does
+so when you tune a channel whose data it deleted from disk earlier: that feed
+only replicates again over a fresh connection, so the engine drops the old
+one first (see `docs/kb/playback.md`).
 
 `rescanMs` guards the play **after** a successful tune. A viewer can tune
 off relay peers while its dials to the origin fail — the swarm then

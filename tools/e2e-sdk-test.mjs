@@ -43,6 +43,12 @@
 // a 'client-only' viewer still plays but joins feed topics server:false (never
 // announced ⇒ not discoverable ⇒ no viewer-to-viewer serving), while the default
 // 'reseed' viewer's feed topic is joined server:true.
+// Then RE-ZAP TO AN EVICTED CHANNEL: the feed-cache LRU PURGES the replica it drops, and
+// a purged core never re-attaches to an already-established protomux — so re-opening it
+// over the still-live broadcaster connection (one socket carries every channel of a peer)
+// used to hand back a replica with ZERO peers, which the tune ladder cannot rescue
+// because its teardown rung is skipped for exactly that symptom. The re-open must destroy
+// that connection and dial fresh; the other channel cached on the socket recovers by itself.
 // Then REDIRECT channels (S23): a catalog entry {redirect:true, url} is a different
 // CLASS — viewers play the operator's https URL directly. resolve() must return it
 // VERBATIM (source 'cdn', no port, no feed open, no watchdog), a url edit must reach
@@ -146,7 +152,15 @@ async function resolveWithin (p, id, ms) {
 const DIFFICULTY = 8 // low for a fast test
 const PASSWORD = 'test123'
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p))
-const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), cliU: tmp('e2es-cliU-'), cliC: tmp('e2es-cliC-'), cliD: tmp('e2es-cliD-'), out: tmp('e2es-hls-') }
+const dirs = { panel: tmp('e2es-panel-'), feed: tmp('e2es-feed-'), feed2: tmp('e2es-feed2-'), feed3: tmp('e2es-feed3-'), feed4: tmp('e2es-feed4-'), feed5: tmp('e2es-feed5-'), feed6: tmp('e2es-feed6-'), feedR: tmp('e2es-feedR-'), feedE: tmp('e2es-feedE-'), cli: tmp('e2es-cli-'), cli2: tmp('e2es-cli2-'), cli3: tmp('e2es-cli3-'), cli4: tmp('e2es-cli4-'), cli5: tmp('e2es-cli5-'), cli6: tmp('e2es-cli6-'), cliZ: tmp('e2es-cliZ-'), cliU: tmp('e2es-cliU-'), cliC: tmp('e2es-cliC-'), cliD: tmp('e2es-cliD-'), cliE: tmp('e2es-cliE-'), out: tmp('e2es-hls-') }
+// corestore 6 keeps every core at cores/<id[0:2]>/<id[2:4]>/<id> (id = discovery key hex),
+// and hypercore's purge UNLINKS the four storage files, sometimes leaving the empty
+// directory behind — so "still on disk" means "still has files in it".
+const corePath = (storeDir, discoveryKey) => {
+  const id = b4a.toString(discoveryKey, 'hex')
+  return path.join(storeDir, 'cores', id.slice(0, 2), id.slice(2, 4), id)
+}
+const coreOnDisk = (p) => { try { return fs.readdirSync(p).length > 0 } catch { return false } }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
 
@@ -944,6 +958,176 @@ try {
   const clientOnlyProven = true
   log("uploadPolicy: 'client-only' played news but joined its topic UNANNOUNCED (server:false); the default player announced (server:true)")
 
+  // ===== Re-zap to an EVICTED channel: a purged replica needs a FRESH DIAL =====
+  // The LRU above does not merely close the feed it drops — it PURGES the replica's
+  // storage, and a hypercore whose storage was purged NEVER re-attaches to an
+  // already-established protomux (measured on the bare stack: close+re-open resumes at
+  // once, purge+re-open never does — at any delay, under any namespace — and only
+  // destroying the connection so hyperswarm re-dials recovers it). One socket carries
+  // every channel of a peer, so the re-zap back to a trimmed channel re-opens over the
+  // SAME broadcaster connection the rest of the lineup is still replicating over, and
+  // comes back with ZERO peers. The tune ladder cannot rescue that: its 'feed:reconnect'
+  // rung is skipped precisely BECAUSE the symptom is zero peers, so pre-fix the channel
+  // died with a friendly 'tune timeout' and stayed dead for the whole session.
+  // Reproduced in the PRODUCTION SHAPE — one seeder serving TWO channels over ONE socket
+  // (hyperswarm keeps one connection per peer) — so the trimmed channel's re-open is
+  // proven to land on a connection the other channel is still demonstrably using.
+  const encKeyE1 = hcrypto.randomBytes(32)
+  const encKeyE2 = hcrypto.randomBytes(32)
+  const storeE = new Corestore(dirs.feedE); await storeE.ready(); cleanups.push(() => storeE.close())
+  const feedE1 = new Hyperdrive(storeE.namespace('e1'), { encryptionKey: encKeyE1 }); await feedE1.ready()
+  const feedE2 = new Hyperdrive(storeE.namespace('e2'), { encryptionKey: encKeyE2 }); await feedE2.ready()
+  const evictSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => evictSwarm.destroy())
+  evictSwarm.on('connection', (s) => { feedE1.replicate(s); feedE2.replicate(s) })
+  evictSwarm.join(feedE1.discoveryKey, { server: true, client: false })
+  evictSwarm.join(feedE2.discoveryKey, { server: true, client: false })
+  await evictSwarm.flush()
+  const stopMirrorE1 = mirrorDirToDrive(dirs.out, feedE1, { interval: 400 }); cleanups.push(() => stopMirrorE1())
+  const stopMirrorE2 = mirrorDirToDrive(dirs.out, feedE2, { interval: 400 }); cleanups.push(() => stopMirrorE2())
+
+  // Own user + channels: every count gate above stays untouched (the cdnuser pattern).
+  const kpE = userKeyPair()
+  const authE = authKeyPair()
+  const saltE = randomSalt()
+  await db.put('user/evictuser', {
+    salt: b4a.toString(saltE, 'hex'),
+    verifier: b4a.toString(deriveVerifier(rwd, saltE, ARGON2_DEFAULT), 'hex'),
+    argon: ARGON2_DEFAULT,
+    pub: b4a.toString(kpE.publicKey, 'hex'),
+    encPriv: wrap(wk, kpE.secretKey),
+    authPub: b4a.toString(authE.publicKey, 'hex'),
+    authPrivEnc: wrap(wk, authE.secretKey),
+    wrapped: { evicta: sealTo(kpE.publicKey, encKeyE1), evictb: sealTo(kpE.publicKey, encKeyE2) },
+    devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
+  })
+  await db.put('catalog/evicta', { title: 'Evict A', category: ['misc'], type: 'live', protection: 'self', feedKey: b4a.toString(feedE1.key, 'hex'), isLive: true, poster: null, status: 'live' })
+  await db.put('catalog/evictb', { title: 'Evict B', category: ['misc'], type: 'live', protection: 'self', feedKey: b4a.toString(feedE2.key, 'hex'), isLive: true, poster: null, status: 'live' })
+
+  // Short tune ladder so a pre-fix run reaches its friendly error quickly (retune at 9 s,
+  // reconnect-or-give-up at 18 s) instead of stretching this lane out.
+  const evE = { status: [], errors: [] }
+  const playerE = createPlayer({
+    panelPubKey,
+    storeDir: dirs.cliE,
+    swarm: { bootstrap },
+    tune: { timeoutMs: 9000, relookupMinMs: 1000, relookupMaxMs: 9000 }
+  })
+  playerE.on('status', (s) => evE.status.push(s.state))
+  playerE.on('error', (e) => evE.errors.push(String((e && e.message) || e)))
+  cleanups.push(() => playerE.stop())
+  await playerE.connect()
+  let streamsE = null
+  const deadlineE = Date.now() + 60000
+  while (!streamsE) {
+    if (Date.now() > deadlineE) throw new Error('timeout: evict-reopen SDK login')
+    try {
+      const s = await playerE.login('evictuser', PASSWORD)
+      if (s.length >= 2) streamsE = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!streamsE) await sleep(1500)
+  }
+
+  const rE1 = await resolveWithin(playerE, 'evicta', 20000)
+  await waitFor(async () => { const r = await httpGet(rE1.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 40000, 'evicta plays over P2P')
+  const eKeyA = b4a.toString(feedE1.key, 'hex') + ':' + b4a.toString(encKeyE1, 'hex')
+  const driveEA = (await playerE._feeds.get(eKeyA)).drive
+  const coreEA = corePath(dirs.cliE, driveEA.discoveryKey)
+  if (!coreOnDisk(coreEA)) throw new Error("evict-reopen: could not find the replica's core on disk: " + coreEA)
+
+  // Zap to the OTHER channel of the same seeder: A stays warm in the cache, B is served.
+  const rE2 = await resolveWithin(playerE, 'evictb', 20000)
+  await waitFor(async () => { const r = await httpGet(rE2.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 40000, 'evictb plays over P2P')
+  const driveEB = playerE._feedDrive
+  const socketsOf = (d) => [...new Set([...d.core.peers].map((p) => p.stream))]
+  const seederSock = [...playerE._swarm.connections].find((s) => b4a.equals(s.remotePublicKey, evictSwarm.keyPair.publicKey))
+  if (!seederSock) throw new Error('evict-reopen: no connection to the two-channel seeder')
+  const socksA = socketsOf(driveEA)
+  const socksB = socketsOf(driveEB)
+  if (socksA.length !== 1 || socksB.length !== 1 || socksA[0] !== socksB[0] || socksA[0] !== seederSock) {
+    throw new Error(`evict-reopen: both channels must ride ONE socket (the production shape); A=${socksA.length} B=${socksB.length} shared=${socksA[0] === socksB[0]}`)
+  }
+  log('evict-reopen: both channels replicating from one seeder over ONE connection')
+
+  // EVICT through the real LRU path — _trimFeeds keeps only the feed being served.
+  const limitE = playerE._feedLimit
+  playerE._feedLimit = 1
+  playerE._trimFeeds()
+  playerE._feedLimit = limitE
+  if (playerE._feeds.has(eKeyA)) throw new Error('evict-reopen: the LRU should have dropped the warm (non-active) feed')
+  // …and the eviction really PURGED it. If purge() had degraded to its plain-close
+  // fallback the replica would still hold every block, the re-open below would serve from
+  // local storage with no peer at all, and this whole lane would pass for the wrong reason.
+  await waitFor(async () => !coreOnDisk(coreEA), 20000, "the evicted replica's storage is purged from disk")
+
+  // The precondition the defect needs: nothing re-dialled the seeder in between. The
+  // socket is the same object, and the other channel is still moving bytes over it.
+  if (seederSock.destroyed || !playerE._swarm.connections.has(seederSock)) throw new Error('evict-reopen: the seeder connection should still be ESTABLISHED after the purge')
+  const beforePl = (await httpGet(rE2.port, '/index.m3u8')).body.toString()
+  await waitFor(async () => { const r = await httpGet(rE2.port, '/index.m3u8'); return r.status === 200 && r.body.toString() !== beforePl }, 20000, 'the surviving channel keeps advancing over that same socket')
+  log('evict-reopen: purged the trimmed replica; the seeder connection is untouched and still carrying the other channel')
+
+  // THE RE-ZAP. Pre-fix this replica comes back with zero peers and never serves a byte:
+  // 'feed:retune' at 9 s (a close+re-open — the connection is already poisoned), then the
+  // 'feed:reconnect' rung SKIPPED for want of a peer to tear down, then the friendly error.
+  const markE = evE.status.length
+  const rE3 = await resolveWithin(playerE, 'evicta', 20000)
+  if (b4a.toString(playerE._feedDrive.key, 'hex') !== b4a.toString(feedE1.key, 'hex')) throw new Error('evict-reopen: the re-zap must serve the evicted feed again')
+  let healedPlE = null
+  try {
+    healedPlE = await waitFor(async () => {
+      const r = await httpGet(rE3.port, '/index.m3u8')
+      return r.status === 200 && r.body.includes('.ts') ? r.body.toString() : null
+    }, 30000, 're-zap to the evicted channel replicates again (purged replica + established connection = dead channel)')
+  } catch (err) {
+    // The whole point of this lane is WHICH way it fails, so say so rather than leaving a
+    // bare timeout: zero peers on a connection that is alive and carrying the neighbour is
+    // the purged-protomux signature, and a ladder that retunes but never reconnects is it
+    // being skipped for want of a peer to tear down.
+    const peers = playerE._feedDrive ? playerE._feedDrive.core.peers.length : 'no drive'
+    throw new Error(`${err.message} — peers=${peers}, seeder socket destroyed=${seederSock.destroyed}, ladder=${JSON.stringify(evE.status.slice(markE))}, errors=${JSON.stringify(evE.errors)}`)
+  }
+  if (evE.errors.some((m) => /tune timeout/i.test(m))) throw new Error('evict-reopen: the channel died with the friendly tune error: ' + JSON.stringify(evE.errors))
+  if (playerE._feedDrive.core.peers.length < 1) throw new Error('evict-reopen: the re-opened replica must have a peer')
+  // Mechanism, not just outcome: only a FRESH DIAL clears a purged core's protomux state.
+  if (!seederSock.destroyed) throw new Error('evict-reopen: the poisoned connection must be destroyed so hyperswarm re-dials')
+  // Bounded collateral: that teardown took the whole socket, so the OTHER channel cached
+  // on it must re-replicate by itself on the fresh connection.
+  await waitFor(async () => driveEB.core.peers.length >= 1, 25000, 'the other channel on that socket re-replicates on the fresh connection')
+  const healedSegsE = healedPlE.split('\n').filter((l) => l.trim().endsWith('.ts')).length
+  log('evict-reopen: re-zap to the trimmed channel dialled fresh and plays (' + healedSegsE + ' segs); the neighbour on that socket recovered too')
+
+  // The mirror image, and the reason the teardown is per-SOCKET-OBJECT rather than per
+  // peer: a replica purged on a connection that has ALREADY gone needs no hang-up at all,
+  // because whatever replaced it never carried the purged core. Getting that wrong the
+  // other way would spend a reconnect on the whole lineup every time a channel came back.
+  await resolveWithin(playerE, 'evictb', 20000) // B served again, A warm behind it
+  // Read the live connection off the SERVED drive rather than scanning swarm.connections:
+  // this is the socket the feeds actually ride, and it survives hyperswarm churning a
+  // duplicate dial straight after the teardown above.
+  const sockHealed = (await waitFor(async () => {
+    const s = socketsOf(playerE._feedDrive)
+    return s.length === 1 && !s[0].destroyed && s[0] !== seederSock ? s[0] : null
+  }, 30000, 'the re-dialled seeder connection settles and carries the served channel'))
+  playerE._feedLimit = 1
+  playerE._trimFeeds()
+  playerE._feedLimit = limitE
+  await waitFor(async () => !coreOnDisk(coreEA), 20000, 'the second trim purges that replica again')
+  const recorded = playerE._purgedFeeds.get(b4a.toString(feedE1.key, 'hex')) || []
+  if (!recorded.some((p) => p.socket === sockHealed)) throw new Error('evict-reopen: the second purge must be recorded against the connection it happened on')
+  sockHealed.destroy() // stand-in for anything that replaces a connection: a flap, the ladder's own rung, a rotation
+  const sockFlapped = await waitFor(async () => {
+    const s = socketsOf(playerE._feedDrive)
+    return s.length === 1 && s[0] !== sockHealed && !s[0].destroyed ? s[0] : null
+  }, 30000, 'hyperswarm re-dials the seeder after the flap')
+  const rE4 = await resolveWithin(playerE, 'evicta', 20000)
+  await waitFor(async () => { const r = await httpGet(rE4.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 30000, 'the twice-purged channel plays over the connection that replaced the one it was purged on')
+  if (sockFlapped.destroyed) throw new Error('evict-reopen: a purge whose connection already died must NOT cost the lineup a second hang-up')
+  const evictReopenProven = !!healedPlE
+  log('evict-reopen: a replica purged on a connection that has since been replaced plays with no second hang-up')
+  await playerE.stop()
+
   // ===== S23 redirect channels: catalog {redirect:true, url} plays the URL, no P2P =====
   // A redirect channel is a different CLASS of catalog entry: no broadcaster, no feed —
   // the record carries an operator-set https URL and resolve() hands it to the host
@@ -1509,8 +1693,8 @@ try {
   const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
-    meteredGated && directionalProven && stallGated && clientOnlyProven && redirectProven && liveEntitlementProven && diskRotationProven)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) + VIEWER-DISK rotation of the active feed (invisible swap, request park, single-flight, cast pin, retune overlap, failed re-open, stop() overlap) verified)' : 'FAIL ❌')
+    meteredGated && directionalProven && stallGated && clientOnlyProven && evictReopenProven && redirectProven && liveEntitlementProven && diskRotationProven)
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + evicted-feed re-open fresh dial + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) + VIEWER-DISK rotation of the active feed (invisible swap, request park, single-flight, cast pin, retune overlap, failed re-open, stop() overlap) verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

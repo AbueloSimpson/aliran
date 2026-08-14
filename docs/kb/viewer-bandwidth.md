@@ -83,7 +83,9 @@ store stays small by itself:
 - **When a feed leaves the cache:** the engine keeps the last 12 watched
   feeds warm for fast zaps. When it evicts a feed from that cache, it
   deletes the feed's data from disk. A delete removes the files, so it
-  frees the bytes on every platform.
+  frees the bytes on every platform. The engine must dial that channel's
+  broadcaster again if you tune the channel later. See "Persistent spinner
+  with zero peers" in the playback guide (`docs/kb/playback.md`).
 - **After login:** the engine deletes the replicas of feeds that are no
   longer in the catalog (for example, a deleted or re-keyed channel).
 - **VOD titles are the exception.** A viewer can seek a VOD title at any

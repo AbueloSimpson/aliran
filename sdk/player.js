@@ -1042,6 +1042,10 @@ export class AliranPlayer extends Emitter {
     this._feedMaintTimer = null // feed-cache maintenance tick (idle reclaim sweep + store byte cap)
     this._feedDiscovery = null
     this._feeds = new Map() // feedKey:encKey -> Promise<{ drive, discovery }> — opened feeds (single-flight), reused across resolve()s
+    // feedKey -> [{ key, socket }] for the connections its replica was PURGED on, until the
+    // next time that feed is SERVED. The deferred half of the eviction teardown: the socket
+    // decides whether to hang up, the key does it. See _recordPurgedFeed.
+    this._purgedFeeds = new Map()
     // streamId -> newest feedKey seen in the replicated catalog (fed by _currentChannel).
     // The feed cache is keyed by the CURRENT feedKey, while _entitled holds the LOGIN
     // SNAPSHOT — which a broadcaster restart rotates out from under us. Callers that can
@@ -3068,6 +3072,11 @@ export class AliranPlayer extends Emitter {
     // budget on the channel the viewer just LEFT would put the rotation's cost on the zap.
     // The rotation itself carries on and purges its old drive; that drive is not this one.
     if (this._feedSwap) this._releaseFeedSwap(this._feedSwap)
+    // A replica this session already purged (an LRU trim, the store byte cap, the tune
+    // ladder's last rung, a wedged open) cannot replicate over the connection it was purged
+    // on — and `feed` may well be a CACHED one that a prefetch re-opened dead minutes ago,
+    // so this belongs here, at the serve, rather than on the open. See _healPurgedFeed.
+    this._healPurgedFeed(feedKeyHex)
     this._trimFeeds()
     this._startFeedMaintenance() // idle reclaim + store byte cap, armed on first play (see there)
     this.emit('status', { state: 'feed:ready' })
@@ -3284,6 +3293,16 @@ export class AliranPlayer extends Emitter {
       // warm caches; only eviction pays the cold-restart cost. Never throws: a
       // refused purge falls back to the old plain close.
       if (!settled) { try { f.drive.close().catch(() => {}) } catch {} return } // see above
+      //
+      // ⚠ NOTE THE CONNECTIONS FIRST — this is the last instant they are readable. A purged
+      // core never replicates again over the connection it was purged on, and this drive's
+      // peers are the only record of which connections those are; purge() closes before it
+      // unlinks, and that close empties the list (see _feedPeerKeys). Destroying them HERE
+      // would be wrong — eviction fires on ordinary zapping, one socket carries every
+      // channel of a peer, and an unconditional hang-up per eviction would interrupt every
+      // other cached feed for a channel the viewer may never come back to. So the hang-up
+      // is deferred to the serve that actually needs it: _healPurgedFeed.
+      this._recordPurgedFeed(cacheKey.slice(0, cacheKey.indexOf(':')), f.drive)
       f.drive.purge().catch(() => { try { f.drive.close().catch(() => {}) } catch {} })
     }).catch(() => {})
   }
@@ -3782,6 +3801,10 @@ export class AliranPlayer extends Emitter {
   _closeFeeds () {
     const feedProms = [...this._feeds.values()]
     this._feeds.clear()
+    // The purged-replica ledger dies with the cache it belongs to. Both callers (stop and
+    // the corruption purge) destroy the swarm right after, so every socket it names is
+    // about to be gone anyway — and holding them would pin dead connections for nothing.
+    this._purgedFeeds.clear()
     for (const p of feedProms) Promise.resolve(p).then((f) => f && f.drive && f.drive.close()).catch(() => {})
   }
 
@@ -4019,6 +4042,105 @@ export class AliranPlayer extends Emitter {
     try { swarm.joinPeer(publicKey); swarm.leavePeer(publicKey) } catch {}
   }
 
+  // --- purged-replica ledger: eviction notes the connections, the next SERVE spends them ---
+
+  // Remember which connections a feed's replica was purged on. THE CONTRACT: any purge of a
+  // feed replica that something could re-open later goes through here first, while the drive
+  // is still open — a purge that skips it is a channel that dies on its next tune. That is
+  // _evictFeed (the count bound, the store byte cap through it, the tune ladder's last rung,
+  // a wedged open) and _rotateActiveFeed's step 4. Not _sweepIdleFeeds, which clears and
+  // never purges, and not _doSweepStaleReplicas, which only touches namespaces absent from
+  // the catalog AND out of the cache — nothing is replicating those, and its bare open never
+  // downloads, so corestore never attached the core to a stream that could be poisoned.
+  //
+  // ⚠ SOCKETS HERE, KEYS AT _feedPeerKeys, AND THE DIFFERENCE IS THE QUESTION EACH ANSWERS.
+  // The rotation asks "get this peer dialled again, now" — a peer-shaped question, and it
+  // MUST be, because the socket it captured is frequently dead by the time it acts (measured:
+  // three rotations in six), so anything hung on that object never runs. This ledger asks a
+  // different one: "is the connection that poisoned this replica STILL the live one?" Only
+  // the object can answer that, and it matters because eviction and re-open are minutes
+  // apart, not milliseconds. If the socket has since been replaced, the replacement is a
+  // fresh protomux that carries the replica perfectly well — hanging up on the PEER there
+  // would drop a healthy connection that is very likely serving other feeds too, and cost the
+  // whole lineup a reconnect to fix nothing. So the socket DECIDES and the key ACTS: what
+  // survives the gate is handed to _hangUpOnPeers, which re-resolves the live connection and
+  // arms _redialPeer on it. Nothing is ever armed on a captured socket, so the failure that
+  // forced _feedPeerKeys cannot reach this path.
+  //
+  // Keyed by feedKey rather than the cache key: the poison follows the DISCOVERY key (same
+  // protomux channel), and that derives from the feed key alone — a re-key opens the same
+  // namespace and inherits the same dead channel. Connections already gone are dropped on the
+  // way in, and so are the records of feeds whose connections have all since died: a feed
+  // purged on a connection that no longer exists has nothing left to hang up on, and neither
+  // the entry nor the socket it pins is worth carrying for the rest of the session.
+  _recordPurgedFeed (feedKeyHex, drive) {
+    for (const [key, list] of this._purgedFeeds) {
+      if (!list.some((p) => !p.socket.destroyed)) this._purgedFeeds.delete(key)
+    }
+    const seen = new Map()
+    if (drive && drive.core && this._swarm) {
+      for (const peer of [...drive.core.peers]) {
+        const socket = peer && peer.stream
+        if (!socket || socket.destroyed || !socket.remotePublicKey) continue
+        seen.set(b4a.toString(socket.remotePublicKey, 'hex'), { key: socket.remotePublicKey, socket })
+      }
+    }
+    if (seen.size) this._purgedFeeds.set(feedKeyHex, [...seen.values()])
+    else this._purgedFeeds.delete(feedKeyHex)
+  }
+
+  // Called when a feed BECOMES THE SERVED ONE. If its replica was purged on a connection that
+  // is still up, hang up on that peer so the swarm dials fresh.
+  //
+  // ⚠ A CORE WHOSE STORAGE WAS PURGED DOES NOT RE-ATTACH TO AN ALREADY-ESTABLISHED PROTOMUX.
+  // Measured on the bare stack — corestore 6.18.4 / hyperdrive 11.13.4 / hypercore 10.38.2 /
+  // hyperswarm 4.17.0 / protomux 3.11.0, no SDK involved:
+  //   close() + re-open, same namespace ................ replication resumes at once
+  //   purge() + re-open, same namespace ................ NEVER resumes (15/30/60 s+)
+  //   purge() + 5 s delay + re-open .................... NEVER — so it is not a race
+  //   purge() + re-open under a DIFFERENT namespace .... NEVER — the discovery key is the
+  //     same, so it is the same protomux channel either way
+  //   purge() + re-open + destroy the connection ....... resumes at once
+  // (hypercore's last-session close does call replicator.destroy(), which closes each peer
+  // channel — so a closed channel is not the whole story. Whatever state remains, only a
+  // fresh socket clears it.)
+  //
+  // AND THE TUNE LADDER CANNOT RESCUE IT, which is why the fix cannot be left to recovery:
+  // the rung that would fix it IS this teardown ('feed:reconnect'), and it is skipped
+  // precisely BECAUSE the symptom is zero peers — with no peer to hang up on,
+  // _startTuneWatchdog goes straight to the friendly error. Measured on the e2e lane with
+  // this call removed: 'feed:open', 'feed:ready', 'feed:retune', NO 'feed:reconnect', then
+  // "tune timeout … after 18s" while the socket sat there undestroyed, still carrying the
+  // channel next door. Dead for the session, on a re-zap to any trimmed channel.
+  //
+  // DEFERRED TO THE SERVE, not done at the eviction and not at every re-open:
+  //   - at the EVICTION it would fire on ordinary zapping, for a channel the viewer may
+  //     never return to, and take every other feed on that connection down with it;
+  //   - at every RE-OPEN it would fire for background prefetch too (prewarm, the neighbour
+  //     warm, the /feedthumb warm), i.e. interrupt the channel that is PLAYING for the sake
+  //     of one that is not. A prefetch that opens a purged feed leaves the record in place
+  //     and gets a replica that downloads nothing until the viewer actually zaps to it —
+  //     the prefetch is wasted, the playback is not.
+  // Residual, stated rather than implied: the serve DOES interrupt the other feeds on that
+  // connection, which is the same trade the ladder's own rung makes — prefetch bandwidth
+  // against a channel that would otherwise not play at all. One hang-up covers every feed
+  // purged on that connection, though, because the ones behind it find their socket already
+  // gone and correctly do nothing.
+  _healPurgedFeed (feedKeyHex) {
+    const purged = this._purgedFeeds.get(feedKeyHex)
+    if (!purged) return 0
+    this._purgedFeeds.delete(feedKeyHex)
+    const swarm = this._swarm
+    if (!swarm) return 0
+    const keys = purged.filter((p) => !p.socket.destroyed && swarm.connections.has(p.socket)).map((p) => p.key)
+    // redial, because hyperswarm's own backoff is not a recovery for a tune the viewer is
+    // waiting on: our teardown walks the peer up the retry ladder (1-1.5 s, 5-6 s, 15-17 s,
+    // then nothing) exactly as it does for the rotation — see _redialPeer.
+    const n = this._hangUpOnPeers(keys, true)
+    if (n > 0) this.emit('status', { state: 'feed:reconnect' })
+    return n
+  }
+
   // ⚠ THERE IS DELIBERATELY NO RETRY LOOP BEHIND THIS, and the history is worth keeping because
   // the obvious fix was the wrong one. A dial that did not take was observed once as a 10078 ms
   // recovery — exactly tune.rescanMs, i.e. the dial had failed silently and _checkFeedPeers'
@@ -4208,6 +4330,12 @@ export class AliranPlayer extends Emitter {
       throw err
     }
     if (castGuard) clearTimeout(castGuard)
+    // This retune only CLOSED the drive, so it needs no teardown of its own — but the feed
+    // it is re-opening may have been PURGED earlier and never served since: the tune
+    // ladder's last rung evicts the active feed, and a host that calls reconnectActiveFeed()
+    // afterwards re-arms the watchdog straight into this function, with no serveFeed in
+    // between to spend the record. See _healPurgedFeed.
+    this._healPurgedFeed(a.feedKey)
     // Re-point the cast BEFORE the _active check below. A cast is pinned to the CHANNEL,
     // and whether the phone zapped away during the reopen has nothing to do with whether
     // this channel's feed is now open again — doing it after the check is what left a
@@ -4543,6 +4671,18 @@ export class AliranPlayer extends Emitter {
       //    free any bytes. (c) A catalog re-key that landed during the drain has already opened
       //    the new feed, quite possibly on this very socket, and it eats the same re-dial.
       const feedPeerKeys = this._feedPeerKeys(drive)
+      // …and the same capture into the purged-replica ledger that _evictFeed makes, for the
+      // paths where step 4b's hang-up does NOT happen or does not take: a throw between here
+      // and there, a re-dial that loses the duplicate-connection tie-break (_redialPeer is
+      // explicit that it cannot guarantee a dial), or a rotation that recovers into
+      // _recoverFailedRotation. Belt to 4b's braces, and free: on the ordinary path 4b
+      // destroys these very connections, so the record finds them dead at the next serve and
+      // correctly does nothing. See _recordPurgedFeed for why the ledger holds sockets while
+      // this step holds keys.
+      // (cacheKey, not a.feedKey: a catalog re-key during the drain moves a.feedKey, and the
+      // replica being purged here is the one cacheKey was built from — the same reason step 7
+      // re-checks `moved`.)
+      this._recordPurgedFeed(cacheKey.slice(0, cacheKey.indexOf(':')), drive)
       // 4. PURGE. Same fallback as _evictFeed: a refused purge degrades to a plain close,
       //    which frees no bytes but leaves the namespace re-openable, so the rotation still
       //    completes and the next one retries.
@@ -5519,6 +5659,10 @@ export class AliranPlayer extends Emitter {
     if (this._active !== a) return
     this._feedDrive = feed.drive
     this._feedDiscovery = feed.discovery
+    // The catalog can rotate a channel BACK onto a feedKey this session already purged
+    // (a broadcaster flipping between sources, a key the viewer watched and the LRU
+    // trimmed), and this path serves it without ever passing through serveFeed.
+    this._healPurgedFeed(feedKey)
     // …AND THE CACHE KEY THAT NAMES IT. This line was missing, and it was not cosmetic:
     // _activeFeedKey is what every disk path uses to mean "never touch the feed being
     // watched" (_trimFeeds, _sweepIdleFeeds, _trimFeedBytes), and it is assigned in exactly

@@ -229,6 +229,47 @@ not been on a television yet**; each says so where it is described.
 
 ### Fixed
 
+- **A channel the viewer came back to could stay dead for the rest of the session.**
+  The feed cache keeps the last 12 watched channels warm and PURGES the replica it
+  drops — the bound that stops a browsing session filling a phone's disk. But a
+  hypercore whose storage was purged does not re-attach to an already-established
+  protomux. Measured on the bare stack: `close()` + re-open resumes replication at
+  once, `purge()` + re-open never does — at any delay, and under any namespace,
+  because the discovery key (and therefore the protomux channel) is the same either
+  way. Only destroying the connection, so hyperswarm dials fresh, recovers it.
+
+  One socket carries every channel of a peer, so the re-zap back to a trimmed channel
+  re-opened over the very connection the rest of the lineup was still replicating
+  over, and came back with ZERO peers. The tune ladder could not rescue that: the rung
+  that would — destroying the connection (`feed:reconnect`) — is skipped precisely
+  BECAUSE the symptom is zero peers, so the tune ran `feed:open` → `feed:ready` →
+  `feed:retune` → the friendly `tune timeout`, and the channel stayed dead until the
+  app restarted. Every eviction path fed it: an ordinary LRU trim while zapping, a
+  wedged open, and the tune ladder's own last rung — whose error text says "switch to
+  it again to retry", the retry that could no longer work.
+
+  Eviction now records which connections the purged replica was replicating over, and
+  the teardown is DEFERRED to the next time that feed is actually SERVED. Doing it at
+  the eviction would hang up on a broadcaster on every zap and interrupt every other
+  cached channel for one the viewer may never come back to; doing it on every re-open
+  would do the same for background prefetch, which means interrupting the channel that
+  is PLAYING for one that is not.
+
+  The ledger holds the SOCKET and the peer key, and uses each for what only it can
+  answer. Eviction and re-open are minutes apart, so the question at the serve is "is
+  the connection that poisoned this replica still the live one?" — which only the object
+  identity answers. A connection re-dialled in the meantime is a fresh protomux that
+  carries the replica perfectly well, and hanging up on the PEER there would drop a
+  healthy connection that is probably serving other feeds too. What survives that gate
+  is then handed to the same peer-keyed hang-up and immediate re-dial the disk-budget
+  rotation uses, so nothing is ever armed on a captured socket. Measured, not merged:
+  with the gate removed and the hang-up keyed on the peer alone, the lane fails at
+  exactly that assertion. New `test:sdk` evicted-feed section reproduces the failure in
+  the production shape (one seeder serving two channels over one socket, the LRU trims
+  one) and pins both halves — the re-zap dials fresh and plays with the neighbour on
+  that socket recovering by itself, and a replica whose connection has since been
+  replaced plays with no second hang-up.
+
 - **The documented first-time bootstrap command reported success and created no
   admin.** `docker-compose.yml` and `docs/reseller-panel.md` documented
   `add-admin <name> <password>`, but every CLI takes the password as a **flag**.
