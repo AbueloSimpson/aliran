@@ -356,7 +356,7 @@ switch and is always accepted.
 
 Requests park during the swap instead of failing, so a rotation is
 **designed** to be invisible — but it is not guaranteed, and it can cost
-the viewer a gap in two ways:
+the viewer a gap in three ways:
 
 - **The park expires.** It is bounded at 2.5 s; past that a parked
   request falls back to a 404. That is the same black gap as before this
@@ -373,6 +373,14 @@ the viewer a gap in two ways:
   normal, for the disk. On the hardware this budget exists for (32-bit
   Android on low-end flash, unlinking a several-hundred-MB replica) this
   is uncommon but routine over a multi-hour session, not a corner case.
+- **The refill after a clean swap.** The re-opened replica is empty, so
+  the live window re-replicates at about 1x real time while the player
+  drains its ~10 s buffer — a thin race even when the swap itself was
+  fast. Measured on a 32-bit TCL box (2026-08-14, swaps 150-662 ms, park
+  never threatened): two of six rotations froze the picture for ~2.5 s
+  with no error and no remount, four were invisible. `durationMs` on the
+  `feed:rotate` event cannot see this case — it measures the swap, not
+  the refill.
 
 **This value is a floor, not the ceiling.** The ceiling actually applied
 is `max(reclaimBudgetBytes, 3 x observed live window)`, where the window

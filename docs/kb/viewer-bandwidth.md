@@ -137,7 +137,7 @@ real size on disk. Two separate bounds use that number:
 
 Requests park during the swap instead of failing, so a rotation is
 **designed** to be invisible. It is not guaranteed. It can cost the
-viewer a gap in two different ways.
+viewer a gap in three different ways.
 
 - **The park expires.** The park is bounded at 2.5 seconds. If the
   re-open does not land in time, the viewer gets the same short black gap
@@ -156,6 +156,16 @@ viewer a gap in two different ways.
   exists for — 32-bit Android on low-end flash, deleting a replica of
   several hundred MB — this is uncommon but routine over a multi-hour
   session, not a corner case.
+- **The refill after a clean swap.** Measured on a 32-bit TCL box
+  (2026-08-14): the swap itself took 150-662 ms and never came near the
+  park bound, but the re-opened replica is empty, and the live window
+  re-replicates at about 1x real time while the player drains its ~10 s
+  buffer. That race is thin. Across six measured rotations, two froze
+  the picture for ~2.5 s — no black screen, no error, playback resumed
+  by itself — and four were invisible. For scale, the same session took
+  an 8.7 s player remount from ordinary upstream churn with no rotation
+  involved. The cost is below a live channel's background noise, and it
+  is not zero.
 
 **A device whose filesystem can punch holes does not rotate.** That is
 the guarantee, and it is about that capability, not about 64-bit. Two
