@@ -328,6 +328,190 @@ test('a re-select after the give-up error mounts a fresh component with a clean 
   }
 })
 
+// THE ERROR GIVE-UP LANE — the stall give-up's sibling, on a faster clock. The <Video>
+// onError retry used to remount every 2.5 s forever: against a persistent failure
+// (loopback server dead, feed gone, a 404 that never heals) that is ExoPlayer's ~3 s of
+// load retries → onError → 2.5 s → a full ExoPlayer/MediaCodec rebuild, every ~5.5 s with
+// no report and no give-up — the codec-churn class that SIGABRTed the TCL box on the stall
+// path (2026-08-14), ~2x faster, and with no engine error coming (a redirect channel has no
+// feed to watch; a dead loopback server reports nothing). This test pins the bound's four
+// properties: the waits double, the attempts are capped with a friendly error, a spent
+// ladder goes quiet, and only real playback — never a remount — buys attempts back.
+test('the error retry ladder backs off, gives up with a friendly error, and stays spent until playback', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const stalls = jest.fn()
+    const errors = jest.fn()
+    const buffering = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000}
+        onStall={stalls} onError={errors} onBuffering={buffering}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+    const mountsBefore = mockVideoMounts
+
+    // Error 1 → the FAST first retry at 2.5 s: the transient contract (a segment lost to
+    // a replica rotation edge) must not get slower because persistent failures exist.
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2500) })
+    expect(mockVideoMounts).toBe(mountsBefore + 1)
+
+    // Error 2 → 5 s. Negative assertion inside the window: a flat 2.5 s ladder would
+    // have remounted again by 4.9 s.
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(4900) })
+    expect(mockVideoMounts).toBe(mountsBefore + 1)
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(100) })
+    expect(mockVideoMounts).toBe(mountsBefore + 2)
+
+    // A mount that LOOKS up but never progresses is not recovery: first-frame and
+    // buffer-idle signals must not reset the ladder — only onProgress motion may.
+    await ReactTestRenderer.act(async () => {
+      lastVideo().onBuffer({ isBuffering: false })
+      lastVideo().onReadyForDisplay()
+    })
+
+    // Error 3 → 10 s (the reset-less schedule continued: ReadyForDisplay bought nothing).
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(9900) })
+    expect(mockVideoMounts).toBe(mountsBefore + 2)
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(100) })
+    expect(mockVideoMounts).toBe(mountsBefore + 3)
+    expect(errors).not.toHaveBeenCalled()
+
+    // Error 4 → GIVE UP: a friendly error, no fourth remount, and no spinner re-arm
+    // (the error UI owns the screen — onBuffering(true) belongs to retries only).
+    const bufferingTrues = buffering.mock.calls.filter(([b]) => b === true).length
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(errors.mock.calls[0][0]).toMatch(/switch to it again to retry/)
+    expect(buffering.mock.calls.filter(([b]) => b === true).length).toBe(bufferingTrues)
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(600000) })
+    expect(mockVideoMounts).toBe(mountsBefore + 3)
+
+    // SPENT MEANS SPENT. Further errors over ten simulated minutes buy nothing — no
+    // second friendly error, no remount. A ladder that re-armed on its own would loop
+    // at the give-up boundary, which is the failure this bound exists to prevent.
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(600000) })
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(mockVideoMounts).toBe(mountsBefore + 3)
+
+    // The stall ladder never joined in: error churn without playback is tune-phase
+    // recovery, and a never-played mount must not trip stall resyncs on top.
+    expect(stalls).not.toHaveBeenCalled()
+
+    // …and REAL PLAYBACK is what re-arms it: the playhead moves, the ladder resets, and
+    // the next error earns a fresh first rung at the fast 2.5 s.
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 9 }) })
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2500) })
+    expect(mockVideoMounts).toBe(mountsBefore + 4)
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(stalls).not.toHaveBeenCalled()
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+// The transient contract the 2.5 s retry exists for, unchanged by the bound: only
+// CONSECUTIVE failures back off, because real playback between errors resets the ladder.
+// Without the reset, every channel would creep toward the give-up over a long session.
+test('real playback between errors keeps the retry at the fast first rung', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const errors = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000} onError={errors}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 1 }) })
+    const mountsBefore = mockVideoMounts
+
+    // A transient: one error, one fast retry…
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2500) })
+    expect(mockVideoMounts).toBe(mountsBefore + 1)
+
+    // …and the retry mount PLAYS, which resets the ladder: the next error is a fresh
+    // transient, not consecutive failure #2 — an unreset ladder would wait 5 s here.
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 2 }) })
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2400) })
+    expect(mockVideoMounts).toBe(mountsBefore + 1)
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(100) })
+    expect(mockVideoMounts).toBe(mountsBefore + 2)
+    expect(errors).not.toHaveBeenCalled()
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+// The other half of the give-up contract — same reason as the stall re-select lane: the
+// spent state lives in a ref, so the retry the error text offers has to be a host-side
+// RE-SELECT that unmounts this component. This lane also pins that the error-UI path
+// genuinely re-arms: the fresh mount completes its tune on real playback, and its ladder
+// starts at the fast first rung — not spent, not backed off.
+test('a re-select after the error give-up mounts a fresh component with a clean retry ladder', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const errors = jest.fn()
+    const tree = await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000} onError={errors}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+    // Run the ladder out: three backed-off retries (2.5 s, 5 s, 10 s), then the 4th
+    // consecutive error is the give-up.
+    for (const wait of [2500, 5000, 10000]) {
+      await ReactTestRenderer.act(async () => { lastVideo().onError() })
+      await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(wait) })
+    }
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    expect(errors).toHaveBeenCalledTimes(1)
+
+    // The host's error UI takes the screen: <AliranVideo> unmounts.
+    await ReactTestRenderer.act(async () => { tree.unmount() })
+    mounted.splice(mounted.indexOf(tree), 1)
+
+    // Re-selecting the channel mounts a fresh component. Its tune completes on real
+    // playback — the retry the error UI offered genuinely works…
+    const events: TuneEvent[] = []
+    const rerrors = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000}
+        onTune={(e) => events.push(e)} onError={rerrors}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 1 }) })
+    expect(playingEvents(events)).toHaveLength(1)
+
+    // …and its ladder is CLEAN: a fresh error retries at the fast 2.5 s first rung. A
+    // spent ladder would never remount; an inherited one would give up on the spot.
+    const mountsBefore = mockVideoMounts
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2500) })
+    expect(mockVideoMounts).toBe(mountsBefore + 1)
+    expect(rerrors).not.toHaveBeenCalled()
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
 // Playback headers (redirect channels behind a provider hotlink check): the engine hands
 // them to the HOST with the url, and this component is what actually gets them onto the
 // wire — ExoPlayer reads source.headers once, when it opens the media, so a headers

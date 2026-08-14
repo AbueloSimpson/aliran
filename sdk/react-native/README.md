@@ -49,7 +49,11 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
   beside the saved credentials (mirrored on `backend.service`).
 - **`<AliranVideo>`** — chrome-free video surface: plays the ACTIVE source URL (a
   localhost P2P URL, or a redirect channel's remote URL passed through verbatim),
-  auto-retries while the P2P live edge replicates, and remounts on `feed-changed`
+  auto-retries while the P2P live edge replicates (bounded: the first retry stays
+  fast at 2.5 s, consecutive hard errors back off 2.5 s → 5 s → 10 s, and the fourth
+  fires `onError` instead of remounting again — final in the same way as the stall
+  give-up below: re-armed only by real playback, so the retry is a re-select), and
+  remounts on `feed-changed`
   (the broadcaster rotated the watched channel's feed — reload to flush the stale
   playlist). (`onFallback`/`onSourceChanged` exist for the engine's internal hybrid
   test mode — production never configures it.) It also

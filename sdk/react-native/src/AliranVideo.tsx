@@ -4,8 +4,9 @@
 // the CDN after a 'fallback', switching back on 'source-changed'. Right after play()
 // the P2P playlist can 404 for a few seconds while the live edge replicates from
 // peers, so source errors retry with a remount instead of failing (the proven
-// behavior from the app's player screen). The component is chrome-free: overlays
-// (badges, peer counts, spinners) belong to the host app via the state callbacks.
+// behavior from the app's player screen; bounded — see ERROR_GIVE_UP). The component
+// is chrome-free: overlays (badges, peer counts, spinners) belong to the host app via
+// the state callbacks.
 //
 // TUNE LIFECYCLE (onTune): ONE localhost URL serves every P2P channel, so raw player
 // events are useless as a "channel switch finished" signal — after a zap the OLD
@@ -46,6 +47,47 @@ export { SelectedTrackType }
 export type { SelectedTrack, AudioTrack, TextTrack, BufferConfig }
 
 const RETRY_MS = 2500
+// …and the BOUND on those retries — the stall ladder's defect class (STALL_GIVE_UP
+// below) on a faster clock. Each consecutive hard error doubles the next wait, and the
+// fourth gives up with a friendly error instead of remounting again:
+//
+//   error 1 -> wait 2.5 s -> retry 1     error 3 -> wait 10 s -> retry 3
+//   error 2 -> wait 5 s   -> retry 2     error 4 -> GIVE UP, onError
+//
+// (2.5+5+10 = 17.5 s of waits; ExoPlayer's own ~3 s of internal load retries precede
+// each onError, so the give-up lands ~27 s after the first hard error.) Three remounts
+// are attempted against a persistent failure, not one every ~5.5 s forever. Unlike the
+// stall ladder there is no fourth wait: a stall rung can only learn it failed by
+// letting the next window expire, but an error IS the failure signal — once the third
+// retry mount reports one, waiting longer to say so would just hold a spinner over a
+// player that is never going to be remounted again.
+//
+// Unbounded, this loop was the SIGABRT recipe measured on the stall path (TCL Android
+// 14, 2026-08-14: ~150 serial ExoPlayer/MediaCodec teardown/rebuild cycles until ART
+// aborted the process — see STALL_GIVE_UP), cycling ~2x faster, and with even less in
+// its way: against a persistent failure (loopback server dead, feed gone, a 404 that
+// never heals) no engine error ever arrives, because a redirect channel has no feed
+// for the engine's watchdog to fail on, and a dead loopback server cannot report
+// anything at all.
+//
+// THE FIRST RETRY STAYS AT 2.5 s ON PURPOSE — transients are real: right after play()
+// the playlist can 404 while the live edge replicates (serve.js's availability wait
+// absorbs the routine miss in-band as a ~100 ms response, but e.g. one segment lost to
+// a replica rotation edge can still reach the player as an error), so only CONSECUTIVE
+// failures back off. RECOVERED means real playback: the ladder resets in onProgress's
+// motion branch — the same signal the stall ladder's `p.played` reads — and never on a
+// merely successful mount, because a mount that errors again 5 s later is the loop,
+// not recovery. And as with the stall ladder, a remount must not buy back attempts
+// once the ladder is spent, or a host that keeps the player mounted would loop at the
+// give-up boundary; the error text's retry is a host-side re-select, which mounts a
+// fresh component whose ladder starts clean.
+//
+// VOD: deliberately DIVERGES from the stall ladder, which disarms on vod because its
+// trigger — a still playhead — is exactly what a paused, seeking, or finished vod
+// title looks like by design. A hard error is a real failure on any record class, and
+// the error retry (restart-at-0:00 cost and all) has always applied to vod; the bound
+// only stops the retry from repeating forever, so it applies to vod too.
+const ERROR_GIVE_UP = 4
 // Start-buffer tuning (zap latency): ExoPlayer's DefaultLoadControl waits for
 // ~2.5 s of media before starting playback — on a 2 s-segment live feed that is
 // most of the perceived zap time once bytes flow. 1 s is enough to start (every
@@ -178,8 +220,9 @@ export interface AliranVideoProps {
   onPeers?: (peers: number) => void
   onBuffering?: (buffering: boolean) => void
   /** A friendly, viewer-showable failure — the tune ENDS here and your error UI owns the
-   *  screen. Two sources: the engine (tune timeout, corrupt store, not entitled) and the
-   *  stall ladder giving up after STALL_GIVE_UP failed resyncs. Both texts end in "switch
+   *  screen. Three sources: the engine (tune timeout, corrupt store, not entitled), the
+   *  stall ladder giving up after STALL_GIVE_UP failed resyncs, and the error retry ladder
+   *  giving up after ERROR_GIVE_UP consecutive load failures. Every text ends in "switch
    *  to it again to retry", so the retry has to be a RE-SELECT that unmounts this component
    *  and mounts a fresh one — a spent ladder is only re-armed by real playback, never by a
    *  remount, so leaving the player mounted leaves it spent. */
@@ -263,6 +306,10 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
   // Consecutive stall resyncs with no playback in between: 1 = plain remount, ≥2 =
   // the remount didn't restore playback, escalate to a transport teardown.
   const resyncs = useRef(0)
+  // Consecutive error-retry remounts with no real playback in between — `resyncs`'s
+  // mirror for hard player errors (see ERROR_GIVE_UP). At ERROR_GIVE_UP the ladder is
+  // SPENT: the friendly error is up, and only real playback (or a zap) re-arms it.
+  const failures = useRef(0)
   // The served record is a vod title (engine's 'port' recordType) — the stall ladder
   // disarms (see the STALL_MS note). Seeded from the backend for re-entry on a title
   // the engine already serves; every port reply for OUR stream refreshes it.
@@ -275,6 +322,11 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
   }), [])
 
   function remount () {
+    // Any remount supersedes a pending error retry: that timer belongs to a mount that
+    // is going away, and letting it fire would remount the fresh player a second time
+    // (and bill the error ladder an attempt no error of its own earned). If the source
+    // is still broken the fresh mount errors on its own and restarts the cycle cleanly.
+    if (retry.current) { clearTimeout(retry.current); retry.current = null }
     epoch.current++
     setAttempt(epoch.current)
   }
@@ -377,8 +429,10 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
     progress.current = { time: -1, at: Date.now(), played: false }
   }, [url, attempt])
 
-  // A zap or source switch starts a fresh tune — the escalation ladder resets with it.
-  useEffect(() => { resyncs.current = 0 }, [streamId, url])
+  // A zap or source switch starts a fresh tune — both escalation ladders reset with it.
+  // (A feed rotation or headers-only change does NOT pass here — same url — and must
+  // not: those remounts neither spend attempts nor buy any back.)
+  useEffect(() => { resyncs.current = 0; failures.current = 0 }, [streamId, url])
 
   // Stall watchdog: playing but the playhead has not moved for stallTimeoutMs → the
   // live window slid past the playhead (no error event exists for this) → remount.
@@ -462,16 +516,37 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
           const p = progress.current
           if (e.currentTime !== p.time) {
             progress.current = { time: e.currentTime, at: Date.now(), played: true }
+            failures.current = 0 // real playback — the error retry ladder re-arms (a mount alone never does)
             completeTune() // an advancing playhead is playback, whatever else fired
           }
         }
         ;(hostOnProgress as ((e: { currentTime: number }) => void) | undefined)?.(e)
       }}
       onError={() => {
-        // Playlist/segments not replicated yet (or a live-edge hiccup) — retry.
+        // Playlist/segments not replicated yet (or a live-edge hiccup) — retry, on the
+        // bounded ladder (see ERROR_GIVE_UP). Consecutive means no real playback since:
+        // only onProgress motion resets `failures`. Handoff remounts (port / fallback /
+        // source-changed / feed-changed / stall resync) neither count as attempts nor
+        // reset the count — they just cancel the pending retry (see remount()).
+        if (failures.current >= ERROR_GIVE_UP) return // spent: the error is up, only real playback re-arms
+        if (failures.current === ERROR_GIVE_UP - 1) {
+          // The 4th attempt gives up: three consecutive retry mounts just took the same
+          // error, and no engine report is coming (see the ERROR_GIVE_UP note). End the
+          // tune and hand the viewer the same re-select retry the other give-ups offer;
+          // the host's error UI takes it from here.
+          if (retry.current) clearTimeout(retry.current) // a double-fired error must not leave a timer running behind the error UI
+          failures.current = ERROR_GIVE_UP
+          tune.current.tuning = false
+          cb.current.onError?.(`playback failed: '${tune.current.streamId}' will not load — the channel may be broken right now, switch to it again to retry`)
+          return
+        }
         cb.current.onBuffering?.(true)
         if (retry.current) clearTimeout(retry.current)
-        retry.current = setTimeout(() => remount(), RETRY_MS)
+        // The delay belongs to the attempt this error asks for: 2.5 s for the first
+        // (fast — the transient contract), doubled for each consecutive failure. The
+        // attempt is counted when the remount actually happens, so N error events that
+        // collapse into one scheduled retry spend one attempt, not N.
+        retry.current = setTimeout(() => { failures.current++; remount() }, RETRY_MS * 2 ** failures.current)
       }}
       {...restVideoProps}
     />
