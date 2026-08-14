@@ -60,7 +60,14 @@ backend.setNetworkProfile(expensive)     // from NetInfo state.details.isConnect
   resync mount then fails to play within another window, the ladder escalates to
   `backend.reconnect()` — the network flap left the engine's peer connection
   transport-alive but replication-dead, and only a fresh dial (not a remount)
-  recovers that. Drive your **tuning indicator from `onTune`**, not from raw player
+  recovers that. **The ladder is bounded**: each failed resync waits twice as long
+  as the last (12 s, 24 s, 48 s, 96 s), and the fourth stops remounting and fires
+  `onError` instead, at about 3 minutes. Nothing else terminates this path — the
+  engine's own error rung cannot fire when the feed is healthy and only the player
+  is stuck — so treat that `onError` as final: **your retry must unmount
+  `<AliranVideo>`** (render your error UI instead of it) and mount a fresh one, the
+  way re-selecting a channel does. A spent ladder is re-armed only by real playback,
+  never by a remount. Drive your **tuning indicator from `onTune`**, not from raw player
   events: ONE localhost URL serves every P2P channel, so after a zap the *previous*
   channel keeps playing (and emitting `onProgress`/`onBuffer`) under the same URL
   until the engine flips the served feed. `onTune` reports each switch as a tune

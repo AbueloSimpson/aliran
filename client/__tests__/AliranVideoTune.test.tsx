@@ -218,6 +218,116 @@ test('a stall resync starts a fresh tune (new id) and completes on the resync mo
   }
 })
 
+// THE GIVE-UP LANE. The stall ladder used to remount forever at a flat 12 s: on a TCL
+// Android 14 box (2026-08-14) a wedged player rebuilt ~150 ExoPlayer/MediaCodec pairs and
+// ART aborted the process, while the FEED was healthy throughout — which is also why no
+// engine-side error ever arrived to stop it (player.js's watchdog kept standing down on the
+// healthy feed and restarting its own countdown). So the bound has to live HERE, and this
+// test pins all four of its properties: the windows double, the attempts are capped, a spent
+// ladder goes quiet, and only real playback — never a remount — buys attempts back.
+test('the stall ladder backs off, gives up with a friendly error, and stays spent until playback', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const stalls = jest.fn()
+    const errors = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000}
+        onStall={stalls} onError={errors}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 1 }) })
+    const mountsBefore = mockVideoMounts
+
+    // Each failed resync doubles the window: 12 s, then 24 s, then 48 s. A flat ladder would
+    // have fired 3 times by 36 s and 7 times by 84 s.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(12000) })
+    expect(stalls).toHaveBeenCalledTimes(1)
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(23000) }) // t=35 s: still inside the 24 s window
+    expect(stalls).toHaveBeenCalledTimes(1)
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(1000) }) // t=36 s
+    expect(stalls).toHaveBeenCalledTimes(2)
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(48000) }) // t=84 s
+    expect(stalls).toHaveBeenCalledTimes(3)
+
+    // Three resyncs, three remounts, and the transport teardown on every rung from the 2nd.
+    expect(mockVideoMounts).toBe(mountsBefore + 3)
+    expect(backend.reconnect).toHaveBeenCalledTimes(2)
+    expect(errors).not.toHaveBeenCalled()
+
+    // The 4th rung GIVES UP: a friendly error instead of a remount, and no 4th onStall.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(96000) }) // t=180 s
+    expect(stalls).toHaveBeenCalledTimes(3)
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(errors.mock.calls[0][0]).toMatch(/switch to it again to retry/)
+    expect(mockVideoMounts).toBe(mountsBefore + 3) // the give-up did NOT remount
+
+    // SPENT MEANS SPENT. Ten minutes with the playhead still buys nothing — no second error,
+    // no remount. A ladder that re-armed on its own would loop here forever, which is the
+    // failure this bound exists to prevent.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(600000) })
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(stalls).toHaveBeenCalledTimes(3)
+    expect(mockVideoMounts).toBe(mountsBefore + 3)
+
+    // …and REAL PLAYBACK is what re-arms it: the playhead moves, the ladder resets, and a
+    // fresh freeze earns a fresh first rung at the full 12 s.
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 9 }) })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(12000) })
+    expect(stalls).toHaveBeenCalledTimes(4)
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+// The other half of that contract, and the reason onError's text says "switch to it again":
+// the ladder's spent state lives in a ref, so the host's retry has to UNMOUNT this component
+// (LiveScreen renders the error instead of <AliranVideo>, then re-selecting the channel
+// clears it). A host that left the player mounted would hand the viewer a retry button that
+// silently does nothing.
+test('a re-select after the give-up error mounts a fresh component with a clean ladder', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const stalls = jest.fn()
+    const tree = await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000}
+        onStall={stalls} onError={jest.fn()}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 1 }) })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(180000) }) // run the ladder out
+    expect(stalls).toHaveBeenCalledTimes(3)
+
+    // The host's error UI takes the screen: <AliranVideo> unmounts.
+    await ReactTestRenderer.act(async () => { tree.unmount() })
+    mounted.splice(mounted.indexOf(tree), 1)
+
+    // Re-selecting the SAME channel clears the error and mounts a fresh one — whose ladder
+    // starts at rung 1 again, not spent.
+    const restalls = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000}
+        onStall={restalls} onError={jest.fn()}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+    await ReactTestRenderer.act(async () => { lastVideo().onProgress({ currentTime: 1 }) })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(12000) })
+    expect(restalls).toHaveBeenCalledTimes(1)
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
 // Playback headers (redirect channels behind a provider hotlink check): the engine hands
 // them to the HOST with the url, and this component is what actually gets them onto the
 // wire — ExoPlayer reads source.headers once, when it opens the media, so a headers

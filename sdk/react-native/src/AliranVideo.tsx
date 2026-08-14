@@ -76,12 +76,41 @@ const BUFFER_CONFIG = {
 // engine's swarm connection is likely wedged — transport-alive but replication-dead
 // (a network flap can leave it that way; the same S22 day, 15+ min stuck with
 // "1 peer" showing) — so the ladder calls backend.reconnect() to tear it down and
-// dial fresh before each further remount.
+// dial fresh before each further remount. GIVING UP is part of the ladder too: the
+// windows double and the fourth resync surfaces a friendly error instead of remounting
+// again (STALL_GIVE_UP), because nothing else on this path ever will — see its note.
 // VOD (S8a): the whole ladder is live-edge machinery, so it DISARMS when the engine
 // reports the served record is a vod title (the 'port' reply's recordType) — a
 // paused, seeking, or finished vod playhead sits still by design, and a resync
 // remount would yank playback back to 0:00.
 const STALL_MS = 12000
+// …and the BOUND on that ladder. Each consecutive resync that fails to restore playback
+// waits twice as long as the last, and the fourth gives up with a friendly error:
+//
+//   wait 12 s -> resync 1     wait 48 s -> resync 3
+//   wait 24 s -> resync 2     wait 96 s -> GIVE UP, onError    (12+24+48+96 = ~3 min)
+//
+// so three remounts are attempted, not the ~150 the unbounded version reached. Both proven
+// rungs survive untouched: resync 1 is still a plain remount at 12 s, resync 2 still adds
+// the transport teardown.
+//
+// UNBOUNDED WAS ACTIVELY HARMFUL, not merely wasteful (TCL Android 14, 2026-08-14). A wedged
+// ExoPlayer remounted every 12 s for at least 3 minutes — 15 full ExoPlayer/MediaCodec
+// teardown/rebuild cycles in the captured window, ~150 by the time ART aborted the process on
+// the MediaCodec_loop thread — while the FEED stayed healthy throughout: 1 peer, store growing
+// at full live bitrate. Two things make that cadence worse than useless. It re-dials the swarm
+// every 12 s, which is shorter than a fresh dial needs to replicate. And each redial re-arms
+// the engine's tune watchdog (player.js _startTuneWatchdog), which then stands down within a
+// second or two on the healthy feed and clears its timer — so the engine's own friendly-error
+// rung, ≤3× timeoutMs, RESTARTS FROM ZERO every cycle and can never fire. The engine measures
+// the engine; the component that is actually stuck is the player, and nothing else bounds it.
+//
+// RE-ARMING IS PLAYBACK-ONLY, BY DESIGN. Once spent, the ladder stays quiet until real motion
+// resets it (the `p.played` branch) — a remount alone must not buy back attempts, or a host
+// that keeps the player mounted would loop at the give-up boundary forever. The retry the
+// error text offers is a host-side re-select, which unmounts the player and mounts a fresh one
+// whose refs start clean; see the give-up lane in AliranVideoTune.test.tsx.
+const STALL_GIVE_UP = 4
 
 // Cheap stable signature of a playback-header set (sorted k=v, '' for none). Two uses,
 // and they must agree: spotting a HEADERS-ONLY change in the 'port' handler, and keying
@@ -148,11 +177,18 @@ export interface AliranVideoProps {
   onFeedChanged?: (e: { feedKey: string; url: string }) => void
   onPeers?: (peers: number) => void
   onBuffering?: (buffering: boolean) => void
+  /** A friendly, viewer-showable failure — the tune ENDS here and your error UI owns the
+   *  screen. Two sources: the engine (tune timeout, corrupt store, not entitled) and the
+   *  stall ladder giving up after STALL_GIVE_UP failed resyncs. Both texts end in "switch
+   *  to it again to retry", so the retry has to be a RE-SELECT that unmounts this component
+   *  and mounts a fresh one — a spent ladder is only re-armed by real playback, never by a
+   *  remount, so leaving the player mounted leaves it spent. */
   onError?: (message: string) => void
   /** A frozen live edge was detected and the player is resyncing (remount onto a fresh
    *  playlist load at the live edge; consecutive failed resyncs additionally tear down
    *  the engine's wedged peer connection via backend.reconnect()). The same moment also
-   *  fires onTune {phase:'start'} — drive tuning UI off onTune, use this for logging. */
+   *  fires onTune {phase:'start'} — drive tuning UI off onTune, use this for logging.
+   *  Fires once per resync, so it stops after the ladder gives up (onError fires instead). */
   onStall?: () => void
   /** Tune lifecycle for the host's tuning indicator: 'start' arms it (reset — never
    *  inherit the previous tune's progress), 'retune'/'reconnect' are the engine's
@@ -174,7 +210,9 @@ export interface AliranVideoProps {
    *  Default 12000 — the ladder fires once the ~10 s of local headroom the live
    *  offset keeps in hand is exhausted (at the recommended 12-segment window the
    *  total time-to-heal is ~22 s — intended). Auto-disabled while the engine
-   *  reports the served record is a vod title (recordType 'vod'). */
+   *  reports the served record is a vod title (recordType 'vod').
+   *  This is the FIRST rung only: each failed resync doubles the wait, and the whole
+   *  ladder ends in onError after 15x this value (12+24+48+96 s at the default). */
   stallTimeoutMs?: number
   /** ExoPlayer load-control overrides, merged over the zap-tuned defaults
    *  (bufferForPlaybackMs 1000 / bufferForPlaybackAfterRebufferMs 1500). */
@@ -346,8 +384,14 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
   // live window slid past the playhead (no error event exists for this) → remount.
   // If a resync mount then FAILS to play within another window, a remount alone can't
   // help — the engine's peer connection is wedged (transport-alive, replication-dead):
-  // tear it down via backend.reconnect() so the swarm dials fresh, and let the engine's
-  // re-armed tune watchdog drive the outcome (playback resumes, or a friendly error).
+  // tear it down via backend.reconnect() so the swarm dials fresh.
+  //
+  // ⚠ THAT REDIAL DOES NOT HAND THE OUTCOME TO THE ENGINE, though it re-arms the engine's
+  // tune watchdog and this comment used to say it did. That watchdog stands down as soon as
+  // the playlist advances and is servable — which, when the feed is healthy and only the
+  // PLAYER is stuck, is within a second or two, every time. So its ladder never reaches the
+  // friendly error and this loop owned its own termination all along, whether or not it knew
+  // it. STALL_GIVE_UP is that termination; see its note for the incident.
   useEffect(() => {
     if (!stallTimeoutMs) return
     const timer = setInterval(() => {
@@ -356,9 +400,19 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
       if (paused) { p.at = Date.now(); return } // a paused playhead is not a stall
       if (p.played) resyncs.current = 0 // motion since the last resync — the ladder resets
       else if (resyncs.current === 0) return // never played: the tune phase owns recovery
-      if (Date.now() - p.at < stallTimeoutMs) return
+      else if (resyncs.current >= STALL_GIVE_UP) return // spent: the error is up, only real playback re-arms
+      // Back off: a resync that changed nothing earns the next attempt twice the window.
+      if (Date.now() - p.at < stallTimeoutMs * 2 ** resyncs.current) return
       progress.current = { time: -1, at: Date.now(), played: false }
       resyncs.current++
+      if (resyncs.current >= STALL_GIVE_UP) {
+        // Remounting again cannot help, and the engine will never say so — its watchdog keeps
+        // standing down on the healthy feed. End the tune and hand the viewer the same retry
+        // the engine's friendly error offers; the host's error UI takes it from here.
+        tune.current.tuning = false
+        cb.current.onError?.(`playback stalled: no video from '${tune.current.streamId}' — the channel may be unreachable right now, switch to it again to retry`)
+        return
+      }
       // A resync re-arms the tune under a NEW id — the host's indicator restarts from
       // scratch, and the remount below must produce fresh playback before 'playing'.
       const t = tune.current
