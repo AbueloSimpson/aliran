@@ -1,5 +1,5 @@
 export { AliranBackend } from './backend'
-export type { Stream, BackendMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, PairingResult, PairingErrorCode, VodConfig, VodListEntry, VodHistoryEntry, UpdatePlatform, AppUpdateInfo, UpdateEntry, UpdateCheckStatus, UpdateCheckResult, UpdateMessage } from './backend'
+export type { Stream, BackendMessage, StatsMessage, HybridConfig, TuneConfig, ZapPrefetchConfig, StartOptions, SavedCredentials, SavedService, PairingResult, PairingErrorCode, VodConfig, VodListEntry, VodHistoryEntry, UpdatePlatform, AppUpdateInfo, UpdateEntry, UpdateCheckStatus, UpdateCheckResult, UpdateMessage } from './backend'
 // Phone -> TV sign-in handover (sdk/signin-pair.js): the progress stream a host renders
 // and the two start results. Drive it with backend.startSignIn() on the TV and
 // backend.sendSignIn(code) on the phone, and answer the three questions in the stream —

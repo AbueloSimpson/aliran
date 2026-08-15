@@ -584,6 +584,28 @@ export interface RemoteStartResult {
   message?: string
 }
 
+/** One diagnostics sample for the debug HUD — the answer to getStats(). Assembled by
+ *  the worklet (client/backend/backend.mjs sendStats): rates are computed there from
+ *  its previous sample, drive bytes come from a ≤10 s-stale cache (measuring walks
+ *  the replica). null = that source failed or has no meaning right now — the HUD
+ *  renders a dash, never crashes and never guesses. */
+export interface StatsMessage {
+  type: 'stats'
+  tag?: string
+  /** Worklet-side sample time (ms). */
+  at: number
+  /** Device, via bare-os: cpuPercent = one-core % over the sample gap (can exceed
+   *  100 on multicore), rss/free/total in bytes, 1-min load average. */
+  os: { cpuPercent: number | null; rssBytes: number | null; freeMem: number | null; totalMem: number | null; loadAvg1: number | null }
+  /** Engine point-in-time: active source + stream, peers on the current feed, total
+   *  swarm connections (catalog + feeds + everything else on the one swarm). */
+  engine: { source: 'p2p' | 'cdn' | null; streamId: string | null; feedPeers: number; swarmPeers: number }
+  /** P2P wire rates (bytes/s) from hypercore replicator counters; 0/0 on cdn. */
+  net: { rxBps: number | null; txBps: number | null }
+  /** Measured on-disk size of the active feed's replica; null on cdn / not measured yet. */
+  store: { driveBytes: number | null }
+}
+
 export type BackendMessage =
   | { type: 'ready' }
   // provisional (cached warm start): a DISK CACHE of the last session's lineup, emitted
@@ -630,7 +652,13 @@ export type BackendMessage =
   // remoteAccept: the persisted "let my other devices change this television" switch —
   // null/absent = never set, so the join's default (accept) applies. Read it to PAINT the
   // toggle; do not pass it to startRemote(), which resolves it from the prefs file itself.
-  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null; remoteAccept?: boolean | null; signinSaved?: boolean }
+  // debugStats: the persisted "Debug overlay" choice — same null/absent contract as
+  // smoothZapping (absent on worklet bundles older than the field).
+  | { type: 'prefs'; creds: SavedCredentials | null; favorites: string[]; smoothZapping?: boolean | null; debugStats?: boolean | null; language?: string | null; service?: SavedService | null; vodList?: VodListEntry[]; vodHistory?: VodHistoryEntry[]; parental?: { hide: boolean } | null; remoteAccept?: boolean | null; signinSaved?: boolean }
+  // One diagnostics sample (answer to getStats(); the debug HUD's data feed). Every
+  // field is best-effort: null = that source failed or has no meaning right now
+  // (e.g. wire rates before a second sample, drive bytes on a cdn source).
+  | StatsMessage
   // Answer to parentalVerify(): did the submitted PIN match? tag echoes the request's.
   | { type: 'parental-verify'; ok: boolean; tag?: string }
   // Answer to resolvePairing(): the panel key a service pairing code stands for, after
@@ -803,6 +831,8 @@ export class AliranBackend {
   favorites: string[] = []
   /** Persisted "Smooth zapping" choice; null until the user first sets the toggle. */
   smoothZapping: boolean | null = null
+  /** Persisted "Debug overlay" choice; null until the user first sets the toggle. */
+  debugStats: boolean | null = null
   /** The viewer's pinned UI language; null while they follow the device language.
    *  The SDK stores and relays it — WHAT it means is the host app's business (this
    *  binding renders no localized copy of its own). */
@@ -1022,6 +1052,23 @@ export class AliranBackend {
    *  prefetch mid-play. Echoed back as {type:'zap-prefetch', enabled}. At boot, pass
    *  the persisted preference via StartOptions.zapPrefetch instead. */
   setZapPrefetch (v: boolean | ZapPrefetchConfig) { this.send({ type: 'zap-prefetch-set', zapPrefetch: v }) }
+
+  /** The "Debug overlay" toggle (device-local, survives restarts). Optimistic mirror
+   *  plus the persisted round trip: the {type:'prefs'} reply confirms, and every
+   *  surface that renders the toggle (Settings row, the TV debug key's flip) reads
+   *  the same pref, so they can never disagree. */
+  setDebugStats (v: boolean) {
+    this.debugStats = v // optimistic; the 'prefs' reply confirms
+    this.send({ type: 'debug-stats-set', debugStats: v })
+  }
+
+  /** One diagnostics sample for the debug HUD. Resolves null when nothing answers
+   *  within the timeout (worklet busy, engine-less build) — the HUD shows dashes for
+   *  a beat and asks again on its own next tick; it must never stack requests. */
+  async getStats (): Promise<StatsMessage | null> {
+    const m = await this.request('stats', { type: 'stats-get' }, 900)
+    return (m as StatsMessage | null)
+  }
 
   /** Pin the viewer's UI language (device-local, survives restarts), or pass null to
    *  clear it and follow the device language again. The worklet whitelists the code
@@ -1608,7 +1655,7 @@ export class AliranBackend {
         // One event per engine. Latched so a React root that starts after it — an Android
         // activity restart over a live worklet — can still be told; see reattach().
         if (msg.type === 'ready') this.engineReady = true
-        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.remoteAccept = msg.remoteAccept ?? null; this.signinSaved = msg.signinSaved === true; this.prefsLoaded = true }
+        if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.debugStats = msg.debugStats ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.remoteAccept = msg.remoteAccept ?? null; this.signinSaved = msg.signinSaved === true; this.prefsLoaded = true }
         if (msg.type === 'streams') {
           // A provisional (cached) lineup must never overwrite a real session's — the
           // worklet guards this ordering too, but a reattach replay makes it reachable.
