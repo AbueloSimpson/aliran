@@ -55,6 +55,18 @@ export const config = {
   // its own topics. Raw blind blocks like every other mirror — the guide drive is
   // public, but this box still never opens it. Default OFF.
   epg: bool(process.env.EPG, false),
+  // Panel-availability mirror: hold the panel's signed bee (accounts + catalog) IN
+  // FULL, not just the blocks this box happened to read. Hypercore replication is
+  // multi-source, so any number of keyless mirrors can then serve the `user/<name>`
+  // and `catalog/*` reads a viewer's login waits on while the panel's own replication
+  // is down or drowning. Availability only, never authority: every bee block is
+  // panel-signed, and the login RPC itself (hello/login/session) still requires the
+  // real panel — this box holds no OPRF secret and no token-signing key, and answers
+  // no RPC. Default OFF (it grows with the panel's history, unbounded by retention).
+  panelData: bool(process.env.PANEL_DATA, false),
+  // Mirror the panel's assets drive (posters/art, meta/assetsKey) IN FULL and serve
+  // it on its own topics — the same raw two-core mirror as the guide. Default OFF.
+  assets: bool(process.env.ASSETS, false),
   // Periodic one-line status log per channel. 0 disables it.
   statusIntervalSeconds: int(process.env.STATUS_INTERVAL_SECONDS, 60),
   // Opt-in health/metrics HTTP server. Default OFF (0) — a stock repeater opens NO

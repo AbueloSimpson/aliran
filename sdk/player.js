@@ -5562,6 +5562,17 @@ export class AliranPlayer extends Emitter {
   // starve the real panel connection arriving a moment later — and the first to
   // validate wins; on failure the slot simply stays open for the next connection.
   // Never throws (a probe failure is normal traffic, not an error).
+  //
+  // Repeaters (S20b) announce on the panel topic too, so an unarmed viewer now also
+  // probes boxes that mirror the panel's data but answer no RPC at all — the probe
+  // just times out. Considered and REJECTED: skipping candidates that arrived on a
+  // non-panel-topic connection. The cost side is a non-issue (probes are concurrent
+  // and fire only while no RPC is armed, so a mirror's dead probe is one pending
+  // timer that never delays the real panel), while the filter has a real failure
+  // mode: hyperswarm keeps ONE socket per peer across all topics and accept-side
+  // connections don't name the topic they came from, so after a panel restart the
+  // real panel can reach us on a socket the filter would classify as "not panel" —
+  // exactly the mid-session re-arm this probe exists for.
   _maybeArmRpc (socket) {
     if (this._call || !this._panelBee) return
     const remoteKey = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : null

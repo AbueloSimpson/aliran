@@ -16,7 +16,13 @@
 //   (4) retention: the mirrored window stays bounded across many segment appends,
 //       cleared blocks stay cleared (no clear/re-download loop);
 //   (5) keyless proof: the repeater's store, config and status contain neither the
-//       encryptionKey nor any plaintext, and its package pulls in no drive/crypto lib.
+//       encryptionKey nor any plaintext, and its package pulls in no drive/crypto lib;
+//   (6) panel availability (S20b): with the repeater holding the FULL panel bee +
+//       assets drive, the panel stops replicating to new connections (RPC only — the
+//       replication-drowned-panel model) and a fresh SDK viewer still completes a real
+//       OPRF login: the `user/<name>` + `catalog/*` reads it waits on are served by
+//       the repeater, while the RPC arms against the REAL panel only (a repeater
+//       answers no `hello`); a cold assets replica fetches art off the repeater alone.
 // No ffmpeg needed. Exits 0 on PASS.
 import createTestnet from 'hyperdht/testnet.js'
 import Corestore from 'corestore'
@@ -26,6 +32,10 @@ import hcrypto from 'hypercore-crypto'
 import assert from 'assert'
 import os from 'os'; import fs from 'fs'; import path from 'path'
 import b4a from 'b4a'
+import {
+  evaluateFull, randomSalt, deriveVerifier, wrapKeyFrom, wrap,
+  userKeyPair, sealTo, authKeyPair, ARGON2_DEFAULT
+} from '@aliran/core'
 import { initKeys, openKeys } from '../panel/src/keys.js'
 import { openStore } from '../panel/src/store.js'
 import { makeThrottle, attachLoginRpc } from '../panel/src/rpc.js'
@@ -55,7 +65,9 @@ const dirs = {
   repeater: fs.mkdtempSync(path.join(os.tmpdir(), 'e2erp-rep-')),
   viewer1: fs.mkdtempSync(path.join(os.tmpdir(), 'e2erp-v1-')),
   viewer2: fs.mkdtempSync(path.join(os.tmpdir(), 'e2erp-v2-')),
-  viewer3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2erp-v3-'))
+  viewer3: fs.mkdtempSync(path.join(os.tmpdir(), 'e2erp-v3-')),
+  viewerL: fs.mkdtempSync(path.join(os.tmpdir(), 'e2erp-vl-')),
+  assetsCold: fs.mkdtempSync(path.join(os.tmpdir(), 'e2erp-ac-'))
 }
 const cleanups = []
 async function cleanup () { for (const fn of cleanups.reverse()) { try { await fn() } catch {} } for (const d of Object.values(dirs)) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} } }
@@ -111,12 +123,21 @@ try {
   // ===== Panel: signed store + register RPC + blobsKey enrichment =====
   initKeys(dirs.panel)
   const keys = openKeys(dirs.panel)
-  const { store: panelStore, db } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
+  const { store: panelStore, db, assets: panelAssets } = await openStore(dirs.panel, keys); cleanups.push(() => panelStore.close())
   const panelSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => panelSwarm.destroy())
   const enrich = makeBlobsKeyEnricher({ store: panelStore, swarm: panelSwarm, db, dataDir: dirs.panel })
   cleanups.push(() => enrich.close())
   const throttle = makeThrottle(1000, 60)
-  panelSwarm.on('connection', (s) => { panelStore.replicate(s); attachLoginRpc(s, { keys, difficulty: 8, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000, enrich }) })
+  // Replication is gated so section (6) can model a panel whose DATA path is drowned
+  // while its RPC stays up: connections accepted after the flip get the login RPC and
+  // nothing else — their bee/assets reads must be answered by someone else.
+  let panelServesData = true
+  let panelDataDenials = 0
+  panelSwarm.on('connection', (s) => {
+    if (panelServesData) panelStore.replicate(s)
+    else panelDataDenials++
+    attachLoginRpc(s, { keys, difficulty: 8, throttle, db, dataDir: dirs.panel, sessionTtlMs: 3600000, enrich })
+  })
   const panelTopic = hcrypto.hash(keys.signing.publicKey)
   panelSwarm.join(panelTopic, { server: true, client: false }); await panelSwarm.flush()
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
@@ -186,7 +207,12 @@ try {
     bootstrap,
     sampleIntervalMs: 500,
     sweepIntervalMs: 1500,
-    statusIntervalSeconds: 0
+    statusIntervalSeconds: 0,
+    // S20b panel-availability round, verified in section (6): full bee + assets
+    // mirrors, announced on the catalog topic so a fresh viewer can find this box.
+    announce: true,
+    panelData: true,
+    assets: true
   })
   cleanups.push(() => repeater.close())
   await repeater.start()
@@ -319,6 +345,82 @@ try {
   assert.ok((await fetchBuf(port3, '/' + seg3)).includes(MARKER), 'a COLD viewer tunes and plays entirely off the repeater')
   log('(2) buffered window survives origin death — warm viewer keeps playing, cold viewer tunes fresh ✓')
 
+  // ===== (6) panel availability (S20b): login reads served by the repeater =====
+  // Enroll a real user exactly the way the panel does (record shape from
+  // e2e-login-test) and publish one art file, then wait until the repeater holds
+  // ALL of the panel's data: the full bee (accounts + catalog) and both assets cores.
+  const PASSWORD = 'repeater-test-pw'
+  const rwd = evaluateFull(keys.oprf, PASSWORD)
+  const salt = randomSalt()
+  const kp = userKeyPair()
+  const auth = authKeyPair()
+  const wk = wrapKeyFrom(rwd)
+  await db.put('user/alice', {
+    salt: b4a.toString(salt, 'hex'),
+    verifier: b4a.toString(deriveVerifier(rwd, salt, ARGON2_DEFAULT), 'hex'),
+    argon: ARGON2_DEFAULT,
+    pub: b4a.toString(kp.publicKey, 'hex'),
+    encPriv: wrap(wk, kp.secretKey),
+    authPub: b4a.toString(auth.publicKey, 'hex'),
+    authPrivEnc: wrap(wk, auth.secretKey),
+    wrapped: { ch1: sealTo(kp.publicKey, encKey) },
+    devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
+  })
+  // Art is PUBLIC plaintext by design (posters, not media) — it must not contain the
+  // MARKER, or the (5) ciphertext-only scan below would rightly flag it.
+  const artBuf = Buffer.alloc(4096, 'aliran-public-art/')
+  await panelAssets.put('/art/ch1/logo.bin', artBuf)
+  const assetsPtr = (await db.get('meta/assetsKey')).value
+  assert.ok(/^[0-9a-f]{64}$/i.test(assetsPtr.blobsKey || ''), 'panel publishes the assets blobsKey for keyless mirrors')
+  await waitFor(() => {
+    const s = repeater.status()
+    return s.panelData && s.panelData.length === db.core.length && s.panelData.held === s.panelData.length &&
+      s.assets && s.assets.key === assetsPtr.key && s.assets.blobsKey === assetsPtr.blobsKey &&
+      s.assets.lengths.length === 2 && s.assets.lengths.every((l) => l > 0)
+  }, 120000, 'repeater holds the FULL panel bee + both assets cores')
+  log(`(6) repeater synced: full panel bee (${db.core.length} blocks) + assets drive`)
+
+  // The flip: every connection the panel accepts from here on is RPC-only. A fresh
+  // viewer must then complete its login off the repeater's mirrors — the exact
+  // "panel dial struggles, catalog still loads" availability this round exists for.
+  panelServesData = false
+  const panelSwarmPub = b4a.toString(panelSwarm.keyPair.publicKey, 'hex')
+  const viewerL = createPlayer({ panelPubKey, storeDir: dirs.viewerL, swarm: { bootstrap } }); cleanups.push(() => viewerL.stop())
+  await viewerL.connect() // join the panel topic — login() itself never joins
+  let session = null
+  const loginDeadline = Date.now() + 120000
+  while (!session) {
+    if (Date.now() > loginDeadline) throw new Error('timeout: SDK login via repeater-served reads')
+    try {
+      // The display list projects the user's GRANTS through the catalog (alice holds
+      // ch1 only), so one record IS the complete successful answer here.
+      const s = await viewerL.login('alice', PASSWORD)
+      if (s.length >= 1) session = s
+    } catch (e) {
+      if (!/not connected|unknown user/i.test(String(e.message))) throw e
+    }
+    if (!session) await sleep(1500)
+  }
+  assert.ok(session.find((x) => x.id === 'ch1'), 'login display list carries the granted channel')
+  assert.ok(panelDataDenials >= 1, 'the viewer really hit the RPC-only panel (replication denied at least once)')
+  assert.strictEqual(viewerL._panelPeerKey, panelSwarmPub, 'RPC armed against the REAL panel — the repeater never answered hello')
+  await viewerL.stop() // before the cold-assets check, so it cannot serve metadata blocks it replicated
+  log('(6) fresh viewer logged in with the panel replicating NOTHING to it — user/catalog reads served by the repeater ✓')
+
+  // Cold assets replica: the panel never announces the assets topics in this test and
+  // no longer replicates to new connections — the repeater is the only possible source.
+  const acStore = new Corestore(dirs.assetsCold); await acStore.ready(); cleanups.push(() => acStore.close())
+  const acSwarm = new Hyperswarm({ bootstrap }); cleanups.push(() => acSwarm.destroy())
+  acSwarm.on('connection', (s) => acStore.replicate(s))
+  const acDrive = new Hyperdrive(acStore, b4a.from(assetsPtr.key, 'hex')); await acDrive.ready()
+  acSwarm.join(acDrive.discoveryKey, { client: true, server: false })
+  // Race against a short sleep: a get() on a cold sparse replica can PARK waiting for
+  // a peer, and waitFor's deadline only trips between calls, never inside one.
+  const coldArt = await waitFor(() => Promise.race([acDrive.get('/art/ch1/logo.bin'), sleep(5000)]).catch(() => null), 60000, 'cold replica fetches art via the repeater')
+  assert.ok(b4a.equals(coldArt, artBuf), 'art bytes intact off the repeater')
+  await acDrive.close(); await acSwarm.destroy(); await acStore.close()
+  log('(6) cold assets replica fetched art off the repeater alone ✓')
+
   // ===== (5) keyless proof: no encryptionKey, no plaintext, anywhere on the box =====
   const statusSnapshot = JSON.stringify(repeater.status())
   const configSnapshot = JSON.stringify(repeater.config)
@@ -340,7 +442,7 @@ try {
   }
   log(`(5) keyless proven: ${stored} B of ciphertext on disk, zero key/plaintext hits; no drive/crypto deps ✓`)
 
-  log('\nRESULT: PASS ✅  (fan-out off the origin → origin-death window → unattended rotation → bounded retention → ciphertext-only box)')
+  log('\nRESULT: PASS ✅  (fan-out off the origin → origin-death window → unattended rotation → bounded retention → panel-availability login via mirrors → ciphertext-only box)')
   await cleanup(); process.exit(0)
 } catch (err) {
   log('ERROR:', err.stack || err.message)
