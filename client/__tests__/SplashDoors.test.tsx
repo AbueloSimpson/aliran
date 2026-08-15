@@ -44,7 +44,7 @@ import { backend } from '../src/worklet'
 // edit in two places rather than a silent re-tuning of the budget.
 const RETRY_MS = 2500
 const RESTORE_BUDGET_MS = 45000
-const LOGIN_MAX_RETRIES = 24
+const LOGIN_MAX_RETRIES = 8
 // What one restore attempt COSTS IN TIME. resumeSignIn() loops inside the worklet on 'not
 // connected to panel' for RESUME_CONNECT_MS before it answers retry:true, so an offline
 // device pays this every single time (client/backend/backend.mjs).
@@ -112,7 +112,14 @@ async function answerResume (answer: Record<string, unknown>) {
 
 /** Boot the screen with the prefs a television that a phone signed in would have. */
 async function boot (prefs: { signinSaved?: boolean; creds?: { username: string; password: string } | null }) {
-  const navigation = { replace: jest.fn() } as unknown as React.ComponentProps<typeof SplashScreen>['navigation']
+  // replace() is the exit the assertions watch; the rest exist because the screen
+  // registers a focus listener on mount and provisional routing navigates/resets.
+  const navigation = {
+    replace: jest.fn(),
+    navigate: jest.fn(),
+    dispatch: jest.fn(),
+    addListener: jest.fn(() => () => {})
+  } as unknown as React.ComponentProps<typeof SplashScreen>['navigation']
   await mount(<SplashScreen navigation={navigation} route={{} as never} backendReady={false} />)
   await ReactTestRenderer.act(async () => {
     workletSays({ type: 'prefs', creds: prefs.creds ?? null, favorites: [], service: null, signinSaved: prefs.signinSaved === true })
