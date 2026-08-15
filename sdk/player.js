@@ -441,6 +441,26 @@ function lastSegmentDurationMs (text) {
   return d > 0 ? d * 1000 : 4000
 }
 
+// panelPeer: the REMEMBERED PANEL PEER — the swarm public key of the peer that answered
+// the hello probe last session (_maybeArmRpc), handed back by the host from wherever it
+// persisted the 'panel-peer' event. It is a REACHABILITY HINT, never an identity claim:
+// _openPanel dials it directly (swarm.joinPeer) right after the topic join, so the dial
+// RACES the topic lookup and whichever lands a socket first wins the probe. MEASURED on
+// the TCL set: every boot pays ~4-5 s of UDP bind + DHT bootstrap ('swarm-ready') plus a
+// topic lookup before the first panel socket (~5.5-6 s to 'rpc-armed') — the direct dial
+// skips the lookup leg entirely on a warm boot. A stale key (panel moved boxes, rotated
+// its swarm identity) costs nothing: the hello probe refuses the impostor exactly as it
+// refuses any other peer, the lookup path proceeds unchanged, and once a DIFFERENT peer
+// validates, the arm path leavePeer()s the stale hint so the swarm stops re-dialling a
+// dead address for the rest of the session. Trust is established per-boot by the probe —
+// the hint is deliberately NOT preloaded into _panelPeerKey, because that field means
+// "proved it is the panel THIS session" and the remembered re-arm path trusts it blindly.
+function normalizePanelPeer (v) {
+  if (v == null) return null
+  if (typeof v !== 'string' || !/^[0-9a-f]{64}$/.test(v)) throw new Error('panelPeer must be the 64-hex swarm public key a previous session validated (the panel-peer event payload)')
+  return v
+}
+
 // swarm: tuning for the ONE Hyperswarm the engine runs (panel + every feed share it).
 // maxPeers = hyperswarm's total-connection budget (lib default 64). Ordinary viewers
 // should omit it; SDK-based seed nodes and the repeater appliance (S20) raise it into
@@ -960,7 +980,7 @@ const REPLICA_SWEEP_DELAY_MS = 20000
 const SWEEP_YIELD_EVERY = 250
 
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, feedLimit, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
+  constructor ({ panelPubKey, panelPeer, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, feedLimit, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._remote = normalizeRemote(remote) // see normalizeRemote — default: hold nothing
@@ -997,6 +1017,8 @@ export class AliranPlayer extends Emitter {
     this._catalogWatcher = null
     this._call = null
     this._panelPeerKey = null // hex public key of the peer that PROVED it is the panel (see _maybeArmRpc)
+    this._panelPeerHint = normalizePanelPeer(panelPeer) // last session's validated key — a direct-dial hint, never trusted (see normalizePanelPeer)
+    this._panelPeerAnnounced = null // last 'panel-peer' emit, so mid-session re-arms on the same socket/key stay quiet
     this._panelDiscovery = null // the panel topic's PeerDiscovery — report() kicks refresh() when the RPC is down
     this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
     this._loginRpcWaitMs = 10000 // login's bounded wait for the RPC to arm (tests shrink it) — see _awaitPanelRpc
@@ -5487,6 +5509,22 @@ export class AliranPlayer extends Emitter {
       if (remoteKey) this._panelPeerKey = remoteKey
       this._mark('rpc-armed', how)
       socket.on('close', () => { if (this._call === call) this._call = null })
+      if (remoteKey && remoteKey !== this._panelPeerAnnounced) {
+        // Tell the host WHICH peer proved it is the panel, so it can persist the key
+        // and hand it back as `panelPeer` next boot (the direct-dial hint — see
+        // normalizePanelPeer). Emitted only on CHANGE: the remembered re-arm fires on
+        // every panel-socket flap mid-session, and a host that fsyncs a file per event
+        // would pay per flap for a value that has not moved.
+        this._panelPeerAnnounced = remoteKey
+        this.emit('panel-peer', remoteKey)
+        // …and if a DIFFERENT peer validated than the one the boot hint dialled, the
+        // hint is stale: hang up the standing dial request so the swarm stops
+        // re-dialling a dead address on its backoff ladder for the rest of the session.
+        if (this._panelPeerHint && this._panelPeerHint !== remoteKey) {
+          try { this._swarm.leavePeer(b4a.from(this._panelPeerHint, 'hex')) } catch {}
+          this._panelPeerHint = null // a purge's _openPanel re-run must not re-dial it either
+        }
+      }
     }
     if (remoteKey && remoteKey === this._panelPeerKey) return arm('remembered')
     ;(async () => {
@@ -5528,6 +5566,18 @@ export class AliranPlayer extends Emitter {
     await this._panelBee.ready()
     this._panelDiscovery = this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
     this._mark('panel-topic-joined')
+    // THE REMEMBERED PANEL PEER (see normalizePanelPeer for the whole story): dial last
+    // session's validated peer directly, racing the topic lookup just joined — whichever
+    // lands a socket first goes through the same hello probe, so a stale key costs
+    // nothing and a fresh one skips the lookup leg of a warm boot. Fired here rather
+    // than at connect() so a corruption purge's re-open gets the same head start.
+    // joinPeer is a request, not a guarantee (see _redialPeer's contract notes) — the
+    // topic join above remains the path that always works, which is why nothing here
+    // waits, checks, or reports failure. The mark is the instrument: 'panel-joinpeer'
+    // followed closely by 'rpc-armed probed' on a warm boot is this feature working.
+    if (this._panelPeerHint) {
+      try { this._swarm.joinPeer(b4a.from(this._panelPeerHint, 'hex')); this._mark('panel-joinpeer') } catch {}
+    }
     this._watchCatalog()
     this._watchEpgKey()
     this._watchGrants() // no-op before the first login; re-arms the grant watch after a purge

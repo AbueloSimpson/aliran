@@ -75,6 +75,11 @@ export interface ServiceDescriptor {
    *  language always wins, and their Settings choice wins over both. Omit for
    *  English. */
   defaultLocale?: string
+  /** Operator-run DHT bootstrap nodes ('host:port'), for self-contained/private
+   *  deployments. Empty/omitted = the public DHT (the shipped default). Passed to the
+   *  engine's swarm at worklet boot — a viewer booted onto a private DHT can reach
+   *  exactly the peers that DHT knows, so set this only when the panel, broadcasters
+   *  and viewers all live on the same private network. */
   bootstrap?: string[]
   // Optional hybrid CDN<->P2P playback policy (cdnUrl is a '{streamId}' template
   // string). Omit for pure P2P. See sdk/react-native and sdk/README.md.

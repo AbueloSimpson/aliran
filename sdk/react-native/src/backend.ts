@@ -149,8 +149,13 @@ export interface ZapPrefetchConfig {
 // an overflowing receive buffer drops packets silently — and send untouched (reseed
 // upload is opportunistic; a phone uplink saturates first). Best-effort on-device:
 // the outcome arrives as {type:'status', state:'net:tuned', message}.
+// bootstrap replaces the PUBLIC DHT's bootstrap nodes with the operator's own
+// ('host:port' strings or {host, port}) — self-contained/private deployments only;
+// omit it everywhere else, because a viewer that boots onto a private DHT can reach
+// exactly the peers that DHT knows and nothing on the public one.
 export interface SwarmConfig {
   maxPeers?: number
+  bootstrap?: Array<string | { host: string; port: number }>
   rcvbufMb?: number
   sndbufMb?: number
 }

@@ -246,8 +246,8 @@ export default function App () {
     // runtime service and either connect()s or routes to the Connect screen.
     // boot()/bootIdle() are async (they await the native app version first); a start()
     // throw must not become an unhandled rejection — surface it on the adb log instead.
-    if (hasBakedKey()) backend.boot(service.panelPubKey, service.hybrid).catch((e) => console.error('worklet boot failed', e))
-    else backend.bootIdle(service.hybrid).catch((e) => console.error('worklet boot failed', e))
+    if (hasBakedKey()) backend.boot(service.panelPubKey, service.hybrid, service.bootstrap).catch((e) => console.error('worklet boot failed', e))
+    else backend.bootIdle(service.hybrid, service.bootstrap).catch((e) => console.error('worklet boot failed', e))
     let offNet: (() => void) | undefined
     try {
       // Both signals matter: `isConnectionExpensive` gates prefetch, and either that OR

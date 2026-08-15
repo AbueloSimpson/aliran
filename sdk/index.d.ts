@@ -80,8 +80,9 @@ export interface ZapPrefetchConfig {
 export interface SwarmConfig {
   /** Total-connection budget (lib default 64) — raise on seed nodes / repeater-style hosts. */
   maxPeers?: number
-  /** Custom DHT bootstrap nodes (local testnets / private DHT). Omit for the public DHT. */
-  bootstrap?: Array<{ host: string; port: number }>
+  /** Custom DHT bootstrap nodes, as 'host:port' strings or {host, port} (local
+   *  testnets / private DHT). Omit for the public DHT. */
+  bootstrap?: Array<string | { host: string; port: number }>
   /** UDP receive-buffer request in MiB (default 2 — a viewer is download-dominant, so
    *  fan-in absorbs into the receive side). 0 leaves the OS/udx default. Mirrors the
    *  servers' SWARM_RCVBUF_MB. Best-effort; the outcome is emitted as a 'status'
@@ -154,6 +155,17 @@ export interface SignInKeys {
 export interface PlayerOptions {
   /** Panel public key (hex) — may instead be passed to connect(). */
   panelPubKey?: string
+  /**
+   * The swarm public key (hex) of the peer a PREVIOUS session validated as the panel —
+   * the payload of the 'panel-peer' event, handed back from wherever the host persisted
+   * it. The engine dials it directly right after the panel topic join, racing the DHT
+   * topic lookup; whichever socket lands first goes through the same hello probe, so a
+   * stale key costs nothing (the probe refuses it and the lookup path proceeds) while a
+   * fresh one skips the lookup leg of a warm boot (~1-2 s measured on a TV box).
+   * A reachability hint only — never treated as an identity claim. Invalidate the
+   * persisted copy on sign-out / service switch.
+   */
+  panelPeer?: string
   /** Disposable replica cache directory (default './aliran-store'). */
   storeDir?: string
   /**
@@ -579,6 +591,15 @@ export interface PlayerEvents {
    * with `remote: { keepSignIn: true }` — see SignInKeys before you subscribe.
    */
   'signin-keys': [keys: SignInKeys]
+  /**
+   * A peer proved it is the panel (it answered the hello probe, or re-validated after a
+   * socket flap onto a NEW key). The payload is its swarm public key (hex): persist it
+   * beside your prefs and pass it back as PlayerOptions.panelPeer next boot, so the
+   * engine can dial the panel directly instead of waiting out the DHT topic lookup.
+   * Emitted only when the key CHANGES, so a persist-per-event host writes once per
+   * panel identity, not once per reconnect.
+   */
+  'panel-peer': [publicKey: string]
 }
 
 /**

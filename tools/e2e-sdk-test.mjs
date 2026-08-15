@@ -1701,6 +1701,8 @@ try {
   cleanups.push(() => { try { fs.rmSync(dirL, { recursive: true, force: true }) } catch {} })
   const playerL = createPlayer({ panelPubKey, storeDir: dirL, swarm: { bootstrap } })
   cleanups.push(() => playerL.stop())
+  const peerEventsL = [] // 'panel-peer' payloads — the key a host would persist for the next boot's direct dial
+  playerL.on('panel-peer', (k) => peerEventsL.push(k))
   await playerL.connect()
   let sL = null
   for (let i = 0; i < 10 && !sL; i++) {
@@ -1718,9 +1720,69 @@ try {
   // and a stop() inside the delay window must starve the pending timers (epoch guard).
   if (playerL._replicaSweep !== null) throw new Error('the stale-replica sweep ran inline with login (stagger regression)')
   if (playerL._feeds.size !== 0) throw new Error('feeds opened inline with login (stagger regression)')
+  const panelPeerL = playerL._panelPeerKey // captured before stop() nulls it — the key the next scene dials
   await playerL.stop()
   await sleep(3500) // across PREWARM_DELAY_MS — a fired timer must find the epoch moved
   if (playerL._store !== null || playerL._swarm !== null) throw new Error('a staggered post-login task rebuilt engine state after stop()')
+
+  // ----- Remembered panel peer: the direct dial ALONE arms the RPC (panel-reachability) -----
+  // A warm boot hands the engine last session's validated peer key (`panelPeer`) and
+  // _openPanel dials it right after the topic join, racing the lookup. On a local testnet
+  // both paths are fast, so "raced and won" proves nothing — instead the topic join is
+  // STUBBED to a dead discovery, leaving the joinPeer dial as the ONLY way this player can
+  // reach the panel. An armed RPC and a delivered lineup are then the direct-dial path alone.
+  if (peerEventsL.length !== 1 || peerEventsL[0] !== panelPeerL || !/^[0-9a-f]{64}$/.test(String(peerEventsL[0]))) {
+    throw new Error('panel-peer must deliver the validated key exactly once: ' + JSON.stringify(peerEventsL) + ' vs ' + panelPeerL)
+  }
+  const dirM = tmp('e2es-cliM-')
+  cleanups.push(() => { try { fs.rmSync(dirM, { recursive: true, force: true }) } catch {} })
+  const playerM = createPlayer({ panelPubKey, storeDir: dirM, swarm: { bootstrap }, panelPeer: peerEventsL[0] })
+  cleanups.push(() => playerM.stop())
+  const realEnsureM = Object.getPrototypeOf(playerM)._ensureStore
+  playerM._ensureStore = async function () {
+    await realEnsureM.call(this)
+    // Kill topic lookups AFTER the swarm exists: every join answers a dead discovery
+    // (refresh/flushed are what the engine touches), so a socket can only come from the
+    // panelPeer dial. joinPeer is untouched — it does not go through join().
+    this._swarm.join = () => ({ refresh () {}, destroy () {}, async flushed () {} })
+  }
+  await playerM.connect()
+  let sM = null
+  for (let i = 0; i < 10 && !sM; i++) {
+    try { sM = await playerM.login('alice', PASSWORD) } catch (e) {
+      if (!/unknown user/.test(String(e.message))) throw new Error('the direct-dial login failed outside the replication gap: ' + e.message)
+      await sleep(500)
+    }
+  }
+  if (!sM || sM.length < 4) throw new Error('the direct dial alone did not deliver the lineup')
+  const marksM = playerM.bootTrace().map((m) => m.name + (m.detail ? ' ' + m.detail : ''))
+  if (!marksM.includes('panel-joinpeer')) throw new Error('no panel-joinpeer mark — the hint was never dialled: ' + marksM.join(' | '))
+  if (!marksM.some((m) => m.startsWith('rpc-armed'))) throw new Error('the RPC never armed on the direct dial: ' + marksM.join(' | '))
+  await playerM.stop()
+  log('panel-peer: with the topic lookup DISABLED, the persisted key alone dialled the panel and logged in —', marksM.filter((m) => m === 'panel-joinpeer' || m.startsWith('rpc-armed')).join(', '))
+
+  // …and a STALE hint costs nothing: a key nobody answers on dials into the void, the
+  // probe never validates it, and the ordinary lookup path proceeds to a working login.
+  // The trust boundary is asserted too — a hint must never appear in _panelPeerKey, which
+  // is the field the instant no-probe re-arm path trusts.
+  const dirN = tmp('e2es-cliN-')
+  cleanups.push(() => { try { fs.rmSync(dirN, { recursive: true, force: true }) } catch {} })
+  const stalePeer = b4a.toString(hcrypto.randomBytes(32), 'hex')
+  const playerN = createPlayer({ panelPubKey, storeDir: dirN, swarm: { bootstrap }, panelPeer: stalePeer })
+  cleanups.push(() => playerN.stop())
+  await playerN.connect()
+  let sN = null
+  for (let i = 0; i < 10 && !sN; i++) {
+    try { sN = await playerN.login('alice', PASSWORD) } catch (e) {
+      if (!/unknown user|not connected to panel/.test(String(e.message))) throw new Error('a stale hint broke the lookup login: ' + e.message)
+      await sleep(500)
+    }
+  }
+  if (!sN || sN.length < 4) throw new Error('a stale panelPeer hint cost the ordinary login its lineup')
+  if (playerN._panelPeerKey === stalePeer) throw new Error('the stale hint was TRUSTED — _panelPeerKey may only ever hold a probed key')
+  await playerN.stop()
+  const panelPeerProven = true
+  log('panel-peer: a stale hint was refused by the probe and cost nothing — the lookup path logged in around it')
 
   // Discovery kick cadence, no network: the stub proves the rate limit and the offline
   // verdict without waiting on a real DHT.
@@ -1736,11 +1798,11 @@ try {
   const loginWaitProven = true
   log('login-wait: discovery kick rate-limited + offline verdict correct; post-login stagger held across stop()')
 
-  const pass = !!(loginWaitProven && streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
+  const pass = !!(loginWaitProven && panelPeerProven && streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
     meteredGated && directionalProven && stallGated && clientOnlyProven && evictReopenProven && redirectProven && liveEntitlementProven && diskRotationProven)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + evicted-feed re-open fresh dial + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) + VIEWER-DISK rotation of the active feed (invisible swap, request park, single-flight, cast pin, retune overlap, failed re-open, stop() overlap) verified)' : 'FAIL ❌')
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + evicted-feed re-open fresh dial + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) + VIEWER-DISK rotation of the active feed (invisible swap, request park, single-flight, cast pin, retune overlap, failed re-open, stop() overlap) + remembered-panel-peer direct dial (arms with the topic lookup disabled; stale hint refused) verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

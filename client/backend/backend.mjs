@@ -638,6 +638,41 @@ function deleteCatalogCache () {
   try { fs.unlinkSync(catalogCachePath()) } catch {} // ENOENT included — gone is gone
 }
 
+// --- the remembered panel peer -----------------------------------------------------------
+// The swarm public key of the peer that last PROVED it is the panel — the engine's
+// 'panel-peer' event — persisted so the NEXT boot can hand it back as `panelPeer` and dial
+// the panel directly instead of waiting out the DHT topic lookup (the lookup leg of the
+// measured ~5.5-6 s to 'rpc-armed' on the TCL set; see sdk/player.js normalizePanelPeer).
+// A SIBLING of the prefs file like the catalog cache, and for the same two reasons: every
+// prefs setter rewrites its whole file, and this must survive a corruption purge — a purge
+// rmSyncs aliran-store wholesale and changes nothing about where the panel lives, so
+// throwing the address away with it would tax exactly the boot that follows a recovery.
+// SCOPED to the panel it validated against: the read side refuses a record stamped with a
+// different panelPubKey, so a service switch cannot leak one operator's peer address into
+// another operator's boot. Never an identity claim — the engine re-runs the hello probe
+// on whatever the dial lands, so the worst a stale, torn or hand-edited value can do is
+// one useless dial racing a lookup that proceeds anyway.
+function panelPeerPath () {
+  return storeDir().replace(/aliran-store$/, 'aliran-panel-peer.json')
+}
+
+function readPanelPeer (panelPubKey) {
+  if (!panelPubKey) return undefined // keyless boot / dev direct-play — no panel to dial yet
+  try {
+    const rec = JSON.parse(b4a.toString(fs.readFileSync(panelPeerPath())))
+    if (rec && rec.panelPubKey === panelPubKey && /^[0-9a-f]{64}$/.test(String(rec.peerKey))) return rec.peerKey
+  } catch { /* absent or torn — this boot pays the topic lookup, nothing more */ }
+  return undefined
+}
+
+function writePanelPeer (panelPubKey, peerKey) {
+  writeJsonFileAtomic(panelPeerPath(), { v: 1, panelPubKey, peerKey })
+}
+
+function deletePanelPeer () {
+  try { fs.unlinkSync(panelPeerPath()) } catch {} // ENOENT included — gone is gone
+}
+
 // The account name the CURRENT session belongs to — what the cache write stamps, and
 // what the read-side gate compares against the saved credentials. Set where the worklet
 // learns it (the password dispatch, a resume's opened record, a received handover),
@@ -1049,10 +1084,14 @@ function narrowPrewarm (prewarm) {
   return prewarm // false / undefined — already off
 }
 
-function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform, remote) {
+function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, appVersion, platform, remote, panelPubKey) {
   if (player) return player
   if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm: narrowPrewarm(prewarm), tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes: VIEWER_FEED_BUDGET_BYTES, feedLimit: NARROW_ABI ? NARROW_FEED_LIMIT : undefined, remote, deviceId: ensureDeviceId(), appVersion, platform })
+  // panelPeer: last session's validated panel peer, if this device has one FOR THIS
+  // panel (readPanelPeer gates on the key) — the engine dials it right after the topic
+  // join so a warm boot skips the lookup wait. readPanelPeer only ever returns a
+  // 64-hex value or undefined, so this cannot be what makes the constructor throw.
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm: narrowPrewarm(prewarm), tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes: VIEWER_FEED_BUDGET_BYTES, feedLimit: NARROW_ABI ? NARROW_FEED_LIMIT : undefined, remote, deviceId: ensureDeviceId(), appVersion, platform, panelPeer: readPanelPeer(panelPubKey) })
   player.on('ready', () => send({ type: 'ready' }))
   // `vod` (S53) rides the streams message only when the panel enabled a provider —
   // the field is absent otherwise, so the UI's "no VOD section" is the default.
@@ -1072,6 +1111,17 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
     send({ type: 'status', ...status })
   })
   player.on('peers', (peers) => send({ type: 'status', peers }))
+  // A peer answered the hello probe — remember its address so the NEXT boot can dial it
+  // directly (see readPanelPeer). Stamped with connectedKey, the panel THIS worklet is
+  // on, which is also the guard: a dev direct-play or a not-yet-adopted handover has no
+  // connectedKey and writes nothing (the adopted service's first ordinary boot writes it
+  // instead). The engine emits only when the key CHANGES, so the compare below makes a
+  // steady-state boot write-free rather than one-fsync-per-boot.
+  player.on('panel-peer', (peerKey) => {
+    try {
+      if (connectedKey && readPanelPeer(connectedKey) !== peerKey) writePanelPeer(connectedKey, peerKey)
+    } catch { /* best-effort — a lost write costs the next boot a topic lookup */ }
+  })
   player.on('recovered', (err) => {
     storePurges++ // a resume in flight has just had its call re-run — see runResume's refund
     send({ type: 'status', state: 'store:reset', message: String((err && err.message) || err) })
@@ -1133,7 +1183,7 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
 function playerFor (msg) {
   const saved = readPrefs().smoothZapping
   const zap = saved == null ? msg.zapPrefetch : saved
-  return ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy, msg.appVersion, msg.platform, msg.remote)
+  return ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy, msg.appVersion, msg.platform, msg.remote, msg.panelPubKey)
 }
 
 // The cached warm start's EMIT half: paint last session's lineup while the login dials.
@@ -1207,6 +1257,10 @@ IPC.on('data', (data) => {
       // Sign-out also forgets the LINEUP: the cache is only ever shown to a device that
       // can get back into the account, and this device just declared it will not.
       deleteCatalogCache()
+      // …and the remembered panel peer. Not because it is account data (it is a server
+      // address), but because a signed-out device keeps no record of where it used to
+      // belong — the next login re-learns it in one probe.
+      deletePanelPeer()
       lastLoginUsername = null
       sendPrefs()
     } else if (msg.type === 'service-save' && msg.service && /^[0-9a-f]{64}$/.test(msg.service.panelPubKey)) {
@@ -1221,8 +1275,10 @@ IPC.on('data', (data) => {
       vaultEpoch++
       writePrefs({ ...readPrefs(), service: null, signin: null })
       // Leaving the operator abandons their lineup with them — same reasoning as the
-      // sign-in erase beside this write.
+      // sign-in erase beside this write — and their panel's peer address, which meant
+      // nothing outside that relationship.
       deleteCatalogCache()
+      deletePanelPeer()
       lastLoginUsername = null
       sendPrefs()
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {

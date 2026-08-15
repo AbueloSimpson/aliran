@@ -83,22 +83,32 @@ async function appVersion (): Promise<string> {
 // root re-runs over a process — and a Bare worklet — that never stopped, and this class
 // is booted a second time. AliranBackend.start() re-attaches for exactly that reason
 // (see its docstring); nothing here has to detect it.
+// The service descriptor's `bootstrap` list as engine swarm options: the operator's own
+// DHT bootstrap nodes (self-contained/private deployments), or — the shipped default,
+// an empty list — nothing at all, so the engine keeps the public DHT. Resolved HERE
+// rather than passed raw because the engine takes it under `swarm`, and an EMPTY array
+// must become "no option": hyperswarm would read [] as "a private DHT with no nodes",
+// which is a viewer that can never find anything.
+function swarmFor (bootstrap?: string[]) {
+  return bootstrap && bootstrap.length ? { bootstrap } : undefined
+}
+
 class Backend extends AliranBackend {
-  async boot (panelPubKey: string, hybrid?: HybridConfig) {
+  async boot (panelPubKey: string, hybrid?: HybridConfig, bootstrap?: string[]) {
     // debug: every backend message hits `adb logcat -s ReactNativeJS` — this
     // instrumentation has caught every on-device failure so far; keep it.
     // prewarm: open the first N channels' feeds right after login so the FIRST zap to a
     // channel is warm (not just re-zaps). Capped so a large lineup doesn't join hundreds
     // of DHT topics at once; a bounded TV lineup warms fully.
-    this.start(bundleBase64, { panelPubKey, hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, remote: REMOTE, appVersion: await appVersion(), debug: true })
+    this.start(bundleBase64, { panelPubKey, hybrid, swarm: swarmFor(bootstrap), prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, remote: REMOTE, appVersion: await appVersion(), debug: true })
   }
 
   // Public (keyless) flavor, S36: boot the worklet WITHOUT a panel so the persisted
   // prefs — including a runtime-saved service — are readable first. Splash then either
   // connect()s to the saved panel or routes to the Connect screen. Same engine policy
   // as boot(); only the panel key arrives later.
-  async bootIdle (hybrid?: HybridConfig) {
-    this.start(bundleBase64, { hybrid, prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, remote: REMOTE, appVersion: await appVersion(), debug: true })
+  async bootIdle (hybrid?: HybridConfig, bootstrap?: string[]) {
+    this.start(bundleBase64, { hybrid, swarm: swarmFor(bootstrap), prewarm: PREWARM_CHANNELS, zapPrefetch: ZAP_PREFETCH, remote: REMOTE, appVersion: await appVersion(), debug: true })
   }
 }
 
