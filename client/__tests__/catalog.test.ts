@@ -3,7 +3,7 @@
 // vod (S8a): library titles get category rails like any channel, but stay OUT of the
 // channel-shaped machinery — numbers, the CH+/CH- zap ring, and the hero pick.
 
-import { groupByCategory, categoryModel, splitCategory, subLabel, displayTitle, channelNumbers, zapOrder, zapRing, pickHero, formatDuration } from '../src/catalog'
+import { groupByCategory, categoryModel, splitCategory, subLabel, displayTitle, channelNumbers, zapOrder, zapRing, zapStep, pickHero, formatDuration } from '../src/catalog'
 import type { Stream } from '../src/worklet'
 
 const s = (id: string, category?: string[], extra: Partial<Stream> = {}): Stream => ({ id, title: id, category, ...extra })
@@ -159,10 +159,11 @@ test('a channel filed under two subs of ONE parent joins the parent group once',
 })
 
 // --- zapRing (Phase 4): CH+/CH- walks the category the viewer tuned from ---
-// 'All' (and any scope the model has no group for, or a group the live-only filter
-// empties) delegates to the global zapOrder ring — the old behavior, unchanged.
-// A real group keeps ITS OWN curated order, vod excluded; PIN gating stays in
-// LiveScreen's play(), never here.
+// 'All' (and any scope the model has no group for) delegates to the global
+// zapOrder ring. A real group keeps ITS OWN curated order, vod excluded — and a
+// group the live-only filter EMPTIES comes back empty: zapRing is the plain
+// scope→ring lookup, and zapStep owns every degradation (and all scope
+// bookkeeping) in one place. PIN gating stays in LiveScreen's play(), never here.
 
 test('zapRing walks a scoped category in its own curated order, live-only', () => {
   const streams = [
@@ -193,17 +194,51 @@ test('zapRing falls back to the global ring for an unknown scope', () => {
   expect(zapRing(streams, m, 'Gone/Away')).toBe(zapOrder(streams))
 })
 
-test('zapRing falls back to the global ring when the live-only filter empties the group', () => {
+test('zapRing hands back a vod-emptied group EMPTY — zapStep owns the degradation', () => {
   const streams = [
     s('ch', ['News'], { order: 1, isLive: true }),
     s('movie-a', ['Library'], { order: 2, type: 'vod' }),
     s('movie-b', ['Library'], { order: 3, type: 'vod' })
   ]
   const m = categoryModel(streams)
-  // 'Library' exists but holds only vod titles: an empty ring strands the keys, so
-  // the global one stands in.
-  expect(zapRing(streams, m, 'Library')).toBe(zapOrder(streams))
-  expect(zapRing(streams, m, 'Library').map(x => x.id)).toEqual(['ch'])
+  // 'Library' exists but holds only vod titles: the plain lookup answers honestly
+  // (empty), and zapStep degrades it to the global ring so the keys never strand.
+  expect(zapRing(streams, m, 'Library')).toEqual([])
+  const step = zapStep(streams, m, 'Library', 'movie-a', 1)
+  expect(step.next?.id).toBe('ch')
+  expect(step.scope).toBe('All')
+})
+
+// --- zapStep: the whole CH+/CH- ladder in one shared place ---
+// The full behavior matrix (ladder rungs, vod exit, All ring) is driven end to end
+// through the real key path in TvLiveZapScope.test.tsx and mirrored in
+// tools/desktop-catalog-test.mjs lane B; these pin the pure function's contract.
+
+test('zapStep: a scoped step walks the category and records NO scope change', () => {
+  const streams = [
+    s('news-1', ['News'], { order: 1, isLive: true }),
+    s('mlb-1', ['Live Events/MLB'], { order: 2, isLive: true }),
+    s('news-2', ['News'], { order: 3, isLive: true }),
+    s('mlb-2', ['Live Events/MLB'], { order: 4, isLive: true })
+  ]
+  const m = categoryModel(streams)
+  const step = zapStep(streams, m, 'Live Events/MLB', 'mlb-1', 1)
+  expect(step.next?.id).toBe('mlb-2') // the category's next, not channel 003
+  expect(step.scope).toBeUndefined() // a scoped zap keeps its ring
+})
+
+test('zapStep: a landing ON the playing channel is a no-op — nothing tunes, no scope is recorded', () => {
+  // A single-live-channel catalog: the ladder widens sub → parent → global and
+  // comes back around to the playing channel itself. The picture never changes,
+  // so the tuned-from context must stand (never the ladder's 'All').
+  const streams = [
+    s('only-live', ['Live Events/MLB'], { order: 1, isLive: true }),
+    s('flick', ['Library'], { order: 2, type: 'vod' })
+  ]
+  const m = categoryModel(streams)
+  const step = zapStep(streams, m, 'Live Events/MLB', 'only-live', 1)
+  expect(step.next).toBeUndefined()
+  expect(step.scope).toBeUndefined()
 })
 
 // --- memoization (S22 round 8): the derivations pay once per catalog array ---

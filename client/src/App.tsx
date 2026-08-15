@@ -69,7 +69,10 @@ export type RootStackParamList = {
   // The full EPG guide (WS3). streamId = the channel Live was playing when it opened
   // the guide — the row the grid mounts at and the NOW pill's jump target. Absent
   // when entered from the Menu tile.
-  Guide: { streamId?: string } | undefined
+  // category: the tune scope Live carried in (Phase 4 round trip) — the guide opens
+  // on that chip instead of 'All', so picking a row in it records the same context
+  // back. OPTIONAL so every other entry point stays valid and opens on 'All'.
+  Guide: { streamId?: string; category?: string } | undefined
   Favorites: undefined
   Search: undefined
   Settings: undefined

@@ -309,6 +309,61 @@ test('a one-game PARENT ring falls back to the global ring — scope All', async
   expect(texts(tree)).toContain('CHANNELS')
 })
 
+// --- the rail-autofocus swallow (the operator bug's root cause) ------------------
+// The panels block mounts TWO autoFocus panes; the RAIL's wins the opening focus
+// before the playing row claims it (the ChannelListPanel contract), and on TV a
+// rail focus IS a scope-select — so the artifact used to overwrite the scope
+// openListInContext had just restored. The swallow eats EXACTLY ONE focus-select
+// right after the open, and only that one.
+
+test('the rail\'s opening autoFocus is swallowed: the restored scope stands, and only the NEXT focus scopes', async () => {
+  const tree = await live()
+  await ReactTestRenderer.act(async () => { leftStrip(tree).props.onFocus() })
+  await ReactTestRenderer.act(async () => { railPill(tree, 'LIVE EVENTS').props.onPress() })
+  await ReactTestRenderer.act(async () => { channelRow(tree, 'MLB One').props.onPress() })
+  // OK from fullscreen: the panel reopens on the restored LIVE EVENTS scope.
+  await ReactTestRenderer.act(async () => { catcher(tree).props.onPress() })
+  expect(listTitles(tree)).toHaveLength(2) // the parent group's games
+  // The autoFocus artifact: the rail's FIRST pill (ALL) receives focus right
+  // after the open. Swallowed — even after the rail-walk debounce elapses, the
+  // restored heading and list must not have moved.
+  await ReactTestRenderer.act(async () => { railPill(tree, 'ALL').props.onFocus() })
+  await ReactTestRenderer.act(async () => { await new Promise<void>((r) => setTimeout(r, 300)) })
+  expect(texts(tree)).toContain('LIVE EVENTS')
+  expect(texts(tree)).not.toContain('CHANNELS')
+  expect(listTitles(tree)).toHaveLength(2)
+  // …one-shot: the viewer's next deliberate focus on the same pill DOES scope.
+  await ReactTestRenderer.act(async () => { railPill(tree, 'ALL').props.onFocus() })
+  await ReactTestRenderer.act(async () => { await new Promise<void>((r) => setTimeout(r, 300)) })
+  expect(texts(tree)).toContain('CHANNELS')
+  expect(listTitles(tree)).toHaveLength(5) // the whole lineup (vod included — 'All' groups everything)
+})
+
+// --- the single-live-channel no-op (zapStep's landing guard) ---------------------
+
+test('CH+ with one live channel is a no-op: the picture stands and the tuned-from scope survives', async () => {
+  const single: Stream[] = [
+    { id: 'only-game', title: 'Only Game', isLive: true, order: 1, category: ['Live Events/MLB'] },
+    { id: 'movie-night', title: 'Movie Night', type: 'vod', order: 9, category: ['Library'] } as Stream
+  ]
+  const tree = await liveWith({ streamId: 'only-game' }, single)
+  // The mount already derived 'Live Events/MLB' (rule c), so LEFT opens the panel
+  // DRILLED into MLB — tune from that scoped list to record the scope through the
+  // ordinary select path.
+  await ReactTestRenderer.act(async () => { leftStrip(tree).props.onFocus() })
+  expect(texts(tree)).toContain('LIVE EVENTS  ›  MLB')
+  await ReactTestRenderer.act(async () => { channelRow(tree, 'Only Game').props.onPress() })
+  // CH+: the ladder widens to the global ring and lands back on the playing
+  // channel itself — the press tunes NOTHING, and (the fix) the ladder's 'All'
+  // is never recorded while the picture never changed.
+  await channelKey('up')
+  expect(texts(tree)).toContain('Only Game') // still playing
+  // OK-reopen still shows the MLB context, not the plain CHANNELS list.
+  await ReactTestRenderer.act(async () => { catcher(tree).props.onPress() })
+  expect(texts(tree)).toContain('LIVE EVENTS  ›  MLB')
+  expect(texts(tree)).not.toContain('CHANNELS')
+})
+
 test('the tuned-from scope survives a trip out to the Menu (module-level memory)', async () => {
   const tree = await live()
   await tuneMlbOneFromDrilledList(tree)

@@ -1,7 +1,7 @@
 // Favorites — the ★ channels (device-local, D4: stored by the worklet beside its
 // store; no panel roundtrip, no sync). Rows reuse ChannelRow; selecting one jumps
 // into Live TV playing that channel.
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { View, Text, FlatList, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
@@ -32,6 +32,12 @@ export function FavoritesScreen ({ navigation }: Props) {
   const numbers = useMemo(() => channelNumbers(streams), [streams])
   const list = useMemo(() => sortByCuration(streams.filter(s => favorites.includes(s.id))), [streams, favorites, locale])
 
+  // Identity-stable row handlers so ChannelRow's memo holds across this screen's
+  // re-renders (the ChannelListPanel discipline) — inline arrows re-rendered every
+  // mounted row per render. `navigation` is identity-stable.
+  const onPressStream = useCallback((s: Stream) => navigation.navigate('Live', { streamId: s.id }), [navigation])
+  const onLongPressStream = useCallback((s: Stream) => backend.toggleFavorite(s.id), [])
+
   if (!loaded) return <SectionLoading section={t('menu.favorites')} />
 
   return (
@@ -53,8 +59,8 @@ export function FavoritesScreen ({ navigation }: Props) {
               number={numbers.get(item.id)}
               favorite
               hasTVPreferredFocus={index === 0}
-              onPressStream={(s) => navigation.navigate('Live', { streamId: s.id })}
-              onLongPressStream={(s) => backend.toggleFavorite(s.id)}
+              onPressStream={onPressStream}
+              onLongPressStream={onLongPressStream}
             />
           )}
         />

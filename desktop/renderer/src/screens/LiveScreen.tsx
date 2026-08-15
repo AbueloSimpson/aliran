@@ -26,7 +26,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
-import { channelNumbers, categoryModel, displayTitle, isVod, pickHero, splitCategory, subLabel, zapOrder, zapRing, type CategoryModel } from '../catalog'
+import { channelNumbers, categoryModel, deriveTuneScope, displayTitle, isVod, pickHero, splitCategory, subLabel, zapStep, type CategoryModel } from '../catalog'
 import { HlsVideo, type HlsVideoHandle, type MediaTrack, type TuneEvent } from '../components/HlsVideo'
 import { autoTunable, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
@@ -60,24 +60,9 @@ let lastStreamId: string | null = null
 // jump — LiveScreen is keyed — so per-mount state would forget even sooner.)
 let lastTuneScope: string = 'All'
 
-// A tune with NO browsing context — a Favorites/Search jump, the hero autoplay, a
-// category the catalog no longer has — takes its scope from the channel's own
-// filing (design rule, shared with the RN twin: the viewer will be STANDING on
-// that channel, so the rail it lives on is the honest context). Prefer the
-// channel's first full 'Parent/Sub' entry that the model actually has a group for
-// (the drilled rail a viewer would find it on), fall back to a bare parent that
-// does, else 'All'.
-function deriveTuneScope (s: Stream | null | undefined, model: CategoryModel): string {
-  if (!s) return 'All'
-  const cats = s.category ?? []
-  for (const c of cats) { if (c && c !== 'All' && model.groups[c]) return c }
-  for (const c of cats) {
-    if (!c || c === 'All') continue
-    const [parent] = splitCategory(c)
-    if (parent && model.groups[parent]) return parent
-  }
-  return 'All'
-}
+// deriveTuneScope (a tune with NO browsing context takes its scope from the
+// channel's own filing) lives in ../catalog now — shared with the RN twin and
+// pinned code-identical by tools/desktop-catalog-test.mjs lane A.
 
 function clockText (d: Date) {
   const h = d.getHours(); const m = d.getMinutes()
@@ -92,10 +77,12 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
    *  filing stands in via deriveTuneScope. Meaningless without initialStreamId. */
   initialCategory?: string
   /** Two-tier OK (WS4): the channel list's already-playing row opens the full EPG
-   *  guide anchored on that channel. Absent = the old single-tier behavior. */
-  onGuide?: (streamId: string) => void
+   *  guide anchored on that channel — carrying the current tune scope so the guide
+   *  opens on that chip (Phase 4 round trip; the guide validates the key against
+   *  its own model). Absent = the old single-tier behavior. */
+  onGuide?: (streamId: string, category?: string) => void
 }) {
-  const { t, tn } = useI18n()
+  const { t, tn, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   // Parental gate (device-local): a restricted channel about to play while the PIN
@@ -219,7 +206,11 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
       }
     } else if (mountedOnHero.current) {
       // Mounted straight onto the hero (catalog already present, nothing to resume).
-      setTuneScope(deriveTuneScope(all.find((x) => x.id === playingIdRef.current), categoryModel(all)))
+      // Guarded like every hero-scope write (see tuneHero): no resolvable record
+      // means nothing to record — never overwrite lastTuneScope with a derived
+      // 'All' while lastStreamId still names the remembered channel.
+      const hero = all.find((x) => x.id === playingIdRef.current)
+      if (hero) setTuneScope(deriveTuneScope(hero, categoryModel(all)))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -301,11 +292,17 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
   const activeKey = model.groups[selected] ? selected : 'All'
   const list = model.groups[activeKey] ?? []
   const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
-  const railItems = inDrill
+  // Memoized (mirroring the client): railItems sits in the window keydown
+  // effect's deps, and an array rebuilt every render re-registered that listener
+  // on every clock tick / tune-progress update. `locale` marks the translated
+  // 'All' label stale (t itself is identity-stable across a language switch).
+  const railItems = useMemo(() => inDrill
     ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
     // 'All' is the everything-group this app adds itself, so it is the only label here
     // that comes out of the catalog. Every other key is an operator category name.
-    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
+    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 })),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [model, inDrill, drillParent, locale])
   const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0]
   const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find((s) => s.id === playingId) ?? null
@@ -321,19 +318,25 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Hero autoplay — the ONE copy of the pick→scope→play triple (it used to be
+  // pasted per call site, which is how a guard misses one). An autoplay is a tune
+  // with no browsing context: the hero's own filing is the scope (deriveTuneScope) —
+  // Enter-from-fullscreen then opens the panel on the rail the playing channel
+  // actually lives on, and the zap ring matches it. `if (hero)` GUARDS the scope
+  // write: a catalog with no autoTunable channel must not overwrite lastTuneScope
+  // with 'All' while lastStreamId still remembers the viewer's channel — the two
+  // module vars would disagree on the next resume.
+  function tuneHero () {
+    const hero = pickHero(autoTunable(streams))
+    if (hero) setTuneScope(deriveTuneScope(hero, categoryModel(streams)))
+    setPlayingId(hero?.id ?? null)
+  }
+
   // First streams push after a cold navigation: start the hero channel. The hero is
   // picked over autoTunable() alone: the app must never tune a PIN-gated channel on
   // its own initiative, and nothing tunable means nothing plays.
   useEffect(() => {
-    if (!playingId && !pinTarget && streams.length) {
-      const hero = pickHero(autoTunable(streams))
-      // An autoplay is a tune with no browsing context: the hero's own filing is
-      // the scope (deriveTuneScope) — Enter-from-fullscreen then opens the panel
-      // on the rail the playing channel actually lives on, and the zap ring
-      // matches it.
-      setTuneScope(deriveTuneScope(hero, categoryModel(streams)))
-      setPlayingId(hero?.id ?? null)
-    }
+    if (!playingId && !pinTarget && streams.length) tuneHero()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
@@ -376,8 +379,8 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
   }
 
   // Fullscreen zap: prev/next WITHIN the category the viewer tuned from, in that
-  // category's own curated order, wrapping (zapRing) — an 'All' tune keeps the old
-  // global channel-number ring. Phase 4 (operator feedback), the same reversal the
+  // category's own curated order, wrapping — an 'All' tune keeps the old global
+  // channel-number ring. Phase 4 (operator feedback), the same reversal the
   // RN twin documents at length: the DISPLAYED channel numbers stay global — only
   // the order the keys walk is scoped.
   //
@@ -386,38 +389,18 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
   // the old land-on-001 behavior, and the scope resets to 'All' with it (the
   // viewer is surfing everything now). A ring whose ONLY member is the playing
   // channel widens outward instead of going silent — sub → parent → global.
+  //
+  // The whole ladder — widen-on-one-ring, not-in-ring global fallback, and the
+  // single-live-channel no-op (a press that would land back ON the playing channel
+  // tunes nothing and records nothing — the picture never changed, so the scope
+  // must not move to the ladder's 'All') — lives in catalog.zapStep, shared with
+  // the RN twin and pinned code-identical (lane A). The step's scope rides
+  // play()'s scope option, so a refused tune (PIN) moves nothing.
   function zap (dir: 1 | -1) {
     const m = categoryModel(streams)
     const scope = resolveTuneScope(m)
-    let ring = zapRing(streams, m, scope)
-    // What the scope should BECOME if this press tunes. undefined = unchanged (a
-    // scoped zap keeps its ring); it rides play()'s scope option, so a refused
-    // tune (PIN) moves nothing.
-    let nextScope: string | undefined
-    // THE LADDER for a ring with no other channel to give: the key means "next
-    // channel", and a one-game category must not make ↑/↓ dead keys — widen to
-    // the NEAREST larger circle first: the sub's parent (still the viewer's
-    // neighborhood), then the global ring. The scope follows the ring that
-    // actually answered, so the next press keeps walking it.
-    const onlyPlaying = (r: Stream[]) => r.length === 1 && r[0].id === playingId
-    if (onlyPlaying(ring)) {
-      const [parent, sub] = splitCategory(scope)
-      if (sub !== undefined) { ring = zapRing(streams, m, parent); nextScope = parent }
-      if (onlyPlaying(ring)) { ring = zapOrder(streams); nextScope = 'All' }
-    }
-    let i = ring.findIndex((s) => s.id === playingId)
-    if (i < 0) {
-      // Not in the ring the scope named (a vod title plays, or the group changed
-      // under us — zapRing may itself have degraded to global already): this
-      // press is a GLOBAL zap, and the scope follows it to 'All' — deliberately
-      // NOT re-derived from the landed channel: the viewer is surfing everything.
-      ring = zapOrder(streams)
-      i = ring.findIndex((s) => s.id === playingId)
-      nextScope = 'All'
-    }
-    if (!ring.length) return
-    const next = ring[(i < 0 ? 0 : i + dir + ring.length) % ring.length]
-    if (next) play(next, { scope: nextScope })
+    const step = zapStep(streams, m, scope, playingId, dir)
+    if (step.next) play(step.next, { scope: step.scope })
   }
 
   // Enter/click from fullscreen: reopen the left panel IN CONTEXT (Phase 4) —
@@ -604,8 +587,10 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
               // Two-tier OK — but NOT while a playback error is up: play() honors
               // re-selecting the SAME channel as the retry the error message
               // promises, and routing that press to the Guide would shadow it.
-              // Absent onGuide = the old path (the client's exact rule).
-              onGuide={error || !onGuide ? undefined : (s) => onGuide(s.id)}
+              // Absent onGuide = the old path (the client's exact rule). The
+              // current tune scope rides along (Phase 4 round trip) so the guide
+              // opens on the viewer's chip instead of 'All'.
+              onGuide={error || !onGuide ? undefined : (s) => onGuide(s.id, resolveTuneScope(categoryModel(streams)))}
               onClose={overlayBack}
               onActivity={bumpMenuIdle}
             />
@@ -708,17 +693,12 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
           onClose={() => {
             setPinTarget(null)
             pinScope.current = undefined // declined: the deferred scope dies with the tune
-            // The mount-time case: nothing playing yet — fall back to the hero. The
+            // The mount-time case: nothing playing yet — fall back to the hero
+            // (tuneHero — the same no-context autoplay as the streams effect). The
             // fallback is PIN-free by construction (autoTunable): declining the
             // challenge must not hand over some OTHER restricted channel instead, and
             // when they are all locked it leaves nothing playing rather than re-asking.
-            if (!playingIdRef.current && streams.length) {
-              const hero = pickHero(autoTunable(streams))
-              // The same no-context autoplay as the streams effect: the hero's own
-              // filing is the tune scope.
-              setTuneScope(deriveTuneScope(hero, categoryModel(streams)))
-              setPlayingId(hero?.id ?? null)
-            }
+            if (!playingIdRef.current && streams.length) tuneHero()
           }}
         />
       )}

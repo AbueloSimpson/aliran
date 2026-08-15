@@ -1,8 +1,9 @@
 /* Aliran desktop player — the S18 design language on the web platform. Every color
  * comes from the CSS custom properties applyTheme() sets from the operator
  * descriptor (--c-*, see theme.ts) — no brand literals in the rules below.
- * Focus grammar (ported): accent border box (menu entries), accent underline
- * (category rail), light row fill (lists). */
+ * Focus grammar (ported): accent border box (menu entries), filled accent pill
+ * (category rail — selected; the light focusFill pill marks keyboard focus),
+ * light row fill (lists). */
 
 * { box-sizing: border-box; }
 
@@ -352,9 +353,16 @@ img { -webkit-user-drag: none; }
   .row-title.marquee .marquee-inner {
     display: inline-block;
     /* Slide to the measured end, hold, slide back, hold — the client's
-       start/end-pause cadence; duration comes inline from the measurement. */
-    animation: marquee-slide 6s linear 0.8s infinite;
+       start/end-pause cadence. The duration has ONE source of truth: JS
+       (MarqueeSpan) sets --marquee-duration inline from the measured distance —
+       no fallback literal here, so a stale hardcoded speed cannot shadow it
+       (the shorthand simply stays inert until the variable arrives with the
+       .marquee class). */
+    animation: marquee-slide var(--marquee-duration) linear 0.8s infinite;
   }
+  /* Travel stops 12%→48%: the glide occupies 36% of the cycle — the JS constant
+     MARQUEE_TRAVEL_FRACTION (ChannelList.tsx) MIRRORS these stops; change them
+     together or the announced px/s glide speed silently drifts. */
   @keyframes marquee-slide {
     0%, 12% { transform: translateX(0); }
     48%, 60% { transform: translateX(var(--marquee-shift)); }

@@ -59,9 +59,11 @@ export function App () {
   // the phone app's VodSeries route.
   const [seriesPick, setSeriesPick] = useState<VodSeriesPick | null>(null)
   // Guide context (WS4): the channel Live was playing when it opened the guide (the
-  // grid's mount row + NOW pill target; null from the Menu tile), and where Esc
-  // returns to — the desktop stand-in for the phone stack's pop-back.
-  const [guideCtx, setGuideCtx] = useState<{ streamId: string | null; from: 'menu' | 'live' }>({ streamId: null, from: 'menu' })
+  // grid's mount row + NOW pill target; null from the Menu tile), where Esc
+  // returns to — the desktop stand-in for the phone stack's pop-back — and the
+  // tune scope Live carried in (Phase 4 round trip: the guide opens on that chip
+  // instead of 'All', so picking a row there records the same context back).
+  const [guideCtx, setGuideCtx] = useState<{ streamId: string | null; from: 'menu' | 'live'; category?: string }>({ streamId: null, from: 'menu' })
 
   useEffect(() => {
     return backend.onMessage((m) => {
@@ -91,6 +93,7 @@ export function App () {
     return (
       <GuideScreen
         playingId={guideCtx.streamId}
+        initialCategory={guideCtx.category}
         // Tuning navigates into Live playing the pick — the same watch() jump
         // Favorites/Search make. LiveScreen is keyed on liveStart, so a value-equal
         // re-tune still lands as a fresh mount (the client's tuneKey concern is a
@@ -154,7 +157,7 @@ export function App () {
       // would re-tune the OLD channel and rewrite the tune scope from a dead
       // prop — resuming via Live's own session memory (lastStreamId +
       // lastTuneScope) is the current state.
-      onGuide={(streamId) => { setLiveStart(undefined); setLiveStartCategory(undefined); setGuideCtx({ streamId, from: 'live' }); setScreen('guide') }}
+      onGuide={(streamId, category) => { setLiveStart(undefined); setLiveStartCategory(undefined); setGuideCtx({ streamId, from: 'live', category }); setScreen('guide') }}
     />
   )
 }

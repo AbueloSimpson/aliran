@@ -95,6 +95,11 @@ function dayHint (windowStart: number, now: number, t: (key: string) => string):
 export interface GuidePanelProps {
   /** The channel currently playing (row accent + the NOW pill's jump target). */
   playingId: string | null
+  /** The category chip to OPEN on (Phase 4 round trip — the tune scope the host
+   *  carried in). Read once at mount; validated lazily against this panel's own
+   *  model (the activeKey guard), so a key the catalog no longer has degrades to
+   *  'All'. Optional — every other caller keeps the 'All' open. */
+  initialCategory?: string
   /** Tap-to-tune — the host decides how (navigate to Live, or switch in place).
    *  The second argument is the panel's ACTIVE CATEGORY CHIP at tap time ('All'
    *  included) — the tune's browsing context (Phase 4): hosts scope the zap ring
@@ -117,11 +122,12 @@ export interface GuidePanelProps {
   onSendToTv?: (s: Stream) => void
 }
 
-export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch, onSendToTv }: GuidePanelProps) {
+export function GuidePanel ({ playingId, initialCategory, onTune, preview = 'none', onSearch, onSendToTv }: GuidePanelProps) {
   const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
-  // Category scope — the same chips grammar as the TV grid header.
-  const [selected, setSelected] = useState('All')
+  // Category scope — the same chips grammar as the TV grid header. Opens on the
+  // host's carried-in context when there is one (see initialCategory).
+  const [selected, setSelected] = useState(initialCategory ?? 'All')
   // Slow clock: past-dimming, the airing accent and every hairline ride this tick.
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The discrete paging window (the TV grid's windowStart model).

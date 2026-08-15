@@ -15,7 +15,8 @@ import { theme } from '../theme'
 export interface CategoryRailItem {
   /** Full category key ('All' | 'Anime' | 'Anime/Español'). */
   key: string
-  /** Display text (top-level name, or the sub's leaf label). */
+  /** FINISHED display text, rendered verbatim — the host already applied the
+   *  viewer-locale casing (LiveScreen's railItems memo; see the S56f note below). */
   label: string
   /** Top-level category that has sub-categories → show a drill-in "›". */
   hasChildren?: boolean
@@ -46,6 +47,13 @@ export interface CategoryRailProps {
 // operator's own category name in the operator's language. There is no casing rule that
 // is right for both, so the whole rail follows the VIEWER's locale (S56f decision) —
 // a Turkish viewer's "i" upper-cases to "İ" everywhere on the surface, consistently.
+// WHERE the casing happens moved (S56f, memo fix): item labels are cased by the
+// HOST, inside LiveScreen's railItems useMemo (already keyed on the locale), and
+// RailItem renders them verbatim — RailItem is React.memo'd with no locale
+// subscription, and operator labels are locale-identical STRINGS, so a casing
+// call in here froze the old locale's casing after a language switch (the memo
+// never broke; only the translated 'All' changed). BackHeader below is unmemoized
+// and keeps its own toLocaleUpperCase.
 function CategoryRailInner ({ items, selected, parentHeader, onSelect, onActivate, onActivity }: CategoryRailProps) {
   return (
     <View style={styles.rail}>
@@ -108,8 +116,9 @@ function RailItemInner ({ itemKey, label, hasChildren, active, onSelect, onActiv
       onPress={() => { onActivity?.(); onActivate(itemKey) }}
     >
       <View style={styles.itemRow}>
+        {/* Verbatim — the host cased it (see the S56f note above). */}
         <Text style={[styles.label, active ? styles.textOnAccent : focused && styles.textOnFill]} numberOfLines={1}>
-          {label.toLocaleUpperCase(getLocale())}
+          {label}
         </Text>
         {hasChildren && <Text style={[styles.chevron, active ? styles.textOnAccent : focused && styles.textOnFill]}>›</Text>}
       </View>

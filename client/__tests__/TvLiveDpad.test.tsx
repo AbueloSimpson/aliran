@@ -273,6 +273,10 @@ test('rail focus moves the highlight at once; the list re-scopes only after the 
     const railItem = tree.root.findAll((n: any) => typeof n.props?.onFocus === 'function' && typeof n.props?.onPress === 'function')
       .find((n: any) => n.findAllByType(Text).some((x: any) => [x.props.children].flat(9).join('') === 'SHOPPING'))
     if (!railItem) throw new Error('no SHOPPING rail item')
+    // The FIRST rail focus after an in-context open is the rail's autoFocus
+    // artifact and is swallowed one-shot (LiveScreen railAutoFocusSwallow) —
+    // consume it, so the focus below measures the debounce, not the swallow.
+    await ReactTestRenderer.act(async () => { railItem.props.onFocus() })
     await ReactTestRenderer.act(async () => { railItem.props.onFocus() })
 
     // Immediately: the highlight is on SHOPPING (the filled accent pill)…

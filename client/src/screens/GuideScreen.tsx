@@ -132,7 +132,10 @@ function GuideScreenPhone ({ route, navigation }: Props) {
   return (
     <View style={styles.container}>
       <Text style={styles.header}>{t('guide.header')}</Text>
-      <GuidePanel playingId={route.params?.streamId ?? null} onTune={tune} />
+      {/* initialCategory (Phase 4 round trip): open on the chip Live tuned from —
+          the panel validates the key against its own model, so a stale one
+          degrades to 'All'. */}
+      <GuidePanel playingId={route.params?.streamId ?? null} initialCategory={route.params?.category} onTune={tune} />
     </View>
   )
 }
@@ -148,7 +151,12 @@ function GuideScreenTV ({ route, navigation }: Props) {
   // would eat width this timeline needs; chips are the VOD tab-bar grammar). The
   // drill state is DERIVED from the selection: picking a parent with subs shows its
   // sub-chips row; re-tapping the selected sub returns to the parent.
-  const [selected, setSelected] = useState('All')
+  // Initialized from the `category` route param (Phase 4 round trip: Live's
+  // two-tier OK carries its tune scope in, so the guide opens on the viewer's
+  // context instead of 'All'). Validated LAZILY by the activeKey guard below —
+  // a key this catalog has no group for degrades to 'All', exactly like a
+  // vanished selection.
+  const [selected, setSelected] = useState(route.params?.category ?? 'All')
   // Slow clock: past-dimming, the airing cell and every hairline ride this tick.
   const [nowMs, setNowMs] = useState(() => Date.now())
 

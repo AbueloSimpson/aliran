@@ -259,7 +259,9 @@ function MarqueeSpan ({ text, active, className }: { text: string; active: boole
           // The keyframe reads the measured distance; the duration scales with
           // it for a ~40 px/s glide (divided by the travel fraction — the cycle
           // is mostly holds), floor 4 s, so long titles do not whip past.
-          ? { ['--marquee-shift' as never]: `-${shift}px`, animationDuration: `${Math.max(4, shift / (40 * MARQUEE_TRAVEL_FRACTION) + 2)}s` }
+          // Passed as --marquee-duration (styles.css reads it in the animation
+          // shorthand) so the CSS carries no duration literal of its own.
+          ? { ['--marquee-shift' as never]: `-${shift}px`, ['--marquee-duration' as never]: `${Math.max(4, shift / (40 * MARQUEE_TRAVEL_FRACTION) + 2)}s` }
           : undefined}
       >{text}</span>
     </span>

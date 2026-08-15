@@ -120,7 +120,13 @@ export function MarqueeText ({
   const onTextLayout = (e: LayoutChangeEvent) => setMeasured({ text, w: e.nativeEvent.layout.width })
 
   return (
-    <View style={[styles.clip, containerStyle]} onLayout={onContainerLayout}>
+    // The container measurement is attached ONLY while `active`: containerW is
+    // consulted only after the arm delay, and ~15 resting rows each paying a
+    // bridge callback + a state write on mount/scroll-in is exactly the per-row
+    // idle cost this component exists to avoid. Attaching the handler on the
+    // focus render triggers a fresh layout dispatch for this view, so the armed
+    // flow still measures before the scroller needs the width.
+    <View style={[styles.clip, containerStyle]} onLayout={active ? onContainerLayout : undefined}>
       {scrolling
         ? (
           <ScrollView

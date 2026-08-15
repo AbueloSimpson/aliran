@@ -74,6 +74,11 @@ export interface GuideScreenProps {
   /** The channel Live was playing when it opened the guide — the row the grid mounts
    *  at and the NOW pill's jump target. Absent when entered from the Menu tile. */
   playingId?: string | null
+  /** The category chip to OPEN on (Phase 4 round trip — the tune scope Live
+   *  carried in). Validated lazily against this screen's own model (the activeKey
+   *  guard), so a stale key degrades to 'All'. Optional — every other entry point
+   *  keeps the 'All' open. */
+  initialCategory?: string
   /** Tune a channel: App routes this to Live the same way MenuScreen's onGo('live')
    *  flow lands there, carrying the streamId — plus the active category chip, the
    *  tune's browsing context (Phase 4): the scope Live's zap ring and reopened
@@ -84,14 +89,15 @@ export interface GuideScreenProps {
   onBack: () => void
 }
 
-export function GuideScreen ({ playingId = null, onTune, onBack }: GuideScreenProps) {
+export function GuideScreen ({ playingId = null, initialCategory, onTune, onBack }: GuideScreenProps) {
   const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // Category scope — the CategoryModel rendered as chips (the client's grammar; a
   // rail would eat width this timeline needs). The drill state is DERIVED from the
   // selection: picking a parent with subs shows its sub-chips row; re-picking the
-  // selected sub returns to the parent.
-  const [selected, setSelected] = useState('All')
+  // selected sub returns to the parent. Opens on the carried-in context when there
+  // is one (see initialCategory).
+  const [selected, setSelected] = useState(initialCategory ?? 'All')
   // Slow clock: past-dimming, the airing cell and every hairline ride this tick.
   const [nowMs, setNowMs] = useState(() => Date.now())
 

@@ -21,6 +21,10 @@ import { useRef } from 'react'
 export function useStableCallback<A extends unknown[], R> (fn: (...args: A) => R): (...args: A) => R {
   const latest = useRef(fn)
   latest.current = fn
-  const stable = useRef((...args: A) => latest.current(...args))
+  // Lazily initialized: a useRef(initial) argument is evaluated EVERY render and
+  // discarded after the first — LiveScreen holds 8 of these, which was 8 wrapper
+  // closures allocated and thrown away per clock/peer/tune re-render.
+  const stable = useRef<((...args: A) => R) | null>(null)
+  if (stable.current === null) stable.current = (...args: A) => latest.current(...args)
   return stable.current
 }

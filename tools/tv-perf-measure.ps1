@@ -9,18 +9,20 @@
 # PREREQUISITES (the script checks the first two):
 #   - the box is reachable over adb (TCL sets need disconnect-then-connect)
 #   - the app is FOREGROUND, in fullscreen Live playback, freshly launched
-#     (hero channel playing, no overlay up, category scope still "All")
+#     (no overlay up; a prelude below tunes a channel from the All list so
+#     the tune scope is 'All' on every build, old or category-aware)
 #   - RELEASE/Hermes build only -- debug numbers are void
 #   - box otherwise idle (no install/download in progress)
 #
-# Scenarios (each does a warm-up pass first and keeps the second pass):
-#   rail_walk   OK, LEFT into the category rail, 15x DOWN (measured),
-#               then 15x UP to restore the "All" scope, BACK to fullscreen
-#   list_scroll OK to open the channel list on the playing row, 40x DOWN
-#               (measured), BACK to fullscreen
+# Scenarios (each pass starts from a deterministic Reset-ToFullscreen, does a
+# warm-up pass first, and keeps the second pass; the two list scenarios pin
+# the scope to the full lineup by walking the rail to its top item first, and
+# soft-assert their end state via a uiautomator dump -> stateOk CSV column):
+#   list_scroll OK, LEFT, 20x UP (top of rail scopes the full list), RIGHT
+#               into the list, 40x DOWN (measured)
+#   rail_walk   OK, LEFT, 20x UP, then 15x DOWN over the rail (measured)
 #   panel_open  5x (OK ... BACK) open/close of the browse panel (measured)
-#   zap         10x CHANNEL_UP in fullscreen (measured; runs LAST -- it moves
-#               the playing channel and, after the scoped-zap change, the scope)
+#   zap         10x CHANNEL_UP in fullscreen (measured)
 #
 # Windows PowerShell 5.1, pure ASCII. No && / ternary anywhere.
 
@@ -84,21 +86,67 @@ $KEY_BACK = 4
 $KEY_DPAD_UP = 19
 $KEY_DPAD_DOWN = 20
 $KEY_DPAD_LEFT = 21
+$KEY_DPAD_RIGHT = 22
 $KEY_OK = 23
 $KEY_CHANNEL_UP = 166
 
+# Soft state assertion: dump the accessibility tree (uiautomator reaches RN
+# views' text) and check a marker string is on screen. Never throws mid-run --
+# a drifted scenario writes stateOk=false into its CSV row so the number is
+# known-tainted instead of silently plausible.
+function Test-UiContains {
+  param([string] $Marker)
+  Invoke-Adb @("shell", "uiautomator", "dump", "/sdcard/ui.xml") | Out-Null
+  $xml = Invoke-Adb @("shell", "cat", "/sdcard/ui.xml")
+  $text = ($xml | Out-String)
+  return ($text -match [regex]::Escape($Marker))
+}
+
+# Deterministic reset to fullscreen Live, from ANY app state the previous
+# scenario may have drifted into: kill the app and relaunch it. BACK-spam was
+# tried first and overshoots (fullscreen BACK exits to the Menu by design, and
+# the next BACK exits the app), so the only state that can be reached from
+# EVERY drift is a fresh process. Costs ~40 s per pass; buys scenario numbers
+# that cannot inherit a previous scenario's state. The Menu's first tile (TV
+# EN VIVO) holds the opening focus, so one OK enters Live; with no remembered
+# channel (fresh process) Live autoplays the hero fullscreen.
+function Reset-ToFullscreen {
+  Invoke-Adb @("shell", "am", "force-stop", $script:Package) | Out-Null
+  Start-Sleep -Seconds 2
+  Invoke-Adb @("shell", "am", "start", "-n", "$($script:Package)/com.aliranclient.MainActivity") | Out-Null
+  Start-Sleep -Seconds 25
+  Send-Key $KEY_OK
+  Start-Sleep -Seconds 10
+  # A fresh process enters Live with the browse panel ALREADY OPEN (no
+  # remembered channel -> the list is the landing surface), and an OK there is
+  # the two-tier OK on the playing row, which opens the Guide -- the drift the
+  # baseline4 run's stateOk column caught. Close it iff it is actually open;
+  # a blind BACK would exit to the Menu on the no-panel case.
+  if (Test-UiContains "CANALES") {
+    Send-Key $KEY_BACK
+    Start-Sleep -Milliseconds 1500
+  }
+}
+
 # Each scenario is a pair of scriptblocks: Setup runs unmeasured to put the app
 # in position, Measured is the gesture under test. Teardown restores fullscreen.
+# AssertMarker (optional): a string that must be on screen right after Measured.
 function Run-Scenario {
-  param([string] $Name, [scriptblock] $Setup, [scriptblock] $Measured, [scriptblock] $Teardown)
+  param([string] $Name, [scriptblock] $Setup, [scriptblock] $Measured, [scriptblock] $Teardown, [string] $AssertMarker)
   $passes = 2
   if ($script:SkipWarmup) { $passes = 1 }
   $stats = $null
+  $stateOk = $true
   for ($pass = 1; $pass -le $passes; $pass++) {
+    Reset-ToFullscreen
     & $Setup
     Reset-FrameStats
     & $Measured
     $stats = Read-FrameStats
+    if ($AssertMarker) {
+      $stateOk = Test-UiContains $AssertMarker
+      if (-not $stateOk) { Write-Host "  WARN: '$Name' pass $pass drifted (marker '$AssertMarker' not on screen)" }
+    }
     & $Teardown
     Start-Sleep -Milliseconds 1000
   }
@@ -118,22 +166,48 @@ function Run-Scenario {
     p90ms = $stats.p90
     p95ms = $stats.p95
     p99ms = $stats.p99
+    stateOk = $stateOk
   }
   $script:rows += $row
 }
 
-# --- connect (TCL adb auth quirk: disconnect first, then connect) ---
-& adb.exe disconnect $DeviceIp 2>$null | Out-Null
-& adb.exe connect $DeviceIp | Out-Null
-$devices = & adb.exe devices
-$hit = $devices | Select-String -SimpleMatch $DeviceIp | Select-String -SimpleMatch "device"
-if ($null -eq $hit) { throw "Device $DeviceIp is not connected (adb devices shows no 'device' state for it)." }
+# --- connect (TCL adb auth quirk: a plain re-connect can answer "failed to
+# authenticate" forever; the working recipe is a LOOPED disconnect -> connect,
+# same as aliran-ops fsext-fixed/verify-on-device.ps1 Connect-Tv). adb writes
+# routine complaints to stderr and PS 5.1 + ErrorActionPreference=Stop turns a
+# redirected native stderr into a terminating NativeCommandError, so the adb
+# legs run under a local Continue preference and never redirect stderr. ---
+$connected = $false
+for ($attempt = 1; $attempt -le 6; $attempt++) {
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & adb.exe disconnect $DeviceIp | Out-Null
+    Start-Sleep -Seconds 2
+    & adb.exe connect $DeviceIp | Out-Null
+    Start-Sleep -Seconds 3
+    $devices = & adb.exe devices
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  $hit = $devices | Select-String -SimpleMatch $DeviceIp | Select-String -SimpleMatch "device"
+  if ($null -ne $hit) { $connected = $true; break }
+  Write-Host "  connect attempt $attempt failed; retrying..."
+}
+if (-not $connected) { throw "Device $DeviceIp is not connected after 6 disconnect/connect rounds." }
 
-# --- verify the app is foreground ---
-$focus = Invoke-Adb @("shell", "dumpsys", "window") | Select-String "mCurrentFocus|mFocusedApp" | Select-Object -First 2
-$focusText = ($focus | ForEach-Object { $_.ToString() }) -join " "
-if ($focusText -notmatch [regex]::Escape($Package)) {
-  throw "Package $Package is not foreground (focus: $focusText). Launch the app into fullscreen Live playback first."
+# --- ensure the app is foreground (launch it if the box sits on the launcher) ---
+function Get-FocusText {
+  $focus = Invoke-Adb @("shell", "dumpsys", "window") | Select-String "mCurrentFocus|mFocusedApp" | Select-Object -First 2
+  return (($focus | ForEach-Object { $_.ToString() }) -join " ")
+}
+if ((Get-FocusText) -notmatch [regex]::Escape($Package)) {
+  Write-Host "  app not foreground; launching..."
+  Invoke-Adb @("shell", "am", "start", "-n", "$Package/com.aliranclient.MainActivity") | Out-Null
+  Start-Sleep -Seconds 25
+  if ((Get-FocusText) -notmatch [regex]::Escape($Package)) {
+    throw "Package $Package did not come to the foreground after launch."
+  }
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
@@ -141,29 +215,43 @@ $rows = @()
 
 Write-Host "Measuring '$Label' on $DeviceIp / $Package ..."
 
+# Every scenario starts from Reset-ToFullscreen (inside Run-Scenario), so a
+# drifted pass cannot leak into the next scenario. The two list-measuring
+# scenarios walk the rail to the TOP item (TODOS/All) in their setup, which
+# scopes the list to the full lineup on every build -- on old builds the rail
+# focus scoped instantly, on this branch it scopes after the 200 ms debounce;
+# either way the measured DOWNs sweep the same full list. panel_open and zap
+# accept the build's own scope (a scoped panel still renders the same ~12
+# initial rows; a zap press costs the same tune pipeline) -- the comparison
+# target for both is "no regression", noted in the plan.
+
 Run-Scenario -Name "list_scroll" -Setup {
-  Send-Key $KEY_OK            # open the browse panel on the playing row
-  Start-Sleep -Milliseconds 1200
+  Send-Key $KEY_OK              # open the browse panel
+  Start-Sleep -Milliseconds 1500
+  Send-Key $KEY_DPAD_LEFT       # focus into the category rail
+  Start-Sleep -Milliseconds 600
+  Send-KeyBurst $KEY_DPAD_UP 20 150   # to the top: TODOS scopes the full list
+  Start-Sleep -Milliseconds 700       # let the scope debounce settle
+  Send-Key $KEY_DPAD_RIGHT      # back into the channel list
+  Start-Sleep -Milliseconds 700
 } -Measured {
   Send-KeyBurst $KEY_DPAD_DOWN 40 150
 } -Teardown {
-  Send-Key $KEY_BACK          # list -> fullscreen
-  Start-Sleep -Milliseconds 800
-}
+  Start-Sleep -Milliseconds 300
+} -AssertMarker "CANALES"
 
 Run-Scenario -Name "rail_walk" -Setup {
-  Send-Key $KEY_OK            # open the browse panel
-  Start-Sleep -Milliseconds 1200
-  Send-Key $KEY_DPAD_LEFT     # focus into the category rail
+  Send-Key $KEY_OK
+  Start-Sleep -Milliseconds 1500
+  Send-Key $KEY_DPAD_LEFT
   Start-Sleep -Milliseconds 600
+  Send-KeyBurst $KEY_DPAD_UP 20 150   # start every pass from the top of the rail
+  Start-Sleep -Milliseconds 700
 } -Measured {
   Send-KeyBurst $KEY_DPAD_DOWN 15 150
 } -Teardown {
-  Send-KeyBurst $KEY_DPAD_UP 15 150   # walk back up: restore the "All" scope
-  Start-Sleep -Milliseconds 400
-  Send-Key $KEY_BACK          # list -> fullscreen
-  Start-Sleep -Milliseconds 800
-}
+  Start-Sleep -Milliseconds 300
+} -AssertMarker "CANALES"
 
 Run-Scenario -Name "panel_open" -Setup {
   Start-Sleep -Milliseconds 200
@@ -178,8 +266,9 @@ Run-Scenario -Name "panel_open" -Setup {
   Start-Sleep -Milliseconds 200
 }
 
-# LAST: zapping moves the playing channel (and the tune scope, once scoped zap
-# lands), so nothing may run after it in the same invocation.
+# LAST in the list: zapping moves the playing channel; the per-scenario reset
+# makes ordering less critical, but the channel it leaves behind becomes the
+# resumed channel for any later manual poking, so keep it last anyway.
 Run-Scenario -Name "zap" -Setup {
   Start-Sleep -Milliseconds 200
 } -Measured {

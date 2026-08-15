@@ -26,10 +26,14 @@ const { CategoryRail } = require('../src/components/CategoryRail')
 
 afterAll(() => { Object.defineProperty(Platform, 'isTV', realIsTV) })
 
+// Labels arrive PRE-CASED: the host (LiveScreen's railItems memo, keyed on the
+// locale) applies the S56f viewer-locale uppercasing and the rail renders them
+// verbatim — RailItem is memoized with no locale subscription, so casing in the
+// component froze the old locale's casing after a language switch.
 const ITEMS = [
-  { key: 'All', label: 'All' },
-  { key: 'Movies', label: 'Movies', hasChildren: true },
-  { key: 'News', label: 'News' }
+  { key: 'All', label: 'ALL' },
+  { key: 'Movies', label: 'MOVIES', hasChildren: true },
+  { key: 'News', label: 'NEWS' }
 ]
 
 const mounted: RendererInstance[] = []

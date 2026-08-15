@@ -77,7 +77,11 @@ async function armAndMeasure (tree: RendererInstance, containerW: number, textW:
 
 test('inactive: the plain ellipsized single line, no animation machinery — however long it sits', async () => {
   const tree = await createTree(<MarqueeText text="A very long live event title" />)
-  await layout(clipView(tree), 100)
+  // A resting row pays NOTHING — not even the container measurement: the clip
+  // View's onLayout is attached only while `active` (containerW is consulted only
+  // after arming), so ~15 mounted rows don't each pay a bridge callback + a state
+  // write on mount/scroll-in.
+  expect(clipView(tree)).toBeUndefined()
   await advance(5000) // nothing arms without `active`
   expectStatic(tree)
 })

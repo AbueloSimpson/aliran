@@ -1,7 +1,7 @@
 // Search — client-side filter over the entitled catalog (title / description /
 // category). No server roundtrip: the whole display list is already replicated.
 // Results reuse ChannelRow; selecting one jumps into Live TV.
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { View, Text, TextInput, FlatList, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
@@ -39,6 +39,11 @@ export function SearchScreen ({ navigation }: Props) {
     ))
   }, [streams, query, locale])
 
+  // Identity-stable row handler so ChannelRow's memo holds — this screen
+  // re-renders on EVERY keystroke, and an inline arrow re-rendered every mounted
+  // result row each time. `navigation` is identity-stable.
+  const onPressStream = useCallback((s: Stream) => navigation.navigate('Live', { streamId: s.id }), [navigation])
+
   return (
     <View style={styles.container}>
       <Text style={styles.header}>{t('search.header')}</Text>
@@ -66,7 +71,7 @@ export function SearchScreen ({ navigation }: Props) {
               stream={item}
               number={numbers.get(item.id)}
               favorite={favorites.includes(item.id)}
-              onPressStream={(s) => navigation.navigate('Live', { streamId: s.id })}
+              onPressStream={onPressStream}
             />
           )}
         />

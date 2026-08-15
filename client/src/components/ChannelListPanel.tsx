@@ -83,17 +83,21 @@ function ChannelListPanelInner ({ streams, heading, numbers, playingId, favorite
       number={numbers.get(item.id)}
       playing={item.id === playingId}
       favorite={favSet.has(item.id)}
-      // Focus must land SOMEWHERE on open: the playing row when this scope contains
-      // it, else the FIRST row — keyed on playingIndex (< 0 = "absent from THIS
-      // list"), not on playingId being null, so a panel scoped away from the
-      // playing channel still opens with a focused row instead of focus nowhere.
-      hasTVPreferredFocus={item.id === playingId || (playingIndex < 0 && index === 0)}
+      // Focus fallback: the FIRST row asks for the opening focus only when NOTHING
+      // is playing at all. Keying this on "the playing channel is absent from THIS
+      // list" (playingIndex < 0) was tried and reverted: it fired on every scope
+      // that lacks the playing channel, so merely WALKING the rail past such a
+      // category made row 0 requestFocus and yanked the D-pad out of the rail.
+      // With the membership-checked scope restore the reopened panel virtually
+      // always contains the playing row; when it doesn't, the rail keeps focus —
+      // acceptable, and far better than stealing it mid-walk.
+      hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
       innerRef={item.id === playingId ? playingRowRef : undefined}
       onFocus={onActivity}
       onPressStream={handlePress}
       onLongPressStream={onInfo}
     />
-  ), [numbers, playingId, playingIndex, favSet, onActivity, handlePress, onInfo])
+  ), [numbers, playingId, favSet, onActivity, handlePress, onInfo])
   return (
     <View style={styles.panel}>
       <Text style={styles.header} numberOfLines={1}>{heading ?? t('live.channels')}</Text>
