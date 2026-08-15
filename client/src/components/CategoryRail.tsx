@@ -1,14 +1,16 @@
 // Far-left category rail (vertical text list). Two-level: at the top level it lists the
-// categories (a "›" marks ones with sub-categories); tapping such a category DRILLS in —
-// the rail then shows a pinned "‹ Parent" back header with the parent's sub-categories
-// scrolling beneath it, and picking a sub scopes the channel list. Selected = a filled
-// accent pill (onPrimary text); a merely-focused item gets the light focusFill pill —
-// the same fill grammar the channel rows use. On TV, focusing a name selects it, so the
-// viewer sees one accent pill tracking the D-pad; on phone, tap. The drill state itself
-// lives in LiveScreen; this component just renders what it's given (items + optional
-// parent header).
+// categories (a "›" marks ones with sub-categories); OK/tap on such a category DRILLS
+// in — the rail then shows a pinned "‹ Parent" back header with the parent's
+// sub-categories scrolling beneath it, and OK on a sub scopes the channel list.
+// Selected = a filled accent pill (onPrimary text); a merely-focused item gets the
+// light focusFill pill — the same fill grammar the channel rows use. On TV the D-pad
+// focus moves ONLY the focusFill pill: nothing is selected, scoped, or drilled until
+// OK (the operator's ask — walking the rail must not redraw the channel list), so the
+// accent pill stays where the last pick left it while the focus pill travels. On
+// phone, tap. The drill state itself lives in LiveScreen; this component just renders
+// what it's given (items + optional parent header).
 import React, { useState } from 'react'
-import { View, ScrollView, Text, Pressable, StyleSheet, Platform } from 'react-native'
+import { View, ScrollView, Text, Pressable, StyleSheet } from 'react-native'
 import { getLocale } from '@aliran/i18n'
 import { theme } from '../theme'
 
@@ -28,17 +30,13 @@ export interface CategoryRailProps {
   /** When drilled into a parent, its name + a back action, pinned above the scroll. */
   parentHeader?: { label: string; onBack: () => void }
   /**
-   * SCOPE the channel list to this category — fired by moving the D-pad focus onto it
-   * (TV). It must never enter/drill: walking the focus down the rail has to be able to
-   * pass a parent that has sub-categories.
+   * ENTER this category — fired by OK (and by a tap on phone, which has no focus
+   * step). Scoping the list, drilling into a parent's sub-categories: this is the
+   * rail's ONE state-changing gesture. D-pad focus deliberately fires nothing —
+   * walking the rail must be free: it has to pass parents without entering them,
+   * and it must not re-scope the list on every stop (see the header note).
    */
-  onSelect: (key: string) => void
-  /**
-   * ENTER this category — fired by OK (and by a tap on phone, which has no focus step).
-   * Drilling into a parent's sub-categories is this, and only this. Defaults to
-   * onSelect when the host has nothing extra to do.
-   */
-  onActivate?: (key: string) => void
+  onActivate: (key: string) => void
   /** Fired on user interaction (item focus / press / scroll) to defer the auto-hide timer. */
   onActivity?: () => void
 }
@@ -54,7 +52,7 @@ export interface CategoryRailProps {
 // call in here froze the old locale's casing after a language switch (the memo
 // never broke; only the translated 'All' changed). BackHeader below is unmemoized
 // and keeps its own toLocaleUpperCase.
-function CategoryRailInner ({ items, selected, parentHeader, onSelect, onActivate, onActivity }: CategoryRailProps) {
+function CategoryRailInner ({ items, selected, parentHeader, onActivate, onActivity }: CategoryRailProps) {
   return (
     <View style={styles.rail}>
       {parentHeader && (
@@ -68,8 +66,7 @@ function CategoryRailInner ({ items, selected, parentHeader, onSelect, onActivat
             label={it.label}
             hasChildren={it.hasChildren}
             active={it.key === selected}
-            onSelect={onSelect}
-            onActivate={onActivate ?? onSelect}
+            onActivate={onActivate}
             onActivity={onActivity}
           />
         ))}
@@ -93,25 +90,23 @@ function BackHeader ({ label, onBack, onActivity }: { label: string; onBack: () 
   )
 }
 
-function RailItemInner ({ itemKey, label, hasChildren, active, onSelect, onActivate, onActivity }: { itemKey: string; label: string; hasChildren?: boolean; active: boolean; onSelect: (key: string) => void; onActivate: (key: string) => void; onActivity?: () => void }) {
+function RailItemInner ({ itemKey, label, hasChildren, active, onActivate, onActivity }: { itemKey: string; label: string; hasChildren?: boolean; active: boolean; onActivate: (key: string) => void; onActivity?: () => void }) {
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
       // Pill precedence: ACTIVE wins (accent fill, onPrimary text) even while focused;
-      // a focused-but-not-active item gets the light focusFill pill. On TV the two
-      // coincide while the D-pad is in the rail (focus scopes → focus IS selection),
-      // so the viewer sees one accent pill tracking the D-pad.
+      // a focused-but-not-active item gets the light focusFill pill. On TV the accent
+      // pill marks the last PICK and stays put while the focusFill pill tracks the
+      // D-pad — two pills on screen is the correct reading, not a styling accident.
       style={[styles.item, active ? styles.pillActive : focused && styles.pillFocused]}
-      // FOCUS SCOPES, OK ENTERS — and the split is the whole point. Focus used to call
-      // the host's select, which DRILLED into any category that had sub-categories, so
-      // simply walking the D-pad down the rail teleported the viewer into the first
-      // parent it passed: they could not reach the categories below it, and could not
-      // stay on the parent either. Measured on a TCL set going down from All.
-      //
-      // Focus-selects at all is TV-only. On phone, Android's touch-mode focus lands on a
-      // rail item right after a tap elsewhere in the rail and would instantly revert the
-      // tapped selection — so phone goes through onPress alone.
-      onFocus={() => { setFocused(true); onActivity?.(); if (Platform.isTV) onSelect(itemKey) }}
+      // FOCUS ONLY HIGHLIGHTS, OK ENTERS. Focus once scoped the list on every stop
+      // (and in its first shape even DRILLED — walking the D-pad down the rail
+      // teleported the viewer into the first parent it passed; measured on a TCL set
+      // going down from All). Both contracts are retired: a rail walk is free, and
+      // the list, the drill, and the selection all wait for OK (LiveScreen
+      // activateRail), so nothing beyond the focus pill redraws while the viewer is
+      // merely traveling.
+      onFocus={() => { setFocused(true); onActivity?.() }}
       onBlur={() => setFocused(false)}
       onPress={() => { onActivity?.(); onActivate(itemKey) }}
     >

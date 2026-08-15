@@ -309,14 +309,16 @@ test('a one-game PARENT ring falls back to the global ring — scope All', async
   expect(texts(tree)).toContain('CHANNELS')
 })
 
-// --- the rail-autofocus swallow (the operator bug's root cause) ------------------
+// --- the rail's opening autoFocus is harmless (was: the swallow) -----------------
 // The panels block mounts TWO autoFocus panes; the RAIL's wins the opening focus
-// before the playing row claims it (the ChannelListPanel contract), and on TV a
-// rail focus IS a scope-select — so the artifact used to overwrite the scope
-// openListInContext had just restored. The swallow eats EXACTLY ONE focus-select
-// right after the open, and only that one.
+// before the playing row claims it (the ChannelListPanel contract). Under the old
+// focus-scopes contract that artifact overwrote the scope openListInContext had
+// just restored, and a one-shot swallow guarded it. Focus no longer changes ANY
+// state — the artifact lands on nothing, the swallow is gone, and this test now
+// pins the invariant that replaced it: however many times the rail is focused,
+// the restored scope stands until OK.
 
-test('the rail\'s opening autoFocus is swallowed: the restored scope stands, and only the NEXT focus scopes', async () => {
+test('rail focus after an in-context reopen never moves the restored scope — only OK does', async () => {
   const tree = await live()
   await ReactTestRenderer.act(async () => { leftStrip(tree).props.onFocus() })
   await ReactTestRenderer.act(async () => { railPill(tree, 'LIVE EVENTS').props.onPress() })
@@ -324,17 +326,20 @@ test('the rail\'s opening autoFocus is swallowed: the restored scope stands, and
   // OK from fullscreen: the panel reopens on the restored LIVE EVENTS scope.
   await ReactTestRenderer.act(async () => { catcher(tree).props.onPress() })
   expect(listTitles(tree)).toHaveLength(2) // the parent group's games
-  // The autoFocus artifact: the rail's FIRST pill (ALL) receives focus right
-  // after the open. Swallowed — even after the rail-walk debounce elapses, the
-  // restored heading and list must not have moved.
+  // The autoFocus artifact (the rail's FIRST pill receiving focus right after the
+  // open) — and then a second, deliberate-looking focus. NEITHER moves the scope.
   await ReactTestRenderer.act(async () => { railPill(tree, 'ALL').props.onFocus() })
   await ReactTestRenderer.act(async () => { await new Promise<void>((r) => setTimeout(r, 300)) })
   expect(texts(tree)).toContain('LIVE EVENTS')
   expect(texts(tree)).not.toContain('CHANNELS')
   expect(listTitles(tree)).toHaveLength(2)
-  // …one-shot: the viewer's next deliberate focus on the same pill DOES scope.
   await ReactTestRenderer.act(async () => { railPill(tree, 'ALL').props.onFocus() })
   await ReactTestRenderer.act(async () => { await new Promise<void>((r) => setTimeout(r, 300)) })
+  expect(texts(tree)).toContain('LIVE EVENTS')
+  expect(texts(tree)).not.toContain('CHANNELS')
+  expect(listTitles(tree)).toHaveLength(2)
+  // OK is the pick that moves it.
+  await ReactTestRenderer.act(async () => { railPill(tree, 'ALL').props.onPress() })
   expect(texts(tree)).toContain('CHANNELS')
   expect(listTitles(tree)).toHaveLength(5) // the whole lineup (vod included — 'All' groups everything)
 })
