@@ -444,17 +444,30 @@ function lastSegmentDurationMs (text) {
 // panelPeer: the REMEMBERED PANEL PEER — the swarm public key of the peer that answered
 // the hello probe last session (_maybeArmRpc), handed back by the host from wherever it
 // persisted the 'panel-peer' event. It is a REACHABILITY HINT, never an identity claim:
-// _openPanel dials it directly (swarm.joinPeer) right after the topic join, so the dial
-// RACES the topic lookup and whichever lands a socket first wins the probe. MEASURED on
-// the TCL set: every boot pays ~4-5 s of UDP bind + DHT bootstrap ('swarm-ready') plus a
-// topic lookup before the first panel socket (~5.5-6 s to 'rpc-armed') — the direct dial
-// skips the lookup leg entirely on a warm boot. A stale key (panel moved boxes, rotated
-// its swarm identity) costs nothing: the hello probe refuses the impostor exactly as it
-// refuses any other peer, the lookup path proceeds unchanged, and once a DIFFERENT peer
-// validates, the arm path leavePeer()s the stale hint so the swarm stops re-dialling a
-// dead address for the rest of the session. Trust is established per-boot by the probe —
-// the hint is deliberately NOT preloaded into _panelPeerKey, because that field means
-// "proved it is the panel THIS session" and the remembered re-arm path trusts it blindly.
+// _openPanel arms a DELAYED swarm.joinPeer() to it as a RESCUE for the boots where the
+// panel topic's DHT records are stale (a restarted panel's announces expire and hyperswarm
+// re-queries a client topic only every ~10 min — the class of failure behind the S22
+// stuck-zap incident) and the lookup therefore produces no socket at all.
+//
+// ⚠ DELAYED ON PURPOSE, NOT A RACE — MEASURED (Terraza vc17, 4 warm boots + hyperswarm
+// source): an immediate joinPeer looks like a free race but LOSES one. Hyperswarm keeps
+// ONE connection attempt per peer: joinPeer upserts the PeerInfo with relayAddresses
+// null, its dht.connect() must run its own findPeer, and while that attempt is in
+// _allConnections the topic lookup's _handlePeer — which arrives WITH the announce's
+// relay addresses and connects in ~0.3 s — returns without dialling. The bare-key dial
+// preempted the address-armed one: topic-join → first-socket measured 1.1-1.7 s dialled
+// immediately vs 0.29 s lookup-only. Delayed past the healthy lookup's window, the dial
+// costs a healthy boot NOTHING (the RPC is armed by then, or joinPeer no-ops on the
+// existing connection) and still rescues a stale-topic boot seconds before login's
+// bounded RPC wait would give up.
+//
+// A stale key (panel moved boxes, rotated its swarm identity) costs nothing even when
+// the rescue fires: the hello probe refuses the impostor exactly as it refuses any other
+// peer, the lookup path proceeds unchanged, and once a DIFFERENT peer validates, the arm
+// path leavePeer()s the stale hint so the swarm stops re-dialling a dead address for the
+// rest of the session. Trust is established per-boot by the probe — the hint is
+// deliberately NOT preloaded into _panelPeerKey, because that field means "proved it is
+// the panel THIS session" and the remembered re-arm path trusts it blindly.
 function normalizePanelPeer (v) {
   if (v == null) return null
   if (typeof v !== 'string' || !/^[0-9a-f]{64}$/.test(v)) throw new Error('panelPeer must be the 64-hex swarm public key a previous session validated (the panel-peer event payload)')
@@ -962,6 +975,12 @@ function signinFacingMessage (err) {
 // per-tick refresh would fire a lookup storm on a box whose radio is the bottleneck.
 const PANEL_REFRESH_MIN_MS = 5000
 
+// How long the remembered-panel-peer rescue dial waits for the topic lookup to land a
+// socket first (see normalizePanelPeer for why it must not dial immediately). Sized past
+// the healthy lookup leg — topic-join → first-socket runs 0.3-1.5 s measured across the
+// TCL rounds — so on an ordinary boot the timer finds the RPC armed and does nothing.
+const PANEL_PEER_DIAL_DELAY_MS = 1500
+
 // The post-login stagger (_schedulePostLogin). Prewarm and the stale-replica sweep used
 // to fire in the SAME tick as the 'streams' emit — exactly when the host is sending its
 // own post-login traffic (the RN app's "remember me" write, the Splash->Menu prefs
@@ -1017,7 +1036,8 @@ export class AliranPlayer extends Emitter {
     this._catalogWatcher = null
     this._call = null
     this._panelPeerKey = null // hex public key of the peer that PROVED it is the panel (see _maybeArmRpc)
-    this._panelPeerHint = normalizePanelPeer(panelPeer) // last session's validated key — a direct-dial hint, never trusted (see normalizePanelPeer)
+    this._panelPeerHint = normalizePanelPeer(panelPeer) // last session's validated key — a rescue-dial hint, never trusted (see normalizePanelPeer)
+    this._panelDialDelayMs = PANEL_PEER_DIAL_DELAY_MS // rescue-dial delay (tests shrink it)
     this._panelPeerAnnounced = null // last 'panel-peer' emit, so mid-session re-arms on the same socket/key stay quiet
     this._panelDiscovery = null // the panel topic's PeerDiscovery — report() kicks refresh() when the RPC is down
     this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
@@ -5566,17 +5586,28 @@ export class AliranPlayer extends Emitter {
     await this._panelBee.ready()
     this._panelDiscovery = this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
     this._mark('panel-topic-joined')
-    // THE REMEMBERED PANEL PEER (see normalizePanelPeer for the whole story): dial last
-    // session's validated peer directly, racing the topic lookup just joined — whichever
-    // lands a socket first goes through the same hello probe, so a stale key costs
-    // nothing and a fresh one skips the lookup leg of a warm boot. Fired here rather
-    // than at connect() so a corruption purge's re-open gets the same head start.
-    // joinPeer is a request, not a guarantee (see _redialPeer's contract notes) — the
-    // topic join above remains the path that always works, which is why nothing here
-    // waits, checks, or reports failure. The mark is the instrument: 'panel-joinpeer'
-    // followed closely by 'rpc-armed probed' on a warm boot is this feature working.
+    // THE REMEMBERED PANEL PEER (see normalizePanelPeer for the whole story, including
+    // why dialling IMMEDIATELY here is measurably WORSE than not dialling at all): arm a
+    // delayed rescue dial to last session's validated peer. The timer stands down when
+    // the ordinary path already delivered — RPC armed — and otherwise joinPeer either
+    // no-ops on an existing connection to that peer or starts the dial the stale topic
+    // could not. Armed here rather than at connect() so a corruption purge's re-open
+    // gets the same rescue. joinPeer is a request, not a guarantee (see _redialPeer's
+    // contract notes) — the topic join above remains the path that always works, which
+    // is why nothing here waits or reports failure. The mark is the instrument, and its
+    // meaning is "the rescue actually fired": a healthy warm boot shows NO
+    // 'panel-joinpeer' mark, a stale-topic boot shows it followed by 'rpc-armed probed'.
+    // Epoch-guarded and unref'd like every engine timer: stop() and a purge both bump
+    // the epoch, so a fired timer over a torn-down swarm does nothing, and a pending one
+    // never holds a worklet open.
     if (this._panelPeerHint) {
-      try { this._swarm.joinPeer(b4a.from(this._panelPeerHint, 'hex')); this._mark('panel-joinpeer') } catch {}
+      const gen = this._epoch
+      const t = setTimeout(() => {
+        const hint = this._panelPeerHint // the arm path nulls it when a DIFFERENT peer validates
+        if (this._epoch !== gen || !this._swarm || this._call || !hint) return
+        try { this._swarm.joinPeer(b4a.from(hint, 'hex')); this._mark('panel-joinpeer') } catch {}
+      }, this._panelDialDelayMs)
+      if (typeof t.unref === 'function') t.unref()
     }
     this._watchCatalog()
     this._watchEpgKey()

@@ -158,12 +158,15 @@ export interface PlayerOptions {
   /**
    * The swarm public key (hex) of the peer a PREVIOUS session validated as the panel —
    * the payload of the 'panel-peer' event, handed back from wherever the host persisted
-   * it. The engine dials it directly right after the panel topic join, racing the DHT
-   * topic lookup; whichever socket lands first goes through the same hello probe, so a
-   * stale key costs nothing (the probe refuses it and the lookup path proceeds) while a
-   * fresh one skips the lookup leg of a warm boot (~1-2 s measured on a TV box).
-   * A reachability hint only — never treated as an identity claim. Invalidate the
-   * persisted copy on sign-out / service switch.
+   * it. The engine arms a short-delayed RESCUE dial to it after the panel topic join:
+   * on a healthy boot the topic lookup lands the socket first and the rescue stands
+   * down (deliberately not an immediate race — hyperswarm allows one attempt per peer,
+   * so an early bare-key dial measurably REPLACES the lookup's faster address-armed
+   * connect); on a boot where the topic's DHT records are stale and the lookup delivers
+   * nothing, the dial reaches the panel by key and saves the boot. Every socket still
+   * goes through the same hello probe, so a stale key costs nothing. A reachability
+   * hint only — never treated as an identity claim. Invalidate the persisted copy on
+   * sign-out / service switch.
    */
   panelPeer?: string
   /** Disposable replica cache directory (default './aliran-store'). */
@@ -595,9 +598,9 @@ export interface PlayerEvents {
    * A peer proved it is the panel (it answered the hello probe, or re-validated after a
    * socket flap onto a NEW key). The payload is its swarm public key (hex): persist it
    * beside your prefs and pass it back as PlayerOptions.panelPeer next boot, so the
-   * engine can dial the panel directly instead of waiting out the DHT topic lookup.
-   * Emitted only when the key CHANGES, so a persist-per-event host writes once per
-   * panel identity, not once per reconnect.
+   * engine can rescue a boot whose panel-topic lookup delivers nothing (stale DHT
+   * records) by dialling the panel by key. Emitted only when the key CHANGES, so a
+   * persist-per-event host writes once per panel identity, not once per reconnect.
    */
   'panel-peer': [publicKey: string]
 }

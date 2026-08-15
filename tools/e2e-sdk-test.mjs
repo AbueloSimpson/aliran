@@ -1725,12 +1725,13 @@ try {
   await sleep(3500) // across PREWARM_DELAY_MS — a fired timer must find the epoch moved
   if (playerL._store !== null || playerL._swarm !== null) throw new Error('a staggered post-login task rebuilt engine state after stop()')
 
-  // ----- Remembered panel peer: the direct dial ALONE arms the RPC (panel-reachability) -----
+  // ----- Remembered panel peer: the rescue dial ALONE arms the RPC (panel-reachability) -----
   // A warm boot hands the engine last session's validated peer key (`panelPeer`) and
-  // _openPanel dials it right after the topic join, racing the lookup. On a local testnet
-  // both paths are fast, so "raced and won" proves nothing — instead the topic join is
-  // STUBBED to a dead discovery, leaving the joinPeer dial as the ONLY way this player can
-  // reach the panel. An armed RPC and a delivered lineup are then the direct-dial path alone.
+  // _openPanel arms a DELAYED joinPeer to it — the rescue for a boot whose topic lookup
+  // delivers nothing. That is exactly the scene staged here: the topic join is STUBBED to
+  // a dead discovery, leaving the rescue dial as the ONLY way this player can reach the
+  // panel. An armed RPC and a delivered lineup are then the rescue path alone. The delay
+  // is shrunk like _rpcProbeMs — what is under test is the dial, not the stand-down window.
   if (peerEventsL.length !== 1 || peerEventsL[0] !== panelPeerL || !/^[0-9a-f]{64}$/.test(String(peerEventsL[0]))) {
     throw new Error('panel-peer must deliver the validated key exactly once: ' + JSON.stringify(peerEventsL) + ' vs ' + panelPeerL)
   }
@@ -1738,6 +1739,7 @@ try {
   cleanups.push(() => { try { fs.rmSync(dirM, { recursive: true, force: true }) } catch {} })
   const playerM = createPlayer({ panelPubKey, storeDir: dirM, swarm: { bootstrap }, panelPeer: peerEventsL[0] })
   cleanups.push(() => playerM.stop())
+  playerM._panelDialDelayMs = 25
   const realEnsureM = Object.getPrototypeOf(playerM)._ensureStore
   playerM._ensureStore = async function () {
     await realEnsureM.call(this)
@@ -1756,20 +1758,22 @@ try {
   }
   if (!sM || sM.length < 4) throw new Error('the direct dial alone did not deliver the lineup')
   const marksM = playerM.bootTrace().map((m) => m.name + (m.detail ? ' ' + m.detail : ''))
-  if (!marksM.includes('panel-joinpeer')) throw new Error('no panel-joinpeer mark — the hint was never dialled: ' + marksM.join(' | '))
-  if (!marksM.some((m) => m.startsWith('rpc-armed'))) throw new Error('the RPC never armed on the direct dial: ' + marksM.join(' | '))
+  if (!marksM.includes('panel-joinpeer')) throw new Error('no panel-joinpeer mark — the rescue never dialled: ' + marksM.join(' | '))
+  if (!marksM.some((m) => m.startsWith('rpc-armed'))) throw new Error('the RPC never armed on the rescue dial: ' + marksM.join(' | '))
   await playerM.stop()
   log('panel-peer: with the topic lookup DISABLED, the persisted key alone dialled the panel and logged in —', marksM.filter((m) => m === 'panel-joinpeer' || m.startsWith('rpc-armed')).join(', '))
 
-  // …and a STALE hint costs nothing: a key nobody answers on dials into the void, the
-  // probe never validates it, and the ordinary lookup path proceeds to a working login.
-  // The trust boundary is asserted too — a hint must never appear in _panelPeerKey, which
-  // is the field the instant no-probe re-arm path trusts.
+  // …and a STALE hint costs nothing even when it fires: the delay is shrunk to (near)
+  // zero so the bogus dial is IN FLIGHT while the lookup proceeds — the worst case — and
+  // the probe never validates it, so the ordinary path logs in around it. The trust
+  // boundary is asserted too — a hint must never appear in _panelPeerKey, which is the
+  // field the instant no-probe re-arm path trusts.
   const dirN = tmp('e2es-cliN-')
   cleanups.push(() => { try { fs.rmSync(dirN, { recursive: true, force: true }) } catch {} })
   const stalePeer = b4a.toString(hcrypto.randomBytes(32), 'hex')
   const playerN = createPlayer({ panelPubKey, storeDir: dirN, swarm: { bootstrap }, panelPeer: stalePeer })
   cleanups.push(() => playerN.stop())
+  playerN._panelDialDelayMs = 1
   await playerN.connect()
   let sN = null
   for (let i = 0; i < 10 && !sN; i++) {
@@ -1802,7 +1806,7 @@ try {
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
     meteredGated && directionalProven && stallGated && clientOnlyProven && evictReopenProven && redirectProven && liveEntitlementProven && diskRotationProven)
-  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + evicted-feed re-open fresh dial + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) + VIEWER-DISK rotation of the active feed (invisible swap, request park, single-flight, cast pin, retune overlap, failed re-open, stop() overlap) + remembered-panel-peer direct dial (arms with the topic lookup disabled; stale hint refused) verified)' : 'FAIL ❌')
+  log('\nRESULT:', pass ? 'PASS ✅  (headless SDK: login → resolve → P2P HLS + catalog live-push + active-feed rotation-while-watching + hybrid CDN fallback/auto-return + tune self-heal + wedged-connection teardown + unservable-feed escalation (tune + hybrid) + adjacent-channel zap prefetch + S21 smooth-zapping toggle/gate/directional + client-only uploadPolicy + evicted-feed re-open fresh dial + S23 redirect channels + S57 live entitlement (mid-session grant/revoke, no re-login) + VIEWER-DISK rotation of the active feed (invisible swap, request park, single-flight, cast pin, retune overlap, failed re-open, stop() overlap) + remembered-panel-peer rescue dial (arms with the topic lookup disabled; stale hint refused) verified)' : 'FAIL ❌')
   await cleanup(); process.exit(pass ? 0 : 1)
 } catch (err) {
   log('ERROR:', err.stack || err.message)

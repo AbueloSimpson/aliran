@@ -640,9 +640,10 @@ function deleteCatalogCache () {
 
 // --- the remembered panel peer -----------------------------------------------------------
 // The swarm public key of the peer that last PROVED it is the panel — the engine's
-// 'panel-peer' event — persisted so the NEXT boot can hand it back as `panelPeer` and dial
-// the panel directly instead of waiting out the DHT topic lookup (the lookup leg of the
-// measured ~5.5-6 s to 'rpc-armed' on the TCL set; see sdk/player.js normalizePanelPeer).
+// 'panel-peer' event — persisted so the NEXT boot can hand it back as `panelPeer`, the
+// engine's rescue dial for a boot whose panel-topic lookup delivers no socket (stale DHT
+// records after a panel restart; see sdk/player.js normalizePanelPeer for the whole
+// story, including why the dial is delayed rather than racing the lookup).
 // A SIBLING of the prefs file like the catalog cache, and for the same two reasons: every
 // prefs setter rewrites its whole file, and this must survive a corruption purge — a purge
 // rmSyncs aliran-store wholesale and changes nothing about where the panel lives, so
@@ -1088,8 +1089,8 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   if (player) return player
   if (uploadPolicy === 'client-only' || uploadPolicy === 'reseed') basePolicy = uploadPolicy
   // panelPeer: last session's validated panel peer, if this device has one FOR THIS
-  // panel (readPanelPeer gates on the key) — the engine dials it right after the topic
-  // join so a warm boot skips the lookup wait. readPanelPeer only ever returns a
+  // panel (readPanelPeer gates on the key) — the engine's delayed rescue dial for a
+  // boot whose topic lookup delivers nothing. readPanelPeer only ever returns a
   // 64-hex value or undefined, so this cannot be what makes the constructor throw.
   player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm: narrowPrewarm(prewarm), tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes: VIEWER_FEED_BUDGET_BYTES, feedLimit: NARROW_ABI ? NARROW_FEED_LIMIT : undefined, remote, deviceId: ensureDeviceId(), appVersion, platform, panelPeer: readPanelPeer(panelPubKey) })
   player.on('ready', () => send({ type: 'ready' }))
