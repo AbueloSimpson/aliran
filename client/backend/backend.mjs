@@ -674,6 +674,53 @@ function deletePanelPeer () {
   try { fs.unlinkSync(panelPeerPath()) } catch {} // ENOENT included — gone is gone
 }
 
+// --- the cached DHT nodes ---------------------------------------------------------------
+// The engine's last routing-table snapshot (its 'dht-nodes' event) — {host, port} records
+// of DHT nodes that answered recently — persisted so the NEXT boot can hand them back as
+// swarm.nodes and bootstrap from them instead of resolving and round-tripping the public
+// bootstrap servers (the measured 4-5 s 'swarm-ready' wall; see normalizeSwarmOpts in
+// sdk/player.js for the whole story, including why a stale or all-dead list only costs a
+// fallback to the normal bootstrap). A SIBLING of the prefs file like the panel peer, and
+// for the same two reasons: every prefs setter rewrites its whole file, and this must
+// survive a corruption purge — a purge rmSyncs aliran-store wholesale and changes nothing
+// about which DHT nodes are alive. SCOPED to the DHT it was learned on: the record stamps
+// the session's custom bootstrap config (null = the public DHT), and the read side
+// refuses a record from a different one, so a testnet's nodes cannot leak into a
+// production boot or vice versa. UNLIKE the panel peer it survives sign-out and service
+// switches — these are public DHT infrastructure addresses, not a record of where this
+// device belonged. Never trusted: DHT nodes are address hints, and everything learned
+// through them is verified end-to-end (panel-signed records), so the worst a torn or
+// hand-edited file can do is slow one boot's bootstrap down.
+function dhtNodesPath () {
+  return storeDir().replace(/aliran-store$/, 'aliran-dht-nodes.json')
+}
+
+// One JSON shape both sides compare — undefined and null both mean "the public DHT".
+function dhtBootstrapStamp (bootstrap) {
+  return JSON.stringify(bootstrap ?? null)
+}
+
+function readDhtNodes (bootstrap) {
+  try {
+    const rec = JSON.parse(b4a.toString(fs.readFileSync(dhtNodesPath())))
+    if (!rec || rec.v !== 1 || !Array.isArray(rec.nodes)) return undefined
+    if (dhtBootstrapStamp(rec.bootstrap) !== dhtBootstrapStamp(bootstrap)) return undefined
+    const nodes = []
+    for (const n of rec.nodes.slice(0, 32)) {
+      // One malformed entry poisons the whole record (return, not skip): the file has
+      // exactly one writer, so a bad entry means a torn/foreign file, not a bad node.
+      if (!n || typeof n.host !== 'string' || !n.host || !Number.isInteger(n.port) || n.port < 1 || n.port > 65535) return undefined
+      nodes.push({ host: n.host, port: n.port })
+    }
+    if (nodes.length) return nodes
+  } catch { /* absent or torn — this boot pays the public bootstrap, nothing more */ }
+  return undefined
+}
+
+function writeDhtNodes (bootstrap, nodes) {
+  writeJsonFileAtomic(dhtNodesPath(), { v: 1, bootstrap: bootstrap ?? null, nodes })
+}
+
 // The account name the CURRENT session belongs to — what the cache write stamps, and
 // what the read-side gate compares against the saved credentials. Set where the worklet
 // learns it (the password dispatch, a resume's opened record, a received handover),
@@ -1092,7 +1139,13 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   // panel (readPanelPeer gates on the key) — the engine's delayed rescue dial for a
   // boot whose topic lookup delivers nothing. readPanelPeer only ever returns a
   // 64-hex value or undefined, so this cannot be what makes the constructor throw.
-  player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm: narrowPrewarm(prewarm), tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes: VIEWER_FEED_BUDGET_BYTES, feedLimit: NARROW_ABI ? NARROW_FEED_LIMIT : undefined, remote, deviceId: ensureDeviceId(), appVersion, platform, panelPeer: readPanelPeer(panelPubKey) })
+  // swarm.nodes: last session's DHT routing-table snapshot, if this device has one FOR
+  // THIS DHT (readDhtNodes gates on the bootstrap config) — the engine's warm bootstrap.
+  // readDhtNodes only ever returns already-validated {host, port} records or undefined,
+  // so this cannot be what makes the constructor throw either.
+  const cachedDhtNodes = readDhtNodes(swarm && swarm.bootstrap)
+  const swarmOpts = cachedDhtNodes ? { ...(swarm || {}), nodes: cachedDhtNodes } : swarm
+  player = new AliranPlayer({ storeDir: storeDir(), http, fs, os, hybrid, prewarm: narrowPrewarm(prewarm), tune, zapPrefetch, swarm: swarmOpts, uploadPolicy, reclaimBudgetBytes: VIEWER_FEED_BUDGET_BYTES, feedLimit: NARROW_ABI ? NARROW_FEED_LIMIT : undefined, remote, deviceId: ensureDeviceId(), appVersion, platform, panelPeer: readPanelPeer(panelPubKey) })
   player.on('ready', () => send({ type: 'ready' }))
   // `vod` (S53) rides the streams message only when the panel enabled a provider —
   // the field is absent otherwise, so the UI's "no VOD section" is the default.
@@ -1122,6 +1175,13 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
     try {
       if (connectedKey && readPanelPeer(connectedKey) !== peerKey) writePanelPeer(connectedKey, peerKey)
     } catch { /* best-effort — a lost write costs the next boot a topic lookup */ }
+  })
+  // The engine's routing-table snapshot — remember it so the NEXT boot bootstraps from
+  // these nodes instead of the public bootstrap servers (see readDhtNodes). Stamped with
+  // the bootstrap config THIS engine was built on, which is also the read-side gate. The
+  // engine already emits only when the set changes, so no compare is needed here.
+  player.on('dht-nodes', (nodes) => {
+    try { writeDhtNodes(swarm && swarm.bootstrap, nodes) } catch { /* best-effort — a lost write costs the next boot the public bootstrap */ }
   })
   player.on('recovered', (err) => {
     storePurges++ // a resume in flight has just had its call re-run — see runResume's refund

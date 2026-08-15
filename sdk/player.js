@@ -480,6 +480,24 @@ function normalizePanelPeer (v) {
 // the hundreds so they can hold big fan-out. bootstrap = custom DHT bootstrap nodes
 // (local testnets / private DHTs) — omit for the public DHT.
 //
+// nodes = KNOWN-GOOD DHT NODES from a previous session ({host, port} records — the
+// engine's 'dht-nodes' event, handed back by the host from wherever it persisted them).
+// They preload the DHT's routing table, which changes what the bootstrap query in
+// dht.ready() — the boot's measured 4-5 s 'swarm-ready' wall — has to do: with ≥ k
+// (20) table nodes, dht-rpc's Query._open never touches the bootstrap list at all
+// (no DNS resolution of the public bootstrap hostnames, no round-trips through them),
+// and the Kademlia walk starts directly against nodes that answered recently. A
+// REACHABILITY hint like panelPeer, never trusted: DHT nodes are identified by a hash
+// of host:port, carry no data, and everything learned from them is verified end-to-end
+// (signed panel records, feed keys), so the worst a stale/hostile list can do is slow
+// this leg down. Stale entries are evicted on their first request timeout (dht-rpc
+// _ontimeout → _removeNode), and an ALL-dead cache degrades to the normal bootstrap
+// path: the bootstrap query fails closed, the table empties as the timeouts land, and
+// the next query's _open falls back to resolving the bootstrap list — a fallback, never
+// a wedge. Capped rather than refused when over-long: the list is a rolling cache the
+// host replays, not API intent, and 32 covers dht-rpc's k=20 with slack for churn.
+const DHT_NODES_MAX = 32
+//
 // rcvbufMb / sndbufMb (S33) size the swarm's UDP socket BUFFERS — MiB, mirroring the
 // server envs SWARM_RCVBUF_MB/SWARM_SNDBUF_MB; 0 leaves that direction at the OS/udx
 // default. Viewer defaults: recv 2 MiB, send 0 — a viewer is download-dominant, so the
@@ -498,6 +516,15 @@ function normalizeSwarmOpts (v) {
   if (v.bootstrap != null) {
     if (!Array.isArray(v.bootstrap)) throw new Error('swarm.bootstrap must be an array of DHT bootstrap nodes')
     ctor.bootstrap = v.bootstrap
+  }
+  if (v.nodes != null) {
+    if (!Array.isArray(v.nodes)) throw new Error('swarm.nodes must be an array of {host, port} DHT nodes (a previous session\'s dht-nodes event)')
+    const nodes = []
+    for (const n of v.nodes.slice(0, DHT_NODES_MAX)) {
+      if (!n || typeof n.host !== 'string' || !n.host || !Number.isInteger(n.port) || n.port < 1 || n.port > 65535) throw new Error('swarm.nodes entries must be { host: string, port: 1-65535 }')
+      nodes.push({ host: n.host, port: n.port })
+    }
+    if (nodes.length) ctor.nodes = nodes
   }
   if (Object.keys(ctor).length) out.ctor = ctor
   for (const [key, dir] of [['rcvbufMb', 'recvBytes'], ['sndbufMb', 'sendBytes']]) {
@@ -981,6 +1008,15 @@ const PANEL_REFRESH_MIN_MS = 5000
 // TCL rounds — so on an ordinary boot the timer finds the RPC armed and does nothing.
 const PANEL_PEER_DIAL_DELAY_MS = 1500
 
+// The DHT node sampler (_armDhtNodeSampler): when a warm snapshot of the routing table
+// is taken for the 'dht-nodes' event. First at +30 s — past the bootstrap walk, the
+// post-login stagger and prewarm's dials, so the table holds nodes that answered THIS
+// session, on an idle worklet — then every 10 min so a long TV session keeps the cache
+// fresh against DHT churn (a snapshot is a toArray() copy + a string compare; the emit
+// is skipped when the set has not moved, so the steady state is write-free host-side).
+const DHT_NODES_SAMPLE_DELAY_MS = 30000
+const DHT_NODES_RESAMPLE_MS = 600000
+
 // The post-login stagger (_schedulePostLogin). Prewarm and the stale-replica sweep used
 // to fire in the SAME tick as the 'streams' emit — exactly when the host is sending its
 // own post-login traffic (the RN app's "remember me" write, the Splash->Menu prefs
@@ -1043,6 +1079,9 @@ export class AliranPlayer extends Emitter {
     this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
     this._loginRpcWaitMs = 10000 // login's bounded wait for the RPC to arm (tests shrink it) — see _awaitPanelRpc
     this._panelRefreshAt = 0 // last _kickPanelDiscovery, so refresh() fires at most every PANEL_REFRESH_MIN_MS
+    this._dhtSampleDelayMs = DHT_NODES_SAMPLE_DELAY_MS // first routing-table snapshot after swarm-ready (tests shrink it)
+    this._dhtResampleMs = DHT_NODES_RESAMPLE_MS // later snapshots (tests shrink it)
+    this._dhtNodesSent = null // last 'dht-nodes' set emitted, so an unchanged table stays quiet
     this._bootTrace = [] // boot diagnosis marks, construction -> first 'streams' (see _mark / bootTrace)
     this._bootSocketSeen = false // so the connection handler marks only the FIRST socket
     this._server = null
@@ -5477,6 +5516,9 @@ export class AliranPlayer extends Emitter {
     this._store = new Corestore(this._storeDir, { globalCache: new Rache({ maxSize: 4096 }) })
     await this._store.ready()
     this._mark('store-ready') // disk-bound: grows with the store, nothing GCs it at boot
+    // Attribution for the cached-node warm bootstrap (see normalizeSwarmOpts `nodes`):
+    // a trace whose swarm-ready leg moved should say whether this boot had the cache.
+    if (this._swarmOpts && this._swarmOpts.nodes) this._mark('dht-cache', this._swarmOpts.nodes.length + ' nodes')
     this._swarm = new Hyperswarm(this._swarmOpts ?? {})
     // S33: size this swarm's UDP socket buffers — the viewer-path completion of S29,
     // which tuned every server-side swarm (see core/net-tune-core.js for the whole
@@ -5494,6 +5536,7 @@ export class AliranPlayer extends Emitter {
     // bind before any packet flows.
     await this._tuneSwarmSockets()
     this._mark('swarm-ready') // includes the awaited dht.ready() (UDP bind + DHT bootstrap)
+    this._armDhtNodeSampler() // re-armed with each store build, so a purge's rebuild samples too
     // Wire the panel RPC on incoming connections — VALIDATED, not first-come (S52).
     // The old heuristic ("the first connection is the panel; we join only its topic
     // first") is only true at boot: mid-session, after a panel restart drops the RPC
@@ -5577,6 +5620,38 @@ export class AliranPlayer extends Emitter {
     } catch {
       // Best-effort by contract — a tuning failure must never surface as a boot error.
     }
+  }
+
+  // Snapshot the DHT routing table for the host to persist — the write half of the
+  // cached-node warm bootstrap (the read half is swarm.nodes; see normalizeSwarmOpts).
+  // dht.toArray() returns freshest-first {host, port} records, so the cap keeps the
+  // entries most likely to still answer next boot. Epoch-guarded and unref'd like every
+  // engine timer: stop() and a purge both bump the epoch, so a fired timer over a
+  // torn-down swarm does nothing and a pending one never holds a worklet open (the
+  // purge's _ensureStore re-run arms a fresh sampler for the rebuilt swarm). Emits only
+  // when the SET changes — toArray()'s recency ordering reshuffles constantly, and a
+  // host that fsyncs a file per event must not pay per reshuffle. Never throws: a
+  // snapshot that fails just leaves the previous cache standing.
+  _armDhtNodeSampler () {
+    const gen = this._epoch
+    const arm = (delay) => {
+      const t = setTimeout(() => {
+        if (this._epoch !== gen || !this._swarm) return
+        try {
+          const nodes = this._swarm.dht.toArray({ limit: DHT_NODES_MAX })
+          if (nodes.length) {
+            const key = nodes.map((n) => n.host + ':' + n.port).sort().join(' ')
+            if (key !== this._dhtNodesSent) {
+              this._dhtNodesSent = key
+              this.emit('dht-nodes', nodes)
+            }
+          }
+        } catch { /* best-effort by contract */ }
+        arm(this._dhtResampleMs)
+      }, delay)
+      if (typeof t.unref === 'function') t.unref()
+    }
+    arm(this._dhtSampleDelayMs)
   }
 
   // Open (or re-open, after a corruption purge) the panel DB and join its topic.

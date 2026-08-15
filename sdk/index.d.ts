@@ -83,6 +83,13 @@ export interface SwarmConfig {
   /** Custom DHT bootstrap nodes, as 'host:port' strings or {host, port} (local
    *  testnets / private DHT). Omit for the public DHT. */
   bootstrap?: Array<string | { host: string; port: number }>
+  /** Known-good DHT nodes from a previous session — the 'dht-nodes' event payload,
+   *  persisted by the host and handed back here. Preloads the DHT routing table so a
+   *  warm boot's bootstrap (the swarm-ready leg) starts against nodes that answered
+   *  recently instead of resolving and round-tripping the public bootstrap servers.
+   *  A reachability hint only: stale entries are evicted on their first timeout and an
+   *  all-dead list falls back to the normal bootstrap path. Capped at 32. */
+  nodes?: Array<{ host: string; port: number }>
   /** UDP receive-buffer request in MiB (default 2 — a viewer is download-dominant, so
    *  fan-in absorbs into the receive side). 0 leaves the OS/udx default. Mirrors the
    *  servers' SWARM_RCVBUF_MB. Best-effort; the outcome is emitted as a 'status'
@@ -603,6 +610,14 @@ export interface PlayerEvents {
    * persist-per-event host writes once per panel identity, not once per reconnect.
    */
   'panel-peer': [publicKey: string]
+  /**
+   * A fresh snapshot of the DHT routing table (freshest-first, capped at 32): persist it
+   * beside your prefs and pass it back as SwarmConfig.nodes next boot, so the engine can
+   * bootstrap from nodes that answered recently instead of the public bootstrap servers.
+   * First emitted ~30 s after the swarm is up, then only when the set actually changes
+   * (at most every ~10 min), so a persist-per-event host stays effectively write-free.
+   */
+  'dht-nodes': [nodes: Array<{ host: string; port: number }>]
 }
 
 /**
