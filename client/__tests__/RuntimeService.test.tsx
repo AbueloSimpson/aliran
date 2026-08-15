@@ -120,6 +120,18 @@ async function pairAnswer (answer: Record<string, unknown>) {
   await ReactTestRenderer.act(async () => { workletSays({ type: 'pair-result', ...answer, tag: req.tag }) })
 }
 
+// Stub for SplashScreen mounts: replace() is the exit the assertions watch; the rest
+// exist because the screen registers a focus listener on mount and provisional
+// routing navigates/resets. (ConnectScreen stubs stay bare — it only replaces.)
+function splashNav () {
+  return {
+    replace: jest.fn(),
+    navigate: jest.fn(),
+    dispatch: jest.fn(),
+    addListener: jest.fn(() => () => {})
+  } as any
+}
+
 test('Connect rejects a malformed panel key without touching the worklet', async () => {
   const navigation = { replace: jest.fn() } as any
   const tree = await mount(<ConnectScreen navigation={navigation} route={{} as any} />)
@@ -242,13 +254,13 @@ test('Connect retries transient errors, surfaces real ones, and can re-submit a 
 })
 
 test('Splash (keyless): no saved service -> Connect; saved service -> connect + auto-login', async () => {
-  const navigation = { replace: jest.fn() } as any
+  const navigation = splashNav()
   await mount(<SplashScreen navigation={navigation} route={{} as any} backendReady={false} />)
   await ReactTestRenderer.act(() => { workletSays({ type: 'prefs', creds: null, favorites: [], service: null }) })
   expect(navigation.replace).toHaveBeenCalledWith('Connect')
 
   // Saved service + saved creds: dial that panel and authorize, no screen change yet.
-  const nav2 = { replace: jest.fn() } as any
+  const nav2 = splashNav()
   await mount(<SplashScreen navigation={nav2} route={{} as any} backendReady={false} />)
   sentMessages().length = 0
   await ReactTestRenderer.act(() => { workletSays({ type: 'prefs', creds: { username: 'u', password: 'p' }, favorites: [], service: { panelPubKey: KEY } }) })
@@ -260,7 +272,7 @@ test('Splash (keyless): no saved service -> Connect; saved service -> connect + 
   expect(backend.service).toEqual({ panelPubKey: KEY }) // mirrored for Settings
 
   // Saved service but no creds: connect, then the normal Login exception path.
-  const nav3 = { replace: jest.fn() } as any
+  const nav3 = splashNav()
   await mount(<SplashScreen navigation={nav3} route={{} as any} backendReady={false} />)
   await ReactTestRenderer.act(() => { workletSays({ type: 'prefs', creds: null, favorites: [], service: { panelPubKey: KEY } }) })
   expect(nav3.replace).toHaveBeenCalledWith('Login')
@@ -268,7 +280,7 @@ test('Splash (keyless): no saved service -> Connect; saved service -> connect + 
 
 test('Splash (baked key) ignores any persisted runtime service', async () => {
   mockFlavor.baked = true
-  const navigation = { replace: jest.fn() } as any
+  const navigation = splashNav()
   await mount(<SplashScreen navigation={navigation} route={{} as any} backendReady={false} />)
   sentMessages().length = 0
   await ReactTestRenderer.act(() => { workletSays({ type: 'prefs', creds: null, favorites: [], service: { panelPubKey: OTHER } }) })

@@ -17,6 +17,14 @@ module.exports = {
     // mechanism is written up in __mocks__/react-native-google-cast.js.
     '^react-native-google-cast$': '<rootDir>/__mocks__/react-native-google-cast.js',
   },
+  // @react-navigation 7 ships ESM only (exports "." -> lib/module/*.js), and the
+  // react-native preset's allowlist — node_modules/(?!((jest-)?react-native|
+  // @react-native(-community)?)/) — transforms nothing outside those exact scopes.
+  // So any suite whose import graph reaches @react-navigation dies at load with
+  // "Unexpected token 'export'". Same allowlist, with the scope added.
+  transformIgnorePatterns: [
+    'node_modules/(?!((jest-)?react-native|@react-native(-community)?|@react-navigation)/)',
+  ],
   // COLD CACHE, NOT SLOW TESTS. On `--no-cache` — which is what a fresh CI runner does —
   // several suites lost races against jest's 5 s default while every worker was babel-
   // transforming react-native at once. Each of them passes in well under a second on a
