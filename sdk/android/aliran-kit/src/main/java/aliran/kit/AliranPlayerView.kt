@@ -45,6 +45,7 @@ import android.os.Looper
 import android.util.AttributeSet
 import android.widget.FrameLayout
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -363,17 +364,22 @@ class AliranPlayerView @JvmOverloads constructor(
         // upstream peer loss. Playback still starts thin (the 1 s start buffer
         // above), so zaps stay fast; minOffsetMs lets ExoPlayer trade a little
         // headroom before it stalls. Live-only — a vod MediaItem ignores it.
-        p.setMediaItem(
-            MediaItem.Builder()
-                .setUri(u)
-                .setLiveConfiguration(
-                    MediaItem.LiveConfiguration.Builder()
-                        .setTargetOffsetMs(10_000)
-                        .setMinOffsetMs(4_000)
-                        .build()
-                )
-                .build()
-        )
+        val item = MediaItem.Builder()
+            .setUri(u)
+            .setLiveConfiguration(
+                MediaItem.LiveConfiguration.Builder()
+                    .setTargetOffsetMs(10_000)
+                    .setMinOffsetMs(4_000)
+                    .build()
+            )
+        // Container hint (RN parity — AliranVideo.tsx sourceType(), ported as
+        // SourceType.kt): an extension-less redirect url (the Samsung TV Plus KR
+        // class, https://jmp2.uk/stvp-<id>) gives ExoPlayer's inference nothing to
+        // go on, so it guesses progressive and dies with
+        // UnrecognizedInputFormatException even though the wire is fine. Force HLS
+        // only then — a self-describing url (.mpd) still opens as itself.
+        if (!hasContainerExtension(u)) item.setMimeType(MimeTypes.APPLICATION_M3U8)
+        p.setMediaItem(item.build())
         p.playWhenReady = true
         p.prepare()
         player = p
