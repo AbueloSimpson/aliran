@@ -13,7 +13,7 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream, SectionToggles } from '../types'
-import { pickHero } from '../catalog'
+import { displayTitle, pickHero } from '../catalog'
 import { visibleStreams } from '../parental'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
 import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
@@ -92,7 +92,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
         <img
           className="menu-wallpaper"
           src={heroThumb}
-          alt={t('menu.heroLiveNow', { title: hero.title ?? '' })}
+          alt={t('menu.heroLiveNow', { title: displayTitle(hero) })}
           onError={() => { setThumbShown(false); onHeroThumbError() }}
           onLoad={() => setThumbShown(true)}
         />
@@ -118,7 +118,7 @@ export function MenuScreen ({ onGo }: { onGo: (target: MenuTarget) => void }) {
         {hero && (
           <div className="menu-hero-line">
             {hero.isLive && <span className="np-live">{t('common.liveBadge')}</span>}
-            <span className="menu-hero-title">{hero.title}</span>
+            <span className="menu-hero-title">{displayTitle(hero)}</span>
           </div>
         )}
         {!!nowTitle && (

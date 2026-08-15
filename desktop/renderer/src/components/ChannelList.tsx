@@ -12,7 +12,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
-import { formatChannelNumber, formatDuration, isVod } from '../catalog'
+import { displayTitle, formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
 import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
 import { ProgressHairline } from './ProgressHairline'
@@ -177,6 +177,10 @@ function ChannelRow ({ stream, top, number, playing, focused, favorite, onHover,
   // Right-edge picture: what is on screen right now, else the station logo.
   const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
   const art = thumbUri || stream.logo
+  // Display name only (catalog.displayTitle): the panel-minted [TAG] prefix goes —
+  // the rail this row sits on already says it. Search MATCHING (SearchScreen)
+  // stays on the raw stored title.
+  const title = displayTitle(stream)
   return (
     <div
       className={'channel-row' + (focused ? ' focused' : '') + (playing ? ' playing' : '')}
@@ -188,7 +192,7 @@ function ChannelRow ({ stream, top, number, playing, focused, favorite, onHover,
       <span className="row-number">{formatChannelNumber(number)}</span>
       <span className="row-main">
         <span className="row-title-line">
-          <span className={'row-title' + (dimmed ? ' dimmed' : '')}>{stream.title || stream.id}</span>
+          <MarqueeSpan className={'row-title' + (dimmed ? ' dimmed' : '')} text={title || stream.id} active={focused} />
           {stream.isLive && <span className="badge-live">{t('common.live')}</span>}
           {duration && <span className="row-duration">{duration}</span>}
           {favorite && <span className="row-star">★</span>}
@@ -200,8 +204,66 @@ function ChannelRow ({ stream, top, number, playing, focused, favorite, onHover,
         {!vod && <ProgressHairline program={data?.now} className="row-hairline" />}
       </span>
       {art
-        ? <img className={'row-logo' + (thumbUri ? ' row-thumb' : '')} src={art} alt={thumbUri ? t('live.livePreview', { title: stream.title ?? '' }) : ''} loading="lazy" onError={thumbUri ? onThumbError : undefined} />
-        : <span className="row-logo row-logo-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</span>}
+        ? <img className={'row-logo' + (thumbUri ? ' row-thumb' : '')} src={art} alt={thumbUri ? t('live.livePreview', { title }) : ''} loading="lazy" onError={thumbUri ? onThumbError : undefined} />
+        : <span className="row-logo row-logo-fallback">{(title || '?').slice(0, 1).toUpperCase()}</span>}
     </div>
+  )
+}
+
+// Overflow epsilon (the client MarqueeText's OVERFLOW_EPS): a few px of overhang
+// is rounding and font hinting, not a title worth scrolling — on the web,
+// scrollWidth/clientWidth are integer-rounded, so a 1 px "overflow" is routine,
+// and gating on > 0 would trade the ellipsis for text-overflow: clip and run a
+// permanent 1 px jiggle. Anything a viewer would actually miss overflows by far
+// more than this.
+const OVERFLOW_EPS = 8
+
+// The marquee keyframe (styles.css marquee-slide) spends only this fraction of
+// its cycle actually traveling (12%→48%); the rest is the start/end holds. The
+// duration math divides by it so the GLIDE speed is what the comment names.
+const MARQUEE_TRAVEL_FRACTION = 0.36
+
+// Focused-row marquee — the desktop stand-in for the client's MarqueeText: when
+// the focused (or hovered — hover IS focus in this list) row's title overflows
+// its slot, slide it end-to-end and back with a CSS keyframe (transform only; the
+// prefers-reduced-motion gate lives in styles.css, where reduced motion keeps the
+// plain ellipsis). Every unfocused row — and any title that fits — is a plain
+// ellipsized span: the measurement runs only on the one active row, so a keyboard
+// walk costs one scrollWidth read per stop, not per row.
+function MarqueeSpan ({ text, active, className }: { text: string; active: boolean; className: string }) {
+  const ref = useRef<HTMLSpanElement | null>(null)
+  // How far the text overhangs its slot (px). 0 = fits (or not measured) = static.
+  const [shift, setShift] = useState(0)
+  useEffect(() => {
+    if (!active) { setShift(0); return }
+    const el = ref.current
+    if (!el) { setShift(0); return }
+    const measure = () => setShift(Math.max(0, el.scrollWidth - el.clientWidth))
+    measure()
+    // Re-measure on geometry change while active: a badge appearing beside the
+    // title or a window resize changes the slot width under a stale shift.
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [active, text])
+  const scrolling = active && shift > OVERFLOW_EPS
+  return (
+    <span ref={ref} className={className + (scrolling ? ' marquee' : '')}>
+      <span
+        // Keyed on the text: a title change restarts the animation from the
+        // start hold instead of mid-flight on the old distance.
+        key={text}
+        className="marquee-inner"
+        style={scrolling
+          // The keyframe reads the measured distance; the duration scales with
+          // it for a ~40 px/s glide (divided by the travel fraction — the cycle
+          // is mostly holds), floor 4 s, so long titles do not whip past.
+          // Passed as --marquee-duration (styles.css reads it in the animation
+          // shorthand) so the CSS carries no duration literal of its own.
+          ? { ['--marquee-shift' as never]: `-${shift}px`, ['--marquee-duration' as never]: `${Math.max(4, shift / (40 * MARQUEE_TRAVEL_FRACTION) + 2)}s` }
+          : undefined}
+      >{text}</span>
+    </span>
   )
 }

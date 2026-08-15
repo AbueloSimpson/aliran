@@ -1,8 +1,9 @@
 /* Aliran desktop player — the S18 design language on the web platform. Every color
  * comes from the CSS custom properties applyTheme() sets from the operator
  * descriptor (--c-*, see theme.ts) — no brand literals in the rules below.
- * Focus grammar (ported): accent border box (menu entries), accent underline
- * (category rail), light row fill (lists). */
+ * Focus grammar (ported): accent border box (menu entries), filled accent pill
+ * (category rail — selected; the light focusFill pill marks keyboard focus),
+ * light row fill (lists). */
 
 * { box-sizing: border-box; }
 
@@ -344,6 +345,30 @@ img { -webkit-user-drag: none; }
   min-width: 0;
 }
 .row-title.dimmed { opacity: 0.5; }
+/* Focused-row marquee (ChannelList MarqueeSpan — the client MarqueeText twin).
+   Everything animated sits INSIDE the reduced-motion gate: with "remove
+   animations" on, .marquee never trades its ellipsis away and nothing moves. */
+@media (prefers-reduced-motion: no-preference) {
+  .row-title.marquee { text-overflow: clip; }
+  .row-title.marquee .marquee-inner {
+    display: inline-block;
+    /* Slide to the measured end, hold, slide back, hold — the client's
+       start/end-pause cadence. The duration has ONE source of truth: JS
+       (MarqueeSpan) sets --marquee-duration inline from the measured distance —
+       no fallback literal here, so a stale hardcoded speed cannot shadow it
+       (the shorthand simply stays inert until the variable arrives with the
+       .marquee class). */
+    animation: marquee-slide var(--marquee-duration) linear 0.8s infinite;
+  }
+  /* Travel stops 12%→48%: the glide occupies 36% of the cycle — the JS constant
+     MARQUEE_TRAVEL_FRACTION (ChannelList.tsx) MIRRORS these stops; change them
+     together or the announced px/s glide speed silently drifts. */
+  @keyframes marquee-slide {
+    0%, 12% { transform: translateX(0); }
+    48%, 60% { transform: translateX(var(--marquee-shift)); }
+    96%, 100% { transform: translateX(0); }
+  }
+}
 .row-star { color: var(--c-accent); font-size: 13px; flex: none; }
 .row-now {
   color: var(--c-text-dim);
@@ -438,7 +463,10 @@ img { -webkit-user-drag: none; }
 }
 .tune-pill-fill { height: 3px; border-radius: 2px; background: var(--c-accent); }
 
-/* --- category rail (accent-underline focus grammar) --- */
+/* --- category rail (filled-pill grammar — the client twin's Phase 2 look) ---
+   Selected = accent pill with on-primary text/chevron; keyboard-focused-but-not-
+   selected = the light focusFill pill the channel rows use. The old accent
+   UNDERLINE (and its 40%-alpha focused variant) is gone with the span itself. */
 
 .category-rail {
   width: 220px;
@@ -460,27 +488,33 @@ img { -webkit-user-drag: none; }
   cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.rail-item { padding: 8px 14px; cursor: pointer; }
+.rail-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 8px 14px;
+  margin: 4px 8px;
+  cursor: pointer;
+}
 .rail-item .rail-label {
   color: var(--c-text-dim);
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.rail-item .rail-chevron { color: var(--c-text-dim); font-weight: 800; margin-left: 6px; }
-.rail-item.selected .rail-label, .rail-item.focused .rail-label,
-.rail-item.selected .rail-chevron, .rail-item.focused .rail-chevron { color: var(--c-text); }
-.rail-underline {
-  display: block;
-  height: 3px;
-  min-width: 28px;
-  width: fit-content;
-  border-radius: 2px;
-  margin-top: 4px;
-  background: transparent;
-}
-.rail-item.selected .rail-underline { background: var(--c-accent); }
-.rail-item.focused:not(.selected) .rail-underline { background: color-mix(in srgb, var(--c-accent) 40%, transparent); }
+/* No margin of its own: the .rail-item flex gap (6px) is the label↔chevron
+   spacing — a margin on top of it doubled the RN twin's rhythm. */
+.rail-item .rail-chevron { color: var(--c-text-dim); font-weight: 800; }
+/* Pill precedence: SELECTED wins (accent fill, on-primary text) even while the
+   keyboard focus sits on it — the viewer sees one accent pill tracking the walk. */
+.rail-item.selected { background: var(--c-accent); }
+.rail-item.selected .rail-label, .rail-item.selected .rail-chevron { color: var(--c-on-primary); }
+.rail-item.focused:not(.selected) { background: var(--c-focus-fill); }
+.rail-item.focused:not(.selected) .rail-label,
+.rail-item.focused:not(.selected) .rail-chevron { color: var(--c-focus-fill-text); }
 
 /* --- channel info panel (detail overlay) --- */
 

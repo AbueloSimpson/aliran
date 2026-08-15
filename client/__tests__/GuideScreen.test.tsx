@@ -113,8 +113,29 @@ test('tapping a row tunes it (navigates to Live with that channel)', async () =>
     .find((n) => typeof n.props.accessibilityLabel === 'string' && n.props.accessibilityLabel.includes('Shop TV'))!
   await ReactTestRenderer.act(async () => { row.props.onPress() })
   // tuneKey: the fresh stamp that makes a value-equal streamId still fire Live's
-  // param effect (re-tuning the channel Live is already on).
-  expect(navigate).toHaveBeenCalledWith('Live', { streamId: 'shop-tv', tuneKey: expect.any(Number) })
+  // param effect (re-tuning the channel Live is already on). category: the panel's
+  // active chip at tap time (Phase 4) — Live scopes its zap ring and its
+  // OK-reopens-the-list context to the category the viewer tuned from.
+  expect(navigate).toHaveBeenCalledWith('Live', { streamId: 'shop-tv', tuneKey: expect.any(Number), category: 'All' })
+})
+
+test('a guide opened WITH a category opens on that chip and tunes back with it (Phase 4 round trip)', async () => {
+  jest.spyOn(epg, 'getPrograms').mockResolvedValue([])
+  ;(backend as any).streams = [{ ...guided, category: ['News'] }, { ...guideless, category: ['Shopping'] }]
+  const navigate = jest.fn()
+  const navigation: any = { navigate }
+  // Live's two-tier OK carries its tune scope in as `category` — the guide must
+  // open scoped to it, so picking a row there records the SAME context back
+  // instead of 'All' (which undid the viewer's context in two presses).
+  const route: any = { params: { streamId: 'moon-cat', category: 'News' } }
+  const tree = await createTree(<GuideScreen navigation={navigation} route={route} />)
+  // Scoped open: only the News channel's row is in the grid.
+  const rows = tree.root.findAll((n) => typeof n.props.onPress === 'function' && typeof n.props.accessibilityLabel === 'string')
+  expect(rows.some((n) => n.props.accessibilityLabel.includes('Moon Cat'))).toBe(true)
+  expect(rows.some((n) => n.props.accessibilityLabel.includes('Shop TV'))).toBe(false)
+  const row = rows.find((n) => n.props.accessibilityLabel.includes('Moon Cat'))!
+  await ReactTestRenderer.act(async () => { row.props.onPress() })
+  expect(navigate).toHaveBeenCalledWith('Live', { streamId: 'moon-cat', tuneKey: expect.any(Number), category: 'News' })
 })
 
 // --- WS11: logo-only channel column ---

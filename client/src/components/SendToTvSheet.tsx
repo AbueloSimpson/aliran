@@ -25,6 +25,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator } from 'react-native'
 import { useI18n } from '@aliran/i18n'
 import type { Stream } from '../worklet'
+import { displayTitle } from '../catalog'
 import { theme } from '../theme'
 import * as castLib from '../cast'
 import {
@@ -177,7 +178,9 @@ export function SendToTvSheet ({ stream, onClose }: SendToTvSheetProps) {
       <View style={styles.panel}>
         <Text style={styles.heading}>{t('tvplay.title')}</Text>
         <ScrollView style={styles.body} contentContainerStyle={styles.bodyInner}>
-          {!!stream && <Text style={styles.channel} numberOfLines={1}>{stream.title}</Text>}
+          {/* Display name only — the handoff/cast PAYLOADS (sendToTv.ts) keep the raw
+              stored title: what crosses the wire names the channel as the panel knows it. */}
+          {!!stream && <Text style={styles.channel} numberOfLines={1}>{displayTitle(stream)}</Text>}
 
           {active && <ActiveCard active={active} busy={busyId === 'stop'} onStop={stop} />}
 

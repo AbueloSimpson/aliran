@@ -59,7 +59,7 @@ import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 // No formatChannelNumber here any more: the grid's rows carry the station's NAME, and
 // the numbers this screen still derives are for the preview card alone.
-import { channelNumbers, categoryModel, splitCategory, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, displayTitle, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpgPrograms, type EpgProgram } from '@aliran/react-native'
 import { loadServiceDescriptor } from '../config'
 import { ProgressHairline } from '../components/ProgressHairline'
@@ -121,16 +121,21 @@ export function GuideScreen (props: Props) {
 
 function GuideScreenPhone ({ route, navigation }: Props) {
   const { t } = useI18n()
-  const tune = useCallback((s: Stream) => {
+  const tune = useCallback((s: Stream, category?: string) => {
     // The same jump Favorites/Search make; Live honors the param when already
     // mounted. tuneKey makes even a VALUE-EQUAL streamId (re-tuning the channel
-    // Live is already on) register as a fresh param there.
-    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now() })
+    // Live is already on) register as a fresh param there. `category` is the
+    // panel's active chip — the tune's browsing context (Phase 4): Live scopes
+    // its zap ring and OK-reopens-the-list to it.
+    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now(), category })
   }, [navigation])
   return (
     <View style={styles.container}>
       <Text style={styles.header}>{t('guide.header')}</Text>
-      <GuidePanel playingId={route.params?.streamId ?? null} onTune={tune} />
+      {/* initialCategory (Phase 4 round trip): open on the chip Live tuned from —
+          the panel validates the key against its own model, so a stale one
+          degrades to 'All'. */}
+      <GuidePanel playingId={route.params?.streamId ?? null} initialCategory={route.params?.category} onTune={tune} />
     </View>
   )
 }
@@ -146,7 +151,12 @@ function GuideScreenTV ({ route, navigation }: Props) {
   // would eat width this timeline needs; chips are the VOD tab-bar grammar). The
   // drill state is DERIVED from the selection: picking a parent with subs shows its
   // sub-chips row; re-tapping the selected sub returns to the parent.
-  const [selected, setSelected] = useState('All')
+  // Initialized from the `category` route param (Phase 4 round trip: Live's
+  // two-tier OK carries its tune scope in, so the guide opens on the viewer's
+  // context instead of 'All'). Validated LAZILY by the activeKey guard below —
+  // a key this catalog has no group for degrades to 'All', exactly like a
+  // vanished selection.
+  const [selected, setSelected] = useState(route.params?.category ?? 'All')
   // Slow clock: past-dimming, the airing cell and every hairline ride this tick.
   const [nowMs, setNowMs] = useState(() => Date.now())
 
@@ -179,9 +189,11 @@ function GuideScreenTV ({ route, navigation }: Props) {
   const tune = useCallback((s: Stream) => {
     // The same jump Favorites/Search make; Live honors the param when already
     // mounted. tuneKey makes even a VALUE-EQUAL streamId (re-tuning the channel
-    // Live is already on) register as a fresh param there.
-    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now() })
-  }, [navigation])
+    // Live is already on) register as a fresh param there. `category` is this
+    // grid's active chip — the tune's browsing context (Phase 4): Live scopes its
+    // zap ring and OK-reopens-the-list to it ('All' rides through as 'All').
+    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now(), category: activeKey })
+  }, [navigation, activeKey])
 
   if (!streams.length) return <SectionLoading section={t('menu.guide')} hint={t('live.waitingForChannels')} />
 
@@ -468,6 +480,10 @@ function GuideRowTV ({ stream, playing, windowStart, stripW, pxPerMin, nowMs, fo
   // one program cell the reducer named — see chCellFocused.
   const rowFocused = focusedCellStart != null
 
+  // Once per row render, not once per title site — this row re-renders on every
+  // focus step (catalog.displayTitle).
+  const title = displayTitle(stream)
+
   return (
     <View style={[styles.gridRow, playing && styles.rowPlaying]}>
       {/* IDENTITY IS THE LOGO AND THE NAME — the channel NUMBER is not here.
@@ -480,9 +496,9 @@ function GuideRowTV ({ stream, playing, windowStart, stripW, pxPerMin, nowMs, fo
           above. */}
       <View style={[styles.chCell, rowFocused && styles.chCellFocused]}>
         {stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
-          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
-        <Text style={[styles.chName, rowFocused && styles.chNameFocused]} numberOfLines={2}>{stream.title}</Text>
+          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+        <Text style={[styles.chName, rowFocused && styles.chNameFocused]} numberOfLines={2}>{title}</Text>
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0

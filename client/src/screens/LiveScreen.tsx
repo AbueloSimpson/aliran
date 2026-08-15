@@ -23,10 +23,12 @@
 // view holds focus, so key handling must be focus-based (the S7 lesson). The bottom
 // menu's touch buttons are phone-only so they stay out of that focus path.
 //
-//   UP / DOWN   zap prev/next across the whole curated channel order (the numbers'
-//               order), like a set-top box's CH+/CH-.
-//   OK / LEFT   open the channel list. Left is where every set-top box in the world
-//               puts its channel menu.
+//   UP / DOWN   zap prev/next WITHIN the category the viewer tuned from (an 'All'
+//               tune keeps the whole curated channel-number order), like a set-top
+//               box's CH+/CH-. See zap() — the scope is lastTuneScope.
+//   OK / LEFT   open the channel list, scoped to that same tuned-from category with
+//               the playing row focused (openListInContext). Left is where every
+//               set-top box in the world puts its channel menu.
 //   RIGHT       channel detail for what is playing — the mirror of LEFT: left browses
 //               everything else, right describes this. BACK from detail entered THIS
 //               way returns to the picture, not to a channel list nobody opened.
@@ -89,9 +91,10 @@ import { backend, type Stream } from '../worklet'
 import { setOrientation } from '../orientation'
 import { onChannelKey } from '../channelKeys'
 import { useMountDeferred } from '../defer'
+import { useStableCallback } from '../hooks'
 import { autoTunable, blockedWithoutPin, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
-import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
+import { channelNumbers, categoryModel, deriveTuneScope, splitCategory, subLabel, displayTitle, pickHero, zapStep, isVod, type CategoryModel } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
@@ -139,11 +142,48 @@ const BAR_IDLE_MS = theme.isTV ? 12000 : 5000
 // well before the channel identity does. Long enough to read four short items unhurried.
 const HINT_IDLE_MS = 9000
 
+// Walking the D-pad down the rail SCOPES the channel list on every focus stop — and on
+// the 32-bit TCL boxes each stop was a full list rebuild (new streams array, new
+// heading, remount of the visible rows) landing while the NEXT key press was already
+// queued: rail_walk p99 sat near a hundred milliseconds. So the rail highlight follows
+// focus instantly (it is one Text style), and the LIST waits out this trailing
+// debounce — long enough to swallow intermediate stops of a continuous walk, short
+// enough that a viewer settling on a category never sees the list lag their choice.
+// Deliberate picks (OK, drill, BACK-unwind) bypass it via setScopeNow.
+const RAIL_SCOPE_DEBOUNCE_MS = 200
+
+// How long the ONE-SHOT swallow of the rail's opening autoFocus stays armed after
+// openListInContext (see railAutoFocusSwallow below). Long enough to cover the
+// mount → native-focus round trip on a slow 32-bit box; short enough that a
+// viewer's first deliberate rail focus after settling in is never eaten.
+const RAIL_AUTOFOCUS_SWALLOW_MS = 1000
+
 // Last channel watched THIS session. Module-level so it survives leaving Live for the
 // Menu and coming back (the native stack unmounts the screen in between): re-entering
 // Live resumes it instead of the hero pick — "the channel control returns to where you
 // left it". In-memory only (per the request: on the trip out to the menu, not restart).
 let lastStreamId: string | null = null
+
+// …and the CATEGORY that channel was tuned FROM (Phase 4, operator feedback): the
+// scope zap() rings over, and the scope OK/LEFT-from-fullscreen reopens the left
+// panel to. 'All' = the global channel-number ring (the old feel). Module-level for
+// the same reason as lastStreamId: a trip out to the Menu must not forget which
+// rail the viewer lives on.
+let lastTuneScope: string = 'All'
+
+/**
+ * TEST-ONLY: reset the module-level session memory (lastStreamId + lastTuneScope)
+ * so test suites stay order-independent. Production never calls it — surviving the
+ * Menu trip is the whole point of the module vars.
+ */
+export function resetLiveSessionMemory () {
+  lastStreamId = null
+  lastTuneScope = 'All'
+}
+
+// deriveTuneScope (a tune with NO browsing context takes its scope from the
+// channel's own filing) lives in ../catalog now — shared with the desktop twin
+// and pinned code-identical by tools/desktop-catalog-test.mjs lane A.
 
 // 24h HH:MM wall clock for the bottom menu (manual format — no Intl under Hermes).
 function clockText (d: Date) {
@@ -152,7 +192,7 @@ function clockText (d: Date) {
 }
 
 export function LiveScreen ({ route, navigation }: Props) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   // Parental gate (device policy): a restricted channel about to play while the PIN
@@ -197,10 +237,16 @@ export function LiveScreen ({ route, navigation }: Props) {
     return !theme.isTV && portrait ? 'guide' : 'none'
   })
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
-  // Two-level category browse: `selected` is the group key whose channels show
+  // Two-level category browse: `selected` is the group key the RAIL highlights
   // ('All' | 'Anime' | 'Anime/Español'); `drillParent` is the parent whose sub-categories
   // the rail is currently showing (null = top-level rail). See CategoryRail.
   const [selected, setSelected] = useState<string>('All')
+  // …and `scopedKey` is the group key whose channels the LIST shows. Split from
+  // `selected` (RAIL_SCOPE_DEBOUNCE_MS): the highlight must track the D-pad
+  // immediately, but rebuilding the channel list on every focus stop of a rail walk
+  // is what the debounce exists to avoid. They converge — selectRail closes the gap
+  // after the debounce, every deliberate pick sets both at once (setScopeNow).
+  const [scopedKey, setScopedKey] = useState<string>('All')
   const [drillParent, setDrillParent] = useState<string | null>(null)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
@@ -283,6 +329,64 @@ export function LiveScreen ({ route, navigation }: Props) {
   const deferredTune = useRef<string | null>(null)
   const drillRef = useRef(drillParent); drillRef.current = drillParent
   const selectedRef = useRef(selected); selectedRef.current = selected
+
+  // Tune scope (Phase 4): the category the playing channel was tuned FROM — the ring
+  // zap() walks, and the scope openListInContext() reopens the panel to. Restored
+  // from the module-level lastTuneScope (the Menu-trip persistence, like
+  // lastStreamId). A ref WITHOUT the state half of the overlayRef pattern, on
+  // purpose: nothing renders from it — the rail/list render from selected/scopedKey,
+  // and the displayed channel numbers stay global — while zap()/the strips need the
+  // value synchronously in the same interaction that set it (select a row, then
+  // CH+ before the next render commit).
+  const tuneScopeRef = useRef(lastTuneScope)
+  function setTuneScope (key: string) {
+    tuneScopeRef.current = key
+    lastTuneScope = key
+  }
+  // The scope validated at USE time (zap / openListInContext) — a catalog push can
+  // remove the group the viewer tuned from, or RE-FILE the playing channel out of a
+  // group that still exists under the same name (an account switch can even swap the
+  // group's whole contents) — so the check is MEMBERSHIP, not existence: the scope
+  // only stands while the playing channel is actually in it. Chasing this in an
+  // effect would just race the push; when it fails, the playing channel's own
+  // filing stands in (deriveTuneScope), remembered so the next use agrees.
+  //
+  // EXCEPT when the playing record itself cannot be resolved — a transient empty /
+  // provisional streams push mid-reload. That is a fact about THIS MOMENT, not
+  // about the viewer's context: degrade this one call to 'All' without writing it,
+  // or a single CH+ during a catalog reload would permanently destroy the scope.
+  function resolveTuneScope (m: CategoryModel): string {
+    const scope = tuneScopeRef.current
+    if (scope === 'All') return scope
+    const id = playingIdRef.current
+    if (m.groups[scope]?.some(x => x.id === id)) return scope
+    const playing = streams.find(x => x.id === id)
+    if (!playing) return 'All' // transient — never persisted
+    const derived = deriveTuneScope(playing, m)
+    setTuneScope(derived)
+    return derived
+  }
+
+  // Did the mount pick the HERO itself? Evaluated during the FIRST render — before
+  // the lastStreamId-writer effect runs — so the pre-mount emptiness of both the
+  // route param and the remembered channel is still observable here.
+  const mountedOnHero = useRef(playingId != null && !(route.params?.streamId ?? lastStreamId))
+  useEffect(() => {
+    // Rule c for the mount-time hero: the useState initializer picked it, so the
+    // streams-effect autoplay below (which derives the scope for the pushed-hero
+    // case) never runs — its `!playingId` guard is already false. Same rule, same
+    // derivation: the hero's own filing is the scope. (lastTuneScope necessarily
+    // sat on 'All' here — the two module vars reset together — which HAPPENED to
+    // behave, but code and documented rule must agree.)
+    if (mountedOnHero.current) {
+      // Guarded like every hero-scope write (see tuneHero): no resolvable hero
+      // record means nothing to record — never overwrite lastTuneScope with a
+      // derived 'All' while lastStreamId still names the remembered channel.
+      const hero = streams.find(x => x.id === playingIdRef.current)
+      if (hero) setTuneScope(deriveTuneScope(hero, categoryModel(streams)))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const portraitRef = useRef(portrait); portraitRef.current = portrait
   const errorRef = useRef(error); errorRef.current = error
@@ -384,14 +488,28 @@ export function LiveScreen ({ route, navigation }: Props) {
   useEffect(() => {
     const id = route.params?.streamId
     if (!id) return
+    const s = backend.streams.find(x => x.id === id)
+    // The tune's browsing context rides in as `category` (the Guide's active chip;
+    // OPTIONAL in the route types so every old caller stays valid). Taken as-is when
+    // present — resolveTuneScope re-derives lazily if the catalog (still loading on a
+    // cold mount, or changed since) turns out not to have the playing channel in that
+    // group. Absent — a Favorites/Search jump, a remote play — the channel's own
+    // filing stands in. It rides play()'s scope option so a refused tune records
+    // nothing (the PIN gates); on the already-playing early return the gates are
+    // moot (it IS on), so it records directly — the viewer re-picked this channel
+    // FROM that chip, and that is where the zap ring lives now.
+    const scope = s ? route.params?.category ?? deriveTuneScope(s, categoryModel(streams)) : undefined
     // Picking the channel that is ALREADY playing is NOT a no-op here, and treating it as
     // one was a bug: the viewer chose that row in the Guide, and this screen answered by
     // showing them whatever overlay it had been left on — usually the channel list, which
     // they never opened. The tune has nothing to do, but the INTENT was "watch this", so
     // collapse to the picture either way.
-    if (id === playingIdRef.current) { setOverlay('none'); return }
-    const s = backend.streams.find(x => x.id === id)
-    if (s) play(s, { collapse: true })
+    if (id === playingIdRef.current) {
+      if (scope !== undefined) setTuneScope(scope)
+      setOverlay('none')
+      return
+    }
+    if (s) play(s, { collapse: true, scope })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params?.streamId, route.params?.tuneKey])
 
@@ -475,18 +593,36 @@ export function LiveScreen ({ route, navigation }: Props) {
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
   const model = useMemo(() => categoryModel(streams), [streams])
-  // `selected` may reference a group that vanished after a catalog change; fall back to All.
-  const activeKey = model.groups[selected] ? selected : 'All'
+  // `scopedKey` may reference a group that vanished after a catalog change; fall back
+  // to All. The LIST derives from the debounced key — mid-walk it lags `selected` by
+  // design (RAIL_SCOPE_DEBOUNCE_MS).
+  const activeKey = model.groups[scopedKey] ? scopedKey : 'All'
   const list = model.groups[activeKey] ?? []
   // Rail contents: top-level categories, or (when drilled) the parent's sub-categories.
   const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
   // Every rail name but one is the OPERATOR's own category and is never translated;
   // 'All' is the everything-group this app adds itself, so it is the only label here
-  // that comes out of the catalog.
-  const railItems = inDrill
-    ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
-    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
-  const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0] // top view highlights the parent
+  // that comes out of the catalog. Memoized so the rail's props hold still across the
+  // clock/peer/tune re-renders this screen makes — the item objects are rebuilt only
+  // when the catalog, the drill level, or the language actually changes.
+  // The S56f viewer-locale CASING happens HERE, not in RailItem: RailItem is
+  // memoized with no locale subscription, and operator labels are locale-identical
+  // strings — after a language switch the memo would never break and the old
+  // locale's casing would freeze on screen. This memo is already keyed on `locale`,
+  // so the rail receives finished display strings and renders them verbatim.
+  const railItems = useMemo(() => inDrill
+    ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key).toLocaleUpperCase(getLocale()) }))
+    : model.top.map((key) => ({ key, label: (key === 'All' ? t('live.all') : key).toLocaleUpperCase(getLocale()), hasChildren: (model.subs[key]?.length ?? 0) > 0 })),
+  // `locale` stands in for `t` in the deps (the Favorites/Search list pattern): t is
+  // identity-stable across a language change, so the locale VALUE is what marks the
+  // translated 'All' label stale.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [model, inDrill, drillParent, locale])
+  // The RAIL highlight follows the IMMEDIATE key — the pill must track the D-pad the
+  // instant focus moves, while the list above waits out the debounce. Same
+  // vanished-group guard as the list's, against its own key.
+  const railKey = model.groups[selected] ? selected : 'All'
+  const railSelected = inDrill ? railKey : splitCategory(railKey)[0] // top view highlights the parent
   const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find(s => s.id === playingId) ?? null
   // The playing record is a vod library title (S8a): transport UI on the bar, pause is
@@ -538,23 +674,47 @@ export function LiveScreen ({ route, navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Hero autoplay — the ONE copy of the pick→scope→play triple (it used to be
+  // pasted per call site, which is how a guard misses one). An autoplay is a tune
+  // with no browsing context: the hero's own filing is the scope (deriveTuneScope) —
+  // OK-from-fullscreen then opens the panel on the rail the playing channel
+  // actually lives on, and the zap ring matches it. `if (hero)` GUARDS the scope
+  // write: a catalog with no autoTunable channel must not overwrite lastTuneScope
+  // with 'All' while lastStreamId still remembers the viewer's channel — the two
+  // module vars would disagree on the next resume.
+  function tuneHero () {
+    const hero = pickHero(autoTunable(streams))
+    if (hero) setTuneScope(deriveTuneScope(hero, categoryModel(streams)))
+    setPlayingId(hero?.id ?? null)
+  }
+
   // First streams push after a cold navigation: start the hero channel (the tuning
   // indicator arms itself — mounting <AliranVideo> fires onTune 'start'). The hero is
   // picked over autoTunable() alone: the app must never tune a PIN-gated channel on
   // its own initiative, and nothing tunable means nothing plays.
   useEffect(() => {
-    if (!playingId && !pinTarget && streams.length) setPlayingId(pickHero(autoTunable(streams))?.id ?? null)
+    if (!playingId && !pinTarget && streams.length) tuneHero()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams])
 
-  function play (s: Stream, { collapse = false }: { collapse?: boolean } = {}) {
+  // The scope a PIN-deferred tune carries (Phase 4): play() parks it here when it
+  // hands the tune to the modal, and the modal's onOk re-enters play() with it — so
+  // the scope records only when the tune actually happens. Cleared on decline.
+  const pinScope = useRef<string | undefined>(undefined)
+
+  function play (s: Stream, { collapse = false, scope }: { collapse?: boolean; scope?: string } = {}) {
     // The last gate before a tune, and it stands here as well as at the routes that can
     // reach it: a restricted channel on a device with NO PIN is refused outright. Every
     // local caller passes a record out of `streams` (already parental-filtered), so this
     // only ever fires for something that arrived from outside those lists — a remote
     // play, or a `lastStreamId` left over from before the PIN was removed.
     if (blockedWithoutPin(s.restricted)) return
-    if (needsPin(s)) { setPinTarget(s); return } // resolved by the PIN modal
+    if (needsPin(s)) { pinScope.current = scope; setPinTarget(s); return } // resolved by the PIN modal
+    // The tune's browsing context (Phase 4), recorded HERE — past both gates — never
+    // at the call sites: a REFUSED tune (no-PIN block, or the viewer declining the
+    // PIN modal) must not move the viewer's scope. `scope` undefined = nothing to
+    // record; the current scope stands (a scoped zap keeps its ring).
+    if (scope !== undefined) setTuneScope(scope)
     if (s.id !== playingId) {
       setPlayingId(s.id)
       setPeers(null)
@@ -571,36 +731,107 @@ export function LiveScreen ({ route, navigation }: Props) {
     if (collapse) setOverlay('none')
   }
 
+  // The rail-walk debounce timer (RAIL_SCOPE_DEBOUNCE_MS). Cleared by every path that
+  // sets the scope deliberately — a stale trailing fire would yank the list to a
+  // category the viewer had already walked past or explicitly left.
+  const scopeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function clearScopeTimer () { if (scopeTimer.current) { clearTimeout(scopeTimer.current); scopeTimer.current = null } }
+  useEffect(() => clearScopeTimer, [])
+  // A deliberate pick: highlight and list move together, and any pending walk fire dies.
+  function setScopeNow (key: string) {
+    clearScopeTimer()
+    setSelected(key)
+    setScopedKey(key)
+  }
+
+  // THE RAIL-AUTOFOCUS SWALLOW (the S7-adjacent lore class: focus-engine artifacts
+  // masquerading as viewer intent). The panels block mounts TWO autoFocus
+  // FocusPanes (rail + list), and by the documented contract (see the "autoFocus
+  // STAYS" comment at the panels JSX, and ChannelListPanel's requestTVFocus note)
+  // the RAIL's pane wins the OPENING focus before the playing row claims it. That
+  // opening focus lands on a rail item, whose onFocus fires selectRail on TV
+  // (CategoryRail: FOCUS SCOPES) — overwriting the scope openListInContext just
+  // restored (and in the drilled view, overwriting it with the FIRST SUB, not even
+  // 'All'). The artifact is indistinguishable from a real D-pad focus except by
+  // WHEN it happens, so: openListInContext arms this stamp (TV only), and
+  // selectRail swallows EXACTLY ONE focus-select within the window, then disarms.
+  // Time-bounded so that if the artifact never arrives, the viewer's first
+  // deliberate rail focus is not eaten; every deliberate action (OK on the rail,
+  // drill exit) disarms it too — a real interaction ends the window early.
+  const railAutoFocusSwallow = useRef<number | null>(null)
+
   // Rail FOCUS (TV) — scope the channel list to this category and nothing more. It must
   // NOT drill, and that is a fix rather than a preference: this used to be the same
   // function as the one below, so moving the D-pad focus down the rail entered the first
   // parent that had sub-categories. The viewer could not reach the categories past it,
   // and could not stay on the parent either. Any pick shows the channel LIST — from the
   // channel-detail overlay that leaves detail (else the press looked like it did nothing).
+  // The highlight moves NOW; the list follows after the debounce (see the split above).
   function selectRail (key: string) {
+    if (railAutoFocusSwallow.current != null) {
+      const artifact = Date.now() - railAutoFocusSwallow.current <= RAIL_AUTOFOCUS_SWALLOW_MS
+      railAutoFocusSwallow.current = null // one-shot either way
+      if (artifact) return // the opening autoFocus, not the viewer — change nothing
+    }
     setSelected(key)
+    clearScopeTimer()
+    scopeTimer.current = setTimeout(() => { scopeTimer.current = null; setScopedKey(key) }, RAIL_SCOPE_DEBOUNCE_MS)
     setOverlay('list')
   }
 
   // Rail OK (and a phone tap, which has no focus step): ENTER the category. A top-level
   // parent with sub-categories drills in — the rail then shows its subs under a pinned
   // "‹ Parent" header. Re-picking the already-selected sub goes back to the whole parent.
-  // A leaf is just the scope the focus already gave it.
+  // A leaf is just the scope the focus already gave it. All deliberate picks — the list
+  // must answer the press itself, never a debounce later.
   function activateRail (key: string) {
+    railAutoFocusSwallow.current = null // a deliberate action ends the swallow window
     if (drillParent == null && (model.subs[key]?.length ?? 0) > 0) {
-      setDrillParent(key); setSelected(key)
+      setDrillParent(key); setScopeNow(key)
     } else if (drillParent != null && key === selected) {
-      setSelected(drillParent) // re-pick the selected sub -> all of the parent
+      setScopeNow(drillParent) // re-pick the selected sub -> all of the parent
     } else {
-      setSelected(key)
+      setScopeNow(key)
     }
     setOverlay('list')
   }
 
   // Leave the drilled sub-category view, back to the top-level rail (parent stays selected).
   function exitDrill () {
-    if (drillParent != null) setSelected(drillParent)
+    railAutoFocusSwallow.current = null // a deliberate action ends the swallow window
+    if (drillParent != null) setScopeNow(drillParent)
     setDrillParent(null)
+    setOverlay('list')
+  }
+
+  // OK / LEFT from fullscreen: reopen the left panel IN CONTEXT (Phase 4) — scoped
+  // to the category the playing channel was tuned from, DRILLED into it when that is
+  // a 'Parent/Sub' (the "‹ Parent" header up, the sub pill active), instead of the
+  // bare setOverlay('list') that landed the viewer back on whatever stale scope
+  // remained ('All' after a mount — the operator-reported bug). The playing row's
+  // focus/scroll needs no help: ChannelListPanel already finds it, it just never
+  // could while the panel opened on a scope that didn't contain the channel.
+  // For a 'Parent/Sub' scope, drillParent/selected land exactly where activateRail
+  // would have put them, so the BACK-unwind ladder (sub → parent-select → top rail
+  // → close) walks the restored state unchanged. For a BARE PARENT scope this
+  // deliberately DIVERGES from activateRail: it does NOT drill even when the parent
+  // has subs — the viewer tuned from the whole parent, the top rail with the parent
+  // pill selected is that state (rail focus included), and it costs one BACK to
+  // close instead of two. The three state writes commit in one batch with the
+  // overlay: the panel mounts LAST, seeing the finished drill/scope whatever the
+  // event source (press, focus strip).
+  // Phone-portrait keeps its guide default — the callers gate on that, this
+  // function is the landscape/TV list path only.
+  function openListInContext () {
+    const m = categoryModel(streams)
+    const scope = resolveTuneScope(m)
+    const [parent, sub] = splitCategory(scope)
+    if (sub !== undefined && (m.subs[parent]?.length ?? 0) > 0) setDrillParent(parent)
+    else setDrillParent(null)
+    setScopeNow(scope) // immediate — a deliberate open, past any pending walk debounce
+    // Arm the one-shot swallow of the rail's opening autoFocus (TV only — phone
+    // has no focus-selects to swallow): see railAutoFocusSwallow.
+    if (theme.isTV) railAutoFocusSwallow.current = Date.now()
     setOverlay('list')
   }
 
@@ -675,17 +906,38 @@ export function LiveScreen ({ route, navigation }: Props) {
     menuIdle.current = setTimeout(() => { if (overlayRef.current === 'list') setOverlay('none') }, MENU_IDLE_MS)
   }
 
-  // Fullscreen zap: prev/next over the LIVE catalog in curated order — the same
-  // order the derived channel numbers follow (001, 002, …), like a TV's CH+/CH-.
-  // (The category rail scopes the browse list, not the zap.) vod titles are not in
-  // the ring (zapOrder): zapping FROM one lands on channel 001 — CH+/CH- is how you
-  // leave a title back into live TV, and live behavior re-arms on that play().
+  // Fullscreen zap: prev/next WITHIN the category the viewer tuned from, in that
+  // category's own curated order, wrapping — an 'All' tune keeps the old global
+  // channel-number ring.
+  //
+  // THIS REVERSES A DOCUMENTED DECISION. The comment here used to read "the category
+  // rail scopes the browse list, not the zap", and that was deliberate — but it was
+  // designed, not observed. Operators watched real viewers: a viewer lives inside
+  // the category they tuned from, and one who entered from LIVE EVENTS › MLB
+  // pressing CH+ wants the next GAME, not channel 042 of the global lineup. The
+  // DISPLAYED channel numbers stay global (the numbers map is untouched) — only the
+  // order the keys walk is scoped.
+  //
+  // The playing channel not being IN the scoped ring — zapping FROM a vod title, or
+  // the scope emptied under a catalog push — falls back to the global ring with the
+  // old land-on-001 behavior (CH+/CH- is how you leave a title back into live TV,
+  // and live behavior re-arms on that play()). The scope resets to 'All' with it,
+  // and deliberately does NOT re-derive from the landed channel: that ring was
+  // global, the viewer is surfing everything now, and the next press must keep
+  // walking the ring this one put them on. A ring whose ONLY member is the playing
+  // channel widens outward instead of going silent — sub → parent → global.
+  //
+  // The whole ladder — widen-on-one-ring, not-in-ring global fallback, and the
+  // single-live-channel no-op (a press that would land back ON the playing channel
+  // tunes nothing and records nothing — the picture never changed, so the scope
+  // must not move to the ladder's 'All') — lives in catalog.zapStep, shared with
+  // the desktop twin and pinned code-identical (lane A). The step's scope rides
+  // play()'s scope option, so a refused tune (PIN) moves nothing.
   function zap (dir: 1 | -1) {
-    const all = zapOrder(streams)
-    if (!all.length) return
-    const i = all.findIndex(s => s.id === playingId)
-    const next = all[(i < 0 ? 0 : i + dir + all.length) % all.length]
-    if (next) play(next)
+    const m = categoryModel(streams)
+    const scope = resolveTuneScope(m)
+    const step = zapStep(streams, m, scope, playingId, dir)
+    if (step.next) play(step.next, { scope: step.scope })
   }
 
   // Focus-engine zap: D-pad UP/DOWN from the fullscreen catcher lands on an invisible
@@ -700,7 +952,8 @@ export function LiveScreen ({ route, navigation }: Props) {
   // no focus strip (a strip is only found by a key that moves focus), so they arrive from
   // the Activity instead — see channelKeys.ts. Only while fullscreen: with a panel up the
   // viewer is browsing, and zapping the picture out from under them is not what the key
-  // means there.
+  // means there. The tune scope stays LIVE across the effect's closure: zap() reads it
+  // through tuneScopeRef at press time (the deps only refresh streams/playingId).
   useEffect(() => onChannelKey((direction) => {
     if (overlayRef.current !== 'none') return
     zap(direction === 'up' ? 1 : -1)
@@ -744,7 +997,9 @@ export function LiveScreen ({ route, navigation }: Props) {
       if (overlayRef.current === 'list') {
         // Unwind the category drill before the overlay: sub selected -> back to sub-select;
         // drilled (no sub) -> back to the top-level rail; else hide the left menu.
-        if (drillRef.current != null && selectedRef.current !== drillRef.current) { setSelected(drillRef.current); return true }
+        // (setScopeNow, not setSelected: a BACK-unwind is a deliberate pick — the list
+        // must land on the parent with the highlight, past any pending walk debounce.)
+        if (drillRef.current != null && selectedRef.current !== drillRef.current) { setScopeNow(drillRef.current); return true }
         if (drillRef.current != null) { setDrillParent(null); return true }
         setOverlay('none'); return true // hide the left menu
       }
@@ -758,7 +1013,53 @@ export function LiveScreen ({ route, navigation }: Props) {
       return false
     })
     return () => sub.remove()
+    // setScopeNow off the deps: it only touches refs and state setters, so the
+    // first render's closure stays correct for the listener's whole life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigation]) // stable identity — the listener registers once in practice
+
+  // Identity-stable handler props for the memoized list panel (and the rail, once it
+  // is memoized too): a memo only holds while every prop keeps its identity across
+  // this screen's frequent re-renders (clock tick, peers, tune progress). These
+  // handlers close over live state — play() reads playingId/error, the rail handlers
+  // read the drill — so a useCallback would either capture stale or churn its
+  // identity; the ref-based wrapper does neither.
+  // The tune's browsing context (Phase 4): the scope the LIST is actually showing at
+  // press time — activeKey, the debounced/guarded key, not the mid-walk rail
+  // highlight, which may still be a category the list never caught up to. Recorded
+  // by play() itself, past its gates.
+  const onListSelect = useStableCallback((s: Stream) => play(s, { collapse: true, scope: activeKey }))
+  const onListInfo = useStableCallback((s: Stream) => openInfo(s))
+  // TV opens the Guide screen; phone raises the guide MODE right here so the video
+  // surface never leaves the tree. NOTE the error gate stays at the JSX prop below
+  // (`error ? undefined : onListGuide`) — the 2026-07-16 retry contract needs onGuide
+  // ABSENT, not merely inert, while an error is up.
+  // The Guide opens IN CONTEXT (Phase 4 round trip): without the category param it
+  // opened on the 'All' chip, so picking any row there recorded scope 'All' —
+  // undoing the viewer's context in two presses. The current resolved tune scope
+  // rides along; the Guide validates it lazily against its own model (its activeKey
+  // guard), so a vanished key degrades to 'All' exactly as before.
+  const onListGuide = useStableCallback((s: Stream) => {
+    if (theme.isTV) navigation.navigate('Guide', { streamId: s.id, category: resolveTuneScope(categoryModel(streams)) })
+    else setOverlay('guide')
+  })
+  const onPanelActivity = useStableCallback(bumpMenuIdle)
+  const onRailSelect = useStableCallback(selectRail)
+  const onRailActivate = useStableCallback(activateRail)
+  const onExitDrill = useStableCallback(exitDrill)
+  // The phone guide's tune handler (GuidePanel onTune) — stable for the same
+  // reason as the list handlers: an inline arrow re-churned the panel's rowPress
+  // identity every LiveScreen render (clock tick, tune progress), re-rendering
+  // every mounted guide row. Safe through the wrapper: invoked only as an event
+  // handler. The panel names the chip the tune was made under (its second arg) —
+  // the tune's browsing context (Phase 4); play() records it past its PIN gates.
+  const onGuideTune = useStableCallback((s: Stream, cat?: string) =>
+    play(s, { collapse: !portrait, scope: cat ?? deriveTuneScope(s, categoryModel(streams)) }))
+  // The rail's parentHeader prop, hoisted: an inline `{ label, onBack }` literal is a
+  // fresh object every render and would break CategoryRail's memo on its own.
+  const railParentHeader = useMemo(
+    () => (inDrill ? { label: drillParent!, onBack: onExitDrill } : undefined),
+    [inDrill, drillParent, onExitDrill])
 
   const guideStrip = overlay === 'guide' && portrait
   // Portrait search uses the SAME strip layout as the portrait guide (the one video
@@ -847,7 +1148,8 @@ export function LiveScreen ({ route, navigation }: Props) {
                 else showBar()
                 return
               }
-              setOverlay(!theme.isTV && portrait && !error ? 'guide' : 'list')
+              if (!theme.isTV && portrait && !error) setOverlay('guide')
+              else openListInContext() // the list opens on the tuned-from category (Phase 4)
             }}
           />
           {Platform.isTV && (
@@ -855,9 +1157,11 @@ export function LiveScreen ({ route, navigation }: Props) {
               <Pressable style={styles.zapUp} onFocus={() => bounceZap(1)} />
               <Pressable style={styles.zapDown} onFocus={() => bounceZap(-1)} />
               {/* LEFT opens the channel list — the same surface OK opens, reached the way
-                  a set-top box viewer expects. No bounce back to the catcher: opening the
-                  overlay unmounts this whole block, and the overlay takes focus itself. */}
-              <Pressable style={styles.menuLeft} onFocus={() => setOverlay('list')} />
+                  a set-top box viewer expects, and scoped the same way too (the
+                  tuned-from category, openListInContext). No bounce back to the catcher:
+                  opening the overlay unmounts this whole block, and the overlay takes
+                  focus itself. */}
+              <Pressable style={styles.menuLeft} onFocus={() => openListInContext()} />
               {/* RIGHT opens channel detail for what is playing: the mirror of LEFT —
                   left browses everything ELSE, right describes THIS — and the last
                   direction on the pad that answered to nothing at all. Guarded on
@@ -894,7 +1198,11 @@ export function LiveScreen ({ route, navigation }: Props) {
                 clock={clockText(now)}
                 favorite={favorites.includes(playing.id)}
                 onSearch={() => setOverlay('search')}
-                onInfo={() => openInfo(playing)}
+                // The bar is a FULLSCREEN surface (it only renders inside overlay
+                // 'none'): BACK from the detail it opens must return to the
+                // picture, and its Watch must not record whatever stale browse
+                // scope remained — the desktop twin's rule.
+                onInfo={() => openInfo(playing, { fromFullscreen: true })}
                 onToggleFavorite={() => { showBar(); backend.toggleFavorite(playing.id) }}
                 onReport={() => { showBar(); setReportOpen(true) }}
                 hasTracks={textTracks.length > 0 || audioTracks.length > 1}
@@ -967,7 +1275,12 @@ export function LiveScreen ({ route, navigation }: Props) {
             <GuidePanel
               playingId={playingId}
               preview={portrait ? 'none' : 'overlay'}
-              onTune={(s) => play(s, { collapse: !portrait })}
+              // Open on the chip the viewer's context names (Phase 4 round trip) —
+              // the panel validates the key against its own model and degrades to
+              // 'All' if the group vanished. Read once at mount (the panel owns its
+              // chip state from there).
+              initialCategory={tuneScopeRef.current}
+              onTune={onGuideTune}
               // Portrait's resting state is the guide and the bar only shows in
               // fullscreen — this chip is the portrait route into the in-player search.
               onSearch={() => setOverlay('search')}
@@ -997,7 +1310,10 @@ export function LiveScreen ({ route, navigation }: Props) {
               playingId={playingId}
               onTune={(s) => {
                 setOverlay(!theme.isTV && portraitRef.current ? 'guide' : 'none')
-                play(s)
+                // A search result is a tune with no category context: the channel's
+                // own filing is the scope (Phase 4 rule c) — recorded by play()
+                // past its gates, so a refused tune moves nothing.
+                play(s, { scope: deriveTuneScope(s, categoryModel(streams)) })
               }}
             />
           ) : <SectionLoading section={t('menu.search')} />}
@@ -1028,7 +1344,7 @@ export function LiveScreen ({ route, navigation }: Props) {
               drilled, so at the top level LEFT stays what it was: nothing to the left of
               the rail, and the press is simply ignored. */}
           {theme.isTV && inDrill && (
-            <Pressable style={styles.railExit} onFocus={exitDrill} />
+            <Pressable style={styles.railExit} onFocus={onExitDrill} />
           )}
           {/* autoFocus STAYS. Taking it off was tried, to stop the rail claiming the
               focus that belongs to the playing channel — and it also stopped LEFT out of
@@ -1041,10 +1357,10 @@ export function LiveScreen ({ route, navigation }: Props) {
             <CategoryRail
               items={railItems}
               selected={railSelected}
-              parentHeader={inDrill ? { label: drillParent!, onBack: exitDrill } : undefined}
-              onSelect={selectRail}
-              onActivate={activateRail}
-              onActivity={bumpMenuIdle}
+              parentHeader={railParentHeader}
+              onSelect={onRailSelect}
+              onActivate={onRailActivate}
+              onActivity={onPanelActivity}
             />
           </FocusPane>
           <FocusPane autoFocus style={[styles.listPane, portrait && styles.listPanePortrait]}>
@@ -1055,16 +1371,17 @@ export function LiveScreen ({ route, navigation }: Props) {
                 numbers={numbers}
                 playingId={playingId}
                 favorites={favorites}
-                onSelect={(s) => play(s, { collapse: true })}
-                onInfo={(s) => openInfo(s)}
+                onSelect={onListSelect}
+                onInfo={onListInfo}
                 // Two-tier OK — but NOT while a playback error is up: play() honors
                 // re-selecting the SAME channel as the retry the error message
                 // promises (see play()'s 2026-07-16 outage note), and routing that
-                // press to the Guide would shadow it. Absent onGuide = the old path.
-                // TV opens the Guide screen; phone raises the guide MODE right here
-                // so the video surface never leaves the tree.
-                onGuide={error ? undefined : (s) => (theme.isTV ? navigation.navigate('Guide', { streamId: s.id }) : setOverlay('guide'))}
-                onActivity={bumpMenuIdle}
+                // press to the Guide would shadow it. Absent onGuide = the old path —
+                // the gate must stay HERE, on the prop: a stable handler that
+                // no-ops on error would still be a present onGuide, and the panel
+                // would route the retry press to it.
+                onGuide={error ? undefined : onListGuide}
+                onActivity={onPanelActivity}
               />
             ) : (
               <View style={styles.infoPane}>
@@ -1076,7 +1393,11 @@ export function LiveScreen ({ route, navigation }: Props) {
                     playing={infoStream.id === playingId}
                     source={source}
                     peers={peers}
-                    onWatch={() => play(streams.find(s => s.id === infoStream.id) ?? infoStream, { collapse: true })}
+                    // Detail reached FROM the list carries the browse scope with its
+                    // Watch (the operator-reported shape: browse NEWS, long-press a
+                    // row, Watch — the tune's context is NEWS). Reached by RIGHT from
+                    // fullscreen it describes the PLAYING channel — no scope to move.
+                    onWatch={() => play(streams.find(s => s.id === infoStream.id) ?? infoStream, { collapse: true, scope: infoFromFullscreen.current ? undefined : activeKey })}
                     onToggleFavorite={() => backend.toggleFavorite(infoStream.id)}
                     onReport={() => setReportOpen(true)}
                     // The controls the TELEVISION's bottom bar cannot carry, because a
@@ -1104,7 +1425,7 @@ export function LiveScreen ({ route, navigation }: Props) {
           active={tuneUI.active}
           phase={tuneUI.phase}
           number={playing ? numbers.get(playing.id) : undefined}
-          title={playing?.title}
+          title={playing ? displayTitle(playing) : undefined}
         />
       )}
 
@@ -1124,7 +1445,9 @@ export function LiveScreen ({ route, navigation }: Props) {
 
       {/* "Report a problem" (S51) — opened from the NowPlayingBar (phone) or the info
           panel of the channel being watched (TV). The engine attaches the ACTIVE
-          stream, so this sheet is only reachable while one is playing. */}
+          stream, so this sheet is only reachable while one is playing. RAW title, not
+          displayTitle: a viewer problem report must name the channel exactly as the
+          panel stores it — the operator reading it greps the lineup, not a rail. */}
       <ReportSheet visible={reportOpen} channelTitle={playing?.title} onClose={() => setReportOpen(false)} />
 
       {/* WHILE A SESSION RUNS, SAY SO — IN EVERY OVERLAY AND EVERY ORIENTATION. A cast
@@ -1168,7 +1491,7 @@ export function LiveScreen ({ route, navigation }: Props) {
       <PinEntryModal
         visible={!!pinTarget}
         title={t('live.enterPin')}
-        hint={pinTarget ? t('live.restricted', { title: pinTarget.title ?? pinTarget.id }) : undefined}
+        hint={pinTarget ? t('live.restricted', { title: (pinTarget.title && displayTitle(pinTarget)) || pinTarget.id }) : undefined}
         onOk={() => {
           markUnlocked()
           const s = pinTarget
@@ -1176,15 +1499,20 @@ export function LiveScreen ({ route, navigation }: Props) {
           // Collapse lands on the orientation default: landscape/TV = fullscreen,
           // portrait = the guide (matching the non-PIN tune paths — a PIN entry must
           // not strand the viewer on the portrait fullscreen that no longer exists).
-          if (s) { play(s, { collapse: true }); if (!theme.isTV && portraitRef.current && !errorRef.current) setOverlay('guide') }
+          // The deferred tune's scope (pinScope) rides back in: it records only NOW,
+          // when the tune actually proceeds.
+          if (s) { play(s, { collapse: true, scope: pinScope.current }); if (!theme.isTV && portraitRef.current && !errorRef.current) setOverlay('guide') }
+          pinScope.current = undefined
         }}
         onClose={() => {
           setPinTarget(null)
-          // The mount-time case: nothing playing yet — fall back to the hero. The
+          pinScope.current = undefined // declined: the deferred scope dies with the tune
+          // The mount-time case: nothing playing yet — fall back to the hero
+          // (tuneHero — the same no-context autoplay as the streams effect). The
           // fallback is PIN-free by construction (autoTunable): declining the
           // challenge must not hand over some OTHER restricted channel instead, and
           // when they are all locked it leaves nothing playing rather than re-asking.
-          if (!playingIdRef.current && streams.length) setPlayingId(pickHero(autoTunable(streams))?.id ?? null)
+          if (!playingIdRef.current && streams.length) tuneHero()
         }}
       />
     </View>

@@ -12,9 +12,10 @@ import React, { useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
-import { formatChannelNumber, formatDuration, isVod } from '../catalog'
+import { displayTitle, formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '@aliran/react-native'
 import { prefersReducedMotion } from '../motion'
+import { MarqueeText } from './MarqueeText'
 import { ProgressHairline } from './ProgressHairline'
 import { theme } from '../theme'
 
@@ -42,11 +43,14 @@ export interface ChannelRowProps {
   /** Handle on the row's Pressable, so a host can place native focus on it directly
    *  (ChannelListPanel does, for the channel being watched). The NowPill's pattern. */
   innerRef?: React.RefObject<any>
-  onPress: () => void
-  onLongPress?: () => void
+  /** Press/long-press hand the row's OWN stream back, so a list host can pass ONE
+   *  handler to every row instead of a fresh closure per row — a per-row closure is a
+   *  changed prop on every parent render, and it alone defeats the memo below. */
+  onPressStream: (s: Stream) => void
+  onLongPressStream?: (s: Stream) => void
 }
 
-export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, innerRef, onFocus, onPress, onLongPress }: ChannelRowProps) {
+function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFocus, innerRef, onFocus, onPressStream, onLongPressStream }: ChannelRowProps) {
   const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   // Off-air channel, or a vod title the library took down (S8a: vod records carry no
@@ -60,6 +64,10 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
   // one cached fetch (src/epg.ts); guide-less channels never fetch.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const nowText = data?.now?.title || stream.description
+  // Display name: the panel-minted [TAG] prefix stripped (catalog.displayTitle) — on
+  // a rail already named for the tag it is pure repetition. The RAW title stays on
+  // everything that names the channel back to the panel.
+  const title = displayTitle(stream)
   return (
     <Pressable
       style={[
@@ -75,13 +83,16 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
       hasTVPreferredFocus={hasTVPreferredFocus}
       onFocus={() => { setFocused(true); onFocus?.() }}
       onBlur={() => setFocused(false)}
-      onPress={onPress}
-      onLongPress={onLongPress}
+      onPress={() => onPressStream(stream)}
+      onLongPress={onLongPressStream ? () => onLongPressStream(stream) : undefined}
     >
       <Text style={[styles.number, focused && styles.textOnFill]}>{formatChannelNumber(number)}</Text>
       <View style={styles.main}>
         <View style={styles.titleLine}>
-          <Text style={[styles.title, focused && styles.textOnFill, dimmed && styles.dimmed]} numberOfLines={1}>{stream.title}</Text>
+          {/* Marquee only while THIS row holds focus (one row ever does, so at most
+              one loop runs — MarqueeText.tsx); at rest it is the same ellipsized
+              single line as before, so the pinned row height never moves. */}
+          <MarqueeText text={title} active={focused} style={[styles.title, focused && styles.textOnFill, dimmed && styles.dimmed]} containerStyle={styles.titleBox} />
           {stream.isLive && <Text style={styles.live}>{t('common.live')}</Text>}
           {!!duration && <Text style={[styles.duration, dimmed && styles.dimmed]}>{duration}</Text>}
           {favorite && <Text style={[styles.star, focused && styles.textOnFill]}>★</Text>}
@@ -94,12 +105,25 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
             pinned (getItemLayout above), so every row must lay out identically. */}
         {!vod && <ProgressHairline program={data?.now} style={styles.hairline} />}
       </View>
+      {/* fadeDuration 0: Android fades every fresh Image bind in over 300 ms, and a
+          scrolling list is nothing but fresh binds — on the 32-bit TCL boxes those
+          per-row fade animations ride the UI thread the scroll is already fighting
+          for. A station logo is identity, not a photo reveal; it should just BE there. */}
       {stream.logo
-        ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" />
-        : <View style={[styles.logo, styles.logoFallback]}><Text style={[styles.logoInitial, focused && styles.textOnFill]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+        ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" fadeDuration={0} />
+        : <View style={[styles.logo, styles.logoFallback]}><Text style={[styles.logoInitial, focused && styles.textOnFill]}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
     </Pressable>
   )
 }
+
+// Memoized: the channel list re-renders wholesale on every catalog push, favorites
+// change, and zap (playingId), and each row body is expensive — an EPG hook, a
+// derived-number format, ten styled Texts. With stream-carrying handlers above, a
+// row's props only actually change when ITS data does, so the memo turns a ~300-row
+// panel re-render into the two rows that care (measured against list_scroll jank on
+// the 32-bit TCL boxes). Default shallow compare — every prop is a primitive, a
+// stable ref, or a catalog record that is replaced (not mutated) on change.
+export const ChannelRow = React.memo(ChannelRowInner)
 
 const styles = StyleSheet.create({
   row: {
@@ -115,6 +139,10 @@ const styles = StyleSheet.create({
   main: { flex: 1, marginRight: theme.spacing(1) },
   titleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: theme.colors.text, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '700', flexShrink: 1 },
+  // The marquee's slot in the title line: same flexShrink as the bare title Text had,
+  // so the LIVE/runtime/star siblings keep their intrinsic width and the NAME is what
+  // gives way (and what scrolls) when the line is tight.
+  titleBox: { flexShrink: 1 },
   dimmed: { opacity: 0.5 },
   live: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption - 2, fontWeight: '800', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
   duration: { color: theme.colors.textDim, borderColor: theme.colors.textDim, borderWidth: 1, fontSize: theme.type.caption - 2, fontWeight: '700', fontVariant: ['tabular-nums'], paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },

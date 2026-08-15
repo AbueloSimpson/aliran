@@ -3,12 +3,18 @@
 // row switches the stream IN PLACE (playback never stops). There is no manual close
 // control — the overlay auto-hides after inactivity (LiveScreen's idle timer); any row
 // focus or scroll here bumps that timer via onActivity.
-import React, { useRef, useEffect } from 'react'
-import { View, Text, FlatList, StyleSheet } from 'react-native'
+import React, { useRef, useEffect, useMemo, useCallback } from 'react'
+import { View, Text, FlatList, StyleSheet, type ListRenderItem } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
 import { ChannelRow, CHANNEL_ROW_H } from './ChannelRow'
 import { theme } from '../theme'
+
+// Hoisted: closes over nothing but the module-scope row height, and FlatList treats a
+// changed getItemLayout as a reason to re-measure — a per-render arrow here is a new
+// prop on every parent render for no information.
+const getItemLayout = (_: ArrayLike<Stream> | null | undefined, index: number) =>
+  ({ length: CHANNEL_ROW_H, offset: CHANNEL_ROW_H * index, index })
 
 export interface ChannelListPanelProps {
   streams: Stream[]
@@ -28,10 +34,16 @@ export interface ChannelListPanelProps {
   onActivity?: () => void
 }
 
-export function ChannelListPanel ({ streams, heading, numbers, playingId, favorites, onSelect, onInfo, onGuide, onActivity }: ChannelListPanelProps) {
+function ChannelListPanelInner ({ streams, heading, numbers, playingId, favorites, onSelect, onInfo, onGuide, onActivity }: ChannelListPanelProps) {
   const { t } = useI18n()
   const listRef = useRef<FlatList<Stream>>(null)
   const playingIndex = streams.findIndex((s) => s.id === playingId)
+  // Set, not Array.includes per row: `favorites.includes(item.id)` in renderItem was a
+  // linear scan per mounted row per render — and worse, the fresh boolean rode a fresh
+  // closure, so every row re-rendered whenever the panel did. The Set is rebuilt only
+  // when favorites actually change, and `favorite={favSet.has(...)}` stays a stable
+  // primitive for the row's memo.
+  const favSet = useMemo(() => new Set(favorites), [favorites])
   // On open, bring the currently-playing channel into view. Rows are EXACTLY
   // CHANNEL_ROW_H tall, so getItemLayout + initialScrollIndex mount the list ALREADY
   // AT the playing channel — one frame, no progressive render-scroll (QA round 2: a
@@ -58,6 +70,34 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
     return () => clearTimeout(timer)
     // Only on open / when the playing channel changes — not on every catalog push.
   }, [playingIndex])
+  // Two-tier OK (WS3) as ONE stable handler: the row hands its stream back, and the
+  // playing-row → guide dispatch happens here instead of inside a per-row closure.
+  // Rows therefore share this single function and their memo holds across renders.
+  const handlePress = useCallback((s: Stream) => {
+    if (s.id === playingId && onGuide) onGuide(s)
+    else onSelect(s)
+  }, [playingId, onGuide, onSelect])
+  const renderItem: ListRenderItem<Stream> = useCallback(({ item, index }) => (
+    <ChannelRow
+      stream={item}
+      number={numbers.get(item.id)}
+      playing={item.id === playingId}
+      favorite={favSet.has(item.id)}
+      // Focus fallback: the FIRST row asks for the opening focus only when NOTHING
+      // is playing at all. Keying this on "the playing channel is absent from THIS
+      // list" (playingIndex < 0) was tried and reverted: it fired on every scope
+      // that lacks the playing channel, so merely WALKING the rail past such a
+      // category made row 0 requestFocus and yanked the D-pad out of the rail.
+      // With the membership-checked scope restore the reopened panel virtually
+      // always contains the playing row; when it doesn't, the rail keeps focus —
+      // acceptable, and far better than stealing it mid-walk.
+      hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
+      innerRef={item.id === playingId ? playingRowRef : undefined}
+      onFocus={onActivity}
+      onPressStream={handlePress}
+      onLongPressStream={onInfo}
+    />
+  ), [numbers, playingId, favSet, onActivity, handlePress, onInfo])
   return (
     <View style={styles.panel}>
       <Text style={styles.header} numberOfLines={1}>{heading ?? t('live.channels')}</Text>
@@ -65,7 +105,7 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
         ref={listRef}
         data={streams}
         keyExtractor={(s) => s.id}
-        getItemLayout={(_, index) => ({ length: CHANNEL_ROW_H, offset: CHANNEL_ROW_H * index, index })}
+        getItemLayout={getItemLayout}
         initialScrollIndex={playingIndex > 0 ? playingIndex : undefined}
         onScrollBeginDrag={onActivity}
         // THE MOUNTED-WINDOW DISCIPLINE, and this list needed it most of all. Every
@@ -81,24 +121,18 @@ export function ChannelListPanel ({ streams, heading, numbers, playingId, favori
           listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false })
           setTimeout(() => { try { listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.35 }) } catch {} }, 60)
         }}
-        renderItem={({ item, index }) => (
-          <ChannelRow
-            stream={item}
-            number={numbers.get(item.id)}
-            playing={item.id === playingId}
-            favorite={favorites.includes(item.id)}
-            hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
-            innerRef={item.id === playingId ? playingRowRef : undefined}
-            onFocus={onActivity}
-            onPress={() => (item.id === playingId && onGuide ? onGuide(item) : onSelect(item))}
-            onLongPress={() => onInfo(item)}
-          />
-        )}
+        renderItem={renderItem}
       />
       <Text style={styles.hint}>{t('live.holdForDetails')}</Text>
     </View>
   )
 }
+
+// Memoized like its rows: LiveScreen re-renders on every clock tick, peer count, and
+// tune-progress update, and none of those are this panel's business. Only holds if the
+// host passes identity-stable handlers (LiveScreen's useStableCallback) and memoized
+// streams/numbers — which it does.
+export const ChannelListPanel = React.memo(ChannelListPanelInner)
 
 const styles = StyleSheet.create({
   panel: { flex: 1, backgroundColor: theme.colors.overlay, borderTopRightRadius: 12, borderBottomRightRadius: 12, paddingVertical: theme.spacing(1), paddingHorizontal: theme.spacing(1) },

@@ -1,8 +1,10 @@
-// Far-left category rail (vertical text list, the reference's focus grammar:
-// selected = accent underline). Two-level: the top level lists categories (a "›"
-// marks ones with sub-categories); picking such a category DRILLS in — the rail then
-// shows a pinned "‹ Parent" back header with the parent's sub-categories beneath.
-// The drill state lives in LiveScreen; this renders what it's given.
+// Far-left category rail (vertical text list). Selected = a filled accent pill
+// (onPrimary text); a merely keyboard-focused item gets the light focusFill pill —
+// the same fill grammar the channel rows use (the client twin's grammar, Phase 2).
+// Two-level: the top level lists categories (a "›" marks ones with sub-categories);
+// picking such a category DRILLS in — the rail then shows a pinned "‹ Parent" back
+// header with the parent's sub-categories beneath. The drill state lives in
+// LiveScreen; this renders what it's given.
 
 import React from 'react'
 import { getLocale } from '@aliran/i18n'
@@ -48,7 +50,6 @@ export function CategoryRail ({ items, selected, focusIndex, parentHeader, onSel
           >
             <span className="rail-label">{it.label.toLocaleUpperCase(getLocale())}</span>
             {it.hasChildren && <span className="rail-chevron">›</span>}
-            <span className="rail-underline" />
           </div>
         ))}
       </div>

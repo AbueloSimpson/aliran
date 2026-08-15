@@ -43,7 +43,7 @@ import { View, Text, Image, Pressable, FlatList, ScrollView, StyleSheet, PanResp
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
-import { channelNumbers, categoryModel, splitCategory, subLabel, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, subLabel, displayTitle, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpg, useEpgProgramsState, useChannelThumb, type EpgProgram } from '@aliran/react-native'
 import { ProgressHairline } from './ProgressHairline'
 import { SectionLoading } from './SectionLoading'
@@ -95,8 +95,16 @@ function dayHint (windowStart: number, now: number, t: (key: string) => string):
 export interface GuidePanelProps {
   /** The channel currently playing (row accent + the NOW pill's jump target). */
   playingId: string | null
-  /** Tap-to-tune — the host decides how (navigate to Live, or switch in place). */
-  onTune: (s: Stream) => void
+  /** The category chip to OPEN on (Phase 4 round trip — the tune scope the host
+   *  carried in). Read once at mount; validated lazily against this panel's own
+   *  model (the activeKey guard), so a key the catalog no longer has degrades to
+   *  'All'. Optional — every other caller keeps the 'All' open. */
+  initialCategory?: string
+  /** Tap-to-tune — the host decides how (navigate to Live, or switch in place).
+   *  The second argument is the panel's ACTIVE CATEGORY CHIP at tap time ('All'
+   *  included) — the tune's browsing context (Phase 4): hosts scope the zap ring
+   *  and the reopened channel list to it. Optional for callers that ignore it. */
+  onTune: (s: Stream, category?: string) => void
   /** 'overlay' (LiveScreen landscape guide mode): tap selects + shows the preview
    *  card, a second tap on the same row tunes. Default 'none': tap tunes at once. */
   preview?: 'overlay' | 'none'
@@ -114,11 +122,12 @@ export interface GuidePanelProps {
   onSendToTv?: (s: Stream) => void
 }
 
-export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch, onSendToTv }: GuidePanelProps) {
+export function GuidePanel ({ playingId, initialCategory, onTune, preview = 'none', onSearch, onSendToTv }: GuidePanelProps) {
   const { t } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
-  // Category scope — the same chips grammar as the TV grid header.
-  const [selected, setSelected] = useState('All')
+  // Category scope — the same chips grammar as the TV grid header. Opens on the
+  // host's carried-in context when there is one (see initialCategory).
+  const [selected, setSelected] = useState(initialCategory ?? 'All')
   // Slow clock: past-dimming, the airing accent and every hairline ride this tick.
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The discrete paging window (the TV grid's windowStart model).
@@ -166,11 +175,12 @@ export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch, onS
   // Two-tier tap (overlay mode): first tap places the selection, the second tap on
   // the SAME row commits the tune. Everywhere else a tap tunes immediately.
   const rowPress = useCallback((s: Stream) => {
-    if (preview !== 'overlay') { onTune(s); return }
+    // Every tune names the chip it was made under (Phase 4 — the browsing context).
+    if (preview !== 'overlay') { onTune(s, activeKey); return }
     // Tune OUTSIDE the state updater (an updater may run twice under StrictMode —
     // a double-tune would double-zap).
-    if (selectedId === s.id) { setSelectedId(null); onTune(s) } else setSelectedId(s.id)
-  }, [preview, onTune, selectedId])
+    if (selectedId === s.id) { setSelectedId(null); onTune(s, activeKey) } else setSelectedId(s.id)
+  }, [preview, onTune, selectedId, activeKey])
 
   // Strip geometry from the MEASURED panel width (the host decides how wide this
   // panel is — full screen, or the Live overlay's pane), floored so a tiny first
@@ -309,20 +319,22 @@ function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW
   // useEpgPrograms — this is the phone grid only.
   const { programs, ready } = useEpgProgramsState(stream.epgUrl, stream.epgId, stream.guideBase)
   const visible = visiblePrograms(programs, windowStart, windowStart + GUIDE_WINDOW_MS)
+  // Once per row render, not once per title site (catalog.displayTitle).
+  const title = displayTitle(stream)
 
   return (
     <Pressable
       style={[styles.row, playing && styles.rowPlaying, selected && styles.rowSelected]}
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${formatChannelNumber(number)} ${stream.title}`}
+      accessibilityLabel={`${formatChannelNumber(number)} ${title}`}
       onPress={onPress}
     >
       <View style={styles.chCol}>
         <Text style={[styles.chNumber, selected && styles.chTextSelected]}>{formatChannelNumber(number)}</Text>
         {stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
-          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {!ready
@@ -386,15 +398,17 @@ export function GuidePreviewCard ({ stream, number, playing, program, hint }: {
   const { t } = useI18n()
   // No probe at all for the playing channel — undefined thumbBase disarms the hook.
   const [thumbUri, onThumbError] = useChannelThumb(playing ? undefined : stream.thumbBase)
+  // Display name (catalog.displayTitle): the guide's rail heading already carries the tag.
+  const title = displayTitle(stream)
   return (
     <View style={styles.previewCard} pointerEvents="none">
       {thumbUri
-        ? <Image source={{ uri: thumbUri }} style={styles.previewArt} resizeMode="cover" onError={onThumbError} accessibilityLabel={t('live.livePreview', { title: stream.title })} />
+        ? <Image source={{ uri: thumbUri }} style={styles.previewArt} resizeMode="cover" onError={onThumbError} accessibilityLabel={t('live.livePreview', { title })} />
         : stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.previewArt} resizeMode="contain" accessibilityLabel={stream.title} />
-          : <View style={[styles.previewArt, styles.previewArtFallback]}><Text style={styles.previewInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          ? <Image source={{ uri: stream.logo }} style={styles.previewArt} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.previewArt, styles.previewArtFallback]}><Text style={styles.previewInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       <View style={styles.previewInfo}>
-        <Text style={styles.previewName} numberOfLines={1}>{formatChannelNumber(number)}  {stream.title}</Text>
+        <Text style={styles.previewName} numberOfLines={1}>{formatChannelNumber(number)}  {title}</Text>
         {program
           ? (
             <>

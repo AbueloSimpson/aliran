@@ -45,8 +45,12 @@ export function App () {
   // (public build, first run) → the Connect screen owns onboarding.
   const [screen, setScreen] = useState<Screen>(() => (backend.streams.length ? 'live' : backend.descriptor ? 'splash' : 'connect'))
   const [authorizing, setAuthorizing] = useState(!!backend.creds)
-  // A channel picked in Favorites/Search jumps into Live playing it.
+  // A channel picked in Favorites/Search jumps into Live playing it. The Guide's
+  // tune also carries the active category chip — the tune's browsing context
+  // (Phase 4): Live records it as the zap/reopen scope. Favorites/Search pass no
+  // category; Live derives the scope from the channel's own filing.
   const [liveStart, setLiveStart] = useState<string | undefined>(undefined)
+  const [liveStartCategory, setLiveStartCategory] = useState<string | undefined>(undefined)
   // The provider title the VOD grid (or a series' episode list) resolved
   // (url/title/runtime + the id the player writes watch history under). The grid does
   // the getMovieInfo call, so the player screen holds no provider credentials at all.
@@ -55,9 +59,11 @@ export function App () {
   // the phone app's VodSeries route.
   const [seriesPick, setSeriesPick] = useState<VodSeriesPick | null>(null)
   // Guide context (WS4): the channel Live was playing when it opened the guide (the
-  // grid's mount row + NOW pill target; null from the Menu tile), and where Esc
-  // returns to — the desktop stand-in for the phone stack's pop-back.
-  const [guideCtx, setGuideCtx] = useState<{ streamId: string | null; from: 'menu' | 'live' }>({ streamId: null, from: 'menu' })
+  // grid's mount row + NOW pill target; null from the Menu tile), where Esc
+  // returns to — the desktop stand-in for the phone stack's pop-back — and the
+  // tune scope Live carried in (Phase 4 round trip: the guide opens on that chip
+  // instead of 'All', so picking a row there records the same context back).
+  const [guideCtx, setGuideCtx] = useState<{ streamId: string | null; from: 'menu' | 'live'; category?: string }>({ streamId: null, from: 'menu' })
 
   useEffect(() => {
     return backend.onMessage((m) => {
@@ -69,12 +75,12 @@ export function App () {
     })
   }, [])
 
-  const watch = (streamId: string) => { setLiveStart(streamId); setScreen('live') }
-  const toMenu = () => { setLiveStart(undefined); setScreen('menu') }
+  const watch = (streamId: string, category?: string) => { setLiveStart(streamId); setLiveStartCategory(category); setScreen('live') }
+  const toMenu = () => { setLiveStart(undefined); setLiveStartCategory(undefined); setScreen('menu') }
 
   const go = (target: MenuTarget) => {
     if (target === 'exit') { window.close(); return }
-    if (target === 'live') setLiveStart(undefined)
+    if (target === 'live') { setLiveStart(undefined); setLiveStartCategory(undefined) }
     if (target === 'guide') setGuideCtx({ streamId: null, from: 'menu' })
     setScreen(target)
   }
@@ -87,6 +93,7 @@ export function App () {
     return (
       <GuideScreen
         playingId={guideCtx.streamId}
+        initialCategory={guideCtx.category}
         // Tuning navigates into Live playing the pick — the same watch() jump
         // Favorites/Search make. LiveScreen is keyed on liveStart, so a value-equal
         // re-tune still lands as a fresh mount (the client's tuneKey concern is a
@@ -141,10 +148,16 @@ export function App () {
     <LiveScreen
       key={liveStart ?? 'live'}
       initialStreamId={liveStart}
+      initialCategory={liveStartCategory}
       onExit={toMenu}
       // Two-tier OK (WS4): the channel list's already-playing row opens the guide
-      // anchored on that channel; Esc there returns here.
-      onGuide={(streamId) => { setGuideCtx({ streamId, from: 'live' }); setScreen('guide') }}
+      // anchored on that channel; Esc there returns here. The jump props are
+      // CLEARED for the round trip: Live remounts on Esc-back, and a stale
+      // liveStart/liveStartCategory from an earlier Favorites/Search/Guide jump
+      // would re-tune the OLD channel and rewrite the tune scope from a dead
+      // prop — resuming via Live's own session memory (lastStreamId +
+      // lastTuneScope) is the current state.
+      onGuide={(streamId, category) => { setLiveStart(undefined); setLiveStartCategory(undefined); setGuideCtx({ streamId, from: 'live', category }); setScreen('guide') }}
     />
   )
 }

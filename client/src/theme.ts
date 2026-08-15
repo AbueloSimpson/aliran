@@ -3,8 +3,9 @@
 // client/src (white-label acceptance, S18). Sizing follows the 10-foot guidance in
 // Google's TV design system (developer.android.com/design/ui/tv): larger type scale,
 // overscan-safe margins, and a three-part focus grammar — border box (menu icons),
-// accent underline (category rail), light row fill (lists) — plus, on TV only, a
-// slight scale lift (focusScale) on the focused list row.
+// accent pill (category rail's selected item), light row fill (lists and the rail's
+// merely-focused item) — plus, on TV only, a slight scale lift (focusScale) on the
+// focused list row.
 import { Platform } from 'react-native'
 import { loadServiceDescriptor, type ServiceDescriptor } from './config'
 

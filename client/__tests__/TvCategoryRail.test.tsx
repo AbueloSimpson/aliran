@@ -13,19 +13,27 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text } from 'react-native'
+import { Text, StyleSheet } from 'react-native'
 
 const { Platform } = require('react-native')
 const realIsTV = Object.getOwnPropertyDescriptor(Platform, 'isTV')!
 Object.defineProperty(Platform, 'isTV', { get: () => true, configurable: true })
+// AFTER the isTV fake, like TvLiveDpad: theme snapshots Platform.isTV at module load,
+// and an ESM import would hoist above the override and bake phone metrics into the
+// "TV" suite. requires below this line see the TV theme.
+const { theme } = require('../src/theme')
 const { CategoryRail } = require('../src/components/CategoryRail')
 
 afterAll(() => { Object.defineProperty(Platform, 'isTV', realIsTV) })
 
+// Labels arrive PRE-CASED: the host (LiveScreen's railItems memo, keyed on the
+// locale) applies the S56f viewer-locale uppercasing and the rail renders them
+// verbatim — RailItem is memoized with no locale subscription, so casing in the
+// component froze the old locale's casing after a language switch.
 const ITEMS = [
-  { key: 'All', label: 'All' },
-  { key: 'Movies', label: 'Movies', hasChildren: true },
-  { key: 'News', label: 'News' }
+  { key: 'All', label: 'ALL' },
+  { key: 'Movies', label: 'MOVIES', hasChildren: true },
+  { key: 'News', label: 'NEWS' }
 ]
 
 const mounted: RendererInstance[] = []
@@ -89,4 +97,34 @@ test('a host that gives no onActivate falls back to onSelect', async () => {
   const { tree, onSelect } = await rail({ onActivate: undefined })
   await ReactTestRenderer.act(async () => { row(tree, 'Movies').props.onPress() })
   expect(onSelect).toHaveBeenCalledWith('Movies')
+})
+
+// ─── Pill grammar (S-Felix): SELECTED = filled accent pill, FOCUSED = light fill ───
+
+/** The rail row's flattened background — the pill fill lives on the pressable itself. */
+function pillBg (tree: RendererInstance, label: string) {
+  return StyleSheet.flatten(row(tree, label).props.style)?.backgroundColor
+}
+
+test('the selected category renders as a filled accent pill', async () => {
+  const { tree } = await rail() // selected="All"
+  expect(pillBg(tree, 'All')).toBe(theme.colors.accent)
+  // Idle, non-selected items carry no fill at all.
+  expect(pillBg(tree, 'News')).toBeUndefined()
+})
+
+test('a focused, non-selected item gets the light focus pill — and the selected item keeps accent', async () => {
+  const { tree } = await rail()
+  await ReactTestRenderer.act(async () => { row(tree, 'News').props.onFocus() })
+  // The harness keeps selected="All" (selection is the HOST's state), so News is
+  // focused-but-not-active → focusFill…
+  expect(pillBg(tree, 'News')).toBe(theme.colors.focusFill)
+  // …while the selected item still shows the accent pill: active wins the precedence.
+  expect(pillBg(tree, 'All')).toBe(theme.colors.accent)
+})
+
+test('focusing the selected item keeps the accent pill (active beats focused)', async () => {
+  const { tree } = await rail()
+  await ReactTestRenderer.act(async () => { row(tree, 'All').props.onFocus() })
+  expect(pillBg(tree, 'All')).toBe(theme.colors.accent)
 })

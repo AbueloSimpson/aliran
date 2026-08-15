@@ -21,7 +21,7 @@ import React, { useState } from 'react'
 import { View, Text, Image, Pressable, ScrollView, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { getLocale, useI18n } from '@aliran/i18n'
-import { formatChannelNumber, formatDuration, isVod } from '../catalog'
+import { displayTitle, formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg, programProgress, type EpgProgram } from '@aliran/react-native'
 import { theme } from '../theme'
 
@@ -67,6 +67,9 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
   // program-guide slot does not apply (a title has no schedule).
   const vod = isVod(stream)
   const duration = vod ? formatDuration(stream.durationSec) : ''
+  // Display name only (catalog.displayTitle): the panel-minted [TAG] prefix goes —
+  // the category chips right below already say it. Reports and payloads stay raw.
+  const title = displayTitle(stream)
 
   if (theme.isTV) {
     // TV: the original stacked layout, untouched (the 10-foot panel is fine as-is).
@@ -74,13 +77,13 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
       <ScrollView style={styles.panel} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <Text style={styles.number}>{formatChannelNumber(number)}</Text>
-          <Text style={styles.title} numberOfLines={2}>{stream.title}</Text>
+          <Text style={styles.title} numberOfLines={2}>{title}</Text>
         </View>
 
         <View style={styles.artBox}>
           {art
             ? <Image source={{ uri: art }} style={styles.art} resizeMode="cover" />
-            : <View style={[styles.art, styles.artFallback]}><Text style={styles.artInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+            : <View style={[styles.art, styles.artFallback]}><Text style={styles.artInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
           {stream.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
           {!!duration && <Text style={styles.durationBadge}>{duration}</Text>}
         </View>
@@ -149,11 +152,11 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
         <View style={styles.phoneIdentity}>
           {stream.logo
             ? <Image source={{ uri: stream.logo }} style={styles.phoneLogo} resizeMode="contain" testID="info-logo" />
-            : <View style={[styles.phoneLogo, styles.phoneLogoFallback]}><Text style={styles.phoneLogoInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+            : <View style={[styles.phoneLogo, styles.phoneLogoFallback]}><Text style={styles.phoneLogoInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
           <View style={styles.phoneIdentityText}>
             <View style={styles.phoneTitleRow}>
               <Text style={styles.number}>{formatChannelNumber(number)}</Text>
-              <Text style={styles.title} numberOfLines={1}>{stream.title}</Text>
+              <Text style={styles.title} numberOfLines={1}>{title}</Text>
             </View>
             <View style={styles.phoneBadges}>
               {stream.isLive && <Text style={styles.phoneLive}>{t('common.liveBadge')}</Text>}

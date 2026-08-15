@@ -1,10 +1,12 @@
 // Far-left category rail (vertical text list). Two-level: at the top level it lists the
 // categories (a "›" marks ones with sub-categories); tapping such a category DRILLS in —
 // the rail then shows a pinned "‹ Parent" back header with the parent's sub-categories
-// scrolling beneath it, and picking a sub scopes the channel list. Selected = accent
-// underline (the reference's focus grammar). On TV, focusing a name selects it; on phone,
-// tap. The drill state itself lives in LiveScreen; this component just renders what it's
-// given (items + optional parent header).
+// scrolling beneath it, and picking a sub scopes the channel list. Selected = a filled
+// accent pill (onPrimary text); a merely-focused item gets the light focusFill pill —
+// the same fill grammar the channel rows use. On TV, focusing a name selects it, so the
+// viewer sees one accent pill tracking the D-pad; on phone, tap. The drill state itself
+// lives in LiveScreen; this component just renders what it's given (items + optional
+// parent header).
 import React, { useState } from 'react'
 import { View, ScrollView, Text, Pressable, StyleSheet, Platform } from 'react-native'
 import { getLocale } from '@aliran/i18n'
@@ -13,7 +15,8 @@ import { theme } from '../theme'
 export interface CategoryRailItem {
   /** Full category key ('All' | 'Anime' | 'Anime/Español'). */
   key: string
-  /** Display text (top-level name, or the sub's leaf label). */
+  /** FINISHED display text, rendered verbatim — the host already applied the
+   *  viewer-locale casing (LiveScreen's railItems memo; see the S56f note below). */
   label: string
   /** Top-level category that has sub-categories → show a drill-in "›". */
   hasChildren?: boolean
@@ -44,7 +47,14 @@ export interface CategoryRailProps {
 // operator's own category name in the operator's language. There is no casing rule that
 // is right for both, so the whole rail follows the VIEWER's locale (S56f decision) —
 // a Turkish viewer's "i" upper-cases to "İ" everywhere on the surface, consistently.
-export function CategoryRail ({ items, selected, parentHeader, onSelect, onActivate, onActivity }: CategoryRailProps) {
+// WHERE the casing happens moved (S56f, memo fix): item labels are cased by the
+// HOST, inside LiveScreen's railItems useMemo (already keyed on the locale), and
+// RailItem renders them verbatim — RailItem is React.memo'd with no locale
+// subscription, and operator labels are locale-identical STRINGS, so a casing
+// call in here froze the old locale's casing after a language switch (the memo
+// never broke; only the translated 'All' changed). BackHeader below is unmemoized
+// and keeps its own toLocaleUpperCase.
+function CategoryRailInner ({ items, selected, parentHeader, onSelect, onActivate, onActivity }: CategoryRailProps) {
   return (
     <View style={styles.rail}>
       {parentHeader && (
@@ -54,11 +64,12 @@ export function CategoryRail ({ items, selected, parentHeader, onSelect, onActiv
         {items.map((it) => (
           <RailItem
             key={it.key}
+            itemKey={it.key}
             label={it.label}
             hasChildren={it.hasChildren}
             active={it.key === selected}
-            onSelect={() => onSelect(it.key)}
-            onActivate={() => (onActivate ?? onSelect)(it.key)}
+            onSelect={onSelect}
+            onActivate={onActivate ?? onSelect}
             onActivity={onActivity}
           />
         ))}
@@ -66,26 +77,31 @@ export function CategoryRail ({ items, selected, parentHeader, onSelect, onActiv
     </View>
   )
 }
+export const CategoryRail = React.memo(CategoryRailInner)
 
 function BackHeader ({ label, onBack, onActivity }: { label: string; onBack: () => void; onActivity?: () => void }) {
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
-      style={styles.back}
+      style={[styles.back, focused && styles.pillFocused]}
       onFocus={() => { setFocused(true); onActivity?.() }}
       onBlur={() => setFocused(false)}
       onPress={() => { onActivity?.(); onBack() }}
     >
-      <Text style={[styles.backText, focused && styles.labelActive]} numberOfLines={1}>‹ {label.toLocaleUpperCase(getLocale())}</Text>
+      <Text style={[styles.backText, focused && styles.textOnFill]} numberOfLines={1}>‹ {label.toLocaleUpperCase(getLocale())}</Text>
     </Pressable>
   )
 }
 
-function RailItem ({ label, hasChildren, active, onSelect, onActivate, onActivity }: { label: string; hasChildren?: boolean; active: boolean; onSelect: () => void; onActivate: () => void; onActivity?: () => void }) {
+function RailItemInner ({ itemKey, label, hasChildren, active, onSelect, onActivate, onActivity }: { itemKey: string; label: string; hasChildren?: boolean; active: boolean; onSelect: (key: string) => void; onActivate: (key: string) => void; onActivity?: () => void }) {
   const [focused, setFocused] = useState(false)
   return (
     <Pressable
-      style={styles.item}
+      // Pill precedence: ACTIVE wins (accent fill, onPrimary text) even while focused;
+      // a focused-but-not-active item gets the light focusFill pill. On TV the two
+      // coincide while the D-pad is in the rail (focus scopes → focus IS selection),
+      // so the viewer sees one accent pill tracking the D-pad.
+      style={[styles.item, active ? styles.pillActive : focused && styles.pillFocused]}
       // FOCUS SCOPES, OK ENTERS — and the split is the whole point. Focus used to call
       // the host's select, which DRILLED into any category that had sub-categories, so
       // simply walking the D-pad down the rail teleported the viewer into the first
@@ -95,20 +111,21 @@ function RailItem ({ label, hasChildren, active, onSelect, onActivate, onActivit
       // Focus-selects at all is TV-only. On phone, Android's touch-mode focus lands on a
       // rail item right after a tap elsewhere in the rail and would instantly revert the
       // tapped selection — so phone goes through onPress alone.
-      onFocus={() => { setFocused(true); onActivity?.(); if (Platform.isTV) onSelect() }}
+      onFocus={() => { setFocused(true); onActivity?.(); if (Platform.isTV) onSelect(itemKey) }}
       onBlur={() => setFocused(false)}
-      onPress={() => { onActivity?.(); onActivate() }}
+      onPress={() => { onActivity?.(); onActivate(itemKey) }}
     >
       <View style={styles.itemRow}>
-        <Text style={[styles.label, (active || focused) && styles.labelActive]} numberOfLines={1}>
-          {label.toLocaleUpperCase(getLocale())}
+        {/* Verbatim — the host cased it (see the S56f note above). */}
+        <Text style={[styles.label, active ? styles.textOnAccent : focused && styles.textOnFill]} numberOfLines={1}>
+          {label}
         </Text>
-        {hasChildren && <Text style={[styles.chevron, (active || focused) && styles.labelActive]}>›</Text>}
+        {hasChildren && <Text style={[styles.chevron, active ? styles.textOnAccent : focused && styles.textOnFill]}>›</Text>}
       </View>
-      <Text style={[styles.underline, active && styles.underlineActive]}> </Text>
     </Pressable>
   )
 }
+const RailItem = React.memo(RailItemInner)
 
 // Phone metrics one notch tighter (~15%, S22 round 3 — the side panel read too
 // large); TV keeps the 10-foot values untouched.
@@ -120,13 +137,23 @@ const styles = StyleSheet.create({
   // tapped. The pad lets the list scroll one item-height past the end, clear of it.
   scrollContent: { paddingBottom: theme.spacing(6) },
   // TV paddings ride the scale ramp with everything else (theme.ts SCALE).
-  back: { paddingVertical: theme.isTV ? theme.px(10) : 7, paddingHorizontal: theme.spacing(1), marginBottom: theme.spacing(0.5) },
+  back: { borderRadius: 999, paddingVertical: theme.isTV ? theme.px(8) : 6, paddingHorizontal: theme.isTV ? theme.px(14) : 7, marginBottom: theme.spacing(0.5) },
   backText: { color: theme.colors.accent, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '800', letterSpacing: 1 },
-  item: { paddingVertical: theme.isTV ? theme.px(10) : 7, paddingHorizontal: theme.spacing(1) },
+  // Pill metrics: the old rows carried an underline strip (3 + 4 margin) under wider
+  // padding — the pill trades that for a marginVertical so the rail's total rhythm
+  // (and its seat beside BackHeader) stays within a pixel of where it was, on BOTH
+  // form factors. The phone rail pane is a fixed percentage width, so horizontal
+  // padding is label width taken away — phone keeps it near the old spacing(1).
+  item: { borderRadius: 999, paddingVertical: theme.isTV ? theme.px(8) : 6, paddingHorizontal: theme.isTV ? theme.px(14) : 7, marginVertical: theme.isTV ? theme.px(5) : 4 },
+  pillActive: { backgroundColor: theme.colors.accent },
+  pillFocused: { backgroundColor: theme.colors.focusFill },
   itemRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
   label: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.label : theme.type.caption, fontWeight: '700', letterSpacing: 1, flexShrink: 1 },
   chevron: { color: theme.colors.textDim, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '800' },
-  labelActive: { color: theme.colors.text },
-  underline: { height: 3, marginTop: 4, borderRadius: 2, backgroundColor: 'transparent', alignSelf: 'flex-start', minWidth: theme.isTV ? 28 : 24 },
-  underlineActive: { backgroundColor: theme.colors.accent }
+  // onPrimary is the sanctioned "text on accent/primary/live fills" token. Brands with
+  // a BRIGHT accent must ship a dark onPrimary for this pill to read (SolTV does:
+  // #201204 on #FBBF24); the default theme's white-on-cyan is known-weak at 10 ft and
+  // is a default-palette concern, not this component's — tokens only here.
+  textOnAccent: { color: theme.colors.onPrimary },
+  textOnFill: { color: theme.colors.focusFillText }
 })

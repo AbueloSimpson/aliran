@@ -38,7 +38,7 @@ test('shows the current EPG program on the now-playing line', async () => {
   const now = Date.now()
   jest.spyOn(epg, 'getNowNext').mockResolvedValue({ now: { title: 'El caso del hombre topo (II)', start: now - 6e5, stop: now + 6e5 }, next: [] })
   const stream: Stream = { id: 'anime.moon-cat', title: 'Moon Cat', isLive: true, description: 'via demotv', epgUrl: 'https://epg.example/a.json', epgId: 'moon-cat' }
-  const t = texts(await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />))
+  const t = texts(await createTree(<ChannelRow stream={stream} number={1} onPressStream={() => {}} />))
   expect(t).toContain('El caso del hombre topo (II)')
   expect(t).not.toContain('via demotv')
 })
@@ -46,7 +46,7 @@ test('shows the current EPG program on the now-playing line', async () => {
 test('falls back to the description for a channel with no EPG', async () => {
   const spy = jest.spyOn(epg, 'getNowNext')
   const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'Rolling headlines' }
-  const t = texts(await createTree(<ChannelRow stream={stream} number={2} onPress={() => {}} />))
+  const t = texts(await createTree(<ChannelRow stream={stream} number={2} onPressStream={() => {}} />))
   expect(t).toContain('Rolling headlines')
   expect(spy).not.toHaveBeenCalled()
 })
@@ -55,7 +55,7 @@ test('falls back to the description for a channel with no EPG', async () => {
 // unavailable title (library took it down) renders grayed out like an off-air channel.
 test('vod row: runtime badge instead of LIVE, no channel number', async () => {
   const stream: Stream = { id: 'vod-heat', title: 'Heat', type: 'vod', durationSec: 5525, status: 'available', description: 'Crime saga' }
-  const tree = await createTree(<ChannelRow stream={stream} onPress={() => {}} />)
+  const tree = await createTree(<ChannelRow stream={stream} onPressStream={() => {}} />)
   const t = texts(tree)
   expect(t).toContain('1:32:05')
   expect(t).not.toContain('LIVE')
@@ -75,7 +75,7 @@ const THUMB = 'http://127.0.0.1:1234/feedthumb/news'
 
 test('right-edge art: the station logo, letterboxed — even when thumbBase is offered', async () => {
   const stream: Stream = { id: 'news', title: 'News 24', isLive: true, logo: LOGO, thumbBase: THUMB }
-  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPressStream={() => {}} />)
   const img = tree.root.findByType(Image)
   expect(img.props.source.uri).toBe(LOGO) // never the feed thumb, never a ?t= probe
   expect(img.props.resizeMode).toBe('contain') // a logo is letterboxed, not cropped
@@ -84,22 +84,37 @@ test('right-edge art: the station logo, letterboxed — even when thumbBase is o
 
 test('right-edge art: no logo leaves the initial box (thumbBase still ignored)', async () => {
   const stream: Stream = { id: 'news', title: 'News 24', isLive: true, thumbBase: THUMB }
-  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPressStream={() => {}} />)
   expect(tree.root.findAllByType(Image)).toHaveLength(0)
   expect(texts(tree)).toContain('N')
 })
 
 test('vod row: status unavailable grays the title out', async () => {
   const stream: Stream = { id: 'vod-gone', title: 'Gone Title', type: 'vod', durationSec: 100, status: 'unavailable' }
-  const tree = await createTree(<ChannelRow stream={stream} onPress={() => {}} />)
+  const tree = await createTree(<ChannelRow stream={stream} onPressStream={() => {}} />)
   const title = tree.root.findAllByType(Text).find(x => [x.props.children].flat().join('') === 'Gone Title')!
   expect(JSON.stringify(title.props.style)).toContain('0.5') // styles.dimmed
 })
 
 test('right-edge art: a logo carries no "live preview" label — it is not one', async () => {
   const stream: Stream = { id: 'news', title: 'News 24', isLive: true, logo: LOGO, thumbBase: THUMB }
-  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPressStream={() => {}} />)
   expect(tree.root.findByType(Image).props.accessibilityLabel).toBeUndefined()
+})
+
+// --- display titles (Phase 3): the panel-minted [TAG] prefix is stripped ---
+// autoSubcategory stores '[MLB] …' VERBATIM and mints category 'Live Events/MLB';
+// on a rail already named MLB the prefix is repetition, so the row shows the clean
+// name (catalog.displayTitle) — and the logo-fallback initial follows it.
+test('live-event row: shows the title without its own sub-rail tag; initial uses the clean name', async () => {
+  const stream: Stream = { id: 'mlb-sea-nyy', title: '[MLB] Mariners vs Yankees (7:05 PM ET)', isLive: true, category: ['Live Events/MLB'] }
+  const tree = await createTree(<ChannelRow stream={stream} number={7} onPressStream={() => {}} />)
+  const t = texts(tree)
+  expect(t).toContain('Mariners vs Yankees (7:05 PM ET)')
+  // Neither the title line nor the initial box carries the bracket: the initial is
+  // 'M' (clean title), never '[' (raw one).
+  expect(t).not.toContain('[MLB]')
+  expect(t).not.toContain('[')
 })
 
 // --- guide UI (WS1) ---
@@ -117,7 +132,7 @@ test('focused row: scale transform + zIndex lift, skipped under reduced motion',
   const stream: Stream = { id: 'news', title: 'News 24', isLive: true, description: 'Rolling headlines' }
   const row = (tree: RendererInstance) =>
     tree.root.findAll(n => typeof n.props.onFocus === 'function' && typeof n.props.onPress === 'function')[0]
-  const tree = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  const tree = await createTree(<ChannelRow stream={stream} number={1} onPressStream={() => {}} />)
   expect(JSON.stringify(row(tree).props.style)).not.toContain('scale')
   await ReactTestRenderer.act(async () => { row(tree).props.onFocus() })
   let style = JSON.stringify(row(tree).props.style)
@@ -125,7 +140,7 @@ test('focused row: scale transform + zIndex lift, skipped under reduced motion',
   expect(style).toContain('zIndex')
 
   ;(prefersReducedMotion as jest.Mock).mockReturnValue(true)
-  const still = await createTree(<ChannelRow stream={stream} number={1} onPress={() => {}} />)
+  const still = await createTree(<ChannelRow stream={stream} number={1} onPressStream={() => {}} />)
   await ReactTestRenderer.act(async () => { row(still).props.onFocus() })
   style = JSON.stringify(row(still).props.style)
   expect(style).not.toContain('scale')

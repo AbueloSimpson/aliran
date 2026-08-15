@@ -33,7 +33,7 @@ import React, { useRef, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, PanResponder, Animated } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
-import { formatChannelNumber, formatDuration } from '../catalog'
+import { displayTitle, formatChannelNumber, formatDuration } from '../catalog'
 import { useEpg } from '@aliran/react-native'
 import { VolumeControl } from './VolumeControl'
 import { ProgressHairline } from './ProgressHairline'
@@ -109,7 +109,7 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onSearch, onIn
           <Text style={styles.number}>{formatChannelNumber(number)}</Text>
           <View style={styles.main}>
             <View style={styles.titleLine}>
-              <Text style={styles.title} numberOfLines={1}>{stream.title}</Text>
+              <Text style={styles.title} numberOfLines={1}>{displayTitle(stream)}</Text>
               {stream.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
             </View>
             {!!subtitle && <Text style={styles.desc} numberOfLines={1}>{subtitle}</Text>}
