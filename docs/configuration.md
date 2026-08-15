@@ -29,8 +29,8 @@ Every service shares two behaviors:
 | `DATA_DIR` | `./data` | Where the panel stores its Corestore and keys. Gitignored. |
 | `RELAY_ONLY` | `false` | Route traffic through DHT relays to hide the panel's origin IP. |
 | `SERVICE_NAME` | `Aliran` | Your service name. The app shows it while a viewer pairs with the [service pairing code](operator-guide.md#the-service-pairing-code), before the viewer signs in. Public display text only. |
-| `ARGON2_MEM_KIB` | `262144` | Argon2id memory cost, in KiB (about 256 MB). |
-| `ARGON2_TIME` | `3` | Argon2id time cost, in iterations. |
+| `ARGON2_MEM_KIB` | `65536` | Argon2id memory cost, in KiB (64 MiB). The viewer's device pays this at every typed login, so size it to the weakest client hardware, not the server. Stored per user record — a change applies to new enrollments and password rotations only. |
+| `ARGON2_TIME` | `2` | Argon2id time cost, in iterations. |
 | `MAX_DEVICES_DEFAULT` | `2` | Default number of concurrent devices allowed per user. |
 | `SESSION_TTL_DAYS` | `30` | Session and token lifetime, in days. Long by design. |
 | `POW_DIFFICULTY` | `16` | Login proof-of-work difficulty, in bits. |

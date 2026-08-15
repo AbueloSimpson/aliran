@@ -472,9 +472,11 @@ RAM-to-core ratio:
   0.5–1 core per SD channel (a test-pattern source *encodes*, so "about two per
   vCPU" applies to those, not to `copy`).
 
-On boxes with 2 GB RAM or less, add swap and lower the login KDF memory in
-`panel/.env` — `ARGON2_MEM_KIB=65536` (64 MiB per login instead of the 256 MiB
-default). The parameters are stored per user record, so changing them later only
+On boxes with 2 GB RAM or less, add swap. The login KDF memory
+(`ARGON2_MEM_KIB` in `panel/.env`) now defaults to 65536 (64 MiB); deployments
+that set the old 262144 default should lower it — the viewer's device grinds
+this cost at every typed login, and a low-RAM TV box pays 256 MiB in seconds of
+frozen app. The parameters are stored per user record, so changing them only
 affects new enrollments and password rotations.
 
 **Running many channels, or on a Pi / SD-card host?** The wall becomes **disk

@@ -47,9 +47,16 @@ export const config = {
   // service pairing code, BEFORE any login — the viewer sees which service the 12
   // characters they typed reached. Public display text, nothing more.
   serviceName: (process.env.SERVICE_NAME || 'Aliran').trim().slice(0, 64),
+  // Argon2id cost for VIEWER passwords — stamped into each user record at enrollment /
+  // password set, and then GROUND ON THE VIEWER'S DEVICE at every typed login
+  // (sdk/login.js verify): the panel's OPRF round is oblivious, so the verifier check
+  // runs client-side at the recorded cost. 64 MiB / t=2 (libsodium "interactive") is the
+  // ceiling a 1-2 GB 32-bit TV box can pay without seconds of frozen worklet; the old
+  // 256 MiB / t=3 default assumed a server was paying it. Existing records keep the cost
+  // they were stamped with until the next password set.
   argon2: {
-    memKiB: int(process.env.ARGON2_MEM_KIB, 262144),
-    time: int(process.env.ARGON2_TIME, 3)
+    memKiB: int(process.env.ARGON2_MEM_KIB, 65536),
+    time: int(process.env.ARGON2_TIME, 2)
   },
   maxDevicesDefault: int(process.env.MAX_DEVICES_DEFAULT, 2),
   sessionTtlDays: int(process.env.SESSION_TTL_DAYS, 30),
