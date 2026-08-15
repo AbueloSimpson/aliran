@@ -5953,11 +5953,22 @@ export class AliranPlayer extends Emitter {
   // only attempts that reach it, and this throws before any RPC leaves the device. The
   // error string is byte-identical to the old one on purpose — the screens' TRANSIENT
   // regexes, the worklet's NOT_CONNECTED match and the resume-cost refund all key on it.
+  //
+  // The kick lives INSIDE the wait's predicate, and the wait runs even while
+  // _panelDiscovery is still null, both for the same measured reason: a login issued in
+  // the app's first second lands BEFORE connect() has the topic joined (the DHT bind
+  // alone is ~5 s on a TV), and an early throw hands the outcome back to the host's
+  // retry timer — which on a provisional boot sits behind a 1400-tile menu render and
+  // may not tick for tens of seconds. Riding the whole gap HERE keeps everything after
+  // the host's one send() on the worklet thread. The kick is a no-op until the topic
+  // joins and rate-limited (PANEL_REFRESH_MIN_MS) after, so a 250 ms poll costs nothing.
   async _awaitPanelRpc () {
     if (this._call) return
-    if (!this._kickPanelDiscovery()) throw new Error('not connected to panel')
     const t0 = Date.now()
-    const ok = await this._waitUntil(() => this._call, this._loginRpcWaitMs)
+    const ok = await this._waitUntil(() => {
+      this._kickPanelDiscovery()
+      return this._call
+    }, this._loginRpcWaitMs)
     this._mark('login-rpc-wait', (Date.now() - t0) + 'ms ' + (ok ? 'armed' : 'gave up'))
     if (!ok) throw new Error('not connected to panel')
   }
