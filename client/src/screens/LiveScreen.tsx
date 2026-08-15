@@ -828,6 +828,12 @@ export function LiveScreen ({ route, navigation }: Props) {
   const onPanelActivity = useStableCallback(bumpMenuIdle)
   const onRailSelect = useStableCallback(selectRail)
   const onRailActivate = useStableCallback(activateRail)
+  const onExitDrill = useStableCallback(exitDrill)
+  // The rail's parentHeader prop, hoisted: an inline `{ label, onBack }` literal is a
+  // fresh object every render and would break CategoryRail's memo on its own.
+  const railParentHeader = useMemo(
+    () => (inDrill ? { label: drillParent!, onBack: onExitDrill } : undefined),
+    [inDrill, drillParent, onExitDrill])
 
   const guideStrip = overlay === 'guide' && portrait
   // Portrait search uses the SAME strip layout as the portrait guide (the one video
@@ -1097,7 +1103,7 @@ export function LiveScreen ({ route, navigation }: Props) {
               drilled, so at the top level LEFT stays what it was: nothing to the left of
               the rail, and the press is simply ignored. */}
           {theme.isTV && inDrill && (
-            <Pressable style={styles.railExit} onFocus={exitDrill} />
+            <Pressable style={styles.railExit} onFocus={onExitDrill} />
           )}
           {/* autoFocus STAYS. Taking it off was tried, to stop the rail claiming the
               focus that belongs to the playing channel — and it also stopped LEFT out of
@@ -1110,7 +1116,7 @@ export function LiveScreen ({ route, navigation }: Props) {
             <CategoryRail
               items={railItems}
               selected={railSelected}
-              parentHeader={inDrill ? { label: drillParent!, onBack: exitDrill } : undefined}
+              parentHeader={railParentHeader}
               onSelect={onRailSelect}
               onActivate={onRailActivate}
               onActivity={onPanelActivity}

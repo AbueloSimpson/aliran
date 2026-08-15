@@ -240,7 +240,7 @@ test('no subtitle button when the stream has no tracks to choose between', async
 // --- the rail-walk debounce (RAIL_SCOPE_DEBOUNCE_MS) ---
 // Walking the D-pad down the rail scopes the channel list on every focus stop, and on
 // the 32-bit boxes each stop was a full list rebuild landing under the next queued key
-// press. So the split: the rail highlight answers the focus INSTANTLY (it is one Text
+// press. So the split: the rail highlight answers the focus INSTANTLY (it is one pill
 // style), and the list re-scopes only after a ~200 ms trailing debounce — a walk
 // swallows the intermediate stops, a viewer settling on a category never notices.
 
@@ -273,9 +273,8 @@ test('rail focus moves the highlight at once; the list re-scopes only after the 
     if (!railItem) throw new Error('no SHOPPING rail item')
     await ReactTestRenderer.act(async () => { railItem.props.onFocus() })
 
-    // Immediately: the highlight is on SHOPPING (the accent underline)…
-    const underline = railItem.findAllByType(Text).find((x: any) => flat(x).height === 3)!
-    expect(flat(underline).backgroundColor).toBe(theme.colors.accent)
+    // Immediately: the highlight is on SHOPPING (the filled accent pill)…
+    expect(flat(railItem).backgroundColor).toBe(theme.colors.accent)
     // …but the LIST is still the walk's starting scope — both channels.
     expect(listTitles()).toHaveLength(2)
 
