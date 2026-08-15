@@ -92,7 +92,13 @@ const EXCLUDE_MAX = 1000
 const GROUP_MAX = 64
 const GROUPS_MAX = 50
 const TITLE_FILTER_MAX = 64
-const TITLE_FILTERS_MAX = 50
+// Sized for the child-rail recipe at real-world vocabulary: a parent source's
+// titleExclude must MIRROR the union of every child rail's titleInclude (or
+// matched entries file twice), and one multilingual sport vocabulary — league
+// words, per-sport tags, and their Spanish spellings, accented and not — runs
+// past 50 on its own. 100 entries × ~1000 playlist lines is still a trivial
+// per-sync substring scan.
+const TITLE_FILTERS_MAX = 100
 const ID_MAX = 64 // NAME_RE's ceiling (ops.js) — prefix + slug must fit inside it
 const CAT_MAX = 64 // normSlug's ceiling (ops.js) — 'Parent/Child' must fit inside it whole
 // Distinct subcategories one sync may DERIVE from provider text. The tags come from a

@@ -738,8 +738,11 @@ try {
   // off a surprise deleteStream.
   r = await api('POST', '/api/sources', { name: 'toolong', url: mixedUrl, format: 'm3u', category: 'X', titleInclude: ['x'.repeat(65)] }, token)
   assert.strictEqual(r.status, 400, 'an over-long name filter must be rejected')
-  r = await api('POST', '/api/sources', { name: 'toomany', url: mixedUrl, format: 'm3u', category: 'X', titleExclude: Array.from({ length: 51 }, (_, i) => 't' + i) }, token)
-  assert.strictEqual(r.status, 400, 'more than 50 name filters must be rejected')
+  r = await api('POST', '/api/sources', { name: 'toomany', url: mixedUrl, format: 'm3u', category: 'X', titleExclude: Array.from({ length: 101 }, (_, i) => 't' + i) }, token)
+  assert.strictEqual(r.status, 400, 'more than 100 name filters must be rejected')
+  r = await api('POST', '/api/sources', { name: 'manyok', url: mixedUrl, format: 'm3u', category: 'X', titleExclude: Array.from({ length: 100 }, (_, i) => 't' + i) }, token)
+  assert.strictEqual(r.status, 201, 'a full 100-entry filter list is accepted — the parent-mirror recipe needs the room')
+  await api('DELETE', '/api/sources/manyok', undefined, token)
   r = await api('POST', '/api/sources', { name: 'crlf', url: mixedUrl, format: 'm3u', category: 'X', titleInclude: ['a\nb'] }, token)
   assert.strictEqual(r.status, 400, 'a line break in a name filter must be rejected')
   // A one-character rule sits inside almost every event name. It would prune almost the whole
