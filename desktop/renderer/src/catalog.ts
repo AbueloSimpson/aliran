@@ -66,6 +66,58 @@ export function subLabel (key: string): string {
   return sub ?? key
 }
 
+// --- display titles: stripping the panel's own live-events tag -------------------
+//
+// The panel's `autoSubcategory` (panel/src/sources.js — SUBCAT_TAG_RE, SUBCAT_MAX,
+// deriveSubcat) reads the leading "[MLB]" off an events-list entry and mints
+// `category: ['Live Events/MLB']` from it, storing the title VERBATIM. So on a rail
+// already NAMED "MLB" the prefix is pure repetition, spent on the row's one elastic
+// thing — the name a viewer is actually reading. displayTitle() removes it at display
+// time only; the stored title (search matching, problem reports, anything that names
+// the channel to the panel) stays raw.
+//
+// SELF-SCOPED, deliberately: the tag is stripped only when its normalized form equals
+// the LEAF of one of the stream's OWN 'Parent/Sub' category entries — the panel's
+// autoSubcategory output, plus any hand-filed category whose leaf happens to repeat
+// the bracket (a channel filed under 'Movies/4K' and titled "[4K] …" loses the
+// bracket too, which is the same redundancy). A decorative bracket with NO matching
+// leaf survives untouched; nothing here guesses at provider punctuation.
+//
+// The regex and the normalization MIRROR deriveSubcat — tag text captured by the same
+// pattern, control chars -> space, '/' -> space (the separator is the panel's, two
+// levels never three), whitespace collapsed, and a result longer than SUBCAT_MAX (32)
+// is a descriptive bracket, not a label. Matching folds casing on BOTH sides
+// (toLocaleLowerCase) the way the panel folds rail casing. FOUR copies stay in step:
+// the panel regex, the panel normalization, the client twin's displayTitle
+// (client/src/catalog.ts), and this one — what the panel turns into a rail defines
+// what either viewer app may strip, and the two apps must strip identically.
+const SUBCAT_TAG_RE = /^\s*\[([^\]\r\n]{1,120})\]/
+const SUBCAT_MAX = 32
+
+export function displayTitle (s: Pick<Stream, 'title' | 'category'>): string {
+  const title = s.title || ''
+  const m = SUBCAT_TAG_RE.exec(title)
+  if (!m) return title
+  const tag = m[1]
+    // eslint-disable-next-line no-control-regex -- mirrors deriveSubcat: control characters never reach a rail label
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\//g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!tag || tag.length > SUBCAT_MAX) return title
+  const want = tag.toLocaleLowerCase()
+  const owned = (s.category ?? []).some((c) => {
+    const [, sub] = splitCategory(c)
+    // The leaf gets the same whitespace collapse as the tag: a hand-typed
+    // 'Live Events/MLB  Playoffs' still names the same rail.
+    return sub !== undefined && sub.replace(/\s+/g, ' ').trim().toLocaleLowerCase() === want
+  })
+  if (!owned) return title
+  // Never hand back an empty name: a title that IS the tag keeps it verbatim.
+  const rest = title.slice(m[0].length).trimStart()
+  return rest || title
+}
+
 export interface CategoryModel {
   /** Rail level 0, in order: ['All', <top-level parents in first-seen curated order>]. */
   top: string[]
@@ -91,13 +143,20 @@ function computeCategoryModel (streams: Stream[]): CategoryModel {
   const subs: Record<string, string[]> = {}
   const subSeen: Record<string, Set<string>> = {}
   for (const s of sorted) {
+    // ONE membership per stream per group. A channel filed under two subs of the
+    // same parent (['Live Events/MLB', 'Live Events/NBA']) used to be pushed into
+    // groups[parent] once per entry — adjacent duplicates that dead-ended the
+    // parent-scoped zap ring (findIndex + 1 landed on the same id, so play() was a
+    // no-op and the zap keys went permanently silent on that channel) and handed
+    // React duplicate keys in every list that renders a parent group.
+    const joined = new Set<string>()
     for (const c of s.category ?? []) {
       if (!c || c === 'All') continue
       const [parent, sub] = splitCategory(c)
       if (!topSeen.has(parent)) { topSeen.add(parent); top.push(parent) }
-      ;(groups[parent] ??= []).push(s)
+      if (!joined.has(parent)) { joined.add(parent); (groups[parent] ??= []).push(s) }
       if (sub) {
-        ;(groups[c] ??= []).push(s)
+        if (!joined.has(c)) { joined.add(c); (groups[c] ??= []).push(s) }
         subSeen[parent] ??= new Set()
         if (!subSeen[parent].has(c)) { subSeen[parent].add(c); (subs[parent] ??= []).push(c) }
       }
@@ -119,6 +178,31 @@ export function zapOrder (streams: Stream[]): Stream[] {
   // The filter output is a fresh array, so the curation cache can't help through
   // it — cache on the INPUT array instead (one zap ring per catalog update).
   return memo1(zapCache, streams, () => sortByCuration(streams.filter(s => !isVod(s))))
+}
+
+// The CATEGORY-SCOPED zap ring (Phase 4, operator feedback): CH+/CH- and the D-pad
+// zap walk the category the viewer tuned FROM, not the global lineup — a viewer who
+// entered from LIVE EVENTS › MLB pressing CH+ wants the next game, not channel 042.
+//
+//   scope 'All' (or any key the model has no group for) -> zapOrder(streams): the
+//   global curated ring, byte-for-byte the old behavior — an 'All' tune keeps the
+//   channel-number surfing feel, and an unknown/vanished scope degrades to it
+//   rather than to a dead key.
+//
+//   a real group -> that group in ITS OWN order (the groups are already
+//   curation-sorted — the curated order IS the category's order), filtered by the
+//   same live-only rule zapOrder applies: vod titles are on-demand, never zap
+//   targets. A group left EMPTY by that filter (a vod-only category) falls back to
+//   the global ring too — a ring with nothing in it strands the keys.
+//
+// Pure and PIN-free on purpose: parental gating stays in LiveScreen's play(), the
+// one gate every tune path already passes through, whichever ring handed it the
+// channel. Kept code-identical with the client twin (client/src/catalog.ts zapRing).
+export function zapRing (streams: Stream[], model: CategoryModel, scope: string): Stream[] {
+  const group = scope === 'All' ? undefined : model.groups[scope]
+  if (!group) return zapOrder(streams)
+  const ring = group.filter(s => !isVod(s))
+  return ring.length ? ring : zapOrder(streams)
 }
 
 // Derived channel numbers (D3): curated sort over the live catalog -> 1..N. The same

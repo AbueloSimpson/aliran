@@ -10,7 +10,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
-import { formatChannelNumber, formatDuration } from '../catalog'
+import { displayTitle, formatChannelNumber, formatDuration } from '../catalog'
 import { VolumeControl } from './VolumeControl'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
 import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
@@ -58,6 +58,8 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
   const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
   const [thumbShown, setThumbShown] = useState(false)
   useEffect(() => { setThumbShown(false) }, [stream.thumbBase])
+  // Display name only (catalog.displayTitle) — the bar is a viewer-facing surface.
+  const title = displayTitle(stream)
   return (
     <div className="nowplaying">
       <div className="np-info">
@@ -67,14 +69,14 @@ export function NowPlayingBar ({ stream, number, clock, favorite, onChannels, on
           <img
             className={'np-live-thumb' + (thumbShown ? '' : ' probe')}
             src={thumbUri}
-            alt={thumbShown ? t('live.livePreview', { title: stream.title ?? '' }) : ''}
+            alt={thumbShown ? t('live.livePreview', { title }) : ''}
             onLoad={() => setThumbShown(true)}
             onError={() => { setThumbShown(false); onThumbError() }}
           />
         )}
         <span className="np-main">
           <span className="np-title-line">
-            <span className="np-title">{stream.title}</span>
+            <span className="np-title">{title}</span>
             {stream.isLive && <span className="np-live">{t('common.liveBadge')}</span>}
           </span>
           {subtitle && <span className="np-desc">{subtitle}</span>}

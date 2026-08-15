@@ -11,7 +11,7 @@
 import React from 'react'
 import { getLocale, useI18n } from '@aliran/i18n'
 import type { Stream } from '../types'
-import { formatChannelNumber, formatDuration, isVod } from '../catalog'
+import { displayTitle, formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '../../../../sdk/react-native/src/useEpg'
 import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
 import { programProgress, type EpgProgram } from '../../../../sdk/react-native/src/epg'
@@ -43,17 +43,20 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
   const art = thumbUri || stream.poster || stream.backdrop || stream.logo
   const vod = isVod(stream)
   const duration = vod ? formatDuration(stream.durationSec) : ''
+  // Display name only (catalog.displayTitle): the panel-minted [TAG] prefix goes —
+  // the category chips right below already say it. Reports and payloads stay raw.
+  const title = displayTitle(stream)
   return (
     <div className="info-panel">
       <div className="info-header">
         <span className="info-number">{formatChannelNumber(number)}</span>
-        <span className="info-title">{stream.title}</span>
+        <span className="info-title">{title}</span>
       </div>
 
       <div className="info-art-box">
         {art
-          ? <img className="info-art" src={art} alt={thumbUri ? t('live.livePreview', { title: stream.title ?? '' }) : ''} onError={thumbUri ? onThumbError : undefined} />
-          : <div className="info-art info-art-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</div>}
+          ? <img className="info-art" src={art} alt={thumbUri ? t('live.livePreview', { title }) : ''} onError={thumbUri ? onThumbError : undefined} />
+          : <div className="info-art info-art-fallback">{(title || '?').slice(0, 1).toUpperCase()}</div>}
         {stream.isLive && <span className="info-live badge-live">{t('common.liveBadge')}</span>}
         {duration && <span className="info-duration">{duration}</span>}
       </div>

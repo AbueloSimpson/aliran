@@ -30,7 +30,7 @@ import { getLocale, useI18n } from '@aliran/i18n'
 import { backend } from '../bridge'
 import type { Stream } from '../types'
 import { visibleStreams } from '../parental'
-import { channelNumbers, categoryModel, splitCategory, subLabel, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, subLabel, displayTitle, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpgPrograms } from '../../../../sdk/react-native/src/useEpg'
 import { useChannelThumb } from '../../../../sdk/react-native/src/thumbs'
 import type { EpgProgram } from '../../../../sdk/react-native/src/epg'
@@ -75,8 +75,11 @@ export interface GuideScreenProps {
    *  at and the NOW pill's jump target. Absent when entered from the Menu tile. */
   playingId?: string | null
   /** Tune a channel: App routes this to Live the same way MenuScreen's onGo('live')
-   *  flow lands there, carrying the streamId. */
-  onTune: (streamId: string) => void
+   *  flow lands there, carrying the streamId — plus the active category chip, the
+   *  tune's browsing context (Phase 4): the scope Live's zap ring and reopened
+   *  channel list follow. The RN twin threads the same value as the Guide route's
+   *  `category` param. */
+  onTune: (streamId: string, category?: string) => void
   /** Esc — back to where the viewer came from (App decides: Menu or Live). */
   onBack: () => void
 }
@@ -115,7 +118,7 @@ export function GuideScreen ({ playingId = null, onTune, onBack }: GuideScreenPr
     setSelected((prev) => (prev === key && key.includes(SUBCAT_SEP) ? splitCategory(key)[0] : key))
   }, [])
 
-  const tune = useCallback((s: Stream) => onTune(s.id), [onTune])
+  const tune = useCallback((s: Stream) => onTune(s.id, activeKey), [onTune, activeKey])
 
   if (!streams.length) {
     return <div className="section-loading"><span className="spinner" /><div>{t('live.waitingForChannels')}</div></div>
@@ -467,6 +470,9 @@ function GuideRow ({ stream, number, playing, windowStart, stripW, pxPerMin, now
   useEffect(() => { onPrograms(stream.id, programs) }, [stream.id, programs, onPrograms])
   const [thumbUri, onThumbError] = useChannelThumb(stream.thumbBase)
   const art = thumbUri || stream.logo
+  // Display name only (catalog.displayTitle) — feeds the thumb alt text and the
+  // logo-fallback initial so every surface agrees on the clean name.
+  const title = displayTitle(stream)
 
   const visible = visiblePrograms(programs, windowStart, windowStart + GUIDE_WINDOW_MS)
   // The focus highlight: the exact cell the reducer named; if the focus position
@@ -481,8 +487,8 @@ function GuideRow ({ stream, number, playing, windowStart, stripW, pxPerMin, now
       <div className="guide-ch-cell" onMouseMove={() => onHoverCell(null)} onClick={onTune}>
         <span className="guide-ch-number">{formatChannelNumber(number)}</span>
         {art
-          ? <img className={'guide-ch-thumb' + (thumbUri ? ' thumb' : '')} src={art} alt={thumbUri ? t('live.livePreview', { title: stream.title ?? '' }) : ''} loading="lazy" onError={thumbUri ? onThumbError : undefined} />
-          : <span className="guide-ch-thumb guide-ch-thumb-fallback">{(stream.title || '?').slice(0, 1).toUpperCase()}</span>}
+          ? <img className={'guide-ch-thumb' + (thumbUri ? ' thumb' : '')} src={art} alt={thumbUri ? t('live.livePreview', { title }) : ''} loading="lazy" onError={thumbUri ? onThumbError : undefined} />
+          : <span className="guide-ch-thumb guide-ch-thumb-fallback">{(title || '?').slice(0, 1).toUpperCase()}</span>}
       </div>
       <div className="guide-strip" style={{ width: stripW }}>
         {visible.length === 0
