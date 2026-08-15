@@ -63,8 +63,12 @@
 //   reclaimBudgetBytes and calls onOverBudget — on those devices a whole-replica
 //   rotation, which only the host can perform, is the only lever left. The
 //   budget only exists at all where a MEASURED capability probe (probeHolePunch)
-//   proved this store's filesystem cannot punch; where it can, onOverBudget is
-//   hard-disabled for the life of the handler and never fires. See Reclaim.
+//   proved this store's filesystem cannot punch; where it can, the blob verdict is
+//   hard-disabled for the life of the handler and never fires. The METADATA core is
+//   the exception on both counts: a punch cannot free a Hyperbee and nothing may
+//   clear one in place, so a second, punch-independent flat budget
+//   (metaBudgetBytes) rides the same measurement and fires the same callback with
+//   trigger: 'meta'. See Reclaim and the paragraph at DEFAULTS.
 //
 //   STALLED-READ ABORT — the feed is an EPHEMERAL rolling buffer: the broadcaster
 //   frees the previous /index.m3u8 blob the instant it writes the next one
@@ -232,7 +236,27 @@ const NO_CORS = {}
 // probeHolePunch remains, and remains worth having: where the punch is PROVED to work the
 // budget is switched off outright, so the measurement, the callback and any argument about
 // window sizes stop existing for that device.
-const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3, readIdleMs: 6000, reclaimIntervalMs: 30000, reclaimBudgetBytes: 512 * 1024 * 1024 }
+//
+// ⚠⚠ EXCEPT FOR THE METADATA CORE, WHICH THE PUNCH CANNOT TOUCH AND THE LATCH THEREFORE
+// MUST NOT COVER — that is what metaBudgetBytes (64 MiB) is. A followed live feed's
+// Hyperbee appends ~1.5 put/del transactions per second (segment put + expired del +
+// playlist put, every hls_time), nothing in this file ever clears the db core (interior
+// nodes referenced by CURRENT keys live in old blocks, so clearing it in place breaks
+// drive.entry() — the one reset is the host's purge + re-open), and hole punching is
+// about the BLOB core: a device that punches perfectly still accumulates metadata for
+// the whole session. Measured on an always-on TV with a working punch (10 h soak,
+// 2026-08-15): ~2.7 MB/h on the watched channel's db core, ~1.1-1.2 MB/h per warm idle
+// feed, +12-17 MB/h store-wide with the blob bound holding a FLAT ~128 MB — i.e. the
+// punch-capable path is where this bites, precisely because nothing else there rotates.
+// So the meta budget rides the SAME throttled measurement and the SAME onOverBudget, with
+// info.trigger = 'meta', and is gated on NEITHER the punch latch NOR the pass having run
+// (a clear pass, completed or failed, never touches the metadata core, so the measurement
+// is trustworthy on both sides of it). It is a FLAT number, never window-scaled: a fresh
+// replica's metadata starts near zero and only ever appends, so there is no healthy floor
+// that scales with operator settings the way the blob window does — 64 MiB is ~24 h of
+// continuous same-channel watching at the measured rate, and any natural teardown (app
+// restart, zap away and back, catalog re-key) resets it to zero for free.
+const DEFAULTS = { waitMs: 6000, pollMs: 150, readAhead: 3, readIdleMs: 6000, reclaimIntervalMs: 30000, reclaimBudgetBytes: 512 * 1024 * 1024, metaBudgetBytes: 64 * 1024 * 1024 }
 
 // The most playlist text the after-serve trigger will ever hold or fetch — the 200 branch's
 // stream mirror and the ranged branch's whole-playlist re-read both cap here. A real
@@ -479,10 +503,13 @@ const RECLAIM_MIN_ROTATE_MS = 5 * 60 * 1000
 const PROBE_MAX_TRIES = 3
 
 class Reclaim {
-  constructor (enabled, intervalMs, budgetBytes, onOverBudget) {
+  constructor (enabled, intervalMs, budgetBytes, onOverBudget, metaBudgetBytes) {
     this._enabled = enabled // true, or a function re-evaluated per serve
     this._intervalMs = intervalMs
     this._budgetBytes = budgetBytes > 0 ? budgetBytes : 0
+    // The METADATA core's own flat ceiling — the punch-independent second bound. See the
+    // metaBudgetBytes paragraph at DEFAULTS; _checkBudget carries the gating differences.
+    this._metaBudgetBytes = metaBudgetBytes > 0 ? metaBudgetBytes : 0
     this._onOverBudget = typeof onOverBudget === 'function' ? onOverBudget : null
     this._last = new WeakMap() // drive -> epoch ms of the last reclaim
     // Latched the first time a measurement comes back "this platform cannot report bytes
@@ -598,60 +625,93 @@ class Reclaim {
   // SIGABRTs the Bare worklet (the whole app process).
   //
   // `ran` is reclaimBelowWindow's "the pass completed" boolean.
+  //
+  // ⚠⚠ TWO BOUNDS SHARE THIS ONE MEASUREMENT, AND THEY ARE GATED DIFFERENTLY ON PURPOSE.
+  // The BLOB budget (r.bytes vs the window-scaled ceiling) keeps every gate it has ever
+  // had: the punch latch, the probe, and the `ran` rule below. The META budget (r.meta vs
+  // the flat _metaBudgetBytes) takes NONE of them, because none of them says anything about
+  // the metadata core: hole punching frees blob blocks and can never free the Hyperbee
+  // (interior nodes referenced by current keys live in old blocks — clearing the db core in
+  // place breaks drive.entry(), which is why no such clear exists anywhere in this file),
+  // so a punch-capable device accumulates metadata exactly as fast as a 32-bit one; and the
+  // clear pass, completed or failed, never touches the metadata core, so the measurement is
+  // trustworthy on both sides of `ran`. The one gate the two DO share is _unmeasurable —
+  // both are judged off the same stat()s — plus the RECLAIM_MIN_ROTATE_MS floor at the
+  // bottom, shared deliberately: a rotation resets BOTH numbers, so two verdicts in one
+  // window could only ever ask for the same rotation twice.
   async _checkBudget (drive, ran) {
-    if (!this._onOverBudget || !this._budgetBytes || this._unmeasurable || this._budgetOff) return
-    // THE GATE. Nothing below this line may run on a filesystem that can hole-punch —
-    // not the callback, not even the measurement (which is four stat()s per drive that
-    // would buy nothing there). See the keystone note in the class header.
-    //
-    // It also has to come FIRST, because the probe's verdict is an input to the very next
-    // decision.
-    if (!(await this._budgetApplies(drive))) return
-
-    // ⚠⚠ MEASURE WHEN THE PASS COMPLETED, *OR* WHEN THE PROBE PROVED THIS FILESYSTEM CANNOT
-    // PUNCH. Withhold only when BOTH are unknown.
-    //
-    // THE RULE THIS REPLACES WAS `if (ran)` ALONE, and it opened a hole exactly where this
-    // change is supposed to close one. Its justification — "do not rotate off a measurement
-    // no reclaim touched" — silently assumes reclaim COULD have worked. On exFAT, FAT32 or a
-    // network mount the punch does not no-op, it REJECTS (EOPNOTSUPP / ENOTSUP) out of
-    // blobs.core.clear(), so reclaimBelowWindow catches, returns false, and under `if (ran)`
-    // the budget was never checked — on a device that also cannot reclaim. That is
-    // unbounded growth with NO bound at all: a narrower audience than 32-bit Android, the
-    // identical outcome, and the outcome this whole file exists to prevent.
-    //
-    // The probe is what makes the wider rule safe. Once canPunch === false is MEASURED,
-    // a failed or wholly no-op pass is the EXPECTED steady state on this filesystem, not a
-    // signal that something is unavailable — clear() has already been proved unable to free
-    // bytes here, so the measurement is trustworthy whether or not the pass finished, and
-    // rotation is the only lever there was ever going to be. Where the probe is
-    // INCONCLUSIVE and the pass ALSO failed, nothing is known about either half and the
-    // original reasoning stands untouched: withhold, and try again next tick.
-    //
-    // ⚠ This changes NOTHING on the primary 32-bit Android case. There random-access-file's
-    // _del calls back SUCCESS with the addon absent, so the pass completes, `ran` is true,
-    // and the budget already fired under the old rule. This clause closes the exFAT-style
-    // REJECTING-punch case specifically, and only that.
-    if (!ran && !this._provedCannotPunch()) return
+    if (!this._onOverBudget || this._unmeasurable) return
+    const metaOn = this._metaBudgetBytes > 0
+    let blobOn = this._budgetBytes > 0 && !this._budgetOff
+    if (blobOn) {
+      // THE GATE (blob half only — see the header note above). Nothing of the BLOB budget
+      // may run on a filesystem that can hole-punch: where the punch works the reclaim pass
+      // is already bounding blobs and a rotation would be pure cost. See the keystone note
+      // in the class header. It comes FIRST because the probe's verdict is an input to the
+      // very next decision — and it still short-circuits the measurement entirely when the
+      // meta budget is off, so a meta-less host pays exactly what it always paid.
+      if (!(await this._budgetApplies(drive))) {
+        blobOn = false
+      } else if (!ran && !this._provedCannotPunch()) {
+        // ⚠⚠ MEASURE FOR THE BLOB BUDGET WHEN THE PASS COMPLETED, *OR* WHEN THE PROBE PROVED
+        // THIS FILESYSTEM CANNOT PUNCH. Withhold the blob verdict when BOTH are unknown.
+        //
+        // THE RULE THIS REPLACES WAS `if (ran)` ALONE, and it opened a hole exactly where
+        // this change is supposed to close one. Its justification — "do not rotate off a
+        // measurement no reclaim touched" — silently assumes reclaim COULD have worked. On
+        // exFAT, FAT32 or a network mount the punch does not no-op, it REJECTS
+        // (EOPNOTSUPP / ENOTSUP) out of blobs.core.clear(), so reclaimBelowWindow catches,
+        // returns false, and under `if (ran)` the budget was never checked — on a device
+        // that also cannot reclaim. That is unbounded growth with NO bound at all: a
+        // narrower audience than 32-bit Android, the identical outcome, and the outcome
+        // this whole file exists to prevent.
+        //
+        // The probe is what makes the wider rule safe. Once canPunch === false is MEASURED,
+        // a failed or wholly no-op pass is the EXPECTED steady state on this filesystem,
+        // not a signal that something is unavailable — clear() has already been proved
+        // unable to free bytes here, so the measurement is trustworthy whether or not the
+        // pass finished, and rotation is the only lever there was ever going to be. Where
+        // the probe is INCONCLUSIVE and the pass ALSO failed, nothing is known about either
+        // half and the original reasoning stands untouched: withhold, and try again next
+        // tick.
+        //
+        // ⚠ This changes NOTHING on the primary 32-bit Android case. There
+        // random-access-file's _del calls back SUCCESS with the addon absent, so the pass
+        // completes, `ran` is true, and the budget already fired under the old rule. This
+        // clause closes the exFAT-style REJECTING-punch case specifically, and only that.
+        blobOn = false
+      }
+    }
+    if (!blobOn && !metaOn) return
 
     const r = await probeDriveBytes(drive)
     if (!r.ok) {
       if (r.unmeasurable) this._unmeasurable = true // flagged once; see the constructor
       return
     }
-    // ⚠ THE CEILING IS SCALED TO THE WINDOW THIS PASS JUST OBSERVED, not the flat configured
-    // number — see _effectiveBudget. This is what makes a healthy replica un-over-budget by
-    // construction rather than by an argument about how big operators set hls_list_size.
+    // ⚠ THE BLOB CEILING IS SCALED TO THE WINDOW THIS PASS JUST OBSERVED, not the flat
+    // configured number — see _effectiveBudget. This is what makes a healthy replica
+    // un-over-budget by construction rather than by an argument about how big operators set
+    // hls_list_size. The META ceiling is flat — the argument for that is at DEFAULTS.
+    //
+    // VERDICT ORDER: blob first. When both are over, the blob verdict is the one that
+    // carries the window arithmetic an operator needs to read the numbers, and the rotation
+    // it asks for resets the metadata anyway — the two can never need separate rotations.
     const budget = this._effectiveBudget(drive)
-    if (!(r.bytes > budget)) return
+    let trigger = null
+    if (blobOn && r.bytes > budget) trigger = 'budget'
+    else if (metaOn && r.meta > this._metaBudgetBytes) trigger = 'meta'
+    if (!trigger) return
     // THE ROTATION FLOOR, checked last so it costs nothing on the overwhelmingly common
     // under-budget path, and so a device that IS over budget still pays the measurement and
-    // can be seen in a log. Per handler, not per drive — see RECLAIM_MIN_ROTATE_MS.
+    // can be seen in a log. Per handler, not per drive — see RECLAIM_MIN_ROTATE_MS. Shared
+    // by both triggers — see the header note.
     const now = Date.now()
     if (now - this._lastOverBudget < RECLAIM_MIN_ROTATE_MS) return
     this._lastOverBudget = now
-    // The host's callback, with the numbers it needs to decide and to log: the split
-    // between blob and metadata bytes is what tells a rotation apart from a leak, and
+    // The host's callback, with the numbers it needs to decide and to log: `trigger` names
+    // WHICH bound fired (the host's feed:rotate event carries it through to the field), the
+    // split between blob and metadata bytes is what tells a rotation apart from a leak, and
     // windowBytes/effectiveBudgetBytes are what tell a real leak from an operator who set a
     // 1920-second window. budgetBytes stays the CONFIGURED number so a host that only ever
     // read that field reads the same thing it always did. windowBytes is by construction the
@@ -659,10 +719,12 @@ class Reclaim {
     // full window, not one pass's raw sum — so the two can never disagree in a log.
     try {
       this._onOverBudget(drive, {
+        trigger,
         bytes: r.bytes,
         blobs: r.blobs,
         meta: r.meta,
         budgetBytes: this._budgetBytes,
+        metaBudgetBytes: this._metaBudgetBytes,
         effectiveBudgetBytes: budget,
         windowBytes: this._window.get(drive) || 0
       })
@@ -734,6 +796,11 @@ class Reclaim {
     return {
       budgetBytes: this._budgetBytes,
       budgetActive: !!(this._onOverBudget && this._budgetBytes && !this._unmeasurable && !this._budgetOff),
+      metaBudgetBytes: this._metaBudgetBytes,
+      // The metadata bound is NOT probe-gated — hole punching cannot free the db core, so
+      // where the punch works this is the one bound still standing (see _checkBudget).
+      // Only "the platform cannot report allocated bytes" switches it off.
+      metaBudgetActive: !!(this._onOverBudget && this._metaBudgetBytes && !this._unmeasurable),
       unmeasurable: this._unmeasurable,
       // How many probes this handler has spent. Only an INCONCLUSIVE answer is ever
       // re-probed, so tries > 1 with punch.ok false says "this device kept failing to
@@ -1747,8 +1814,12 @@ function pump (rs, res, wanted, idleMs = 0, onDone = null) {
 // adds the CORS headers above to every response and answers OPTIONS 204 BEFORE any drive
 // read — only the LAN-scoped cast server turns it on. onError(err) is called for
 // unexpected failures (the SDK routes corruption errors into store recovery).
-// onOverBudget(drive, info) is called when a reclaim pass leaves a replica bigger than the
-// budget — info is { bytes, blobs, meta, budgetBytes, effectiveBudgetBytes, windowBytes }.
+// onOverBudget(drive, info) is called when a reclaim pass leaves a replica bigger than a
+// budget — info is { trigger, bytes, blobs, meta, budgetBytes, metaBudgetBytes,
+// effectiveBudgetBytes, windowBytes }, where `trigger` names which bound fired: 'budget'
+// (the whole replica passed the window-scaled blob ceiling) or 'meta' (the METADATA core
+// alone passed the flat metaBudgetBytes — see the paragraph at DEFAULTS; that bound is
+// punch-independent, because a hole punch cannot free a Hyperbee).
 // Requires `reclaim` (it is the reclaim pass that measures). It is ADVISORY: the handler
 // frees nothing extra and does nothing else with the verdict. Freeing those bytes means
 // discarding and re-opening the replica, which only the owner of the feed cache can do — see
@@ -1764,18 +1835,23 @@ function pump (rs, res, wanted, idleMs = 0, onDone = null) {
 //   AND at most once per RECLAIM_MIN_ROTATE_MS (5 min) per HANDLER — the second floor is not
 //   keyed on the drive because a rotation hands back a new drive and a drive-keyed timer
 //   would reset exactly when it is needed.
-//   ⚠ AND IT CANNOT FIRE AT ALL until a capability probe has proved this store's filesystem
-//   cannot hole-punch (probeHolePunch, run only when this callback is set — a host that
-//   passes no onOverBudget pays nothing for any of it). Where the punch works, the reclaim
-//   pass is already doing its job and a rotation would be pure cost, so the callback is
-//   hard-disabled for the life of the handler. A MEASURED verdict is permanent; an
-//   INCONCLUSIVE probe is re-run up to 3 times, at most once per reclaim tick, because its
-//   causes (ENOSPC, EMFILE, a purge racing it, writeback lag) are transient. It is also
-//   skipped after a reclaim pass that FAILED — unless the probe has already MEASURED that
-//   this filesystem cannot punch, in which case a failed pass is the expected state and the
-//   bound still applies (that clause is what covers exFAT/FAT32/network mounts, where the
-//   punch rejects rather than no-ops). And it is silently disabled if the platform cannot
-//   report allocated bytes at all. handler.reclaimStatus() reports which of those happened.
+//   ⚠ AND THE BLOB HALF CANNOT FIRE AT ALL until a capability probe has proved this store's
+//   filesystem cannot hole-punch (probeHolePunch, run only when this callback is set and
+//   reclaimBudgetBytes is non-zero — a host that passes no onOverBudget pays nothing for
+//   any of it). Where the punch works, the reclaim pass is already doing its job and a
+//   rotation would be pure cost, so the blob verdict is hard-disabled for the life of the
+//   handler. A MEASURED verdict is permanent; an INCONCLUSIVE probe is re-run up to 3
+//   times, at most once per reclaim tick, because its causes (ENOSPC, EMFILE, a purge
+//   racing it, writeback lag) are transient. It is also skipped after a reclaim pass that
+//   FAILED — unless the probe has already MEASURED that this filesystem cannot punch, in
+//   which case a failed pass is the expected state and the bound still applies (that clause
+//   is what covers exFAT/FAT32/network mounts, where the punch rejects rather than
+//   no-ops). And it is silently disabled if the platform cannot report allocated bytes at
+//   all. handler.reclaimStatus() reports which of those happened.
+//   ⚠ NONE OF THAT GATES THE 'meta' TRIGGER except the last clause (unmeasurable): the
+//   metadata bound exists precisely for the store the punch latch switches the blob half
+//   off on, and a clear pass cannot invalidate a metadata measurement. It shares the
+//   5-minute floor and the reclaim throttle, nothing else.
 //
 // The returned handler carries two methods for that owner, so a rotation can drain before
 // it purges (drive.purge() kills in-flight reads mid-body — see InFlight):
@@ -1793,7 +1869,8 @@ function pump (rs, res, wanted, idleMs = 0, onDone = null) {
 //
 // And one for observability:
 //
-//   handler.reclaimStatus() -> { budgetBytes, budgetActive, unmeasurable, punchTries, punch }
+//   handler.reclaimStatus() -> { budgetBytes, budgetActive, metaBudgetBytes,
+//                                metaBudgetActive, unmeasurable, punchTries, punch }
 //     null when this handler has no `reclaim`. `punch` is probeHolePunch's answer once it has
 //     one (null before that, and it never runs unless onOverBudget is set) and `punchTries`
 //     is how many attempts it took — together they are the answer to "why did / didn't this
@@ -1804,7 +1881,7 @@ function pump (rs, res, wanted, idleMs = 0, onDone = null) {
 export function createDriveHandler (resolveTarget, opts = {}) {
   const cfg = { ...DEFAULTS, ...opts }
   const readAhead = cfg.readAhead > 0 ? new ReadAhead(cfg.readAhead, cfg.liveReadAhead) : null
-  const reclaim = cfg.reclaim ? new Reclaim(cfg.reclaim, cfg.reclaimIntervalMs, cfg.reclaimBudgetBytes, cfg.onOverBudget) : null
+  const reclaim = cfg.reclaim ? new Reclaim(cfg.reclaim, cfg.reclaimIntervalMs, cfg.reclaimBudgetBytes, cfg.onOverBudget, cfg.metaBudgetBytes) : null
   const inflight = new InFlight()
   const cors = cfg.cors ? CORS_HEADERS : NO_CORS
 

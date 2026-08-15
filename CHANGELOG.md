@@ -20,6 +20,36 @@ not been on a television yet**; each says so where it is described.
 
 ### Added
 
+- **The viewer bounds its metadata growth — the third disk bound (`metaBudgetBytes`).**
+  The blob bounds hold the media flat, but every followed live feed also carries a
+  metadata database (the index that maps paths to media blocks), the broadcaster
+  writes to it ~1.5 times per second, and a hole punch cannot free any of it —
+  interior nodes referenced by current keys live in old blocks, so the engine never
+  clears the db core in place; the only reset is purge + re-open. Measured on an
+  always-on TV with a **working** punch (10 h soak, 2026-08-15): ~2.7 MB/h on the
+  watched channel's metadata, ~1.1-1.2 MB/h per warm idle feed, +12-17 MB/h
+  store-wide — the punch-capable box that never rotates fills 4 GB of free flash in
+  about two weeks, with the blob bound working perfectly. Short sessions never see
+  it; the always-on box on one channel is where it bites.
+
+  `metaBudgetBytes` (default 64 MiB, `0` disables, refused below 8 MiB) bounds it in
+  two halves off the one option. The **watched** feed rotates through the proven
+  rotation path when its metadata passes the full value — roughly once per day
+  always-on; the capability probe deliberately does **not** gate this trigger (it
+  answers a blob question), and the `feed:rotate` event now names which bound asked
+  (`trigger: 'budget' | 'meta'`) with the metadata share (`meta`) alongside. An
+  **idle** feed is evicted outright at a quarter of the value during the store-cap
+  pass — nobody is watching, so it costs nothing at the time and one fresh dial on
+  the next tune (the purged-feed ledger makes that dial work), and a `meta-evict`
+  breadcrumb names the feed. Natural teardowns (app restart, zap away and back,
+  catalog re-key) already reset metadata for free; the thresholds exist for the
+  session that never tears down. Covered by `test:reclaim` scenario O (the meta
+  verdict fires through the punch latch, beside an armed-but-under blob budget, with
+  the blob half off by config — no probe run — and off a failed pass; VOD serves
+  reach neither trigger) and by `test:sdk` (a meta-triggered rotation runs the same
+  proven path end to end; the idle half evicts through the real maintenance pass,
+  the active feed survives on the pinned set, and the re-zap dials fresh).
+
 - **A rail per sport, derived from the playlist (`autoSubcategory`).** A provider
   puts every sport of the day inside ONE `group-title` and writes the sport into the
   entry NAME — `[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed`. Until now the

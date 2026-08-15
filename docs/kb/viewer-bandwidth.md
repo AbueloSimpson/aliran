@@ -70,7 +70,9 @@ holes in a file — a 64-bit build on a normal internal filesystem — the
 store stays small by itself:
 
 - **While you watch:** the store holds about **one live window** of media
-  per cached feed, plus a small amount of metadata. When a segment leaves
+  per cached feed, plus metadata that grows slowly for as long as the feed
+  is followed (a few MB per hour; bounded separately — see the metadata
+  paragraphs below). When a segment leaves
   the live window, the engine clears its blocks from disk automatically.
   This is safe: the broadcaster already cleared those blocks at the
   source, so no peer can fetch them again. On 32-bit Android this clear
@@ -167,9 +169,9 @@ viewer a gap in three different ways.
   involved. The cost is below a live channel's background noise, and it
   is not zero.
 
-**A device whose filesystem can punch holes does not rotate.** That is
-the guarantee, and it is about that capability, not about 64-bit. Two
-independent things enforce it.
+**A device whose filesystem can punch holes does not rotate on the
+media bound.** That is the guarantee, and it is about that capability,
+not about 64-bit. Two independent things enforce it.
 
 First, the engine tests the filesystem before it applies the budget. It
 writes a scratch file, punches a hole in the middle, and measures the
@@ -190,6 +192,50 @@ A flat ceiling would have rotated a perfectly healthy replica, over and
 over. With the window term, a replica holding about one live window
 cannot be over budget on either side of the probe. A rotation is also
 rate-limited to one per five minutes.
+
+**The metadata store is the exception to that guarantee, and it has its
+own bound.** Each feed replica is two stores: the media blocks that the
+punch and the budget above are about, and a metadata database — the
+index that maps paths to media blocks. A followed live channel writes to
+that database about 1.5 times per second (every segment put, every
+expired-segment delete, every playlist rewrite), and the viewer's
+replica follows it for as long as the feed stays cached. Hole punching
+cannot free any of it: the database's current keys reference interior
+nodes that live in old blocks, so the engine never clears the metadata
+store in place. The only reset is to delete the replica and open it
+again.
+
+Measured on an always-on TV with a working hole punch (10-hour soak,
+2026-08-15): the watched channel's metadata grew ~2.7 MB per hour, each
+warm cached feed's ~1.1-1.2 MB per hour, and the store as a whole
++12-17 MB per hour — about 0.3 GB per day — while the media bound held
+the active feed's 2.8 GB of logical writes flat at ~128 MB allocated. A
+box with 4 GB free fills in roughly two weeks. Short sessions never see
+this: any app restart, channel change away and back, or channel re-key
+resets the metadata for free. The always-on box left on one channel is
+where it bites.
+
+So the engine bounds metadata separately (`metaBudgetBytes`, default
+64 MiB; `0` disables it):
+
+- **The feed you are watching** rotates through the same rotation path
+  as the byte budget above when its metadata store passes the full
+  value — at the measured rate, roughly once per day of continuous
+  same-channel watching. The capability probe does not gate this
+  trigger: a device that punches perfectly still accumulates metadata,
+  and that device is exactly where this fires. The `feed:rotate` event
+  names which bound asked (`trigger: 'budget' | 'meta'`), so a daily
+  metadata rotation is tellable in the field from a media bound that is
+  failing.
+- **Idle cached feeds** are evicted outright at a quarter of the value
+  (16 MiB at the default), during the same maintenance pass as the
+  store cap. Nobody is watching an idle feed, so the eviction costs
+  nothing at the time; the next tune of that channel pays one fresh
+  dial (the engine records the purge and hangs up that connection
+  first, so the re-dial works — see "Persistent spinner with zero
+  peers" in `docs/kb/playback.md`). The engine records a `meta-evict`
+  breadcrumb naming the feed, so an operator reading a problem report
+  can see why a warm channel went cold.
 
 **The probe leaves scratch files, and nothing sweeps them.** Each probe
 writes 512 KiB into a `punch-probe-<random>/data` path in the store, then

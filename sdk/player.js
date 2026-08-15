@@ -327,6 +327,25 @@ function normalizeReclaimBudget (v) {
   return v
 }
 
+// metaBudgetBytes: the ceiling on the ACTIVE feed's METADATA core, past which the engine
+// rotates the replica through the same path as reclaimBudgetBytes — see
+// FEED_META_BUDGET_BYTES for the measured growth rates and why the capability probe cannot
+// gate this one. Same contract as normalizeReclaimBudget, for the same reasons: rejected
+// when it is not a number, floored with a message that names the floor, and 0 is the
+// documented off switch — which disables BOTH halves of the metadata bound, the active
+// rotation trigger and the idle eviction threshold derived from it (_metaIdleEvictBytes).
+function normalizeMetaBudget (v) {
+  if (v == null) return FEED_META_BUDGET_BYTES
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+    throw new Error('metaBudgetBytes must be a non-negative NUMBER of bytes (0 disables the metadata bound) — strings and booleans are not coerced')
+  }
+  if (v === 0) return 0 // the documented off switch, not a tiny budget
+  if (v < FEED_META_BUDGET_MIN_BYTES) {
+    throw new Error(`metaBudgetBytes must be at least ${FEED_META_BUDGET_MIN_BYTES} bytes (${Math.round(FEED_META_BUDGET_MIN_BYTES / 1048576)} MiB), or exactly 0 to disable the metadata bound — the metadata core grows a few MB per hour at most, so a smaller budget schedules rotation churn without saving meaningful disk`)
+  }
+  return Math.floor(v)
+}
+
 // zapPrefetch: while a stream plays, keep the NEWEST segment of the adjacent
 // channels (next/previous in curated zap order) replicated locally, so a CH+/CH-
 // zap starts from warm bytes instead of a cold demand-paged fetch. OFF by default —
@@ -678,6 +697,20 @@ const CAST_RECLAIM_READ_MS = 3000
 //   serve of a `media: true` target, and only _feedDrive is ever marked media:true), so
 //   the other ~11 cached feeds — prewarmed, zapped through, opened by a /feedthumb — had
 //   never been reclaimed once in the life of a session.
+//
+//   …and a FOURTH, the METADATA BOUND (metaBudgetBytes), which is the one bound that must
+//   fire on the hardware the other three leave alone. Every bound above is about the BLOB
+//   core; the Hyperbee metadata core grows on EVERY platform for as long as a live feed is
+//   followed (~2.7 MB/h watched, ~1.1-1.2 MB/h per warm feed — vc10 soak, 2026-08-15), and
+//   a hole punch cannot free any of it, so a punch-capable always-on box fills its disk at
+//   ~0.3 GB/day with the blob bound working PERFECTLY. Two halves, both riding machinery
+//   above: the ACTIVE feed rotates through _rotateActiveFeed when its metadata core passes
+//   metaBudgetBytes (the serving core measures and calls onOverBudget with trigger: 'meta'
+//   — NOT gated on the punch probe, which is about blobs); an IDLE feed is evicted outright
+//   at a quarter of that inside _trimFeedBytes (nobody is watching, so the eviction is free
+//   now and one fresh dial later). Natural teardowns (restart, zap away and back, catalog
+//   re-key) already reset metadata for free — the thresholds exist for the always-on
+//   same-channel session that never tears down. See FEED_META_BUDGET_BYTES.
 
 // The per-feed budget's default, and the host-facing option that overrides it
 // (`reclaimBudgetBytes`, passed straight to the serving core, which is what measures).
@@ -697,6 +730,42 @@ const FEED_ROTATE_BUDGET_MIN_BYTES = 64 * 1024 * 1024
 // feed may hold has halved what a browsing session may hold, and a store cap that stayed
 // put would just start evicting the warm cache for no stated reason.
 const FEED_STORE_BUDGET_FEEDS = 4
+
+// The METADATA-core budget's default, and the option that overrides it (`metaBudgetBytes`,
+// passed straight to the serving core, which measures it on the same throttled pass as the
+// blob budget). The metadata core — the Hyperbee behind drive.entry() — grows on EVERY
+// platform for as long as a live feed is followed: the broadcaster writes ~1.5 put/del
+// transactions per second (segment put + expired del + playlist put, every hls_time), and
+// hole punching cannot free ANY of it — interior nodes referenced by CURRENT keys live in
+// old blocks, so clearing the db core in place breaks drive.entry() (the serving core's
+// Reclaim header carries the full argument; the one reset is purge + re-open). Measured on
+// the vc10 soak (TCL Domestica, Android 11, fixed fsext, 10 h, 2026-08-15): ~2.7 MB/h on
+// the watched channel's db core, ~1.1-1.2 MB/h per warm idle feed, +12-17 MB/h store-wide
+// — with the blob bound holding the active feed's 2.8 GB logical at a FLAT ~128 MB
+// allocated, i.e. the punch-capable always-on box is exactly where this bites. 64 MiB is
+// ~24 h of continuous same-channel watching at that rate; any natural teardown (app
+// restart, zap away and back, catalog re-key) resets the metadata for free, so the
+// threshold only has to catch the session that never tears down. The reset is the SAME
+// proven rotation path as the blob budget (park, drain, purge, re-open, fresh dial) — only
+// the trigger differs, and the feed:rotate event names it (trigger: 'budget' | 'meta').
+const FEED_META_BUDGET_BYTES = 64 * 1024 * 1024
+// …and the FLOOR under a host-supplied one, same refusal-not-clamp contract as
+// FEED_ROTATE_BUDGET_MIN_BYTES. At the measured ~2.7 MB/h even 8 MiB is one rotation every
+// ~3 h — tolerable; below that the number stops bounding accumulation and starts scheduling
+// churn (the serving core's 5-minute rotation floor would cap the rate, i.e. pure rotation
+// noise with no disk being saved), so the misconfiguration surfaces at construction.
+const FEED_META_BUDGET_MIN_BYTES = 8 * 1024 * 1024
+// IDLE feeds evict at a QUARTER of the active meta budget (16 MiB at the default), inside
+// the store-cap pass (_trimFeedBytes). Deliberately earlier than the active threshold:
+// evicting an idle feed costs the viewer nothing at the time (nobody is watching it) and
+// one fresh dial on the next tune (the purged-feed ledger — _recordPurgedFeed — is what
+// makes that dial fresh instead of dead), while an active rotation costs a measured ~2.5 s
+// picture freeze about one rotation in three. An idle feed's metadata is pure history — a
+// purge + re-open re-syncs only the current head — so warm MiB held there buy nothing.
+// Derived from the one option rather than adding a second knob, so `metaBudgetBytes: 0`
+// disables the WHOLE metadata bound (both halves) and a raised budget raises both
+// thresholds together.
+const FEED_META_IDLE_DIVISOR = 4
 
 // How long a media request may PARK while the active feed rotates (see _rotateActiveFeed
 // and _armFeedSwap). The alternative is what the code did before: hand the serving core a
@@ -1035,7 +1104,7 @@ const REPLICA_SWEEP_DELAY_MS = 20000
 const SWEEP_YIELD_EVERY = 250
 
 export class AliranPlayer extends Emitter {
-  constructor ({ panelPubKey, panelPeer, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, feedLimit, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
+  constructor ({ panelPubKey, panelPeer, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, metaBudgetBytes, feedLimit, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
     if (!http || !fs) throw new Error('AliranPlayer needs injected { http, fs } runtime modules (use index.js in Node)')
     this._remote = normalizeRemote(remote) // see normalizeRemote — default: hold nothing
@@ -1113,6 +1182,11 @@ export class AliranPlayer extends Emitter {
     this._feedLimit = normalizeFeedLimit(feedLimit)
     // …and the BYTE bound the count above cannot express (see the VIEWER DISK BUDGET note).
     this._feedBudgetBytes = normalizeReclaimBudget(reclaimBudgetBytes) // per-feed: over this, the ACTIVE feed ROTATES (0 = off)
+    // The METADATA bound — punch-independent, both halves derived from the one option:
+    // the serving core rotates the ACTIVE feed past the full value (trigger: 'meta'), and
+    // _trimFeedBytes EVICTS an idle feed past a quarter of it. See FEED_META_BUDGET_BYTES.
+    this._metaBudgetBytes = normalizeMetaBudget(metaBudgetBytes)
+    this._metaIdleEvictBytes = Math.floor(this._metaBudgetBytes / FEED_META_IDLE_DIVISOR) // 0 disables with the option
     // Store-wide: over this, inactive feeds are purged oldest-first. Floored at the
     // DEFAULT budget when rotation is switched off, because `reclaimBudgetBytes: 0` means
     // "do not rotate", not "hold no warm cache" — deriving 0 × 4 from it would evict every
@@ -3650,6 +3724,24 @@ export class AliranPlayer extends Emitter {
         f.drive === this._feedDrive || (this._cast && this._cast.drive === f.drive) ||
         vod.has(key)
       if (pinned) { held += m.bytes; continue }
+      // THE METADATA BOUND'S IDLE HALF (the active half is the serving core's meta budget —
+      // see FEED_META_BUDGET_BYTES / FEED_META_IDLE_DIVISOR). An idle feed's Hyperbee keeps
+      // replicating the broadcaster's head for as long as the feed stays warm (~1.1-1.2 MB/h
+      // measured), the punch cannot free any of it, and the bytes are pure history — a
+      // purge + re-open re-syncs only the current head. So past the threshold the feed is
+      // EVICTED outright, which is this file's proven reset: _evictFeed purges the storage
+      // and records the purged feed against its connections (_recordPurgedFeed), so the
+      // next tune of this channel hangs up and dials fresh instead of dying at zero peers.
+      // Skipped for everything `pinned` covers (active / cast / VOD / drive identity), and
+      // _evictFeed itself refuses a CLAIMED slot — in that case the feed stays in this
+      // pass's ordinary accounting below and comes around next tick.
+      if (this._metaIdleEvictBytes > 0 && m.meta > this._metaIdleEvictBytes) {
+        this._evictFeed(key)
+        if (!this._feeds.has(key)) {
+          this._recordEvent('meta-evict', `idle feed ${key.slice(0, 8)} evicted: its metadata core reached ${Math.round(m.meta / 1048576)} MiB (threshold ${Math.round(this._metaIdleEvictBytes / 1048576)} MiB of hyperbee history the punch cannot free) — the next tune of this channel dials fresh`)
+          continue
+        }
+      }
       cached += m.bytes
       evictable.push({ key, bytes: m.bytes })
     }
@@ -4671,12 +4763,17 @@ export class AliranPlayer extends Emitter {
     // publishes this._cast LAST, after an async LAN socket bind, while _castFeedKey was
     // pinned before it. The three sibling guards (_trimFeeds, _sweepIdleFeeds,
     // _trimFeedBytes) all test the key on its own; this now matches them.
+    // WHICH bound asked for this rotation — 'budget' (the blob replica passed the
+    // window-scaled ceiling) or 'meta' (the metadata core alone passed metaBudgetBytes).
+    // Carried through every emit below so a meta-triggered rotation is attributable in the
+    // field; the path itself does not branch on it — the reset is identical.
+    const trigger = info && info.trigger === 'meta' ? 'meta' : 'budget'
     if (this._castPins(drive, cacheKey)) {
       // The only "log" this file has is the status stream, which is also the problem-report
       // breadcrumb ring (_recordEmit) — i.e. the surface an operator can actually read back
       // from a viewer's device. A refusal that left no trace would make "why did this
       // device fill up?" unanswerable.
-      this.emit('status', { state: 'feed:rotate', streamId: a.streamId, skipped: 'cast-pinned', message: 'not rotated: a cast session is pinned to this feed' })
+      this.emit('status', { state: 'feed:rotate', streamId: a.streamId, trigger, skipped: 'cast-pinned', message: 'not rotated: a cast session is pinned to this feed' })
       return false
     }
 
@@ -4712,6 +4809,7 @@ export class AliranPlayer extends Emitter {
     let reopened = null
     let purged = false // the old replica's storage is gone — nothing may be pointed at it
     let bytes = info && Number.isFinite(info.bytes) ? info.bytes : null
+    let meta = info && Number.isFinite(info.meta) ? info.meta : null // the metadata core's share, for the event
     let done = null // the success payload, emitted OUTSIDE the try (see below)
     let swapped = false
     try {
@@ -4735,7 +4833,7 @@ export class AliranPlayer extends Emitter {
       //    trigger already measured to decide, so this pass is only paid for when the
       //    caller did not carry a number (and null, "unmeasurable", is a fine answer: it
       //    costs the event a field, not the rotation). Bounded inside _measureFeed.
-      if (bytes === null) { const m = await this._measureFeed(drive); bytes = m ? m.bytes : null }
+      if (bytes === null) { const m = await this._measureFeed(drive); bytes = m ? m.bytes : null; if (meta === null) meta = m ? m.meta : null }
       if (this._epoch !== epoch || this._active !== a) return false
       // 3a. RE-CHECK THE PIN. The check at the top is ~1.5 s of awaits old by now, and
       //     _doStartCast can resolve THIS drive (it reuses the cache through
@@ -4744,7 +4842,7 @@ export class AliranPlayer extends Emitter {
       //     top exists to prevent, arrived a moment later. This is the last point at which
       //     backing out is free.
       if (this._castPins(drive, cacheKey)) {
-        this.emit('status', { state: 'feed:rotate', streamId: a.streamId, skipped: 'cast-pinned', message: 'not rotated: a cast session was pinned to this feed while it drained' })
+        this.emit('status', { state: 'feed:rotate', streamId: a.streamId, trigger, skipped: 'cast-pinned', message: 'not rotated: a cast session was pinned to this feed while it drained' })
         return false
       }
       // 3b. ARM THE PARK — here, not at the top. It used to be armed before the drain, back
@@ -5091,7 +5189,7 @@ export class AliranPlayer extends Emitter {
         this._peersLostAt = null
         if (this._tuneTimer) this._startTuneWatchdog()
       }
-      done = { bytes, durationMs: Date.now() - startedAt, redialing }
+      done = { bytes, meta, trigger, durationMs: Date.now() - startedAt, redialing }
       swapped = !moved && this._active === a
     } catch (err) {
       if (installed) this._dropPlaceholder(cacheKey, placeholder)
@@ -5159,7 +5257,13 @@ export class AliranPlayer extends Emitter {
       // that file's edit. It earns its place in the breadcrumb ring anyway — "the picture came
       // back two seconds after the swap" is otherwise unattributable, and a 0 here on a feed
       // that then goes quiet says the peer was already gone before the rotation touched it.
-      this.emit('status', { state: 'feed:rotate', streamId: a.streamId, bytes: done.bytes, durationMs: done.durationMs, message: `rotated ${a.streamId}: ${done.bytes == null ? 'unmeasured' : Math.round(done.bytes / 1048576) + ' MiB'} freed in ${done.durationMs} ms; ${done.redialing} peer connection(s) re-dialling` })
+      //
+      // `trigger` and `meta` ARE fields (declared in index.d.ts with this edit): a
+      // meta-triggered rotation must be tellable from a budget one in the field, and the
+      // metadata share is what tells "the db core reached its ceiling after a day on one
+      // channel" (expected, ~daily) from "the blob bound is failing" (a defect) at a glance.
+      const why = done.trigger === 'meta' ? ` (metadata core at ${done.meta == null ? 'an unmeasured size' : Math.round(done.meta / 1048576) + ' MiB'} — over its budget)` : ''
+      this.emit('status', { state: 'feed:rotate', streamId: a.streamId, trigger: done.trigger, bytes: done.bytes, meta: done.meta, durationMs: done.durationMs, message: `rotated ${a.streamId}${why}: ${done.bytes == null ? 'unmeasured' : Math.round(done.bytes / 1048576) + ' MiB'} freed in ${done.durationMs} ms; ${done.redialing} peer connection(s) re-dialling` })
     }
     return swapped
   }
@@ -6684,9 +6788,14 @@ export class AliranPlayer extends Emitter {
       // rotation budget from being reached at all.
       reclaim: true,
       // The rotation trigger. The serving core measures the drive it is serving and calls
-      // this when the replica crosses the budget; only the ACTIVE tune acts on it (see
+      // this when the replica crosses a budget; only the ACTIVE tune acts on it (see
       // _onFeedOverBudget), and a cast-pinned or VOD feed is refused inside the rotation.
+      // Two budgets share the one callback and info.trigger says which fired: the blob
+      // budget (punch-gated) and the metadata budget (NOT punch-gated — a hole punch
+      // cannot free the Hyperbee, so on punch-capable hardware this is the one rotation
+      // trigger left; see FEED_META_BUDGET_BYTES).
       reclaimBudgetBytes: this._feedBudgetBytes,
+      metaBudgetBytes: this._metaBudgetBytes,
       onOverBudget: (drive, info) => this._onFeedOverBudget(drive, info),
       // Corruption can also surface at read time (the blobs core opens lazily): heal
       // in the background; the host player's retry re-opens the feed on the fresh store.

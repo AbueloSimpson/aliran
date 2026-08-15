@@ -1126,6 +1126,37 @@ try {
   if (sockFlapped.destroyed) throw new Error('evict-reopen: a purge whose connection already died must NOT cost the lineup a second hang-up')
   const evictReopenProven = !!healedPlE
   log('evict-reopen: a replica purged on a connection that has since been replaced plays with no second hang-up')
+
+  // ----- The METADATA bound's IDLE half rides this same eviction machinery -----
+  // An idle warm feed's hyperbee follows the broadcaster's head for as long as the feed
+  // stays cached (~1.1-1.2 MB/h measured on the vc10 soak), a hole punch cannot free any
+  // of it, and the bytes are pure history — so past _metaIdleEvictBytes the maintenance
+  // pass (_trimFeedBytes) EVICTS the feed outright, through the very _evictFeed +
+  // purged-feed-ledger path this lane has just proven twice. evicta is ACTIVE (rE4);
+  // evictb is the idle one. The threshold is injected at 1 byte so any real bee is over
+  // it — which also makes the ACTIVE feed's survival a live assertion on the pinned set,
+  // not on its size.
+  const eKeyB = b4a.toString(feedE2.key, 'hex') + ':' + b4a.toString(encKeyE2, 'hex')
+  if (!playerE._feeds.has(eKeyB)) throw new Error('idle-meta: expected evictb to be warm in the cache')
+  const idleDriveB = (await playerE._feeds.get(eKeyB)).drive
+  const coreEB = corePath(dirs.cliE, idleDriveB.discoveryKey)
+  if (!coreOnDisk(coreEB)) throw new Error('idle-meta: could not find the idle replica on disk: ' + coreEB)
+  const activeDriveBefore = playerE._feedDrive
+  const savedIdleThreshold = playerE._metaIdleEvictBytes
+  if (!(savedIdleThreshold === 16 * 1024 * 1024)) throw new Error('idle-meta: the default idle threshold should be a quarter of the 64 MiB meta budget, got ' + savedIdleThreshold)
+  playerE._metaIdleEvictBytes = 1
+  await waitFor(async () => { await playerE._trimFeedBytes(); return !playerE._feeds.has(eKeyB) }, 20000, 'idle-meta: the maintenance pass evicts the meta-bloated idle feed')
+  playerE._metaIdleEvictBytes = savedIdleThreshold
+  if (!playerE._feeds.has(eKeyA)) throw new Error('idle-meta: the ACTIVE feed was evicted by the idle meta threshold — the pinned set must protect it')
+  if (playerE._feedDrive !== activeDriveBefore) throw new Error('idle-meta: the served drive moved across an idle eviction')
+  await waitFor(async () => !coreOnDisk(coreEB), 20000, 'idle-meta: the evicted replica is purged from disk')
+  if (!(playerE._purgedFeeds.get(b4a.toString(feedE2.key, 'hex')) || []).length) throw new Error('idle-meta: the eviction must land in the purged-feed ledger so the next tune dials fresh')
+  const metaCrumb = playerE._eventRing.find((e) => e.type === 'meta-evict')
+  if (!metaCrumb || !metaCrumb.detail.includes(eKeyB.slice(0, 8))) throw new Error('idle-meta: no meta-evict breadcrumb naming the feed: ' + JSON.stringify(metaCrumb || null))
+  // …and the re-zap takes the ledger path this lane proved: hang up, dial fresh, play.
+  const rE5 = await resolveWithin(playerE, 'evictb', 20000)
+  await waitFor(async () => { const r = await httpGet(rE5.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 30000, 'idle-meta: the meta-evicted channel plays again on a fresh dial')
+  log('idle-meta: the maintenance pass evicted the meta-bloated IDLE feed (breadcrumb + purged-feed ledger recorded), the active feed survived on the pinned set, and the re-zap dialled fresh and plays')
   await playerE.stop()
 
   // ===== S23 redirect channels: catalog {redirect:true, url} plays the URL, no P2P =====
@@ -1440,6 +1471,8 @@ try {
   const rotEv1 = await waitFor(() => rotOk()[0], 20000, "disk-rotation: 'feed:rotate' success event")
   if (rotEv1.streamId !== 'news') throw new Error('the rotation event named the wrong stream: ' + rotEv1.streamId)
   if (rotEv1.bytes !== 700 * MiB) throw new Error("the trigger's measured bytes did not reach the event: " + rotEv1.bytes)
+  if (rotEv1.trigger !== 'budget') throw new Error("a blob-budget rotation must name its trigger ('budget'), got: " + rotEv1.trigger)
+  if (rotEv1.meta !== 10 * MiB) throw new Error("the trigger's metadata share did not reach the event: " + rotEv1.meta)
   if (!Number.isFinite(rotEv1.durationMs)) throw new Error('the rotation event carries no durationMs — a rotation nobody can attribute')
   if (!playerD._feedDrive) throw new Error('the rotation left the engine with no served drive')
   if (playerD._feedDrive === driveD1) throw new Error('nothing was rotated: _feedDrive is still the over-budget replica')
@@ -1660,11 +1693,23 @@ try {
   // …and the disk bound is not permanently off afterwards. A mutex stuck by a failure is
   // rotation switched off for the life of the process, i.e. on a 32-bit build no disk bound at
   // all — which is exactly the state this whole feature exists to prevent.
+  //
+  // This post-failure rotation is fired with trigger: 'meta' — the METADATA bound's shape
+  // (the serving core sends it when the hyperbee metadata core alone crosses
+  // metaBudgetBytes; the punch latch does not gate it, so on punch-capable hardware this is
+  // the ONE rotation trigger there is). It must run the SAME proven path — purge, re-open,
+  // fresh dial, playback back — and the event must say which bound asked, or a daily meta
+  // rotation on an always-on box is indistinguishable in the field from a blob bound that
+  // is failing.
   const okBeforeD6 = rotOk().length
-  playerD._onFeedOverBudget(playerD._feedDrive, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
-  await waitFor(() => rotOk().length > okBeforeD6, 20000, 'disk-rotation: a rotation after a failed one still runs')
-  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback after the post-failure rotation')
-  log('disk-rotate: a re-open that missed its bound recovered (playback returned) and left the mutex free — a later rotation still ran')
+  playerD._onFeedOverBudget(playerD._feedDrive, { trigger: 'meta', bytes: 200 * MiB, blobs: 110 * MiB, meta: 90 * MiB, budgetBytes: 64 * MiB, metaBudgetBytes: 64 * MiB })
+  await waitFor(() => rotOk().length > okBeforeD6, 20000, 'disk-rotation: a META-triggered rotation after a failed one still runs')
+  const metaEvD6 = rotOk()[rotOk().length - 1]
+  if (metaEvD6.trigger !== 'meta') throw new Error("a metadata-budget rotation must name its trigger ('meta'), got: " + metaEvD6.trigger)
+  if (metaEvD6.meta !== 90 * MiB) throw new Error("the meta trigger's metadata share did not reach the event: " + metaEvD6.meta)
+  if (!/metadata core at 90 MiB/.test(String(metaEvD6.message))) throw new Error('the breadcrumb message does not attribute the rotation to the metadata core: ' + metaEvD6.message)
+  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback after the post-failure META rotation')
+  log('disk-rotate: a re-open that missed its bound recovered (playback returned) and left the mutex free — and a later META-triggered rotation ran the same path, with trigger+meta on its event')
 
   // ----- (7) stop() during a rotation leaves nothing behind -----
   // A rotation is the longest-lived piece of work in the engine and it holds a store, a swarm

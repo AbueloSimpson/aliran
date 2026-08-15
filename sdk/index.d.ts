@@ -210,6 +210,31 @@ export interface PlayerOptions {
    */
   reclaimBudgetBytes?: number
   /**
+   * Ceiling on the WATCHED feed's METADATA core (the hyperbee behind the drive), past
+   * which the engine rotates the replica exactly as reclaimBudgetBytes does (default
+   * 64 MiB; 0 disables the metadata bound). REFUSED, NOT CLAMPED, below 8 MiB, for
+   * reclaimBudgetBytes' reason: a smaller number schedules rotation churn instead of
+   * bounding disk.
+   *
+   * This bound exists because the metadata core grows on EVERY platform: hole punching
+   * frees blob blocks, but hyperbee interior nodes referenced by current keys live in
+   * old blocks, so the db core can never be cleared in place — the only reset is
+   * purge + re-open. A followed live channel appends ~1.5 put/del transactions per
+   * second; measured on an always-on TV with a WORKING hole punch (10 h soak,
+   * 2026-08-15): ~2.7 MB/h for the watched channel, ~1.1-1.2 MB/h per warm idle feed,
+   * +12-17 MB/h store-wide. At the default this is roughly one rotation per ~24 h of
+   * continuous same-channel watching; any natural teardown (app restart, zap away and
+   * back, catalog re-key) resets the metadata for free and pushes the rotation out.
+   *
+   * The capability probe does NOT gate this bound — it gates only the blob budget. A
+   * device that punches perfectly still accumulates metadata, which is precisely the
+   * device this exists for. Idle cached feeds are bounded by the same option at a
+   * quarter of the value: past that they are evicted (purged) outright, which costs
+   * the viewer nothing at the time and one fresh dial on the next tune. The
+   * feed:rotate status event reports which bound fired (trigger: 'budget' | 'meta').
+   */
+  metaBudgetBytes?: number
+  /**
    * How many feeds may stay open at once (default 12). This bounds HANDLES — open drives
    * and swarm topics — so that browsing a large catalogue cannot leave hundreds of both
    * open; it is not a disk bound, because prewarm's opens are connections only and it is
@@ -468,15 +493,25 @@ export interface PlayerEvents {
   streams: [streams: Stream[]]
   /**
    * Tuning / self-heal progress. 'feed:rotate' is the viewer-disk rotation: the engine
-   * purged and re-opened the ACTIVE replica because it passed reclaimBudgetBytes. It is
+   * purged and re-opened the ACTIVE replica because it passed a disk budget. It is
    * designed to be invisible (requests park across the swap), so treat it as telemetry,
    * NOT as a cue to show a spinner.
+   *
+   * `trigger` names WHICH budget asked for it: 'budget' is the blob bound
+   * (reclaimBudgetBytes — the whole replica passed the window-scaled ceiling; fires only
+   * where the filesystem cannot hole-punch), 'meta' is the metadata bound
+   * (metaBudgetBytes — the hyperbee metadata core alone passed its flat ceiling; fires
+   * on ANY platform, because a hole punch cannot free the metadata core). A 'meta'
+   * rotation on an always-on device roughly daily is the design working; frequent
+   * 'budget' rotations on hardware that should punch are worth investigating.
    *
    * THREE SHAPES, discriminated by `durationMs`/`skipped`/`failed` — NOT by `bytes`:
    *   success  `durationMs` set, `bytes` set but possibly null (unmeasurable replica),
    *            no `skipped`, no `failed`. On this shape none of the other two is set,
-   *            and `bytes` alone does not identify it.
-   *   refused  `skipped: 'cast-pinned'` only — nothing was rotated.
+   *            and `bytes` alone does not identify it. `trigger` and `meta` are set
+   *            (meta null where the replica was unmeasurable).
+   *   refused  `skipped: 'cast-pinned'` only — nothing was rotated (`trigger` says what
+   *            asked).
    *   failed   `failed: true` only — the re-open died; the engine retries at once.
    *
    * `durationMs` times the WHOLE rotation, and the drain (<=6 s) and the measurement
@@ -487,11 +522,12 @@ export interface PlayerEvents {
    *
    * `bytes` is NOT bytes freed. It is the replica's measured size BEFORE the purge,
    * taken up to one reclaim tick plus the drain earlier — an approximation of what the
-   * replica held, after which it re-downloads a live window.
+   * replica held, after which it re-downloads a live window. `meta` is the metadata
+   * core's share of that same measurement.
    */
   status: [status:
     | { state: 'feed:open' | 'feed:ready' | 'feed:retune' | 'feed:reconnect' | 'feed:rescan' }
-    | { state: 'feed:rotate', streamId: string, message: string, bytes?: number | null, durationMs?: number, skipped?: 'cast-pinned', failed?: true }
+    | { state: 'feed:rotate', streamId: string, message: string, trigger?: 'budget' | 'meta', bytes?: number | null, meta?: number | null, durationMs?: number, skipped?: 'cast-pinned', failed?: true }
   ]
   /** Peer count of the served feed, every 3 s while serving. */
   peers: [count: number]

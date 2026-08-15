@@ -60,6 +60,17 @@
 //      probe latched the budget OFF while real below-window clears freed nothing. The
 //      second stage punches > 4 GiB across a block parked above 2^32 and must refuse the
 //      verdict: MEASURED cannot-punch, budget stays armed.
+//   O  THE METADATA BUDGET — the hyperbee metadata core grows on EVERY platform (a hole
+//      punch cannot free a bee, and nothing may clear the db core in place), so it is the
+//      one growth the punch latch must NOT cover: a store the probe MEASURES as punchable,
+//      blob budget latched OFF, must still fire onOverBudget with trigger: 'meta' when the
+//      metadata core alone crosses metaBudgetBytes — and the crossing happens AFTER the
+//      latch is set, because that is the field order and the order a latch-gated meta
+//      check silently survives the other way round. Flat (never window-scaled), compared
+//      against info.meta only, indifferent to the `ran` rule, sharing the 5-minute floor;
+//      it also fires with the blob budget armed-but-under and with reclaimBudgetBytes: 0 —
+//      and in that last shape the capability probe must never run at all (the 512 KiB
+//      scratch write belongs to the blob half). VOD serves reach neither trigger.
 //
 // Exits 0 on PASS.
 
@@ -516,6 +527,9 @@ log('E: a storage layer that cannot hole-punch — clear() succeeds and frees NO
   assert(info.bytes > BUDGET, `info.bytes (${info.bytes}) is over it — that is why it fired`)
   assert(info.bytes === info.blobs + info.meta, 'info splits the total into blobs + meta (what tells a rotation from a leak)')
   assert(info.blobs > 0 && info.meta > 0, 'both cores are counted — metadata is not free on a feed that writes every ~2 s')
+  // The trigger discriminator the metadata budget added (scenario O owns the 'meta' side).
+  assert(info.trigger === 'budget', `a blob-ceiling verdict names itself (trigger "${info.trigger}")`)
+  assert(info.metaBudgetBytes === 64 * 1024 * 1024, 'info carries the metadata budget too — the shipped 64 MiB default here, far above this fixture\'s bee')
   // The two fields the window scaling added. Here the window is deliberately tiny, so the
   // configured floor wins and the effective ceiling IS the configured one — which is the
   // whole reason the fixture above is shaped the way it is. Scenario I takes the other branch.
@@ -1168,13 +1182,246 @@ log('N: the wide-punch stage — an addon that casts punch lengths to 32 bits is
   assert(wide.litter.length === 0, 'and the ~5 GiB-LOGICAL scratch file was truncated and unlinked like any other')
 }
 
+log('O: the METADATA budget — punch-independent, flat, and it survives the punch latch')
+{
+  // THE FINDING THIS PINS (vc10 soak, TCL Domestica, 2026-08-15): with the punch WORKING
+  // and the blob bound holding the active feed's 2.8 GB logical at a flat ~128 MB
+  // allocated, the store still grew 40 -> 191 MB overnight — all of it hyperbee METADATA
+  // (data+tree growing together; ~2.7 MB/h on the watched channel's db core, ~1.1-1.2 MB/h
+  // per warm feed's). A punch cannot free a bee: interior nodes referenced by CURRENT keys
+  // live in old blocks, so clearing the db core in place would break drive.entry() — the
+  // one reset is the host's purge + re-open. metaBudgetBytes is therefore a SECOND verdict
+  // on the SAME throttled measurement: compared against info.meta ALONE, flat (a fresh
+  // replica's metadata starts near zero and only appends — there is no healthy
+  // operator-scaled floor like the blob window's), gated on NEITHER the punch latch NOR
+  // the `ran` rule, and named in the info (trigger: 'meta') so a host can tell the two
+  // rotations apart in the field.
+
+  // Deterministic metadata bloat: every put appends the bee (key/value leaf + interior
+  // nodes + oplog churn). The bodies are EMPTY so the BLOB core stays boring — this
+  // fixture needs meta large and blobs small, the exact inverse of every fixture above.
+  const EMPTY = Buffer.alloc(0)
+  const bloatMeta = async (d, n) => { for (let i = 0; i < n; i++) await d.put(`/bloat/${i}`, EMPTY) }
+  // Tens of KB, the same order as E's blob budget, crossed with structural margin (~1500
+  // appends settle to several times this). The serve loop below re-serves until the
+  // verdict lands rather than trusting one post-write measurement — the E note's NTFS
+  // allocation lag applies to the bee's files exactly as it does to the blob file.
+  const METABUDGET = 32 * 1024
+  const serveUntil = async (port, p, fn, label) => {
+    await waitFor(async () => {
+      const r = await httpGet(port, p)
+      if (r.status !== 200) throw new Error(`${label}: serve failed (${r.status})`)
+      await sleep(100) // the verdict chain is fire-and-forget off the serve
+      return fn()
+    }, 15000, label)
+  }
+
+  // (1) THE ASSERTION THE SCENARIO IS NAMED FOR: a store the probe MEASURES as punchable —
+  // the blob budget latched OFF for the life of the handler (J's latch, re-proven here off
+  // reclaimStatus) — must still fire the META verdict. Control first, with a generous meta
+  // budget: the latch holds, and a bee under its own ceiling adds no verdict of its own.
+  //
+  // ⚠⚠ THE ORDER IS THE TEST. The bee crosses its ceiling only AFTER the handler has
+  // already served, probed and LATCHED — because that is the field sequence (the latch is
+  // set on the first playlist serve of the session; the metadata crosses a day later), and
+  // because the first version of this scenario bloated the bee up front, which let a meta
+  // check gated on the latch pass green here: metaOn was captured before the first probe
+  // ever ran, so the one tick that mattered was immune, and the always-on device the bound
+  // exists for would have been the first place the regression showed. A mutation run found
+  // it (gate metaOn on _budgetOff: the lane stayed green); with the bloat moved BELOW the
+  // latch, both that mutation and its verdict-time twin now fail this sub-case.
+  const oDir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-reclaim-meta-'))
+  const oStore = probeStore(new Corestore(oDir), truncPunch())
+  await oStore.ready()
+  const oDrive = new Hyperdrive(oStore.namespace('feed'))
+  await oDrive.ready()
+  for (let i = 1; i <= 11; i++) await oDrive.put(`/seg${i}.ts`, seg(i))
+  await oDrive.put('/seg12.ts', Buffer.alloc(8 * 1024, 12)) // the one-segment window — E says why
+  const oWin = playlist(['seg12.ts'])
+  await oDrive.put('/live.m3u8', Buffer.from(oWin))
+
+  const oCallsControl = []
+  const oControl = driveHandler(oDrive, {
+    reclaim: true, reclaimIntervalMs: 0, reclaimBudgetBytes: 64 * 1024, metaBudgetBytes: 64 * 1024 * 1024, onOverBudget: (d, info) => oCallsControl.push(info)
+  })
+  const oControlServer = http.createServer(oControl)
+  await new Promise((resolve) => oControlServer.listen(0, '127.0.0.1', resolve))
+  const rO1 = await httpGet(oControlServer.address().port, '/live.m3u8')
+  assert(rO1.status === 200, 'live playlist serves intact on the punchable, meta-bloated replica')
+  await waitFor(() => oControl.reclaimStatus().punch !== null, 10000, 'the capability probe to answer')
+  const oSt1 = oControl.reclaimStatus()
+  assert(oSt1.punch.ok === true && oSt1.punch.canPunch === true && oSt1.budgetActive === false,
+    'the probe measured PUNCHABLE and latched the blob budget off (J), with the meta budget present')
+  assert(oSt1.metaBudgetBytes === 64 * 1024 * 1024 && oSt1.metaBudgetActive === true,
+    'while reclaimStatus reports the metadata budget still armed — the latch does not cover it')
+  const oM = await measureDriveBytes(oDrive)
+  assert(oM.bytes > 64 * 1024, `non-vacuity: the replica IS over the blob budget (${oM.bytes} vs 65536) — only the latch keeps that verdict quiet`)
+  await sleep(400)
+  assert(oCallsControl.length === 0, 'and nothing fired: blob latched off, bee under its own generous ceiling')
+  oControlServer.close()
+
+  // …then the real sequence: a FRESH handler (the 5-minute rotation floor is per handler
+  // and the control above must not eat it) with a meta budget the bee is still UNDER;
+  // serve, let the probe LATCH the blob budget off; only then bloat the bee past its
+  // ceiling and serve again. The verdict has to fire on a tick where _budgetOff is already
+  // true — the state every tick of an always-on session is in.
+  //
+  // 512 KiB rather than (2)-(4)'s 32 KiB, because this sub-case needs UNDER first: a fresh
+  // bee's four backing files allocate ~64 KiB units apiece on NTFS sparse accounting
+  // (measureDriveBytes' note), so tens-of-KB thresholds are already crossed by an empty
+  // core there. Half a MiB clears that floor about 2x on the under side, and ~4000 appends
+  // settle several times over it on the over side — margins structural on both, per E.
+  const META_LATCHED = 512 * 1024
+  const oCalls = []
+  const oHandler = driveHandler(oDrive, {
+    reclaim: true, reclaimIntervalMs: 0, reclaimBudgetBytes: 64 * 1024, metaBudgetBytes: META_LATCHED, onOverBudget: (d, info) => oCalls.push({ drive: d, info })
+  })
+  const oServer = http.createServer(oHandler)
+  await new Promise((resolve) => oServer.listen(0, '127.0.0.1', resolve))
+  const rOArm = await httpGet(oServer.address().port, '/live.m3u8')
+  assert(rOArm.status === 200, 'the meta handler serves before the bee has crossed anything')
+  await waitFor(() => oHandler.reclaimStatus().punch !== null, 10000, 'the meta handler\'s probe to answer')
+  assert(oHandler.reclaimStatus().budgetActive === false, 'the punch latch is SET, with the bee still under its ceiling')
+  const oM0 = await measureDriveBytes(oDrive)
+  assert(oM0.meta < META_LATCHED, `fixture: the bee really is under the meta ceiling before the bloat (${oM0.meta} vs ${META_LATCHED})`)
+  await sleep(400)
+  assert(oCalls.length === 0, 'and no verdict fired — armed is not over')
+  await bloatMeta(oDrive, 4000) // NOW the bee crosses, with the latch already set
+  await serveUntil(oServer.address().port, '/live.m3u8', () => oCalls.length > 0, 'the META verdict through the punch latch')
+  const o1 = oCalls[0]
+  assert(o1.drive === oDrive, 'the callback names the drive whose bee is over budget')
+  assert(o1.info.trigger === 'meta', `and the verdict names the METADATA bound (trigger "${o1.info.trigger}")`)
+  assert(o1.info.meta > META_LATCHED, `info.meta (${o1.info.meta}) is over metaBudgetBytes (${META_LATCHED}) — that alone is why it fired`)
+  assert(o1.info.metaBudgetBytes === META_LATCHED, 'info.metaBudgetBytes echoes the configured number')
+  assert(o1.info.bytes === o1.info.blobs + o1.info.meta, 'the blobs/meta split still adds up on a meta verdict')
+  const oSt2 = oHandler.reclaimStatus()
+  assert(oSt2.budgetActive === false && oSt2.metaBudgetActive === true,
+    'blob budget latched OFF, meta budget armed — the two verdicts really are gated independently')
+  // The 5-minute rotation floor is SHARED: a second serve well inside it adds no verdict.
+  const rO2 = await httpGet(oServer.address().port, '/live.m3u8')
+  assert(rO2.status === 200, 'a second serve inside the rotation floor')
+  await sleep(400)
+  assert(oCalls.length === 1, 'the meta trigger shares the 5-minute rotation floor — one verdict, not a storm')
+  oServer.close()
+  await oDrive.close()
+  await oStore.close()
+  try { fs.rmSync(oDir, { recursive: true, force: true }) } catch {}
+
+  // (2) NOT THE LATCH'S SHADOW: on the crippled storage (probe measures CANNOT punch, blob
+  // budget ARMED) with the replica far UNDER the shipped blob default, the meta verdict
+  // still fires — a blob budget that is armed-but-under must not silence the other bound.
+  const o2Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-reclaim-meta2-'))
+  const o2Store = noTrimStore(new Corestore(o2Dir))
+  await o2Store.ready()
+  const o2Drive = new Hyperdrive(o2Store.namespace('feed'))
+  await o2Drive.ready()
+  for (let i = 1; i <= 3; i++) await o2Drive.put(`/seg${i}.ts`, seg(i))
+  await bloatMeta(o2Drive, 1500)
+  await o2Drive.put('/live.m3u8', Buffer.from(playlist(['seg2.ts', 'seg3.ts'])))
+  const o2Calls = []
+  const o2Handler = driveHandler(o2Drive, {
+    reclaim: true, reclaimIntervalMs: 0, metaBudgetBytes: METABUDGET, onOverBudget: (d, info) => o2Calls.push(info)
+  })
+  const o2Server = http.createServer(o2Handler)
+  await new Promise((resolve) => o2Server.listen(0, '127.0.0.1', resolve))
+  await serveUntil(o2Server.address().port, '/live.m3u8', () => o2Calls.length > 0, 'the META verdict beside an armed-but-under blob budget')
+  assert(o2Calls[0].trigger === 'meta', 'trigger: meta — the blob ceiling was never crossed')
+  const o2St = o2Handler.reclaimStatus()
+  assert(o2St.punch.ok === true && o2St.punch.canPunch === false && o2St.budgetActive === true,
+    'with the blob budget ARMED (measured cannot-punch) and simply under — the two coexist')
+  const o2M = await measureDriveBytes(o2Drive)
+  assert(o2M.bytes < 512 * 1024 * 1024, `non-vacuity: the replica (${o2M.bytes} bytes) is far under the shipped blob default`)
+  o2Server.close()
+  await o2Drive.close()
+  await o2Store.close()
+  try { fs.rmSync(o2Dir, { recursive: true, force: true }) } catch {}
+
+  // (3) reclaimBudgetBytes: 0 — the blob half off BY CONFIG. The meta verdict must still
+  // fire, VOD serves must reach neither trigger, and the capability probe must never run:
+  // the probe answers a BLOB question, and each attempt writes 512 KiB of scratch on a
+  // device that is by definition worried about disk.
+  const o3Drive = new Hyperdrive(store.namespace('metaonly'))
+  await o3Drive.ready()
+  await o3Drive.put('/seg1.ts', seg(1))
+  await bloatMeta(o3Drive, 1500)
+  await o3Drive.put('/vod.m3u8', Buffer.from(playlist(['seg1.ts'], { end: true })))
+  await o3Drive.put('/live.m3u8', Buffer.from(playlist(['seg1.ts'])))
+  const o3Calls = []
+  const o3Handler = driveHandler(o3Drive, {
+    reclaim: true, reclaimIntervalMs: 0, reclaimBudgetBytes: 0, metaBudgetBytes: METABUDGET, onOverBudget: (d, info) => o3Calls.push(info)
+  })
+  const o3Server = http.createServer(o3Handler)
+  await new Promise((resolve) => o3Server.listen(0, '127.0.0.1', resolve))
+  const o3Port = o3Server.address().port
+  for (let i = 0; i < 3; i++) {
+    const rVod = await httpGet(o3Port, '/vod.m3u8')
+    assert(rVod.status === 200, 'the VOD playlist serves')
+    await sleep(150)
+  }
+  assert(o3Calls.length === 0, 'an #EXT-X-ENDLIST serve reaches NEITHER trigger — the live-only gate covers the meta budget too')
+  await serveUntil(o3Port, '/live.m3u8', () => o3Calls.length > 0, 'the META verdict with the blob budget off by config')
+  assert(o3Calls[0].trigger === 'meta' && o3Calls[0].budgetBytes === 0, 'trigger: meta, with info.budgetBytes reporting the configured 0')
+  const o3St = o3Handler.reclaimStatus()
+  assert(o3St.punchTries === 0 && o3St.punch === null,
+    'and the capability probe NEVER ran — the 512 KiB scratch write belongs to the blob half alone')
+  assert(o3St.budgetActive === false && o3St.metaBudgetActive === true, 'reclaimStatus: blob off (configured), meta armed')
+  o3Server.close()
+  await o3Drive.close()
+
+  // (4) …and the `ran` rule does not gate it. A store whose OWN dels REJECT (the exFAT
+  // shape — the reclaim pass itself FAILS) with the probe held INCONCLUSIVE (its scratch
+  // write fails), so the blob half is withheld on BOTH of its rules — and the meta verdict
+  // must fire anyway, because a clear pass, completed or failed, never touches the bee.
+  const o4Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srv-reclaim-meta4-'))
+  const o4Store = new Corestore(o4Dir)
+  {
+    const raw = o4Store.storage
+    o4Store.storage = (name) => {
+      const file = raw(name)
+      if (name.startsWith('punch-probe-')) {
+        file._write = (req) => req.callback(errno('ENOSPC')) // probe: INCONCLUSIVE, never a verdict
+      } else {
+        const del = file._del
+        file._del = function (req) { if (req.size === Infinity) return del.call(this, req); req.callback(errno('EOPNOTSUPP')) } // core clears: REJECT — the pass fails
+      }
+      return file
+    }
+  }
+  await o4Store.ready()
+  const o4Drive = new Hyperdrive(o4Store.namespace('feed'))
+  await o4Drive.ready()
+  for (let i = 1; i <= 3; i++) await o4Drive.put(`/seg${i}.ts`, seg(i))
+  await bloatMeta(o4Drive, 1500)
+  // The floor is seg3's offset (> 0): the pass really has blocks to clear, and the clear
+  // REJECTS — `ran` is false on every tick, which is exactly the state under test.
+  await o4Drive.put('/live.m3u8', Buffer.from(playlist(['seg3.ts'])))
+  const o4Calls = []
+  const o4Handler = driveHandler(o4Drive, {
+    reclaim: true, reclaimIntervalMs: 0, metaBudgetBytes: METABUDGET, onOverBudget: (d, info) => o4Calls.push(info)
+  })
+  const o4Server = http.createServer(o4Handler)
+  await new Promise((resolve) => o4Server.listen(0, '127.0.0.1', resolve))
+  await serveUntil(o4Server.address().port, '/live.m3u8', () => o4Calls.length > 0, 'the META verdict off a FAILED pass with an inconclusive probe')
+  assert(o4Calls[0].trigger === 'meta', 'trigger: meta — the blob half was withheld on both of its rules and the meta half takes neither')
+  const o4St = o4Handler.reclaimStatus()
+  assert(o4St.punch !== null && o4St.punch.ok === false, `the probe stayed INCONCLUSIVE (${o4St.punch && o4St.punch.reason})`)
+  assert(o4St.budgetActive === true, 'so the blob budget is armed-and-withheld, not latched — and it still could not silence the meta half')
+  o4Server.close()
+  await o4Drive.close()
+  await o4Store.close()
+  try { fs.rmSync(o4Dir, { recursive: true, force: true }) } catch {}
+}
+
 log('\nRESULT: PASS ✅  live reclaim after rotation, VOD untouched, opt-in only, live thumbnail survives,')
 log('              a no-op trim is caught by the byte budget, a healthy replica never trips it,')
 log('              the idle sweep honours all three branches, and the drain surface settles both ways;')
 log('              the budget scales to the OBSERVED live window, a punchable store switches it off')
 log('              outright, and the capability probe tells a verdict from an inconclusive answer;')
-log('              the trigger chain rides RANGED playlist serves off the whole-playlist floor, and')
-log('              a punch that truncates its lengths mod 2^32 is refused by the wide probe stage')
+log('              the trigger chain rides RANGED playlist serves off the whole-playlist floor,')
+log('              a punch that truncates its lengths mod 2^32 is refused by the wide probe stage,')
+log('              and the METADATA budget fires through the punch latch (trigger: meta) — beside an')
+log('              armed blob budget, with the blob half off by config (no probe run), and off a')
+log('              failed pass — while VOD serves reach neither trigger')
 await drive.close()
 await store.close()
 try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}

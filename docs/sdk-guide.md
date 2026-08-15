@@ -418,6 +418,47 @@ or an allocation that has not settled) leaves the budget armed and is
 retried — only a measured verdict is permanent.
 Measured disk behavior: [viewer bandwidth](kb/viewer-bandwidth.md#disk).
 
+### `metaBudgetBytes: number` — default 64 MiB
+The ceiling on the **watched** feed's **metadata store** — the database
+half of a replica, the index that maps paths to media blocks. It is the
+one part of a replica the punch guarantee above does not cover, and it
+grows on **every** platform: a followed live channel writes to that
+database about 1.5 times per second (segment put, expired-segment
+delete, playlist rewrite), the viewer's replica follows it for as long
+as the feed stays cached, and a hole punch cannot free any of it — the
+database's current keys reference interior nodes that live in old
+blocks, so the engine never clears the metadata store in place. The only
+reset is the same purge-and-reopen the rotation already does.
+
+Measured on an always-on TV with a **working** hole punch (10 h soak,
+2026-08-15): ~2.7 MB/h on the watched channel's metadata, ~1.1-1.2 MB/h
+per warm idle feed, +12-17 MB/h store-wide — about 0.3 GB/day, filling a
+box with 4 GB free in roughly two weeks, while the blob bound held the
+active feed flat at ~128 MB. That is why this bound exists and why the
+capability probe does **not** gate it: the device that punches perfectly
+is exactly the device where metadata is the growth that remains.
+
+Two thresholds come from the one option:
+
+- **The watched feed** rotates through the same path as
+  `reclaimBudgetBytes` when its metadata passes the full value — at the
+  measured rate, roughly once per day of continuous same-channel
+  watching. Any natural teardown (app restart, a zap away and back, a
+  catalog re-key) resets the metadata for free and pushes that rotation
+  out; the threshold exists for the always-on session that never tears
+  down. The `feed:rotate` event names which bound asked
+  (`trigger: 'budget' | 'meta'`).
+- **Idle cached feeds** are evicted outright at a **quarter** of the
+  value (16 MiB at the default), during the same maintenance pass as the
+  store cap. Nobody is watching an idle feed, so the eviction costs the
+  viewer nothing at the time and one fresh dial on the next tune of that
+  channel; the engine records a `meta-evict` breadcrumb naming the feed.
+
+Values are checked the way `reclaimBudgetBytes` is checked: a non-number
+throws, anything above `0` but below **8 MiB** throws (a smaller number
+schedules rotation churn without saving meaningful disk), and `0` is the
+documented off switch — it disables both halves.
+
 ### `feedLimit: number` — default 12
 How many feeds may stay **open** at once. This bounds *handles* — open
 drives and swarm topics — so browsing a 300-channel catalogue cannot
@@ -688,7 +729,7 @@ custom hosts.
 | `ready` | — | `connect()` finished; safe to `login()`. |
 | `streams` | `Stream[]` | Render the lineup. Fires at login **and live** on any panel catalog edit (title/art/isLive/order/categories) — no polling, no re-login. A newly *granted* stream still needs the next login. |
 | `status` | `{ state: 'feed:open' \| 'feed:ready' \| 'feed:retune' \| 'feed:reconnect' \| 'feed:rescan' }` | Drive a tuning indicator: `open` means a cold tune started, `ready` means playable, and `retune`/`reconnect`/`rescan` mean self-heal in progress. Say "reconnecting…" — don't freeze a spinner at a fake percentage. |
-| `status` | `{ state: 'feed:rotate', streamId, message, bytes?, durationMs?, skipped?, failed? }` | The viewer-disk rotation (§3, `reclaimBudgetBytes`): the engine purged and re-opened the active replica to free disk. Three shapes, told apart by **`durationMs` / `skipped` / `failed`** — not by `bytes`. **Success**: `durationMs` set, and `bytes` set but possibly `null`. **Refused**: `skipped: 'cast-pinned'`, no rotation happened. **Failed**: `failed: true`, the re-open died; the engine retries immediately and falls back to the tune ladder only if that also fails, so it is recoverable but worth logging. On success **do not show a spinner** — requests parked across the swap and it is emitted *after* the swap anyway, so it is telemetry, not a cue. `durationMs` times the **whole** rotation, and the drain (≤6 s) and the measurement (≤5 s) both run *before* the park is armed, so a value above 2500 is **necessary but not sufficient** evidence that the park expired: a 3 s drain plus a 200 ms swap reports ~3200 ms with nothing ever parked. Treat it as a reason to investigate, not as a count of viewer-visible gaps — and note that a rotation can cost the viewer a remount while still reporting success (§3). `bytes` is **not** bytes freed: it is the replica's measured size *before* the purge, taken up to one reclaim tick plus the drain earlier, and `null` where the platform could not measure. Read it as an approximation of what the replica held; the feed re-downloads a live window straight afterwards. |
+| `status` | `{ state: 'feed:rotate', streamId, message, trigger?, bytes?, meta?, durationMs?, skipped?, failed? }` | The viewer-disk rotation (§3, `reclaimBudgetBytes` / `metaBudgetBytes`): the engine purged and re-opened the active replica to free disk. Three shapes, told apart by **`durationMs` / `skipped` / `failed`** — not by `bytes`. **Success**: `durationMs` set, and `bytes` set but possibly `null`. **Refused**: `skipped: 'cast-pinned'`, no rotation happened. **Failed**: `failed: true`, the re-open died; the engine retries immediately and falls back to the tune ladder only if that also fails, so it is recoverable but worth logging. `trigger` names which bound asked: `'budget'` is the blob bound (fires only where the filesystem cannot punch), `'meta'` is the metadata bound (fires on any platform — a `'meta'` rotation roughly daily on an always-on device is the design working, while frequent `'budget'` rotations on hardware that should punch are worth investigating). On success **do not show a spinner** — requests parked across the swap and it is emitted *after* the swap anyway, so it is telemetry, not a cue. `durationMs` times the **whole** rotation, and the drain (≤6 s) and the measurement (≤5 s) both run *before* the park is armed, so a value above 2500 is **necessary but not sufficient** evidence that the park expired: a 3 s drain plus a 200 ms swap reports ~3200 ms with nothing ever parked. Treat it as a reason to investigate, not as a count of viewer-visible gaps — and note that a rotation can cost the viewer a remount while still reporting success (§3). `bytes` is **not** bytes freed: it is the replica's measured size *before* the purge, taken up to one reclaim tick plus the drain earlier, and `null` where the platform could not measure. Read it as an approximation of what the replica held; the feed re-downloads a live window straight afterwards. `meta` is the metadata store's share of that same measurement. |
 | `peers` | `number` | Peer count of the served feed, every 3 s while serving. |
 | `feed-changed` | `{ streamId, feedKey, url }` | The watched stream's feedKey rotated (broadcaster restart/rotation). The engine already re-resolved and swapped the served feed behind the **same** `url`. Reload or remount the player to flush the stale playlist. No re-login, no `resolve()` call needed. |
 | `zap-prefetch` | `{ enabled? }` or `{ state: 'suspended' \| 'resumed', reason: 'metered' \| 'stall' \| 'thin' }` | Reflect the Smooth-zapping toggle / adaptive gate in UI if you surface it. |
