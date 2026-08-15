@@ -100,6 +100,8 @@
   "settings.result": "Sonuç",
   "settings.activeSource": "Etkin kaynak",
   "settings.peers": "Eşler",
+  "settings.debugStats": "Hata ayıklama katmanı",
+  "settings.debugStatsHint": "Oynatma ve ağ istatistiklerini videonun üzerinde gösterir.",
   "settings.signOut": "Çıkış yap",
   "settings.signOutHint": "Çıkış yapınca bu cihaz kayıtlı girişi unutur.",
   "settings.changeService": "Hizmeti değiştir…",

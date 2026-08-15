@@ -102,6 +102,8 @@ import { GuidePanel } from '../components/GuidePanel'
 import { GuideSkeleton } from '../components/GuideSkeleton'
 import { SearchPanel } from '../components/SearchPanel'
 import { ChannelChangeIndicator, type ChannelChangePhase } from '../components/ChannelChangeIndicator'
+import { StatsHud, emptyHudVideoStats } from '../components/StatsHud'
+import { onDebugKey } from '../debugKeys'
 import { NowPlayingBar } from '../components/NowPlayingBar'
 import { TrackMenu } from '../components/TrackMenu'
 import { ReportSheet } from '../components/ReportSheet'
@@ -262,6 +264,34 @@ export function LiveScreen ({ route, navigation }: Props) {
   // pill on the S22). id keys the pill so every tune replaces it atomically at 0%;
   // active flips false on 'playing' (snap to 100% + hold); null = no pill (error UI).
   const [tuneUI, setTuneUI] = useState<{ id: number; phase: ChannelChangePhase; active: boolean } | null>(null)
+  // The "Debug overlay" (StatsHud). Seeded from the mirrored pref, kept in sync by
+  // the 'prefs' replies (so the Settings toggle and the TV debug key can never
+  // disagree — both go through backend.setDebugStats).
+  const [hudOn, setHudOn] = useState(backend.debugStats === true)
+  const hudOnRef = useRef(hudOn); hudOnRef.current = hudOn
+  // Player-side HUD numbers, captured from <Video> events into a REF, not state:
+  // onProgress fires every second of playback and must not re-render this screen —
+  // StatsHud's own 1 s tick reads the current values when it repaints.
+  const hudVideo = useRef(emptyHudVideoStats())
+  type HudTrack = { selected?: boolean; codecs?: string; width?: number; height?: number; bitrate?: number }
+  function hudTracks (tracks?: HudTrack[]) {
+    const sel = tracks?.find((tr) => tr.selected) ?? tracks?.[0]
+    if (!sel) return
+    if (sel.codecs) hudVideo.current.codec = sel.codecs
+    if (sel.width) hudVideo.current.width = sel.width
+    if (sel.height) hudVideo.current.height = sel.height
+    if (sel.bitrate && sel.bitrate > 0) hudVideo.current.bitrateBps = sel.bitrate
+  }
+  function hudLoad (e: { naturalSize?: { width?: number; height?: number }; videoTracks?: HudTrack[] }) {
+    hudTracks(e.videoTracks)
+    if (e.naturalSize?.width) hudVideo.current.width = e.naturalSize.width
+    if (e.naturalSize?.height) hudVideo.current.height = e.naturalSize.height
+  }
+  function hudBuffer (e: { currentTime: number; playableDuration?: number }) {
+    hudVideo.current.bufferSec = typeof e.playableDuration === 'number' && e.playableDuration > e.currentTime
+      ? e.playableDuration - e.currentTime
+      : 0
+  }
   const [now, setNow] = useState(() => new Date())
   // Subtitle/CC + audio tracks the player found in the CURRENT stream, plus the current
   // picks (default subtitles Off, audio = the stream's default). The CC button + TrackMenu
@@ -458,7 +488,7 @@ export function LiveScreen ({ route, navigation }: Props) {
           if (id === playingIdRef.current) backend.play(id)
         }
       }
-      if (m.type === 'prefs') setFavorites(m.favorites)
+      if (m.type === 'prefs') { setFavorites(m.favorites); setHudOn(m.debugStats === true) }
       // Broadcaster rotated the channel we're watching (source change / restart): the SDK
       // re-resolved the feed behind the same URL and AliranVideo remounts. Clear any prior
       // playback error (that had unmounted the video) so it re-mounts onto the fresh feed.
@@ -566,6 +596,7 @@ export function LiveScreen ({ route, navigation }: Props) {
     setSelectedText({ type: SelectedTrackType.DISABLED }); setSelectedAudio(undefined)
     setShowTracks(false)
     setVodPaused(false); setVodPos(0)
+    hudVideo.current = emptyHudVideoStats() // the HUD must not show the previous channel's codec/bitrate
     const s = backend.streams.find(x => x.id === playingId)
     setVodDur(s && isVod(s) ? s.durationSec ?? 0 : 0)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -965,6 +996,15 @@ export function LiveScreen ({ route, navigation }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [streams, playingId])
 
+  // …and the remote's DEBUG key (INFO / YELLOW — see debugKeys.ts): flip the Debug
+  // overlay in place. Optimistic local flip for the instant paint, then through the
+  // pref round-trip so Settings stays in sync and the choice survives a restart.
+  useEffect(() => onDebugKey(() => {
+    const next = !hudOnRef.current
+    setHudOn(next)
+    backend.setDebugStats(next)
+  }), [])
+
   // BACK: channel detail → list; the left menu → fullscreen (collapse, hiding it);
   // then the ladder splits by orientation (phone, S22 round 3). LANDSCAPE keeps the
   // original order: guide → fullscreen, fullscreen → default (pop to Menu).
@@ -1118,10 +1158,22 @@ export function LiveScreen ({ route, navigation }: Props) {
             // In-app volume rides every playback (QA round 3).
             volume: muted ? 0 : volume,
             muted,
+            // Debug HUD sources. SAFE pass-throughs only: the SDK chains onProgress
+            // itself and handles none of these others — onBuffer/onError must NEVER
+            // ride videoProps, they would silently replace the SDK's stall/error
+            // ladders (restVideoProps spreads last in AliranVideo).
+            ...(hudOn ? {
+              reportBandwidth: true, // Android: onBandwidthUpdate is opt-in
+              onBandwidthUpdate: (e: { bitrate?: number }) => { if (e.bitrate && e.bitrate > 0) hudVideo.current.bitrateBps = e.bitrate },
+              onVideoTracks: (e: { videoTracks?: Array<{ selected?: boolean; codecs?: string; width?: number; height?: number; bitrate?: number }> }) => hudTracks(e.videoTracks)
+            } : {}),
             ...(playingVod ? {
-              onProgress: (e: { currentTime: number }) => setVodPos(Math.floor(e.currentTime)),
-              onLoad: (e: { duration?: number }) => { if (e.duration && e.duration > 0) setVodDur(e.duration) },
+              onProgress: (e: { currentTime: number; playableDuration?: number }) => { setVodPos(Math.floor(e.currentTime)); if (hudOnRef.current) hudBuffer(e) },
+              onLoad: (e: { duration?: number; naturalSize?: { width?: number; height?: number } }) => { if (e.duration && e.duration > 0) setVodDur(e.duration); if (hudOnRef.current) hudLoad(e) },
               onEnd: () => { setVodPaused(true); showBar() }
+            } : hudOn ? {
+              onProgress: hudBuffer,
+              onLoad: hudLoad
             } : {})
           }}
         />
@@ -1446,6 +1498,11 @@ export function LiveScreen ({ route, navigation }: Props) {
           title={playing ? displayTitle(playing) : undefined}
         />
       )}
+
+      {/* Debug overlay (Settings → Debug overlay, or the TV remote's INFO/YELLOW
+          key). Sits permanently below the tune pill's corner slot; pointerEvents
+          none like the pill — never a focusable over the video (S7). */}
+      {hudOn && playingId && !error && <StatsHud videoStats={hudVideo} />}
 
       {/* Subtitle/CC + audio selector — floats over the video independent of the browse
           overlay state machine (opened from the phone NowPlayingBar CC button). */}

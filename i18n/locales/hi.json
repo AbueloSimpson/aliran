@@ -100,6 +100,8 @@
   "settings.result": "नतीजा",
   "settings.activeSource": "सक्रिय स्रोत",
   "settings.peers": "पीयर",
+  "settings.debugStats": "डीबग ओवरले",
+  "settings.debugStatsHint": "वीडियो के ऊपर प्लेबैक और नेटवर्क आँकड़े दिखाता है।",
   "settings.signOut": "साइन आउट करें",
   "settings.signOutHint": "साइन आउट करने पर यह डिवाइस सहेजा गया साइन-इन भूल जाता है।",
   "settings.changeService": "सेवा बदलें…",

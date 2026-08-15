@@ -59,6 +59,10 @@ export function SettingsScreen ({ navigation }: Props) {
   // "Smooth zapping" (S21): user-facing switch for the engine's adjacent-channel
   // prefetch. null in prefs = never set -> the app default (off) applies.
   const [smoothZap, setSmoothZap] = useState<boolean>(backend.smoothZapping ?? false)
+  // "Debug overlay": the player's stats HUD (StatsHud). Same optimistic round-trip
+  // as smoothZap; the TV remote's INFO/YELLOW key flips the same pref, so this row
+  // repaints on that too via the 'prefs' listener below.
+  const [debugStats, setDebugStats] = useState<boolean>(backend.debugStats ?? false)
   // Parental controls (device policy — the worklet stores the PIN digest; the UI
   // only ever sees "a PIN exists" + the hide toggle).
   const [parental, setParental] = useState<{ hide: boolean } | null>(backend.parental)
@@ -110,6 +114,7 @@ export function SettingsScreen ({ navigation }: Props) {
       if (m.type === 'prefs') {
         setUsername(m.creds?.username ?? null)
         setSmoothZap(m.smoothZapping ?? false)
+        setDebugStats(m.debugStats ?? false)
         setParental(m.parental ?? null)
         setAcceptRemote(m.remoteAccept !== false)
         setLanguage(m.language ?? null)
@@ -125,6 +130,12 @@ export function SettingsScreen ({ navigation }: Props) {
     const next = !smoothZap
     setSmoothZap(next) // optimistic; the worklet's 'prefs' reply confirms
     backend.setZapPrefetch(next)
+  }
+
+  function toggleDebugStats () {
+    const next = !debugStats
+    setDebugStats(next) // optimistic; the worklet's 'prefs' reply confirms
+    backend.setDebugStats(next)
   }
 
   // Deliberately NOT optimistic — see the state declaration. The row repaints when the
@@ -265,6 +276,12 @@ export function SettingsScreen ({ navigation }: Props) {
         <View style={styles.group}>
           <Row label={t('settings.activeSource')} value={source ? source.toUpperCase() : '—'} />
           <Row label={t('settings.peers')} value={peers != null ? String(peers) : '—'} />
+          <ToggleRow
+            label={t('settings.debugStats')}
+            hint={t('settings.debugStatsHint')}
+            value={debugStats}
+            onToggle={toggleDebugStats}
+          />
         </View>
 
         {/* "Report a problem" moved to the player (S51): the report must carry the

@@ -100,6 +100,8 @@
   "settings.result": "結果",
   "settings.activeSource": "使用中のソース",
   "settings.peers": "ピア",
+  "settings.debugStats": "デバッグオーバーレイ",
+  "settings.debugStatsHint": "再生とネットワークの統計情報を映像の上に表示します。",
   "settings.signOut": "サインアウト",
   "settings.signOutHint": "サインアウトすると、この端末に保存したサインイン情報を消します。",
   "settings.changeService": "サービスを変更…",

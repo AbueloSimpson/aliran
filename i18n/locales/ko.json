@@ -100,6 +100,8 @@
   "settings.result": "결과",
   "settings.activeSource": "사용 중인 소스",
   "settings.peers": "피어",
+  "settings.debugStats": "디버그 오버레이",
+  "settings.debugStatsHint": "재생 및 네트워크 통계를 영상 위에 표시합니다.",
   "settings.signOut": "로그아웃",
   "settings.signOutHint": "로그아웃하면 이 기기에 저장된 로그인 정보를 지워요.",
   "settings.changeService": "서비스 변경…",

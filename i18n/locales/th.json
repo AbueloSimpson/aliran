@@ -100,6 +100,8 @@
   "settings.result": "ผลลัพธ์",
   "settings.activeSource": "แหล่งที่ใช้อยู่",
   "settings.peers": "เพียร์",
+  "settings.debugStats": "โอเวอร์เลย์ดีบัก",
+  "settings.debugStatsHint": "แสดงสถิติการเล่นและเครือข่ายทับบนวิดีโอ",
   "settings.signOut": "ออกจากระบบ",
   "settings.signOutHint": "การออกจากระบบจะลบการเข้าสู่ระบบที่บันทึกไว้บนอุปกรณ์นี้",
   "settings.changeService": "เปลี่ยนบริการ…",

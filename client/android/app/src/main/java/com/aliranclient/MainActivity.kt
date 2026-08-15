@@ -98,6 +98,16 @@ class MainActivity : ReactActivity() {
       emitChannelKey(direction)
       return true
     }
+    // INFO / YELLOW toggle the Debug overlay (client/src/debugKeys.ts). Same
+    // measured-safe-to-consume story as the channel keys above: neither key is in
+    // the tvOS fork's bridge map, neither moves focus, and with the app foregrounded
+    // the system acts on 165/185 nowhere else. INFO because "show me stream info" is
+    // what the key says; YELLOW because half the fleet's remotes have no INFO key
+    // but every color-fkey row carries a yellow one.
+    if (keyCode == KeyEvent.KEYCODE_INFO || keyCode == KeyEvent.KEYCODE_PROG_YELLOW) {
+      emitDebugKey()
+      return true
+    }
     return super.onKeyDown(keyCode, event)
   }
 
@@ -110,6 +120,14 @@ class MainActivity : ReactActivity() {
     context
         .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
         .emit(CHANNEL_KEY_EVENT, direction)
+  }
+
+  /** The debug-overlay key, same fire-and-forget contract as emitChannelKey. */
+  private fun emitDebugKey() {
+    val context = (application as? MainApplication)?.reactHost?.currentReactContext ?: return
+    context
+        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        .emit(DEBUG_KEY_EVENT, null)
   }
 
   /** Re-hide the bars after a transient reveal (edge swipe) or a dialog/keyboard. */
@@ -148,5 +166,8 @@ class MainActivity : ReactActivity() {
   companion object {
     /** Mirrored in client/src/channelKeys.ts — the two names must stay identical. */
     const val CHANNEL_KEY_EVENT = "aliranChannelKey"
+
+    /** Mirrored in client/src/debugKeys.ts — the two names must stay identical. */
+    const val DEBUG_KEY_EVENT = "aliranDebugKey"
   }
 }

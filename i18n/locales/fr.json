@@ -100,6 +100,8 @@
   "settings.result": "Résultat",
   "settings.activeSource": "Source active",
   "settings.peers": "Pairs",
+  "settings.debugStats": "Surcouche de diagnostic",
+  "settings.debugStatsHint": "Affiche les statistiques de lecture et de réseau sur la vidéo.",
   "settings.signOut": "Se déconnecter",
   "settings.signOutHint": "La déconnexion efface les identifiants enregistrés sur cet appareil.",
   "settings.changeService": "Changer de service…",
