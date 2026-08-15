@@ -113,8 +113,10 @@ test('tapping a row tunes it (navigates to Live with that channel)', async () =>
     .find((n) => typeof n.props.accessibilityLabel === 'string' && n.props.accessibilityLabel.includes('Shop TV'))!
   await ReactTestRenderer.act(async () => { row.props.onPress() })
   // tuneKey: the fresh stamp that makes a value-equal streamId still fire Live's
-  // param effect (re-tuning the channel Live is already on).
-  expect(navigate).toHaveBeenCalledWith('Live', { streamId: 'shop-tv', tuneKey: expect.any(Number) })
+  // param effect (re-tuning the channel Live is already on). category: the panel's
+  // active chip at tap time (Phase 4) — Live scopes its zap ring and its
+  // OK-reopens-the-list context to the category the viewer tuned from.
+  expect(navigate).toHaveBeenCalledWith('Live', { streamId: 'shop-tv', tuneKey: expect.any(Number), category: 'All' })
 })
 
 // --- WS11: logo-only channel column ---

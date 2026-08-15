@@ -264,8 +264,10 @@ test('rail focus moves the highlight at once; the list re-scopes only after the 
     // can't: the pill prints the playing channel's title too).
     const listTitles = () => tree.root.findAll((n: any) => typeof n.props?.onLongPress === 'function')
       .map((n: any) => n.findAllByType(Text).map((x: any) => [x.props.children].flat(9).join('')).join(' '))
-    expect(listTitles().join(' ')).toContain('Shop TV') // 'All' scope: both channels listed
-    expect(listTitles()).toHaveLength(2)
+    // The panel opens IN CONTEXT (Phase 4, openListInContext): the playing channel's
+    // own category — NEWS — not the stale-'All' open this used to make.
+    expect(listTitles().join(' ')).toContain('Moon Cat')
+    expect(listTitles()).toHaveLength(1)
 
     // Focus (not OK) the SHOPPING rail item — on TV, focus selects.
     const railItem = tree.root.findAll((n: any) => typeof n.props?.onFocus === 'function' && typeof n.props?.onPress === 'function')
@@ -275,8 +277,9 @@ test('rail focus moves the highlight at once; the list re-scopes only after the 
 
     // Immediately: the highlight is on SHOPPING (the filled accent pill)…
     expect(flat(railItem).backgroundColor).toBe(theme.colors.accent)
-    // …but the LIST is still the walk's starting scope — both channels.
-    expect(listTitles()).toHaveLength(2)
+    // …but the LIST is still the walk's starting scope — the NEWS channel.
+    expect(listTitles()).toHaveLength(1)
+    expect(listTitles()[0]).toContain('Moon Cat')
 
     // The debounce elapses: now the list is scoped to the category under focus.
     await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(300) })
@@ -304,12 +307,14 @@ test('OK on a rail category scopes the list at once — no debounce on a deliber
     await ReactTestRenderer.act(async () => { edgeStrip(tree, 'left').props.onFocus() })
     const listTitles = () => tree.root.findAll((n: any) => typeof n.props?.onLongPress === 'function')
       .map((n: any) => n.findAllByType(Text).map((x: any) => [x.props.children].flat(9).join('')).join(' '))
+    // The panel opened scoped to the playing channel's NEWS (Phase 4) — so the
+    // deliberate pick goes the other way: OK on SHOPPING must re-scope at once.
     const railItem = tree.root.findAll((n: any) => typeof n.props?.onFocus === 'function' && typeof n.props?.onPress === 'function')
-      .find((n: any) => n.findAllByType(Text).some((x: any) => [x.props.children].flat(9).join('') === 'NEWS'))
-    if (!railItem) throw new Error('no NEWS rail item')
+      .find((n: any) => n.findAllByType(Text).some((x: any) => [x.props.children].flat(9).join('') === 'SHOPPING'))
+    if (!railItem) throw new Error('no SHOPPING rail item')
     await ReactTestRenderer.act(async () => { railItem.props.onPress() }) // OK = activateRail
     expect(listTitles()).toHaveLength(1) // scoped without advancing any timer
-    expect(listTitles()[0]).toContain('Moon Cat')
+    expect(listTitles()[0]).toContain('Shop TV')
   } finally {
     jest.useRealTimers()
   }

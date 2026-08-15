@@ -83,13 +83,17 @@ function ChannelListPanelInner ({ streams, heading, numbers, playingId, favorite
       number={numbers.get(item.id)}
       playing={item.id === playingId}
       favorite={favSet.has(item.id)}
-      hasTVPreferredFocus={item.id === playingId || (playingId == null && index === 0)}
+      // Focus must land SOMEWHERE on open: the playing row when this scope contains
+      // it, else the FIRST row — keyed on playingIndex (< 0 = "absent from THIS
+      // list"), not on playingId being null, so a panel scoped away from the
+      // playing channel still opens with a focused row instead of focus nowhere.
+      hasTVPreferredFocus={item.id === playingId || (playingIndex < 0 && index === 0)}
       innerRef={item.id === playingId ? playingRowRef : undefined}
       onFocus={onActivity}
       onPressStream={handlePress}
       onLongPressStream={onInfo}
     />
-  ), [numbers, playingId, favSet, onActivity, handlePress, onInfo])
+  ), [numbers, playingId, playingIndex, favSet, onActivity, handlePress, onInfo])
   return (
     <View style={styles.panel}>
       <Text style={styles.header} numberOfLines={1}>{heading ?? t('live.channels')}</Text>

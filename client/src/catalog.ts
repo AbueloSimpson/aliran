@@ -172,13 +172,20 @@ function computeCategoryModel (streams: Stream[]): CategoryModel {
   const subs: Record<string, string[]> = {}
   const subSeen: Record<string, Set<string>> = {}
   for (const s of sorted) {
+    // ONE membership per stream per group. A channel filed under two subs of the
+    // same parent (['Live Events/MLB', 'Live Events/NBA']) used to be pushed into
+    // groups[parent] once per entry — adjacent duplicates that dead-ended the
+    // parent-scoped zap ring (findIndex + 1 landed on the same id, so play() was a
+    // no-op and CH+ went permanently silent on that channel) and handed FlatList
+    // duplicate keys in every list that renders a parent group.
+    const joined = new Set<string>()
     for (const c of s.category ?? []) {
       if (!c || c === 'All') continue
       const [parent, sub] = splitCategory(c)
       if (!topSeen.has(parent)) { topSeen.add(parent); top.push(parent) }
-      ;(groups[parent] ??= []).push(s)
+      if (!joined.has(parent)) { joined.add(parent); (groups[parent] ??= []).push(s) }
       if (sub) {
-        ;(groups[c] ??= []).push(s)
+        if (!joined.has(c)) { joined.add(c); (groups[c] ??= []).push(s) }
         subSeen[parent] ??= new Set()
         if (!subSeen[parent].has(c)) { subSeen[parent].add(c); (subs[parent] ??= []).push(c) }
       }
@@ -208,6 +215,31 @@ export function zapOrder (streams: Stream[]): Stream[] {
   // sortByCuration(streams) is the same call the category model already made — a
   // cache hit. Memoized on the input array so the ring keeps a stable identity too.
   return memo1(zapCache, 'zap-order', streams, () => sortByCuration(streams).filter(s => !isVod(s)))
+}
+
+// The CATEGORY-SCOPED zap ring (Phase 4, operator feedback): CH+/CH- and the D-pad
+// zap walk the category the viewer tuned FROM, not the global lineup — a viewer who
+// entered from LIVE EVENTS › MLB pressing CH+ wants the next game, not channel 042.
+//
+//   scope 'All' (or any key the model has no group for) -> zapOrder(streams): the
+//   global curated ring, byte-for-byte the old behavior — an 'All' tune keeps the
+//   channel-number surfing feel, and an unknown/vanished scope degrades to it
+//   rather than to a dead key.
+//
+//   a real group -> that group in ITS OWN order (the groups are already
+//   curation-sorted — the curated order IS the category's order), filtered by the
+//   same live-only rule zapOrder applies: vod titles are on-demand, never zap
+//   targets. A group left EMPTY by that filter (a vod-only category) falls back to
+//   the global ring too — a ring with nothing in it strands the keys.
+//
+// Pure and PIN-free on purpose: parental gating stays in LiveScreen's play(), the
+// one gate every tune path already passes through, whichever ring handed it the
+// channel.
+export function zapRing (streams: Stream[], model: CategoryModel, scope: string): Stream[] {
+  const group = scope === 'All' ? undefined : model.groups[scope]
+  if (!group) return zapOrder(streams)
+  const ring = group.filter(s => !isVod(s))
+  return ring.length ? ring : zapOrder(streams)
 }
 
 // Derived channel numbers (D3): curated sort over the live catalog -> 1..N. The same

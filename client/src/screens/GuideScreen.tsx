@@ -121,11 +121,13 @@ export function GuideScreen (props: Props) {
 
 function GuideScreenPhone ({ route, navigation }: Props) {
   const { t } = useI18n()
-  const tune = useCallback((s: Stream) => {
+  const tune = useCallback((s: Stream, category?: string) => {
     // The same jump Favorites/Search make; Live honors the param when already
     // mounted. tuneKey makes even a VALUE-EQUAL streamId (re-tuning the channel
-    // Live is already on) register as a fresh param there.
-    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now() })
+    // Live is already on) register as a fresh param there. `category` is the
+    // panel's active chip — the tune's browsing context (Phase 4): Live scopes
+    // its zap ring and OK-reopens-the-list to it.
+    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now(), category })
   }, [navigation])
   return (
     <View style={styles.container}>
@@ -179,9 +181,11 @@ function GuideScreenTV ({ route, navigation }: Props) {
   const tune = useCallback((s: Stream) => {
     // The same jump Favorites/Search make; Live honors the param when already
     // mounted. tuneKey makes even a VALUE-EQUAL streamId (re-tuning the channel
-    // Live is already on) register as a fresh param there.
-    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now() })
-  }, [navigation])
+    // Live is already on) register as a fresh param there. `category` is this
+    // grid's active chip — the tune's browsing context (Phase 4): Live scopes its
+    // zap ring and OK-reopens-the-list to it ('All' rides through as 'All').
+    navigation.navigate('Live', { streamId: s.id, tuneKey: Date.now(), category: activeKey })
+  }, [navigation, activeKey])
 
   if (!streams.length) return <SectionLoading section={t('menu.guide')} hint={t('live.waitingForChannels')} />
 

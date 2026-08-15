@@ -95,8 +95,11 @@ function dayHint (windowStart: number, now: number, t: (key: string) => string):
 export interface GuidePanelProps {
   /** The channel currently playing (row accent + the NOW pill's jump target). */
   playingId: string | null
-  /** Tap-to-tune — the host decides how (navigate to Live, or switch in place). */
-  onTune: (s: Stream) => void
+  /** Tap-to-tune — the host decides how (navigate to Live, or switch in place).
+   *  The second argument is the panel's ACTIVE CATEGORY CHIP at tap time ('All'
+   *  included) — the tune's browsing context (Phase 4): hosts scope the zap ring
+   *  and the reopened channel list to it. Optional for callers that ignore it. */
+  onTune: (s: Stream, category?: string) => void
   /** 'overlay' (LiveScreen landscape guide mode): tap selects + shows the preview
    *  card, a second tap on the same row tunes. Default 'none': tap tunes at once. */
   preview?: 'overlay' | 'none'
@@ -166,11 +169,12 @@ export function GuidePanel ({ playingId, onTune, preview = 'none', onSearch, onS
   // Two-tier tap (overlay mode): first tap places the selection, the second tap on
   // the SAME row commits the tune. Everywhere else a tap tunes immediately.
   const rowPress = useCallback((s: Stream) => {
-    if (preview !== 'overlay') { onTune(s); return }
+    // Every tune names the chip it was made under (Phase 4 — the browsing context).
+    if (preview !== 'overlay') { onTune(s, activeKey); return }
     // Tune OUTSIDE the state updater (an updater may run twice under StrictMode —
     // a double-tune would double-zap).
-    if (selectedId === s.id) { setSelectedId(null); onTune(s) } else setSelectedId(s.id)
-  }, [preview, onTune, selectedId])
+    if (selectedId === s.id) { setSelectedId(null); onTune(s, activeKey) } else setSelectedId(s.id)
+  }, [preview, onTune, selectedId, activeKey])
 
   // Strip geometry from the MEASURED panel width (the host decides how wide this
   // panel is — full screen, or the Live overlay's pane), floored so a tiny first
