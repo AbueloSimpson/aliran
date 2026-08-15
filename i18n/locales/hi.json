@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — लाइव प्रीव्यू",
   "live.waitingForChannels": "चैनल सूची का इंतज़ार…",
   "live.playbackFailed": "प्लेबैक विफल",
+  "live.offline": "चैनल ऑफ़लाइन",
+  "live.offlineHint": "यह चैनल अभी उपलब्ध नहीं है। पुनः प्रयास के लिए इसे फिर से चुनें, या कोई और चैनल चुनें।",
   "live.error.codec": "यह डिवाइस इस चैनल का वीडियो फ़ॉर्मैट डिकोड नहीं कर सकता।",
   "live.error.codecDetail": "यह डिवाइस इस चैनल का वीडियो फ़ॉर्मैट डिकोड नहीं कर सकता ({codec})।",
   "live.enterPin": "पिन डालें",

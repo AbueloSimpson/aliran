@@ -41,6 +41,14 @@ import type { BackendMessage } from '../types'
 import { trackDisplayLabels } from '../lang'
 
 const RETRY_MS = 2500
+// The BOUND on those retries — the RN component's ERROR_GIVE_UP, ported. Unbounded,
+// a dead redirect url (404 that never heals, host refusing connections) remounted
+// hls.js every 2.5 s forever with no report: the eternal spinner. Each consecutive
+// failure doubles the next wait (2.5/5/10 s, give-up ≈ 25-30 s after the first
+// error); only real playback — never a mere remount — re-arms a spent ladder, and
+// the retry the offline text offers is a host-side re-select that mounts a fresh
+// component. See sdk/react-native/src/AliranVideo.tsx for the full rationale.
+const ERROR_GIVE_UP = 4
 const STALL_MS = 12000
 
 export type TunePhase = 'start' | 'retune' | 'reconnect' | 'playing'
@@ -137,6 +145,8 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const hlsRef = useRef<Hls | null>(null)
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Consecutive error-retry remounts with no real playback in between (ERROR_GIVE_UP).
+  const failures = useRef(0)
   const cb = useRef({ onTune, onPeers, onBuffering, onSource, onError, onStall, onAudioTracks, onTextTracks, onProgress, onDuration, onEnded })
   cb.current = { onTune, onPeers, onBuffering, onSource, onError, onStall, onAudioTracks, onTextTracks, onProgress, onDuration, onEnded }
   // The in-flight tune. `live` = the engine confirmed the shared localhost URL serves
@@ -249,6 +259,7 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
       const p = progress.current
       if (t !== p.time) {
         progress.current = { time: t, at: Date.now(), played: true }
+        failures.current = 0 // real playback — the error retry ladder re-arms (a mount alone never does)
         completeTune() // an advancing playhead is playback, whatever else fired
       }
       cb.current.onProgress?.(Math.floor(t))
@@ -264,8 +275,25 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
     video.addEventListener('ended', onVideoEnded)
 
     const scheduleRetry = () => {
+      if (failures.current >= ERROR_GIVE_UP) return // spent: the error is up, only real playback re-arms
+      if (failures.current === ERROR_GIVE_UP - 1) {
+        // The last rung gives up: three consecutive retry mounts took the same error
+        // and nothing else on this path will ever report it (a redirect channel has
+        // no feed for the engine's watchdog to fail on). Our own translated sentence,
+        // same pattern as the codec error below — the channel is offline, and the
+        // retry is a re-select.
+        if (retry.current) { clearTimeout(retry.current); retry.current = null }
+        failures.current = ERROR_GIVE_UP
+        tune.current.tuning = false
+        cb.current.onError?.(t('live.offlineHint'))
+        return
+      }
       if (retry.current) clearTimeout(retry.current)
-      retry.current = setTimeout(() => remount(), RETRY_MS)
+      // The delay belongs to the attempt this error asks for: 2.5 s first (the
+      // transient contract), doubled per consecutive failure. The attempt is counted
+      // when the remount actually happens, so N errors collapsing into one scheduled
+      // retry spend one attempt, not N.
+      retry.current = setTimeout(() => { failures.current++; remount() }, RETRY_MS * 2 ** failures.current)
     }
 
     let hls: Hls | null = null
@@ -345,8 +373,10 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, attempt])
 
-  // A zap or source switch starts a fresh tune — the escalation ladder resets with it.
-  useEffect(() => { resyncs.current = 0 }, [streamId, url])
+  // A zap or source switch starts a fresh tune — both escalation ladders reset with it.
+  // (Keyed on streamId/url, NEVER on attempt: a retry remount must not buy back the
+  // attempt it just spent, or the ladder would never give up.)
+  useEffect(() => { resyncs.current = 0; failures.current = 0 }, [streamId, url])
 
   // Host-owned pause (vod transport).
   useEffect(() => {

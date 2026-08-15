@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — 直播预览",
   "live.waitingForChannels": "正在等待频道列表…",
   "live.playbackFailed": "播放失败",
+  "live.offline": "频道已离线",
+  "live.offlineHint": "该频道目前不可用。再次选择即可重试，或选择其他频道。",
   "live.error.codec": "此设备无法解码该频道的视频格式。",
   "live.error.codecDetail": "此设备无法解码该频道的视频格式（{codec}）。",
   "live.enterPin": "输入 PIN 码",

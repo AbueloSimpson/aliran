@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — aperçu en direct",
   "live.waitingForChannels": "En attente de la liste des chaînes…",
   "live.playbackFailed": "Échec de la lecture",
+  "live.offline": "Chaîne hors ligne",
+  "live.offlineHint": "Cette chaîne n'est pas disponible pour le moment. Sélectionnez-la à nouveau pour réessayer, ou choisissez une autre chaîne.",
   "live.error.codec": "Cet appareil ne peut pas décoder le format vidéo de cette chaîne.",
   "live.error.codecDetail": "Cet appareil ne peut pas décoder le format vidéo de cette chaîne ({codec}).",
   "live.enterPin": "Saisissez le code PIN",

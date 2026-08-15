@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — ライブプレビュー",
   "live.waitingForChannels": "チャンネル一覧を待っています…",
   "live.playbackFailed": "再生に失敗しました",
+  "live.offline": "チャンネルはオフラインです",
+  "live.offlineHint": "このチャンネルは現在利用できません。もう一度選択して再試行するか、別のチャンネルをお選びください。",
   "live.error.codec": "この端末はこのチャンネルの映像形式をデコードできません。",
   "live.error.codecDetail": "この端末はこのチャンネルの映像形式をデコードできません（{codec}）。",
   "live.enterPin": "PINを入力",

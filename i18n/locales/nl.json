@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — livevoorbeeld",
   "live.waitingForChannels": "Wachten op de zenderlijst…",
   "live.playbackFailed": "Afspelen mislukt",
+  "live.offline": "Kanaal offline",
+  "live.offlineHint": "Dit kanaal is momenteel niet beschikbaar. Selecteer het opnieuw om het nog eens te proberen, of kies een ander kanaal.",
   "live.error.codec": "Dit apparaat kan het videoformaat van deze zender niet decoderen.",
   "live.error.codecDetail": "Dit apparaat kan het videoformaat van deze zender niet decoderen ({codec}).",
   "live.enterPin": "Voer de pincode in",

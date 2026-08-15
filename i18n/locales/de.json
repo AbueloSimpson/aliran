@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — Live-Vorschau",
   "live.waitingForChannels": "Warten auf die Senderliste…",
   "live.playbackFailed": "Wiedergabe fehlgeschlagen",
+  "live.offline": "Sender offline",
+  "live.offlineHint": "Dieser Sender ist zurzeit nicht verfügbar. Wähle ihn erneut, um es noch einmal zu versuchen, oder wähle einen anderen Sender.",
   "live.error.codec": "Dieses Gerät kann das Videoformat dieses Senders nicht decodieren.",
   "live.error.codecDetail": "Dieses Gerät kann das Videoformat dieses Senders nicht decodieren ({codec}).",
   "live.enterPin": "PIN eingeben",

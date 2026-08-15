@@ -96,7 +96,10 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
           </View>
         )}
 
-        {vod && stream.status === 'unavailable' && (
+        {/* Unavailable: a vod title the library marked so, or a LIVE channel the
+            panel's liveness probe flipped isLive:false on (a dead redirect url) —
+            the same signal that dims its row in the channel list. */}
+        {(vod ? stream.status === 'unavailable' : stream.isLive === false) && (
           <Text style={styles.unavailable}>{t('live.unavailable')}</Text>
         )}
 
@@ -175,7 +178,10 @@ export function ChannelInfoPanel ({ stream, number, favorite, playing, source, p
           </View>
         )}
 
-        {vod && stream.status === 'unavailable' && (
+        {/* Unavailable: a vod title the library marked so, or a LIVE channel the
+            panel's liveness probe flipped isLive:false on (a dead redirect url) —
+            the same signal that dims its row in the channel list. */}
+        {(vod ? stream.status === 'unavailable' : stream.isLive === false) && (
           <Text style={styles.unavailable}>{t('live.unavailable')}</Text>
         )}
 

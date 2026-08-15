@@ -251,6 +251,11 @@ export function LiveScreen ({ route, navigation }: Props) {
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The SDK marked the failure code:'offline' — the CHANNEL is not answering (dead
+  // redirect url, permanent HTTP refusal, silent worklet), so the error surface shows
+  // the translated channel-offline copy instead of the SDK's English prose. Lives
+  // beside `error` (never instead of it): every error-clearing path clears both.
+  const [offline, setOffline] = useState(false)
   // The top-right tuning indicator, driven SOLELY by <AliranVideo>'s onTune lifecycle
   // (single source of truth — the SDK knows when a tune starts, self-heals, and truly
   // plays; raw player events also fire for the PREVIOUS channel, which stuck/killed the
@@ -458,7 +463,7 @@ export function LiveScreen ({ route, navigation }: Props) {
       // re-resolved the feed behind the same URL and AliranVideo remounts. Clear any prior
       // playback error (that had unmounted the video) so it re-mounts onto the fresh feed.
       if (m.type === 'feed-changed' && m.streamId === playingIdRef.current) {
-        setError(null)
+        setError(null); setOffline(false)
       }
     })
   }, [])
@@ -718,7 +723,7 @@ export function LiveScreen ({ route, navigation }: Props) {
     if (s.id !== playingId) {
       setPlayingId(s.id)
       setPeers(null)
-      setError(null)
+      setError(null); setOffline(false)
       // The tuning indicator follows via onTune 'start' (the streamId prop change).
     } else if (error) {
       // The friendly tune-timeout says "switch to it again to retry" — honor re-selecting
@@ -726,7 +731,7 @@ export function LiveScreen ({ route, navigation }: Props) {
       // tune (mount → play() → onTune 'start'). Without this the retry was a no-op and
       // the only way out was a trip through the Menu (found live 2026-07-16, broadcaster
       // outage on the VPS).
-      setError(null)
+      setError(null); setOffline(false)
     }
     if (collapse) setOverlay('none')
   }
@@ -1100,9 +1105,10 @@ export function LiveScreen ({ route, navigation }: Props) {
           // then only means "no session yet" — the menu painted from disk before the
           // login landed. Keep the tuning pill up and remember the intent; the streams
           // handler above re-issues the tune on the first REAL push.
-          onError={(msg) => {
+          onError={(msg, info) => {
             if (backend.provisional && /not entitled/.test(msg)) { deferredTune.current = playingIdRef.current; return }
-            setError(msg); setTuneUI(null); setOverlay((o) => (o === 'guide' || o === 'search' ? 'none' : o))
+            setError(msg); setOffline(info?.code === 'offline')
+            setTuneUI(null); setOverlay((o) => (o === 'guide' || o === 'search' ? 'none' : o))
           }}
           // vod transport feed (chained by the SDK behind its own handlers): playhead
           // in whole seconds (one re-render/second), the player-reported runtime, and
@@ -1250,9 +1256,21 @@ export function LiveScreen ({ route, navigation }: Props) {
 
       {error && (
         <View style={styles.center} pointerEvents="none">
-          <Text style={styles.errorTitle}>{t('live.playbackFailed')}</Text>
-          {/* The engine's own words, verbatim: SDK error prose stays English (S56). */}
-          <Text style={styles.dim}>{error}</Text>
+          {offline ? (
+            <>
+              {/* The SDK said code:'offline' — the channel's fault, not the player's.
+                  This branch is FULLY translated: no raw SDK prose, the viewer just
+                  needs "it's offline, retry or move on" in their own language. */}
+              <Text style={styles.errorTitle}>{t('live.offline')}</Text>
+              <Text style={styles.dim}>{t('live.offlineHint')}</Text>
+            </>
+          ) : (
+            <>
+              <Text style={styles.errorTitle}>{t('live.playbackFailed')}</Text>
+              {/* The engine's own words, verbatim: SDK error prose stays English (S56). */}
+              <Text style={styles.dim}>{error}</Text>
+            </>
+          )}
         </View>
       )}
 

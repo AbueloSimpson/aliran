@@ -512,6 +512,139 @@ test('a re-select after the error give-up mounts a fresh component with a clean 
   }
 })
 
+// THE OFFLINE WATCHDOG LANES (NO_ANSWER / CDN_TUNE). A dead REDIRECT channel is the class
+// neither ladder above can see: the engine never arms its tune watchdog for a redirect
+// ("the host player owns its own errors"), and a host that hangs the TCP connect — or
+// answers 200 with something the loader chews on forever — never surfaces a player error
+// either. Before the bound, that was the ~80% pill forever (2026-08-15). These lanes pin
+// the wall-clock termination: a confirmed cdn source with no first frame ends at 30 s, a
+// play() the engine never answers ends at 15 s, a second consecutive permanent HTTP
+// refusal ends immediately, and p2p tunes NEVER trip it (the engine owns that class).
+
+test('offline watchdog: a confirmed cdn source with no playback ends the tune at 30 s', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const REMOTE = 'https://provider.example/dead/e1.m3u8'
+    const errors = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="dead" controls={false} stallTimeoutMs={12000} onError={errors}
+      />
+    )
+    backend.url = REMOTE; backend.source = 'cdn'
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', url: REMOTE, source: 'cdn', streamId: 'dead' }) })
+
+    // The player mounted, produces neither a frame nor an error (the hanging-host
+    // shape). 29 s in: still inside the window — a slow link must not false-trip.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(29000) })
+    expect(errors).not.toHaveBeenCalled()
+
+    // 30 s: the watchdog ends the tune with the offline marker.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2000) })
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(errors.mock.calls[0][0]).toMatch(/switch to it again to retry/)
+    expect(errors.mock.calls[0][1]).toEqual({ code: 'offline' })
+
+    // Spent means spent — same contract as the ladders: no second error, and a late
+    // player error cannot restart the retry loop behind the error UI.
+    const mountsBefore = mockVideoMounts
+    await ReactTestRenderer.act(async () => { lastVideo().onError() })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(600000) })
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(mockVideoMounts).toBe(mountsBefore)
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('offline watchdog: a play() the engine never answers ends the tune at 15 s', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    ;(backend as any).url = null // nothing resolved yet: no <Video> ever mounts
+    const errors = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000} onError={errors}
+      />
+    )
+    expect(backend.play).toHaveBeenCalledWith('a')
+    expect(mockVideoRenders).toHaveLength(0) // url null → no player, no player events, ever
+
+    // 14 s: a slow resolve is still allowed to land.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(14000) })
+    expect(errors).not.toHaveBeenCalled()
+
+    // 15 s with no 'port' (and no 'error') for this stream: the worklet is gone, not
+    // slow — the watchdog is the only thing that can ever end this tune.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2000) })
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(errors.mock.calls[0][1]).toEqual({ code: 'offline' })
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('offline watchdog: the second consecutive permanent HTTP refusal on cdn ends the tune immediately', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const REMOTE = 'https://provider.example/gone/e1.m3u8'
+    const errors = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="gone" controls={false} stallTimeoutMs={12000} onError={errors}
+      />
+    )
+    backend.url = REMOTE; backend.source = 'cdn'
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', url: REMOTE, source: 'cdn', streamId: 'gone' }) })
+    const mountsBefore = mockVideoMounts
+
+    // Refusal 1 gets the one retry the token-rotation race earns (event playlists
+    // rotate tokens — a single 403 can be a stale-token edge, not a dead channel).
+    await ReactTestRenderer.act(async () => { lastVideo().onError({ error: { errorString: 'Response code: 404' } }) })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(2500) })
+    expect(mockVideoMounts).toBe(mountsBefore + 1)
+    expect(errors).not.toHaveBeenCalled()
+
+    // Refusal 2 is the provider saying no — give up NOW (~5 s in), not at ~27 s.
+    await ReactTestRenderer.act(async () => { lastVideo().onError({ error: { errorString: 'Response code: 404' } }) })
+    expect(errors).toHaveBeenCalledTimes(1)
+    expect(errors.mock.calls[0][1]).toEqual({ code: 'offline' })
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(600000) })
+    expect(mockVideoMounts).toBe(mountsBefore + 1) // no further retry mounts behind the error UI
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('offline watchdog: a p2p tune never trips it — the engine owns that class', async () => {
+  jest.useFakeTimers()
+  try {
+    const backend = makeBackend()
+    const errors = jest.fn()
+    await createTree(
+      <AliranVideo
+        backend={backend as unknown as AliranBackend}
+        streamId="a" controls={false} stallTimeoutMs={12000} onError={errors}
+      />
+    )
+    await ReactTestRenderer.act(async () => { backend.emit({ type: 'port', port: 7357, url: URL, source: 'p2p', streamId: 'a' }) })
+
+    // Two minutes of confirmed-p2p tuning with no playback: the engine's own tune
+    // watchdog owns this (retune → reconnect → friendly 'error' message), and the
+    // offline watchdog must not preempt it with a false 'channel offline'.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(120000) })
+    expect(errors).not.toHaveBeenCalled()
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
 // Playback headers (redirect channels behind a provider hotlink check): the engine hands
 // them to the HOST with the url, and this component is what actually gets them onto the
 // wire — ExoPlayer reads source.headers once, when it opens the media, so a headers

@@ -153,6 +153,29 @@ const STALL_MS = 12000
 // error text offers is a host-side re-select, which unmounts the player and mounts a fresh one
 // whose refs start clean; see the give-up lane in AliranVideoTune.test.tsx.
 const STALL_GIVE_UP = 4
+// Offline bounds for the classes NEITHER ladder above can see (the ~80% pill forever,
+// 2026-08-15). A redirect channel has no engine watchdog — _resolveStream answers with
+// the operator's URL and never arms _startTuneWatchdog ("the host player owns its own
+// errors") — and the error ladder only runs if ExoPlayer actually SURFACES an error. A
+// dead host that hangs the TCP connect, or answers 200 with something the loader chews
+// on forever, produces no error event at all; and a worklet that never answers play()
+// leaves url null with no <Video> mounted, so no player event of any kind can ever end
+// the tune. Two wall-clock bounds are the only termination for those classes:
+//   NO_ANSWER — play() was sent and the engine has not confirmed THIS stream (no
+//   'port' reply for it) after 15 s. Resolve is a local catalog read bounded at 5 s
+//   and a healthy reply lands in under a second, so 15 s means the worklet is gone,
+//   not slow.
+//   CDN_TUNE — the engine confirmed a cdn source and 30 s of mounted player produced
+//   no first frame. Sits just past the error ladder's ~27 s give-up so whichever
+//   signal arrives first ends the tune; a LIVE stream that cannot produce one frame
+//   in 30 s is dead for zap purposes. Never armed for p2p (the engine's tune watchdog
+//   owns that class — see the STALL_MS note on why measuring the engine is wrong for
+//   the player, and vice versa) and never for vod.
+// The clock restarts whenever the tune advances a phase (new tune, port confirm,
+// fallback, source/feed change, self-heal re-arm, stall resync) so no phase inherits
+// time another phase already spent.
+const NO_ANSWER_TIMEOUT_MS = 15000
+const CDN_TUNE_TIMEOUT_MS = 30000
 
 // Cheap stable signature of a playback-header set (sorted k=v, '' for none). Two uses,
 // and they must agree: spotting a HEADERS-ONLY change in the 'port' handler, and keying
@@ -220,13 +243,18 @@ export interface AliranVideoProps {
   onPeers?: (peers: number) => void
   onBuffering?: (buffering: boolean) => void
   /** A friendly, viewer-showable failure — the tune ENDS here and your error UI owns the
-   *  screen. Three sources: the engine (tune timeout, corrupt store, not entitled), the
-   *  stall ladder giving up after STALL_GIVE_UP failed resyncs, and the error retry ladder
-   *  giving up after ERROR_GIVE_UP consecutive load failures. Every text ends in "switch
-   *  to it again to retry", so the retry has to be a RE-SELECT that unmounts this component
-   *  and mounts a fresh one — a spent ladder is only re-armed by real playback, never by a
-   *  remount, so leaving the player mounted leaves it spent. */
-  onError?: (message: string) => void
+   *  screen. Four sources: the engine (tune timeout, corrupt store, not entitled), the
+   *  stall ladder giving up after STALL_GIVE_UP failed resyncs, the error retry ladder
+   *  giving up after ERROR_GIVE_UP consecutive load failures, and the offline watchdog
+   *  (NO_ANSWER / CDN_TUNE). Every text ends in "switch to it again to retry", so the
+   *  retry has to be a RE-SELECT that unmounts this component and mounts a fresh one —
+   *  a spent ladder is only re-armed by real playback, never by a remount, so leaving
+   *  the player mounted leaves it spent.
+   *  `info.code === 'offline'` marks the failures that mean THE CHANNEL ITSELF is not
+   *  answering (dead redirect url, permanent HTTP refusal, silent worklet) — the host
+   *  can show a "channel offline" screen instead of generic error prose. The message
+   *  string stays English either way (SDK prose is not localized by design). */
+  onError?: (message: string, info?: { code?: 'offline' }) => void
   /** A frozen live edge was detected and the player is resyncing (remount onto a fresh
    *  playlist load at the live edge; consecutive failed resyncs additionally tear down
    *  the engine's wedged peer connection via backend.reconnect()). The same moment also
@@ -310,6 +338,9 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
   // mirror for hard player errors (see ERROR_GIVE_UP). At ERROR_GIVE_UP the ladder is
   // SPENT: the friendly error is up, and only real playback (or a zap) re-arms it.
   const failures = useRef(0)
+  // When the current tune PHASE began — the offline watchdog's clock (NO_ANSWER /
+  // CDN_TUNE). Restarted at every phase advance so no phase inherits spent time.
+  const tuneStart = useRef(Date.now())
   // The served record is a vod title (engine's 'port' recordType) — the stall ladder
   // disarms (see the STALL_MS note). Seeded from the backend for re-entry on a title
   // the engine already serves; every port reply for OUR stream refreshes it.
@@ -346,6 +377,7 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
     // channel), the mount is live from the start — first playback completes the tune
     // without waiting for the play() reply.
     tune.current = { id: tune.current.id + 1, streamId, tuning: true, live: served.current === streamId }
+    tuneStart.current = Date.now()
     // Re-derive the record class for the (possibly new) channel: known when the engine
     // already serves it, else assumed live until this channel's port reply says vod —
     // so a vod→live zap re-arms the stall ladder immediately.
@@ -372,6 +404,7 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
           headersRef.current = sig
           if (changed || headersChanged) remount()
           tune.current.live = true
+          tuneStart.current = Date.now() // confirmed serve: the CDN_TUNE clock starts here
           // Record class of the confirmed serve (absent on pre-S8a worklet bundles →
           // keep the live assumption).
           if (m.recordType) vod.current = m.recordType === 'vod'
@@ -384,12 +417,14 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
         setUrl(m.url); setHeaders(null); headersRef.current = ''; remount()
         served.current = streamId
         tune.current.live = true
+        tuneStart.current = Date.now() // fresh source, fresh offline clock
         cb.current.onFallback?.({ url: m.url, reason: m.reason })
       }
       if (m.type === 'source-changed' && m.streamId === streamId) {
         setUrl(m.url); setHeaders(null); headersRef.current = ''; remount() // same reason as 'fallback' above
         served.current = streamId
         tune.current.live = true
+        tuneStart.current = Date.now() // fresh source, fresh offline clock
         cb.current.onSourceChanged?.({ url: m.url, source: m.source })
       }
       if (m.type === 'feed-changed' && m.streamId === streamId) {
@@ -399,6 +434,7 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
         // are already null — clearing would be noise, carrying them would be a bug.
         setUrl(m.url); remount()
         tune.current.live = true
+        tuneStart.current = Date.now() // fresh feed, fresh offline clock
         cb.current.onFeedChanged?.({ feedKey: m.feedKey, url: m.url })
       }
       if (m.type === 'status' && typeof m.peers === 'number') cb.current.onPeers?.(m.peers)
@@ -408,6 +444,7 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
         // a friendly error — and surface the phase so the host can say "reconnecting"
         // instead of freezing its indicator.
         tune.current.tuning = true
+        tuneStart.current = Date.now() // self-heal re-arm: the offline clock must not bill it
         cb.current.onTune?.({ id: tune.current.id, streamId: tune.current.streamId, phase: m.state === 'feed:retune' ? 'retune' : 'reconnect' })
       }
       if (m.type === 'error') {
@@ -471,6 +508,7 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
       // scratch, and the remount below must produce fresh playback before 'playing'.
       const t = tune.current
       tune.current = { id: t.id + 1, streamId: t.streamId, tuning: true, live: t.live }
+      tuneStart.current = Date.now() // resync is a fresh tune — fresh offline clock too
       cb.current.onStall?.()
       cb.current.onTune?.({ id: tune.current.id, streamId: t.streamId, phase: 'start' })
       if (resyncs.current >= 2) backend.reconnect()
@@ -479,6 +517,36 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
     return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backend, paused, stallTimeoutMs])
+
+  // Offline watchdog — the wall-clock bound for the classes no player event can end
+  // (see NO_ANSWER/CDN_TUNE). Runs regardless of whether a <Video> is mounted: the
+  // NO_ANSWER class is precisely the one where `url` never arrives and nothing below
+  // this hook ever renders. Reads refs (and backend.source, a plain mirror property),
+  // so the interval closure never goes stale.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const t = tune.current
+      if (!t.tuning || progress.current.played || vod.current) return
+      const waited = Date.now() - tuneStart.current
+      // NO_ANSWER: the engine never confirmed this stream. CDN_TUNE: confirmed cdn,
+      // no first frame. p2p is deliberately out of scope — the engine's own tune
+      // watchdog owns it, and it WILL answer (retune/reconnect/error), each of which
+      // restarts this clock.
+      const noAnswer = !t.live && waited >= NO_ANSWER_TIMEOUT_MS
+      const cdnDead = t.live && backend.source === 'cdn' && waited >= CDN_TUNE_TIMEOUT_MS
+      if (!noAnswer && !cdnDead) return
+      // End the tune exactly the way a spent error ladder does: kill any pending
+      // retry (no zombie remounts behind the error UI), mark the ladder spent, and
+      // hand the host the re-select retry. 'offline' tells the host this is the
+      // channel's fault, not the player's.
+      if (retry.current) { clearTimeout(retry.current); retry.current = null }
+      failures.current = ERROR_GIVE_UP
+      t.tuning = false
+      cb.current.onError?.("channel is not answering — it may be offline right now, switch to it again to retry", { code: 'offline' })
+    }, 1000)
+    return () => clearInterval(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backend])
 
   if (!url) return null
 
@@ -522,22 +590,31 @@ export const AliranVideo = React.forwardRef<AliranVideoHandle, AliranVideoProps>
         }
         ;(hostOnProgress as ((e: { currentTime: number }) => void) | undefined)?.(e)
       }}
-      onError={() => {
+      onError={(e: { error?: unknown }) => {
         // Playlist/segments not replicated yet (or a live-edge hiccup) — retry, on the
         // bounded ladder (see ERROR_GIVE_UP). Consecutive means no real playback since:
         // only onProgress motion resets `failures`. Handoff remounts (port / fallback /
         // source-changed / feed-changed / stall resync) neither count as attempts nor
         // reset the count — they just cancel the pending retry (see remount()).
         if (failures.current >= ERROR_GIVE_UP) return // spent: the error is up, only real playback re-arms
-        if (failures.current === ERROR_GIVE_UP - 1) {
-          // The 4th attempt gives up: three consecutive retry mounts just took the same
-          // error, and no engine report is coming (see the ERROR_GIVE_UP note). End the
-          // tune and hand the viewer the same re-select retry the other give-ups offer;
-          // the host's error UI takes it from here.
+        // A permanent HTTP refusal (a 4xx that will not heal) from a cdn/redirect
+        // source earns ONE retry, not three: event playlists rotate tokens, so a
+        // single 403 can be a rotation race — but the SECOND consecutive one is the
+        // provider saying no, and ten more seconds of spinner will not change the
+        // answer. The field names inside react-native-video's error payload vary by
+        // platform and version, so match the stringified event rather than a path.
+        const permanent = /response code:?\s*(401|403|404|410|451)/i.test(JSON.stringify(e?.error ?? {}))
+        const cdn = backend.source === 'cdn'
+        if (failures.current === ERROR_GIVE_UP - 1 || (cdn && permanent && failures.current >= 1)) {
+          // The last rung gives up: consecutive retry mounts just took the same error,
+          // and no engine report is coming (see the ERROR_GIVE_UP note). End the tune
+          // and hand the viewer the same re-select retry the other give-ups offer; the
+          // host's error UI takes it from here. On a cdn source this is the channel
+          // refusing to play, not the player breaking — say 'offline'.
           if (retry.current) clearTimeout(retry.current) // a double-fired error must not leave a timer running behind the error UI
           failures.current = ERROR_GIVE_UP
           tune.current.tuning = false
-          cb.current.onError?.(`playback failed: '${tune.current.streamId}' will not load — the channel may be broken right now, switch to it again to retry`)
+          cb.current.onError?.(`playback failed: '${tune.current.streamId}' will not load — the channel may be broken right now, switch to it again to retry`, cdn ? { code: 'offline' } : undefined)
           return
         }
         cb.current.onBuffering?.(true)
