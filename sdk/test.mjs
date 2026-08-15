@@ -48,7 +48,15 @@ function ok (name) { n++; console.log('  ok ', name) }
   assert.strictEqual(p.assetUrl(null), undefined)
   await assert.rejects(() => p.connect(), /no panelPubKey/)
   await assert.rejects(() => p.resolve('nope'), /not entitled/)
+  // The login door WAITS a bounded moment for the RPC to arm before the dial-gate
+  // throw (see _awaitPanelRpc) — on UNREF'D timers, which are all this bare process
+  // has left at this point: the loop drains and Node dies of an unsettled top-level
+  // await before the rejection can land. Shrink the wait like the e2e lanes do AND
+  // hold the loop open with one ref'd timer for the duration.
+  p._loginRpcWaitMs = 50
+  const keepAlive = setTimeout(() => {}, 10000)
   await assert.rejects(() => p.login('u', 'p'), /not connected to panel/)
+  clearTimeout(keepAlive)
   ok('constructor + method guards (no side effects before connect)')
 }
 
@@ -93,6 +101,73 @@ function ok (name) { n++; console.log('  ok ', name) }
     for (const d of [dir, dir + '-b']) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
   }
   ok('swarm.maxPeers/bootstrap validated + plumbed into Hyperswarm (default preserved)')
+}
+
+// --- cached DHT nodes (swarm.nodes + 'dht-nodes'): the warm-bootstrap round ---
+// Validation and the cap are white-box against _swarmOpts; the live half runs on a
+// local testnet like the e2e lanes — snapshot emitted, cached nodes preloading the
+// routing table, and the load-bearing failure mode: an ALL-dead cache must cost a
+// fallback to the bootstrap list, never a wedge.
+{
+  assert.throws(() => createPlayer({ swarm: { nodes: 'not-a-list' } }), /swarm\.nodes/)
+  assert.throws(() => createPlayer({ swarm: { nodes: ['1.2.3.4:80'] } }), /swarm\.nodes/, 'string form is a bootstrap shape, not a node record')
+  assert.throws(() => createPlayer({ swarm: { nodes: [{ host: '', port: 80 }] } }), /swarm\.nodes/)
+  assert.throws(() => createPlayer({ swarm: { nodes: [{ host: '1.2.3.4', port: 0 }] } }), /swarm\.nodes/)
+  assert.throws(() => createPlayer({ swarm: { nodes: [{ host: '1.2.3.4', port: 1.5 }] } }), /swarm\.nodes/)
+  assert.throws(() => createPlayer({ swarm: { nodes: [{ host: '1.2.3.4', port: 70000 }] } }), /swarm\.nodes/)
+  const many = Array.from({ length: 40 }, (_, i) => ({ host: '10.0.0.' + (i + 1), port: 1000 + i }))
+  const capped = createPlayer({ swarm: { nodes: many } })
+  assert.strictEqual(capped._swarmOpts.nodes.length, 32, 'capped at 32 — the freshest-first prefix')
+  assert.deepStrictEqual(capped._swarmOpts.nodes[0], { host: '10.0.0.1', port: 1000 })
+  assert.strictEqual(createPlayer({ swarm: { nodes: [] } })._swarmOpts, null, 'empty list = no ctor opts, hyperswarm untouched')
+  ok('swarm.nodes validated, copied, capped')
+
+  const os = await import('os'); const fs = await import('fs'); const path = await import('path')
+  const { default: createTestnet } = await import('hyperdht/testnet.js')
+  const testnet = await createTestnet(3)
+  const bootstrap = testnet.bootstrap
+  const dirs = ['a', 'b', 'c'].map((s) => fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-dhtnodes-' + s + '-')))
+  const a = createPlayer({ storeDir: dirs[0], swarm: { bootstrap } })
+  a._dhtSampleDelayMs = 200; a._dhtResampleMs = 200
+  let b = null; let c = null
+  try {
+    const snapshot = new Promise((resolve) => a.once('dht-nodes', resolve))
+    await a._ensureStore() // no join/announce — local testnet only
+    const nodes = await snapshot
+    assert.ok(Array.isArray(nodes) && nodes.length >= 1, 'a routing-table snapshot arrives')
+    for (const n of nodes) {
+      assert.strictEqual(typeof n.host, 'string', 'snapshot entries are {host, port}')
+      assert.ok(Number.isInteger(n.port) && n.port > 0 && n.port < 65536)
+    }
+    // The read half: a player HANDED that snapshot has it in the routing table from
+    // construction (addNode is synchronous), before any bootstrap round-trip.
+    b = createPlayer({ storeDir: dirs[1], swarm: { bootstrap, nodes } })
+    await b._ensureStore()
+    assert.ok(b._swarm.dht.toArray().length >= 1, 'cached nodes reached the DHT routing table')
+    // The failure mode the design leans on: 20 dead entries — enough that the bootstrap
+    // query never touches the bootstrap list at all (dht-rpc Query._open takes k from
+    // the table and skips it) — must still come up: swarm-ready resolves once the dead
+    // nodes time out and are evicted, and the next query falls back to the bootstrap
+    // list and repopulates. 127.6.6.6 is loopback space nothing in this test binds, so
+    // a dead entry can never collide with a real testnet port.
+    const dead = Array.from({ length: 20 }, (_, i) => ({ host: '127.6.6.6', port: 64000 + i }))
+    c = createPlayer({ storeDir: dirs[2], swarm: { bootstrap, nodes: dead } })
+    await c._ensureStore() // the wedge would be here — swarm-ready must resolve
+    c._swarm.dht.refresh()
+    const deadline = Date.now() + 20000
+    let recovered = false
+    while (Date.now() < deadline) {
+      const now = c._swarm.dht.toArray()
+      if (now.length && now.every((n) => n.host !== '127.6.6.6')) { recovered = true; break }
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    assert.ok(recovered, 'dead cache evicted and the bootstrap-list fallback repopulated the table')
+  } finally {
+    await a.stop(); if (b) await b.stop(); if (c) await c.stop()
+    await testnet.destroy()
+    for (const d of dirs) { try { fs.rmSync(d, { recursive: true, force: true }) } catch {} }
+  }
+  ok('dht-nodes snapshot emitted; cached nodes preload the table; all-dead cache falls back, no wedge')
 }
 
 // --- swarm socket buffers (S33): validation, defaults, opt-out ---
