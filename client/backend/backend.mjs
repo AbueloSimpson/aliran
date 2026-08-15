@@ -63,6 +63,13 @@
 //                                        from <AliranVideo>'s stall ladder)
 //        { type:'zap-prefetch-set', zapPrefetch }  -> runtime "Smooth zapping" toggle:
 //                                        boolean or config object, applied mid-play
+//        { type:'debug-stats-set', debugStats }    -> the "Debug overlay" toggle:
+//                                        persisted boolean, echoed in the prefs reply
+//        { type:'stats-get', tag }    -> one diagnostics sample for the debug HUD ->
+//                                        { type:'stats', tag, at, os, engine, net, store }
+//                                        (see sendStats: cpu/mem, feed peers + swarm
+//                                        connections, wire rx/tx per second, cached
+//                                        replica bytes; nulls where a source failed)
 //        { type:'language-set', language }         -> the viewer's UI-language choice
 //                                        (S56e): one of the 14 supported codes, or null
 //                                        to clear the override and follow the DEVICE
@@ -486,6 +493,8 @@ function readPrefs () {
       // "Smooth zapping" toggle: null = the user never chose (boot uses the app's
       // compiled default), true/false = their persisted choice wins.
       smoothZapping: typeof (p && p.smoothZapping) === 'boolean' ? p.smoothZapping : null,
+      // "Debug overlay" toggle (the stats HUD): same null/boolean contract.
+      debugStats: typeof (p && p.debugStats) === 'boolean' ? p.debugStats : null,
       // UI language (S56e): null = the user never picked one, so the app follows the
       // DEVICE language. A pinned code survives restarts and beats device detection.
       language: LANGUAGES.includes(p && p.language) ? p.language : null,
@@ -522,7 +531,7 @@ function readPrefs () {
       signin: gateVaultRecord(p && p.signin)
     }
   } catch {
-    return { creds: null, favorites: [], smoothZapping: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null, remoteAccept: null, signin: null }
+    return { creds: null, favorites: [], smoothZapping: null, debugStats: null, language: null, service: null, deviceId: null, vodList: [], vodHistory: [], parental: null, remoteAccept: null, signin: null }
   }
 }
 
@@ -602,6 +611,65 @@ function writeJsonFileAtomic (file, obj) {
 function sendPrefs () {
   const { deviceId, parental, signin, ...rest } = readPrefs()
   send({ type: 'prefs', ...rest, parental: parental ? { hide: parental.hide } : null, signinSaved: !!signin })
+}
+
+// --- debug HUD stats (the Debug overlay's data feed) -----------------------------------
+// One tagged 'stats-get' request per HUD tick (1 s, and only while the HUD is visible —
+// the app owns the interval, so a hidden HUD costs the worklet nothing). The reply must
+// never wedge or throw the worklet: every source is best-effort, a failed read answers
+// nulls/zeros and the HUD shows dashes. Rates (cpu %, rx/tx per second) are computed
+// HERE from the previous sample — the engine's stats() is a synchronous point-in-time
+// read, and the worklet is the only place both samples live.
+let statsPrev = null // { at, cpu: {user,system} µs, wire: {rx,tx} cumulative bytes }
+// measureDriveBytes walks the active replica (engine-bounded at 5 s) — NEVER run on
+// the 1 s reply path. A throttled background refresh keeps this cache ≤10 s stale.
+const statsDrive = { at: 0, value: null, busy: false }
+
+function sendStats (tag) {
+  const at = Date.now()
+  const out = {
+    type: 'stats',
+    tag,
+    at,
+    os: { cpuPercent: null, rssBytes: null, freeMem: null, totalMem: null, loadAvg1: null },
+    engine: { source: null, streamId: null, feedPeers: 0, swarmPeers: 0 },
+    net: { rxBps: null, txBps: null },
+    store: { driveBytes: statsDrive.value ? statsDrive.value.bytes : null }
+  }
+  let cpu = null
+  try {
+    cpu = os.cpuUsage() // process-wide µs since start; % of one core over the sample gap
+    if (statsPrev && statsPrev.cpu && at > statsPrev.at) {
+      const dUs = (cpu.user + cpu.system) - (statsPrev.cpu.user + statsPrev.cpu.system)
+      out.os.cpuPercent = Math.max(0, Math.round((dUs / ((at - statsPrev.at) * 1000)) * 100))
+    }
+  } catch {}
+  try { out.os.rssBytes = os.memoryUsage().rss ?? null } catch {}
+  try { out.os.freeMem = os.freemem(); out.os.totalMem = os.totalmem() } catch {}
+  try { const l = os.loadavg(); if (Array.isArray(l) && l.length) out.os.loadAvg1 = l[0] } catch {}
+  let wire = null
+  if (player) {
+    try {
+      const s = player.stats()
+      out.engine = { source: s.source, streamId: s.streamId, feedPeers: s.feedPeers, swarmPeers: s.swarmPeers }
+      wire = s.wire
+      if (statsPrev && statsPrev.wire && at > statsPrev.at) {
+        const dt = (at - statsPrev.at) / 1000
+        // max(0): a feed swap replaces the drive and its counters restart at zero —
+        // one clamped sample beats a negative rate on screen.
+        out.net.rxBps = Math.max(0, Math.round((wire.rx - statsPrev.wire.rx) / dt))
+        out.net.txBps = Math.max(0, Math.round((wire.tx - statsPrev.wire.tx) / dt))
+      }
+    } catch {}
+    if (!statsDrive.busy && at - statsDrive.at > 10000) {
+      statsDrive.busy = true
+      player.feedBytes()
+        .then((m) => { statsDrive.value = m }, () => { statsDrive.value = null })
+        .then(() => { statsDrive.at = Date.now(); statsDrive.busy = false })
+    }
+  }
+  statsPrev = { at, cpu, wire }
+  send(out)
 }
 
 // Per-install device id (S50c): 8 random bytes, minted once and persisted. Read on
@@ -1467,6 +1535,14 @@ IPC.on('data', (data) => {
       writePrefs({ ...readPrefs(), smoothZapping: !!msg.zapPrefetch })
       if (player) { try { player.setZapPrefetch(msg.zapPrefetch) } catch (err) { fail(err) } }
       sendPrefs()
+    } else if (msg.type === 'debug-stats-set') {
+      // The "Debug overlay" toggle (Settings row + the TV remote's debug key).
+      // Persist-only, like language-set: the HUD polls stats-get while visible, so
+      // there is nothing to apply engine-side.
+      writePrefs({ ...readPrefs(), debugStats: !!msg.debugStats })
+      sendPrefs()
+    } else if (msg.type === 'stats-get') {
+      sendStats(msg.tag)
     } else if (msg.type === 'language-set') {
       // The viewer's UI language (S56e). Persist-only: nothing in the engine is
       // localized, so this never touches the player. A null/absent/unknown code clears

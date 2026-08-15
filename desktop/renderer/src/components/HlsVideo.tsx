@@ -174,6 +174,12 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
   }, [volume, muted, attempt, url])
 
   function remount () {
+    // Any remount supersedes a pending error retry: that timer belongs to a mount
+    // that is going away, and now that the timer bills the ladder (failures++), a
+    // handoff remount (port switch, feed rotation, stall resync) letting it fire
+    // would charge a phantom attempt no error of the fresh mount's own earned —
+    // and remount the fresh player a second time. (RN parity: AliranVideo.remount.)
+    if (retry.current) { clearTimeout(retry.current); retry.current = null }
     epoch.current++
     setAttempt(epoch.current)
   }
@@ -219,6 +225,12 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
       if (m.type === 'status' && (m.state === 'feed:retune' || m.state === 'feed:reconnect')) {
         // The engine's self-heal on the active feed — re-arm completion and surface
         // the phase so the host says "reconnecting" instead of freezing its indicator.
+        // The error ladder resets with it: the engine is actively recovering, so the
+        // errors spent so far belong to the outage the recovery is about to end — a
+        // long P2P transient must heal the way the old flat retry always let it,
+        // instead of stranding the viewer on a give-up mid-recovery. (A dead
+        // redirect never emits these — no feed — so its bound is untouched.)
+        failures.current = 0
         tune.current.tuning = true
         cb.current.onTune?.({ id: tune.current.id, streamId: tune.current.streamId, phase: m.state === 'feed:retune' ? 'retune' : 'reconnect' })
       }
@@ -275,19 +287,26 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
     video.addEventListener('ended', onVideoEnded)
 
     const scheduleRetry = () => {
-      if (failures.current >= ERROR_GIVE_UP) return // spent: the error is up, only real playback re-arms
+      if (failures.current >= ERROR_GIVE_UP) return // spent: the error is up — no spinner, no remount, only real playback re-arms
       if (failures.current === ERROR_GIVE_UP - 1) {
         // The last rung gives up: three consecutive retry mounts took the same error
         // and nothing else on this path will ever report it (a redirect channel has
         // no feed for the engine's watchdog to fail on). Our own translated sentence,
-        // same pattern as the codec error below — the channel is offline, and the
-        // retry is a re-select.
+        // same pattern as the codec error below — and the copy follows the source:
+        // a cdn/redirect url refusing to play is the CHANNEL offline; a p2p failure
+        // this persistent (the engine's own self-heal resets this ladder, so it was
+        // silent too) gets the neutral playback-failed line instead of blaming the
+        // channel for what may be a local engine problem. Retry is a re-select.
         if (retry.current) { clearTimeout(retry.current); retry.current = null }
         failures.current = ERROR_GIVE_UP
         tune.current.tuning = false
-        cb.current.onError?.(t('live.offlineHint'))
+        cb.current.onError?.(t(backend.source === 'cdn' ? 'live.offlineHint' : 'live.playbackFailed'))
         return
       }
+      // The spinner belongs to a retry that is actually coming — after the early
+      // returns above, so a spent ladder's further error events cannot re-raise
+      // buffering chrome over the error UI (RN parity: the spent-check runs first).
+      cb.current.onBuffering?.(true)
       if (retry.current) clearTimeout(retry.current)
       // The delay belongs to the attempt this error asks for: 2.5 s first (the
       // transient contract), doubled per consecutive failure. The attempt is counted
@@ -339,15 +358,15 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
           mediaRecovered = true
           try { hls!.recoverMediaError(); return } catch { /* fall through to remount */ }
         }
-        // Playlist/segments not replicated yet, or a live-edge hiccup — remount+retry.
-        cb.current.onBuffering?.(true)
+        // Playlist/segments not replicated yet, or a live-edge hiccup — remount+retry
+        // (scheduleRetry owns the buffering chrome: a spent ladder shows no spinner).
         scheduleRetry()
       })
       hls.loadSource(url)
       hls.attachMedia(video)
     } else {
       // Non-HLS redirect URL (or MSE unavailable): let Chromium play it directly.
-      const onNativeError = () => { if (!stale()) { cb.current.onBuffering?.(true); scheduleRetry() } }
+      const onNativeError = () => { if (!stale()) scheduleRetry() } // scheduleRetry owns the buffering chrome
       video.addEventListener('error', onNativeError)
       video.src = url
       video.play().catch(() => {})
@@ -409,6 +428,11 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
       const p = progress.current
       if (vod.current) { p.at = Date.now(); return } // vod: a still playhead is by design
       if (pausedRef.current) { p.at = Date.now(); return }
+      // A spent error ladder means the error UI owns the screen — the stall lane must
+      // not resurrect the tune over it (12 s remount loop + tuning chrome over the
+      // offline text). Desktop has no STALL_GIVE_UP of its own yet, so this gate is
+      // what keeps the give-up final; real playback resets `failures` and re-arms.
+      if (failures.current >= ERROR_GIVE_UP) return
       if (p.played) resyncs.current = 0
       else if (resyncs.current === 0) return // never played: the tune phase owns recovery
       if (Date.now() - p.at < stallTimeoutMs) return

@@ -100,6 +100,8 @@
   "settings.result": "Resultado",
   "settings.activeSource": "Fonte ativa",
   "settings.peers": "Pares",
+  "settings.debugStats": "Sobreposição de diagnóstico",
+  "settings.debugStatsHint": "Mostra estatísticas de reprodução e de rede sobre o vídeo.",
   "settings.signOut": "Sair da conta",
   "settings.signOutHint": "Ao sair da conta, este aparelho esquece o login salvo.",
   "settings.changeService": "Mudar de serviço…",

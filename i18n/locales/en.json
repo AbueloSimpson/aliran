@@ -100,6 +100,8 @@
   "settings.result": "Result",
   "settings.activeSource": "Active source",
   "settings.peers": "Peers",
+  "settings.debugStats": "Debug overlay",
+  "settings.debugStatsHint": "Show playback and network statistics over the video.",
   "settings.signOut": "Sign out",
   "settings.signOutHint": "Sign out forgets the saved sign-in on this device.",
   "settings.changeService": "Change service…",

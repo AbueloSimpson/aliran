@@ -100,6 +100,8 @@
   "settings.result": "Resultaat",
   "settings.activeSource": "Actieve bron",
   "settings.peers": "Peers",
+  "settings.debugStats": "Debug-overlay",
+  "settings.debugStatsHint": "Toont afspeel- en netwerkstatistieken over het beeld.",
   "settings.signOut": "Uitloggen",
   "settings.signOutHint": "Uitloggen wist de opgeslagen login op dit apparaat.",
   "settings.changeService": "Andere dienst…",

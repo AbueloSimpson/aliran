@@ -100,6 +100,8 @@
   "settings.result": "结果",
   "settings.activeSource": "当前来源",
   "settings.peers": "节点",
+  "settings.debugStats": "调试悬浮层",
+  "settings.debugStatsHint": "在视频上方显示播放和网络统计信息。",
   "settings.signOut": "退出登录",
   "settings.signOutHint": "退出登录会清除此设备上保存的登录信息。",
   "settings.changeService": "更换服务…",

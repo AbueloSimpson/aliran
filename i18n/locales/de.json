@@ -100,6 +100,8 @@
   "settings.result": "Ergebnis",
   "settings.activeSource": "Aktive Quelle",
   "settings.peers": "Peers",
+  "settings.debugStats": "Debug-Overlay",
+  "settings.debugStatsHint": "Zeigt Wiedergabe- und Netzwerkstatistiken über dem Video an.",
   "settings.signOut": "Abmelden",
   "settings.signOutHint": "Das Abmelden löscht die gespeicherte Anmeldung auf diesem Gerät.",
   "settings.changeService": "Dienst wechseln…",

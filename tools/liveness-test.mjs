@@ -40,6 +40,26 @@ const server = http.createServer((req, res) => {
     } else { res.writeHead(403); res.end('forbidden') }
   } else if (path === '/hang') {
     // accept and never answer — the probe's timeout is the only way out
+  } else if (path === '/empty') {
+    res.writeHead(204); res.end() // body-less 2xx: nothing to play, and nothing to crash on
+  } else if (path === '/reset') {
+    // headers, a partial body, then a hard socket kill — the mid-body reset class
+    // that used to reject reader.read() and abort the whole sweep.
+    res.writeHead(200, { 'content-type': 'text/plain' })
+    res.write('partial')
+    res.destroy()
+  } else if (path === '/liar.m3u8') {
+    // A dead provider stamping a PLAYLIST content type on garbage: the audio/*
+    // media shortcut must not grade this alive on the header alone.
+    res.writeHead(200, { 'content-type': 'audio/x-mpegurl' })
+    res.end('sorry, expired')
+  } else if (path === '/rawts') {
+    // An extension-less raw MPEG-TS stream behind a generic content-type: sync
+    // bytes every 188 say it is playable media, not a dead 200.
+    const ts = Buffer.alloc(188 * 4)
+    for (let i = 0; i < 4; i++) ts[i * 188] = 0x47
+    res.writeHead(200, { 'content-type': 'application/octet-stream' })
+    res.end(ts)
   } else {
     res.writeHead(404); res.end('nope')
   }
@@ -85,7 +105,16 @@ const quiet = () => {}
   assert.strictEqual(timedOut.net, true, 'timeout is a network-layer failure')
   const refused = await probeUrl(REFUSED, null, { timeoutMs: 2000 })
   assert.strictEqual(refused.net, true, 'connection refused is a network-layer failure')
-  log('A: probeUrl — playlist/DASH/file alive; 404/HTML dead; timeout+refused are net-layer ✓')
+  // The classes that used to THROW out of probeUrl and abort whole sweeps:
+  const empty = await probeUrl(`${BASE}/empty`, null, o)
+  assert.strictEqual(empty.alive, false, 'a body-less 2xx is dead, not a crash')
+  const reset = await probeUrl(`${BASE}/reset`, null, o)
+  assert.strictEqual(reset.alive, false)
+  assert.strictEqual(reset.net, true, 'a mid-body connection reset is a net-layer failure, not a throw')
+  // Header lies and header-less truths:
+  assert.strictEqual((await probeUrl(`${BASE}/liar.m3u8`, null, o)).alive, false, 'a playlist content-type on garbage is judged by the BODY')
+  assert.deepStrictEqual(await probeUrl(`${BASE}/rawts`, null, o), { alive: true }, 'raw MPEG-TS sync bytes are playable media')
+  log('A: probeUrl — playlist/DASH/file/TS alive; 404/HTML/liar/empty dead; timeout+refused+reset are net-layer, never throws ✓')
 }
 
 // ===== B: header pass-through =====
@@ -132,20 +161,38 @@ const quiet = () => {}
   log('C: hysteresis — flip at 3, put-only-on-flip, first-success recovery ✓')
 }
 
-// ===== D: a url change resets the fail counter =====
+// ===== D: token rotation must not shield a dead channel — counters key on the ID =====
 {
   state.dead = true
-  const db = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8`) })
+  const db = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8?token=aaa`) })
   const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, log: quiet })
-  await prober.probeNow(); await prober.probeNow() // 2 fails on the old url
-  db.m.set('catalog/ev1', redirect(`${BASE}/gone`)) // admin/sync moved the channel to a (also dead) new url
-  await prober.probeNow()
-  assert.strictEqual(db.m.get('catalog/ev1').isLive, true, 'new url = fresh counter — 1 fail, not 3')
-  await prober.probeNow(); await prober.probeNow()
-  assert.strictEqual(db.m.get('catalog/ev1').isLive, false, 'three fails on the NEW url flip it')
+  await prober.probeNow() // fail 1
+  db.m.set('catalog/ev1', redirect(`${BASE}/toggle.m3u8?token=bbb`)) // source sync re-stamped the token
+  await prober.probeNow() // fail 2 — the rotation must NOT have reset the count
+  db.m.set('catalog/ev1', redirect(`${BASE}/toggle.m3u8?token=ccc`))
+  await prober.probeNow() // fail 3 -> flip
+  assert.strictEqual(db.m.get('catalog/ev1').isLive, false, 'three fails across token rotations still flip — a per-url counter could never dim an event channel')
   prober.close()
   state.dead = false
-  log('D: url change resets the counter ✓')
+  log('D: counters survive url token rotation ✓')
+}
+
+// ===== D2: a stale verdict is not applied to a url that changed after the snapshot =====
+{
+  const db = makeDb({ 'catalog/mv1': redirect(`${BASE}/gone-a`) })
+  // fetchImpl hook: mid-sweep (between snapshot and flip), an admin repoints the url.
+  let swapped = false
+  const swappingFetch = (url, opts) => {
+    if (!swapped) { swapped = true; db.m.set('catalog/mv1', redirect(`${BASE}/gone-b`)) }
+    return fetch(url, opts)
+  }
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, fetchImpl: swappingFetch, log: quiet })
+  await prober.probeNow()
+  assert.strictEqual(db.m.get('catalog/mv1').isLive, true, 'the old url verdict must not dim the new url')
+  await prober.probeNow() // url stable now; the counter survived, this sweep's own evidence flips
+  assert.strictEqual(db.m.get('catalog/mv1').isLive, false)
+  prober.close()
+  log('D2: a mid-sweep url change parks the verdict; the next sweep flips on fresh evidence ✓')
 }
 
 // ===== E: self-outage guard — a mostly-net-dead sweep is discarded =====
@@ -170,14 +217,38 @@ const quiet = () => {}
 {
   const db = makeDb({
     'catalog/p2p': { title: 'p', feedKey: 'f'.repeat(64), isLive: true, type: 'live' }, // no redirect
-    'catalog/vodr': redirect(`${BASE}/gone`, { type: 'vod' }) // vod redirect record: not live inventory
+    'catalog/vodr': redirect(`${BASE}/gone`, { type: 'vod' }), // vod redirect record: not live inventory
+    // DUAL record (feedKey + redirect url): the broadcaster heartbeat owns isLive
+    // there and would ping-pong puts against a prober flip forever. Never probed.
+    'catalog/dual': redirect(`${BASE}/gone`, { feedKey: 'a'.repeat(64) })
   })
-  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, log: quiet })
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
   const r = await prober.probeNow()
-  assert.strictEqual(r.probed, 0, 'p2p and vod records are out of scope')
+  assert.strictEqual(r.probed, 0, 'p2p, vod and DUAL records are all out of scope')
   assert.strictEqual(db.stats.puts, 0)
   prober.close()
-  log('F: only live redirect records are probed ✓')
+  log('F: only pure live redirect records are probed (duals excluded) ✓')
+}
+
+// ===== F2: one pathological host cannot abort the sweep for everyone else =====
+{
+  state.dead = true
+  const db = makeDb({
+    'catalog/rst': redirect(`${BASE}/reset`), // mid-body reset — used to reject Promise.all
+    'catalog/emp': redirect(`${BASE}/empty`), // body-less 2xx — used to throw on getReader
+    'catalog/ded': redirect(`${BASE}/toggle.m3u8`),
+    'catalog/ok2': redirect(`${BASE}/ok.m3u8`)
+  })
+  const prober = makeLivenessProber({ config: {}, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  const r = await prober.probeNow()
+  assert.strictEqual(r.discarded, undefined, 'one net-dead of four is not a self-outage')
+  assert.strictEqual(r.probed, 4, 'every url got its verdict — the sweep survived the pathological hosts')
+  assert.strictEqual(db.m.get('catalog/emp').isLive, false, 'the empty-answer channel dims')
+  assert.strictEqual(db.m.get('catalog/ded').isLive, false, 'the dead channel dims despite its bad neighbors')
+  assert.strictEqual(db.m.get('catalog/ok2').isLive, true)
+  prober.close()
+  state.dead = false
+  log('F2: pathological hosts are classified, never sweep-fatal ✓')
 }
 
 // ===== G: disabled prober is a stub =====

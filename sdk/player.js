@@ -1346,6 +1346,41 @@ export class AliranPlayer extends Emitter {
     return this._bootTrace.slice()
   }
 
+  // Cheap synchronous point-in-time engine stats for a diagnostics overlay (the
+  // client's debug HUD): active source + stream, peers on the CURRENT feed (the
+  // same number the 3 s 'peers' ticker emits — see serveFeed), total swarm
+  // connections (catalog + feed peers + everything else on the one swarm), and
+  // cumulative wire bytes rx/tx summed over the active feed's cores (hypercore
+  // replicator stats). No timers, no I/O, nothing async — rate deltas are the
+  // caller's job (the worklet keeps the last sample and divides by wall time).
+  // A cdn/redirect source has no feed: peers and wire read 0, which is the truth.
+  stats () {
+    const a = this._active
+    const drive = this._feedDrive
+    let rx = 0
+    let tx = 0
+    for (const core of [drive && drive.core, drive && drive.blobs && drive.blobs.core]) {
+      const w = core && core.replicator && core.replicator.stats && core.replicator.stats.wireData
+      if (w) { rx += w.rx || 0; tx += w.tx || 0 }
+    }
+    return {
+      source: a ? a.source : null,
+      streamId: a ? a.streamId : null,
+      feedPeers: drive && drive.core && drive.core.peers ? drive.core.peers.length : 0,
+      swarmPeers: this._swarm ? this._swarm.connections.size : 0,
+      wire: { rx, tx }
+    }
+  }
+
+  // stats()'s async companion: the measured on-disk size of the ACTIVE feed's
+  // replica ({ bytes, blobs, meta } | null), on the same FEED_MEASURE_MS bound as
+  // every other measurement (an unbounded measure can wedge its caller — see
+  // _measureFeed). It walks the drive: callers cache and throttle it, never call
+  // it per HUD tick.
+  async feedBytes () {
+    return this._feedDrive ? this._measureFeed(this._feedDrive) : null
+  }
+
   // --- public API ---
 
   // Join the panel's topic and replicate its signed DB. Resolves once the topic is

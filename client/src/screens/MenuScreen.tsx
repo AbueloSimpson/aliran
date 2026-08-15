@@ -1,11 +1,11 @@
-// Main menu hub. TV keeps the reference's icon-bar-over-wallpaper screen: a single
-// horizontal icon menu across the top — white glyphs + ALL-CAPS labels, focused item
-// wrapped in an accent rounded border — over a full-screen wallpaper. PHONE (S22
-// redesign, portrait + landscape) moves the sections into a vertical LEFT rail (the
-// BBC-iPlayer pattern): same glyph + ALL-CAPS tiles running down the left edge on a
-// translucent surface panel with an accent hairline, pressed tiles reusing the accent
-// border grammar. The right side becomes the hero/info area (wordmark + live hero
-// lines anchored lower-right). Wallpaper = the featured stream's LIVE feed thumb when
+// Main menu hub. BOTH builds run the vertical LEFT-rail grammar (the BBC-iPlayer
+// pattern): glyph + ALL-CAPS tiles down the left edge on a translucent surface panel
+// with an accent hairline, the right side the hero/info area (wordmark + live hero
+// lines anchored lower-right). PHONE got it first (S22 redesign); TV joined
+// 2026-08-15 (operator request — it used to keep the reference's horizontal top
+// bar), with the one grammar difference remotes force: TV tiles are FOCUS-driven
+// (accent ring on D-pad focus, MenuEntry) where phone tiles answer PRESS
+// (RailEntry). Wallpaper = the featured stream's LIVE feed thumb when
 // one is rolling (WS5), over its backdrop (panel curation, S16c) under a dark scrim,
 // falling back to the operator's branding.wallpaper, then a plain brand surface (D6:
 // no baked-in art). On phone a theme-token wash (background/surface gradient built
@@ -148,7 +148,16 @@ export function MenuScreen ({ navigation }: Props) {
   })()
 
   if (theme.isTV) {
-    // TV branch — unchanged (the redesign below is phone-first; TV keeps its top bar).
+    // TV: the same left-rail grammar as the phone (operator request 2026-08-15 — the
+    // section icons used to ride a horizontal TOP bar, out of step with the phone
+    // build). The rail keeps the FOCUS-driven MenuEntry, never the touch-only
+    // RailEntry: D-pad UP/DOWN walks it, OK enters, the first item takes preferred
+    // focus — the accent ring is the selection state a remote viewer navigates by.
+    // Top-aligned on purpose (no flexGrow/center like the phone rail): seven entries
+    // can outgrow a 540dp viewport, and a centered overflow in a ScrollView clips
+    // the top entries out of reach. The wordmark + hero/now-playing lines move to
+    // the lower-right hero area, phone-style — the old absolute bottom-left footer
+    // would sit under the rail.
     return (
       <View style={styles.container}>
         {wallpaper && <Image source={{ uri: wallpaper }} style={StyleSheet.absoluteFill} resizeMode="cover" />}
@@ -166,25 +175,29 @@ export function MenuScreen ({ navigation }: Props) {
         )}
         <View style={[StyleSheet.absoluteFill, styles.scrim]} />
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bar} contentContainerStyle={styles.barContent}>
-          {items.map((item, i) => <MenuEntry key={item.key} item={item} first={i === 0} />)}
-        </ScrollView>
+        <View style={styles.tvBody}>
+          <View style={styles.tvRail}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.tvRailContent}>
+              {items.map((item, i) => <MenuEntry key={item.key} item={item} first={i === 0} />)}
+            </ScrollView>
+          </View>
 
-        <View style={styles.footer}>
-          <Text style={styles.wordmark}>{service.name}</Text>
-          {hero && (
-            <View style={styles.heroLine}>
-              {hero.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
-              <Text style={styles.heroTitle} numberOfLines={1}>{displayTitle(hero)}</Text>
-            </View>
-          )}
-          {!!nowTitle && (
-            <View style={styles.heroLine}>
-              {/* The chip needs live evidence: only after a feed frame actually loaded. */}
-              {thumbShown && <Text style={styles.liveChip}>{t('common.live')}</Text>}
-              <Text style={styles.heroTitle} numberOfLines={1}>{nowTitle}</Text>
-            </View>
-          )}
+          <View style={styles.tvHeroArea}>
+            <Text style={styles.wordmark}>{service.name}</Text>
+            {hero && (
+              <View style={styles.heroLine}>
+                {hero.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
+                <Text style={styles.heroTitle} numberOfLines={1}>{displayTitle(hero)}</Text>
+              </View>
+            )}
+            {!!nowTitle && (
+              <View style={styles.heroLine}>
+                {/* The chip needs live evidence: only after a feed frame actually loaded. */}
+                {thumbShown && <Text style={styles.liveChip}>{t('common.live')}</Text>}
+                <Text style={styles.heroTitle} numberOfLines={1}>{nowTitle}</Text>
+              </View>
+            )}
+          </View>
         </View>
       </View>
     )
@@ -282,11 +295,13 @@ const styles = StyleSheet.create({
   washRow: { flexDirection: 'row' },
   washBandV: { flex: 1, backgroundColor: theme.colors.background },
   washBandH: { flex: 1, backgroundColor: theme.colors.surface },
-  // --- TV (unchanged) ---
-  bar: { position: 'absolute', top: theme.safeY + theme.spacing(1), left: 0, right: 0, flexGrow: 0 },
-  // flexGrow lets the row fill the viewport so justifyContent can center the items;
-  // if the sections ever overflow the width it falls back to a normal scrollable row.
-  barContent: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: theme.safeX, gap: theme.spacing(1.5) },
+  // --- TV left rail (the phone rail's grammar, focus-driven) ---
+  tvBody: { flex: 1, flexDirection: 'row' },
+  // Same translucent surface + accent hairline as the phone rail; the safe insets
+  // live on the rail itself so no entry ever sits in overscan.
+  tvRail: { backgroundColor: theme.colors.overlay, borderRightWidth: 1, borderRightColor: theme.colors.accent, paddingLeft: theme.safeX },
+  tvRailContent: { paddingVertical: theme.safeY + theme.spacing(1), paddingRight: theme.spacing(1), gap: theme.spacing(0.75) },
+  tvHeroArea: { flex: 1, justifyContent: 'flex-end', alignItems: 'flex-end', paddingLeft: theme.spacing(2), paddingRight: theme.safeX, paddingBottom: theme.safeY + theme.spacing(1.5) },
   entry: {
     alignItems: 'center', justifyContent: 'center',
     minWidth: theme.isTV ? 132 : 92,
@@ -297,7 +312,6 @@ const styles = StyleSheet.create({
   glyph: { fontSize: Math.round((theme.isTV ? 34 : 26) * ICON_SCALE) },
   label: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginTop: 8 },
   labelFocused: { color: theme.colors.accent },
-  footer: { position: 'absolute', left: theme.safeX, bottom: theme.safeY + theme.spacing(1) },
   // --- phone rail + hero area ---
   phoneBody: { flex: 1, flexDirection: 'row' },
   // Translucent surface panel: the hero art shows through; a 1px accent hairline
