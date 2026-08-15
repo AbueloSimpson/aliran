@@ -488,7 +488,11 @@ export function LiveScreen ({ route, navigation }: Props) {
           if (id === playingIdRef.current) backend.play(id)
         }
       }
-      if (m.type === 'prefs') { setFavorites(m.favorites); setHudOn(m.debugStats === true) }
+      // debugStats: absent (an older worklet bundle that never persists it — the
+      // C:\b brand-skew shape) means KEEP the local flip, not "off": otherwise the
+      // TV debug key's optimistic toggle silently reverts on the next unrelated
+      // prefs echo (a favorites write) and the key appears to not stick.
+      if (m.type === 'prefs') { setFavorites(m.favorites); if (m.debugStats !== undefined) setHudOn(m.debugStats === true) }
       // Broadcaster rotated the channel we're watching (source change / restart): the SDK
       // re-resolved the feed behind the same URL and AliranVideo remounts. Clear any prior
       // playback error (that had unmounted the video) so it re-mounts onto the fresh feed.
@@ -1165,7 +1169,7 @@ export function LiveScreen ({ route, navigation }: Props) {
             ...(hudOn ? {
               reportBandwidth: true, // Android: onBandwidthUpdate is opt-in
               onBandwidthUpdate: (e: { bitrate?: number }) => { if (e.bitrate && e.bitrate > 0) hudVideo.current.bitrateBps = e.bitrate },
-              onVideoTracks: (e: { videoTracks?: Array<{ selected?: boolean; codecs?: string; width?: number; height?: number; bitrate?: number }> }) => hudTracks(e.videoTracks)
+              onVideoTracks: (e: { videoTracks?: HudTrack[] }) => hudTracks(e.videoTracks)
             } : {}),
             ...(playingVod ? {
               onProgress: (e: { currentTime: number; playableDuration?: number }) => { setVodPos(Math.floor(e.currentTime)); if (hudOnRef.current) hudBuffer(e) },

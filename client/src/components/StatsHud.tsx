@@ -22,6 +22,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, StyleSheet } from 'react-native'
 import type { StatsMessage } from '@aliran/react-native'
 import { backend } from '../worklet'
+import { PILL_TOP, PILL_SLOT_HEIGHT } from './ChannelChangeIndicator'
 import { theme } from '../theme'
 
 /** Player-side numbers LiveScreen captures from <Video> events into a ref. */
@@ -117,9 +118,10 @@ export function StatsHud ({ videoStats }: { videoStats: React.MutableRefObject<H
 
 const styles = StyleSheet.create({
   wrap: {
-    // The tune pill owns the corner (top: safeY + spacing(1), ~60 px tall with its
-    // track); the HUD sits permanently below its slot so nothing jumps during a zap.
-    position: 'absolute', top: theme.safeY + theme.spacing(1) + 72, right: theme.safeX,
+    // The tune pill owns the corner; the HUD sits permanently below its slot so
+    // nothing jumps during a zap. Derived from the pill's own exported geometry —
+    // never hand-measured here.
+    position: 'absolute', top: PILL_TOP + PILL_SLOT_HEIGHT, right: theme.safeX,
     backgroundColor: theme.colors.overlayStrong, borderRadius: 10,
     paddingHorizontal: theme.spacing(1.25), paddingVertical: theme.spacing(0.75),
     minWidth: theme.isTV ? 240 : 190, maxWidth: 300

@@ -75,10 +75,13 @@ test('reflects the worklet-confirmed pref (and the backend mirrors it)', async (
   expect(pillState(tree)).toBe('ON')
   expect(backend.debugStats).toBe(true)
 
-  // A prefs reply without the field (older worklet bundle) degrades to OFF, not crash.
+  // A prefs reply WITHOUT the field (older worklet bundle, the brand-skew shape)
+  // keeps the local value — never forces OFF. Otherwise the TV key's optimistic
+  // flip would silently revert on the next unrelated prefs echo (a favorites
+  // write) and the toggle would appear to bounce on bundle-skewed installs.
   await ReactTestRenderer.act(() => { workletSays({ type: 'prefs', creds: null, favorites: [] }) })
-  expect(pillState(tree)).toBe('OFF')
-  expect(backend.debugStats).toBeNull()
+  expect(pillState(tree)).toBe('ON')
+  expect(backend.debugStats).toBeNull() // the mirror still reports "unknown" honestly
 })
 
 test('a screen mounted after boot seeds from the mirrored pref', async () => {

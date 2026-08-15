@@ -22,6 +22,13 @@ import { theme } from '../theme'
 const TICK_MS = 140
 const HOLD_MS = 450 // keep the completed bar up briefly so 100% is actually seen
 
+// The pill's corner slot, exported so overlays that stack UNDER it (StatsHud) derive
+// their offset from the same numbers instead of hand-measuring — an edit to the
+// pill's geometry must move both or they fight for the corner mid-zap.
+export const PILL_TOP = theme.safeY + theme.spacing(1)
+/** Vertical room the pill can occupy (two text lines + track + padding), rounded up. */
+export const PILL_SLOT_HEIGHT = 72
+
 /** Mirrors <AliranVideo>'s tune phases: a plain tune vs the engine's self-heal cycle. */
 export type ChannelChangePhase = 'tuning' | 'retune' | 'reconnect'
 
@@ -87,7 +94,7 @@ export function ChannelChangeIndicator ({ active, phase = 'tuning', number, titl
 
 const styles = StyleSheet.create({
   wrap: {
-    position: 'absolute', top: theme.safeY + theme.spacing(1), right: theme.safeX,
+    position: 'absolute', top: PILL_TOP, right: theme.safeX,
     backgroundColor: theme.colors.overlayStrong, borderRadius: 10,
     paddingHorizontal: theme.spacing(1.25), paddingVertical: theme.spacing(0.75),
     minWidth: theme.isTV ? 200 : 150, maxWidth: 280

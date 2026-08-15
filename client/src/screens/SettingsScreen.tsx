@@ -114,7 +114,10 @@ export function SettingsScreen ({ navigation }: Props) {
       if (m.type === 'prefs') {
         setUsername(m.creds?.username ?? null)
         setSmoothZap(m.smoothZapping ?? false)
-        setDebugStats(m.debugStats ?? false)
+        // Absent (older worklet bundle) = keep the local value, never force off —
+        // same reason as LiveScreen's debug-key handling: the toggle must not
+        // visibly bounce on installs whose app.bundle predates the field.
+        if (m.debugStats !== undefined) setDebugStats(m.debugStats ?? false)
         setParental(m.parental ?? null)
         setAcceptRemote(m.remoteAccept !== false)
         setLanguage(m.language ?? null)
