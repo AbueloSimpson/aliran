@@ -24,7 +24,7 @@ import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 import { loadServiceDescriptor, type SectionToggles } from '../config'
-import { pickHero } from '../catalog'
+import { displayTitle, pickHero } from '../catalog'
 import { useEpg, useChannelThumb } from '@aliran/react-native'
 import { theme } from '../theme'
 
@@ -161,7 +161,7 @@ export function MenuScreen ({ navigation }: Props) {
             resizeMode="cover"
             onError={() => { setThumbShown(false); onHeroThumbError() }}
             onLoad={() => setThumbShown(true)}
-            accessibilityLabel={t('menu.heroLiveNow', { title: hero.title })}
+            accessibilityLabel={t('menu.heroLiveNow', { title: displayTitle(hero) })}
           />
         )}
         <View style={[StyleSheet.absoluteFill, styles.scrim]} />
@@ -175,7 +175,7 @@ export function MenuScreen ({ navigation }: Props) {
           {hero && (
             <View style={styles.heroLine}>
               {hero.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
-              <Text style={styles.heroTitle} numberOfLines={1}>{hero.title}</Text>
+              <Text style={styles.heroTitle} numberOfLines={1}>{displayTitle(hero)}</Text>
             </View>
           )}
           {!!nowTitle && (
@@ -204,7 +204,7 @@ export function MenuScreen ({ navigation }: Props) {
           resizeMode="cover"
           onError={() => { setThumbShown(false); onHeroThumbError() }}
           onLoad={() => setThumbShown(true)}
-          accessibilityLabel={t('menu.heroLiveNow', { title: hero.title })}
+          accessibilityLabel={t('menu.heroLiveNow', { title: displayTitle(hero) })}
         />
       )}
       <View style={[StyleSheet.absoluteFill, styles.scrim]} />
@@ -222,7 +222,7 @@ export function MenuScreen ({ navigation }: Props) {
           {hero && (
             <View style={styles.heroLine}>
               {hero.isLive && <Text style={styles.live}>{t('common.liveBadge')}</Text>}
-              <Text style={styles.heroTitle} numberOfLines={1}>{hero.title}</Text>
+              <Text style={styles.heroTitle} numberOfLines={1}>{displayTitle(hero)}</Text>
             </View>
           )}
           {!!nowTitle && (

@@ -12,9 +12,10 @@ import React, { useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet } from 'react-native'
 import type { Stream } from '../worklet'
 import { useI18n } from '@aliran/i18n'
-import { formatChannelNumber, formatDuration, isVod } from '../catalog'
+import { displayTitle, formatChannelNumber, formatDuration, isVod } from '../catalog'
 import { useEpg } from '@aliran/react-native'
 import { prefersReducedMotion } from '../motion'
+import { MarqueeText } from './MarqueeText'
 import { ProgressHairline } from './ProgressHairline'
 import { theme } from '../theme'
 
@@ -63,6 +64,10 @@ function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFoc
   // one cached fetch (src/epg.ts); guide-less channels never fetch.
   const { data } = useEpg(stream.epgUrl, stream.epgId, stream.guideBase)
   const nowText = data?.now?.title || stream.description
+  // Display name: the panel-minted [TAG] prefix stripped (catalog.displayTitle) — on
+  // a rail already named for the tag it is pure repetition. The RAW title stays on
+  // everything that names the channel back to the panel.
+  const title = displayTitle(stream)
   return (
     <Pressable
       style={[
@@ -84,7 +89,10 @@ function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFoc
       <Text style={[styles.number, focused && styles.textOnFill]}>{formatChannelNumber(number)}</Text>
       <View style={styles.main}>
         <View style={styles.titleLine}>
-          <Text style={[styles.title, focused && styles.textOnFill, dimmed && styles.dimmed]} numberOfLines={1}>{stream.title}</Text>
+          {/* Marquee only while THIS row holds focus (one row ever does, so at most
+              one loop runs — MarqueeText.tsx); at rest it is the same ellipsized
+              single line as before, so the pinned row height never moves. */}
+          <MarqueeText text={title} active={focused} style={[styles.title, focused && styles.textOnFill, dimmed && styles.dimmed]} containerStyle={styles.titleBox} />
           {stream.isLive && <Text style={styles.live}>{t('common.live')}</Text>}
           {!!duration && <Text style={[styles.duration, dimmed && styles.dimmed]}>{duration}</Text>}
           {favorite && <Text style={[styles.star, focused && styles.textOnFill]}>★</Text>}
@@ -103,7 +111,7 @@ function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFoc
           for. A station logo is identity, not a photo reveal; it should just BE there. */}
       {stream.logo
         ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" fadeDuration={0} />
-        : <View style={[styles.logo, styles.logoFallback]}><Text style={[styles.logoInitial, focused && styles.textOnFill]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+        : <View style={[styles.logo, styles.logoFallback]}><Text style={[styles.logoInitial, focused && styles.textOnFill]}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
     </Pressable>
   )
 }
@@ -131,6 +139,10 @@ const styles = StyleSheet.create({
   main: { flex: 1, marginRight: theme.spacing(1) },
   titleLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: theme.colors.text, fontSize: theme.isTV ? theme.type.body : theme.type.label, fontWeight: '700', flexShrink: 1 },
+  // The marquee's slot in the title line: same flexShrink as the bare title Text had,
+  // so the LIVE/runtime/star siblings keep their intrinsic width and the NAME is what
+  // gives way (and what scrolls) when the line is tight.
+  titleBox: { flexShrink: 1 },
   dimmed: { opacity: 0.5 },
   live: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption - 2, fontWeight: '800', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
   duration: { color: theme.colors.textDim, borderColor: theme.colors.textDim, borderWidth: 1, fontSize: theme.type.caption - 2, fontWeight: '700', fontVariant: ['tabular-nums'], paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },

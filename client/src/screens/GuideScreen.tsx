@@ -59,7 +59,7 @@ import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
 // No formatChannelNumber here any more: the grid's rows carry the station's NAME, and
 // the numbers this screen still derives are for the preview card alone.
-import { channelNumbers, categoryModel, splitCategory, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, displayTitle, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpgPrograms, type EpgProgram } from '@aliran/react-native'
 import { loadServiceDescriptor } from '../config'
 import { ProgressHairline } from '../components/ProgressHairline'
@@ -468,6 +468,10 @@ function GuideRowTV ({ stream, playing, windowStart, stripW, pxPerMin, nowMs, fo
   // one program cell the reducer named — see chCellFocused.
   const rowFocused = focusedCellStart != null
 
+  // Once per row render, not once per title site — this row re-renders on every
+  // focus step (catalog.displayTitle).
+  const title = displayTitle(stream)
+
   return (
     <View style={[styles.gridRow, playing && styles.rowPlaying]}>
       {/* IDENTITY IS THE LOGO AND THE NAME — the channel NUMBER is not here.
@@ -480,9 +484,9 @@ function GuideRowTV ({ stream, playing, windowStart, stripW, pxPerMin, nowMs, fo
           above. */}
       <View style={[styles.chCell, rowFocused && styles.chCellFocused]}>
         {stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
-          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
-        <Text style={[styles.chName, rowFocused && styles.chNameFocused]} numberOfLines={2}>{stream.title}</Text>
+          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={styles.chInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+        <Text style={[styles.chName, rowFocused && styles.chNameFocused]} numberOfLines={2}>{title}</Text>
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {visible.length === 0

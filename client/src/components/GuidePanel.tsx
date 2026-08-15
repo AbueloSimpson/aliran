@@ -43,7 +43,7 @@ import { View, Text, Image, Pressable, FlatList, ScrollView, StyleSheet, PanResp
 import { getLocale, useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
-import { channelNumbers, categoryModel, splitCategory, subLabel, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, subLabel, displayTitle, formatChannelNumber, isVod, SUBCAT_SEP, type CategoryModel } from '../catalog'
 import { useEpg, useEpgProgramsState, useChannelThumb, type EpgProgram } from '@aliran/react-native'
 import { ProgressHairline } from './ProgressHairline'
 import { SectionLoading } from './SectionLoading'
@@ -309,20 +309,22 @@ function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW
   // useEpgPrograms — this is the phone grid only.
   const { programs, ready } = useEpgProgramsState(stream.epgUrl, stream.epgId, stream.guideBase)
   const visible = visiblePrograms(programs, windowStart, windowStart + GUIDE_WINDOW_MS)
+  // Once per row render, not once per title site (catalog.displayTitle).
+  const title = displayTitle(stream)
 
   return (
     <Pressable
       style={[styles.row, playing && styles.rowPlaying, selected && styles.rowSelected]}
       accessibilityRole="button"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${formatChannelNumber(number)} ${stream.title}`}
+      accessibilityLabel={`${formatChannelNumber(number)} ${title}`}
       onPress={onPress}
     >
       <View style={styles.chCol}>
         <Text style={[styles.chNumber, selected && styles.chTextSelected]}>{formatChannelNumber(number)}</Text>
         {stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={stream.title} />
-          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {!ready
@@ -386,15 +388,17 @@ export function GuidePreviewCard ({ stream, number, playing, program, hint }: {
   const { t } = useI18n()
   // No probe at all for the playing channel — undefined thumbBase disarms the hook.
   const [thumbUri, onThumbError] = useChannelThumb(playing ? undefined : stream.thumbBase)
+  // Display name (catalog.displayTitle): the guide's rail heading already carries the tag.
+  const title = displayTitle(stream)
   return (
     <View style={styles.previewCard} pointerEvents="none">
       {thumbUri
-        ? <Image source={{ uri: thumbUri }} style={styles.previewArt} resizeMode="cover" onError={onThumbError} accessibilityLabel={t('live.livePreview', { title: stream.title })} />
+        ? <Image source={{ uri: thumbUri }} style={styles.previewArt} resizeMode="cover" onError={onThumbError} accessibilityLabel={t('live.livePreview', { title })} />
         : stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.previewArt} resizeMode="contain" accessibilityLabel={stream.title} />
-          : <View style={[styles.previewArt, styles.previewArtFallback]}><Text style={styles.previewInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          ? <Image source={{ uri: stream.logo }} style={styles.previewArt} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.previewArt, styles.previewArtFallback]}><Text style={styles.previewInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       <View style={styles.previewInfo}>
-        <Text style={styles.previewName} numberOfLines={1}>{formatChannelNumber(number)}  {stream.title}</Text>
+        <Text style={styles.previewName} numberOfLines={1}>{formatChannelNumber(number)}  {title}</Text>
         {program
           ? (
             <>

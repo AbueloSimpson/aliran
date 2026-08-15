@@ -37,7 +37,7 @@ import { View, Text, Image, Pressable, TextInput, FlatList, ScrollView, StyleShe
 import { useI18n } from '@aliran/i18n'
 import { backend, type Stream } from '../worklet'
 import { visibleStreams } from '../parental'
-import { channelNumbers, sortByCuration, formatChannelNumber } from '../catalog'
+import { channelNumbers, sortByCuration, displayTitle, formatChannelNumber } from '../catalog'
 import { DIGITS, railLetters, scriptForLocale, normalizeSearch, type RailScript } from '../alphabets'
 import { theme } from '../theme'
 
@@ -257,21 +257,27 @@ function ChannelCard ({ stream, number, w, playing, onPress }: {
   onPress: () => void
 }) {
   const logoH = Math.round(w * 9 / 16)
+  // DISPLAY only: the result card shows the clean name (catalog.displayTitle), but
+  // searchChannels above keeps MATCHING on the raw title — typing "MLB" must still
+  // find every game whose stored title leads with the tag. Any future highlight/
+  // snippet logic must compute its indices against displayTitle, NOT the raw title:
+  // the two disagree by exactly the stripped prefix.
+  const title = displayTitle(stream)
   return (
     <Pressable
       style={[styles.card, { width: w }]}
       accessibilityRole="button"
-      accessibilityLabel={`${formatChannelNumber(number)} ${stream.title}`}
+      accessibilityLabel={`${formatChannelNumber(number)} ${title}`}
       onPress={onPress}
     >
       <View style={[styles.logoBox, { height: logoH }, playing && styles.logoBoxPlaying]}>
         {stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" accessibilityLabel={stream.title} />
-          : <View style={[styles.logo, styles.logoFallback]}><Text style={styles.logoInitial}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.logo, styles.logoFallback]}><Text style={styles.logoInitial}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <Text style={styles.cardLine} numberOfLines={1}>
         <Text style={styles.cardNumber}>{formatChannelNumber(number)}</Text>
-        <Text style={styles.cardTitle}>  {stream.title}</Text>
+        <Text style={styles.cardTitle}>  {title}</Text>
       </Text>
     </Pressable>
   )

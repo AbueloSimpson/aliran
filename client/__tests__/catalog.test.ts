@@ -3,7 +3,7 @@
 // vod (S8a): library titles get category rails like any channel, but stay OUT of the
 // channel-shaped machinery — numbers, the CH+/CH- zap ring, and the hero pick.
 
-import { groupByCategory, categoryModel, splitCategory, subLabel, channelNumbers, zapOrder, pickHero, formatDuration } from '../src/catalog'
+import { groupByCategory, categoryModel, splitCategory, subLabel, displayTitle, channelNumbers, zapOrder, pickHero, formatDuration } from '../src/catalog'
 import type { Stream } from '../src/worklet'
 
 const s = (id: string, category?: string[], extra: Partial<Stream> = {}): Stream => ({ id, title: id, category, ...extra })
@@ -90,6 +90,54 @@ test('categoryModel: parent/sub tree; a channel joins BOTH its parent and sub gr
   expect(m.groups.Anime.map((x) => x.id).sort()).toEqual(['moon-cat', 'ninja-run']) // parent = union of subs
   expect(m.groups['Anime/Español'].map((x) => x.id)).toEqual(['moon-cat']) // sub = just that one
   expect(m.groups.All).toHaveLength(5)
+})
+
+// --- displayTitle: stripping the panel's own live-events tag ---
+// The strip is SELF-SCOPED to the panel's autoSubcategory output (panel/src/sources.js
+// SUBCAT_TAG_RE / SUBCAT_MAX / deriveSubcat): a leading [TAG] goes ONLY when its
+// normalized form matches the leaf of one of the stream's own 'Parent/Sub' entries —
+// exactly the channels the panel minted a rail for. Decorative brackets survive.
+
+const dt = (title: string, category?: string[]) => displayTitle({ title, category })
+
+test('displayTitle strips the tag the panel turned into this stream\'s own sub-rail', () => {
+  expect(dt('[MLB] Mariners vs Yankees (7:05 PM ET)', ['Live Events/MLB'])).toBe('Mariners vs Yankees (7:05 PM ET)')
+})
+
+test('displayTitle keeps the tag when no category entry carries a matching leaf', () => {
+  // Parent-only category: the panel did NOT mint a rail from this bracket.
+  expect(dt('[MLB] Mariners vs Yankees', ['Live Events'])).toBe('[MLB] Mariners vs Yankees')
+  // A leaf that names something else is no license either.
+  expect(dt('[4K] Cine Max', ['Movies/Estrenos'])).toBe('[4K] Cine Max')
+  // No category at all.
+  expect(dt('[MLB] Mariners vs Yankees')).toBe('[MLB] Mariners vs Yankees')
+})
+
+test('displayTitle keeps a descriptive bracket longer than SUBCAT_MAX (32) — the panel never rails those', () => {
+  const long = '[Some very long descriptive bracket over thirty two characters] X'
+  // Even alongside a sub-rail the panel DID mint, an over-budget bracket is prose, not a label.
+  expect(dt(long, ['Live Events/MLB'])).toBe(long)
+})
+
+test('displayTitle folds casing on both sides (the panel folds rail casing too)', () => {
+  expect(dt('[mlb] Game of the night', ['Live Events/MLB'])).toBe('Game of the night')
+  expect(dt('[MLB] Game of the night', ['Live Events/mlb'])).toBe('Game of the night')
+})
+
+test('displayTitle leaves an untagged title untouched', () => {
+  expect(dt('News 24', ['News/English'])).toBe('News 24')
+})
+
+test('displayTitle mirrors the panel\'s normalization: \'/\' and whitespace fold to single spaces', () => {
+  // deriveSubcat turns '/' into a space (two levels, never three) before railing.
+  expect(dt('[MLB/Playoffs] Game 7', ['Live Events/MLB Playoffs'])).toBe('Game 7')
+  // Runs of whitespace collapse; edges trim.
+  expect(dt('[ MLB   Playoffs ] Game 7', ['Live Events/MLB Playoffs'])).toBe('Game 7')
+})
+
+test('displayTitle never returns an empty name: a title that IS the tag keeps it', () => {
+  expect(dt('[MLB]', ['Live Events/MLB'])).toBe('[MLB]')
+  expect(dt('  [MLB]  ', ['Live Events/MLB'])).toBe('  [MLB]  ')
 })
 
 // --- memoization (S22 round 8): the derivations pay once per catalog array ---

@@ -102,6 +102,21 @@ test('right-edge art: a logo carries no "live preview" label — it is not one',
   expect(tree.root.findByType(Image).props.accessibilityLabel).toBeUndefined()
 })
 
+// --- display titles (Phase 3): the panel-minted [TAG] prefix is stripped ---
+// autoSubcategory stores '[MLB] …' VERBATIM and mints category 'Live Events/MLB';
+// on a rail already named MLB the prefix is repetition, so the row shows the clean
+// name (catalog.displayTitle) — and the logo-fallback initial follows it.
+test('live-event row: shows the title without its own sub-rail tag; initial uses the clean name', async () => {
+  const stream: Stream = { id: 'mlb-sea-nyy', title: '[MLB] Mariners vs Yankees (7:05 PM ET)', isLive: true, category: ['Live Events/MLB'] }
+  const tree = await createTree(<ChannelRow stream={stream} number={7} onPressStream={() => {}} />)
+  const t = texts(tree)
+  expect(t).toContain('Mariners vs Yankees (7:05 PM ET)')
+  // Neither the title line nor the initial box carries the bracket: the initial is
+  // 'M' (clean title), never '[' (raw one).
+  expect(t).not.toContain('[MLB]')
+  expect(t).not.toContain('[')
+})
+
 // --- guide UI (WS1) ---
 
 // The getItemLayout contract: this constant IS the phone row geometry (jest runs the

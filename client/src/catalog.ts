@@ -96,6 +96,57 @@ export function subLabel (key: string): string {
   return sub ?? key
 }
 
+// --- display titles: stripping the panel's own live-events tag -------------------
+//
+// The panel's `autoSubcategory` (panel/src/sources.js — SUBCAT_TAG_RE, SUBCAT_MAX,
+// deriveSubcat) reads the leading "[MLB]" off an events-list entry and mints
+// `category: ['Live Events/MLB']` from it, storing the title VERBATIM. So on a rail
+// already NAMED "MLB" the prefix is pure repetition, spent on the row's one elastic
+// thing — the name a viewer is actually reading. displayTitle() removes it at display
+// time only; the stored title (search matching, problem reports, send-to-TV payloads,
+// anything that names the channel to the panel) stays raw.
+//
+// SELF-SCOPED, deliberately: the tag is stripped only when its normalized form equals
+// the LEAF of one of the stream's OWN 'Parent/Sub' category entries — the panel's
+// autoSubcategory output, plus any hand-filed category whose leaf happens to repeat
+// the bracket (a channel filed under 'Movies/4K' and titled "[4K] …" loses the
+// bracket too, which is the same redundancy). A decorative bracket with NO matching
+// leaf survives untouched; nothing here guesses at provider punctuation.
+//
+// The regex and the normalization MIRROR deriveSubcat — tag text captured by the same
+// pattern, control chars -> space, '/' -> space (the separator is the panel's, two
+// levels never three), whitespace collapsed, and a result longer than SUBCAT_MAX (32)
+// is a descriptive bracket, not a label. Matching folds casing on BOTH sides
+// (toLocaleLowerCase) the way the panel folds rail casing. These three — panel regex,
+// panel normalization, this function — must stay in step: what the panel turns into a
+// rail defines what the client may strip.
+const SUBCAT_TAG_RE = /^\s*\[([^\]\r\n]{1,120})\]/
+const SUBCAT_MAX = 32
+
+export function displayTitle (s: Pick<Stream, 'title' | 'category'>): string {
+  const title = s.title || ''
+  const m = SUBCAT_TAG_RE.exec(title)
+  if (!m) return title
+  const tag = m[1]
+    // eslint-disable-next-line no-control-regex -- mirrors deriveSubcat: control characters never reach a rail label
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\//g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!tag || tag.length > SUBCAT_MAX) return title
+  const want = tag.toLocaleLowerCase()
+  const owned = (s.category ?? []).some((c) => {
+    const [, sub] = splitCategory(c)
+    // The leaf gets the same whitespace collapse as the tag: a hand-typed
+    // 'Live Events/MLB  Playoffs' still names the same rail.
+    return sub !== undefined && sub.replace(/\s+/g, ' ').trim().toLocaleLowerCase() === want
+  })
+  if (!owned) return title
+  // Never hand back an empty name: a title that IS the tag keeps it verbatim.
+  const rest = title.slice(m[0].length).trimStart()
+  return rest || title
+}
+
 export interface CategoryModel {
   /** Rail level 0, in order: ['All', <top-level parents in first-seen curated order>]. */
   top: string[]

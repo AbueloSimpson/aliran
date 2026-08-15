@@ -92,7 +92,7 @@ import { useMountDeferred } from '../defer'
 import { useStableCallback } from '../hooks'
 import { autoTunable, blockedWithoutPin, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
-import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
+import { channelNumbers, categoryModel, splitCategory, subLabel, displayTitle, pickHero, zapOrder, isVod } from '../catalog'
 import { CategoryRail } from '../components/CategoryRail'
 import { ChannelListPanel } from '../components/ChannelListPanel'
 import { ChannelInfoPanel } from '../components/ChannelInfoPanel'
@@ -1180,7 +1180,7 @@ export function LiveScreen ({ route, navigation }: Props) {
           active={tuneUI.active}
           phase={tuneUI.phase}
           number={playing ? numbers.get(playing.id) : undefined}
-          title={playing?.title}
+          title={playing ? displayTitle(playing) : undefined}
         />
       )}
 
@@ -1200,7 +1200,9 @@ export function LiveScreen ({ route, navigation }: Props) {
 
       {/* "Report a problem" (S51) — opened from the NowPlayingBar (phone) or the info
           panel of the channel being watched (TV). The engine attaches the ACTIVE
-          stream, so this sheet is only reachable while one is playing. */}
+          stream, so this sheet is only reachable while one is playing. RAW title, not
+          displayTitle: a viewer problem report must name the channel exactly as the
+          panel stores it — the operator reading it greps the lineup, not a rail. */}
       <ReportSheet visible={reportOpen} channelTitle={playing?.title} onClose={() => setReportOpen(false)} />
 
       {/* WHILE A SESSION RUNS, SAY SO — IN EVERY OVERLAY AND EVERY ORIENTATION. A cast
@@ -1244,7 +1246,7 @@ export function LiveScreen ({ route, navigation }: Props) {
       <PinEntryModal
         visible={!!pinTarget}
         title={t('live.enterPin')}
-        hint={pinTarget ? t('live.restricted', { title: pinTarget.title ?? pinTarget.id }) : undefined}
+        hint={pinTarget ? t('live.restricted', { title: (pinTarget.title && displayTitle(pinTarget)) || pinTarget.id }) : undefined}
         onOk={() => {
           markUnlocked()
           const s = pinTarget
