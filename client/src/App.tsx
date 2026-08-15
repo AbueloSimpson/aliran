@@ -144,6 +144,23 @@ export default function App () {
   // Dismissing hides it until a LATER check finds it again (never for mandatory).
   const [update, setUpdate] = useState<AvailableUpdate | null>(null)
 
+  // Boot trace: a 1 s heartbeat over the boot window. A timer can only fire late if
+  // the JS thread was busy (or the process suspended), so the overshoot measures any
+  // grind — including one whose work logs nothing itself (render, layout, bridge
+  // traffic). Quiet when the thread is healthy; stops itself after 2 minutes.
+  useEffect(() => {
+    const t0 = Date.now()
+    let last = t0
+    const beat = setInterval(() => {
+      const now = Date.now()
+      const late = now - last - 1000
+      if (late > 500) console.log(`[boot-ui] js-thread stalled ~${late}ms (ended t+${now - t0}ms)`)
+      last = now
+      if (now - t0 > 120_000) clearInterval(beat)
+    }, 1000)
+    return () => clearInterval(beat)
+  }, [])
+
   useEffect(() => {
     if (!engineSupported) return // nothing to boot — the backend would no-op anyway
     const service = loadServiceDescriptor()
@@ -165,9 +182,14 @@ export default function App () {
       // warm computes under the locale the screens will use.
       if (m.type === 'streams' || m.type === 'prefs') {
         InteractionManager.runAfterInteractions(() => {
+          // Boot trace: the warm is one synchronous block on the JS thread — its
+          // duration IS the stall every queued timer/message waits out.
+          const t0 = Date.now()
           const v = visibleStreams(backend.streams)
           categoryModel(v)
           channelNumbers(v)
+          const ms = Date.now() - t0
+          if (ms > 50) console.log(`[boot-ui] catalog warm took ${ms}ms (${v.length} visible)`)
         })
       }
       // "Send to TV": the catalog push is the first moment a login is KNOWN to have

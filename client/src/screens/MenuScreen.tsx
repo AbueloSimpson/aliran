@@ -16,7 +16,7 @@
 // external VOD provider enabled (S53 — backend.vod is delivered on the login/'streams'
 // payload and is null otherwise), and a brand can still switch it off with
 // sections.vod:false. Exit is TV-only by default (D7).
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { View, Text, Image, Pressable, StyleSheet, Platform, BackHandler, ScrollView, useWindowDimensions } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
@@ -75,14 +75,28 @@ const BackgroundWash = React.memo(function BackgroundWash () {
 
 export function MenuScreen ({ navigation }: Props) {
   const { t } = useI18n()
+  // Boot trace: when this render pass started, so the mount effect below can say how
+  // long the first paint took — the window the vc13 trace lost 42 s inside.
+  const mountT0 = useRef(Date.now())
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   // The panel's VOD provider switch. It rides the same 'streams' message, so a menu
   // mounted before login sees it the moment the catalog lands.
   const [vodEnabled, setVodEnabled] = useState<boolean>(!!backend.vod?.enabled)
 
+  // Boot trace: the first committed frame. The gap from mountT0 is what a viewer
+  // waits between the splash handing over and a menu they can press.
+  useEffect(() => {
+    console.log(`[boot-ui] menu first frame ${Date.now() - mountT0.current}ms after mount (${streams.length} channels${backend.provisional ? ', provisional' : ''})`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     return backend.onMessage((m) => {
-      if (m.type === 'streams') { setStreams(visibleStreams(m.streams)); setVodEnabled(!!m.vod?.enabled) }
+      if (m.type === 'streams') {
+        // Boot trace: when each lineup lands at THIS screen (the swap the viewer sees).
+        console.log(`[boot-ui] menu lineup ${m.provisional ? 'provisional' : 'real'} n=${m.streams.length} at t+${Date.now() - mountT0.current}ms`)
+        setStreams(visibleStreams(m.streams)); setVodEnabled(!!m.vod?.enabled)
+      }
       // A parental change in Settings (this screen stays mounted under the stack)
       // can re-hide/reveal restricted channels — recompute the wallpaper pick.
       if (m.type === 'prefs') setStreams(visibleStreams(backend.streams))

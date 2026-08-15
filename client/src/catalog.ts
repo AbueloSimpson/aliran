@@ -16,11 +16,16 @@ import type { Stream } from './worklet'
 // every later mount is O(1). The locale rides the key: the title tie-break collates
 // in the viewer's locale, so a language switch must recompute.
 interface Keyed<T> { locale: string; out: T }
-function memo1<T> (cache: WeakMap<Stream[], Keyed<T>>, streams: Stream[], compute: () => T): T {
+function memo1<T> (cache: WeakMap<Stream[], Keyed<T>>, label: string, streams: Stream[], compute: () => T): T {
   const locale = getLocale()
   const hit = cache.get(streams)
   if (hit && hit.locale === locale) return hit.out
+  // Boot trace (see '[boot-ui]' in the screens): a derivation that costs real time is
+  // a JS-thread stall every screen feels — name the one that did and what it cost.
+  const t0 = Date.now()
   const out = compute()
+  const ms = Date.now() - t0
+  if (ms > 50) console.log(`[boot-ui] catalog ${label} computed in ${ms}ms (${streams.length} streams)`)
   cache.set(streams, { locale, out })
   return out
 }
@@ -29,17 +34,40 @@ const modelCache = new WeakMap<Stream[], Keyed<CategoryModel>>()
 const zapCache = new WeakMap<Stream[], Keyed<Stream[]>>()
 const numbersCache = new WeakMap<Stream[], Keyed<Map<string, number>>>()
 
+// ONE collator per locale, never one per comparison. `localeCompare(b, locale)` looks
+// like a plain string op but on Hermes/Android every call crosses into platform ICU and
+// resolves the locale from scratch — milliseconds each, and a sort makes O(n log n) of
+// them: ~15k comparisons over a 1400-channel lineup pegged the Terraza TCL's JS thread
+// for tens of seconds per sort (the vc13 "42 s menu render"). Intl.Collator pays the
+// locale resolution once and its bound compare is a straight ICU call. The fallback
+// keeps engines without Intl exactly where they were: localeCompare's own fallback is
+// code-point order, and per-call cost was never a problem there.
+let collatorCache: { locale: string; compare: (a: string, b: string) => number } | null = null
+function titleCompare (a: string, b: string): number {
+  const locale = getLocale()
+  if (!collatorCache || collatorCache.locale !== locale) {
+    let compare: (a: string, b: string) => number
+    try {
+      compare = new Intl.Collator(locale).compare
+    } catch {
+      compare = (x, y) => x.localeCompare(y, locale)
+    }
+    collatorCache = { locale, compare }
+  }
+  return collatorCache.compare(a, b)
+}
+
 // Panel curation sort: (order ?? Infinity, title). Stable for equal keys.
 // The title tie-break sorts in the VIEWER's locale (S56 design D9): collation is not
 // universal — Swedish files "ä" after "z", Turkish files "ı" before "i" — and the list
 // a viewer scans should be alphabetical to THEM. Engines without a real collator ignore
 // the argument and fall back to code-point order, which is what they did before.
 export function sortByCuration (streams: Stream[]): Stream[] {
-  return memo1(curationCache, streams, () => [...streams].sort((a, b) => {
+  return memo1(curationCache, 'curation-sort', streams, () => [...streams].sort((a, b) => {
     const ao = a.order ?? Infinity
     const bo = b.order ?? Infinity
     if (ao !== bo) return ao - bo
-    return (a.title || '').localeCompare(b.title || '', getLocale())
+    return titleCompare(a.title || '', b.title || '')
   }))
 }
 
@@ -82,7 +110,7 @@ export interface CategoryModel {
 // a channel tagged "Anime/Español" lands in BOTH the 'Anime' parent group and the
 // 'Anime/Español' sub group. Uncategorized channels live only in 'All'.
 export function categoryModel (streams: Stream[]): CategoryModel {
-  return memo1(modelCache, streams, () => computeCategoryModel(streams))
+  return memo1(modelCache, 'category-model', streams, () => computeCategoryModel(streams))
 }
 
 function computeCategoryModel (streams: Stream[]): CategoryModel {
@@ -123,16 +151,19 @@ export function isVod (s: Stream): boolean {
 // LIVE catalog only. vod titles are on-demand — they neither take a channel number
 // (adding movies must not renumber the lineup) nor sit in the zap ring.
 export function zapOrder (streams: Stream[]): Stream[] {
-  // The filter output is a fresh array, so the curation cache can't help through
-  // it — cache on the INPUT array instead (one zap ring per catalog update).
-  return memo1(zapCache, streams, () => sortByCuration(streams.filter(s => !isVod(s))))
+  // Filter the SORTED list, never sort the filtered one: a filter output is a fresh
+  // array the curation cache has never seen, so sort-after-filter paid the whole
+  // O(n log n) collation a second time per catalog. Filtering preserves order, and
+  // sortByCuration(streams) is the same call the category model already made — a
+  // cache hit. Memoized on the input array so the ring keeps a stable identity too.
+  return memo1(zapCache, 'zap-order', streams, () => sortByCuration(streams).filter(s => !isVod(s)))
 }
 
 // Derived channel numbers (D3): curated sort over the live catalog -> 1..N. The same
 // stream keeps its number in every category group; vod titles have none. Zero-pad
 // for the 10-foot list.
 export function channelNumbers (streams: Stream[]): Map<string, number> {
-  return memo1(numbersCache, streams, () => {
+  return memo1(numbersCache, 'channel-numbers', streams, () => {
     const map = new Map<string, number>()
     zapOrder(streams).forEach((s, i) => map.set(s.id, i + 1))
     return map
