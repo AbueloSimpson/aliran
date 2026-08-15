@@ -62,6 +62,8 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
   const [focused, setFocused] = useState<'user' | 'pass' | 'submit' | 'phone' | null>(null)
   const [phoneSignIn, setPhoneSignIn] = useState(false)
   const tries = useRef(0)
+  // Boot trace (diagnosis): when the viewer pressed Sign in, for the outcome lines below.
+  const submitT0 = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Which door is in flight, and therefore what a 'streams' means. A REF (inside the
   // handle), not state, because the listener below is registered once.
@@ -88,10 +90,13 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
         // the prefs file (plaintext at rest) and fail every auto-login from then on.
         door.release()
         backend.saveCredentials(d.username, d.password)
+        console.log(`[boot-ui] login ok after ${Date.now() - submitT0.current}ms (tries=${tries.current})`)
         setBusy(false)
         goMenu()
       }
       if (m.type === 'login-error' && d?.kind === 'manual') {
+        // Boot trace: WHICH error each retry saw (see SplashScreen for the vocabulary).
+        console.log(`[boot-ui] login error #${tries.current}: ${m.message}`)
         if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
           tries.current += 1
           timer.current = setTimeout(() => {
@@ -114,6 +119,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
   const onSubmit = () => {
     setError(null); setBusy(true)
     tries.current = 0
+    submitT0.current = Date.now()
     door.claim({ kind: 'manual', username, password })
     backend.login(username, password)
   }

@@ -17,6 +17,20 @@ import ProtomuxRPC from 'protomux-rpc'
 import b4a from 'b4a'
 import { blind, finalize, verify, wrapKeyFrom, unwrap, sealTo, sealOpen, powSolve, authSign, verifyToken, remoteSecret } from '@aliran/core'
 
+// Boot-trace hook: per-phase timings for the engine's boot trace (sdk/player.js _mark).
+// The protocol is strictly serial, so "time since the previous phase" IS that phase's
+// cost. Always returns a function (no-op without a trace) so no call site needs a guard,
+// and a throwing trace callback can never fail a login.
+function tracer (trace) {
+  if (typeof trace !== 'function') return () => {}
+  let last = Date.now()
+  return (name, extra) => {
+    const now = Date.now()
+    try { trace(name, now - last, extra) } catch {}
+    last = now
+  }
+}
+
 // Wrap a connection to the panel as a JSON RPC caller.
 export function panelClient (socket) {
   const rpc = new ProtomuxRPC(socket)
@@ -28,31 +42,38 @@ export function panelClient (socket) {
   return { rpc, call }
 }
 
-export async function login (call, db, username, password, { deviceId, deviceLabel, handover, remoteSecret } = {}) {
+export async function login (call, db, username, password, { deviceId, deviceLabel, handover, remoteSecret, trace } = {}) {
+  const mark = tracer(trace)
   // 1. proof-of-work challenge from the panel
   const hello = await call('hello')
+  mark('hello')
   const nonce = powSolve(b4a.from(hello.challenge, 'hex'), hello.difficulty)
+  mark('pow', 'difficulty ' + hello.difficulty)
 
   // 2. blinded OPRF round-trip (panel never sees the password)
   const { blinded, r } = blind(password)
   const res = await call('login', { username, blinded: b4a.toString(blinded, 'hex'), powNonce: b4a.toString(nonce, 'hex') })
+  mark('login-rpc')
   if (res.error) throw new Error('login failed: ' + res.error + (res.retryAfter ? ` (retry ${res.retryAfter}s)` : ''))
   const rwd = finalize(password, r, b4a.from(res.evaluated, 'hex'))
 
   // 3. verify against the replicated signed record (local)
   const node = await db.get('user/' + username)
+  mark('user-get')
   if (!node) throw new Error('unknown user')
   const user = node.value
-  if (!verify(rwd, b4a.from(user.salt, 'hex'), b4a.from(user.verifier, 'hex'), user.argon)) {
-    throw new Error('invalid credentials')
-  }
+  const ok = verify(rwd, b4a.from(user.salt, 'hex'), b4a.from(user.verifier, 'hex'), user.argon)
+  // The Argon2id grind, at the cost the panel STAMPED INTO THIS RECORD (user.argon) —
+  // marked before the throw so a wrong password still reports what the grind cost.
+  mark('verify', user.argon ? `mem ${user.argon.memlimit} ops ${user.argon.opslimit}` : 'default cost')
+  if (!ok) throw new Error('invalid credentials')
 
   // 4. recover private keys and open the granted stream keys
   const wk = wrapKeyFrom(rwd)
   const priv = unwrap(wk, user.encPriv)
   if (!priv) throw new Error('key recovery failed')
   const authPriv = user.authPrivEnc ? unwrap(wk, user.authPrivEnc) : null
-  return openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret })
+  return openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret, trace })
 }
 
 /**
@@ -78,22 +99,27 @@ export async function login (call, db, username, password, { deviceId, deviceLab
  * @param {object} keys  { priv, authPriv } — hex or buffers, as sdk/signin-pair.js
  *                       delivers them: X25519 secret (32 bytes) + Ed25519 secret (64).
  */
-export async function loginWithKeys (call, db, username, keys, { deviceId, deviceLabel, handover, remoteSecret } = {}) {
+export async function loginWithKeys (call, db, username, keys, { deviceId, deviceLabel, handover, remoteSecret, trace } = {}) {
+  const mark = tracer(trace)
   const priv = secretKeyBytes(keys && keys.priv, 'priv', 32) // crypto_box_SECRETKEYBYTES
   const authPriv = secretKeyBytes(keys && keys.authPriv, 'authPriv', 64) // crypto_sign_SECRETKEYBYTES
 
   const hello = await call('hello')
+  mark('hello')
   const nonce = powSolve(b4a.from(hello.challenge, 'hex'), hello.difficulty)
+  mark('pow', 'difficulty ' + hello.difficulty)
   // A uniformly random blinded point: `blind` multiplies by a fresh random scalar, and
   // ristretto255 has prime order, so the point on the wire is independent of the string
   // below whatever it is. It is a constant only because there is nothing to hide behind
   // — this is a request for a challenge, not an attempt at a password.
   const { blinded } = blind(CHALLENGE_ONLY_SECRET)
   const res = await call('login', { username, blinded: b4a.toString(blinded, 'hex'), powNonce: b4a.toString(nonce, 'hex') })
+  mark('login-rpc')
   if (res.error) throw new Error('login failed: ' + res.error + (res.retryAfter ? ` (retry ${res.retryAfter}s)` : ''))
   if (!res.sessionChallenge) throw new Error('the panel issued no session challenge — it is too old for a key handover')
 
   const node = await db.get('user/' + username)
+  mark('user-get')
   if (!node) throw new Error('unknown user')
   const user = node.value
 
@@ -106,7 +132,7 @@ export async function loginWithKeys (call, db, username, keys, { deviceId, devic
   const opened = user.pub ? sealOpen(b4a.from(user.pub, 'hex'), priv, sealTo(b4a.from(user.pub, 'hex'), probe)) : null
   if (!opened || !b4a.equals(opened, probe)) throw new Error('key handover does not match this account')
 
-  const out = await openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret })
+  const out = await openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret, trace })
   // Unlike the password path, a missing token here is fatal rather than degraded: the
   // ONLY reason to run this is to enrol a device and be issued one.
   if (!out.token) throw new Error('the panel issued no session token — the key handover did not sign this device in')
@@ -133,7 +159,8 @@ function secretKeyBytes (value, what, len) {
 // path and the key-handover path: open the granted stream keys, read the VOD config,
 // register this device and take a panel-signed token. Both callers reach the same
 // result shape, so a caller cannot tell (and must not care) which door was used.
-async function openSession (call, db, username, user, priv, authPriv, sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret: wantRemoteSecret } = {}) {
+async function openSession (call, db, username, user, priv, authPriv, sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret: wantRemoteSecret, trace } = {}) {
+  const mark = tracer(trace)
   const streams = []
   for (const id of Object.keys(user.wrapped || {})) {
     const enc = sealOpen(b4a.from(user.pub, 'hex'), priv, user.wrapped[id])
@@ -168,6 +195,7 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
       })
     }
   }
+  mark('catalog', streams.length + '/' + Object.keys(user.wrapped || {}).length + ' streams')
 
   // 4b. External VOD provider (S53): ONE replicated record the panel writes
   //     (`svcmeta/vod`) carrying the operator's enable SWITCH plus the coordinates the
@@ -180,6 +208,7 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
   //     — an operator's change lands on the viewer's next login.
   let vod
   const vodNode = await db.get('svcmeta/vod')
+  mark('vod-get')
   if (vodNode && vodNode.value && vodNode.value.enabled === true) {
     const v = vodNode.value
     vod = { enabled: true, apiBase: v.apiBase, service: v.service, sources: v.sources || {}, params: v.params || {} }
@@ -192,6 +221,7 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
   if (authPriv && sessionChallenge) {
     const sig = authSign(authPriv, b4a.from(sessionChallenge, 'hex'))
     const sres = await call('session', { username, deviceId: did, deviceLabel, sig: b4a.toString(sig, 'hex') })
+    mark('session-rpc')
     if (sres.error) throw new Error('session failed: ' + sres.error)
     // verify the token with the panel signing public key (= the account DB core key)
     const payload = verifyToken(db.core.key, sres.token)

@@ -977,6 +977,8 @@ export class AliranPlayer extends Emitter {
     this._panelPeerKey = null // hex public key of the peer that PROVED it is the panel (see _maybeArmRpc)
     this._panelDiscovery = null // the panel topic's PeerDiscovery — report() kicks refresh() when the RPC is down
     this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
+    this._bootTrace = [] // boot diagnosis marks, construction -> first 'streams' (see _mark / bootTrace)
+    this._bootSocketSeen = false // so the connection handler marks only the FIRST socket
     this._server = null
     // --- cast to a TV (startCast): the SECOND, LAN-scoped server ---
     // Everything here is null while no cast session exists, and goes back to null on
@@ -1222,6 +1224,23 @@ export class AliranPlayer extends Emitter {
     if (this._eventRing.length > REPORT_EVENT_LIMIT) this._eventRing.splice(0, this._eventRing.length - REPORT_EVENT_LIMIT)
   }
 
+  // --- boot trace (diagnosis) ---
+
+  // Timestamped marks from construction to the first 'streams' emit, so a slow start can
+  // be ATTRIBUTED on a device (store open, DHT bind, first socket, RPC armed, each
+  // sdk/login.js phase) instead of guessed at from the login screen's spinner. Marks are
+  // cheap ({t,name,detail} pushes), never emitted as events, and capped so a retry
+  // ladder that never lands cannot grow the array for as long as the screen keeps trying.
+  _mark (name, detail) {
+    if (this._bootTrace.length >= 400) return
+    this._bootTrace.push({ t: Date.now(), name, ...(detail == null ? {} : { detail: String(detail) }) })
+  }
+
+  // A copy, so a host logging the trace cannot hold (or mutate) the live array.
+  bootTrace () {
+    return this._bootTrace.slice()
+  }
+
   // --- public API ---
 
   // Join the panel's topic and replicate its signed DB. Resolves once the topic is
@@ -1229,6 +1248,7 @@ export class AliranPlayer extends Emitter {
   async connect (panelPubKey) {
     if (panelPubKey) this._panelKey = panelPubKey
     if (!this._panelKey) throw new Error('no panelPubKey configured')
+    this._mark('connect')
     await this._recover(() => this._openPanel())
     this.emit('ready')
   }
@@ -1297,6 +1317,7 @@ export class AliranPlayer extends Emitter {
   // door cannot quietly skip the prewarm or the orphan sweep.
   _publishLogin (streams) {
     this._streams = streams
+    this._mark('streams', streams.length + ' streams')
     // Second argument (S53): the panel-delivered VOD provider config, or undefined.
     // Additive — every existing listener takes one argument and is untouched.
     this.emit('streams', streams, this._vod || undefined)
@@ -5334,8 +5355,10 @@ export class AliranPlayer extends Emitter {
     // session leaks ~4 MB/h (same leak the broadcaster fixed in channel.js). Rache
     // evicts randomly; a re-read of an evicted node is a cheap replica-store hit.
     // Recreated per store (not per player) so a corruption purge drops it with the store.
+    this._mark('store-open')
     this._store = new Corestore(this._storeDir, { globalCache: new Rache({ maxSize: 4096 }) })
     await this._store.ready()
+    this._mark('store-ready') // disk-bound: grows with the store, nothing GCs it at boot
     this._swarm = new Hyperswarm(this._swarmOpts ?? {})
     // S33: size this swarm's UDP socket buffers — the viewer-path completion of S29,
     // which tuned every server-side swarm (see core/net-tune-core.js for the whole
@@ -5352,6 +5375,7 @@ export class AliranPlayer extends Emitter {
     // dht.ready() is not added latency: the join right after would trigger the same
     // bind before any packet flows.
     await this._tuneSwarmSockets()
+    this._mark('swarm-ready') // includes the awaited dht.ready() (UDP bind + DHT bootstrap)
     // Wire the panel RPC on incoming connections — VALIDATED, not first-come (S52).
     // The old heuristic ("the first connection is the panel; we join only its topic
     // first") is only true at boot: mid-session, after a panel restart drops the RPC
@@ -5364,6 +5388,7 @@ export class AliranPlayer extends Emitter {
       // A handshake that was in flight when stop()/a recovery purge nulled the store
       // can still land here (swarm.destroy() resolves later) — drop it, don't crash.
       if (!this._store) { try { socket.destroy() } catch {} return }
+      if (!this._bootSocketSeen) { this._bootSocketSeen = true; this._mark('first-socket') }
       this._store.replicate(socket)
       this._maybeArmRpc(socket)
     })
@@ -5380,20 +5405,21 @@ export class AliranPlayer extends Emitter {
     if (this._call || !this._panelBee) return
     const remoteKey = socket.remotePublicKey ? b4a.toString(socket.remotePublicKey, 'hex') : null
     const { call } = panelClient(socket)
-    const arm = () => {
+    const arm = (how) => {
       if (this._call || socket.destroyed) return
       this._call = call
       if (remoteKey) this._panelPeerKey = remoteKey
+      this._mark('rpc-armed', how)
       socket.on('close', () => { if (this._call === call) this._call = null })
     }
-    if (remoteKey && remoteKey === this._panelPeerKey) return arm()
+    if (remoteKey && remoteKey === this._panelPeerKey) return arm('remembered')
     ;(async () => {
       try {
         const res = await Promise.race([
           call('hello'),
           new Promise((_, reject) => setTimeout(() => reject(new Error('rpc probe timeout')), this._rpcProbeMs).unref?.())
         ])
-        if (res && typeof res.challenge === 'string') arm()
+        if (res && typeof res.challenge === 'string') arm('probed')
       } catch {}
     })()
   }
@@ -5425,6 +5451,7 @@ export class AliranPlayer extends Emitter {
     this._panelBee = new Hyperbee(this._store.get({ key: b4a.from(this._panelKey, 'hex') }), { keyEncoding: 'utf-8', valueEncoding: 'json' })
     await this._panelBee.ready()
     this._panelDiscovery = this._swarm.join(hcrypto.hash(b4a.from(this._panelKey, 'hex')), { client: true, server: false })
+    this._mark('panel-topic-joined')
     this._watchCatalog()
     this._watchEpgKey()
     this._watchGrants() // no-op before the first login; re-arms the grant watch after a purge
@@ -5820,11 +5847,14 @@ export class AliranPlayer extends Emitter {
       deviceId: this._deviceId || undefined,
       deviceLabel: this._deviceLabel || undefined,
       handover: this._remote.sendToTv,
-      remoteSecret: this._remote.control
+      remoteSecret: this._remote.control,
+      // Boot trace: sdk/login.js reports each protocol phase's cost through here.
+      trace: (name, ms, extra) => this._mark('login:' + name, ms + 'ms' + (extra ? ' ' + extra : ''))
     }
   }
 
   async _doLogin (username, password) {
+    this._mark('login-attempt', this._call ? 'password' : 'password no-rpc')
     if (!this._call) throw new Error('not connected to panel')
     const res = await oprfLogin(this._call, this._panelBee, username, password, this._loginOpts())
     return this._applyLoginResult(username, res)
@@ -5838,6 +5868,7 @@ export class AliranPlayer extends Emitter {
   // keys only if this build is itself allowed to send a sign-in onward; a receive-only
   // build takes its token and lets the material go.
   async _doLoginWithKeys (username, keys) {
+    this._mark('login-attempt', this._call ? 'keys' : 'keys no-rpc')
     if (!this._call) throw new Error('not connected to panel')
     const res = await loginWithKeys(this._call, this._panelBee, username, keys, this._loginOpts())
     return this._applyLoginResult(username, res)
@@ -5871,9 +5902,12 @@ export class AliranPlayer extends Emitter {
           handover: res.handover || null
         }
       : null
+    this._mark('assets-open')
     await this._openAssets()
+    this._mark('assets-ready')
     this._openEpg().catch(() => {}) // the guide is never allowed to delay (or fail) a login
     const port = await this._ensureServer() // posters must be loadable before anything plays
+    this._mark('server-ready')
     // Stand the live-entitlement machinery down for the rebuild below. Deliberately here
     // and not at the top of _doLogin: a REJECTED login (wrong password) must not clobber
     // the session already running, so nothing may be torn down until oprfLogin has

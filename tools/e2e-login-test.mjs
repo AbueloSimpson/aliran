@@ -100,8 +100,15 @@ try {
   await waitFor(async () => await cliBee.get('user/alice'), 30000, 'DB replication to client')
   log('client: DB replicated; logging in…')
 
-  const { streams, token } = await login(call, cliBee, 'alice', PASSWORD, { deviceId: 'device-1', deviceLabel: 'Test Phone' })
+  // Boot-trace hook: collect the per-phase timings the engine's boot trace consumes,
+  // and assert the phases actually report — the app's slow-login diagnosis rides this.
+  const phases = []
+  const { streams, token } = await login(call, cliBee, 'alice', PASSWORD, { deviceId: 'device-1', deviceLabel: 'Test Phone', trace: (name, ms, extra) => phases.push(`${name}=${ms}ms${extra ? ` (${extra})` : ''}`) })
   if (!streams.length) throw new Error('no streams after login')
+  log('client: login phases:', phases.join(', '))
+  for (const want of ['hello', 'pow', 'login-rpc', 'user-get', 'verify', 'catalog', 'vod-get', 'session-rpc']) {
+    if (!phases.some((p) => p.startsWith(want + '='))) throw new Error('boot trace missing the ' + want + ' phase')
+  }
   const s = streams[0]
   log('client: login OK; entitled to', JSON.stringify(streams.map(x => x.id)), '- feedKey', s.feedKey.slice(0, 16) + '…')
   if (b4a.toString(encKey, 'hex') !== s.encryptionKey) throw new Error('recovered encryptionKey mismatch')

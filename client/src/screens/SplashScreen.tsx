@@ -114,10 +114,15 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   const restoreLogins = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const door = useSigninPath<SigninDoor>()
+  // Boot trace (diagnosis): when this screen mounted, so the exit line below can say how
+  // long the viewer looked at it and what the wait was spent on (see also the worklet's
+  // '[boot-trace]' dumps — this is the RN half of the same picture).
+  const bootT0 = useRef(Date.now())
 
   const route = (name: 'Connect' | 'Login' | 'Menu') => {
     if (routed.current) return
     routed.current = true
+    console.log(`[boot-ui] splash -> ${name} after ${Date.now() - bootT0.current}ms (loginTries=${loginTries.current} restoreLogins=${restoreLogins.current})`)
     navigation.replace(name)
   }
 
@@ -190,6 +195,9 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
       if (m.type === 'streams' && d) { door.release(); route('Menu') }
       if (m.type === 'login-error' && d?.kind === 'saved') {
         if (routed.current) return
+        // Boot trace: WHICH error each retry saw — 'not connected' means the swarm is
+        // still dialing, 'unknown user' means the account record has not replicated.
+        console.log(`[boot-ui] splash login-error #${loginTries.current}: ${m.message}`)
         if (TRANSIENT.test(m.message) && loginTries.current < LOGIN_MAX_RETRIES) {
           loginTries.current += 1
           timer.current = setTimeout(() => {

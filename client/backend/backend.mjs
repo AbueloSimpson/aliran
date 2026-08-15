@@ -336,6 +336,25 @@ import {
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
 
+// Boot trace (diagnosis): one line the moment the worklet's module graph is up, so plain
+// logcat (app-stdout tag) can attribute the gap between process start and engine work —
+// bundle decode + Bare boot land BEFORE this line, everything the engine does after it.
+try { console.log('[boot-trace] worklet-up') } catch {}
+
+// The engine's boot marks (sdk/player.js bootTrace), printed with offsets in ms since
+// the first mark. Once on the first successful login per engine (the WeakSet), and on
+// any login failure that got PAST the dial gate — 'not connected to panel' repeats every
+// 2.5 s while the swarm dials and would bury logcat with identical dumps.
+const bootTraceLogged = new WeakSet()
+function logBootTrace (p, label) {
+  try {
+    const marks = p.bootTrace()
+    if (!marks.length) return
+    const t0 = marks[0].t
+    console.log('[boot-trace]', label, JSON.stringify(marks.map((m) => ({ ...m, t: m.t - t0 }))))
+  } catch {}
+}
+
 // Unref'd throughout: a pending wait must never be the reason a worklet stays alive.
 function sleep (ms) {
   return new Promise((resolve) => {
@@ -954,7 +973,11 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   player.on('ready', () => send({ type: 'ready' }))
   // `vod` (S53) rides the streams message only when the panel enabled a provider —
   // the field is absent otherwise, so the UI's "no VOD section" is the default.
-  player.on('streams', (streams, vod) => send({ type: 'streams', streams, ...(vod ? { vod } : {}) }))
+  const p = player // the relay's engine — `player` moves on a service switch
+  player.on('streams', (streams, vod) => {
+    if (!bootTraceLogged.has(p)) { bootTraceLogged.add(p); logBootTrace(p, 'login-ok') }
+    send({ type: 'streams', streams, ...(vod ? { vod } : {}) })
+  })
   player.on('status', (status) => {
     // Mirror the servers' "[net] ..." console line for the socket-buffer tuning
     // outcome (S33) so plain logcat shows it even without the RN debug relay.
@@ -1379,7 +1402,13 @@ IPC.on('data', (data) => {
     } else if (msg.username) {
       // 'streams' is sent by the event relay on success; failures (including the
       // transient 'not connected to panel' while the swarm dials) surface here.
-      ensurePlayer().login(msg.username, msg.password).catch((e) => send({ type: 'login-error', message: String((e && e.message) || e) }))
+      ensurePlayer().login(msg.username, msg.password).catch((e) => {
+        const message = String((e && e.message) || e)
+        // Boot trace on the failures that reached the panel (or its replica) — the ones
+        // with phase timings worth reading. The dial-gate throw has none and repeats.
+        if (player && !/not connected to panel/.test(message)) logBootTrace(player, 'login-failed: ' + message)
+        send({ type: 'login-error', message })
+      })
     } else if (msg.streamId) {
       // `type` from the engine rides as `recordType` (the IPC message's own `type` is
       // the envelope discriminant): 'vod' = finished library title (seek/pause UI, no
