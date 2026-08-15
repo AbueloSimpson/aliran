@@ -55,6 +55,11 @@ class AliranBackend internal constructor(private val hostFactory: () -> EngineHo
     var url: String? = null; private set
     var source: String? = null; private set
     var activeStreamId: String? = null; private set
+    /** Request headers the video player must send with `url` (redirect channels
+     *  behind a provider hotlink check). Tracked beside url because they are only
+     *  valid FOR that url: every event that replaces url with a localhost or CDN
+     *  one clears this. */
+    var headers: Map<String, String>? = null; private set
     var recordType: String? = null; private set
     var durationSec: Double? = null; private set
     var savedUsername: String? = null; private set
@@ -159,9 +164,14 @@ class AliranBackend internal constructor(private val hostFactory: () -> EngineHo
                     msg.streamId?.let { activeStreamId = it }
                     recordType = msg.recordType
                     durationSec = msg.durationSec
+                    headers = msg.headers // null for everything but a hotlink-checked redirect url
                 }
-                is BackendMessage.Fallback -> { url = msg.url; source = "cdn" }
-                is BackendMessage.SourceChanged -> { url = msg.url; source = msg.source }
+                // Both of these hand out a DIFFERENT url — the localhost server or the
+                // operator's CDN template — so the previous provider's headers must not
+                // follow it. ('feed-changed' keeps the same localhost URL and is
+                // P2P-only, so it leaves them alone.)
+                is BackendMessage.Fallback -> { url = msg.url; source = "cdn"; headers = null }
+                is BackendMessage.SourceChanged -> { url = msg.url; source = msg.source; headers = null }
                 is BackendMessage.FeedChanged -> url = msg.url // same localhost URL, new feed behind it
                 is BackendMessage.Prefs -> {
                     savedUsername = msg.username; savedPassword = msg.password

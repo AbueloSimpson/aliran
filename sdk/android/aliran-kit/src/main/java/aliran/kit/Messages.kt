@@ -35,10 +35,14 @@ sealed class BackendMessage {
     data class Streams(val streams: List<Stream>) : BackendMessage()
     data class LoginError(val message: String) : BackendMessage()
     /** Reply to play(): what the shared localhost URL now serves. recordType "vod"
-     *  means a finished library title (seek UI, no live self-heal). */
+     *  means a finished library title (seek UI, no live self-heal). headers are the
+     *  request headers the VIDEO PLAYER must send with `url` — redirect channels
+     *  whose provider hotlink-checks Referer/Origin/User-Agent answer 403 without
+     *  them. Present only there. */
     data class Port(
         val port: Int?, val url: String?, val source: String?,
-        val streamId: String?, val recordType: String?, val durationSec: Double?
+        val streamId: String?, val recordType: String?, val durationSec: Double?,
+        val headers: Map<String, String>? = null
     ) : BackendMessage()
     data class Status(val peers: Int?, val state: String?, val message: String?) : BackendMessage()
     data class Fallback(val streamId: String, val url: String, val reason: String) : BackendMessage()
@@ -70,7 +74,8 @@ sealed class BackendMessage {
                     o.optStringOrNull("source"),
                     o.optStringOrNull("streamId"),
                     o.optStringOrNull("recordType"),
-                    if (o.has("durationSec") && !o.isNull("durationSec")) o.optDouble("durationSec") else null
+                    if (o.has("durationSec") && !o.isNull("durationSec")) o.optDouble("durationSec") else null,
+                    parseHeaders(o.optJSONObject("headers"))
                 )
                 "status" -> Status(
                     if (o.has("peers") && !o.isNull("peers")) o.optInt("peers") else null,
@@ -120,6 +125,15 @@ sealed class BackendMessage {
                 )
             }
             return out
+        }
+
+        /** {} normalizes to null so plain Map equality answers "did the headers
+         *  change?" — the same trick the RN binding's headersSig ('' for none) plays. */
+        private fun parseHeaders(o: JSONObject?): Map<String, String>? {
+            if (o == null) return null
+            val out = LinkedHashMap<String, String>()
+            for (k in o.keys()) if (!o.isNull(k)) out[k] = o.optString(k)
+            return if (out.isEmpty()) null else out
         }
 
         private fun stringList(arr: JSONArray?): List<String> {
