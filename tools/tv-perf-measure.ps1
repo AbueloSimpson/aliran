@@ -95,11 +95,29 @@ $KEY_CHANNEL_UP = 166
 # a drifted scenario writes stateOk=false into its CSV row so the number is
 # known-tainted instead of silently plausible.
 function Test-UiContains {
-  param([string] $Marker)
-  Invoke-Adb @("shell", "uiautomator", "dump", "/sdcard/ui.xml") | Out-Null
-  $xml = Invoke-Adb @("shell", "cat", "/sdcard/ui.xml")
-  $text = ($xml | Out-String)
-  return ($text -match [regex]::Escape($Marker))
+  param([string] $Marker, [int] $Tries = 3)
+  # uiautomator can race a busy render (video init, tune) and return a stale or
+  # empty tree; retry before declaring the marker absent.
+  for ($t = 0; $t -lt $Tries; $t++) {
+    Invoke-Adb @("shell", "uiautomator", "dump", "/sdcard/ui.xml") | Out-Null
+    $xml = Invoke-Adb @("shell", "cat", "/sdcard/ui.xml")
+    if ((($xml | Out-String)) -match [regex]::Escape($Marker)) { return $true }
+    Start-Sleep -Milliseconds 1500
+  }
+  return $false
+}
+
+# Close the browse panel if it is up, verifying it actually closed. Never
+# presses BACK blind (fullscreen BACK exits to the Menu).
+function Close-PanelIfOpen {
+  if (Test-UiContains "CANALES" 2) {
+    Send-Key $KEY_BACK
+    Start-Sleep -Milliseconds 1500
+    if (Test-UiContains "CANALES" 1) {
+      Send-Key $KEY_BACK             # a drilled rail eats the first BACK
+      Start-Sleep -Milliseconds 1500
+    }
+  }
 }
 
 # Deterministic reset to fullscreen Live, from ANY app state the previous
@@ -120,12 +138,8 @@ function Reset-ToFullscreen {
   # A fresh process enters Live with the browse panel ALREADY OPEN (no
   # remembered channel -> the list is the landing surface), and an OK there is
   # the two-tier OK on the playing row, which opens the Guide -- the drift the
-  # baseline4 run's stateOk column caught. Close it iff it is actually open;
-  # a blind BACK would exit to the Menu on the no-panel case.
-  if (Test-UiContains "CANALES") {
-    Send-Key $KEY_BACK
-    Start-Sleep -Milliseconds 1500
-  }
+  # baseline4 run's stateOk column caught. Close it iff it is actually open.
+  Close-PanelIfOpen
 }
 
 # Each scenario is a pair of scriptblocks: Setup runs unmeasured to put the app
@@ -137,8 +151,12 @@ function Run-Scenario {
   if ($script:SkipWarmup) { $passes = 1 }
   $stats = $null
   $stateOk = $true
+  # ONE reset per scenario, shared by both passes: a per-pass force-stop made
+  # the measured pass as cold as the warm-up pass, so the numbers were mostly
+  # process-start noise (JIT, empty EPG caches) instead of the gesture cost.
+  # The teardown returns each pass to fullscreen inside the same process.
+  Reset-ToFullscreen
   for ($pass = 1; $pass -le $passes; $pass++) {
-    Reset-ToFullscreen
     & $Setup
     Reset-FrameStats
     & $Measured
@@ -148,6 +166,7 @@ function Run-Scenario {
       if (-not $stateOk) { Write-Host "  WARN: '$Name' pass $pass drifted (marker '$AssertMarker' not on screen)" }
     }
     & $Teardown
+    Close-PanelIfOpen
     Start-Sleep -Milliseconds 1000
   }
   Write-Host ("  {0,-12} frames={1,-5} janky={2} ({3}%)  p50={4}ms p90={5}ms p95={6}ms p99={7}ms" -f `
