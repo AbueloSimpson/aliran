@@ -14,15 +14,14 @@
 #   - RELEASE/Hermes build only -- debug numbers are void
 #   - box otherwise idle (no install/download in progress)
 #
-# Scenarios (each pass starts from a deterministic Reset-ToFullscreen, does a
-# warm-up pass first, and keeps the second pass; the two list scenarios pin
-# the scope to the full lineup by walking the rail to its top item first, and
-# soft-assert their end state via a uiautomator dump -> stateOk CSV column):
-#   list_scroll OK, LEFT, 20x UP (top of rail scopes the full list), RIGHT
-#               into the list, 40x DOWN (measured)
-#   rail_walk   OK, LEFT, 20x UP, then 15x DOWN over the rail (measured)
-#   panel_open  5x (OK ... BACK) open/close of the browse panel (measured)
-#   zap         10x CHANNEL_UP in fullscreen (measured)
+# Scenarios: each begins from the fresh-process LANDING PANEL (Live's list
+# overlay, TODOS scope, playing row focused -- identical on every build), one
+# warm-up pass then the kept measured pass in the same process, with a
+# uiautomator soft assertion -> stateOk CSV column on the list scenarios:
+#   list_scroll 40x DOWN over the full-lineup list (measured)
+#   rail_walk   LEFT into the rail, 20x UP to pin the top, 15x DOWN (measured)
+#   panel_open  close panel, 5x (OK ... BACK) open/close (measured)
+#   zap         close panel, 10x CHANNEL_UP in fullscreen (measured)
 #
 # Windows PowerShell 5.1, pure ASCII. No && / ternary anywhere.
 
@@ -128,18 +127,20 @@ function Close-PanelIfOpen {
 # that cannot inherit a previous scenario's state. The Menu's first tile (TV
 # EN VIVO) holds the opening focus, so one OK enters Live; with no remembered
 # channel (fresh process) Live autoplays the hero fullscreen.
-function Reset-ToFullscreen {
+# Reset to the LANDING PANEL: a fresh process enters Live with the browse
+# panel already open, scoped to TODOS/All with the playing row focused -- on
+# every build, old or category-aware (verified by screenshot on both). That
+# state IS the measurement surface: scenarios that need the full-lineup list
+# start right here instead of trying to navigate a rail whose focus behavior
+# the branch deliberately changed (the navigate-to-TODOS approach drifted on
+# drilled reopens and was abandoned).
+function Reset-ToLandingPanel {
   Invoke-Adb @("shell", "am", "force-stop", $script:Package) | Out-Null
   Start-Sleep -Seconds 2
   Invoke-Adb @("shell", "am", "start", "-n", "$($script:Package)/com.aliranclient.MainActivity") | Out-Null
   Start-Sleep -Seconds 25
   Send-Key $KEY_OK
   Start-Sleep -Seconds 10
-  # A fresh process enters Live with the browse panel ALREADY OPEN (no
-  # remembered channel -> the list is the landing surface), and an OK there is
-  # the two-tier OK on the playing row, which opens the Guide -- the drift the
-  # baseline4 run's stateOk column caught. Close it iff it is actually open.
-  Close-PanelIfOpen
 }
 
 # Each scenario is a pair of scriptblocks: Setup runs unmeasured to put the app
@@ -154,8 +155,7 @@ function Run-Scenario {
   # ONE reset per scenario, shared by both passes: a per-pass force-stop made
   # the measured pass as cold as the warm-up pass, so the numbers were mostly
   # process-start noise (JIT, empty EPG caches) instead of the gesture cost.
-  # The teardown returns each pass to fullscreen inside the same process.
-  Reset-ToFullscreen
+  Reset-ToLandingPanel
   for ($pass = 1; $pass -le $passes; $pass++) {
     & $Setup
     Reset-FrameStats
@@ -166,7 +166,6 @@ function Run-Scenario {
       if (-not $stateOk) { Write-Host "  WARN: '$Name' pass $pass drifted (marker '$AssertMarker' not on screen)" }
     }
     & $Teardown
-    Close-PanelIfOpen
     Start-Sleep -Milliseconds 1000
   }
   Write-Host ("  {0,-12} frames={1,-5} janky={2} ({3}%)  p50={4}ms p90={5}ms p95={6}ms p99={7}ms" -f `
@@ -234,25 +233,23 @@ $rows = @()
 
 Write-Host "Measuring '$Label' on $DeviceIp / $Package ..."
 
-# Every scenario starts from Reset-ToFullscreen (inside Run-Scenario), so a
-# drifted pass cannot leak into the next scenario. The two list-measuring
-# scenarios walk the rail to the TOP item (TODOS/All) in their setup, which
-# scopes the list to the full lineup on every build -- on old builds the rail
-# focus scoped instantly, on this branch it scopes after the 200 ms debounce;
-# either way the measured DOWNs sweep the same full list. panel_open and zap
-# accept the build's own scope (a scoped panel still renders the same ~12
-# initial rows; a zap press costs the same tune pipeline) -- the comparison
-# target for both is "no regression", noted in the plan.
+# Every scenario starts from the fresh-process LANDING PANEL (TODOS scope,
+# playing row focused -- identical on every build), so the measured gestures
+# and the lists they sweep are build-neutral by construction:
+#   list_scroll  pass 1 scrolls rows 1-40 of the full lineup, pass 2 rows
+#                41-80 (the panel stays open between passes) -- both passes
+#                sweep the full TODOS list on both builds
+#   rail_walk    LEFT into the rail near its top, UP x20 to pin the start,
+#                DOWN x15 over the categories
+#   panel_open   closes the landing panel, then 5x (OK ... BACK); on the
+#                category-aware build OK reopens DRILLED into the playing
+#                channel's rail -- same machinery, slightly different content;
+#                the target for this scenario is "no regression"
+#   zap          closes the panel, 10x CHANNEL_UP; the category-aware build
+#                rings the hero's category -- same tune pipeline per press
 
 Run-Scenario -Name "list_scroll" -Setup {
-  Send-Key $KEY_OK              # open the browse panel
-  Start-Sleep -Milliseconds 1500
-  Send-Key $KEY_DPAD_LEFT       # focus into the category rail
-  Start-Sleep -Milliseconds 600
-  Send-KeyBurst $KEY_DPAD_UP 20 150   # to the top: TODOS scopes the full list
-  Start-Sleep -Milliseconds 700       # let the scope debounce settle
-  Send-Key $KEY_DPAD_RIGHT      # back into the channel list
-  Start-Sleep -Milliseconds 700
+  Start-Sleep -Milliseconds 500       # the landing panel is already open, playing row focused
 } -Measured {
   Send-KeyBurst $KEY_DPAD_DOWN 40 150
 } -Teardown {
@@ -260,11 +257,9 @@ Run-Scenario -Name "list_scroll" -Setup {
 } -AssertMarker "CANALES"
 
 Run-Scenario -Name "rail_walk" -Setup {
-  Send-Key $KEY_OK
-  Start-Sleep -Milliseconds 1500
-  Send-Key $KEY_DPAD_LEFT
+  Send-Key $KEY_DPAD_LEFT             # from the focused playing row into the rail (lands near the top)
   Start-Sleep -Milliseconds 600
-  Send-KeyBurst $KEY_DPAD_UP 20 150   # start every pass from the top of the rail
+  Send-KeyBurst $KEY_DPAD_UP 20 150   # pin the start at the top of the rail
   Start-Sleep -Milliseconds 700
 } -Measured {
   Send-KeyBurst $KEY_DPAD_DOWN 15 150
@@ -273,7 +268,7 @@ Run-Scenario -Name "rail_walk" -Setup {
 } -AssertMarker "CANALES"
 
 Run-Scenario -Name "panel_open" -Setup {
-  Start-Sleep -Milliseconds 200
+  Close-PanelIfOpen                   # pass 1 closes the landing panel; pass 2 no-op
 } -Measured {
   for ($i = 0; $i -lt 5; $i++) {
     Send-Key $KEY_OK
@@ -289,7 +284,7 @@ Run-Scenario -Name "panel_open" -Setup {
 # makes ordering less critical, but the channel it leaves behind becomes the
 # resumed channel for any later manual poking, so keep it last anyway.
 Run-Scenario -Name "zap" -Setup {
-  Start-Sleep -Milliseconds 200
+  Close-PanelIfOpen
 } -Measured {
   Send-KeyBurst $KEY_CHANNEL_UP 10 1500
 } -Teardown {
