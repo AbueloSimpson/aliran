@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — ตัวอย่างสด",
   "live.waitingForChannels": "กำลังรอรายการช่อง…",
   "live.playbackFailed": "เล่นไม่สำเร็จ",
+  "live.offline": "ช่องออฟไลน์",
+  "live.offlineHint": "ช่องนี้ไม่พร้อมใช้งานในขณะนี้ เลือกช่องนี้อีกครั้งเพื่อลองใหม่ หรือเลือกช่องอื่น",
   "live.error.codec": "อุปกรณ์นี้ถอดรหัสรูปแบบวิดีโอของช่องนี้ไม่ได้",
   "live.error.codecDetail": "อุปกรณ์นี้ถอดรหัสรูปแบบวิดีโอของช่องนี้ไม่ได้ ({codec})",
   "live.enterPin": "ใส่รหัส PIN",

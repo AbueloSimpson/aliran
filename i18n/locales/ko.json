@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — 실시간 미리보기",
   "live.waitingForChannels": "채널 목록을 기다리는 중…",
   "live.playbackFailed": "재생 실패",
+  "live.offline": "채널 오프라인",
+  "live.offlineHint": "이 채널은 지금 이용할 수 없습니다. 다시 선택해 재시도하거나 다른 채널을 선택하세요.",
   "live.error.codec": "이 기기는 이 채널의 영상 형식을 디코딩할 수 없어요.",
   "live.error.codecDetail": "이 기기는 이 채널의 영상 형식을 디코딩할 수 없어요({codec}).",
   "live.enterPin": "PIN 입력",

@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — canlı önizleme",
   "live.waitingForChannels": "Kanal listesi bekleniyor…",
   "live.playbackFailed": "Oynatma başarısız",
+  "live.offline": "Kanal çevrimdışı",
+  "live.offlineHint": "Bu kanal şu anda kullanılamıyor. Yeniden denemek için tekrar seçin veya başka bir kanal seçin.",
   "live.error.codec": "Bu cihaz bu kanalın video biçimini çözemiyor.",
   "live.error.codecDetail": "Bu cihaz bu kanalın video biçimini çözemiyor ({codec}).",
   "live.enterPin": "PIN girin",

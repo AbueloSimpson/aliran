@@ -119,6 +119,8 @@
   "live.livePreview": "{title} — anteprima in diretta",
   "live.waitingForChannels": "Attesa dell'elenco dei canali…",
   "live.playbackFailed": "Riproduzione non riuscita",
+  "live.offline": "Canale offline",
+  "live.offlineHint": "Questo canale non è disponibile al momento. Selezionalo di nuovo per riprovare, oppure scegli un altro canale.",
   "live.error.codec": "Questo dispositivo non può decodificare il formato video di questo canale.",
   "live.error.codecDetail": "Questo dispositivo non può decodificare il formato video di questo canale ({codec}).",
   "live.enterPin": "Inserisci il PIN",
