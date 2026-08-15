@@ -66,7 +66,7 @@ export function SearchScreen ({ navigation }: Props) {
               stream={item}
               number={numbers.get(item.id)}
               favorite={favorites.includes(item.id)}
-              onPress={() => navigation.navigate('Live', { streamId: item.id })}
+              onPressStream={(s) => navigation.navigate('Live', { streamId: s.id })}
             />
           )}
         />

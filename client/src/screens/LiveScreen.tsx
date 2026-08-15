@@ -89,6 +89,7 @@ import { backend, type Stream } from '../worklet'
 import { setOrientation } from '../orientation'
 import { onChannelKey } from '../channelKeys'
 import { useMountDeferred } from '../defer'
+import { useStableCallback } from '../hooks'
 import { autoTunable, blockedWithoutPin, markUnlocked, needsPin, visibleStreams } from '../parental'
 import { PinEntryModal } from '../components/PinModal'
 import { channelNumbers, categoryModel, splitCategory, subLabel, pickHero, zapOrder, isVod } from '../catalog'
@@ -139,6 +140,16 @@ const BAR_IDLE_MS = theme.isTV ? 12000 : 5000
 // well before the channel identity does. Long enough to read four short items unhurried.
 const HINT_IDLE_MS = 9000
 
+// Walking the D-pad down the rail SCOPES the channel list on every focus stop — and on
+// the 32-bit TCL boxes each stop was a full list rebuild (new streams array, new
+// heading, remount of the visible rows) landing while the NEXT key press was already
+// queued: rail_walk p99 sat near a hundred milliseconds. So the rail highlight follows
+// focus instantly (it is one Text style), and the LIST waits out this trailing
+// debounce — long enough to swallow intermediate stops of a continuous walk, short
+// enough that a viewer settling on a category never sees the list lag their choice.
+// Deliberate picks (OK, drill, BACK-unwind) bypass it via setScopeNow.
+const RAIL_SCOPE_DEBOUNCE_MS = 200
+
 // Last channel watched THIS session. Module-level so it survives leaving Live for the
 // Menu and coming back (the native stack unmounts the screen in between): re-entering
 // Live resumes it instead of the hero pick — "the channel control returns to where you
@@ -152,7 +163,7 @@ function clockText (d: Date) {
 }
 
 export function LiveScreen ({ route, navigation }: Props) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [streams, setStreams] = useState<Stream[]>(() => visibleStreams(backend.streams))
   const [favorites, setFavorites] = useState<string[]>(backend.favorites)
   // Parental gate (device policy): a restricted channel about to play while the PIN
@@ -197,10 +208,16 @@ export function LiveScreen ({ route, navigation }: Props) {
     return !theme.isTV && portrait ? 'guide' : 'none'
   })
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
-  // Two-level category browse: `selected` is the group key whose channels show
+  // Two-level category browse: `selected` is the group key the RAIL highlights
   // ('All' | 'Anime' | 'Anime/Español'); `drillParent` is the parent whose sub-categories
   // the rail is currently showing (null = top-level rail). See CategoryRail.
   const [selected, setSelected] = useState<string>('All')
+  // …and `scopedKey` is the group key whose channels the LIST shows. Split from
+  // `selected` (RAIL_SCOPE_DEBOUNCE_MS): the highlight must track the D-pad
+  // immediately, but rebuilding the channel list on every focus stop of a rail walk
+  // is what the debounce exists to avoid. They converge — selectRail closes the gap
+  // after the debounce, every deliberate pick sets both at once (setScopeNow).
+  const [scopedKey, setScopedKey] = useState<string>('All')
   const [drillParent, setDrillParent] = useState<string | null>(null)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
@@ -475,18 +492,31 @@ export function LiveScreen ({ route, navigation }: Props) {
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
   const model = useMemo(() => categoryModel(streams), [streams])
-  // `selected` may reference a group that vanished after a catalog change; fall back to All.
-  const activeKey = model.groups[selected] ? selected : 'All'
+  // `scopedKey` may reference a group that vanished after a catalog change; fall back
+  // to All. The LIST derives from the debounced key — mid-walk it lags `selected` by
+  // design (RAIL_SCOPE_DEBOUNCE_MS).
+  const activeKey = model.groups[scopedKey] ? scopedKey : 'All'
   const list = model.groups[activeKey] ?? []
   // Rail contents: top-level categories, or (when drilled) the parent's sub-categories.
   const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
   // Every rail name but one is the OPERATOR's own category and is never translated;
   // 'All' is the everything-group this app adds itself, so it is the only label here
-  // that comes out of the catalog.
-  const railItems = inDrill
+  // that comes out of the catalog. Memoized so the rail's props hold still across the
+  // clock/peer/tune re-renders this screen makes — the item objects are rebuilt only
+  // when the catalog, the drill level, or the language actually changes.
+  const railItems = useMemo(() => inDrill
     ? model.subs[drillParent!].map((key) => ({ key, label: subLabel(key) }))
-    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 }))
-  const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0] // top view highlights the parent
+    : model.top.map((key) => ({ key, label: key === 'All' ? t('live.all') : key, hasChildren: (model.subs[key]?.length ?? 0) > 0 })),
+  // `locale` stands in for `t` in the deps (the Favorites/Search list pattern): t is
+  // identity-stable across a language change, so the locale VALUE is what marks the
+  // translated 'All' label stale.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [model, inDrill, drillParent, locale])
+  // The RAIL highlight follows the IMMEDIATE key — the pill must track the D-pad the
+  // instant focus moves, while the list above waits out the debounce. Same
+  // vanished-group guard as the list's, against its own key.
+  const railKey = model.groups[selected] ? selected : 'All'
+  const railSelected = inDrill ? railKey : splitCategory(railKey)[0] // top view highlights the parent
   const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find(s => s.id === playingId) ?? null
   // The playing record is a vod library title (S8a): transport UI on the bar, pause is
@@ -571,35 +601,52 @@ export function LiveScreen ({ route, navigation }: Props) {
     if (collapse) setOverlay('none')
   }
 
+  // The rail-walk debounce timer (RAIL_SCOPE_DEBOUNCE_MS). Cleared by every path that
+  // sets the scope deliberately — a stale trailing fire would yank the list to a
+  // category the viewer had already walked past or explicitly left.
+  const scopeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  function clearScopeTimer () { if (scopeTimer.current) { clearTimeout(scopeTimer.current); scopeTimer.current = null } }
+  useEffect(() => clearScopeTimer, [])
+  // A deliberate pick: highlight and list move together, and any pending walk fire dies.
+  function setScopeNow (key: string) {
+    clearScopeTimer()
+    setSelected(key)
+    setScopedKey(key)
+  }
+
   // Rail FOCUS (TV) — scope the channel list to this category and nothing more. It must
   // NOT drill, and that is a fix rather than a preference: this used to be the same
   // function as the one below, so moving the D-pad focus down the rail entered the first
   // parent that had sub-categories. The viewer could not reach the categories past it,
   // and could not stay on the parent either. Any pick shows the channel LIST — from the
   // channel-detail overlay that leaves detail (else the press looked like it did nothing).
+  // The highlight moves NOW; the list follows after the debounce (see the split above).
   function selectRail (key: string) {
     setSelected(key)
+    clearScopeTimer()
+    scopeTimer.current = setTimeout(() => { scopeTimer.current = null; setScopedKey(key) }, RAIL_SCOPE_DEBOUNCE_MS)
     setOverlay('list')
   }
 
   // Rail OK (and a phone tap, which has no focus step): ENTER the category. A top-level
   // parent with sub-categories drills in — the rail then shows its subs under a pinned
   // "‹ Parent" header. Re-picking the already-selected sub goes back to the whole parent.
-  // A leaf is just the scope the focus already gave it.
+  // A leaf is just the scope the focus already gave it. All deliberate picks — the list
+  // must answer the press itself, never a debounce later.
   function activateRail (key: string) {
     if (drillParent == null && (model.subs[key]?.length ?? 0) > 0) {
-      setDrillParent(key); setSelected(key)
+      setDrillParent(key); setScopeNow(key)
     } else if (drillParent != null && key === selected) {
-      setSelected(drillParent) // re-pick the selected sub -> all of the parent
+      setScopeNow(drillParent) // re-pick the selected sub -> all of the parent
     } else {
-      setSelected(key)
+      setScopeNow(key)
     }
     setOverlay('list')
   }
 
   // Leave the drilled sub-category view, back to the top-level rail (parent stays selected).
   function exitDrill () {
-    if (drillParent != null) setSelected(drillParent)
+    if (drillParent != null) setScopeNow(drillParent)
     setDrillParent(null)
     setOverlay('list')
   }
@@ -744,7 +791,9 @@ export function LiveScreen ({ route, navigation }: Props) {
       if (overlayRef.current === 'list') {
         // Unwind the category drill before the overlay: sub selected -> back to sub-select;
         // drilled (no sub) -> back to the top-level rail; else hide the left menu.
-        if (drillRef.current != null && selectedRef.current !== drillRef.current) { setSelected(drillRef.current); return true }
+        // (setScopeNow, not setSelected: a BACK-unwind is a deliberate pick — the list
+        // must land on the parent with the highlight, past any pending walk debounce.)
+        if (drillRef.current != null && selectedRef.current !== drillRef.current) { setScopeNow(drillRef.current); return true }
         if (drillRef.current != null) { setDrillParent(null); return true }
         setOverlay('none'); return true // hide the left menu
       }
@@ -758,7 +807,27 @@ export function LiveScreen ({ route, navigation }: Props) {
       return false
     })
     return () => sub.remove()
+    // setScopeNow off the deps: it only touches refs and state setters, so the
+    // first render's closure stays correct for the listener's whole life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigation]) // stable identity — the listener registers once in practice
+
+  // Identity-stable handler props for the memoized list panel (and the rail, once it
+  // is memoized too): a memo only holds while every prop keeps its identity across
+  // this screen's frequent re-renders (clock tick, peers, tune progress). These
+  // handlers close over live state — play() reads playingId/error, the rail handlers
+  // read the drill — so a useCallback would either capture stale or churn its
+  // identity; the ref-based wrapper does neither.
+  const onListSelect = useStableCallback((s: Stream) => play(s, { collapse: true }))
+  const onListInfo = useStableCallback((s: Stream) => openInfo(s))
+  // TV opens the Guide screen; phone raises the guide MODE right here so the video
+  // surface never leaves the tree. NOTE the error gate stays at the JSX prop below
+  // (`error ? undefined : onListGuide`) — the 2026-07-16 retry contract needs onGuide
+  // ABSENT, not merely inert, while an error is up.
+  const onListGuide = useStableCallback((s: Stream) => { if (theme.isTV) navigation.navigate('Guide', { streamId: s.id }); else setOverlay('guide') })
+  const onPanelActivity = useStableCallback(bumpMenuIdle)
+  const onRailSelect = useStableCallback(selectRail)
+  const onRailActivate = useStableCallback(activateRail)
 
   const guideStrip = overlay === 'guide' && portrait
   // Portrait search uses the SAME strip layout as the portrait guide (the one video
@@ -1042,9 +1111,9 @@ export function LiveScreen ({ route, navigation }: Props) {
               items={railItems}
               selected={railSelected}
               parentHeader={inDrill ? { label: drillParent!, onBack: exitDrill } : undefined}
-              onSelect={selectRail}
-              onActivate={activateRail}
-              onActivity={bumpMenuIdle}
+              onSelect={onRailSelect}
+              onActivate={onRailActivate}
+              onActivity={onPanelActivity}
             />
           </FocusPane>
           <FocusPane autoFocus style={[styles.listPane, portrait && styles.listPanePortrait]}>
@@ -1055,16 +1124,17 @@ export function LiveScreen ({ route, navigation }: Props) {
                 numbers={numbers}
                 playingId={playingId}
                 favorites={favorites}
-                onSelect={(s) => play(s, { collapse: true })}
-                onInfo={(s) => openInfo(s)}
+                onSelect={onListSelect}
+                onInfo={onListInfo}
                 // Two-tier OK — but NOT while a playback error is up: play() honors
                 // re-selecting the SAME channel as the retry the error message
                 // promises (see play()'s 2026-07-16 outage note), and routing that
-                // press to the Guide would shadow it. Absent onGuide = the old path.
-                // TV opens the Guide screen; phone raises the guide MODE right here
-                // so the video surface never leaves the tree.
-                onGuide={error ? undefined : (s) => (theme.isTV ? navigation.navigate('Guide', { streamId: s.id }) : setOverlay('guide'))}
-                onActivity={bumpMenuIdle}
+                // press to the Guide would shadow it. Absent onGuide = the old path —
+                // the gate must stay HERE, on the prop: a stable handler that
+                // no-ops on error would still be a present onGuide, and the panel
+                // would route the retry press to it.
+                onGuide={error ? undefined : onListGuide}
+                onActivity={onPanelActivity}
               />
             ) : (
               <View style={styles.infoPane}>

@@ -42,11 +42,14 @@ export interface ChannelRowProps {
   /** Handle on the row's Pressable, so a host can place native focus on it directly
    *  (ChannelListPanel does, for the channel being watched). The NowPill's pattern. */
   innerRef?: React.RefObject<any>
-  onPress: () => void
-  onLongPress?: () => void
+  /** Press/long-press hand the row's OWN stream back, so a list host can pass ONE
+   *  handler to every row instead of a fresh closure per row — a per-row closure is a
+   *  changed prop on every parent render, and it alone defeats the memo below. */
+  onPressStream: (s: Stream) => void
+  onLongPressStream?: (s: Stream) => void
 }
 
-export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredFocus, innerRef, onFocus, onPress, onLongPress }: ChannelRowProps) {
+function ChannelRowInner ({ stream, number, playing, favorite, hasTVPreferredFocus, innerRef, onFocus, onPressStream, onLongPressStream }: ChannelRowProps) {
   const { t } = useI18n()
   const [focused, setFocused] = useState(false)
   // Off-air channel, or a vod title the library took down (S8a: vod records carry no
@@ -75,8 +78,8 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
       hasTVPreferredFocus={hasTVPreferredFocus}
       onFocus={() => { setFocused(true); onFocus?.() }}
       onBlur={() => setFocused(false)}
-      onPress={onPress}
-      onLongPress={onLongPress}
+      onPress={() => onPressStream(stream)}
+      onLongPress={onLongPressStream ? () => onLongPressStream(stream) : undefined}
     >
       <Text style={[styles.number, focused && styles.textOnFill]}>{formatChannelNumber(number)}</Text>
       <View style={styles.main}>
@@ -94,12 +97,25 @@ export function ChannelRow ({ stream, number, playing, favorite, hasTVPreferredF
             pinned (getItemLayout above), so every row must lay out identically. */}
         {!vod && <ProgressHairline program={data?.now} style={styles.hairline} />}
       </View>
+      {/* fadeDuration 0: Android fades every fresh Image bind in over 300 ms, and a
+          scrolling list is nothing but fresh binds — on the 32-bit TCL boxes those
+          per-row fade animations ride the UI thread the scroll is already fighting
+          for. A station logo is identity, not a photo reveal; it should just BE there. */}
       {stream.logo
-        ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" />
+        ? <Image source={{ uri: stream.logo }} style={styles.logo} resizeMode="contain" fadeDuration={0} />
         : <View style={[styles.logo, styles.logoFallback]}><Text style={[styles.logoInitial, focused && styles.textOnFill]}>{(stream.title || '?').slice(0, 1).toUpperCase()}</Text></View>}
     </Pressable>
   )
 }
+
+// Memoized: the channel list re-renders wholesale on every catalog push, favorites
+// change, and zap (playingId), and each row body is expensive — an EPG hook, a
+// derived-number format, ten styled Texts. With stream-carrying handlers above, a
+// row's props only actually change when ITS data does, so the memo turns a ~300-row
+// panel re-render into the two rows that care (measured against list_scroll jank on
+// the 32-bit TCL boxes). Default shallow compare — every prop is a primitive, a
+// stable ref, or a catalog record that is replaced (not mutated) on change.
+export const ChannelRow = React.memo(ChannelRowInner)
 
 const styles = StyleSheet.create({
   row: {

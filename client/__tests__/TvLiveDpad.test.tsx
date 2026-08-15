@@ -237,6 +237,85 @@ test('no subtitle button when the stream has no tracks to choose between', async
   expect(shown).not.toContain(t('live.bar.subtitles'))
 })
 
+// --- the rail-walk debounce (RAIL_SCOPE_DEBOUNCE_MS) ---
+// Walking the D-pad down the rail scopes the channel list on every focus stop, and on
+// the 32-bit boxes each stop was a full list rebuild landing under the next queued key
+// press. So the split: the rail highlight answers the focus INSTANTLY (it is one Text
+// style), and the list re-scopes only after a ~200 ms trailing debounce — a walk
+// swallows the intermediate stops, a viewer settling on a category never notices.
+
+test('rail focus moves the highlight at once; the list re-scopes only after the debounce', async () => {
+  jest.useFakeTimers()
+  try {
+    backHandlers = []
+    jest.spyOn(BackHandler, 'addEventListener').mockImplementation(((_e: string, h: () => boolean) => {
+      backHandlers.push(h)
+      return { remove () {} }
+    }) as any)
+    ;(backend as any).streams = [
+      { id: 'moon-cat', title: 'Moon Cat', isLive: true, category: ['News'] },
+      { id: 'shop-tv', title: 'Shop TV', isLive: true, category: ['Shopping'] }
+    ]
+    const navigation: any = { isFocused: () => true, navigate: jest.fn() }
+    const tree = await createTree(<LiveScreen navigation={navigation} route={{ params: { streamId: 'moon-cat' } } as any} />)
+    await ReactTestRenderer.act(async () => { edgeStrip(tree, 'left').props.onFocus() })
+    // The channel rows are the only long-pressables on this surface — the tuning pill
+    // and the rail carry none — so they count the LIST's scope directly (the text dump
+    // can't: the pill prints the playing channel's title too).
+    const listTitles = () => tree.root.findAll((n: any) => typeof n.props?.onLongPress === 'function')
+      .map((n: any) => n.findAllByType(Text).map((x: any) => [x.props.children].flat(9).join('')).join(' '))
+    expect(listTitles().join(' ')).toContain('Shop TV') // 'All' scope: both channels listed
+    expect(listTitles()).toHaveLength(2)
+
+    // Focus (not OK) the SHOPPING rail item — on TV, focus selects.
+    const railItem = tree.root.findAll((n: any) => typeof n.props?.onFocus === 'function' && typeof n.props?.onPress === 'function')
+      .find((n: any) => n.findAllByType(Text).some((x: any) => [x.props.children].flat(9).join('') === 'SHOPPING'))
+    if (!railItem) throw new Error('no SHOPPING rail item')
+    await ReactTestRenderer.act(async () => { railItem.props.onFocus() })
+
+    // Immediately: the highlight is on SHOPPING (the accent underline)…
+    const underline = railItem.findAllByType(Text).find((x: any) => flat(x).height === 3)!
+    expect(flat(underline).backgroundColor).toBe(theme.colors.accent)
+    // …but the LIST is still the walk's starting scope — both channels.
+    expect(listTitles()).toHaveLength(2)
+
+    // The debounce elapses: now the list is scoped to the category under focus.
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(300) })
+    expect(listTitles()).toHaveLength(1)
+    expect(listTitles()[0]).toContain('Shop TV')
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
+test('OK on a rail category scopes the list at once — no debounce on a deliberate pick', async () => {
+  jest.useFakeTimers()
+  try {
+    backHandlers = []
+    jest.spyOn(BackHandler, 'addEventListener').mockImplementation(((_e: string, h: () => boolean) => {
+      backHandlers.push(h)
+      return { remove () {} }
+    }) as any)
+    ;(backend as any).streams = [
+      { id: 'moon-cat', title: 'Moon Cat', isLive: true, category: ['News'] },
+      { id: 'shop-tv', title: 'Shop TV', isLive: true, category: ['Shopping'] }
+    ]
+    const navigation: any = { isFocused: () => true, navigate: jest.fn() }
+    const tree = await createTree(<LiveScreen navigation={navigation} route={{ params: { streamId: 'moon-cat' } } as any} />)
+    await ReactTestRenderer.act(async () => { edgeStrip(tree, 'left').props.onFocus() })
+    const listTitles = () => tree.root.findAll((n: any) => typeof n.props?.onLongPress === 'function')
+      .map((n: any) => n.findAllByType(Text).map((x: any) => [x.props.children].flat(9).join('')).join(' '))
+    const railItem = tree.root.findAll((n: any) => typeof n.props?.onFocus === 'function' && typeof n.props?.onPress === 'function')
+      .find((n: any) => n.findAllByType(Text).some((x: any) => [x.props.children].flat(9).join('') === 'NEWS'))
+    if (!railItem) throw new Error('no NEWS rail item')
+    await ReactTestRenderer.act(async () => { railItem.props.onPress() }) // OK = activateRail
+    expect(listTitles()).toHaveLength(1) // scoped without advancing any timer
+    expect(listTitles()[0]).toContain('Moon Cat')
+  } finally {
+    jest.useRealTimers()
+  }
+})
+
 test('the catcher band clears BOTH side edges, or a sideways press finds nothing', async () => {
   const tree = await live()
   // The catcher is the wide middle band that holds native focus; the strips live in

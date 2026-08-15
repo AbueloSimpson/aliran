@@ -53,8 +53,8 @@ export function FavoritesScreen ({ navigation }: Props) {
               number={numbers.get(item.id)}
               favorite
               hasTVPreferredFocus={index === 0}
-              onPress={() => navigation.navigate('Live', { streamId: item.id })}
-              onLongPress={() => backend.toggleFavorite(item.id)}
+              onPressStream={(s) => navigation.navigate('Live', { streamId: s.id })}
+              onLongPressStream={(s) => backend.toggleFavorite(s.id)}
             />
           )}
         />
