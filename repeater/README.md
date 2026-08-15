@@ -60,6 +60,10 @@ Docker (from the repo root): `docker compose -f deploy/docker-compose.repeater.y
 | `CHANNELS` | `all` | `all`, `ch1,ch2`, or `category:news[,sports]` |
 | `RETENTION_SECONDS` | `300` | Live window kept per channel (may exceed the origin's) |
 | `SWARM_MAX_PEERS` | `256` | Connection budget — a repeater exists to absorb fan-out |
+| `ANNOUNCE` | `0` (off) | Also advertise this box on the panel's catalog topic so cold viewers can bootstrap from it (exposes this box's IP there) |
+| `PANEL_DATA` | `0` (off) | Hold the panel's signed bee (accounts + catalog) **in full**, so viewers' login reads (`user/<name>`, `catalog/*`) complete off this box while the panel's replication is down — availability only; the login RPC still needs the real panel |
+| `ASSETS` | `0` (off) | Mirror the panel's assets drive (posters/art, `meta/assetsKey`) in full and announce its topics |
+| `EPG` | `0` (off) | Mirror the panel's program-guide drive (`meta/epgKey`) in full and announce its topics; epoch rotations are followed live |
 | `DATA_DIR` | `./data` | Ciphertext block store (disposable cache) |
 | `STATUS_INTERVAL_SECONDS` | `60` | Per-channel status log cadence (0 = off) |
 | `STATUS_PORT` | `0` (off) | Opt-in `GET /healthz` + Prometheus `GET /metrics` server — default off, a stock repeater opens **no listening sockets** |

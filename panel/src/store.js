@@ -23,11 +23,18 @@ export async function openStore (dataDir, keys) {
 
   // Assets Hyperdrive (posters/art). Panel-owned, replicated to clients; its key is
   // advertised in the signed DB under meta/assetsKey so clients can discover it.
+  // blobsKey rides the record so a keyless repeater can mirror the art blobs without
+  // opening the drive (precedent: the EPG pointer and meta/updatesKey below). Clients
+  // read only .key, so an existing record gaining blobsKey costs one bee append at
+  // the first boot after the upgrade and changes nothing for them.
   const assets = new Hyperdrive(store.namespace('assets'))
   await assets.ready()
   const assetsKeyHex = b4a.toString(assets.key, 'hex')
+  const assetsBlobsHex = b4a.toString(assets.blobs.core.key, 'hex')
   const metaNode = await db.get('meta/assetsKey')
-  if (!metaNode || metaNode.value.key !== assetsKeyHex) await db.put('meta/assetsKey', { key: assetsKeyHex })
+  if (!metaNode || metaNode.value.key !== assetsKeyHex || metaNode.value.blobsKey !== assetsBlobsHex) {
+    await db.put('meta/assetsKey', { key: assetsKeyHex, blobsKey: assetsBlobsHex })
+  }
 
   // Updates Hyperdrive (app OTA artifacts: /manifest.json + /pkg/ installers, ops.js).
   // Same ownership/discovery pattern as assets, advertised under meta/updatesKey.

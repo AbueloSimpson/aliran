@@ -76,6 +76,19 @@ function renderMetrics (repeater, startedAt) {
       lines.push(`aliran_repeater_served_bytes_total{stream_id="${esc(c.streamId)}",core="${kind}"} ${t.servedBytes || 0}`)
     }
   }
+  // Auxiliary mirrors (S20b panel availability): the full panel bee plus any
+  // pointer drives (guide/assets). For the bee, held == length is the "every
+  // login read can be answered from here" condition — the alertable signal.
+  if (s.panelData) {
+    lines.push('# HELP aliran_repeater_panel_bee_blocks Panel bee blocks: total appended vs held on this box.', '# TYPE aliran_repeater_panel_bee_blocks gauge')
+    lines.push(`aliran_repeater_panel_bee_blocks{kind="length"} ${s.panelData.length}`)
+    lines.push(`aliran_repeater_panel_bee_blocks{kind="held"} ${s.panelData.held}`)
+  }
+  const aux = [['panel', s.panelData], ['epg', s.epg], ['assets', s.assets]].filter(([, v]) => v)
+  if (aux.length) {
+    lines.push('# HELP aliran_repeater_mirror_served_bytes_total Block bytes uploaded to peers per auxiliary mirror (panel bee, guide/assets drives) since process start.', '# TYPE aliran_repeater_mirror_served_bytes_total counter')
+    for (const [name, v] of aux) lines.push(`aliran_repeater_mirror_served_bytes_total{mirror="${name}"} ${v.servedBytes || 0}`)
+  }
   lines.push('')
   return lines.join('\n')
 }

@@ -146,13 +146,15 @@ full capture is the
   that a fleet of boxes watches, so admins re-target them from the dashboard)
   are a planned follow-up; today's selection is local config.
 
-## Relay mode: serve the catalog and the program guide
+## Relay mode: serve the panel's data
 
-Two optional settings turn a repeater into a full relay. Both are off by
+Four optional settings turn a repeater into a full relay. All are off by
 default.
 
 ```
 ANNOUNCE=1
+PANEL_DATA=1
+ASSETS=1
 EPG=1
 ```
 
@@ -160,15 +162,30 @@ EPG=1
   A new viewer can then load the channel list from the repeater while the
   panel is offline. Without this setting the repeater only answers viewers
   that found it through a channel topic.
+- `PANEL_DATA=1` — the repeater holds the panel's signed bee (accounts +
+  catalog) **in full**, not just the blocks its own catalog reads touched.
+  Hypercore replication is multi-source, so a viewer whose panel dial is
+  struggling still completes the `user/<name>` and `catalog/*` reads its
+  login waits on, off any mirror it can reach — with no client change at all.
+  The login RPC itself (`hello`/`login`/`session`) still requires the real
+  panel: only it holds the OPRF secret and the token-signing key, and a
+  repeater answers no RPC (a viewer's `hello` probe against one just times
+  out, harmlessly).
+- `ASSETS=1` — the repeater mirrors the panel's assets drive (posters/art)
+  in full and announces it, from the `meta/assetsKey` pointer.
 - `EPG=1` — the repeater mirrors the panel's program-guide drive in full and
   announces it. Viewers can then load the guide from the repeater. The mirror
-  follows guide rotations on its own. See
+  follows guide rotations live off the `meta/` pointer watch. See
   [the EPG service](epg-service.md) for the guide itself.
 
 The trust model does not change. All mirrored data is signed by the panel
 key that viewers already hold. A repeater can serve it but cannot change it.
 The one new cost of `ANNOUNCE=1`: the repeater's IP address becomes visible
 on the catalog topic, the same way the panel's is.
+
+Place panel-availability mirrors on **separate boxes and networks** from the
+panel — a mirror running beside the panel shares its power, disk and uplink
+failures, which is exactly what it exists to survive.
 
 ## Verification
 
@@ -179,7 +196,10 @@ sides); (2) the origin dies mid-play and both a warm and a *cold* viewer keep
 playing the buffered window; (3) a feedKey rotation re-targets the mirror
 unattended and purges the old cores; (4) retention keeps the store bounded and
 cleared blocks stay cleared; (5) the box's store, config and status contain no
-key material and no plaintext.
+key material and no plaintext; (6) with the panel replicating nothing to new
+connections (RPC only), a fresh viewer still completes a real OPRF login off
+the repeater's full-bee mirror, and a cold replica fetches art off the
+repeater alone.
 
 Beyond the testnet proof, a production deployment has been captured end to
 end — including the socket-buffer clamp warning on an untuned host and the
