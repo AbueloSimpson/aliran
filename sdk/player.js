@@ -937,6 +937,28 @@ function signinFacingMessage (err) {
     : 'the sign-in could not be completed on this device'
 }
 
+// Minimum interval between panel-topic refresh() kicks (_kickPanelDiscovery). Each
+// refresh is a full DHT query — the app-side login ladders tick every 2.5 s, and a
+// per-tick refresh would fire a lookup storm on a box whose radio is the bottleneck.
+const PANEL_REFRESH_MIN_MS = 5000
+
+// The post-login stagger (_schedulePostLogin). Prewarm and the stale-replica sweep used
+// to fire in the SAME tick as the 'streams' emit — exactly when the host is sending its
+// own post-login traffic (the RN app's "remember me" write, the Splash->Menu prefs
+// round-trip) — and on a single-threaded TV worklet the pile-up left IPC messages parked
+// for ~40 MEASURED seconds, long enough for a viewer quitting the app to lose the write.
+// Prewarm at 3 s: its product value is a warm FIRST zap, and a viewer physically cannot
+// zap before the menu has painted (itself seconds of RN work that benefits from an idle
+// worklet) — the delay costs warmth only for a zap inside those 3 s. The sweep at 20 s:
+// disk hygiene over namespaces stale since before this boot; nothing about the session
+// needs it early, so it waits until prewarm's dials have settled.
+const PREWARM_DELAY_MS = 3000
+const REPLICA_SWEEP_DELAY_MS = 20000
+// How many sweep iterations run between real setTimeout yields (_doSweepStaleReplicas).
+// Awaiting already-resolved bee reads drains as MICROTASKS — the loop never reaches the
+// poll phase and IPC 'data' never runs — so the yield must be a macrotask.
+const SWEEP_YIELD_EVERY = 250
+
 export class AliranPlayer extends Emitter {
   constructor ({ panelPubKey, storeDir = './aliran-store', http, fs, os, hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, reclaimBudgetBytes, feedLimit, remote, deviceId, deviceLabel, appVersion, platform } = {}) {
     super()
@@ -977,6 +999,8 @@ export class AliranPlayer extends Emitter {
     this._panelPeerKey = null // hex public key of the peer that PROVED it is the panel (see _maybeArmRpc)
     this._panelDiscovery = null // the panel topic's PeerDiscovery — report() kicks refresh() when the RPC is down
     this._rpcProbeMs = 8000 // hello-probe bound for candidate RPC sockets (tests shrink it)
+    this._loginRpcWaitMs = 10000 // login's bounded wait for the RPC to arm (tests shrink it) — see _awaitPanelRpc
+    this._panelRefreshAt = 0 // last _kickPanelDiscovery, so refresh() fires at most every PANEL_REFRESH_MIN_MS
     this._bootTrace = [] // boot diagnosis marks, construction -> first 'streams' (see _mark / bootTrace)
     this._bootSocketSeen = false // so the connection handler marks only the FIRST socket
     this._server = null
@@ -1253,6 +1277,30 @@ export class AliranPlayer extends Emitter {
     this.emit('ready')
   }
 
+  /**
+   * The engine half of a CACHED WARM START: stand the loopback server up before any
+   * login so a host can paint a lineup it cached on disk last session (display metadata
+   * only — a cache never holds keys, so playback still waits for the real login).
+   * Resolves to the server's port; the host re-points its cached art/guide/thumb URLs
+   * at it (client/backend/catalog-cache.mjs rewriteOrigins).
+   *
+   * Safe pre-login by construction: _ensureServer binds 127.0.0.1 only, and every route
+   * guards on its drive being open — an art request that arrives before the assets
+   * replica opens 404s cleanly (hosts already treat a 404 as "no art right now") rather
+   * than parking. The drive opens are kicked here best-effort so previously replicated
+   * poster blocks serve as soon as the store allows: now if the panel DB is already
+   * open, otherwise on 'ready' — and the real login re-runs both anyway (single-flight,
+   * idempotent).
+   */
+  async warmStart () {
+    const port = await this._ensureServer()
+    this._mark('warm-start')
+    const kick = () => { this._openAssets().catch(() => {}); this._openEpg().catch(() => {}) }
+    if (this._panelBee) kick()
+    else this.once('ready', kick)
+    return port
+  }
+
   // OPRF login. Returns (and caches, and emits as 'streams') the DISPLAY list: id,
   // title, description, category, isLive, poster/backdrop/logo as localhost URLs —
   // stream keys stay inside the engine. Throws on failure ('not connected to panel'
@@ -1321,9 +1369,23 @@ export class AliranPlayer extends Emitter {
     // Second argument (S53): the panel-delivered VOD provider config, or undefined.
     // Additive — every existing listener takes one argument and is untouched.
     this.emit('streams', streams, this._vod || undefined)
-    if (this._prewarmN) this.prewarm().catch(() => {}) // background warm the lineup — never blocks login
-    this._sweepStaleReplicas() // background disk sweep of catalog-orphaned replicas — never blocks or fails login
+    this._schedulePostLogin() // prewarm + stale-replica sweep, STAGGERED — see the constants
     return streams
+  }
+
+  // Arm the deferred post-login work (see PREWARM_DELAY_MS / REPLICA_SWEEP_DELAY_MS for
+  // why it is deferred at all). Epoch-guarded, the file's own idiom: stop(), a corruption
+  // purge or a re-login during the delay makes the pending timer a silent no-op — a
+  // re-login simply re-schedules (prewarm is idempotent, the sweep is single-flight).
+  // Unref'd so a pending timer never keeps a worklet alive.
+  _schedulePostLogin () {
+    const gen = this._epoch
+    const arm = (ms, fn) => {
+      const t = setTimeout(() => { if (this._epoch === gen && this._store) fn() }, ms)
+      if (typeof t.unref === 'function') t.unref()
+    }
+    if (this._prewarmN) arm(PREWARM_DELAY_MS, () => this.prewarm().catch(() => {})) // background warm — never blocks login
+    arm(REPLICA_SWEEP_DELAY_MS, () => this._sweepStaleReplicas()) // background disk sweep — never blocks or fails login
   }
 
   // Open + join entitled feeds ahead of play so the FIRST zap to a channel is warm: the
@@ -1335,16 +1397,19 @@ export class AliranPlayer extends Emitter {
     const n = this._prewarmN
     if (!n || this._hybrid.mode === 'cdn-only' || !this._entitled.size) return
     // Warm lowest curated order first (viewers start at ch1 and zap up); fall back to
-    // login order for uncurated streams.
+    // login order for uncurated streams. SERIAL on purpose: the ids are already in zap
+    // order, so serial warms ch1 — the channel a viewer actually lands on — FIRST, and
+    // spreads the per-feed Noise-handshake CPU across time instead of stacking N
+    // concurrent handshakes on the single worklet thread right after a login.
     const ids = this._curatedIds().slice(0, n === Infinity ? undefined : n)
-    await Promise.all(ids.map(async (id) => {
+    for (const id of ids) {
       try {
         const k = this._entitled.get(id)
-        if (!k || !k.encryptionKey) return
+        if (!k || !k.encryptionKey) continue
         const feedKey = await this._currentFeedKey(id, k.feedKey)
         if (feedKey) await this._openFeed(feedKey, k.encryptionKey)
       } catch { /* prewarm is best-effort; a real play will retry */ }
-    }))
+    }
   }
 
   // Entitled stream ids in curated zap order (lowest `order` first, login order as
@@ -1387,8 +1452,7 @@ export class AliranPlayer extends Emitter {
         // The swarm redials the topic on its own; kick the discovery and give the
         // validated re-arm (_maybeArmRpc) a bounded moment before declaring offline.
         // The UI is already showing "Sending…", so a few seconds here is honest.
-        if (!this._panelDiscovery) return { error: 'offline' }
-        try { this._panelDiscovery.refresh({ client: true, server: false }) } catch {}
+        if (!this._kickPanelDiscovery()) return { error: 'offline' }
         const t0 = Date.now()
         while (!this._call && Date.now() - t0 < 5000) await new Promise((resolve) => setTimeout(resolve, 250))
         if (!this._call) return { error: 'offline' }
@@ -3661,17 +3725,29 @@ export class AliranPlayer extends Emitter {
   async _doSweepStaleReplicas () {
     const tracked = this._readReplicas()
     if (!tracked.length || !this._store) return
+    // Macrotask yield, every SWEEP_YIELD_EVERY iterations of the two long loops below:
+    // on a large catalog they are thousands of awaited bee reads that mostly resolve
+    // from cache, i.e. pure microtask churn that starves the IPC 'data' handler (see the
+    // constant). Yielding changes no semantics — the keep-set is still built in full
+    // before any purge, and a thrown error still aborts purging nothing.
+    let iter = 0
+    const breathe = async () => {
+      if (++iter % SWEEP_YIELD_EVERY !== 0) return
+      await new Promise((resolve) => { const t = setTimeout(resolve, 20); if (typeof t.unref === 'function') t.unref() })
+    }
     const keep = new Set()
     try {
       // Every feedKey any replicated catalog record names (entitled or not).
       for await (const node of this._panelBee.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
         if (node && node.value && node.value.feedKey) keep.add(node.value.feedKey)
+        await breathe()
       }
       // Login-snapshot keys plus the live catalog view of each entitled stream.
       for (const [id, k] of this._entitled) {
         if (k && k.feedKey) keep.add(k.feedKey)
         const cur = await this._currentFeedKey(id, k && k.feedKey)
         if (cur) keep.add(cur)
+        await breathe()
       }
     } catch { return } // incomplete keep-set — purge nothing
     for (const cacheKey of this._feeds.keys()) keep.add(cacheKey.slice(0, cacheKey.indexOf(':')))
@@ -5853,9 +5929,42 @@ export class AliranPlayer extends Emitter {
     }
   }
 
+  // Ask hyperswarm to look the panel topic up again, at most every PANEL_REFRESH_MIN_MS.
+  // Without this, a topic joined before the panel announced (or across its restart) waits
+  // on hyperswarm's own periodic refresh — TEN MINUTES plus jitter — which is the
+  // measured "minutes on the login screen" worst case. docs/kb/bare-worklet.md prescribes
+  // exactly this kick-on-poll. Returns false when connect() never joined the topic —
+  // genuinely offline, nothing can re-arm.
+  _kickPanelDiscovery () {
+    if (!this._panelDiscovery) return false
+    const now = Date.now()
+    if (now - this._panelRefreshAt >= PANEL_REFRESH_MIN_MS) {
+      this._panelRefreshAt = now
+      try { this._panelDiscovery.refresh({ client: true, server: false }) } catch {}
+    }
+    return true
+  }
+
+  // The two login doors' shared RPC gate: where they used to throw 'not connected to
+  // panel' the instant `_call` was unarmed, they now kick the discovery and wait a
+  // BOUNDED moment for the socket + hello probe to land — on the measured boot the RPC
+  // arms at ~5 s and the old instant-throw handed the viewer to a 2.5 s retry tick that
+  // burned 2.4 more. Waiting here is free by construction: the panel's lockout counts
+  // only attempts that reach it, and this throws before any RPC leaves the device. The
+  // error string is byte-identical to the old one on purpose — the screens' TRANSIENT
+  // regexes, the worklet's NOT_CONNECTED match and the resume-cost refund all key on it.
+  async _awaitPanelRpc () {
+    if (this._call) return
+    if (!this._kickPanelDiscovery()) throw new Error('not connected to panel')
+    const t0 = Date.now()
+    const ok = await this._waitUntil(() => this._call, this._loginRpcWaitMs)
+    this._mark('login-rpc-wait', (Date.now() - t0) + 'ms ' + (ok ? 'armed' : 'gave up'))
+    if (!ok) throw new Error('not connected to panel')
+  }
+
   async _doLogin (username, password) {
     this._mark('login-attempt', this._call ? 'password' : 'password no-rpc')
-    if (!this._call) throw new Error('not connected to panel')
+    await this._awaitPanelRpc()
     const res = await oprfLogin(this._call, this._panelBee, username, password, this._loginOpts())
     return this._applyLoginResult(username, res)
   }
@@ -5869,7 +5978,7 @@ export class AliranPlayer extends Emitter {
   // build takes its token and lets the material go.
   async _doLoginWithKeys (username, keys) {
     this._mark('login-attempt', this._call ? 'keys' : 'keys no-rpc')
-    if (!this._call) throw new Error('not connected to panel')
+    await this._awaitPanelRpc()
     const res = await loginWithKeys(this._call, this._panelBee, username, keys, this._loginOpts())
     return this._applyLoginResult(username, res)
   }

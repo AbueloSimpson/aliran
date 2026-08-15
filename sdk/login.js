@@ -42,7 +42,7 @@ export function panelClient (socket) {
   return { rpc, call }
 }
 
-export async function login (call, db, username, password, { deviceId, deviceLabel, handover, remoteSecret, trace } = {}) {
+export async function login (call, db, username, password, { deviceId, deviceLabel, handover, remoteSecret, trace, catalogWaitMs } = {}) {
   const mark = tracer(trace)
   // 1. proof-of-work challenge from the panel
   const hello = await call('hello')
@@ -73,7 +73,7 @@ export async function login (call, db, username, password, { deviceId, deviceLab
   const priv = unwrap(wk, user.encPriv)
   if (!priv) throw new Error('key recovery failed')
   const authPriv = user.authPrivEnc ? unwrap(wk, user.authPrivEnc) : null
-  return openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret, trace })
+  return openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret, trace, catalogWaitMs })
 }
 
 /**
@@ -99,7 +99,7 @@ export async function login (call, db, username, password, { deviceId, deviceLab
  * @param {object} keys  { priv, authPriv } — hex or buffers, as sdk/signin-pair.js
  *                       delivers them: X25519 secret (32 bytes) + Ed25519 secret (64).
  */
-export async function loginWithKeys (call, db, username, keys, { deviceId, deviceLabel, handover, remoteSecret, trace } = {}) {
+export async function loginWithKeys (call, db, username, keys, { deviceId, deviceLabel, handover, remoteSecret, trace, catalogWaitMs } = {}) {
   const mark = tracer(trace)
   const priv = secretKeyBytes(keys && keys.priv, 'priv', 32) // crypto_box_SECRETKEYBYTES
   const authPriv = secretKeyBytes(keys && keys.authPriv, 'authPriv', 64) // crypto_sign_SECRETKEYBYTES
@@ -132,7 +132,7 @@ export async function loginWithKeys (call, db, username, keys, { deviceId, devic
   const opened = user.pub ? sealOpen(b4a.from(user.pub, 'hex'), priv, sealTo(b4a.from(user.pub, 'hex'), probe)) : null
   if (!opened || !b4a.equals(opened, probe)) throw new Error('key handover does not match this account')
 
-  const out = await openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret, trace })
+  const out = await openSession(call, db, username, user, priv, authPriv, res.sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret, trace, catalogWaitMs })
   // Unlike the password path, a missing token here is fatal rather than degraded: the
   // ONLY reason to run this is to enrol a device and be issued one.
   if (!out.token) throw new Error('the panel issued no session token — the key handover did not sign this device in')
@@ -142,6 +142,19 @@ export async function loginWithKeys (call, db, username, keys, { deviceId, devic
 // The placeholder secret of loginWithKeys' challenge-only OPRF round. Never a password,
 // never compared against anything, and never sent — only a point derived from it is.
 const CHALLENGE_ONLY_SECRET = 'aliran-session-challenge-only'
+
+// The catalog fan-out's shape (openSession). Concurrency 8: the gets are replica reads
+// dominated by per-leaf round-trips to the panel peer (measured ~11.5 ms each on a TV,
+// 16.7 s serial over a 1447-grant lineup), and they all multiplex over ONE socket into
+// hypercore's own request pipeline — past this, extra in-flight gets just queue inside
+// hypercore while flooding the single-threaded worklet's microtask queue and competing
+// with the replication stream delivering the very blocks being awaited. The wait bound
+// mirrors sdk/player.js _pushTimeoutMs and exists for the same reason: on a sparse
+// replica whose panel socket has died, a get can park FOREVER (the client Corestore is
+// built without a core timeout). Overridable per login (catalogWaitMs) so a test can
+// prove the timeout without waiting 30 s — the _rpcProbeMs pattern.
+const CATALOG_GET_CONCURRENCY = 8
+const CATALOG_WAIT_MS = 30000
 
 // A private key as bytes, given as hex or a buffer, at exactly the length its algorithm
 // defines. Wrong-length material must not reach sodium: a short X25519 key would be
@@ -159,12 +172,64 @@ function secretKeyBytes (value, what, len) {
 // path and the key-handover path: open the granted stream keys, read the VOD config,
 // register this device and take a panel-signed token. Both callers reach the same
 // result shape, so a caller cannot tell (and must not care) which door was used.
-async function openSession (call, db, username, user, priv, authPriv, sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret: wantRemoteSecret, trace } = {}) {
+async function openSession (call, db, username, user, priv, authPriv, sessionChallenge, { deviceId, deviceLabel, handover, remoteSecret: wantRemoteSecret, trace, catalogWaitMs = CATALOG_WAIT_MS } = {}) {
   const mark = tracer(trace)
+  // The catalog reads, fanned out under CATALOG_GET_CONCURRENCY with one shared
+  // deadline — this loop used to be one awaited get per grant IN SERIES, and it was 83%
+  // of a measured 20 s login. Results land by index so the projection below walks the
+  // ids in their original order: _curatedIds() (sdk/player.js) uses login order as the
+  // zap tie-break, and a nondeterministic order would make the lineup flap between
+  // logins.
+  //
+  // ON TIMEOUT THE LOGIN DELIVERS A PARTIAL CATALOG, IT DOES NOT FAIL. Unlike 'not
+  // connected to panel' (thrown before any RPC leaves the device), a login that got this
+  // far has already spent hello+pow+login against the panel throttle (LOCKOUT_THRESHOLD
+  // counts successes too) — surfacing the timeout as a transient error would send the
+  // app-side retry ladders re-running PAID logins into the same dead socket until the
+  // account locked out. A partial lineup is a working session; the channels the deadline
+  // cost are the ones a failed login would not have delivered either. What self-heals
+  // and what does not: _watchGrants' catch-up re-reads ids missing from the entitlement
+  // map, which repairs REDIRECT channels live, but a P2P channel missed here stays
+  // missing until the next login (the engine does not retain `priv`, so it cannot
+  // re-open a sealed stream key later — see _refreshEntitlements). Note _pushCatalog
+  // makes the OPPOSITE choice on its timeout (abandon without emitting): there a
+  // previous list stands and a truncated emit reads as "channels gone"; here there is no
+  // previous list, so partial beats nothing. Do not "align" the two.
+  const ids = Object.keys(user.wrapped || {})
+  const nodes = new Array(ids.length)
+  const deadline = Date.now() + catalogWaitMs
+  let cursor = 0
+  let timedOut = false
+  const worker = async () => {
+    while (true) {
+      const i = cursor++
+      if (i >= ids.length) return
+      const left = deadline - Date.now()
+      if (left <= 0) { timedOut = true; return }
+      // Raced, not cancelled — a hyperbee get has no abort. The abandoned get MUST hold
+      // a rejection handler: if the bee closes underneath it, an unobserved rejection
+      // takes the whole Bare worklet down (docs/kb/bare-worklet.md).
+      const get = db.get('catalog/' + ids[i])
+      let timer = null
+      nodes[i] = await Promise.race([
+        get.then((n) => n, () => null),
+        new Promise((resolve) => {
+          timer = setTimeout(() => { timedOut = true; resolve(null) }, left)
+          if (typeof timer.unref === 'function') timer.unref()
+        })
+      ])
+      if (timer) clearTimeout(timer)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CATALOG_GET_CONCURRENCY, ids.length) }, worker))
+
+  // Projection pass: serial and synchronous, in ids order (see above). The sealOpen per
+  // entry is cheap CPU — deliberately out of the async fan-out.
   const streams = []
-  for (const id of Object.keys(user.wrapped || {})) {
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i]
     const enc = sealOpen(b4a.from(user.pub, 'hex'), priv, user.wrapped[id])
-    const cat = await db.get('catalog/' + id)
+    const cat = nodes[i]
     if (enc && cat) {
       streams.push({
         id,
@@ -195,7 +260,7 @@ async function openSession (call, db, username, user, priv, authPriv, sessionCha
       })
     }
   }
-  mark('catalog', streams.length + '/' + Object.keys(user.wrapped || {}).length + ' streams')
+  mark('catalog', streams.length + '/' + ids.length + ' streams' + (timedOut ? ' (timed out)' : ''))
 
   // 4b. External VOD provider (S53): ONE replicated record the panel writes
   //     (`svcmeta/vod`) carrying the operator's enable SWITCH plus the coordinates the

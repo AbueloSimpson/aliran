@@ -332,6 +332,12 @@ import {
   gateSignInKeys, gateVaultRecord, sealSignIn, openSignIn,
   terminalSignInError, accountNotReplicatedYet
 } from './signin-vault.mjs'
+// The cached warm start's pure half: gate rules, URL re-porting, terminal judgement.
+// This file owns only the disk and the emit (see "cached warm start" below).
+import {
+  CATALOG_CACHE_VERSION,
+  gateCatalogCache, warmStartAllowed, rewriteOrigins, terminalCatalogError
+} from './catalog-cache.mjs'
 
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
@@ -346,6 +352,10 @@ try { console.log('[boot-trace] worklet-up') } catch {}
 // any login failure that got PAST the dial gate — 'not connected to panel' repeats every
 // 2.5 s while the swarm dials and would bury logcat with identical dumps.
 const bootTraceLogged = new WeakSet()
+// Engines whose REAL login has emitted streams — after that, a provisional (cached)
+// emit must never overwrite the live lineup. WeakSet like the trace latch above, and for
+// the same reason: a service switch replaces the engine and the latch must die with it.
+const streamsSeen = new WeakSet()
 function logBootTrace (p, label) {
   try {
     const marks = p.bootTrace()
@@ -548,13 +558,19 @@ function pinDigest (saltHex, pin) {
  *   failure in this file a caller must never report as success.
  */
 function writePrefs (prefs) {
-  const file = prefsPath()
+  return writeJsonFileAtomic(prefsPath(), prefs)
+}
+
+// The recipe documented above, generalized: prefs and the catalog cache share it, so
+// there is exactly one place the tmp+fsync+rename dance can rot. The error line names
+// the file — the two callers' failures mean different things to a viewer.
+function writeJsonFileAtomic (file, obj) {
   const tmp = file + '.tmp'
   let fd = null
   try {
-    const data = b4a.from(JSON.stringify(prefs))
-    // 0600 from creation, and carried onto the live path by the rename: this file holds a
-    // plaintext password and a sealed account record, and open()'s mode applies only to a
+    const data = b4a.from(JSON.stringify(obj))
+    // 0600 from creation, and carried onto the live path by the rename: these files hold a
+    // plaintext password / a sealed account record, and open()'s mode applies only to a
     // file it CREATES, so a stale temp from an earlier crash must not donate a looser one.
     fd = fs.openSync(tmp, 'w', 0o600)
     for (let len = 0; len < data.byteLength;) len += fs.writeSync(fd, len ? data.subarray(len) : data)
@@ -569,7 +585,7 @@ function writePrefs (prefs) {
   } catch (err) {
     if (fd !== null) { try { fs.closeSync(fd) } catch {} }
     try { fs.unlinkSync(tmp) } catch {} // a failed write leaves no litter
-    send({ type: 'error', message: 'prefs write failed: ' + String((err && err.message) || err) })
+    send({ type: 'error', message: file.replace(/^.*\//, '') + ' write failed: ' + String((err && err.message) || err) })
     return false
   }
 }
@@ -599,6 +615,66 @@ function ensureDeviceId () {
   const id = b4a.toString(b4a.from(bytes), 'hex')
   writePrefs({ ...prefs, deviceId: id })
   return id
+}
+
+// --- cached warm start (the catalog cache) ---------------------------------------------
+// The last session's display list, snapshotted so the NEXT boot can paint the menu in its
+// first second while the real login dials behind it. Display metadata ONLY — the gate in
+// catalog-cache.mjs whitelists the fields on write AND read, so no key can ever ride
+// along. A SIBLING of the prefs file, deliberately not a prefs field: every prefs setter
+// rewrites that whole file (a favorites toggle would become a half-megabyte fsync'd
+// rewrite over a 1400-channel lineup), and a torn catalog write must never be able to
+// cost the device its password, deviceId or vault record. Outside aliran-store like
+// prefs, so a corruption purge keeps it.
+function catalogCachePath () {
+  return storeDir().replace(/aliran-store$/, 'aliran-catalog.json')
+}
+
+function readCatalogCache () {
+  try { return gateCatalogCache(JSON.parse(b4a.toString(fs.readFileSync(catalogCachePath())))) } catch { return null }
+}
+
+function deleteCatalogCache () {
+  try { fs.unlinkSync(catalogCachePath()) } catch {} // ENOENT included — gone is gone
+}
+
+// The account name the CURRENT session belongs to — what the cache write stamps, and
+// what the read-side gate compares against the saved credentials. Set where the worklet
+// learns it (the password dispatch, a resume's opened record, a received handover),
+// cleared where the account goes (sign-out, service change). Set at ATTEMPT time, not on
+// success, because the engine's 'streams' emit is synchronous with the login resolving —
+// a success-time setter would run after the relay already snapshotted.
+let lastLoginUsername = null
+
+// Debounced + deferred write, LATEST WINS. Deferred well past the engine's own post-login
+// stagger so this write joins the idle tail of a boot, not the pile that used to park IPC
+// for 40 measured seconds; debounced because live catalog pushes re-emit the whole list
+// on every change. The unref keeps a pending write from holding a worklet open; losing
+// one (app killed inside the window) costs a boot's warm start, nothing more.
+const CATALOG_CACHE_WRITE_DELAY_MS = 15000
+let catalogWriteTimer = null
+let catalogWritePending = null
+
+function scheduleCatalogCacheWrite (streams, vod) {
+  if (!lastLoginUsername || !connectedKey) return // dev direct-play / keyless boot — nothing to stamp
+  if (!Array.isArray(streams) || !streams.length) return
+  catalogWritePending = { streams, vod: vod ?? null, username: lastLoginUsername, panelPubKey: connectedKey }
+  if (catalogWriteTimer) return // a timer is already running — it will write the snapshot above
+  catalogWriteTimer = setTimeout(() => {
+    catalogWriteTimer = null
+    const p = catalogWritePending
+    catalogWritePending = null
+    if (!p) return
+    // The loopback port the entry URLs were minted for, recovered from guideBase —
+    // _display() sets it unconditionally. No match = a shape this file does not
+    // understand; write nothing rather than a cache that re-ports wrongly next boot.
+    const first = p.streams[0]
+    const m = first && typeof first.guideBase === 'string' && first.guideBase.match(/^http:\/\/127\.0\.0\.1:(\d+)\//)
+    if (!m) return
+    const gated = gateCatalogCache({ v: CATALOG_CACHE_VERSION, panelPubKey: p.panelPubKey, username: p.username, savedAt: Date.now(), port: Number(m[1]), vod: p.vod, streams: p.streams })
+    if (gated) writeJsonFileAtomic(catalogCachePath(), gated)
+  }, CATALOG_CACHE_WRITE_DELAY_MS)
+  if (typeof catalogWriteTimer.unref === 'function') catalogWriteTimer.unref()
 }
 
 // --- the sign-in vault (see "The sign-in vault" in the header) -------------------------
@@ -659,6 +735,11 @@ function forgetSignIn (why) {
   // still answers whether the write landed, and still sends the same two statuses.
   vaultEpoch++
   const ok = writePrefs({ ...prev, signin: null })
+  // The cache and the vault record share every terminal reason (operator refused, wrong
+  // service, unopenable) — a lineup for an account this device can no longer enter must
+  // not paint on the next boot. Saved credentials, when they exist, rebuild it on their
+  // own next successful login.
+  deleteCatalogCache()
   sendPrefs()
   send(ok
     ? { type: 'status', state: 'signin:erased', message: why || 'the kept sign-in was erased' }
@@ -688,6 +769,7 @@ const PERSIST_WRAP_STEP_MS = 1500
 async function persistSignIn (keys) {
   const rec = gateSignInKeys(keys)
   if (!rec) return send({ type: 'status', state: 'signin:not-kept', message: 'the sign-in this device received was not storable' })
+  lastLoginUsername = rec.username // the catalog cache stamps the account it belongs to
   const epoch = vaultEpoch
   try {
     const fileKey = hcrypto.randomBytes(FILE_KEY_BYTES)
@@ -848,6 +930,7 @@ async function runResume (msg, answer, cost) {
     connectedKey = rec.panelPubKey
     p.connect(rec.panelPubKey).catch(() => {})
   }
+  lastLoginUsername = rec.username // the catalog cache stamps the account it belongs to
 
   const deadline = Date.now() + RESUME_CONNECT_MS
   let recordTries = 0
@@ -976,6 +1059,10 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
   const p = player // the relay's engine — `player` moves on a service switch
   player.on('streams', (streams, vod) => {
     if (!bootTraceLogged.has(p)) { bootTraceLogged.add(p); logBootTrace(p, 'login-ok') }
+    // A REAL session's lineup: latch it (a provisional emit racing in later must stand
+    // down — see maybeWarmStart) and snapshot it for the next boot's warm start.
+    streamsSeen.add(p)
+    scheduleCatalogCacheWrite(streams, vod)
     send({ type: 'streams', streams, ...(vod ? { vod } : {}) })
   })
   player.on('status', (status) => {
@@ -1049,6 +1136,33 @@ function playerFor (msg) {
   return ensurePlayer(msg.hybrid, msg.prewarm, msg.tune, zap, msg.swarm, msg.uploadPolicy, msg.appVersion, msg.platform, msg.remote)
 }
 
+// The cached warm start's EMIT half: paint last session's lineup while the login dials.
+// Fire-and-forget from the {panelPubKey} dispatch; every refusal is silent because the
+// fallback IS today's behavior (splash spinner until the real login). Emits only when
+// catalog-cache.mjs allows it — a gated cache for exactly this panel, a way back into
+// the same account (saved creds naming the cache's username, or a kept sign-in), fresh
+// enough — and only while no REAL lineup has landed this boot. `provisional: true` is
+// the whole contract with the RN side: the menu may paint, playback may not (the engine
+// has no entitlement keys yet), and the real login's push replaces it wholesale.
+let warmStarted = false // once per worklet boot — a service switch must not re-fire it
+
+async function maybeWarmStart (p, panelPubKey) {
+  try {
+    if (warmStarted) return
+    const cache = readCatalogCache()
+    const prefs = readPrefs() // prefs.signin is already gated by readPrefs (gateVaultRecord)
+    if (!warmStartAllowed({ cache, panelPubKey, creds: prefs.creds, signinSaved: !!prefs.signin })) return
+    warmStarted = true
+    const port = await p.warmStart()
+    // Re-check AFTER the await: the real login can land inside it (streamsSeen), and a
+    // service switch can retire this engine (player moved on).
+    if (streamsSeen.has(p) || player !== p) return
+    const streams = rewriteOrigins(cache.streams, cache.port, port)
+    send({ type: 'streams', streams, ...(cache.vod ? { vod: cache.vod } : {}), provisional: true })
+    try { console.log('[boot-trace] provisional-streams', streams.length + ' streams') } catch {}
+  } catch { /* a warm start is a bonus, never a boot failure */ }
+}
+
 // The three one-word answers of a sign-in, which are all the same shape: run an engine
 // call that returns a boolean and answer with it, ALWAYS. A screen is blocked on each of
 // them, so the reply is not optional — and the call is guarded because an uncaught throw
@@ -1090,6 +1204,10 @@ IPC.on('data', (data) => {
       // it before it writes, or the sign-out is undone a few seconds after it happened.
       vaultEpoch++
       writePrefs({ ...readPrefs(), creds: null, signin: null })
+      // Sign-out also forgets the LINEUP: the cache is only ever shown to a device that
+      // can get back into the account, and this device just declared it will not.
+      deleteCatalogCache()
+      lastLoginUsername = null
       sendPrefs()
     } else if (msg.type === 'service-save' && msg.service && /^[0-9a-f]{64}$/.test(msg.service.panelPubKey)) {
       writePrefs({ ...readPrefs(), service: { panelPubKey: msg.service.panelPubKey, ...(typeof msg.service.name === 'string' ? { name: msg.service.name } : {}) } })
@@ -1102,6 +1220,10 @@ IPC.on('data', (data) => {
       // in. The Keystore key goes with it (sdk/react-native clearService).
       vaultEpoch++
       writePrefs({ ...readPrefs(), service: null, signin: null })
+      // Leaving the operator abandons their lineup with them — same reasoning as the
+      // sign-in erase beside this write.
+      deleteCatalogCache()
+      lastLoginUsername = null
       sendPrefs()
     } else if (msg.type === 'favorites-set' && Array.isArray(msg.favorites)) {
       writePrefs({ ...readPrefs(), favorites: msg.favorites.filter((x) => typeof x === 'string') })
@@ -1402,11 +1524,18 @@ IPC.on('data', (data) => {
     } else if (msg.username) {
       // 'streams' is sent by the event relay on success; failures (including the
       // transient 'not connected to panel' while the swarm dials) surface here.
+      // The username is stamped at ATTEMPT time — the engine's 'streams' emit is
+      // synchronous with the login resolving, so a success-time stamp would run after
+      // the catalog-cache relay already snapshotted (see lastLoginUsername).
+      lastLoginUsername = String(msg.username)
       ensurePlayer().login(msg.username, msg.password).catch((e) => {
         const message = String((e && e.message) || e)
         // Boot trace on the failures that reached the panel (or its replica) — the ones
         // with phase timings worth reading. The dial-gate throw has none and repeats.
         if (player && !/not connected to panel/.test(message)) logBootTrace(player, 'login-failed: ' + message)
+        // A verdict on the ACCOUNT (rotated password, disabled, gone) kills the warm
+        // start too: without this, every boot flashes a cached menu and yanks it away.
+        if (terminalCatalogError(message)) deleteCatalogCache()
         send({ type: 'login-error', message })
       })
     } else if (msg.streamId) {
@@ -1424,7 +1553,11 @@ IPC.on('data', (data) => {
       // it is an unhandled rejection instead. Answering with {type:'error'} leaves the
       // engine unbuilt, which is what the screens are already able to show.
       const boot = () => {
-        try { playerFor(msg).connect(msg.panelPubKey).catch(fail) } catch (err) { fail(err) }
+        try {
+          const p = playerFor(msg)
+          p.connect(msg.panelPubKey).catch(fail)
+          maybeWarmStart(p, msg.panelPubKey) // fire-and-forget — see the function
+        } catch (err) { fail(err) }
       }
       if (player && connectedKey && connectedKey !== msg.panelPubKey) {
         // Service switch (S36: a Connect-screen retry after a wrong key, or "Change

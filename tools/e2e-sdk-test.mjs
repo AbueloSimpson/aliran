@@ -1690,7 +1690,53 @@ try {
   const diskRotationProven = true
   log('disk-rotate: stop() inside a rotation released the mutex and the park, and nothing was rebuilt behind it')
 
-  const pass = !!(streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
+  // ----- Login dial-wait + discovery kick + post-login stagger (login-screen fixes) -----
+  // A login issued the instant connect() returns must ride the dial on its OWN: the
+  // engine kicks the topic discovery and waits through the RPC arm (_awaitPanelRpc)
+  // instead of bouncing 'not connected to panel' to an app-side retry ladder. The ONLY
+  // retry this loop tolerates is the bare replication gap ('unknown user' — the bee's
+  // length can land a beat after the RPC socket): seeing 'not connected' here IS the
+  // regression this scene exists to catch.
+  const dirL = tmp('e2es-cliL-')
+  cleanups.push(() => { try { fs.rmSync(dirL, { recursive: true, force: true }) } catch {} })
+  const playerL = createPlayer({ panelPubKey, storeDir: dirL, swarm: { bootstrap } })
+  cleanups.push(() => playerL.stop())
+  await playerL.connect()
+  let sL = null
+  for (let i = 0; i < 10 && !sL; i++) {
+    try { sL = await playerL.login('alice', PASSWORD) } catch (e) {
+      if (!/unknown user/.test(String(e.message))) throw new Error('login bounced instead of riding the dial: ' + e.message)
+      await sleep(500)
+    }
+  }
+  if (!sL || sL.length < 4) throw new Error('dial-wait login did not deliver the lineup')
+  const marksL = playerL.bootTrace().map((m) => m.name + (m.detail ? ' ' + m.detail : ''))
+  if (!marksL.some((m) => m.startsWith('login-rpc-wait') && m.endsWith('armed'))) throw new Error('the first login did not wait through the RPC arm: ' + marksL.join(' | '))
+  log('login-wait: the FIRST login() rode the dial inside the engine —', marksL.find((m) => m.startsWith('login-rpc-wait')))
+
+  // Post-login stagger: nothing heavy may have started inline with the streams emit,
+  // and a stop() inside the delay window must starve the pending timers (epoch guard).
+  if (playerL._replicaSweep !== null) throw new Error('the stale-replica sweep ran inline with login (stagger regression)')
+  if (playerL._feeds.size !== 0) throw new Error('feeds opened inline with login (stagger regression)')
+  await playerL.stop()
+  await sleep(3500) // across PREWARM_DELAY_MS — a fired timer must find the epoch moved
+  if (playerL._store !== null || playerL._swarm !== null) throw new Error('a staggered post-login task rebuilt engine state after stop()')
+
+  // Discovery kick cadence, no network: the stub proves the rate limit and the offline
+  // verdict without waiting on a real DHT.
+  let kicksL = 0
+  const kickFn = Object.getPrototypeOf(playerL)._kickPanelDiscovery
+  const fakeL = { _panelDiscovery: { refresh: () => { kicksL++ } }, _panelRefreshAt: 0 }
+  if (kickFn.call(fakeL) !== true || kicksL !== 1) throw new Error('first kick did not refresh the discovery')
+  if (kickFn.call(fakeL) !== true || kicksL !== 1) throw new Error('a second kick inside the window must not fire another DHT query')
+  fakeL._panelRefreshAt = Date.now() - 6000
+  kickFn.call(fakeL)
+  if (kicksL !== 2) throw new Error('a kick past the window must refresh again')
+  if (kickFn.call({ _panelDiscovery: null }) !== false) throw new Error('no discovery must answer false (genuinely offline)')
+  const loginWaitProven = true
+  log('login-wait: discovery kick rate-limited + offline verdict correct; post-login stagger held across stop()')
+
+  const pass = !!(loginWaitProven && streams.length && rejected && full.body.length > 0 && /video/.test(probeOut) &&
     livePushed >= 1 && rotated && ev2.fallback.length === 1 && ev2.sourceChanged.some(e => e.source === 'p2p') &&
     !ev2.status.includes('feed:open') && tuned && relookups >= 1 && wedgeHealed && unservableProven && hybridUnservableProven && zapWarmed &&
     meteredGated && directionalProven && stallGated && clientOnlyProven && evictReopenProven && redirectProven && liveEntitlementProven && diskRotationProven)

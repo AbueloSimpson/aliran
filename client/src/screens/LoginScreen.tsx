@@ -19,6 +19,7 @@ import { backend } from '../worklet'
 import { loadServiceDescriptor } from '../config'
 import { SignInWithPhone } from '../components/SignInWithPhone'
 import { useSigninPath } from '../signinPath'
+import { isReplicationGap, REPLICATION_GAP_TRIES, REPLICATION_GAP_STEP_MS } from '../loginErrors'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -36,7 +37,11 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Login'> & { backendRead
 // only surface real errors (bad credentials, lockout, rate limit).
 const TRANSIENT = /not connected|channel closed/i
 const RETRY_MS = 2500
-const MAX_RETRIES = 24 // ≈1 minute of dialing before giving up
+// Each attempt now DIALS inside the engine for up to ~10 s (sdk/player.js
+// _awaitPanelRpc kicks the topic discovery and waits for the RPC to arm), so 8 attempts
+// ≈100 s of genuine dialing — and the common submit succeeds on attempt #1 because the
+// engine waits through the arm instead of bouncing to this ladder.
+const MAX_RETRIES = 8
 
 // What the screen can show under the fields: our own "cannot reach it" line, or the
 // engine's message verbatim (SDK error prose stays English by design — S56).
@@ -62,6 +67,9 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
   const [focused, setFocused] = useState<'user' | 'pass' | 'submit' | 'phone' | null>(null)
   const [phoneSignIn, setPhoneSignIn] = useState(false)
   const tries = useRef(0)
+  // The replication-gap budget (see ../loginErrors): bare 'unknown user' retries are
+  // PAID logins, counted apart from the free transient ladder.
+  const recordTries = useRef(0)
   // Boot trace (diagnosis): when the viewer pressed Sign in, for the outcome lines below.
   const submitT0 = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -97,13 +105,21 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
       if (m.type === 'login-error' && d?.kind === 'manual') {
         // Boot trace: WHICH error each retry saw (see SplashScreen for the vocabulary).
         console.log(`[boot-ui] login error #${tries.current}: ${m.message}`)
-        if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
-          tries.current += 1
+        const retryIn = (ms: number) => {
           timer.current = setTimeout(() => {
             // Re-read: only the door that still owns the outcome retries.
             const still = door.current
             if (still?.kind === 'manual') backend.login(still.username, still.password)
-          }, RETRY_MS)
+          }, ms)
+        }
+        if (TRANSIENT.test(m.message) && tries.current < MAX_RETRIES) {
+          tries.current += 1
+          retryIn(RETRY_MS)
+        } else if (isReplicationGap(m.message) && recordTries.current < REPLICATION_GAP_TRIES) {
+          // The account record has not replicated to this device yet — retry on its own
+          // small PAID budget (see ../loginErrors), never the free ladder above.
+          recordTries.current += 1
+          retryIn(REPLICATION_GAP_STEP_MS)
         } else {
           // Terminal — this attempt gives the outcome up rather than leaving its
           // password behind for the next door's success to save.
@@ -119,6 +135,7 @@ export function LoginScreen ({ navigation, backendReady }: Props) {
   const onSubmit = () => {
     setError(null); setBusy(true)
     tries.current = 0
+    recordTries.current = 0
     submitT0.current = Date.now()
     door.claim({ kind: 'manual', username, password })
     backend.login(username, password)

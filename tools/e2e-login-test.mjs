@@ -123,6 +123,64 @@ try {
   if (!rejected) throw new Error('wrong password was NOT rejected')
   log('client: wrong password correctly rejected')
 
+  // ===== Catalog fan-out: 300 grants must land in seconds, not serially =====
+  // (sdk/login.js openSession runs the per-grant catalog reads under a bounded worker
+  // pool — this is the regression gate on both the parallelism and the count.)
+  const FANOUT_N = 300
+  const rwd2 = evaluateFull(keys.oprf, PASSWORD)
+  const salt2 = randomSalt()
+  const kp2 = userKeyPair()
+  const auth2 = authKeyPair()
+  const wk2 = wrapKeyFrom(rwd2)
+  const wrapped2 = {}
+  for (let i = 0; i < FANOUT_N; i++) {
+    const id = 'cat' + String(i).padStart(3, '0')
+    wrapped2[id] = sealTo(kp2.publicKey, encKey)
+    await db.put('catalog/' + id, { title: 'Channel ' + i, category: ['bulk'], type: 'live', protection: 'self', feedKey: b4a.toString(feed.key, 'hex'), isLive: true, poster: null, status: 'live' })
+  }
+  await db.put('user/bob', {
+    salt: b4a.toString(salt2, 'hex'),
+    verifier: b4a.toString(deriveVerifier(rwd2, salt2, ARGON2_DEFAULT), 'hex'),
+    argon: ARGON2_DEFAULT,
+    pub: b4a.toString(kp2.publicKey, 'hex'),
+    encPriv: wrap(wk2, kp2.secretKey),
+    authPub: b4a.toString(auth2.publicKey, 'hex'),
+    authPrivEnc: wrap(wk2, auth2.secretKey),
+    wrapped: wrapped2,
+    devices: [], tokenVersion: 1, maxDevices: 2, status: 'active'
+  })
+  await waitFor(async () => await cliBee.get('user/bob'), 30000, 'bob replication to client')
+  const fanPhases = []
+  const t0 = Date.now()
+  const bulk = await login(call, cliBee, 'bob', PASSWORD, { deviceId: 'device-2', trace: (name, ms, extra) => fanPhases.push(`${name}=${ms}ms${extra ? ` (${extra})` : ''}`) })
+  const fanMs = Date.now() - t0
+  const catPhase = fanPhases.find((p) => p.startsWith('catalog='))
+  log('client: bulk login', bulk.streams.length + '/' + FANOUT_N, 'in', fanMs + 'ms —', catPhase)
+  if (bulk.streams.length !== FANOUT_N) throw new Error('bulk login delivered ' + bulk.streams.length + '/' + FANOUT_N)
+  if (!catPhase || !catPhase.includes(`${FANOUT_N}/${FANOUT_N}`)) throw new Error('catalog phase did not report ' + FANOUT_N + '/' + FANOUT_N + ': ' + catPhase)
+  if (fanMs > 10000) throw new Error('bulk login took ' + fanMs + 'ms — the catalog fan-out has gone serial')
+  // Login order must be preserved (the zap tie-break rides it).
+  const ids2 = bulk.streams.map((x) => x.id)
+  if (ids2.some((id, i) => id !== 'cat' + String(i).padStart(3, '0'))) throw new Error('bulk login reordered the lineup')
+
+  // ===== Catalog timeout: a parked get costs its CHANNEL, never the login =====
+  // One catalog read never settles (a dead panel socket under a sparse replica);
+  // catalogWaitMs shrinks the deadline the way tests shrink _rpcProbeMs. The login must
+  // RESOLVE with the other channels — failing it whole would ladder PAID logins into
+  // the panel lockout (see the comment block in sdk/login.js openSession).
+  const stuckId = 'cat150'
+  const slowBee = { core: cliBee.core, get: (k) => k === 'catalog/' + stuckId ? new Promise(() => {}) : cliBee.get(k) }
+  const partPhases = []
+  const t1 = Date.now()
+  const part = await login(call, slowBee, 'bob', PASSWORD, { deviceId: 'device-2', catalogWaitMs: 1500, trace: (name, ms, extra) => partPhases.push(`${name}=${ms}ms${extra ? ` (${extra})` : ''}`) })
+  const partMs = Date.now() - t1
+  const partCat = partPhases.find((p) => p.startsWith('catalog='))
+  log('client: partial login', part.streams.length + '/' + FANOUT_N, 'in', partMs + 'ms —', partCat)
+  if (part.streams.length !== FANOUT_N - 1) throw new Error('partial login delivered ' + part.streams.length + ' (expected ' + (FANOUT_N - 1) + ')')
+  if (part.streams.some((x) => x.id === stuckId)) throw new Error('the parked channel should be the one missing')
+  if (!partCat || !partCat.includes('timed out')) throw new Error('catalog phase did not report the timeout: ' + partCat)
+  if (partMs > 8000) throw new Error('partial login took ' + partMs + 'ms — the deadline did not bound it')
+
   // ===== Client: play the entitled feed over P2P =====
   const cfStore = new Corestore(dirs.cliFeed); await cfStore.ready(); cleanups.push(() => cfStore.close())
   const replica = new Hyperdrive(cfStore, b4a.from(s.feedKey, 'hex'), { encryptionKey: b4a.from(s.encryptionKey, 'hex') })

@@ -277,6 +277,10 @@ export function LiveScreen ({ route, navigation }: Props) {
 
   const overlayRef = useRef(overlay); overlayRef.current = overlay
   const playingIdRef = useRef(playingId); playingIdRef.current = playingId
+  // Cached warm start: the channel a viewer picked while the lineup was still
+  // provisional — 'not entitled' then only means "no session yet", so the tune is
+  // remembered here and re-issued on the first real streams push (see onMessage).
+  const deferredTune = useRef<string | null>(null)
   const drillRef = useRef(drillParent); drillRef.current = drillParent
   const selectedRef = useRef(selected); selectedRef.current = selected
 
@@ -334,7 +338,17 @@ export function LiveScreen ({ route, navigation }: Props) {
   useEffect(() => {
     backend.requestPrefs() // favorites may not be loaded yet
     return backend.onMessage((m) => {
-      if (m.type === 'streams') setStreams(visibleStreams(m.streams))
+      if (m.type === 'streams') {
+        setStreams(visibleStreams(m.streams))
+        // Cached warm start: a tune that was refused while the lineup was provisional
+        // ('not entitled' = no session yet, see onError below) retries itself the
+        // moment the REAL login's push arrives — the viewer just sees a longer tune.
+        if (m.provisional !== true && deferredTune.current) {
+          const id = deferredTune.current
+          deferredTune.current = null
+          if (id === playingIdRef.current) backend.play(id)
+        }
+      }
       if (m.type === 'prefs') setFavorites(m.favorites)
       // Broadcaster rotated the channel we're watching (source change / restart): the SDK
       // re-resolved the feed behind the same URL and AliranVideo remounts. Clear any prior
@@ -780,7 +794,15 @@ export function LiveScreen ({ route, navigation }: Props) {
           // Pill hands off to the error UI — and the guide/search overlays collapse
           // so the error text (with its retry instruction) is never hidden under
           // their opaque beds (the error-collapse pattern).
-          onError={(msg) => { setError(msg); setTuneUI(null); setOverlay((o) => (o === 'guide' || o === 'search' ? 'none' : o)) }}
+          //
+          // EXCEPT while the lineup is PROVISIONAL (cached warm start): 'not entitled'
+          // then only means "no session yet" — the menu painted from disk before the
+          // login landed. Keep the tuning pill up and remember the intent; the streams
+          // handler above re-issues the tune on the first REAL push.
+          onError={(msg) => {
+            if (backend.provisional && /not entitled/.test(msg)) { deferredTune.current = playingIdRef.current; return }
+            setError(msg); setTuneUI(null); setOverlay((o) => (o === 'guide' || o === 'search' ? 'none' : o))
+          }}
           // vod transport feed (chained by the SDK behind its own handlers): playhead
           // in whole seconds (one re-render/second), the player-reported runtime, and
           // end-of-title parking the transport on ▶ (no auto-anything — the viewer

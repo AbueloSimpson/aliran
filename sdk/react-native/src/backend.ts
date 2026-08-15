@@ -581,7 +581,10 @@ export interface RemoteStartResult {
 
 export type BackendMessage =
   | { type: 'ready' }
-  | { type: 'streams'; streams: Stream[]; vod?: VodConfig }
+  // provisional (cached warm start): a DISK CACHE of the last session's lineup, emitted
+  // before any login so the menu can paint — a session does NOT exist yet, resolve()
+  // fails until the real (non-provisional) push arrives and replaces it wholesale.
+  | { type: 'streams'; streams: Stream[]; vod?: VodConfig; provisional?: boolean }
   | { type: 'login-error'; message: string }
   // streamId names the stream this play() reply is for (absent on dev direct-play and
   // on worklet bundles older than the field) — <AliranVideo> uses it to tell "the served
@@ -760,6 +763,11 @@ export class AliranBackend {
   // home screen navigated to on {type:'streams'}) read this instead of missing the
   // one-shot message.
   streams: Stream[] = []
+  /** True while `streams` is the PROVISIONAL disk cache (cached warm start): the menu
+   *  may paint, but no session exists yet — resolve() fails until the real login's push
+   *  clears this. A real push always wins; a provisional message never overwrites one. */
+  provisional = false
+  private streamsReal = false
   // Panel-delivered external VOD provider config (S53), or null when the operator has
   // none / has it disabled — null IS "no VOD section". Login-scoped: it rides the
   // 'streams' message and never changes mid-session.
@@ -979,7 +987,7 @@ export class AliranBackend {
     if (this.debug) console.log('[backend]', `re-attach (ready=${this.engineReady}, streams=${this.streams.length})`)
     Promise.resolve().then(() => {
       if (this.engineReady) this.deliver({ type: 'ready' })
-      if (this.streams.length > 0) this.deliver({ type: 'streams', streams: this.streams, ...(this.vod ? { vod: this.vod } : {}) })
+      if (this.streams.length > 0) this.deliver({ type: 'streams', streams: this.streams, ...(this.vod ? { vod: this.vod } : {}), ...(this.provisional ? { provisional: true } : {}) })
       this.requestPrefs()
     })
   }
@@ -1596,7 +1604,15 @@ export class AliranBackend {
         // activity restart over a live worklet — can still be told; see reattach().
         if (msg.type === 'ready') this.engineReady = true
         if (msg.type === 'prefs') { this.creds = msg.creds; this.favorites = msg.favorites || []; this.smoothZapping = msg.smoothZapping ?? null; this.language = msg.language ?? null; this.service = msg.service ?? null; this.vodList = msg.vodList || []; this.vodHistory = msg.vodHistory || []; this.parental = msg.parental ?? null; this.remoteAccept = msg.remoteAccept ?? null; this.signinSaved = msg.signinSaved === true; this.prefsLoaded = true }
-        if (msg.type === 'streams') { this.streams = msg.streams; this.vod = msg.vod ?? null }
+        if (msg.type === 'streams') {
+          // A provisional (cached) lineup must never overwrite a real session's — the
+          // worklet guards this ordering too, but a reattach replay makes it reachable.
+          if (msg.provisional && this.streamsReal) continue
+          this.streams = msg.streams
+          this.vod = msg.vod ?? null
+          this.provisional = msg.provisional === true
+          if (!msg.provisional) this.streamsReal = true
+        }
         if (msg.type === 'port') {
           this.port = msg.port ?? null
           this.url = msg.url ?? (msg.port ? `http://127.0.0.1:${msg.port}/index.m3u8` : null)

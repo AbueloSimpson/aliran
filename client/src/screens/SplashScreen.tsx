@@ -27,12 +27,14 @@
 // below.
 import React, { useEffect, useRef, useState } from 'react'
 import { View, Text, Image, ActivityIndicator, StyleSheet } from 'react-native'
+import { CommonActions } from '@react-navigation/native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import type { RootStackParamList } from '../App'
 import { useI18n } from '@aliran/i18n'
 import { backend } from '../worklet'
 import { hasBakedKey, loadServiceDescriptor } from '../config'
 import { useSigninPath } from '../signinPath'
+import { isReplicationGap, REPLICATION_GAP_TRIES, REPLICATION_GAP_STEP_MS } from '../loginErrors'
 import { theme } from '../theme'
 
 const service = loadServiceDescriptor()
@@ -46,10 +48,13 @@ const RETRY_MS = 2500
 // gave the restore door eleven minutes, and it let the restore door spend the password
 // door's retries before the password door had made a single attempt.
 //
-// THE PASSWORD DOOR counts, because its attempts are free. backend.login() answers
-// 'login-error' in milliseconds when there is no panel socket, so 24 attempts 2.5 s apart
-// really is ≈1 minute of dialling before giving up to Login.
-const LOGIN_MAX_RETRIES = 24
+// THE PASSWORD DOOR counts, because its attempts are free. An attempt is no longer
+// answered in milliseconds: the engine now DIALS through each one (kicking the panel
+// topic's discovery and waiting up to ~10 s for the RPC to arm — sdk/player.js
+// _awaitPanelRpc) before 'not connected' comes back, so 8 attempts ≈100 s of genuine
+// dialling — more real work than the old 24 fast bounces bought — and the common boot
+// succeeds on attempt #1 because the engine waits THROUGH the arm instead of bouncing.
+const LOGIN_MAX_RETRIES = 8
 // THE RESTORE DOOR uses a DEADLINE FOR THE ATTEMPTS THAT COST NOTHING, because those are
 // slow: resumeSignIn() dials inside the worklet for RESUME_CONNECT_MS (25 s) before it
 // answers retry:true, so an offline set spends ~27.5 s per attempt — and 24 of those is
@@ -107,6 +112,9 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   // through to the password door with nothing left, and drop to LoginScreen on its first
   // transient — having never once tried the password it had.
   const loginTries = useRef(0)
+  // The replication-gap budget (see ../loginErrors): bare 'unknown user' retries are
+  // PAID logins, counted apart from the free transient ladder above.
+  const recordTries = useRef(0)
   const restoreUntil = useRef(0)
   // What this boot has already spent at the restore door, in PANEL LOGINS. Splash is the
   // initial route and every exit is a replace(), so it mounts once and this counter really
@@ -118,12 +126,35 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
   // long the viewer looked at it and what the wait was spent on (see also the worklet's
   // '[boot-trace]' dumps — this is the RN half of the same picture).
   const bootT0 = useRef(Date.now())
+  // Cached warm start: the Menu was PUSHED over this screen on a provisional lineup, and
+  // this screen is still alive underneath it running the doors. NOT `routed` — routed is
+  // the terminal exit, and every guard in this file keys on it staying false until the
+  // real outcome is known.
+  const provisionalRouted = useRef(false)
 
   const route = (name: 'Connect' | 'Login' | 'Menu') => {
     if (routed.current) return
     routed.current = true
-    console.log(`[boot-ui] splash -> ${name} after ${Date.now() - bootT0.current}ms (loginTries=${loginTries.current} restoreLogins=${restoreLogins.current})`)
-    navigation.replace(name)
+    console.log(`[boot-ui] splash -> ${name} after ${Date.now() - bootT0.current}ms (loginTries=${loginTries.current} restoreLogins=${restoreLogins.current}${provisionalRouted.current ? ', upgraded provisional' : ''})`)
+    if (provisionalRouted.current) {
+      // A provisional Menu is already on top of this screen. replace() would swap the
+      // BURIED splash and leave the stack's history wrong, so reset to the outcome:
+      // [Menu] when the login landed, [Login] when it terminally failed — the pullback
+      // that matches the worklet having just dropped the cache.
+      navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name }] }))
+    } else {
+      navigation.replace(name)
+    }
+  }
+
+  // Provisional route: PUSH the Menu and stay mounted (doors, budgets and timers keep
+  // running underneath — relocating them was rejected on purpose, their lockout
+  // arithmetic lives here). Idempotent; a second provisional emit cannot double-push.
+  const routeProvisional = () => {
+    if (routed.current || provisionalRouted.current) return
+    provisionalRouted.current = true
+    console.log(`[boot-ui] splash -> Menu (provisional) after ${Date.now() - bootT0.current}ms`)
+    navigation.navigate('Menu')
   }
 
   useEffect(() => {
@@ -168,6 +199,9 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
       })
     }
 
+    // The provisional lineup can beat this screen's mount (the worklet emits it the
+    // moment the loopback server is up) — the message is gone but the binding caches it.
+    if (backend.provisional && backend.streams.length > 0) routeProvisional()
     // Prefs live on the device (no network) — ask right away; the SDK queues the
     // request if the worklet is still booting.
     backend.requestPrefs()
@@ -192,19 +226,32 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
       }
       // Read the owner ONCE (signinPath.ts) — a door that failed owns nothing.
       const d = door.current
-      if (m.type === 'streams' && d) { door.release(); route('Menu') }
+      if (m.type === 'streams') {
+        // Provisional = the disk cache painting early (cached warm start). The doors
+        // keep running: only a REAL lineup releases one and takes the terminal exit.
+        if (m.provisional === true) routeProvisional()
+        else if (d) { door.release(); route('Menu') }
+      }
       if (m.type === 'login-error' && d?.kind === 'saved') {
         if (routed.current) return
         // Boot trace: WHICH error each retry saw — 'not connected' means the swarm is
         // still dialing, 'unknown user' means the account record has not replicated.
         console.log(`[boot-ui] splash login-error #${loginTries.current}: ${m.message}`)
-        if (TRANSIENT.test(m.message) && loginTries.current < LOGIN_MAX_RETRIES) {
-          loginTries.current += 1
+        const retryIn = (ms: number) => {
           timer.current = setTimeout(() => {
             // Re-read the owner: the door may have been released while we waited.
             const still = door.current
             if (still?.kind === 'saved' && !routed.current) backend.login(still.username, still.password)
-          }, RETRY_MS)
+          }, ms)
+        }
+        if (TRANSIENT.test(m.message) && loginTries.current < LOGIN_MAX_RETRIES) {
+          loginTries.current += 1
+          retryIn(RETRY_MS)
+        } else if (isReplicationGap(m.message) && recordTries.current < REPLICATION_GAP_TRIES) {
+          // The account record has not replicated to this device yet — retry on its own
+          // small PAID budget (see ../loginErrors), never the free ladder above.
+          recordTries.current += 1
+          retryIn(REPLICATION_GAP_STEP_MS)
         } else {
           // Real auth failure (changed password, revoked account, unreachable
           // service): drop to Login — it prefills the saved username.
@@ -222,6 +269,15 @@ export function SplashScreen ({ navigation, backendReady }: Props) {
       setStatus('authorizing')
     }
   }, [backendReady])
+
+  // Back-button edge during the provisional window: popping the Menu lands the viewer on
+  // this still-mounted splash with nothing to press. Send them back up — the doors below
+  // decide the real exit, and route() resets the stack when they do.
+  useEffect(() => {
+    return navigation.addListener('focus', () => {
+      if (provisionalRouted.current && !routed.current) navigation.navigate('Menu')
+    })
+  }, [navigation])
 
   return (
     <View style={styles.container}>
