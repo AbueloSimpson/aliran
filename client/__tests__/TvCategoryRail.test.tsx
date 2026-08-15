@@ -1,15 +1,13 @@
-// The category rail's TV grammar: FOCUS SCOPES, OK ENTERS.
+// The category rail's TV grammar: FOCUS ONLY HIGHLIGHTS, OK ENTERS.
 //
-// These were one action, and that was the bug. Moving the D-pad focus called the host's
-// select, and select DRILLED into any category that had sub-categories — so simply
-// walking down the rail entered the first parent it passed. Measured on a TCL set going
-// down from All: the focus landed on Movies, the rail immediately became Movies'
-// sub-list, and from there the viewer could reach neither the categories below Movies
-// nor Movies itself as a whole.
-//
-// Focus-selects at all is TV-only: on phone, Android's touch-mode focus lands on a rail
-// item right after a tap elsewhere in the rail and would instantly revert the tapped
-// selection, so the phone goes through press alone. Both halves are pinned here.
+// Two regressions ago these were ONE action: moving the D-pad focus drilled into any
+// category that had sub-categories, so walking down the rail entered the first parent
+// it passed (measured on a TCL set going down from All). The first fix split focus
+// into a scope-only select — but that still re-scoped the channel list on every focus
+// stop, so a simple scroll kept redrawing the list (the operator's complaint). The
+// standing contract: a focus stop fires NOTHING at the host — no select, no activate.
+// The light focus pill (component-local state) is the only thing that moves; the
+// list, the selection, and the drill all wait for OK.
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
@@ -57,46 +55,34 @@ function row (tree: RendererInstance, label: string) {
 }
 
 async function rail (over: Partial<Record<string, any>> = {}) {
-  const onSelect = jest.fn()
   const onActivate = jest.fn()
   const tree = await createTree(
-    <CategoryRail items={ITEMS} selected="All" onSelect={onSelect} onActivate={onActivate} {...over} />
+    <CategoryRail items={ITEMS} selected="All" onActivate={onActivate} {...over} />
   )
-  return { tree, onSelect, onActivate }
+  return { tree, onActivate }
 }
 
-test('moving the focus onto a parent SCOPES it and never enters it', async () => {
-  const { tree, onSelect, onActivate } = await rail()
+test('moving the focus onto a parent fires NOTHING at the host', async () => {
+  const { tree, onActivate } = await rail()
   await ReactTestRenderer.act(async () => { row(tree, 'Movies').props.onFocus() })
-  // Scope, yes…
-  expect(onSelect).toHaveBeenCalledWith('Movies')
-  // …enter, no. This is the whole regression: onActivate is what drills, and walking
-  // the focus past a parent must not fire it or the rail below Movies becomes
-  // unreachable.
+  // onActivate is the rail's one state-changing callback, and a focus stop must not
+  // fire it: entering would make the rail below Movies unreachable, and even a mere
+  // re-scope would redraw the channel list under a simple scroll.
   expect(onActivate).not.toHaveBeenCalled()
 })
 
 test('OK on a parent is what enters it', async () => {
-  const { tree, onSelect, onActivate } = await rail()
+  const { tree, onActivate } = await rail()
   await ReactTestRenderer.act(async () => { row(tree, 'Movies').props.onPress() })
   expect(onActivate).toHaveBeenCalledWith('Movies')
-  expect(onSelect).not.toHaveBeenCalled()
 })
 
-test('the focus can walk the whole rail — a parent in the middle is passed, not entered', async () => {
-  const { tree, onSelect, onActivate } = await rail()
+test('the focus can walk the whole rail without a single host callback', async () => {
+  const { tree, onActivate } = await rail()
   for (const label of ['All', 'Movies', 'News']) {
     await ReactTestRenderer.act(async () => { row(tree, label).props.onFocus() })
   }
-  expect(onSelect.mock.calls.map((c: any[]) => c[0])).toEqual(['All', 'Movies', 'News'])
   expect(onActivate).not.toHaveBeenCalled()
-})
-
-test('a host that gives no onActivate falls back to onSelect', async () => {
-  // Phone passes only onSelect — a tap must still do the whole job there.
-  const { tree, onSelect } = await rail({ onActivate: undefined })
-  await ReactTestRenderer.act(async () => { row(tree, 'Movies').props.onPress() })
-  expect(onSelect).toHaveBeenCalledWith('Movies')
 })
 
 // ─── Pill grammar (S-Felix): SELECTED = filled accent pill, FOCUSED = light fill ───

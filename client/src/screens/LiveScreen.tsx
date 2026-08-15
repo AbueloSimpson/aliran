@@ -144,21 +144,14 @@ const BAR_IDLE_MS = theme.isTV ? 12000 : 5000
 // well before the channel identity does. Long enough to read four short items unhurried.
 const HINT_IDLE_MS = 9000
 
-// Walking the D-pad down the rail SCOPES the channel list on every focus stop — and on
-// the 32-bit TCL boxes each stop was a full list rebuild (new streams array, new
-// heading, remount of the visible rows) landing while the NEXT key press was already
-// queued: rail_walk p99 sat near a hundred milliseconds. So the rail highlight follows
-// focus instantly (it is one Text style), and the LIST waits out this trailing
-// debounce — long enough to swallow intermediate stops of a continuous walk, short
-// enough that a viewer settling on a category never sees the list lag their choice.
-// Deliberate picks (OK, drill, BACK-unwind) bypass it via setScopeNow.
-const RAIL_SCOPE_DEBOUNCE_MS = 200
-
-// How long the ONE-SHOT swallow of the rail's opening autoFocus stays armed after
-// openListInContext (see railAutoFocusSwallow below). Long enough to cover the
-// mount → native-focus round trip on a slow 32-bit box; short enough that a
-// viewer's first deliberate rail focus after settling in is never eaten.
-const RAIL_AUTOFOCUS_SWALLOW_MS = 1000
+// NOTE (history): rail focus used to SCOPE the channel list on every stop, first
+// directly, then behind a 200 ms trailing debounce (the 32-bit list-rebuild cost),
+// guarded by a one-shot swallow of the panel's opening autoFocus. All three are
+// gone together: focus no longer scopes AT ALL — the list moves only on OK (see
+// the `selected` state note). Do not reintroduce a focus-scoping path without
+// also bringing the swallow back: the rail's autoFocus pane wins the opening
+// focus (see the "autoFocus STAYS" comment at the panels JSX), and that artifact
+// is jest-invisible.
 
 // Last channel watched THIS session. Module-level so it survives leaving Live for the
 // Menu and coming back (the native stack unmounts the screen in between): re-entering
@@ -239,16 +232,17 @@ export function LiveScreen ({ route, navigation }: Props) {
     return !theme.isTV && portrait ? 'guide' : 'none'
   })
   const [infoStream, setInfoStream] = useState<Stream | null>(null)
-  // Two-level category browse: `selected` is the group key the RAIL highlights
-  // ('All' | 'Anime' | 'Anime/Español'); `drillParent` is the parent whose sub-categories
-  // the rail is currently showing (null = top-level rail). See CategoryRail.
+  // Two-level category browse: `selected` is the group key the RAIL highlights AND
+  // the one the LIST shows ('All' | 'Anime' | 'Anime/Español') — one value, because
+  // only DELIBERATE picks (OK, LEFT-out-of-drill, BACK-unwind) move it. Walking the
+  // D-pad focus along the rail moves nothing but the light focus pill (CategoryRail's
+  // local state): the operator's ask — the list stops redrawing under a simple
+  // scroll, and a parent's sub-categories open on OK, never en passant. This
+  // retires the old focus-scopes contract and with it the `scopedKey` debounce
+  // split and the rail-autofocus swallow (the opening-focus artifact now lands on
+  // nothing that can change state). `drillParent` is the parent whose
+  // sub-categories the rail is currently showing (null = top-level rail).
   const [selected, setSelected] = useState<string>('All')
-  // …and `scopedKey` is the group key whose channels the LIST shows. Split from
-  // `selected` (RAIL_SCOPE_DEBOUNCE_MS): the highlight must track the D-pad
-  // immediately, but rebuilding the channel list on every focus stop of a rail walk
-  // is what the debounce exists to avoid. They converge — selectRail closes the gap
-  // after the debounce, every deliberate pick sets both at once (setScopeNow).
-  const [scopedKey, setScopedKey] = useState<string>('All')
   const [drillParent, setDrillParent] = useState<string | null>(null)
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
@@ -369,7 +363,7 @@ export function LiveScreen ({ route, navigation }: Props) {
   // zap() walks, and the scope openListInContext() reopens the panel to. Restored
   // from the module-level lastTuneScope (the Menu-trip persistence, like
   // lastStreamId). A ref WITHOUT the state half of the overlayRef pattern, on
-  // purpose: nothing renders from it — the rail/list render from selected/scopedKey,
+  // purpose: nothing renders from it — the rail/list render from selected,
   // and the displayed channel numbers stay global — while zap()/the strips need the
   // value synchronously in the same interaction that set it (select a row, then
   // CH+ before the next render commit).
@@ -633,10 +627,9 @@ export function LiveScreen ({ route, navigation }: Props) {
 
   const numbers = useMemo(() => channelNumbers(streams), [streams])
   const model = useMemo(() => categoryModel(streams), [streams])
-  // `scopedKey` may reference a group that vanished after a catalog change; fall back
-  // to All. The LIST derives from the debounced key — mid-walk it lags `selected` by
-  // design (RAIL_SCOPE_DEBOUNCE_MS).
-  const activeKey = model.groups[scopedKey] ? scopedKey : 'All'
+  // `selected` may reference a group that vanished after a catalog change; fall back
+  // to All. Rail highlight and list both derive from this one guarded key.
+  const activeKey = model.groups[selected] ? selected : 'All'
   const list = model.groups[activeKey] ?? []
   // Rail contents: top-level categories, or (when drilled) the parent's sub-categories.
   const inDrill = drillParent != null && (model.subs[drillParent]?.length ?? 0) > 0
@@ -658,11 +651,7 @@ export function LiveScreen ({ route, navigation }: Props) {
   // translated 'All' label stale.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [model, inDrill, drillParent, locale])
-  // The RAIL highlight follows the IMMEDIATE key — the pill must track the D-pad the
-  // instant focus moves, while the list above waits out the debounce. Same
-  // vanished-group guard as the list's, against its own key.
-  const railKey = model.groups[selected] ? selected : 'All'
-  const railSelected = inDrill ? railKey : splitCategory(railKey)[0] // top view highlights the parent
+  const railSelected = inDrill ? activeKey : splitCategory(activeKey)[0] // top view highlights the parent
   const listHeading = activeKey === 'All' ? t('live.channels') : splitCategory(activeKey).filter((x): x is string => !!x).map((x) => x.toLocaleUpperCase(getLocale())).join('  ›  ')
   const playing = streams.find(s => s.id === playingId) ?? null
   // The playing record is a vod library title (S8a): transport UI on the bar, pause is
@@ -771,75 +760,29 @@ export function LiveScreen ({ route, navigation }: Props) {
     if (collapse) setOverlay('none')
   }
 
-  // The rail-walk debounce timer (RAIL_SCOPE_DEBOUNCE_MS). Cleared by every path that
-  // sets the scope deliberately — a stale trailing fire would yank the list to a
-  // category the viewer had already walked past or explicitly left.
-  const scopeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  function clearScopeTimer () { if (scopeTimer.current) { clearTimeout(scopeTimer.current); scopeTimer.current = null } }
-  useEffect(() => clearScopeTimer, [])
-  // A deliberate pick: highlight and list move together, and any pending walk fire dies.
-  function setScopeNow (key: string) {
-    clearScopeTimer()
-    setSelected(key)
-    setScopedKey(key)
-  }
-
-  // THE RAIL-AUTOFOCUS SWALLOW (the S7-adjacent lore class: focus-engine artifacts
-  // masquerading as viewer intent). The panels block mounts TWO autoFocus
-  // FocusPanes (rail + list), and by the documented contract (see the "autoFocus
-  // STAYS" comment at the panels JSX, and ChannelListPanel's requestTVFocus note)
-  // the RAIL's pane wins the OPENING focus before the playing row claims it. That
-  // opening focus lands on a rail item, whose onFocus fires selectRail on TV
-  // (CategoryRail: FOCUS SCOPES) — overwriting the scope openListInContext just
-  // restored (and in the drilled view, overwriting it with the FIRST SUB, not even
-  // 'All'). The artifact is indistinguishable from a real D-pad focus except by
-  // WHEN it happens, so: openListInContext arms this stamp (TV only), and
-  // selectRail swallows EXACTLY ONE focus-select within the window, then disarms.
-  // Time-bounded so that if the artifact never arrives, the viewer's first
-  // deliberate rail focus is not eaten; every deliberate action (OK on the rail,
-  // drill exit) disarms it too — a real interaction ends the window early.
-  const railAutoFocusSwallow = useRef<number | null>(null)
-
-  // Rail FOCUS (TV) — scope the channel list to this category and nothing more. It must
-  // NOT drill, and that is a fix rather than a preference: this used to be the same
-  // function as the one below, so moving the D-pad focus down the rail entered the first
-  // parent that had sub-categories. The viewer could not reach the categories past it,
-  // and could not stay on the parent either. Any pick shows the channel LIST — from the
-  // channel-detail overlay that leaves detail (else the press looked like it did nothing).
-  // The highlight moves NOW; the list follows after the debounce (see the split above).
-  function selectRail (key: string) {
-    if (railAutoFocusSwallow.current != null) {
-      const artifact = Date.now() - railAutoFocusSwallow.current <= RAIL_AUTOFOCUS_SWALLOW_MS
-      railAutoFocusSwallow.current = null // one-shot either way
-      if (artifact) return // the opening autoFocus, not the viewer — change nothing
-    }
-    setSelected(key)
-    clearScopeTimer()
-    scopeTimer.current = setTimeout(() => { scopeTimer.current = null; setScopedKey(key) }, RAIL_SCOPE_DEBOUNCE_MS)
-    setOverlay('list')
-  }
-
-  // Rail OK (and a phone tap, which has no focus step): ENTER the category. A top-level
+  // Rail OK (and a phone tap — the rail's ONLY state-changing gesture; a D-pad focus
+  // moves nothing but CategoryRail's local focus pill): ENTER the category. A top-level
   // parent with sub-categories drills in — the rail then shows its subs under a pinned
-  // "‹ Parent" header. Re-picking the already-selected sub goes back to the whole parent.
-  // A leaf is just the scope the focus already gave it. All deliberate picks — the list
-  // must answer the press itself, never a debounce later.
+  // "‹ Parent" header — and the list scopes to the whole parent in the same press.
+  // OK on a sub narrows to it; re-picking the already-selected sub goes back to the
+  // whole parent. Any pick shows the channel LIST — from the channel-detail overlay
+  // that leaves detail (else the press looked like it did nothing).
   function activateRail (key: string) {
-    railAutoFocusSwallow.current = null // a deliberate action ends the swallow window
     if (drillParent == null && (model.subs[key]?.length ?? 0) > 0) {
-      setDrillParent(key); setScopeNow(key)
+      setDrillParent(key); setSelected(key)
     } else if (drillParent != null && key === selected) {
-      setScopeNow(drillParent) // re-pick the selected sub -> all of the parent
+      setSelected(drillParent) // re-pick the selected sub -> all of the parent
     } else {
-      setScopeNow(key)
+      setSelected(key)
     }
     setOverlay('list')
   }
 
-  // Leave the drilled sub-category view, back to the top-level rail (parent stays selected).
+  // Leave the drilled sub-category view, back to the top-level rail. A deliberate
+  // exit (OK on the "‹ Parent" header, or LEFT out of the rail), so the list widens
+  // back to the whole parent in the same gesture.
   function exitDrill () {
-    railAutoFocusSwallow.current = null // a deliberate action ends the swallow window
-    if (drillParent != null) setScopeNow(drillParent)
+    if (drillParent != null) setSelected(drillParent)
     setDrillParent(null)
     setOverlay('list')
   }
@@ -857,9 +800,11 @@ export function LiveScreen ({ route, navigation }: Props) {
   // deliberately DIVERGES from activateRail: it does NOT drill even when the parent
   // has subs — the viewer tuned from the whole parent, the top rail with the parent
   // pill selected is that state (rail focus included), and it costs one BACK to
-  // close instead of two. The three state writes commit in one batch with the
-  // overlay: the panel mounts LAST, seeing the finished drill/scope whatever the
-  // event source (press, focus strip).
+  // close instead of two. The state writes commit in one batch with the overlay:
+  // the panel mounts LAST, seeing the finished drill/scope whatever the event
+  // source (press, focus strip). The rail's opening autoFocus lands harmlessly on
+  // whatever item wins it — a focus changes no state — so the restored scope
+  // stands without the swallow guard this open used to arm.
   // Phone-portrait keeps its guide default — the callers gate on that, this
   // function is the landscape/TV list path only.
   function openListInContext () {
@@ -868,10 +813,7 @@ export function LiveScreen ({ route, navigation }: Props) {
     const [parent, sub] = splitCategory(scope)
     if (sub !== undefined && (m.subs[parent]?.length ?? 0) > 0) setDrillParent(parent)
     else setDrillParent(null)
-    setScopeNow(scope) // immediate — a deliberate open, past any pending walk debounce
-    // Arm the one-shot swallow of the rail's opening autoFocus (TV only — phone
-    // has no focus-selects to swallow): see railAutoFocusSwallow.
-    if (theme.isTV) railAutoFocusSwallow.current = Date.now()
+    setSelected(scope)
     setOverlay('list')
   }
 
@@ -1046,9 +988,7 @@ export function LiveScreen ({ route, navigation }: Props) {
       if (overlayRef.current === 'list') {
         // Unwind the category drill before the overlay: sub selected -> back to sub-select;
         // drilled (no sub) -> back to the top-level rail; else hide the left menu.
-        // (setScopeNow, not setSelected: a BACK-unwind is a deliberate pick — the list
-        // must land on the parent with the highlight, past any pending walk debounce.)
-        if (drillRef.current != null && selectedRef.current !== drillRef.current) { setScopeNow(drillRef.current); return true }
+        if (drillRef.current != null && selectedRef.current !== drillRef.current) { setSelected(drillRef.current); return true }
         if (drillRef.current != null) { setDrillParent(null); return true }
         setOverlay('none'); return true // hide the left menu
       }
@@ -1062,8 +1002,8 @@ export function LiveScreen ({ route, navigation }: Props) {
       return false
     })
     return () => sub.remove()
-    // setScopeNow off the deps: it only touches refs and state setters, so the
-    // first render's closure stays correct for the listener's whole life.
+    // The body reads refs and calls state setters only, so the first render's
+    // closure stays correct for the listener's whole life.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigation]) // stable identity — the listener registers once in practice
 
@@ -1074,9 +1014,8 @@ export function LiveScreen ({ route, navigation }: Props) {
   // read the drill — so a useCallback would either capture stale or churn its
   // identity; the ref-based wrapper does neither.
   // The tune's browsing context (Phase 4): the scope the LIST is actually showing at
-  // press time — activeKey, the debounced/guarded key, not the mid-walk rail
-  // highlight, which may still be a category the list never caught up to. Recorded
-  // by play() itself, past its gates.
+  // press time — activeKey, the vanished-group-guarded key. Recorded by play()
+  // itself, past its gates.
   const onListSelect = useStableCallback((s: Stream) => play(s, { collapse: true, scope: activeKey }))
   const onListInfo = useStableCallback((s: Stream) => openInfo(s))
   // TV opens the Guide screen; phone raises the guide MODE right here so the video
@@ -1093,7 +1032,6 @@ export function LiveScreen ({ route, navigation }: Props) {
     else setOverlay('guide')
   })
   const onPanelActivity = useStableCallback(bumpMenuIdle)
-  const onRailSelect = useStableCallback(selectRail)
   const onRailActivate = useStableCallback(activateRail)
   const onExitDrill = useStableCallback(exitDrill)
   // The phone guide's tune handler (GuidePanel onTune) — stable for the same
@@ -1432,7 +1370,6 @@ export function LiveScreen ({ route, navigation }: Props) {
               items={railItems}
               selected={railSelected}
               parentHeader={railParentHeader}
-              onSelect={onRailSelect}
               onActivate={onRailActivate}
               onActivity={onPanelActivity}
             />

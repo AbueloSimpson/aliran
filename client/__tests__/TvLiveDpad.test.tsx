@@ -237,14 +237,13 @@ test('no subtitle button when the stream has no tracks to choose between', async
   expect(shown).not.toContain(t('live.bar.subtitles'))
 })
 
-// --- the rail-walk debounce (RAIL_SCOPE_DEBOUNCE_MS) ---
-// Walking the D-pad down the rail scopes the channel list on every focus stop, and on
-// the 32-bit boxes each stop was a full list rebuild landing under the next queued key
-// press. So the split: the rail highlight answers the focus INSTANTLY (it is one pill
-// style), and the list re-scopes only after a ~200 ms trailing debounce — a walk
-// swallows the intermediate stops, a viewer settling on a category never notices.
+// --- rail focus is FREE: only OK moves the list -----------------------------------
+// The old contract (focus scopes, first directly, then behind a 200 ms debounce and
+// an opening-autofocus swallow) is retired: walking the D-pad along the rail moves
+// nothing but the light focus pill. The list, the selection, and the drill all wait
+// for OK — the operator's ask: a simple scroll must stop redrawing the channel list.
 
-test('rail focus moves the highlight at once; the list re-scopes only after the debounce', async () => {
+test('rail focus moves only the focus pill — the list never re-scopes, however long you wait', async () => {
   jest.useFakeTimers()
   try {
     backHandlers = []
@@ -269,24 +268,25 @@ test('rail focus moves the highlight at once; the list re-scopes only after the 
     expect(listTitles().join(' ')).toContain('Moon Cat')
     expect(listTitles()).toHaveLength(1)
 
-    // Focus (not OK) the SHOPPING rail item — on TV, focus selects.
+    // Focus (not OK) the SHOPPING rail item.
     const railItem = tree.root.findAll((n: any) => typeof n.props?.onFocus === 'function' && typeof n.props?.onPress === 'function')
       .find((n: any) => n.findAllByType(Text).some((x: any) => [x.props.children].flat(9).join('') === 'SHOPPING'))
     if (!railItem) throw new Error('no SHOPPING rail item')
-    // The FIRST rail focus after an in-context open is the rail's autoFocus
-    // artifact and is swallowed one-shot (LiveScreen railAutoFocusSwallow) —
-    // consume it, so the focus below measures the debounce, not the swallow.
-    await ReactTestRenderer.act(async () => { railItem.props.onFocus() })
     await ReactTestRenderer.act(async () => { railItem.props.onFocus() })
 
-    // Immediately: the highlight is on SHOPPING (the filled accent pill)…
-    expect(flat(railItem).backgroundColor).toBe(theme.colors.accent)
-    // …but the LIST is still the walk's starting scope — the NEWS channel.
+    // The focused item shows the light FOCUS pill — not the accent selection pill:
+    // focus is travel, not a pick, so the selection stays where the open left it.
+    expect(flat(railItem).backgroundColor).toBe(theme.colors.focusFill)
+    // …and the LIST does not move, immediately or ever: no debounce is lurking.
+    expect(listTitles()).toHaveLength(1)
+    expect(listTitles()[0]).toContain('Moon Cat')
+    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(1000) })
     expect(listTitles()).toHaveLength(1)
     expect(listTitles()[0]).toContain('Moon Cat')
 
-    // The debounce elapses: now the list is scoped to the category under focus.
-    await ReactTestRenderer.act(async () => { jest.advanceTimersByTime(300) })
+    // OK is the pick: the accent pill and the list move together, at once.
+    await ReactTestRenderer.act(async () => { railItem.props.onPress() })
+    expect(flat(railItem).backgroundColor).toBe(theme.colors.accent)
     expect(listTitles()).toHaveLength(1)
     expect(listTitles()[0]).toContain('Shop TV')
   } finally {
