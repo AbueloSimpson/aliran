@@ -143,6 +143,17 @@ export const config = {
     fetchTimeoutMs: int(process.env.SOURCES_FETCH_TIMEOUT_MS, 30000),
     maxBytes: int(process.env.SOURCES_MAX_BYTES, 5242880),
     maxChannels: int(process.env.SOURCES_MAX_CHANNELS, 500)
+  },
+  // Redirect-channel liveness probe (src/liveness.js): redirect channels have no
+  // broadcaster heartbeat, so the panel probes their urls itself and flips isLive —
+  // dead links dim in the viewer's list instead of spinning. 0 minutes disables.
+  // Event playlists (dead between events by design) are why the default is 10 min:
+  // undim happens on the first sweep after the event starts.
+  liveness: {
+    intervalMinutes: int(process.env.LIVENESS_INTERVAL_MINUTES, 10),
+    timeoutMs: int(process.env.LIVENESS_TIMEOUT_MS, 8000),
+    failsToFlip: int(process.env.LIVENESS_FAILS_TO_FLIP, 3),
+    bootDelayMs: int(process.env.LIVENESS_BOOT_DELAY_MS, 90000)
   }
 }
 
@@ -209,6 +220,10 @@ chkInt('SOURCES_SYNC_INTERVAL_MS', config.sources.defaultIntervalMs, 60000)
 chkInt('SOURCES_FETCH_TIMEOUT_MS', config.sources.fetchTimeoutMs, 1000)
 chkInt('SOURCES_MAX_BYTES', config.sources.maxBytes, 1024)
 chkInt('SOURCES_MAX_CHANNELS', config.sources.maxChannels, 1)
+chkInt('LIVENESS_INTERVAL_MINUTES', config.liveness.intervalMinutes, 0)
+chkInt('LIVENESS_TIMEOUT_MS', config.liveness.timeoutMs, 1000)
+chkInt('LIVENESS_FAILS_TO_FLIP', config.liveness.failsToFlip, 1)
+chkInt('LIVENESS_BOOT_DELAY_MS', config.liveness.bootDelayMs, 0)
 chkBootstrap('BOOTSTRAP', config.bootstrap)
 
 // --- check-config dry-run (S49a) ---

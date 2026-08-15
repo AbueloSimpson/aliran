@@ -27,6 +27,7 @@ import { makeReports } from './reports.js'
 import { makeNotifier } from './notify.js'
 import { makeBlobsKeyEnricher } from './blobs-key.js'
 import { loadSources, makeSourcesScheduler } from './sources.js'
+import { makeLivenessProber } from './liveness.js'
 import { loadPackages, reconcilePackages } from './packages.js'
 import { tuneSwarm, logSwarmTuning } from '@aliran/core/net-tune.js'
 import { initLogging } from './log.js'
@@ -163,6 +164,13 @@ export async function startPanel () {
   const sourceCount = Object.keys(loadSources(config.dataDir)).length
   if (sourceCount > 0) console.log(`Channel sources: ${sourceCount} registered — due feeds sync ~${Math.round(config.sources.bootDelayMs / 1000)}s after boot, then every tick.`)
 
+  // Redirect-channel liveness (src/liveness.js): probes redirect urls and flips
+  // isLive so dead links dim in the viewer's list instead of spinning forever.
+  const liveness = makeLivenessProber({ config, db, activity })
+  console.log(config.liveness.intervalMinutes > 0
+    ? `Redirect liveness: probing redirect urls every ${config.liveness.intervalMinutes} min — a url dead ${config.liveness.failsToFlip} sweeps dims (isLive:false), the first success undims. LIVENESS_INTERVAL_MINUTES=0 disables.`
+    : 'Redirect liveness: DISABLED (LIVENESS_INTERVAL_MINUTES=0) — dead redirect urls stay listed as live.')
+
   // Analytics sampling (S48). Fast tick (5 min): the swarm connection count — every
   // open app holds the catalog connection, so this approximates "apps online" (it
   // also counts non-viewer peers like repeaters; surfaces label it approximate).
@@ -198,9 +206,9 @@ export async function startPanel () {
     console.log('Viewer reports: DISABLED (REPORTS_RETENTION_DAYS=0) — the `report` RPC method is not served.')
   }
 
-  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); reports.close(); notifier.close(); sourcesSched.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
+  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); reports.close(); notifier.close(); sourcesSched.close(); liveness.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys, admin, enrich, sourcesSched, analytics, reports, notifier }
+  return { swarm, store, db, keys, admin, enrich, sourcesSched, liveness, analytics, reports, notifier }
 }
 
 // Run directly (not when imported by a test).
