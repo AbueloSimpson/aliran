@@ -29,6 +29,16 @@ const requestTVFocus: jest.Mock =
 // The reveal reads Platform.isTV at LAYOUT time (jest defaults it to false = the
 // phone), so each test picks its platform here and afterEach puts the phone back.
 // isTV is a GETTER over constants.uiMode — plain assignment silently no-ops.
+//
+// ⚠ A LATE fake, unlike every other TV suite (TvMenuRail, TvCategoryRail, TvLiveDpad …
+// fake it before the require so theme.ts snapshots a television). That is correct here
+// and only here, because the reveal re-reads Platform.isTV every layout pass. But it
+// does mean everything resolved at MODULE LOAD is still the phone's: theme's SCALE
+// ramp, and the component's own `FocusPane = Platform.isTV ? TVFocusGuideView : View`.
+// So this suite must never grow a sizing, geometry or FocusPane assertion — it would
+// silently measure phone metrics. (It reads no theme numbers today: the geometry the
+// reveal computes on is injected by hand through onLayout below.) TvMenuRail shipped a
+// clipped TV rail behind exactly that mistake; use the before-require fake for those.
 const realIsTV = Object.getOwnPropertyDescriptor(Platform, 'isTV')!
 const asTV = () => { Object.defineProperty(Platform, 'isTV', { configurable: true, get: () => true }) }
 
