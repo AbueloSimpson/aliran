@@ -12,11 +12,12 @@ milestone with its verification narrative — lives in
 ## [Unreleased]
 
 The cumulative pre-1.0 state (no version has been cut yet). Every item below is
-implemented and covered by an e2e or unit suite, and — with the exception noted on
-the first three items — everything that touches the runtime is verified on real
+implemented and covered by an e2e or unit suite, and — except where an item says
+otherwise in its own text — everything that touches the runtime is verified on real
 infrastructure (a VPS over the public DHT, a physical Android phone + Android TV,
 and the Windows desktop player). **"Send to TV", "play on my TV" and casting have
-not been on a television yet**; each says so where it is described.
+not been on a television yet**; each says so where it is described. Read the ⚠ lines:
+an item that carries one is telling you exactly which claim is still on paper.
 
 ### Added
 
@@ -89,6 +90,38 @@ not been on a television yet**; each says so where it is described.
   Idle evictions are also rate-limited to one feed per 60 s maintenance pass, so a
   prewarm lineup whose feeds all cross the threshold together drains over several
   passes instead of vanishing at once.
+
+- **The hole-punch verdict is readable on an ordinary build (`[reclaim]`).** Which of
+  the disk bounds above actually applies to a device is decided by one measurement —
+  the engine writes a scratch file, punches a hole in it, and asks the filesystem
+  whether the allocated size dropped. That verdict decided everything and was visible
+  to nobody: it was computed, exposed on the serving core, and never read, so
+  answering "did the punch work on this box?" meant building a one-off instrumented
+  APK. The client worklet now prints one `[reclaim]` line when the probe answers and
+  one more whenever the answer changes — `canPunch`, the bytes it freed, the wide
+  (> 4 GiB) stage's own number when that stage ran, the retry count, and whether each
+  bound is still armed. **One line per change, not per tick**: an inconclusive probe
+  is retried and the latches flip after it lands, so the sequence is the diagnosis,
+  but the total is a handful of lines per session and it is therefore safe to leave on
+  in a shipping build. It rides the existing 3 s peers ticker rather than a timer of
+  its own — the probe only runs from a reclaim tick, and a reclaim tick only happens
+  while a feed is being served. Hosts can read the same thing through the new
+  `player.reclaimStatus()`. Nothing about the probe, the thresholds or the bounds
+  changed. Covered by `test:reclaim-log` (rendering, the absent-vs-zero distinction
+  that identifies a truncated-punch addon, the retry and latch transitions, and source
+  gates on the wiring) and by `test:sdk`, which now reads the status through the
+  public accessor and pins the ticker's own contract — the 3 s status timer emits
+  `peers` only while a feed is actually being served, which is both what makes this
+  log's sampling honest and the guard that keeps the timer from throwing on the four
+  paths that drop the served feed under it.
+  ⚠ **Not on a device yet.** Every claim above is from the suites and from reading the
+  engine; no build carrying this has been run on a phone or a television, so the log
+  line itself is unverified in the place it was written for. That is a slightly odd
+  exception to have to declare — the feature exists precisely to make the on-device
+  answer readable, so the verification it is waiting for is the thing it produces. What
+  it is expected to print, once run: `canPunch:false` on a 32-bit Android TV build (the
+  platform the blob bound exists for) and `canPunch:true` with `budgetActive:false` on
+  an arm64 build.
 
 - **A rail per sport, derived from the playlist (`autoSubcategory`).** A provider
   puts every sport of the day inside ONE `group-title` and writes the sport into the

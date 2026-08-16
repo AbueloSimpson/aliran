@@ -183,6 +183,16 @@ or some network mounts, the punch fails, the budget stays armed, and
 that device does rotate. That is correct: a clear frees no bytes there
 either.
 
+**You can read that test's answer off a device.** It used to be
+computed and never printed, which made "did the punch work here?" a
+question you could only answer by building an instrumented app. Every
+build now logs one `[reclaim]` line when the probe answers and one more
+whenever the answer changes — `canPunch`, the bytes it actually freed,
+and whether the budget is still armed. `docs/kb/playback.md` has the
+line and the logcat tag it lands under (not `ReactNativeJS`). The probe
+runs on the first reclaim tick, so it answers a few seconds into the
+first channel you play, not at boot.
+
 The heading above says *media bound* for a reason. A punch-capable
 device can still rotate on the **metadata** bound described further
 down. A hole punch frees media blocks. It can never free the metadata

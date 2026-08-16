@@ -345,6 +345,9 @@ import {
   CATALOG_CACHE_VERSION,
   gateCatalogCache, warmStartAllowed, rewriteOrigins, terminalCatalogError
 } from './catalog-cache.mjs'
+// The hole-punch verdict's pure half: what to print, and when it has changed enough to be
+// worth printing. This file owns only the ticker it rides and the console line.
+import { createReclaimVerdictLog } from './reclaim-log.mjs'
 
 const IPC = BareKit.IPC
 function send (msg) { IPC.write(b4a.from(JSON.stringify(msg) + '\n')) }
@@ -1233,6 +1236,42 @@ function ensurePlayer (hybrid, prewarm, tune, zapPrefetch, swarm, uploadPolicy, 
     send({ type: 'status', ...status })
   })
   player.on('peers', (peers) => send({ type: 'status', peers }))
+  // THE HOLE-PUNCH VERDICT, on an ordinary build. Everything about the viewer's disk bound
+  // turns on whether this filesystem frees bytes on a punch (see reclaim-log.mjs), and the
+  // answer used to be readable only from a one-off diagnostics APK. One '[reclaim]' line
+  // per CHANGE, into the app-process stdout tag every other worklet line lands in:
+  //   [reclaim] {"ok":true,"canPunch":true,"reason":"...","freed":262144,...,"punchTries":1}
+  //
+  // ⚠ IT RIDES THE PEERS TICKER RATHER THAN A TIMER OF ITS OWN, and that is a claim about
+  // the engine, not a convenience: the probe only ever runs from a reclaim tick, a reclaim
+  // tick only happens while a feed is being SERVED, and the 3 s 'peers' ticker fires exactly
+  // while _feedDrive is set (sdk/player.js _statusTimer — its null check is that contract).
+  // So no verdict can change in a window that is not EVENTUALLY re-sampled — and a session
+  // that never plays anything (no feed, no reclaim, no verdict) costs nothing and prints
+  // nothing. If the ticker is ever moved off the served feed, this needs its own.
+  //
+  // ⚠ "EVENTUALLY", NOT "IMMEDIATELY", AND THE GAP COSTS SOMETHING. The probe sits on an
+  // async tail bounded by PROBE_TIMEOUT_MS (10 s, sdk/serve.js), so its answer can land
+  // AFTER _feedDrive has gone null: zap from a P2P channel to a redirect one two seconds
+  // into the first play and that verdict is never sampled in that window. Nothing is lost
+  // permanently — the latch compares against the last line PRINTED, not the last one seen,
+  // so the standing verdict prints as soon as a P2P feed is being served again. What a gap
+  // like that does eat is the retry SEQUENCE: three inconclusive probes spaced a reclaim
+  // tick apart are the diagnosis (a device that kept failing to answer reads nothing like
+  // one that answered once), and an unsampled window coalesces them into whichever verdict
+  // was standing when the ticker came back. `punchTries` on the surviving line is what is
+  // left of the count — read it rather than counting lines.
+  //
+  // `p`, not `player`: a service switch replaces the engine, and this listener belongs to
+  // the one it was registered on. The latch is per-engine for the same reason — the new
+  // engine's handler probes again from zero and must be free to print its own verdict.
+  const noteReclaimVerdict = createReclaimVerdictLog()
+  player.on('peers', () => {
+    try {
+      const line = noteReclaimVerdict(p.reclaimStatus())
+      if (line) console.log('[reclaim]', line)
+    } catch { /* diagnostics must never be the reason a tick throws */ }
+  })
   // A peer answered the hello probe — remember its address so the NEXT boot can dial it
   // directly (see readPanelPeer). Stamped with connectedKey, the panel THIS worklet is
   // on, which is also the guard: a dev direct-play or a not-yet-adopted handover has no

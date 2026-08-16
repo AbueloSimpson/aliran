@@ -47,6 +47,7 @@
     "test:stream": "node tools/e2e-stream-test.mjs",
     "test:serve": "node tools/serve-progressive-test.mjs",
     "test:reclaim": "node tools/serve-reclaim-test.mjs",
+    "test:reclaim-log": "node tools/reclaim-log-test.mjs",
     "test:login": "node tools/e2e-login-test.mjs",
     "test:pairing": "node tools/e2e-pairing-test.mjs",
     "test:signin-pair": "node tools/e2e-signin-pair-test.mjs",

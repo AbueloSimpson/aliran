@@ -1621,10 +1621,65 @@ try {
   // line in _requestHandler is INVISIBLE: every host silently reverts to that default and
   // every existing assertion still passes. reclaimStatus() is the observable end of the
   // wire — this reads the number the Reclaim instance is actually comparing against.
-  const rsD = playerD._handler && playerD._handler.reclaimStatus()
+  //
+  // Read through the PUBLIC accessor, which is also what the client worklet uses to print
+  // the hole-punch verdict on an ordinary build (client/backend/reclaim-log.mjs). Reaching
+  // into _handler here would leave that accessor with no coverage at all, and a host that
+  // cannot read this status is a host back to needing a diagnostics build.
+  const rsD = playerD.reclaimStatus()
   if (!rsD) throw new Error('disk-rotation: the loopback handler reports no reclaim status')
+  if (typeof rsD.punchTries !== 'number') throw new Error('reclaimStatus() carries no probe count — the verdict is unreadable: ' + JSON.stringify(rsD))
+  if (!('punch' in rsD)) throw new Error('reclaimStatus() carries no punch field — nothing to log on a device')
   if (rsD.metaBudgetBytes !== 40 * MiB) throw new Error("metaBudgetBytes did not reach the SERVING CORE (it fell back to its own default): " + rsD.metaBudgetBytes)
   if (rsD.budgetBytes !== 64 * MiB) throw new Error('reclaimBudgetBytes did not reach the serving core: ' + rsD.budgetBytes)
+
+  // ⚠⚠ THE 3 s STATUS TICKER MUST SAMPLE ONLY WHILE A FEED DRIVE IS SET (sdk/player.js,
+  // _statusTimer). One line — `if (!this._feedDrive) return` — carries two independent
+  // contracts and had coverage for NEITHER, in any lane:
+  //
+  //   IT IS A CRASH GUARD. The timer is armed once per engine and cleared only by stop(),
+  //   while _feedDrive is nulled underneath it by a zap to a redirect/CDN channel (which
+  //   then plays indefinitely with no feed drive), by a rotation across an unbounded
+  //   drive.purge(), and by both eviction paths. Drop the guard and
+  //   `this._feedDrive.core.peers.length` throws a TypeError out of a setInterval every 3 s
+  //   with nothing to catch it — on Android that is the worklet thread, so it is a dead app.
+  //   That failure is what this section reproduces: with the guard removed, the null window
+  //   below crashes THIS PROCESS rather than failing an assertion.
+  //
+  //   IT IS THE SAMPLING CONTRACT the [reclaim] verdict log rides
+  //   (client/backend/reclaim-log.mjs): 'peers' fires exactly while a feed is being served,
+  //   which is exactly when the hole-punch probe can run. A guard "fixed" by emitting a
+  //   placeholder instead of returning would keep the app alive and silently break that —
+  //   hence the second assertion, which is about the event and not about the crash.
+  //
+  // Only _feedDrive is nulled here, never _activeFeedKey: the key is what the idle sweep and
+  // the store-byte cap read to mean "never touch this replica" (_trimFeeds, _sweepIdleFeeds,
+  // _trimFeedBytes all skip on it), so the feed stays pinned across the window and the
+  // rotation section below still starts from the drive it expects.
+  const peersD = []
+  const onPeersD = (n) => peersD.push(n)
+  playerD.on('peers', onPeersD)
+  await waitFor(() => peersD.length > 0, 8000, 'disk-rotation: the peers ticker fires while a feed IS served')
+  const heldDriveD = playerD._feedDrive
+  playerD._feedDrive = null
+  const peersAtNullD = peersD.length
+  await sleep(4500) // > one 3000 ms tick, from a phase a tick has just established
+  const tickedBlindD = peersD.length - peersAtNullD
+  playerD._feedDrive = heldDriveD // restore BEFORE asserting — a throw here must not strand the engine
+  if (tickedBlindD !== 0) {
+    throw new Error(`the 3 s ticker emitted ${tickedBlindD} 'peers' event(s) with NO served feed — ` +
+      'that guard is the sampling contract the [reclaim] verdict log rides (it prints only while a ' +
+      'feed is served, which is the only time the hole-punch probe can run), and a placeholder tick ' +
+      'here would make the log claim a window it never saw. It is also the crash guard for four ' +
+      'paths that null _feedDrive under a live timer.')
+  }
+  // …and the guard SKIPS a tick, it does not disarm the timer: the same interval has to be
+  // ticking again on its own once a feed is served, or every path that nulls _feedDrive would
+  // leave the engine permanently silent — no peer counts for the overlay and no [reclaim] line
+  // for the rest of the session. Listener removed only AFTER this, or there is nothing to see.
+  await waitFor(() => peersD.length > peersAtNullD, 8000,
+    'disk-rotation: the ticker resumes once the feed is served again (the guard must SKIP, not disarm)')
+  playerD.off('peers', onPeersD)
 
   // ----- (1) A rotation while watching is INVISIBLE -----
   // The feature's whole promise: the replica is thrown away and rebuilt under a live play and

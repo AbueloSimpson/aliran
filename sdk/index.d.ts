@@ -690,6 +690,38 @@ export interface PlayerEvents {
 }
 
 /**
+ * The serving core's disk-bound bookkeeping, as reported by AliranPlayer.reclaimStatus().
+ * Diagnostics only: nothing here is a control surface, and reading it changes nothing.
+ */
+export interface ReclaimStatus {
+  /** The blob (media) budget a replica is measured against — see PlayerOptions.reclaimBudgetBytes. */
+  budgetBytes: number
+  /** Whether that budget can still fire here. False once the punch is PROVED to work. */
+  budgetActive: boolean
+  /** The metadata budget — see PlayerOptions.metaBudgetBytes. */
+  metaBudgetBytes: number
+  /** Whether the metadata budget can fire. NOT gated on the punch: no punch frees a Hyperbee. */
+  metaBudgetActive: boolean
+  /** This platform cannot report allocated bytes at all, so neither bound can be judged. */
+  unmeasurable: boolean
+  /** Capability probes spent. A measured verdict is never re-run; only an inconclusive one is. */
+  punchTries: number
+  /** The verdict, once there is one. */
+  punch: {
+    /** False means INCONCLUSIVE — not a verdict, and the budget stays armed (fail-active). */
+    ok: boolean
+    /** Only meaningful when ok is true. */
+    canPunch: boolean
+    /** Which of the three outcomes happened, in the probe's own words. */
+    reason: string
+    /** Allocated bytes the punch freed. Absent when the probe never got as far as measuring. */
+    freed?: number
+    /** The same, for the wide (> 4 GiB) stage. Absent unless that stage ran. */
+    wideFreed?: number
+  } | null
+}
+
+/**
  * Headless Aliran player engine. Runtime-agnostic core — construct directly only when
  * injecting { http, fs } yourself (e.g. a Bare worklet); in Node use createPlayer().
  * The event emitter never throws on unhandled 'error'.
@@ -796,6 +828,20 @@ export class AliranPlayer {
   setUploadPolicy(policy: UploadPolicy): Promise<{ policy: UploadPolicy; changed: boolean; rejoined: number }>
   /** Tear down wedged peer connections of the active feed and dial fresh. */
   reconnectActiveFeed(): number
+  /**
+   * Diagnostics: what the serving core decided about this device's disk bounds, and
+   * why. Synchronous and side-effect free — a read of the last reclaim tick's state,
+   * never a probe. `null` before the loopback server exists (the handler is built with
+   * it) and `null` again after `stop()`.
+   *
+   * `punch` stays `null` until a reclaim tick has PROBED, which takes more than a feed
+   * being served: the probe runs only from the blob budget's own gate, so a player
+   * constructed with `reclaimBudgetBytes: 0` never reports a verdict at all — not "not
+   * yet", ever. `wideFreed` is present only when the wide (> 4 GiB) probe stage ran, and
+   * `canPunch` is a verdict only when `ok` is true — an inconclusive probe also reports
+   * `canPunch: false` and is retried.
+   */
+  reclaimStatus(): ReclaimStatus | null
   /**
    * Send a pseudonymous problem report over the panel RPC socket. NEVER throws or
    * rejects — switch on the result. Attaches the active channel, peer count, the

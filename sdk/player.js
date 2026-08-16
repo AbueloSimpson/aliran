@@ -1520,6 +1520,32 @@ export class AliranPlayer extends Emitter {
     return this._feedDrive ? this._measureFeed(this._feedDrive) : null
   }
 
+  // What the SERVING CORE decided about this device's disk bound, and why — the byte
+  // budgets it compares a replica against, and the hole-punch capability verdict that
+  // decides whether the blob budget applies here at all. The shape is sdk/serve.js
+  // status(): { budgetBytes, budgetActive, metaBudgetBytes, metaBudgetActive, unmeasurable,
+  // punchTries, punch: { ok, canPunch, reason, freed, wideFreed } | null }.
+  //
+  // null until the loopback server is up (the handler is built with it) and null again
+  // after stop(). ⚠ THE SECOND HALF IS EXPLICIT BECAUSE THE HANDLER OUTLIVES THE SERVER:
+  // stop() drops _server but deliberately KEEPS _handler (see _requestHandler — the
+  // rotation hangs its per-drive read accounting on it), so keying off the handler alone
+  // would keep answering a stopped engine's stale verdict for as long as the object lives.
+  // _server is the honest liveness bit and is assigned in the same statement that builds
+  // the handler, so the two can never disagree in the other direction.
+  //
+  // `punch` stays null until a reclaim tick has PROBED, which takes more than a feed being
+  // served: the probe runs only from the BLOB budget's own gate (Reclaim._checkBudget), so
+  // a host with `reclaimBudgetBytes: 0` never gets a verdict at all — not "not yet", ever.
+  // Synchronous and side-effect free: a read of what the last tick decided, never a probe.
+  //
+  // This exists because the verdict was otherwise unobservable outside a diagnostics build
+  // — the client worklet prints it once per change (client/backend/reclaim-log.mjs).
+  reclaimStatus () {
+    if (!this._server || !this._handler || !this._handler.reclaimStatus) return null
+    return this._handler.reclaimStatus()
+  }
+
   // --- public API ---
 
   // Join the panel's topic and replicate its signed DB. Resolves once the topic is
@@ -3466,6 +3492,24 @@ export class AliranPlayer extends Emitter {
     this.emit('status', { state: 'feed:ready' })
     const port = await this._ensureServer()
     // Feed-health ticker for player overlays: how many peers serve the CURRENT feed.
+    //
+    // ⚠⚠ THE NULL CHECK BELOW IS LOAD-BEARING TWICE, and neither reason is visible in the
+    // line itself. Do not "simplify" it away; tools/e2e-sdk-test.mjs pins both halves.
+    //
+    //   1. IT IS A CRASH GUARD. This timer is armed once and cleared only by stop(), while
+    //      _feedDrive is set to null underneath it on four paths that all keep running: a
+    //      zap to a redirect/CDN channel (which then plays INDEFINITELY with no feed drive
+    //      — the longest window of the four), a disk rotation (across an unbounded
+    //      drive.purge()), and both feed-eviction paths (_evictFeed, _retuneActive).
+    //      Without the check, `this._feedDrive.core.peers.length` throws a TypeError out of
+    //      a setInterval every 3 s with nothing to catch it — in a Bare worklet that is an
+    //      uncaught exception on the engine thread, i.e. a dead app, not a dropped tick.
+    //   2. IT IS THE SAMPLING CONTRACT anything riding this ticker inherits: 'peers' fires
+    //      exactly while a feed is being SERVED, and never otherwise. The client worklet's
+    //      [reclaim] verdict log (client/backend/reclaim-log.mjs) rides this event for that
+    //      reason — the hole-punch probe only runs from a reclaim tick and a reclaim tick
+    //      only happens on a served feed, so this ticker's cadence is the probe's. Emitting
+    //      a placeholder here instead of returning would break that, quietly.
     if (!this._statusTimer) {
       this._statusTimer = setInterval(() => {
         if (!this._feedDrive) return

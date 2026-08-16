@@ -304,10 +304,67 @@ sign the set out.
   app offers it, and prefer "play on my TV" on a network you do not trust:
   a handoff sends no video at all.
 
-## Reading the app's own diagnostics (dev builds)
+## Reading the app's own diagnostics
 
-Every backend→UI IPC message is logged. `adb logcat -s ReactNativeJS` shows
-`[backend] {"type": ...}` lines, including `feed:open` / `feed:ready`
-breadcrumbs, peer-count ticks, `fallback` / `source-changed` events, and
-`store:reset` (corruption recovery). Read these before guessing from the
-screen.
+**The app writes to logcat under two different tags, and the obvious filter
+shows only one of them.** Knowing which is which is the difference between
+"the app prints nothing useful" and reading the engine directly.
+
+**`ReactNativeJS` — the JavaScript UI side.** `adb logcat -s ReactNativeJS`
+shows the `[boot-ui]` ladder (splash → login → menu, with the time each step
+took), the live screen's stall resyncs, and `[backend] {"type": ...}` — one
+line per backend→UI IPC message, including `feed:open` / `feed:ready`
+breadcrumbs, peer-count ticks, `fallback` / `source-changed` events and
+`store:reset` (corruption recovery). Those `[backend]` lines come from the
+SDK's React Native layer, not from the app's own code, and the app turns them
+on in **release** builds too — so they are there on an ordinary install, not
+only a dev one. Messages that could carry a credential or a viewing record
+are reduced to their type before printing.
+
+**The P2P engine's own prints do NOT carry that tag.** Anything the Bare
+worklet writes with `console.log` — the `[boot-trace]` dumps, the `[net]`
+socket-tuning line, the `[reclaim]` verdict below — goes to the **app
+process's own stdout**, which logcat labels with a tag derived from the
+package name. Android caps tag length, so that tag appears **truncated**;
+it is not something to guess or type, and `-s` on it is a trap. **Do not
+filter by tag for these.** `adb logcat -s ReactNativeJS` hides every one of
+them, which is the failure mode worth naming: the filter that gives you the
+IPC breadcrumbs blinds you to the engine that produced them. Run unfiltered,
+or grep the bracketed prefix instead — `adb logcat | grep "\[reclaim\]"`.
+Raise the buffer first (`adb logcat -G 8M`): the default wraps in minutes.
+The in-app Debug overlay remains the quickest read of live engine state
+(peers, rates, store size) when a cable is not attached.
+
+**`[reclaim]` — whether this device's filesystem can punch holes.** Every
+build prints one line when the capability probe answers, and one more each
+time the answer changes. Both ends of it can move: an inconclusive probe is
+retried, and the bounds the verdict switches off flip after it lands. It is
+at most a handful of lines per session:
+
+```
+[reclaim] {"ok":true,"canPunch":true,"reason":"measured","freed":262144,"wideFreed":262144,"punchTries":1,"budgetActive":false,"metaBudgetActive":true,"unmeasurable":false}
+```
+
+`canPunch` with `ok:true` is the verdict. **`freed` on its own does not
+prove it:** the probe punches a small hole first and then a wide one (past
+the 4 GiB line), and `canPunch:true` is granted only where *both* stages
+freed bytes. So a healthy `freed` next to `"wideFreed":0` and
+`"reason":"wide-measured"` is not a near miss — it is the signature of a
+32-bit `fs-native-extensions` build whose punch lengths are truncated, which
+frees the 256 KiB the probe asks for and none of what a real clear asks for.
+`wideFreed` is **absent** entirely when the wide stage never ran, and absent
+is a different claim from zero.
+
+The two `*Active` flags say which bounds are still armed, and they are
+independent. `budgetActive` is the **media** rotation, which the verdict
+switches off once the punch is proved. `metaBudgetActive` is the
+**metadata** rotation, which no hole punch can help and which therefore
+stays armed almost everywhere. Read both: `"budgetActive":false` alone does
+**not** mean this device never rotates.
+
+`ok:false` is not a verdict at all — the probe could not tell, the bounds
+stay as they were, and `punchTries` counts the retries. One case prints
+nothing ever: a host that sets `reclaimBudgetBytes: 0` disables the media
+budget, and the probe only runs from that budget's own gate, so there is no
+verdict to report on such a build. What the answer buys, and what a device
+does when the punch fails, is in `docs/kb/viewer-bandwidth.md`.
