@@ -345,11 +345,11 @@ an item that carries one is telling you exactly which claim is still on paper.
   551dp and still clipped. The glyph and the margin now ride the ramp, which brings the
   rail to 530dp of 540: **with the default six sections, every entry is visible at rest.**
   Verified on a 1080p TCL set by building and photographing both sides of the fix.
-  Enabling a VOD provider adds a seventh entry and the
-  rail scrolls again, as it is built to — the ScrollView keeps every entry reachable, and
-  shrinking the tiles far enough to force seven onto the screen would cost more legibility
-  than it buys. The television's density ramp is unchanged at 0.72, and the phone tiles are
-  a separate, already-tuned component; both are untouched.
+  Enabling a VOD provider adds a seventh entry and the rail scrolls again, as it is built
+  to — the ScrollView keeps every entry reachable, and shrinking the tiles far enough to
+  force seven onto the screen would cost more legibility than it buys. The television's
+  density ramp is unchanged at 0.72, and the phone tiles are a separate, already-tuned
+  component; both are untouched.
 
 - **A wedged player remounted itself until Android killed the app.** `<AliranVideo>`'s
   stall ladder had no upper bound: while the playhead sat still it remounted every 12
