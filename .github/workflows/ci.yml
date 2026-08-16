@@ -24,7 +24,11 @@ jobs:
   core:
     name: core (required)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 70 = the sum of the step timeouts below (58) plus headroom for checkout, two npm ci
+    # runs, the ffmpeg install and bundle-backend. Keep it above that sum, or a slow early
+    # suite silently cancels the later ones — the same rule the e2e-dht job below states.
+    # This is a CEILING on a hung job, not a target: the lanes finish in about a minute.
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
