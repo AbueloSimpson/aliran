@@ -80,7 +80,13 @@ export interface HlsVideoProps {
   onPeers?: (peers: number) => void
   onBuffering?: (buffering: boolean) => void
   onSource?: (url: string, source: 'p2p' | 'cdn') => void
-  onError?: (message: string) => void
+  /** A playback error the host should surface. `info.code === 'offline'` marks the one
+   *  case the host must NOT phrase as a player fault: a cdn/redirect channel that spent
+   *  the retry ladder is dead upstream, so the host titles it "channel offline" instead
+   *  of "playback failed". Same discrimination as the RN component's onError (see
+   *  sdk/react-native/src/AliranVideo.tsx giveUp) — the two surfaces must not disagree
+   *  about the same channel. Absent code = phrase it neutrally. */
+  onError?: (message: string, info?: { code?: 'offline' }) => void
   /** The frozen-live-edge self-heal kicked in (logging hook; onTune 'start' re-arms the UI). */
   onStall?: () => void
   /** Available audio tracks (fires after manifest parse; [] when none/single implied). */
@@ -297,10 +303,18 @@ export const HlsVideo = React.forwardRef<HlsVideoHandle, HlsVideoProps>(function
         // this persistent (the engine's own self-heal resets this ladder, so it was
         // silent too) gets the neutral playback-failed line instead of blaming the
         // channel for what may be a local engine problem. Retry is a re-select.
+        //
+        // The cdn case also carries code:'offline', which is what lets the host TITLE
+        // it "channel offline" the way the phone and TV do — passing only the hint
+        // sentence left the desktop falling back to its generic "Playback failed"
+        // heading, i.e. blaming the viewer's own machine for a dead upstream (the
+        // exact misdiagnosis this detection exists to prevent). The message stays a
+        // real sentence so a host that ignores the code still reads correctly.
         if (retry.current) { clearTimeout(retry.current); retry.current = null }
         failures.current = ERROR_GIVE_UP
         tune.current.tuning = false
-        cb.current.onError?.(t(backend.source === 'cdn' ? 'live.offlineHint' : 'live.playbackFailed'))
+        const offline = backend.source === 'cdn'
+        cb.current.onError?.(t(offline ? 'live.offlineHint' : 'live.playbackFailed'), offline ? { code: 'offline' } : undefined)
         return
       }
       // The spinner belongs to a retry that is actually coming — after the early
