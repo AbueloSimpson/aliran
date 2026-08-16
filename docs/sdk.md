@@ -129,9 +129,9 @@ native code of its own.
   instead of a P2P feed ([content management](content-management.md)).
   `resolve()` returns the URL verbatim with `source: 'cdn'`. A hotlink-protected
   channel also returns `headers` (Referer / Origin / User-Agent) that the host
-  player **must** send with the URL — the desktop app and the React Native player
-  do this for you. **Custom bindings must forward them, or the URL returns `403`;**
-  the `aliran-kit` Kotlin binding does not send them yet (see [Redirect-channel
+  player **must** send with the URL — the desktop app, the React Native player and
+  the `aliran-kit` Kotlin binding do this for you. **Any other custom binding must
+  forward them, or the URL returns `403`** (see [Redirect-channel
   headers](#redirect-channel-headers)).
 - **Tune self-heal.** Timeouts escalate from cache eviction to
   peer-connection teardown before the engine surfaces a friendly error.
@@ -176,10 +176,10 @@ browser engine forbids setting these headers from the page) and patches the CORS
 response so the cross-origin fetch is allowed — no renderer-side code needed.
 
 **A custom host player must send these headers itself.** A `'cdn'` tune whose
-`headers` you ignore returns `403` from a hotlink-protected provider. This is a
-known gap in the `sdk/android/aliran-kit` Kotlin binding: it does **not** forward
-redirect headers yet, so header-protected channels `403` there until a follow-up
-change. Header-free redirect channels are unaffected on every binding.
+`headers` you ignore returns `403` from a hotlink-protected provider. The
+`sdk/android/aliran-kit` Kotlin binding sends them for you. It applies the port
+reply's headers to the media open. A change to the headers alone also rebuilds
+the source. Header-free redirect channels are unaffected on every binding.
 
 ## Partial adoption
 

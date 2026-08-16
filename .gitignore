@@ -6,6 +6,14 @@ node_modules/
 .env
 */.env
 .env.local
+# …and the timestamped BACKUPS operators leave beside them. `.env` and
+# `mcp/config.json` are ignored by exact name, so a `.bak-<date>` copy of either
+# was still a tracked-able file holding live panel credentials — one `git add -A`
+# away from a public commit. Measured on this checkout: four such files existed.
+*.bak
+*.bak-*
+**/*.bak
+**/*.bak-*
 **/keys/
 **/*.key
 **/store/

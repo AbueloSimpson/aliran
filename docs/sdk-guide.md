@@ -767,9 +767,9 @@ const r = await player.resolve(streamId)
   `url`, or the provider answers `403`. `headers` is `undefined` on every
   other branch and on redirect channels that need none. The value is live:
   a source refresh that rotates the URL and its headers reaches the viewer
-  on the next tune, with no re-login. The RN player and the desktop app do
-  this for you; a custom host must forward them (the `aliran-kit` Kotlin
-  binding does not yet — see [the SDK reference](sdk.md#redirect-channel-headers)).
+  on the next tune, with no re-login. The RN player, the desktop app and the
+  `aliran-kit` Kotlin binding do this for you; any other custom host must
+  forward them (see [the SDK reference](sdk.md#redirect-channel-headers)).
 - **Not entitled** → throws `not entitled to <id>`.
 - **Entitled but no broadcaster feeding it** (`feedKey` null in the
   catalog) → throws `channel is not broadcasting right now` (for vod:

@@ -185,9 +185,9 @@ either.
 
 The heading above says *media bound* for a reason. A punch-capable
 device can still rotate on the **metadata** bound described further
-down: a hole punch frees blob blocks and can never free the hyperbee, so
-that bound is deliberately not probe-gated and it is the one rotation
-trigger left on hardware that punches.
+down. A hole punch frees media blocks. It can never free the metadata
+database. So that bound does not use the probe, and it is the one
+rotation trigger left on hardware that punches.
 
 Second, the ceiling is not a flat number. It is the larger of the
 configured budget and three times the **observed** live window, measured

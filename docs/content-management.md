@@ -112,9 +112,8 @@ PATCH /api/streams/event-1 {"url":"https://provider.example/e1.m3u8","headers":{
   the three header fields; leave a field blank to leave that header unset.
 - **Playback support.** The desktop app sets these headers in its main process (the
   browser engine cannot set them from the page), and patches the response so the
-  cross-origin fetch is allowed. The phone app hands them to its player. **The
-  `aliran-kit` Kotlin binding does not send them yet**, so a header-protected channel
-  returns `403` on that binding until a later change. See
+  cross-origin fetch is allowed. The phone app hands them to its player. The
+  `aliran-kit` Kotlin binding sends them too. See
   [the SDK reference](sdk.md#redirect-channel-headers).
 
 ## Remote channel sources (provider feeds)

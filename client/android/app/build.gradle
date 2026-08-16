@@ -191,16 +191,25 @@ android {
     // from rotating, and neither is this number:
     //   probeHolePunch    writes a scratch file, punches its middle and re-measures the
     //                     allocated size. Where the punch FREES BYTES, Reclaim._budgetOff
-    //                     latches and the budget is dead for the life of the handler — no
-    //                     measurement, no callback, no rotation.
+    //                     latches and the BLOB budget is dead for the life of the handler —
+    //                     no measurement, no callback, no rotation ON THAT BOUND.
     //   _effectiveBudget  the ceiling actually applied is max(reclaimBudgetBytes, 3 x the
     //                     OBSERVED live window), so a replica holding ~one window is under
     //                     budget BY CONSTRUCTION at any hls_time x hls_list_size and any
     //                     bitrate — on BOTH sides of the probe.
     // So the honest statement is about CAPABILITY, not word size: a store whose filesystem
-    // can punch holes does not rotate. A 64-bit build on exFAT, FAT32 or a network mount
-    // DOES arm the budget, and correctly — the punch REJECTS there (EOPNOTSUPP/ENOTSUP)
-    // rather than lying about success the way the missing addon does above.
+    // can punch holes does not rotate ON THE BLOB BOUND. A 64-bit build on exFAT, FAT32 or a
+    // network mount DOES arm the budget, and correctly — the punch REJECTS there
+    // (EOPNOTSUPP/ENOTSUP) rather than lying about success the way the missing addon does
+    // above.
+    //
+    // ⚠ AND DO NOT READ THE LINE ABOVE AS "A PUNCH-CAPABLE DEVICE NEVER ROTATES". That was
+    // true when this comment was written and is not any more. A punch frees BLOB blocks and
+    // can never free the Hyperbee metadata core, which grows for as long as a live feed is
+    // followed, so sdk/serve.js carries a second, punch-INDEPENDENT ceiling on the metadata
+    // alone (metaBudgetBytes, 64 MiB) that rotates exactly the device this probe switches the
+    // blob budget off on. Roughly one rotation per day of continuous same-channel watching;
+    // the feed:rotate event names which bound asked (trigger: 'budget' | 'meta').
     //
     // 64-bit builds are UNTOUCHED and keep both addons — this is scoped to the two 32-bit
     // ABIs on purpose, so the common case pays nothing.

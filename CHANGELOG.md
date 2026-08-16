@@ -20,6 +20,22 @@ not been on a television yet**; each says so where it is described.
 
 ### Added
 
+- **The `aliran-kit` Kotlin binding reaches parity with the React Native player on
+  playback recovery.** A host that embeds the Android binding directly now gets the
+  same bounded behaviour the phone app has: an error ladder that retries at 2.5, 5
+  and 10 seconds and then stops, a stall ladder that retries at 12, 24, 48 and 96
+  seconds and then stops, and an offline watchdog that gives up when the engine
+  never confirms the stream (15 s) or confirms a CDN tune that never shows a frame
+  (30 s). A dead channel therefore reports itself instead of retrying for ever.
+  **New callback `onOffline`**, which fires when a channel is judged offline rather
+  than merely failing; it is additive, and the existing `onError(String)` signature
+  is unchanged, so current hosts keep working untouched. The binding also sends
+  redirect playback headers (closing a gap this file used to list as open), and
+  forces the HLS container hint for redirect URLs that carry no file extension, so
+  a provider URL that ends in an id still plays. Covered by 19 recovery-ladder
+  lanes plus header and source-type lanes in the module's own test suite.
+  ⚠ Those lanes have no CI job yet — the Kotlin module is not built by
+  `.github/workflows/ci.yml`, and nothing mechanically enforces the parity.
 - **The viewer bounds its metadata growth — the fourth disk bound (`metaBudgetBytes`).**
   The blob bounds hold the media flat, but every followed live feed also carries a
   metadata database (the index that maps paths to media blocks), the broadcaster
@@ -222,6 +238,8 @@ not been on a television yet**; each says so where it is described.
   header-protected channels `403` there until a follow-up. See
   [content-management.md](docs/content-management.md#playlist-m3u-sources) and
   [sdk.md](docs/sdk.md#redirect-channel-headers).
+  *(Since closed — the Kotlin binding forwards redirect headers; see the
+  `aliran-kit` entry above.)*
 
 - **Live channel thumbnails — a rolling preview frame in every channel's feed
   drive.** The broadcaster's ffmpeg writes a ~320px JPEG (`/thumb.jpg`) beside the
