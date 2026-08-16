@@ -71,6 +71,9 @@
 //      it also fires with the blob budget armed-but-under and with reclaimBudgetBytes: 0 —
 //      and in that last shape the capability probe must never run at all (the 512 KiB
 //      scratch write belongs to the blob half). VOD serves reach neither trigger.
+//      metaBudgetBytes: 0 switches it off on the same fixture that just fired (the pair of
+//      zeros is the real "never rotate"), and effectiveBudgetBytes — the BLOB ceiling — is
+//      NULL on a meta verdict rather than a number the decision never used.
 //
 // Exits 0 on PASS.
 
@@ -1294,6 +1297,14 @@ log('O: the METADATA budget — punch-independent, flat, and it survives the pun
   assert(o1.info.meta > META_LATCHED, `info.meta (${o1.info.meta}) is over metaBudgetBytes (${META_LATCHED}) — that alone is why it fired`)
   assert(o1.info.metaBudgetBytes === META_LATCHED, 'info.metaBudgetBytes echoes the configured number')
   assert(o1.info.bytes === o1.info.blobs + o1.info.meta, 'the blobs/meta split still adds up on a meta verdict')
+  // …and effectiveBudgetBytes does NOT ride along. It is the BLOB ceiling — window × 3, or
+  // the configured floor — and on a meta verdict it had no part in the decision. Shipping it
+  // anyway put a number in the field log that reads as "the budget this rotation crossed"
+  // and is nothing of the kind (worst here: the blob half is LATCHED OFF, so it is the
+  // ceiling of a bound that cannot fire at all). Absent beats wrong. windowBytes stays: it
+  // is an observation of the playlist, true on both verdicts.
+  assert(o1.info.effectiveBudgetBytes === null, `effectiveBudgetBytes is null on a meta verdict (got ${o1.info.effectiveBudgetBytes})`)
+  assert(Number.isFinite(o1.info.windowBytes), 'while windowBytes — an observation, not a ceiling — is still reported')
   const oSt2 = oHandler.reclaimStatus()
   assert(oSt2.budgetActive === false && oSt2.metaBudgetActive === true,
     'blob budget latched OFF, meta budget armed — the two verdicts really are gated independently')
@@ -1361,11 +1372,40 @@ log('O: the METADATA budget — punch-independent, flat, and it survives the pun
   assert(o3Calls.length === 0, 'an #EXT-X-ENDLIST serve reaches NEITHER trigger — the live-only gate covers the meta budget too')
   await serveUntil(o3Port, '/live.m3u8', () => o3Calls.length > 0, 'the META verdict with the blob budget off by config')
   assert(o3Calls[0].trigger === 'meta' && o3Calls[0].budgetBytes === 0, 'trigger: meta, with info.budgetBytes reporting the configured 0')
+  // …and this is the shape that made shipping effectiveBudgetBytes on a meta verdict worst:
+  // there is NO blob ceiling here at all, so the number would have been windowBytes × 3 —
+  // an "effective budget" invented out of a bound the host switched off.
+  assert(o3Calls[0].effectiveBudgetBytes === null, `effectiveBudgetBytes is null where no blob budget exists (got ${o3Calls[0].effectiveBudgetBytes})`)
   const o3St = o3Handler.reclaimStatus()
   assert(o3St.punchTries === 0 && o3St.punch === null,
     'and the capability probe NEVER ran — the 512 KiB scratch write belongs to the blob half alone')
   assert(o3St.budgetActive === false && o3St.metaBudgetActive === true, 'reclaimStatus: blob off (configured), meta armed')
   o3Server.close()
+
+  // (3b) THE OFF SWITCH, on the SAME drive the sub-case above just fired on — which is what
+  // makes it non-vacuous: identical fixture, identical serves, only `metaBudgetBytes: 0`
+  // different, and now nothing may fire. Paired with reclaimBudgetBytes: 0 this is the
+  // documented "this viewer never rotates" configuration, and it has to be REAL: it is a
+  // pair of zeros, not one, precisely because the metadata bound is independent of the blob
+  // one everywhere else in this file. (The host-side half — that the same 0 also disables
+  // the IDLE eviction threshold derived from it — is asserted in test:sdk.)
+  const o3zCalls = []
+  const o3zHandler = driveHandler(o3Drive, {
+    reclaim: true, reclaimIntervalMs: 0, reclaimBudgetBytes: 0, metaBudgetBytes: 0, onOverBudget: (d, info) => o3zCalls.push(info)
+  })
+  const o3zServer = http.createServer(o3zHandler)
+  await new Promise((resolve) => o3zServer.listen(0, '127.0.0.1', resolve))
+  for (let i = 0; i < 4; i++) {
+    const rz = await httpGet(o3zServer.address().port, '/live.m3u8')
+    assert(rz.status === 200, 'the live playlist still serves with both budgets off')
+    await sleep(150)
+  }
+  assert(o3zCalls.length === 0, 'metaBudgetBytes: 0 disables the meta verdict — the bee is far over the number the sub-case above fired on, and nothing fired')
+  const o3zSt = o3zHandler.reclaimStatus()
+  assert(o3zSt.metaBudgetBytes === 0 && o3zSt.metaBudgetActive === false && o3zSt.budgetActive === false,
+    'reclaimStatus says so on both halves — the pair of zeros really is "never rotate"')
+  assert(o3zSt.punchTries === 0 && o3zSt.punch === null, 'and still no probe: there is no blob budget to gate')
+  o3zServer.close()
   await o3Drive.close()
 
   // (4) …and the `ran` rule does not gate it. A store whose OWN dels REJECT (the exFAT
@@ -1421,7 +1461,8 @@ log('              the trigger chain rides RANGED playlist serves off the whole-
 log('              a punch that truncates its lengths mod 2^32 is refused by the wide probe stage,')
 log('              and the METADATA budget fires through the punch latch (trigger: meta) — beside an')
 log('              armed blob budget, with the blob half off by config (no probe run), and off a')
-log('              failed pass — while VOD serves reach neither trigger')
+log('              failed pass — while VOD serves reach neither trigger, metaBudgetBytes: 0 silences')
+log('              it on the very fixture it just fired on, and effectiveBudgetBytes is null there')
 await drive.close()
 await store.close()
 try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}

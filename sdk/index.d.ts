@@ -180,10 +180,15 @@ export interface PlayerOptions {
   storeDir?: string
   /**
    * Ceiling on the WATCHED feed's replica on disk, past which the engine purges and
-   * re-opens it (default 512 MiB; 0 disables). VALUES ARE REFUSED, NOT CLAMPED: a
-   * non-number throws, and so does anything above 0 but below 64 MiB — 32 MiB is
-   * rejected at construction rather than silently raised, because a budget that small
-   * rotates on almost every reclaim pass and reads as a broken stream in the field.
+   * re-opens it (default 512 MiB; 0 disables THIS bound — see metaBudgetBytes, which
+   * rotates the same feed on a trigger of its own, so switching rotation off entirely
+   * takes both `reclaimBudgetBytes: 0` and `metaBudgetBytes: 0`).
+   *
+   * VALUES ARE REFUSED, NOT CLAMPED: a non-number throws, and so does anything above 0
+   * but below 64 MiB — 32 MiB is rejected at construction rather than silently raised,
+   * because a budget that small rotates on almost every reclaim pass and reads as a
+   * broken stream in the field.
+   *
    * This exists because `hypercore.clear()` frees bytes only where the filesystem can
    * hole-punch: on the 32-bit Android ABIs the app ships without `fs-native-extensions`,
    * so the clear reports success and frees NOTHING, and an unrotated replica grows
@@ -199,10 +204,14 @@ export interface PlayerOptions {
    *
    * The budget is also gated on a real capability probe rather than on the platform:
    * the engine punches a scratch file and re-measures allocated size, and where the
-   * punch works the budget is switched off and rotation is unreachable. A 64-bit device
-   * on exFAT/FAT32 (where punching also fails) is still bounded. The two mechanisms are
-   * independent on purpose — a healthy replica is under the ceiling even if the probe
-   * is wrong.
+   * punch works THIS budget is switched off. A 64-bit device on exFAT/FAT32 (where
+   * punching also fails) is still bounded. The two mechanisms are independent on
+   * purpose — a healthy replica is under the ceiling even if the probe is wrong.
+   *
+   * ⚠ THE PROBE NO LONGER MAKES ROTATION UNREACHABLE, and neither does `0` here. The
+   * metadata bound (metaBudgetBytes) rotates the same feed down the same path, is
+   * deliberately gated on NEITHER the probe nor this option, and is the one trigger
+   * left on hardware that punches. Setting this to 0 disables the BLOB half only.
    *
    * Two things this does NOT do: only the SERVED feed is measured against it (idle
    * cached replicas are bounded separately by a store-wide cap), and lowering it also
@@ -228,10 +237,20 @@ export interface PlayerOptions {
    *
    * The capability probe does NOT gate this bound — it gates only the blob budget. A
    * device that punches perfectly still accumulates metadata, which is precisely the
-   * device this exists for. Idle cached feeds are bounded by the same option at a
-   * quarter of the value: past that they are evicted (purged) outright, which costs
-   * the viewer nothing at the time and one fresh dial on the next tune. The
-   * feed:rotate status event reports which bound fired (trigger: 'budget' | 'meta').
+   * device this exists for. Neither does `reclaimBudgetBytes: 0`: this bound rotates
+   * the active feed on its own, so "never rotate" is the pair of zeros. Idle cached
+   * feeds are bounded by the same option at a quarter of the value: past that they are
+   * evicted (purged) outright, which costs the viewer nothing at the time and one
+   * fresh dial on the next tune — at most one such eviction per 60 s maintenance pass,
+   * so a prewarm lineup that warmed together drains over several passes rather than
+   * vanishing in one. The feed:rotate status event reports which bound fired
+   * (trigger: 'budget' | 'meta').
+   *
+   * ONE THING SWITCHES IT OFF AT RUNTIME: if a rotation completes and the replica's
+   * metadata core is measurably still over the budget, the purge freed nothing (it was
+   * refused and degraded to a plain close), so the bound disarms itself for the rest of
+   * the session rather than rotating every five minutes to no effect. The engine leaves
+   * a breadcrumb saying so; nothing disarms a rotation that worked.
    */
   metaBudgetBytes?: number
   /**
@@ -505,14 +524,21 @@ export interface PlayerEvents {
    * rotation on an always-on device roughly daily is the design working; frequent
    * 'budget' rotations on hardware that should punch are worth investigating.
    *
+   * `trigger` is set on ALL THREE shapes below, including `failed` — that is the shape
+   * an operator actually investigates, so it is the one that most needs to name a bound.
+   *
    * THREE SHAPES, discriminated by `durationMs`/`skipped`/`failed` — NOT by `bytes`:
    *   success  `durationMs` set, `bytes` set but possibly null (unmeasurable replica),
    *            no `skipped`, no `failed`. On this shape none of the other two is set,
-   *            and `bytes` alone does not identify it. `trigger` and `meta` are set
-   *            (meta null where the replica was unmeasurable).
+   *            and `bytes` alone does not identify it. `trigger` and `meta` are set —
+   *            `meta` is null where the replica was unmeasurable AND where the trigger
+   *            supplied `bytes` without a `meta` of its own (the engine only re-measures
+   *            when `bytes` was missing; the shipped serving core always supplies both,
+   *            so in practice this is the unmeasurable case).
    *   refused  `skipped: 'cast-pinned'` only — nothing was rotated (`trigger` says what
    *            asked).
    *   failed   `failed: true` only — the re-open died; the engine retries at once.
+   *            `trigger` says which bound asked; no `bytes`, `meta` or `durationMs`.
    *
    * `durationMs` times the WHOLE rotation, and the drain (<=6 s) and the measurement
    * (<=5 s) both run BEFORE the park is armed — so a value over 2500 is necessary but

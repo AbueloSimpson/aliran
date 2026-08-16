@@ -20,7 +20,7 @@ not been on a television yet**; each says so where it is described.
 
 ### Added
 
-- **The viewer bounds its metadata growth — the third disk bound (`metaBudgetBytes`).**
+- **The viewer bounds its metadata growth — the fourth disk bound (`metaBudgetBytes`).**
   The blob bounds hold the media flat, but every followed live feed also carries a
   metadata database (the index that maps paths to media blocks), the broadcaster
   writes to it ~1.5 times per second, and a hole punch cannot free any of it —
@@ -49,6 +49,22 @@ not been on a television yet**; each says so where it is described.
   reach neither trigger) and by `test:sdk` (a meta-triggered rotation runs the same
   proven path end to end; the idle half evicts through the real maintenance pass,
   the active feed survives on the pinned set, and the re-zap dials fresh).
+
+  Two consequences worth reading before you upgrade. **`reclaimBudgetBytes: 0` no
+  longer means "this viewer never rotates"** — that option's `0` switches the *blob*
+  bound off, and the metadata bound is deliberately independent of both it and the
+  hole-punch probe, so the same feed can still rotate on a metadata verdict. Opting
+  out of rotation entirely now takes **both** `reclaimBudgetBytes: 0` **and**
+  `metaBudgetBytes: 0`. Nothing in this repo sets either, so no shipped host changes
+  behaviour; a host that set the first zero to mean "never rotate" needs the second.
+  And the metadata bound **switches itself off** if a rotation cannot actually free
+  metadata: a purge the filesystem refuses degrades to a plain close, the replica
+  re-opens over the same metadata store, and the verdict would otherwise fire again
+  every five minutes forever on hardware that never rotated before. The engine
+  re-measures after each `'meta'` rotation, disarms on a number that did not go down,
+  and leaves a `meta-rotate-off` breadcrumb. Idle evictions are also rate-limited to
+  one feed per 60 s maintenance pass, so a prewarm lineup whose feeds all cross the
+  threshold together drains over several passes instead of vanishing at once.
 
 - **A rail per sport, derived from the playlist (`autoSubcategory`).** A provider
   puts every sport of the day inside ONE `group-title` and writes the sport into the

@@ -697,7 +697,7 @@ class Reclaim {
     // VERDICT ORDER: blob first. When both are over, the blob verdict is the one that
     // carries the window arithmetic an operator needs to read the numbers, and the rotation
     // it asks for resets the metadata anyway — the two can never need separate rotations.
-    const budget = this._effectiveBudget(drive)
+    const budget = blobOn ? this._effectiveBudget(drive) : null
     let trigger = null
     if (blobOn && r.bytes > budget) trigger = 'budget'
     else if (metaOn && r.meta > this._metaBudgetBytes) trigger = 'meta'
@@ -717,6 +717,14 @@ class Reclaim {
     // read that field reads the same thing it always did. windowBytes is by construction the
     // number effectiveBudgetBytes was derived from — _observeWindow's folded estimate of one
     // full window, not one pass's raw sum — so the two can never disagree in a log.
+    //
+    // ⚠ effectiveBudgetBytes IS NULL ON A 'meta' VERDICT, because on that verdict it means
+    // nothing: it is the BLOB ceiling, and the blob ceiling had no part in the decision. It
+    // used to ship unconditionally, so a host with `reclaimBudgetBytes: 0` — where there is
+    // no blob budget at all — read `windowBytes × 3` as "the effective budget" for a rotation
+    // the blob half never looked at. That is precisely the misreading in a field log that
+    // `trigger` was added to prevent, so the field is absent instead of wrong. windowBytes
+    // stays on both verdicts: it is an OBSERVATION of the live playlist, true either way.
     try {
       this._onOverBudget(drive, {
         trigger,
@@ -725,7 +733,7 @@ class Reclaim {
         meta: r.meta,
         budgetBytes: this._budgetBytes,
         metaBudgetBytes: this._metaBudgetBytes,
-        effectiveBudgetBytes: budget,
+        effectiveBudgetBytes: trigger === 'budget' ? budget : null,
         windowBytes: this._window.get(drive) || 0
       })
     } catch { /* a host callback must never break a serve */ }
@@ -1820,6 +1828,10 @@ function pump (rs, res, wanted, idleMs = 0, onDone = null) {
 // (the whole replica passed the window-scaled blob ceiling) or 'meta' (the METADATA core
 // alone passed the flat metaBudgetBytes — see the paragraph at DEFAULTS; that bound is
 // punch-independent, because a hole punch cannot free a Hyperbee).
+// ⚠ effectiveBudgetBytes is the BLOB ceiling and is therefore NULL on a 'meta' verdict —
+// including where reclaimBudgetBytes is 0 and no blob ceiling exists at all. Read it only
+// beside trigger === 'budget'. windowBytes is an observation of the live playlist and is
+// reported on both.
 // Requires `reclaim` (it is the reclaim pass that measures). It is ADVISORY: the handler
 // frees nothing extra and does nothing else with the verdict. Freeing those bytes means
 // discarding and re-opening the replica, which only the owner of the feed cache can do — see
