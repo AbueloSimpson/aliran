@@ -5,3 +5,7 @@
 # value. Normalising here means it cannot depend on a contributor's local git config.
 *.sh text eol=lf
 deploy/sysctl/*.conf text eol=lf
+# The Gradle wrapper script has no .sh extension but is exactly the same hazard — CI
+# runs it on ubuntu (the sdk-android job), and it is also committed executable so the
+# runner can invoke it directly.
+sdk/android/gradlew text eol=lf

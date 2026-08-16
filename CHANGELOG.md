@@ -34,9 +34,21 @@ an item that carries one is telling you exactly which claim is still on paper.
   redirect playback headers (closing a gap this file used to list as open), and
   forces the HLS container hint for redirect URLs that carry no file extension, so
   a provider URL that ends in an id still plays. Covered by 19 recovery-ladder
-  lanes plus header and source-type lanes in the module's own test suite.
-  ⚠ Those lanes have no CI job yet — the Kotlin module is not built by
-  `.github/workflows/ci.yml`, and nothing mechanically enforces the parity.
+  lanes plus header and source-type lanes in the module's own test suite — and both
+  halves of that claim now run in CI. A `sdk-android` job builds the Kotlin module and
+  runs its 50 unit tests on every push and pull request, from a plain checkout with no
+  phone-app install: the vendored engine runtime turned out to be a packaging
+  prerequisite rather than a compilation one, so the pure-JVM tests no longer drag a
+  React Native toolchain behind them. A new `test:kit-parity` lane then pins the port
+  against its source — the six ladder constants, the schedules they derive, the give-up
+  predicates (including which HTTP refusals shorten the ladder), the reconnect rung,
+  the offline watchdog's two arms and the container-extension rule. The parity used to
+  be a human reading two files side by side; it is now a build failure.
+  ⚠ The gap that remains runs the OTHER way. The React Native stall ladder's give-up
+  does not route through its own `giveUp()`, so it leaves the error ladder armed and a
+  retry timer alive; the Kotlin port spends both. Kotlin is the stricter side here and
+  must not be relaxed to match — `test:kit-parity` says so as a note rather than a
+  failure until the React Native side is fixed.
 - **The viewer bounds its metadata growth — the fourth disk bound (`metaBudgetBytes`).**
   The blob bounds hold the media flat, but every followed live feed also carries a
   metadata database (the index that maps paths to media blocks), the broadcaster
