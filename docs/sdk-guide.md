@@ -328,11 +328,14 @@ someone already:
 
 - **Only the served feed is measured against it.** An idle cached
   replica is never rotated, however large it is. Idle feeds are bounded
-  separately, by the store cap below.
+  separately, and by **two** other things: the store cap below, and
+  `metaBudgetBytes / 4` — past a quarter of the metadata budget an idle
+  feed is evicted outright, whatever its blob size and whatever this
+  option says.
 - **It silently moves a second bound.** The warm-cache cap is four times
   this value (2 GiB by default). Lowering `reclaimBudgetBytes` for a
   small device also lowers the cap, and idle feeds start being deleted
-  sooner. `0` disables rotation and leaves the cap at its default.
+  sooner. `0` disables **this** bound and leaves the cap at its default.
   That cap is **not a hard ceiling on the store**: it is applied to the
   bytes this pass can actually evict, after the protected feeds (active,
   cast-pinned, VOD) have taken their share, and the warm cache is never
@@ -356,8 +359,15 @@ non-number throws, and so does any value above `0` but below 64 MiB. A
 32 MiB budget is refused at construction, not raised to 64 MiB — the
 misconfiguration has to surface where you can see it, because a tiny
 budget rotates the served feed on almost every reclaim pass, which looks
-exactly like a broken stream. `0` is the documented "do not rotate"
-switch and is always accepted.
+exactly like a broken stream. `0` is always accepted.
+
+**`0` here is no longer "do not rotate".** It switches off the *blob*
+bound, and `metaBudgetBytes` below rotates the same feed on a trigger of
+its own — deliberately gated on neither this option nor the hole-punch
+probe. Opting out of rotation **entirely** takes both
+`reclaimBudgetBytes: 0` **and** `metaBudgetBytes: 0`. This is a change in
+what `0` means for an option that already existed; if you set it to opt
+out of rotation, set the second zero too.
 
 Requests park during the swap instead of failing, so a rotation is
 **designed** to be invisible — but it is not guaranteed, and it can cost
@@ -396,12 +406,19 @@ default — and any channel above ~2.24 Mbit/s passes that default
 outright. A flat budget therefore rotated healthy replicas in a loop.
 Rotation is also rate-limited to one per five minutes per engine.
 
-**A viewer whose filesystem can punch holes does not rotate at all**,
-enforced rather than assumed. The guarantee is about that capability, not
-about the ABI. Before the budget is applied the engine probes the store:
-it writes a scratch file, punches its middle, and re-measures allocated
-size. If the punch frees bytes the budget is switched off and rotation is
-unreachable.
+**A viewer whose filesystem can punch holes never rotates on *this*
+bound**, enforced rather than assumed. The guarantee is about that
+capability, not about the ABI. Before the budget is applied the engine
+probes the store: it writes a scratch file, punches its middle, and
+re-measures allocated size. If the punch frees bytes this budget is
+switched off for the life of the handler.
+
+It does **not** make rotation unreachable, and the older wording here
+that said so is corrected rather than dropped: `metaBudgetBytes` rotates
+the same feed past a metadata ceiling the punch cannot help with, and it
+is gated on neither this probe nor `reclaimBudgetBytes`. On hardware that
+punches — 64-bit Android, desktop — that is now the only rotation trigger
+there is, which is exactly what it was added for.
 
 So a 64-bit viewer is not exempt for being 64-bit. On exFAT, FAT32 or a
 network mount the punch does not silently no-op — it **rejects**
@@ -417,6 +434,93 @@ it withholds and retries. An inconclusive probe (a transient I/O error,
 or an allocation that has not settled) leaves the budget armed and is
 retried — only a measured verdict is permanent.
 Measured disk behavior: [viewer bandwidth](kb/viewer-bandwidth.md#disk).
+
+### `metaBudgetBytes: number` — default 64 MiB
+The ceiling on the **watched** feed's **metadata store** — the database
+half of a replica, the index that maps paths to media blocks. It is the
+one part of a replica the punch guarantee above does not cover, and it
+grows on **every** platform: a followed live channel writes to that
+database about 1.5 times per second (segment put, expired-segment
+delete, playlist rewrite), the viewer's replica follows it for as long
+as the feed stays cached, and a hole punch cannot free any of it — the
+database's current keys reference interior nodes that live in old
+blocks, so the engine never clears the metadata store in place. The only
+reset is the same purge-and-reopen the rotation already does.
+
+Measured on an always-on TV with a **working** hole punch (10 h soak,
+2026-08-15): ~2.7 MB/h on the watched channel's metadata, ~1.1-1.2 MB/h
+per warm idle feed, +12-17 MB/h store-wide — about 0.3 GB/day, filling a
+box with 4 GB free in roughly two weeks, while the blob bound held the
+active feed flat at ~128 MB. That is why this bound exists and why the
+capability probe does **not** gate it: the device that punches perfectly
+is exactly the device where metadata is the growth that remains.
+
+Two thresholds come from the one option:
+
+- **The watched feed** rotates through the same path as
+  `reclaimBudgetBytes` when its metadata passes the full value — at the
+  measured rate, roughly once per day of continuous same-channel
+  watching. Any natural teardown (app restart, a zap away and back, a
+  catalog re-key) resets the metadata for free and pushes that rotation
+  out; the threshold exists for the always-on session that never tears
+  down. The `feed:rotate` event names which bound asked
+  (`trigger: 'budget' | 'meta'`).
+- **Idle cached feeds** are evicted outright at a **quarter** of the
+  value (16 MiB at the default), during the same maintenance pass as the
+  store cap. Nobody is watching an idle feed, so the eviction costs the
+  viewer nothing at the time and one fresh dial on the next tune of that
+  channel; the engine records a `meta-evict` breadcrumb naming the feed.
+  **At most one feed per pass**, and the pass runs every 60 s: the
+  session this half is for warms the same prewarm lineup all session, so
+  every idle feed crosses the threshold within minutes of every other,
+  and uncapped, one pass would purge the entire warm cache in a single
+  tick on a box with free disk. Capped, a full 12-feed cache drains over
+  ~12 minutes instead. Disk *pressure* is the store cap's job, and that
+  one is deliberately not capped.
+
+Values are checked the way `reclaimBudgetBytes` is checked: a non-number
+throws, anything above `0` but below **8 MiB** throws (a smaller number
+schedules rotation churn without saving meaningful disk), and `0` is the
+documented off switch — it disables both halves. It disables the
+*metadata* bound, not rotation: the blob budget still rotates wherever
+the probe leaves it armed.
+
+**Nobody forwards this option, and that is the decision rather than an
+omission.** `client/backend/backend.mjs` passes `reclaimBudgetBytes` (128
+MiB) and deliberately does not pass this one, so every host — Android,
+Android TV, desktop — takes the 64 MiB default. It is the right number on
+the 32-bit televisions too: a rotation there resets the metadata as a
+side effect of the blob bound it already hits, and 64 MiB is proportionate
+to the 128 MiB blob budget those boxes run. Forward it only if you have
+measured a device that needs something else.
+
+**The bound switches itself off if a store cannot free the metadata.**
+The purge behind a rotation degrades to a plain close when the
+filesystem refuses it, and a degraded purge frees nothing — the replica
+re-opens over the same metadata store, so the ceiling is still crossed
+and the next verdict lands five minutes later, forever, each one costing
+a re-dial and possibly a ~2.5 s freeze. So after a `'meta'` rotation the
+engine re-measures the replica, and it disarms only on **both** signals
+together: the purge itself rejected, **and** the metadata core is still
+over the budget. Both, because a number on its own cannot tell a refused
+purge from a purge that worked and a reading that is high for some other
+reason.
+
+And on **two consecutive** rotations, not one. A refusal is usually a
+property of the filesystem and occasionally a moment — an `EBUSY`
+unlink, a namespace another session still holds open — and the two leave
+identical evidence, so the only thing that separates them is whether it
+happens again. The second ask costs one more rotation five minutes later
+on a store that would otherwise have rotated for the whole session.
+
+When it does disarm it leaves a `meta-rotate-off` breadcrumb naming the
+numbers, and it disarms **both halves**: the idle eviction purges
+through the same fallback and frees the same nothing, so on a
+purge-refusing store it would otherwise re-evict every warm channel once
+per warm cycle for ever, paying a hang-up and a cold dial each time and
+freeing nothing. A rotation that worked never disarms the bound, an
+accepted purge resets the count, and a replica that cannot be measured
+leaves it armed. The blob bound is untouched either way.
 
 ### `feedLimit: number` — default 12
 How many feeds may stay **open** at once. This bounds *handles* — open
@@ -688,7 +792,7 @@ custom hosts.
 | `ready` | — | `connect()` finished; safe to `login()`. |
 | `streams` | `Stream[]` | Render the lineup. Fires at login **and live** on any panel catalog edit (title/art/isLive/order/categories) — no polling, no re-login. A newly *granted* stream still needs the next login. |
 | `status` | `{ state: 'feed:open' \| 'feed:ready' \| 'feed:retune' \| 'feed:reconnect' \| 'feed:rescan' }` | Drive a tuning indicator: `open` means a cold tune started, `ready` means playable, and `retune`/`reconnect`/`rescan` mean self-heal in progress. Say "reconnecting…" — don't freeze a spinner at a fake percentage. |
-| `status` | `{ state: 'feed:rotate', streamId, message, bytes?, durationMs?, skipped?, failed? }` | The viewer-disk rotation (§3, `reclaimBudgetBytes`): the engine purged and re-opened the active replica to free disk. Three shapes, told apart by **`durationMs` / `skipped` / `failed`** — not by `bytes`. **Success**: `durationMs` set, and `bytes` set but possibly `null`. **Refused**: `skipped: 'cast-pinned'`, no rotation happened. **Failed**: `failed: true`, the re-open died; the engine retries immediately and falls back to the tune ladder only if that also fails, so it is recoverable but worth logging. On success **do not show a spinner** — requests parked across the swap and it is emitted *after* the swap anyway, so it is telemetry, not a cue. `durationMs` times the **whole** rotation, and the drain (≤6 s) and the measurement (≤5 s) both run *before* the park is armed, so a value above 2500 is **necessary but not sufficient** evidence that the park expired: a 3 s drain plus a 200 ms swap reports ~3200 ms with nothing ever parked. Treat it as a reason to investigate, not as a count of viewer-visible gaps — and note that a rotation can cost the viewer a remount while still reporting success (§3). `bytes` is **not** bytes freed: it is the replica's measured size *before* the purge, taken up to one reclaim tick plus the drain earlier, and `null` where the platform could not measure. Read it as an approximation of what the replica held; the feed re-downloads a live window straight afterwards. |
+| `status` | `{ state: 'feed:rotate', streamId, message, trigger?, bytes?, meta?, durationMs?, skipped?, failed? }` | The viewer-disk rotation (§3, `reclaimBudgetBytes` / `metaBudgetBytes`): the engine purged and re-opened the active replica to free disk. Three shapes, told apart by **`durationMs` / `skipped` / `failed`** — not by `bytes`. **Success**: `durationMs` set, and `bytes` set but possibly `null`. **Refused**: `skipped: 'cast-pinned'`, no rotation happened. **Failed**: `failed: true`, the re-open died; the engine retries immediately and falls back to the tune ladder only if that also fails, so it is recoverable but worth logging. `trigger` names which bound asked and is set on **all three** shapes, the failed one included — that is the shape you investigate, so it is the one that has to be attributable: `'budget'` is the blob bound (fires only where the filesystem cannot punch), `'meta'` is the metadata bound (fires on any platform — a `'meta'` rotation roughly daily on an always-on device is the design working, while frequent `'budget'` rotations on hardware that should punch are worth investigating). On success **do not show a spinner** — requests parked across the swap and it is emitted *after* the swap anyway, so it is telemetry, not a cue. `durationMs` times the **whole** rotation, and the drain (≤6 s) and the measurement (≤5 s) both run *before* the park is armed, so a value above 2500 is **necessary but not sufficient** evidence that the park expired: a 3 s drain plus a 200 ms swap reports ~3200 ms with nothing ever parked. Treat it as a reason to investigate, not as a count of viewer-visible gaps — and note that a rotation can cost the viewer a remount while still reporting success (§3). `bytes` is **not** bytes freed: it is the replica's measured size *before* the purge, taken up to one reclaim tick plus the drain earlier, and `null` where the platform could not measure. Read it as an approximation of what the replica held; the feed re-downloads a live window straight afterwards. `meta` is the metadata store's share of that same measurement. |
 | `peers` | `number` | Peer count of the served feed, every 3 s while serving. |
 | `feed-changed` | `{ streamId, feedKey, url }` | The watched stream's feedKey rotated (broadcaster restart/rotation). The engine already re-resolved and swapped the served feed behind the **same** `url`. Reload or remount the player to flush the stale playlist. No re-login, no `resolve()` call needed. |
 | `zap-prefetch` | `{ enabled? }` or `{ state: 'suspended' \| 'resumed', reason: 'metered' \| 'stall' \| 'thin' }` | Reflect the Smooth-zapping toggle / adaptive gate in UI if you surface it. |

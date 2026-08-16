@@ -20,6 +20,60 @@ not been on a television yet**; each says so where it is described.
 
 ### Added
 
+- **The viewer bounds its metadata growth — the fourth disk bound (`metaBudgetBytes`).**
+  The blob bounds hold the media flat, but every followed live feed also carries a
+  metadata database (the index that maps paths to media blocks), the broadcaster
+  writes to it ~1.5 times per second, and a hole punch cannot free any of it —
+  interior nodes referenced by current keys live in old blocks, so the engine never
+  clears the db core in place; the only reset is purge + re-open. Measured on an
+  always-on TV with a **working** punch (10 h soak, 2026-08-15): ~2.7 MB/h on the
+  watched channel's metadata, ~1.1-1.2 MB/h per warm idle feed, +12-17 MB/h
+  store-wide — the punch-capable box that never rotates fills 4 GB of free flash in
+  about two weeks, with the blob bound working perfectly. Short sessions never see
+  it; the always-on box on one channel is where it bites.
+
+  `metaBudgetBytes` (default 64 MiB, `0` disables, refused below 8 MiB) bounds it in
+  two halves off the one option. The **watched** feed rotates through the proven
+  rotation path when its metadata passes the full value — roughly once per day
+  always-on; the capability probe deliberately does **not** gate this trigger (it
+  answers a blob question), and the `feed:rotate` event now names which bound asked
+  (`trigger: 'budget' | 'meta'`) with the metadata share (`meta`) alongside. An
+  **idle** feed is evicted outright at a quarter of the value during the store-cap
+  pass — nobody is watching, so it costs nothing at the time and one fresh dial on
+  the next tune (the purged-feed ledger makes that dial work), and a `meta-evict`
+  breadcrumb names the feed. Natural teardowns (app restart, zap away and back,
+  catalog re-key) already reset metadata for free; the thresholds exist for the
+  session that never tears down. Covered by `test:reclaim` scenario O (the meta
+  verdict fires through the punch latch, beside an armed-but-under blob budget, with
+  the blob half off by config — no probe run — and off a failed pass; VOD serves
+  reach neither trigger) and by `test:sdk` (a meta-triggered rotation runs the same
+  proven path end to end; the idle half evicts through the real maintenance pass,
+  the active feed survives on the pinned set, and the re-zap dials fresh).
+
+  Two consequences worth reading before you upgrade. **`reclaimBudgetBytes: 0` no
+  longer means "this viewer never rotates"** — that option's `0` switches the *blob*
+  bound off, and the metadata bound is deliberately independent of both it and the
+  hole-punch probe, so the same feed can still rotate on a metadata verdict. Opting
+  out of rotation entirely now takes **both** `reclaimBudgetBytes: 0` **and**
+  `metaBudgetBytes: 0`. Nothing in this repo sets either **to 0**, so no shipped host
+  changes behaviour (the Android app forwards `reclaimBudgetBytes: 128 MiB` and
+  neither app forwards `metaBudgetBytes`); a host that set the first zero to mean
+  "never rotate" needs the second. And the metadata bound **switches itself off** if a
+  store cannot actually free metadata: a purge the filesystem refuses degrades to a
+  plain close, the replica re-opens over the same metadata store, and the verdict
+  would otherwise fire again every five minutes forever on hardware that never rotated
+  before. After each `'meta'` rotation the engine re-measures and disarms only where
+  the purge itself **rejected** *and* the core is still over budget — a number alone
+  cannot tell a refused purge from a reading that is high for another reason — and
+  only on **two consecutive** such rotations, since one refusal can be an `EBUSY`
+  rather than a property of the store. The disarm leaves a `meta-rotate-off`
+  breadcrumb and covers **both** halves: the idle eviction purges through the same
+  fallback and frees the same nothing, so on such a store it would otherwise re-evict
+  every warm channel once per warm cycle, paying a hang-up and a cold dial each time.
+  Idle evictions are also rate-limited to one feed per 60 s maintenance pass, so a
+  prewarm lineup whose feeds all cross the threshold together drains over several
+  passes instead of vanishing at once.
+
 - **A rail per sport, derived from the playlist (`autoSubcategory`).** A provider
   puts every sport of the day inside ONE `group-title` and writes the sport into the
   entry NAME — `[MLB] Boston Red Sox at Toronto Blue Jays | TOR Feed`. Until now the
@@ -559,8 +613,14 @@ not been on a television yet**; each says so where it is described.
     default) and a channel above ~2.24 Mbps passes it outright, so a flat ceiling
     rotated healthy replicas in a loop. Rotation is rate-limited to one per five
     minutes, and is switched off for good on any store whose filesystem passes a
-    live hole-punch probe. Neither shipped app forwards the option; it is for
-    direct SDK embedders.
+    live hole-punch probe. The Android app forwards **128 MiB**; the desktop
+    engine does not forward it and takes the default.
+
+    **Since superseded in part by `metaBudgetBytes`** (the metadata-bound entry
+    above): the hole-punch probe switches off *this* budget, not rotation — the
+    metadata bound is not probe-gated and is the one trigger left on a store that
+    punches — and `0` here disables only the blob half, so "never rotate" is now
+    the pair of zeros.
   - **A `feed:rotate` status event.** Three shapes, told apart by
     `durationMs` / `skipped` / `failed`. `bytes` is the size measured *before* the
     purge, not a count of bytes freed, and is `null` where the platform cannot

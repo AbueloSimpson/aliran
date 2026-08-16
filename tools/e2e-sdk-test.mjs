@@ -1126,6 +1126,168 @@ try {
   if (sockFlapped.destroyed) throw new Error('evict-reopen: a purge whose connection already died must NOT cost the lineup a second hang-up')
   const evictReopenProven = !!healedPlE
   log('evict-reopen: a replica purged on a connection that has since been replaced plays with no second hang-up')
+
+  // ----- The METADATA bound's IDLE half rides this same eviction machinery -----
+  // An idle warm feed's hyperbee follows the broadcaster's head for as long as the feed
+  // stays cached (~1.1-1.2 MB/h measured on the vc10 soak), a hole punch cannot free any
+  // of it, and the bytes are pure history — so past _metaIdleEvictBytes the maintenance
+  // pass (_trimFeedBytes) EVICTS the feed outright, through the very _evictFeed +
+  // purged-feed-ledger path this lane has just proven twice. evicta is ACTIVE (rE4);
+  // evictb is the idle one. The threshold is injected at 1 byte so any real bee is over
+  // it — which also makes the ACTIVE feed's survival a live assertion on the pinned set,
+  // not on its size.
+  const eKeyB = b4a.toString(feedE2.key, 'hex') + ':' + b4a.toString(encKeyE2, 'hex')
+  if (!playerE._feeds.has(eKeyB)) throw new Error('idle-meta: expected evictb to be warm in the cache')
+  const idleDriveB = (await playerE._feeds.get(eKeyB)).drive
+  const coreEB = corePath(dirs.cliE, idleDriveB.discoveryKey)
+  if (!coreOnDisk(coreEB)) throw new Error('idle-meta: could not find the idle replica on disk: ' + coreEB)
+  const activeDriveBefore = playerE._feedDrive
+  const savedIdleThreshold = playerE._metaIdleEvictBytes
+  if (!(savedIdleThreshold === 16 * 1024 * 1024)) throw new Error('idle-meta: the default idle threshold should be a quarter of the 64 MiB meta budget, got ' + savedIdleThreshold)
+  // ⚠ THE OFF SWITCH FIRST, on a LIVE cache. `metaBudgetBytes: 0` derives a 0 threshold
+  // (asserted at construction in the disk-rotation lane), and 0 has to mean "do not evict",
+  // not "evict everything": with the `> 0` guard dropped the surviving test is `m.meta > 0`,
+  // which is true of every warm feed on every 60 s pass — the entire cache purged once a
+  // minute, on a host that explicitly switched the bound off. Both suites stayed green under
+  // that mutation before this ran.
+  playerE._metaIdleEvictBytes = 0
+  await playerE._trimFeedBytes()
+  await playerE._trimFeedBytes()
+  if (!playerE._feeds.has(eKeyB)) throw new Error('idle-meta: the warm feed was evicted with the metadata bound switched off (metaBudgetBytes: 0)')
+  if (playerE._eventRing.some((e) => e.type === 'meta-evict')) throw new Error('idle-meta: a meta-evict breadcrumb with the bound switched off')
+  playerE._metaIdleEvictBytes = 1
+  await waitFor(async () => { await playerE._trimFeedBytes(); return !playerE._feeds.has(eKeyB) }, 20000, 'idle-meta: the maintenance pass evicts the meta-bloated idle feed')
+  playerE._metaIdleEvictBytes = savedIdleThreshold
+  if (!playerE._feeds.has(eKeyA)) throw new Error('idle-meta: the ACTIVE feed was evicted by the idle meta threshold — the pinned set must protect it')
+  if (playerE._feedDrive !== activeDriveBefore) throw new Error('idle-meta: the served drive moved across an idle eviction')
+  await waitFor(async () => !coreOnDisk(coreEB), 20000, 'idle-meta: the evicted replica is purged from disk')
+  if (!(playerE._purgedFeeds.get(b4a.toString(feedE2.key, 'hex')) || []).length) throw new Error('idle-meta: the eviction must land in the purged-feed ledger so the next tune dials fresh')
+  const metaCrumb = playerE._eventRing.find((e) => e.type === 'meta-evict' && e.detail.includes(eKeyB.slice(0, 8)))
+  if (!metaCrumb) throw new Error('idle-meta: no meta-evict breadcrumb naming the feed: ' + JSON.stringify(playerE._eventRing.filter((e) => e.type === 'meta-evict')))
+  // …and the re-zap takes the ledger path this lane proved: hang up, dial fresh, play.
+  const rE5 = await resolveWithin(playerE, 'evictb', 20000)
+  await waitFor(async () => { const r = await httpGet(rE5.port, '/index.m3u8'); return r.status === 200 && r.body.includes('.ts') }, 30000, 'idle-meta: the meta-evicted channel plays again on a fresh dial')
+  log('idle-meta: the maintenance pass evicted the meta-bloated IDLE feed (breadcrumb + purged-feed ledger recorded), the active feed survived on the pinned set, and the re-zap dialled fresh and plays')
+
+  // ----- …ONE per pass, not the whole warm cache -----
+  // The session this half targets parks on one channel with a fixed prewarm lineup, so every
+  // idle feed's bee starts together and grows at the same rate: they all cross 16 MiB within
+  // minutes of each other, ~14.6 h in. Uncapped, ONE pass then evicts the entire warm cache
+  // — N dials queued behind the next N zaps and N breadcrumbs filling the ring, on a box with
+  // free disk and no store pressure whatsoever. Capped at FEED_META_EVICT_PER_PASS the set
+  // drains over successive 60 s passes instead, which is the whole difference between a
+  // rolling refresh and a scheduled cache wipe.
+  //
+  // Two synthetic slots rather than two more real channels: the assertion is about the
+  // LOOP's arithmetic, and the real eviction machinery underneath it has just been proven
+  // three times over on live replicas. _measureFeed is stubbed for the pass so the planted
+  // drives report a bee over the threshold and the real ones report nothing at all (which
+  // also keeps the store cap out of this — it is deliberately NOT rate-limited).
+  const capDrive = () => ({ __capFake: true, core: { peers: [] }, purge: async () => {}, close: async () => {} })
+  const capKeys = ['ca9'.repeat(21) + 'a:00', 'cb9'.repeat(21) + 'b:00']
+  for (const k of capKeys) {
+    const settled = { drive: capDrive(), discovery: null }
+    const slot = Promise.resolve(settled)
+    slot.settled = settled
+    playerE._feeds.set(k, slot)
+  }
+  const realMeasureE = playerE._measureFeed.bind(playerE)
+  playerE._measureFeed = async (d) => (d && d.__capFake ? { bytes: 4096, blobs: 0, meta: 99 * 1024 * 1024 } : { bytes: 0, blobs: 0, meta: 0 })
+  const crumbsBeforeCap = playerE._eventRing.filter((e) => e.type === 'meta-evict').length
+  playerE._metaIdleEvictBytes = 1
+  try {
+    await playerE._trimFeedBytes()
+    const goneAfterOne = capKeys.filter((k) => !playerE._feeds.has(k)).length
+    if (goneAfterOne !== 1) throw new Error('idle-meta: one pass must meta-evict at most ONE idle feed, it took ' + goneAfterOne)
+    if (playerE._eventRing.filter((e) => e.type === 'meta-evict').length !== crumbsBeforeCap + 1) throw new Error('idle-meta: one pass, one breadcrumb')
+    await playerE._trimFeedBytes()
+    if (capKeys.some((k) => playerE._feeds.has(k))) throw new Error('idle-meta: the NEXT pass must take the second one — the cap is a smoothing, not a bound that strands feeds')
+  } finally {
+    playerE._measureFeed = realMeasureE
+    playerE._metaIdleEvictBytes = savedIdleThreshold
+    for (const k of capKeys) playerE._feeds.delete(k)
+  }
+  log('idle-meta: one maintenance pass evicts at most one meta-bloated idle feed — a prewarm lineup that warmed together drains over passes instead of vanishing in one tick')
+
+  // ----- …and ONLY the slot the pass actually measured -----
+  // The pass awaits _measureFeed per feed and `_feeds` is LIVE across that await: the slot
+  // can be taken out (a zap's _trimFeeds, the tune ladder's last rung, a failed open dropping
+  // itself at _openFeed's catch) and a prewarm or a /feedthumb can re-open the SAME key
+  // straight afterwards. Evicting THAT purges a brand-new replica this pass never looked at
+  // — and it used to happen SILENTLY, because the identity check gated only the breadcrumb
+  // while _evictFeed ran unconditionally underneath it.
+  //
+  // Two planted slots in insertion order: `swapKey` is replaced from inside its own
+  // measurement, `victimKey` is an ordinary over-threshold feed. The victim is what makes the
+  // per-pass-cap half non-vacuous — had the swapped slot been evicted it would have spent
+  // FEED_META_EVICT_PER_PASS and the victim would have survived the pass.
+  const plantSlot = (k) => {
+    const settled = { drive: capDrive(), discovery: null }
+    const slot = Promise.resolve(settled)
+    slot.settled = settled
+    playerE._feeds.set(k, slot)
+    return slot
+  }
+  const swapKey = 'cc9'.repeat(21) + 'c:00'
+  const victimKey = 'cd9'.repeat(21) + 'd:00'
+  const swapSlotBefore = plantSlot(swapKey)
+  plantSlot(victimKey)
+  let swapReplacement = null
+  playerE._measureFeed = async (d) => {
+    if (!d || !d.__capFake) return { bytes: 0, blobs: 0, meta: 0 }
+    if (d === swapSlotBefore.settled.drive && playerE._feeds.get(swapKey) === swapSlotBefore) {
+      playerE._feeds.delete(swapKey)
+      swapReplacement = plantSlot(swapKey) // the fresh open another caller put there
+    }
+    return { bytes: 4096, blobs: 0, meta: 99 * 1024 * 1024 }
+  }
+  const crumbsBeforeSwap = playerE._eventRing.filter((e) => e.type === 'meta-evict').length
+  playerE._metaIdleEvictBytes = 1
+  try {
+    await playerE._trimFeedBytes()
+    if (!swapReplacement) throw new Error('idle-meta: the swap fixture never ran — the planted slot was not measured, so nothing below is being tested')
+    if (playerE._feeds.get(swapKey) !== swapReplacement) throw new Error('idle-meta: the pass evicted (and purged) a slot it never measured — the fresh open under that key is gone')
+    const crumbs = playerE._eventRing.filter((e) => e.type === 'meta-evict')
+    if (crumbs.some((e) => e.detail.includes(swapKey.slice(0, 8)))) throw new Error('idle-meta: a meta-evict breadcrumb for a slot this pass did not evict')
+    if (playerE._feeds.has(victimKey)) throw new Error('idle-meta: the un-owned slot spent the per-pass cap — the feed that really was over the threshold survived the pass')
+    if (crumbs.length !== crumbsBeforeSwap + 1) throw new Error('idle-meta: one eviction, one breadcrumb — got ' + (crumbs.length - crumbsBeforeSwap))
+  } finally {
+    playerE._measureFeed = realMeasureE
+    playerE._metaIdleEvictBytes = savedIdleThreshold
+    playerE._feeds.delete(swapKey)
+    playerE._feeds.delete(victimKey)
+  }
+  log('idle-meta: a slot replaced under its key during the measurement is neither evicted nor charged against the per-pass cap — identity gates the ACTION, not just the breadcrumb')
+
+  // ----- …and BOTH halves stop when the metadata bound disarms itself -----
+  // _metaRotateOff is set by the ACTIVE half (the meta-guard lane in the disk-rotation
+  // section below) and it means "purging a replica on this store frees no metadata".
+  // _evictFeed's purge degrades to the same plain close the rotation's does, so an idle
+  // eviction there frees nothing either: the channel comes back on the next tune with the
+  // same bee, crosses the threshold again and is evicted again — a hang-up plus a cold dial
+  // per warm cycle, for ever, on exactly the hardware the latch was invented for.
+  const latchKey = 'ce9'.repeat(21) + 'e:00'
+  plantSlot(latchKey)
+  playerE._measureFeed = async (d) => (d && d.__capFake ? { bytes: 4096, blobs: 0, meta: 99 * 1024 * 1024 } : { bytes: 0, blobs: 0, meta: 0 })
+  playerE._metaIdleEvictBytes = 1
+  playerE._metaRotateOff = true
+  const crumbsBeforeLatch = playerE._eventRing.filter((e) => e.type === 'meta-evict').length
+  try {
+    await playerE._trimFeedBytes()
+    if (!playerE._feeds.has(latchKey)) throw new Error('idle-meta: the idle half evicted on metadata after the bound disarmed itself — that purge frees exactly as much as the rotation the latch stopped, i.e. nothing')
+    if (playerE._eventRing.filter((e) => e.type === 'meta-evict').length !== crumbsBeforeLatch) throw new Error('idle-meta: a meta-evict breadcrumb with the metadata bound disarmed')
+    // …and the latch really was the only thing holding it back, or the assertion above
+    // proves nothing about the latch.
+    playerE._metaRotateOff = false
+    await playerE._trimFeedBytes()
+    if (playerE._feeds.has(latchKey)) throw new Error('idle-meta: with the latch clear the over-threshold feed must be evicted — otherwise the assertion above is vacuous')
+  } finally {
+    playerE._measureFeed = realMeasureE
+    playerE._metaIdleEvictBytes = savedIdleThreshold
+    playerE._metaRotateOff = false
+    playerE._feeds.delete(latchKey)
+  }
+  log('idle-meta: the IDLE half honours the same disarm latch as the active one — one latch, both halves')
   await playerE.stop()
 
   // ===== S23 redirect channels: catalog {redirect:true, url} plays the URL, no P2P =====
@@ -1376,6 +1538,28 @@ try {
   assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, reclaimBudgetBytes: true }), /non-negative NUMBER/, 'a BOOLEAN reclaimBudgetBytes')
   assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, reclaimBudgetBytes: 8 * MiB }), /at least/, 'a reclaimBudgetBytes under the floor')
 
+  // The METADATA budget is a second public option with a floor of its own and the same
+  // refuse-do-not-coerce contract, and it had none of this coverage: `Number('67108864')`
+  // is a perfectly good number, so a string would land as a 64-byte budget and rotate the
+  // served feed on every reclaim pass — the identical failure the lines above exist for.
+  assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, metaBudgetBytes: '67108864' }), /non-negative NUMBER/, 'a STRING metaBudgetBytes')
+  assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, metaBudgetBytes: true }), /non-negative NUMBER/, 'a BOOLEAN metaBudgetBytes')
+  assertThrows(() => createPlayer({ panelPubKey, storeDir: dirs.cliD, metaBudgetBytes: 4 * MiB }), /at least/, 'a metaBudgetBytes under the 8 MiB floor')
+  // …and THE OFF SWITCH, which is the option's headline ("0 disables BOTH halves") and was
+  // untested on either side. The idle half is the one where it matters: its threshold is
+  // DERIVED (_metaIdleEvictBytes = budget / 4), so 0 has to survive the arithmetic — and
+  // the guard that carries it is exactly the kind a mutation eats silently. Dropping
+  // `this._metaIdleEvictBytes > 0` leaves `m.meta > 0`, true of every warm feed on every
+  // 60 s pass, i.e. the whole cache evicted once a minute — and both suites stayed green.
+  // The behavioural half of this is asserted on a live cache in the evict lane above.
+  const playerMetaOff = createPlayer({ panelPubKey, storeDir: dirs.cliD, metaBudgetBytes: 0 })
+  cleanups.push(() => { try { return playerMetaOff.stop() } catch { return null } })
+  if (playerMetaOff._metaBudgetBytes !== 0) throw new Error('metaBudgetBytes: 0 did not reach the engine: ' + playerMetaOff._metaBudgetBytes)
+  if (playerMetaOff._metaIdleEvictBytes !== 0) throw new Error('metaBudgetBytes: 0 must disable the IDLE half too, got ' + playerMetaOff._metaIdleEvictBytes)
+  // …while leaving the BLOB bound alone: the two options are independent in both
+  // directions, which is the whole point of the pair (see normalizeReclaimBudget).
+  if (playerMetaOff._feedBudgetBytes !== 512 * MiB) throw new Error('metaBudgetBytes: 0 must not touch reclaimBudgetBytes, got ' + playerMetaOff._feedBudgetBytes)
+
   const evD = { status: [], rotate: [], errors: [], feedChanged: [], swapVersion: [] }
   // ⚠ THE ZERO-PEER RESCAN IS DISABLED FOR THIS PLAYER (tune.rescanMs: 0), and that is the
   // point of the section rather than a convenience. A purged replica does not re-attach to the
@@ -1388,7 +1572,11 @@ try {
   // success. With the rescan off, nothing downstream can rescue the dial inside the bounds
   // asserted below (the tune watchdog's first rung is 30 s away), so the assertions measure the
   // dial itself.
-  const playerD = createPlayer({ panelPubKey, storeDir: dirs.cliD, swarm: { bootstrap }, reclaimBudgetBytes: 64 * MiB, tune: { rescanMs: 0 } })
+  // metaBudgetBytes is set to a NON-DEFAULT number on purpose: it is the only way the
+  // forwarding assertion below can tell "the engine passed the host's value to the serving
+  // core" from "the serving core fell back to its own 64 MiB default". Comfortably above
+  // anything a two-minute testnet feed's bee reaches, so it never fires on its own.
+  const playerD = createPlayer({ panelPubKey, storeDir: dirs.cliD, swarm: { bootstrap }, reclaimBudgetBytes: 64 * MiB, metaBudgetBytes: 40 * MiB, tune: { rescanMs: 0 } })
   playerD.on('status', (s) => {
     evD.status.push(s.state)
     if (s.state !== 'feed:rotate') return
@@ -1402,6 +1590,8 @@ try {
   playerD.on('feed-changed', (e) => evD.feedChanged.push(e))
   cleanups.push(() => playerD.stop())
   if (playerD._feedBudgetBytes !== 64 * MiB) throw new Error('reclaimBudgetBytes did not reach the engine: ' + playerD._feedBudgetBytes)
+  if (playerD._metaBudgetBytes !== 40 * MiB) throw new Error('metaBudgetBytes did not reach the engine: ' + playerD._metaBudgetBytes)
+  if (playerD._metaIdleEvictBytes !== 10 * MiB) throw new Error('the idle threshold must be a quarter of the configured meta budget, got ' + playerD._metaIdleEvictBytes)
 
   await playerD.connect()
   let streamsD = null
@@ -1426,6 +1616,16 @@ try {
   const rotSkipped = () => evD.rotate.filter((e) => e.skipped === 'cast-pinned')
   const rotFailed = () => evD.rotate.filter((e) => e.failed)
 
+  // THE OPTION HAS TO REACH THE THING THAT MEASURES, and nothing pinned that. The serving
+  // core carries its own 64 MiB metaBudgetBytes default, so deleting the one forwarding
+  // line in _requestHandler is INVISIBLE: every host silently reverts to that default and
+  // every existing assertion still passes. reclaimStatus() is the observable end of the
+  // wire — this reads the number the Reclaim instance is actually comparing against.
+  const rsD = playerD._handler && playerD._handler.reclaimStatus()
+  if (!rsD) throw new Error('disk-rotation: the loopback handler reports no reclaim status')
+  if (rsD.metaBudgetBytes !== 40 * MiB) throw new Error("metaBudgetBytes did not reach the SERVING CORE (it fell back to its own default): " + rsD.metaBudgetBytes)
+  if (rsD.budgetBytes !== 64 * MiB) throw new Error('reclaimBudgetBytes did not reach the serving core: ' + rsD.budgetBytes)
+
   // ----- (1) A rotation while watching is INVISIBLE -----
   // The feature's whole promise: the replica is thrown away and rebuilt under a live play and
   // the host player is never told anything happened. Same port, same source(), no
@@ -1440,6 +1640,8 @@ try {
   const rotEv1 = await waitFor(() => rotOk()[0], 20000, "disk-rotation: 'feed:rotate' success event")
   if (rotEv1.streamId !== 'news') throw new Error('the rotation event named the wrong stream: ' + rotEv1.streamId)
   if (rotEv1.bytes !== 700 * MiB) throw new Error("the trigger's measured bytes did not reach the event: " + rotEv1.bytes)
+  if (rotEv1.trigger !== 'budget') throw new Error("a blob-budget rotation must name its trigger ('budget'), got: " + rotEv1.trigger)
+  if (rotEv1.meta !== 10 * MiB) throw new Error("the trigger's metadata share did not reach the event: " + rotEv1.meta)
   if (!Number.isFinite(rotEv1.durationMs)) throw new Error('the rotation event carries no durationMs — a rotation nobody can attribute')
   if (!playerD._feedDrive) throw new Error('the rotation left the engine with no served drive')
   if (playerD._feedDrive === driveD1) throw new Error('nothing was rotated: _feedDrive is still the over-budget replica')
@@ -1660,11 +1862,95 @@ try {
   // …and the disk bound is not permanently off afterwards. A mutex stuck by a failure is
   // rotation switched off for the life of the process, i.e. on a 32-bit build no disk bound at
   // all — which is exactly the state this whole feature exists to prevent.
+  //
+  // This post-failure rotation is fired with trigger: 'meta' — the METADATA bound's shape
+  // (the serving core sends it when the hyperbee metadata core alone crosses
+  // metaBudgetBytes; the punch latch does not gate it, so on punch-capable hardware this is
+  // the ONE rotation trigger there is). It must run the SAME proven path — purge, re-open,
+  // fresh dial, playback back — and the event must say which bound asked, or a daily meta
+  // rotation on an always-on box is indistinguishable in the field from a blob bound that
+  // is failing.
   const okBeforeD6 = rotOk().length
-  playerD._onFeedOverBudget(playerD._feedDrive, { bytes: 900 * MiB, budgetBytes: 64 * MiB })
-  await waitFor(() => rotOk().length > okBeforeD6, 20000, 'disk-rotation: a rotation after a failed one still runs')
-  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback after the post-failure rotation')
-  log('disk-rotate: a re-open that missed its bound recovered (playback returned) and left the mutex free — a later rotation still ran')
+  playerD._onFeedOverBudget(playerD._feedDrive, { trigger: 'meta', bytes: 200 * MiB, blobs: 110 * MiB, meta: 90 * MiB, budgetBytes: 64 * MiB, metaBudgetBytes: 64 * MiB })
+  await waitFor(() => rotOk().length > okBeforeD6, 20000, 'disk-rotation: a META-triggered rotation after a failed one still runs')
+  const metaEvD6 = rotOk()[rotOk().length - 1]
+  if (metaEvD6.trigger !== 'meta') throw new Error("a metadata-budget rotation must name its trigger ('meta'), got: " + metaEvD6.trigger)
+  if (metaEvD6.meta !== 90 * MiB) throw new Error("the meta trigger's metadata share did not reach the event: " + metaEvD6.meta)
+  if (!/metadata core at 90 MiB/.test(String(metaEvD6.message))) throw new Error('the breadcrumb message does not attribute the rotation to the metadata core: ' + metaEvD6.message)
+  await waitFor(() => playableAt(portD), 30000, 'disk-rotation: playback after the post-failure META rotation')
+  log('disk-rotate: a re-open that missed its bound recovered (playback returned) and left the mutex free — and a later META-triggered rotation ran the same path, with trigger+meta on its event')
+
+  // ----- (6b) A meta rotation that frees NOTHING must stop asking -----
+  // The purge behind a rotation degrades to a plain CLOSE when the filesystem refuses it
+  // (drive.purge().catch(() => close())), and a degraded purge frees nothing: the replica
+  // re-opens over the same metadata core, the serving core measures the same number, and
+  // the meta verdict fires again the instant the 5-minute floor is up. Forever. The blob
+  // budget survives that shape (its retry chases a growing number, on a store already
+  // MEASURED as the difficult case); the metadata bound cannot, because it is the only
+  // rotation trigger on punch-capable hardware — a device that never rotated before would
+  // start rotating every five minutes, paying a hang-up, a dial and a ~2.5 s freeze about
+  // one time in three, and freeing nothing at all.
+  //
+  // …but "still over budget" is NOT on its own enough to conclude it, which is the second
+  // half of this lane. What the latch concludes is a permanent property of a filesystem, and
+  // the evidence for that is two signals — the purge REJECTED, and the number stayed — seen
+  // TWICE, because one refusal can be an EBUSY and leaves evidence identical to a permanent
+  // one. Each of those is asserted below in the order that makes it non-vacuous.
+  //
+  // ⚠ AWAIT THE VERIFICATION, DO NOT SLEEP PAST IT. It is fire-and-forget off the success
+  // emit above and its _measureFeed is bounded at FEED_MEASURE_MS (5000), so a bare
+  // sleep(1000) asserts against a latch that may not have been decided yet on a slow box —
+  // i.e. the mutation "disarm unconditionally" would sail through green. The engine keeps the
+  // in-flight promise (_metaVerify) for exactly this.
+  if (!playerD._metaVerify) throw new Error('meta-guard: the META rotation started no verification — every assertion below would be vacuous')
+  await playerD._metaVerify
+  if (playerD._metaRotateOff) throw new Error('meta-guard: a rotation that genuinely worked must NOT disarm the metadata bound')
+  if (playerD._metaRotateStrikes !== 0) throw new Error('meta-guard: a rotation whose purge was ACCEPTED must leave no strike behind, got ' + playerD._metaRotateStrikes)
+  const realMeasureD = playerD._measureFeed.bind(playerD)
+  // The shape a refused purge leaves behind: the replica is re-opened, and its metadata
+  // core is still over the ceiling because nothing was ever unlinked.
+  playerD._measureFeed = async () => ({ bytes: 200 * MiB, blobs: 100 * MiB, meta: 100 * MiB })
+  try {
+    // (a) AN ACCEPTED PURGE IS CONTRARY EVIDENCE, whatever the number says. It unlinked the
+    // replica; a re-measure that still reads high after that is telling us something about
+    // the measurement, not about the store, and latching on it would switch off the only
+    // disk bound punch-capable hardware has on a false positive.
+    await playerD._verifyMetaRotation(playerD._feedDrive, false)
+    if (playerD._metaRotateOff || playerD._metaRotateStrikes !== 0) throw new Error('meta-guard: an ACCEPTED purge must contribute nothing to the disarm, however the re-measure reads')
+    // (b) …and ONE refusal is not the property either.
+    await playerD._verifyMetaRotation(playerD._feedDrive, true)
+    if (playerD._metaRotateOff) throw new Error('meta-guard: one refused purge must not disarm the bound for the session — a transient refusal leaves exactly the evidence a permanent one does')
+    if (playerD._metaRotateStrikes !== 1) throw new Error('meta-guard: the first refused-and-over verdict must be recorded as a strike, got ' + playerD._metaRotateStrikes)
+    // …and "consecutive" is honest: an accepted purge in between clears the count.
+    await playerD._verifyMetaRotation(playerD._feedDrive, false)
+    if (playerD._metaRotateStrikes !== 0) throw new Error('meta-guard: an accepted purge must reset the strike count, got ' + playerD._metaRotateStrikes)
+    // …as does an UNMEASURABLE replica, which is evidence of nothing in either direction
+    // (_measureFeed answers null for "this platform cannot report bytes" and "this replica
+    // did not answer" alike) and must leave the bound ARMED.
+    playerD._measureFeed = async () => null
+    await playerD._verifyMetaRotation(playerD._feedDrive, true)
+    if (playerD._metaRotateOff || playerD._metaRotateStrikes !== 0) throw new Error('meta-guard: an unmeasurable re-measure must leave the bound armed and the strike count untouched')
+    playerD._measureFeed = async () => ({ bytes: 200 * MiB, blobs: 100 * MiB, meta: 100 * MiB })
+    // (c) Two in a row, both refused, both still over budget. That is the measured property.
+    await playerD._verifyMetaRotation(playerD._feedDrive, true)
+    if (playerD._metaRotateOff) throw new Error('meta-guard: the first of the two must not be enough')
+    await playerD._verifyMetaRotation(playerD._feedDrive, true)
+  } finally { playerD._measureFeed = realMeasureD }
+  if (!playerD._metaRotateOff) throw new Error('meta-guard: two consecutive rotations whose purge was refused and whose metadata core stayed over budget must disarm the bound instead of asking again every 5 minutes')
+  const offCrumb = playerD._eventRing.find((e) => e.type === 'meta-rotate-off')
+  if (!offCrumb || !/100 MiB/.test(String(offCrumb.detail))) throw new Error('meta-guard: the disarm must leave a breadcrumb naming the number it measured: ' + JSON.stringify(offCrumb || null))
+  const okBeforeGuard = rotOk().length
+  playerD._onFeedOverBudget(playerD._feedDrive, { trigger: 'meta', bytes: 200 * MiB, blobs: 100 * MiB, meta: 100 * MiB, budgetBytes: 64 * MiB, metaBudgetBytes: 40 * MiB })
+  await sleep(2000)
+  if (rotOk().length !== okBeforeGuard) throw new Error('meta-guard: a meta verdict after the disarm must not rotate — that is the spin this guard exists to stop')
+  if (rotFailed().some((e) => e.trigger === 'meta' && /recovery/.test(String(e.message)))) throw new Error('meta-guard: the refused verdict must be a no-op, not a failed rotation')
+  // …and ONLY the meta trigger. The blob bound has its own gating, its own audience and its
+  // own (tolerable) retry shape; disarming it here would be a regression in the bound this
+  // whole file was written for.
+  playerD._onFeedOverBudget(playerD._feedDrive, { trigger: 'budget', bytes: 900 * MiB, blobs: 890 * MiB, meta: 10 * MiB, budgetBytes: 64 * MiB, metaBudgetBytes: 40 * MiB })
+  await waitFor(() => rotOk().length > okBeforeGuard, 20000, 'meta-guard: the BLOB trigger still rotates after the metadata bound disarmed itself')
+  await waitFor(() => playableAt(portD), 30000, 'meta-guard: playback after that blob rotation')
+  log('meta-guard: two consecutive REFUSED purges that freed no metadata disarmed the bound (breadcrumb recorded) instead of spinning every 5 minutes — an accepted purge, a single refusal and an unmeasurable replica all left it armed, and the blob trigger still rotates')
 
   // ----- (7) stop() during a rotation leaves nothing behind -----
   // A rotation is the longest-lived piece of work in the engine and it holds a store, a swarm
