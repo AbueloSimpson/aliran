@@ -328,7 +328,10 @@ someone already:
 
 - **Only the served feed is measured against it.** An idle cached
   replica is never rotated, however large it is. Idle feeds are bounded
-  separately, by the store cap below.
+  separately, and by **two** other things: the store cap below, and
+  `metaBudgetBytes / 4` — past a quarter of the metadata budget an idle
+  feed is evicted outright, whatever its blob size and whatever this
+  option says.
 - **It silently moves a second bound.** The warm-cache cap is four times
   this value (2 GiB by default). Lowering `reclaimBudgetBytes` for a
   small device also lowers the cap, and idle feeds start being deleted
@@ -491,17 +494,33 @@ side effect of the blob bound it already hits, and 64 MiB is proportionate
 to the 128 MiB blob budget those boxes run. Forward it only if you have
 measured a device that needs something else.
 
-**The bound switches itself off if a rotation cannot free the
-metadata.** The purge behind a rotation degrades to a plain close when
-the filesystem refuses it, and a degraded purge frees nothing — the
-replica re-opens over the same metadata store, so the ceiling is still
-crossed and the next verdict lands five minutes later, forever, each one
-costing a re-dial and possibly a ~2.5 s freeze. So after a `'meta'`
-rotation the engine re-measures the replica: still over the budget means
-the purge freed nothing, and the bound disarms for the rest of the
-session with a `meta-rotate-off` breadcrumb naming the numbers. A
-rotation that worked never disarms it, and the blob bound and the idle
-half are untouched either way.
+**The bound switches itself off if a store cannot free the metadata.**
+The purge behind a rotation degrades to a plain close when the
+filesystem refuses it, and a degraded purge frees nothing — the replica
+re-opens over the same metadata store, so the ceiling is still crossed
+and the next verdict lands five minutes later, forever, each one costing
+a re-dial and possibly a ~2.5 s freeze. So after a `'meta'` rotation the
+engine re-measures the replica, and it disarms only on **both** signals
+together: the purge itself rejected, **and** the metadata core is still
+over the budget. Both, because a number on its own cannot tell a refused
+purge from a purge that worked and a reading that is high for some other
+reason.
+
+And on **two consecutive** rotations, not one. A refusal is usually a
+property of the filesystem and occasionally a moment — an `EBUSY`
+unlink, a namespace another session still holds open — and the two leave
+identical evidence, so the only thing that separates them is whether it
+happens again. The second ask costs one more rotation five minutes later
+on a store that would otherwise have rotated for the whole session.
+
+When it does disarm it leaves a `meta-rotate-off` breadcrumb naming the
+numbers, and it disarms **both halves**: the idle eviction purges
+through the same fallback and frees the same nothing, so on a
+purge-refusing store it would otherwise re-evict every warm channel once
+per warm cycle for ever, paying a hang-up and a cold dial each time and
+freeing nothing. A rotation that worked never disarms the bound, an
+accepted purge resets the count, and a replica that cannot be measured
+leaves it armed. The blob bound is untouched either way.
 
 ### `feedLimit: number` — default 12
 How many feeds may stay **open** at once. This bounds *handles* — open

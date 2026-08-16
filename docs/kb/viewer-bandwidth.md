@@ -175,12 +175,19 @@ not about 64-bit. Two independent things enforce it.
 
 First, the engine tests the filesystem before it applies the budget. It
 writes a scratch file, punches a hole in the middle, and measures the
-allocated size again. Where the punch frees bytes the budget is switched
-off for that store, so a rotation can never run. This tests the
-behaviour, not the platform. A 64-bit device is therefore not exempt for
-being 64-bit. If its store sits on exFAT, FAT32 or some network mounts,
-the punch fails, the budget stays armed, and that device does rotate.
-That is correct: a clear frees no bytes there either.
+allocated size again. Where the punch frees bytes the **media** budget
+is switched off for that store, so a rotation can never run **on that
+bound**. This tests the behaviour, not the platform. A 64-bit device is
+therefore not exempt for being 64-bit. If its store sits on exFAT, FAT32
+or some network mounts, the punch fails, the budget stays armed, and
+that device does rotate. That is correct: a clear frees no bytes there
+either.
+
+The heading above says *media bound* for a reason. A punch-capable
+device can still rotate on the **metadata** bound described further
+down: a hole punch frees blob blocks and can never free the hyperbee, so
+that bound is deliberately not probe-gated and it is the one rotation
+trigger left on hardware that punches.
 
 Second, the ceiling is not a flat number. It is the larger of the
 configured budget and three times the **observed** live window, measured
@@ -236,6 +243,20 @@ So the engine bounds metadata separately (`metaBudgetBytes`, default
   peers" in `docs/kb/playback.md`). The engine records a `meta-evict`
   breadcrumb naming the feed, so an operator reading a problem report
   can see why a warm channel went cold.
+
+**Both halves stop if the store will not free the metadata.** Everything
+above depends on a purge actually unlinking the replica, and a purge the
+filesystem refuses degrades to a plain close, which frees nothing. So
+after a metadata rotation the engine re-measures, and where the purge
+*rejected* **and** the core is still over the budget — on two rotations
+in a row, since a single refusal can be an `EBUSY` rather than a
+property of the store — it switches the whole metadata bound off for
+that session and records a `meta-rotate-off` breadcrumb naming the
+numbers. Both halves go quiet together: the idle eviction purges the
+same way, so on such a store it would re-evict every warm channel once
+per warm cycle, pay a hang-up and a cold dial each time, and free
+nothing. Seeing `meta-rotate-off` in a problem report means metadata on
+that device is bounded only by app restarts and zapping.
 
 **The probe leaves scratch files, and nothing sweeps them.** Each probe
 writes 512 KiB into a `punch-probe-<random>/data` path in the store, then

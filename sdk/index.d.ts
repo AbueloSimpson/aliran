@@ -246,11 +246,18 @@ export interface PlayerOptions {
    * vanishing in one. The feed:rotate status event reports which bound fired
    * (trigger: 'budget' | 'meta').
    *
-   * ONE THING SWITCHES IT OFF AT RUNTIME: if a rotation completes and the replica's
-   * metadata core is measurably still over the budget, the purge freed nothing (it was
-   * refused and degraded to a plain close), so the bound disarms itself for the rest of
-   * the session rather than rotating every five minutes to no effect. The engine leaves
-   * a breadcrumb saying so; nothing disarms a rotation that worked.
+   * ONE THING SWITCHES IT OFF AT RUNTIME, and it takes two pieces of evidence, twice. A
+   * rotation's purge can be REFUSED by the filesystem, in which case it degrades to a
+   * plain close and frees nothing: the replica re-opens over the same metadata core, the
+   * verdict fires again five minutes later, and that repeats for the session. So after a
+   * 'meta' rotation the engine re-measures, and it disarms only where the purge actually
+   * rejected AND the metadata core is still over the budget — on TWO CONSECUTIVE
+   * rotations, because one refusal can be a transient (EBUSY, a namespace still open
+   * elsewhere) and produces evidence identical to a permanent one. A rotation that worked
+   * never disarms it, an accepted purge resets the count, and an unmeasurable replica
+   * leaves the bound armed. The disarm then covers BOTH halves — the idle eviction purges
+   * through the same fallback and frees the same nothing — and leaves a breadcrumb naming
+   * the numbers. The blob budget is untouched either way.
    */
   metaBudgetBytes?: number
   /**

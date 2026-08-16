@@ -234,8 +234,10 @@ const NO_CORS = {}
 // for a rotation at all, whatever the arithmetic says.
 //
 // probeHolePunch remains, and remains worth having: where the punch is PROVED to work the
-// budget is switched off outright, so the measurement, the callback and any argument about
-// window sizes stop existing for that device.
+// BLOB budget is switched off outright, so its ceiling and any argument about window sizes
+// stop existing for that device. It does NOT switch the measurement or the callback off —
+// the metadata half below rides both and is not probe-gated, so a punch-capable store still
+// pays the four stat()s per throttled pass and can still be handed a verdict.
 //
 // ⚠⚠ EXCEPT FOR THE METADATA CORE, WHICH THE PUNCH CANNOT TOUCH AND THE LATCH THEREFORE
 // MUST NOT COVER — that is what metaBudgetBytes (64 MiB) is. A followed live feed's
