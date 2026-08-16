@@ -26,13 +26,19 @@ const isTV = Platform.isTV
 // took the space out of the name, because the name is the only elastic thing in a row of
 // number + name + LIVE badge + logo. Scaling the whole ramp shrinks the number, the
 // badge, the logo and the lettering together, and the name gets the difference.
-// Tuned on the TCL set: 1.0 → 0.8 (names became readable) → 0.72, the operator's call
-// from an actual viewing distance, which is the only place this question can be settled.
+// Tuned on the TCL set: 1.0 → 0.8 (names became readable) → 0.72 → 0.66, each step the
+// operator's call from an actual viewing distance, which is the only place this question
+// can be settled. The 0.72 → 0.66 step came with the main menu's left rail: six section
+// entries measured 602dp against a 540dp viewport and clipped SALIR off the bottom. The
+// ramp was only half the fix — see MenuScreen's entry/glyph/label styles, which had to be
+// put ON this ramp first (at 0.72 they were 50 of each entry's 86dp, so no reachable
+// SCALE could have closed the gap on its own). With those on the ramp, 0.66 lands the
+// rail at 496dp — a fitting rail with ~44dp of headroom rather than a hairline pass.
 //
 // ⚠ Do not take TV below 0.6 without re-checking the guide's channel column: its parts
 // must keep summing inside CH_COL_W, and that inequality only holds down to 0.6.
 // GuideScreen's chCell comment carries the arithmetic.
-const SCALE = isTV ? 0.72 : 0.68
+const SCALE = isTV ? 0.66 : 0.68
 const px = (n: number) => Math.round(n * SCALE)
 
 const DEFAULT_COLORS = {

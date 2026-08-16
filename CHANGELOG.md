@@ -301,6 +301,18 @@ not been on a television yet**; each says so where it is described.
 
 ### Fixed
 
+- **The television's main menu cut its last entry off the bottom of the screen.** When the
+  TV menu moved to the phone's vertical left rail, the six section entries laid out at
+  602dp against a 540dp viewport (a 1080p set at density 320), so Exit sat below the fold
+  at rest. It scrolled into view on focus, which is why it read as cosmetic, but the rail
+  is meant to be readable without moving the remote. The tiles' sizing was the cause: 50
+  of each 86dp tile — the emoji glyph's line box and the label's top margin — did not go
+  through the theme's single density ramp, so only 36dp per tile answered it. Even at the
+  ramp's documented floor the rail still measured 551dp and still clipped. The glyph and
+  the margin now ride the ramp, and the television's ramp goes from 0.72 to 0.66; the rail
+  measures 496dp of 540 and every entry is visible at rest. Verified on two 1080p TCL sets.
+  The phone tiles are a separate, already-tuned component and are untouched.
+
 - **A wedged player remounted itself until Android killed the app.** `<AliranVideo>`'s
   stall ladder had no upper bound: while the playhead sat still it remounted every 12
   seconds forever, and each remount tears down and rebuilds an ExoPlayer and its
