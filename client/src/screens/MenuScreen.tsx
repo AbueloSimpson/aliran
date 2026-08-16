@@ -44,15 +44,29 @@ interface MenuItem {
 // a vertical background wash (transparent top → grounded bottom, under the hero text)
 // and a horizontal surface wash (left edge → transparent), giving the composite a
 // subtle diagonal drift toward the rail.
-// Menu icon size, trimmed on device. TWO ROUNDS OF 15%, the same way the phone's overall
-// density knob was tuned (theme.ts SCALE: 0.85 → 0.80 → 0.68) — the glyphs read too large
-// on both a phone and a television.
+// Menu icon size, trimmed on device. TWO ROUNDS OF 15%, the same way the overall density
+// knob was tuned (theme.ts SCALE: 0.85 → 0.80 → 0.68 phone, 1.0 → 0.8 → 0.72 TV) — the
+// glyphs read too large on both a phone and a television.
 //
-// ⚠ These glyphs do NOT go through theme's px()/SCALE ramp, which is almost certainly why
-// they looked oversized on the phone in the first place: every other piece of type there is
-// cut to 0.68 and the icons stayed at their raw size. This factor is deliberately separate
-// from that ramp rather than folded into it, so the two decisions stay legible — but if the
-// phone still reads heavy, running these through px() as well is the next lever.
+// This factor stays SEPARATE from theme's px()/SCALE ramp so the two decisions stay
+// legible, but the TV rail's glyph now composes the two (px(34 * ICON_SCALE)) — see the
+// `glyph` style. That was not cosmetic. Measured on a TCL 1080p set (density 320, so a
+// 540dp viewport) the six-entry rail laid out at 602dp and clipped SALIR off the bottom.
+// 50 of each entry's 86dp were OFF the ramp, in three pieces:
+//
+//   focus border 3 × 2                                            =  6dp
+//   emoji line box (fontSize 25 × the ~1.44 line-box ratio of
+//     Android's emoji font)                                       = 36dp
+//   label marginTop, a literal 8                                  =  8dp
+//
+// so only 36 of the 86 answered SCALE, and no reachable SCALE could close a 62dp gap on
+// its own — even at 0.6 the rail still measured 551dp. The fix is to put the glyph and
+// the marginTop (44 of that 50) ON the ramp, which lands the six-entry rail at 530dp of
+// 540. SCALE stays at 0.72: it is global and already near its floor, so the rail's own
+// geometry is the right place to pay for this (theme.ts carries that reasoning). The
+// 6dp border stays off the ramp deliberately — see the `entry` style. The PHONE tiles
+// (railGlyph/railLabel) are untouched: a different, already-tuned component that does
+// not clip.
 const ICON_SCALE = 0.85 * 0.85
 
 const WASH_BANDS = 16
@@ -153,9 +167,19 @@ export function MenuScreen ({ navigation }: Props) {
     // build). The rail keeps the FOCUS-driven MenuEntry, never the touch-only
     // RailEntry: D-pad UP/DOWN walks it, OK enters, the first item takes preferred
     // focus — the accent ring is the selection state a remote viewer navigates by.
-    // Top-aligned on purpose (no flexGrow/center like the phone rail): seven entries
-    // can outgrow a 540dp viewport, and a centered overflow in a ScrollView clips
-    // the top entries out of reach. The wordmark + hero/now-playing lines move to
+    // Top-aligned on purpose (no flexGrow/center like the phone rail): a centered
+    // overflow in a ScrollView clips the top entries out of reach. The DEFAULT set of
+    // six (no VOD provider) must fit at rest and does — 530dp of a 540dp viewport.
+    // Device-verified on the Android 11 TCL set (1920x1080, density 320) by building
+    // both sides: before the sizing fix SALIR's label was entirely below the fold, after
+    // it the whole tile is on screen. The measured tile pitch was 81dp against the 80dp
+    // (74 tile + 6 gap) this comment predicts, so the model is good to about a dp.
+    // That is a ~10dp margin, so if an entry is ever added to the
+    // default set, re-measure: the lever is this rail's own paddingVertical/gap (see
+    // the `entry` and `tvRailContent` styles), NOT theme's SCALE.
+    // A seventh entry (VOD enabled) takes it to 610dp and it scrolls, which is what
+    // the ScrollView is here for — the rail is reachable, just not all at rest.
+    // The wordmark + hero/now-playing lines move to
     // the lower-right hero area, phone-style — the old absolute bottom-left footer
     // would sit under the rail.
     return (
@@ -300,17 +324,43 @@ const styles = StyleSheet.create({
   // Same translucent surface + accent hairline as the phone rail; the safe insets
   // live on the rail itself so no entry ever sits in overscan.
   tvRail: { backgroundColor: theme.colors.overlay, borderRightWidth: 1, borderRightColor: theme.colors.accent, paddingLeft: theme.safeX },
+  // ⚠ The gap is QUANTIZED and barely moves with SCALE: spacing(0.75) rounds to 6dp at
+  // both 0.72 and 0.66, and spacing(0.5) to 4dp at both. Small spacings are the first
+  // thing rounding flattens, which is part of why the global ramp is a poor lever for a
+  // rail that overflows — most of what it would shrink here does not shrink. To buy
+  // height, drop this to spacing(0.5) (5 gaps × 2dp = 10dp) before touching SCALE.
   tvRailContent: { paddingVertical: theme.safeY + theme.spacing(1), paddingRight: theme.spacing(1), gap: theme.spacing(0.75) },
   tvHeroArea: { flex: 1, justifyContent: 'flex-end', alignItems: 'flex-end', paddingLeft: theme.spacing(2), paddingRight: theme.safeX, paddingBottom: theme.safeY + theme.spacing(1.5) },
+  // These three (entry/glyph/label) are the TV rail's tiles — MenuEntry is rendered only
+  // from the isTV branch above, the phone uses railEntry/railGlyph/railLabel — so every
+  // number here is a TV number and putting them on the ramp cannot touch the phone.
+  // The TV tile's height budget at SCALE 0.72, which is what has to stay under the
+  // viewport (6 tiles + 5 gaps + 2 × [safeY + spacing(1)] = 530 of 540dp):
+  //
+  //   focus border 3 × 2                          =  6dp  off ramp, deliberately
+  //   paddingVertical spacing(1.25) × 2           = 22dp
+  //   glyph line box  px(25) 18 × ~1.44           = 26dp
+  //   label marginTop px(8)                       =  6dp
+  //   label line box  type.label 12 × ~1.17       = 14dp
+  //                                                 ----
+  //                                                 74dp
+  //
+  // paddingVertical is the lever if this ever needs to give: 1.25 → 1 takes the tile to
+  // 70dp and the rail to 506. Reach for that, not theme's SCALE.
   entry: {
     alignItems: 'center', justifyContent: 'center',
     minWidth: theme.isTV ? 132 : 92,
     paddingVertical: theme.spacing(1.25), paddingHorizontal: theme.spacing(1),
+    // borderWidth stays OFF the ramp on purpose, unlike the glyph and the label margin:
+    // it is the focus affordance a remote navigates by, not a density value, and at 6dp
+    // of the tile's height it is not what was pushing the rail past the fold.
     borderRadius: 12, borderWidth: 3, borderColor: 'transparent'
   },
   entryFocused: { borderColor: theme.colors.accent, backgroundColor: theme.colors.overlay },
-  glyph: { fontSize: Math.round((theme.isTV ? 34 : 26) * ICON_SCALE) },
-  label: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginTop: 8 },
+  // ON the ramp (see ICON_SCALE): the emoji line box is the single largest contributor to
+  // the tile's height, so it has to shrink with everything else or the rail overflows.
+  glyph: { fontSize: theme.px(Math.round((theme.isTV ? 34 : 26) * ICON_SCALE)) },
+  label: { color: theme.colors.text, fontSize: theme.type.label, fontWeight: '800', letterSpacing: 2, marginTop: theme.px(8) },
   labelFocused: { color: theme.colors.accent },
   // --- phone rail + hero area ---
   phoneBody: { flex: 1, flexDirection: 'row' },
