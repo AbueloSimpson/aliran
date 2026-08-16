@@ -105,6 +105,10 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
   const [source, setSource] = useState<'p2p' | 'cdn' | null>(backend.source)
   const [peers, setPeers] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Whether that error was the player's own report of a DEAD CHANNEL (HlsVideo's
+  // code:'offline'). Kept beside `error` and cleared with it everywhere, so the
+  // heading can never outlive the error it describes.
+  const [offline, setOffline] = useState(false)
   const [tuneUI, setTuneUI] = useState<{ id: number; phase: TunePillPhase; active: boolean } | null>(null)
   const [now, setNow] = useState(() => new Date())
   // In-stream tracks of the CURRENT channel + the picks (subtitles default Off,
@@ -223,7 +227,7 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
       // Broadcaster rotated the channel we're watching: the SDK re-resolved behind
       // the same URL and HlsVideo remounts. Clear any prior playback error (that had
       // unmounted the video) so it re-mounts onto the fresh feed.
-      if (m.type === 'feed-changed' && m.streamId === playingIdRef.current) setError(null)
+      if (m.type === 'feed-changed' && m.streamId === playingIdRef.current) { setError(null); setOffline(false) }
     })
   }, [])
 
@@ -350,11 +354,11 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
     if (s.id !== playingId) {
       setPlayingId(s.id)
       setPeers(null)
-      setError(null)
+      setError(null); setOffline(false)
     } else if (error) {
       // The friendly tune-timeout says "switch to it again to retry" — honor
       // re-selecting the SAME channel: clearing the error remounts the video.
-      setError(null)
+      setError(null); setOffline(false)
     }
     if (collapse) setOverlay('none')
   }
@@ -534,7 +538,7 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
           onPeers={setPeers}
           onTune={onTune}
           onStall={() => console.log('[live] stall resync', playingIdRef.current)}
-          onError={(msg) => { setError(msg); setTuneUI(null) }}
+          onError={(msg, info) => { setError(msg); setOffline(info?.code === 'offline'); setTuneUI(null) }}
           onAudioTracks={setAudioTracks}
           onTextTracks={setTextTracks}
           selectedAudio={selectedAudio}
@@ -555,9 +559,22 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
 
       {error && (
         <div className="live-error">
-          <div className="live-error-title">{t('live.playbackFailed')}</div>
-          {/* The engine's own message, English by design (S56) — never translated. */}
-          <div className="live-error-msg">{error}</div>
+          {offline ? (
+            <>
+              {/* The player said code:'offline' — the CHANNEL is dead upstream, not
+                  this machine. "Playback failed" here would send an operator hunting
+                  a local fault, so this branch is FULLY translated, phone/TV parity
+                  (client/src/screens/LiveScreen.tsx): no raw player prose at all. */}
+              <div className="live-error-title">{t('live.offline')}</div>
+              <div className="live-error-msg">{t('live.offlineHint')}</div>
+            </>
+          ) : (
+            <>
+              <div className="live-error-title">{t('live.playbackFailed')}</div>
+              {/* The engine's own message, English by design (S56) — never translated. */}
+              <div className="live-error-msg">{error}</div>
+            </>
+          )}
           <div className="live-error-hint">{t('hints.retryEnter', { enter: 'Enter' })}</div>
         </div>
       )}
