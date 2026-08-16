@@ -29,9 +29,27 @@ const isTV = Platform.isTV
 // Tuned on the TCL set: 1.0 → 0.8 (names became readable) → 0.72, the operator's call
 // from an actual viewing distance, which is the only place this question can be settled.
 //
-// ⚠ Do not take TV below 0.6 without re-checking the guide's channel column: its parts
-// must keep summing inside CH_COL_W, and that inequality only holds down to 0.6.
-// GuideScreen's chCell comment carries the arithmetic.
+// ⚠ THIS KNOB IS NEAR ITS FLOOR ALREADY — do not reach for it to make one screen fit.
+// It is global (~30 files), and the type it drives is at the bottom of what a 10-foot UI
+// can carry. Google's 10-foot floor is ~12sp; at 0.72 `type.caption` is already 10dp and
+// the ~19 sites written as `type.caption - 1` / `- 2` are at 9dp and 8dp — the LIVE badges
+// (ChannelRow, NowPlayingBar, ChannelInfoPanel, MenuScreen), the remote-key legend, and
+// the Debug HUD an end user reads aloud to an operator over the phone. Those subtractions
+// land AFTER px() rounds, so they lose 11-12.5% per SCALE step where the ramp loses 8.3%:
+// a step to 0.66 puts the badges at 7dp. The focus targets are the other wall — the guide
+// grid row is px(62) (45dp at 0.72) and the channel row px(80) (58dp), against Android's
+// ~48dp focusable-target guidance.
+//
+// So: when a single screen overflows, fix that screen's own geometry. The TV main menu's
+// left rail overflowed a 540dp viewport at 602dp and was fixed entirely inside
+// MenuScreen.tsx, by putting the two parts of its tile that were OFF this ramp (the emoji
+// line box and the label's top margin) ON it. SCALE stayed at 0.72. See MenuScreen's
+// entry/glyph/label styles.
+//
+// (The guide's channel column used to be a constraint here — its parts had to sum inside
+// CH_COL_W. It is not one any more: GuideScreen's chName is `flex: 1` and takes whatever
+// the fixed parts leave, so the remainder can never go negative. That guardrail is gone,
+// not merely relaxed.)
 const SCALE = isTV ? 0.72 : 0.68
 const px = (n: number) => Math.round(n * SCALE)
 
