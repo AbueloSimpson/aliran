@@ -50,7 +50,17 @@ const isTV = Platform.isTV
 // CH_COL_W. It is not one any more: GuideScreen's chName is `flex: 1` and takes whatever
 // the fixed parts leave, so the remainder can never go negative. That guardrail is gone,
 // not merely relaxed.)
-const SCALE = isTV ? 0.72 : 0.68
+// ⚠ TV sits at 0.66 by the OPERATOR'S DECISION (2026-08-16), not by derivation. They watch
+// these sets, and they asked for the television UI zoomed out as far as it goes. The rail's
+// own fit does NOT need this — putting the menu glyph and label on the ramp already lands the
+// six-entry rail at 530dp of 540. This is a deliberate density preference on top of that.
+// The cost, so nobody re-derives it in surprise: `caption` is px(14), so it goes 10 -> 9dp,
+// and the ~19 sites that write `caption - 1` / `caption - 2` subtract AFTER the rounding and
+// so lose 11-12.5% rather than 8.3% — LIVE badges land at 7dp, the remote legend and the
+// stats overlay at 8dp. Those were ALREADY below Google's ~12sp 10-foot floor at 0.72 (8 and
+// 9dp), so this worsens an existing problem rather than creating a new one. The fix for that
+// is to retire the `caption - N` idiom, not to move this number back.
+const SCALE = isTV ? 0.66 : 0.68
 const px = (n: number) => Math.round(n * SCALE)
 
 const DEFAULT_COLORS = {
