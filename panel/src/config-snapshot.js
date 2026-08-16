@@ -356,9 +356,24 @@ export async function apply (ctx, env, opts = {}) {
     }
 
     if (removeExtra) {
-      for (const id of Object.keys(live)) {
-        if (id in env.sections.streams || live[id].source) continue
-        try { await ops.deleteStream(ctx, id); done.streams.removed.push(id) } catch (err) { done.failed.push({ section: 'streams', id, error: err.message }) }
+      // ONE batched purge, not one call per id: each removal re-serialises the whole
+      // record of every user holding the grant, so per-id this costs
+      // ids x users x whole-record of permanent bee growth (ops.deleteStreams' header has
+      // the incident). `tolerant` is what keeps the restore report honest — every id that
+      // fails comes back with its own reason, which is the per-id attribution this loop
+      // existed for.
+      // hasOwnProperty, NOT `in`: `in` walks the prototype chain, so a channel legitimately
+      // named `constructor`/`toString`/`valueOf` (NAME_RE admits them — only __proto__ is
+      // excluded) would test as present in a snapshot that does not contain it, and survive
+      // an exact-match restore instead of being purged. Same class as the wrapped-map guard
+      // in ops.deleteStreams.
+      const extra = Object.keys(live).filter(
+        (id) => !Object.prototype.hasOwnProperty.call(env.sections.streams, id) && !live[id].source
+      )
+      if (extra.length) {
+        const purged = await ops.deleteStreams(ctx, extra, { tolerant: true })
+        for (const r of purged.ok) done.streams.removed.push(r.id)
+        for (const f of purged.failed) done.failed.push({ section: 'streams', id: f.id, error: f.error })
       }
     }
   }

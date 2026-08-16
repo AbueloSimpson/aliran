@@ -15,7 +15,9 @@
 // cross-format hints keeping the last good state) → the m3u PROGRAM GUIDE (opt-in
 // tvg-id → epgId + header url-tvg → epgUrl, the override, and the duplicate-id guard
 // that keeps an events playlist from collapsing in the EPG service) → redirect playback
-// headers over the admin API (allowlist, no-url refusal, url-clear clearing them).
+// headers over the admin API (allowlist, no-url refusal, url-clear clearing them) → what a
+// REMOVAL sync costs the signed bee, asserted in BYTES as well as in blocks (one whole-record
+// rewrite per ENTITLED user, never one per dropped channel).
 // Exits 0 on PASS.
 import assert from 'assert'
 import http from 'http'
@@ -80,7 +82,9 @@ try {
   // ===== panel store + admin server (in-process, same shape as e2e-admin-api) =====
   initKeys(dir)
   const keys = openKeys(dir)
-  const { store, db, assets } = await openStore(dir, keys); cleanups.push(() => store.close())
+  // `core` is the bee's own hypercore — the only place the SIZE of what a sync appended is
+  // readable (db.version counts blocks, not bytes). Test O is the one that needs it.
+  const { store, db, core, assets } = await openStore(dir, keys); cleanups.push(() => store.close())
   const ring = makeRing(200)
   const ctx = { config, keys, db, assets, dataDir: dir, activity: ring }
   ops.addAdmin(ctx, 'root', ADMIN_PASSWORD)
@@ -1302,6 +1306,109 @@ try {
   assert.strictEqual(sources.loadSources(dir).broken.lastErrorAt, errAt, 'a source that just failed is NOT retried on the next tick')
   sched2.close()
   log('N: a failing source is not re-fetched every tick — the retry floor holds ✓')
+
+  // ===== Test O: a removal sync costs ONE rewrite per ENTITLED USER, not one per channel =====
+  // The shape that filled a 24 GB disk in production. applyFeed's removal loop calls
+  // ops.deleteStream ONCE PER DROPPED CHANNEL, and deleteStream re-puts the FULL record of
+  // every user holding that grant. A user record embeds one sealed grant per entitled channel
+  // and store.js pins valueEncoding:'json', so ANY put re-serialises the whole map — ~455 KB
+  // a record on the fleet. Dropping D channels therefore writes D x entitled-users x
+  // whole-record, and one sync retiring 217 finished events grew the signed bee by 1.12 GB.
+  // The ADDITION path already gets this right: reconcileGrants makes ONE pass over the users
+  // and puts only the ones it actually changed (`if (dirty)`).
+  //
+  // WHY BOTH ASSERTIONS BELOW, and why neither one catches the other's bug:
+  //
+  //   (a) BYTES is the assertion the incident needed. `db.version` is a hyperbee BLOCK COUNT,
+  //       so the idiom test C uses ("appends nothing") can say how MANY blocks a sync wrote
+  //       and nothing at all about how BIG they were. That is exactly how this hid in plain
+  //       sight: a block-count assertion sits there serenely while the bee puts on hundreds
+  //       of megabytes in minutes. Only a core.byteLength budget sees it.
+  //
+  //   (b) BLOCKS fences the half bytes cannot: a user who held NONE of the dropped grants
+  //       must not be written AT ALL. On a panel whose accounts carry small `wrapped` maps
+  //       those puts are nearly free, so they slip under any byte budget written here and
+  //       only start costing disk on a deployment with thousands of accounts. It is also
+  //       what pins the batching itself — (U/2) puts, never D x (U/2).
+  //
+  // Half the users are entitled ON PURPOSE: that split is what gives (b) anything to say.
+  const BEE_USERS = 6 // U — half hold every growth grant, half hold none of them
+  const BEE_CHANNELS = 60 // N
+  const BEE_DROPPED = 10 // D — the channels the next feed no longer carries
+  const BEE_PUT_SLACK = 4096 // hyperbee node/index overhead allowed on top of each record
+  const BEE_DEL_SLACK = 1024 // …and on each valueless catalog delete
+  const beeEntitled = BEE_USERS / 2
+
+  const beeFixture = []
+  for (let i = 0; i < BEE_CHANNELS; i++) beeFixture.push({ id: 'g' + i, name: 'Growth ' + i, url: `https://cdn.example/g/${i}.m3u8` })
+  feeds['/growth.json'] = { channels: beeFixture }; rev++
+  // autoGrant OFF: an autoGrant source seals to EVERY user, and this test needs the
+  // half-and-half split. The entitlement comes from ops.grant instead, which records
+  // manualGrants provenance — stable under the package reconcile that rides every sync.
+  r = await api('POST', '/api/sources', { name: 'growth', url: feedBase + '/growth.json', category: 'Growth', prefix: 'gr.', autoGrant: false }, token)
+  assert.strictEqual(r.status, 201, 'add the growth source: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.autoGrant, false, 'autoGrant off — this test owns the grants')
+  // scfg() reads the config live on every sync and this file pins maxChannels at 5 so that
+  // truncation stays testable (section G). Lift it for this section only, as L5 does.
+  const beeCap = config.sources.maxChannels
+  config.sources.maxChannels = 500
+  r = await api('POST', '/api/sources/growth/sync', undefined, token)
+  assert.strictEqual(r.body.added, BEE_CHANNELS, 'the whole fixture imported: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.granted, 0, 'and autoGrant sealed nothing')
+  const beeIds = beeFixture.map((c) => 'gr.' + c.id)
+  assert.deepStrictEqual(await ownedKeys('growth'), [...beeIds].sort(), 'the source owns exactly the fixture')
+
+  const beeUsers = Array.from({ length: BEE_USERS }, (_, i) => 'bee' + i)
+  for (const u of beeUsers) {
+    r = await api('POST', '/api/users', { username: u, password: u + '-secret-1' }, token)
+    assert.strictEqual(r.status, 201, 'seed ' + u + ': ' + JSON.stringify(r.body))
+  }
+  const beeHolders = beeUsers.slice(0, beeEntitled)
+  const beeBystanders = beeUsers.slice(beeEntitled)
+  for (const u of beeHolders) for (const id of beeIds) await ops.grant(ctx, u, id)
+  const beeGrants = async (u) => Object.keys((await db.get('user/' + u)).value.wrapped).filter((id) => id.startsWith('gr.')).length
+  for (const u of beeHolders) assert.strictEqual(await beeGrants(u), BEE_CHANNELS, u + ' holds every growth grant')
+  for (const u of beeBystanders) assert.strictEqual(await beeGrants(u), 0, u + ' holds none of them')
+
+  // Settle before measuring: a 304 sync still runs the grant + package reconciles, so whatever
+  // those still owe on the OTHER accounts lands here instead of inside the measured window.
+  // The second one is test C's own idiom, used as a harness guard: if anything but this sync
+  // were writing to the bee, the byte and block deltas below would be measuring it too.
+  r = await api('POST', '/api/sources/growth/sync', undefined, token)
+  assert.strictEqual(r.body.notModified, true, 'the settle sync revalidated to 304')
+  const beeQuiet = db.version
+  r = await api('POST', '/api/sources/growth/sync', undefined, token)
+  assert.strictEqual(db.version, beeQuiet, 'nothing but the sync under test writes to the bee')
+
+  // Read off the FIXTURE rather than hardcoded: this is what one whole-record put really
+  // costs here, so the budget keeps meaning the same thing when the seed changes.
+  const beeRecordBytes = Buffer.byteLength(JSON.stringify((await db.get('user/' + beeHolders[0])).value))
+  const beeBudget = beeEntitled * (beeRecordBytes + BEE_PUT_SLACK) + BEE_DROPPED * BEE_DEL_SLACK
+
+  feeds['/growth.json'] = { channels: beeFixture.slice(0, BEE_CHANNELS - BEE_DROPPED) }; rev++
+  const beeV0 = db.version
+  const beeB0 = core.byteLength
+  r = await api('POST', '/api/sources/growth/sync', undefined, token)
+  const beeBlocks = db.version - beeV0
+  const beeBytes = core.byteLength - beeB0
+  config.sources.maxChannels = beeCap
+  assert.strictEqual(r.body.removed, BEE_DROPPED, 'the feed really dropped D channels: ' + JSON.stringify(r.body))
+  assert.strictEqual(r.body.added + r.body.updated, 0, 'and changed nothing else — this sync is a pure removal')
+  for (const id of beeIds.slice(BEE_CHANNELS - BEE_DROPPED)) assert.strictEqual(await db.get('catalog/' + id), null, id + ' is gone from the catalog')
+  for (const u of beeHolders) assert.strictEqual(await beeGrants(u), BEE_CHANNELS - BEE_DROPPED, u + ' kept exactly the surviving grants')
+
+  // (a) SIZE. The cost of a removal must scale with the number of entitled USERS and never
+  // with the number of dropped CHANNELS.
+  assert.ok(beeBytes < beeBudget,
+    `bee BYTES: dropping ${BEE_DROPPED} channels appended ${beeBytes} B, budget ${beeBudget} B ` +
+    `(${beeEntitled} entitled users x (${beeRecordBytes} B record + ${BEE_PUT_SLACK} B slack) + ${BEE_DROPPED} x ${BEE_DEL_SLACK} B deletes) ` +
+    `— ${(beeBytes / beeBudget).toFixed(1)}x over. A removal must rewrite each entitled user ONCE, not once per dropped channel.`)
+  // (b) COUNT. One put per user that ACTUALLY held a grant, plus one catalog del per id.
+  assert.strictEqual(beeBlocks, beeEntitled + BEE_DROPPED,
+    `bee BLOCKS: dropping ${BEE_DROPPED} channels appended ${beeBlocks} blocks, expected ${beeEntitled + BEE_DROPPED} ` +
+    `(${beeEntitled} user puts + ${BEE_DROPPED} catalog deletes) — ${BEE_USERS - beeEntitled} users held none of them and must not be written at all.`)
+  await api('DELETE', '/api/sources/growth', undefined, token)
+  log(`O: a removal sync rewrites each entitled user ONCE — ${beeBytes} B / ${beeBlocks} blocks to drop ${BEE_DROPPED} channels across ${beeEntitled}/${BEE_USERS} entitled users ✓`)
 
   log('\nPASS: remote channel sources e2e (S27)')
   await cleanup()

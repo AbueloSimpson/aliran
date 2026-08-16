@@ -473,31 +473,126 @@ export async function setMeta (ctx, id, fields = {}) {
   return { id, catalog: c }
 }
 
-// FULL purge of a stream: its art files, every user's sealed grant, the
-// panel-private secret, and finally the catalog record. Clients converge on the
+// FULL purge of a SET of streams: their art files, every user's sealed grants, the
+// panel-private secrets, and finally the catalog records. Clients converge on the
 // next catalog push (their display list is grants ∩ catalog). A client that
 // already unsealed the key may have it cached — real revocation of live content
 // is a key rotation — and re-adding the id later mints a FRESH key.
-export async function deleteStream (ctx, id) {
-  await requireStream(ctx, id)
-  try {
-    for await (const entry of ctx.assets.list('/' + id + '/')) await ctx.assets.del(entry.key)
-  } catch {} // an empty/never-used assets drive must not block the purge
-  let grantsRevoked = 0
-  for await (const { key, value } of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) {
-    const hadWrapped = value.wrapped && value.wrapped[id] !== undefined
-    const hadManual = Array.isArray(value.manualGrants) && value.manualGrants.includes(id)
-    if (hadWrapped || hadManual) {
-      if (hadWrapped) delete value.wrapped[id]
-      if (hadManual) value.manualGrants = value.manualGrants.filter((g) => g !== id) // provenance dies with the stream
-      await ctx.db.put(key, value)
-      if (hadWrapped) grantsRevoked++
+//
+// WHY THIS TAKES A SET. A user record embeds one sealed grant per entitled channel
+// and store.js pins valueEncoding:'json', so ANY put re-serialises the whole map —
+// ~455 KB a record in production. Purging one id at a time walks every user once PER
+// CHANNEL, so dropping D channels costs D x entitled-users x whole-record of permanent
+// append-only growth: one source sync retiring 217 finished events grew the signed bee
+// by 1.12 GB, and the bee reached 12.35 GB before it filled a 24 GB disk. So this makes
+// ONE pass over the users for the WHOLE set and puts each of them at most once — the
+// exact shape the ADDITION path already had (sources.js reconcileGrants, `if (dirty)`).
+//
+// ⚠ A user who held NONE of these ids is NOT written, and that guard is load-bearing
+// beyond frugality: the SDK arms _watchGrants (sdk/player.js) precisely BECAUSE the
+// panel re-puts a user record only when that user's grant set changes. Writing every
+// user would wake _refreshEntitlements on every connected device at once, each pulling
+// its whole record over P2P.
+//
+// Validation runs over the WHOLE set before anything is mutated. Without `tolerant` a
+// single bad id throws OpsError('not-found') having changed nothing — the contract
+// deleteStream has always had (admin-server maps it to 404). With it, bad ids land in
+// `failed` and the rest of the purge proceeds: a batch caller (removeSource) must not be
+// left with a half-deleted source because one id vanished underneath it.
+//
+// Returns { ok: [{ id, deleted, grantsRevoked }], failed: [{ id, error }] }.
+export async function deleteStreams (ctx, ids, { tolerant = false } = {}) {
+  const seen = new Set()
+  const list = []
+  for (const id of Array.isArray(ids) ? ids : [ids]) { if (seen.has(id)) continue; seen.add(id); list.push(id) } // a repeated id must not double-count
+  const ok = []
+  const failed = []
+  for (const id of list) {
+    try { await requireStream(ctx, id); ok.push(id) } catch (err) {
+      if (!tolerant) throw err // nothing below has run yet — a bad id mutates nothing
+      failed.push({ id, error: err.message })
     }
   }
+  if (!ok.length) return { ok: [], failed }
+  const doomed = new Set(ok)
+  const grantsRevoked = new Map(ok.map((id) => [id, 0]))
+
+  // Art, best-effort PER ID: one unreadable entry must not block the purge. clear()
+  // BEFORE del() — del alone drops the path and keeps the bytes (the rule spelled out
+  // at pruneUpdateArtifacts below). getBlobs() is hoisted out of the loop because
+  // hyperdrive.clear() returns null and frees NOTHING while drive.blobs is still
+  // unset, which would make the whole reclaim a silent no-op.
+  try { await ctx.assets.getBlobs() } catch {}
+  for (const id of ok) {
+    try {
+      for await (const entry of ctx.assets.list('/' + id + '/')) {
+        try { await ctx.assets.clear(entry.key) } catch {}
+        await ctx.assets.del(entry.key)
+      }
+    } catch {} // an empty/never-used assets drive must not block the purge
+  }
+
+  // ONE pass over the users, at most ONE put each, and only for those who held
+  // something. grantsRevoked keeps its exact meaning per id: users who held a SEALED
+  // grant — manual-grant provenance alone never counts toward it.
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) {
+    if (!value) continue
+    let dirty = false
+    if (value.wrapped) {
+      for (const id of ok) {
+        // hasOwnProperty, NOT `!== undefined`: checkName admits every Object.prototype
+        // member name ('constructor', 'toString', 'valueOf', …), so a stream legitimately
+        // called `constructor` would read as held by EVERY user — writing accounts that
+        // held nothing (the one thing this pass must never do) and inflating
+        // grantsRevoked with it. Not reachable from feed data, which is always prefixed,
+        // but addStream / the admin API / a config restore all take a bare id.
+        if (!Object.prototype.hasOwnProperty.call(value.wrapped, id)) continue
+        delete value.wrapped[id]
+        grantsRevoked.set(id, grantsRevoked.get(id) + 1)
+        dirty = true
+      }
+    }
+    if (Array.isArray(value.manualGrants)) {
+      const kept = value.manualGrants.filter((g) => !doomed.has(g)) // provenance dies with the stream
+      if (kept.length !== value.manualGrants.length) { value.manualGrants = kept; dirty = true }
+    }
+    if (dirty) await ctx.db.put(key, value)
+  }
+
+  // Catalog records go BEFORE the secrets, and the secrets file is written ONCE for the
+  // whole batch (it is ~215 KB and every write is an fsync — this used to run per id).
+  // ⚠ THE ORDER IS DELIBERATE, and batching is what makes it matter: the crash gap spans
+  // N streams now, not one. Secrets-first can strand a catalog record whose secret is
+  // already gone — reconcileGrants and reconcilePackages both skip an id with no secret,
+  // so that channel exists but can be granted to nobody, silently. This way round the
+  // residue is the opposite: a secret with no catalog record.
+  // ⚠⚠ THAT RESIDUE IS ONLY SAFE BECAUSE EVERY RE-CREATE PATH MINTS UNCONDITIONALLY —
+  // addStream does, and sources.js applyFeed's create branch does. A path that reused a
+  // leftover secret would hand a returning id (an events playlist re-issues ids weekly)
+  // the very key a client unsealed before it was purged, quietly defeating the purge and
+  // breaking this header's promise that re-adding an id mints a FRESH key. If you ever
+  // make a create path reuse a stored secret, flip this order back.
+  for (const id of ok) await ctx.db.del('catalog/' + id)
   const secrets = loadSecrets(ctx.dataDir)
-  if (secrets[id] !== undefined) { delete secrets[id]; saveSecrets(ctx.dataDir, secrets) }
-  await ctx.db.del('catalog/' + id)
-  return { id, deleted: true, grantsRevoked }
+  let secretsDirty = false
+  // hasOwnProperty for the same reason as the wrapped-map guard above: `secrets['constructor']`
+  // is an inherited function, so `!== undefined` reports a secret that is not there and delete
+  // is a no-op on it — costing a spurious ~215 KB fsync of the whole secrets file per batch.
+  for (const id of ok) {
+    if (Object.prototype.hasOwnProperty.call(secrets, id)) { delete secrets[id]; secretsDirty = true }
+  }
+  if (secretsDirty) saveSecrets(ctx.dataDir, secrets)
+
+  return { ok: ok.map((id) => ({ id, deleted: true, grantsRevoked: grantsRevoked.get(id) })), failed }
+}
+
+// Single-stream purge — the one-element case of deleteStreams, kept as its own export
+// because the admin API, the CLI and the config restore all depend on its exact
+// contract: validate first (a bad id throws 'not-found' and mutates nothing) and return
+// { id, deleted, grantsRevoked } for that one id.
+export async function deleteStream (ctx, id) {
+  const { ok } = await deleteStreams(ctx, [id])
+  return ok[0]
 }
 
 export const ART_KINDS = ['poster', 'backdrop', 'logo']
@@ -509,9 +604,35 @@ export async function uploadArt (ctx, id, kind, data, ext = '.bin') {
   if (!b4a.isBuffer(data) || data.length === 0) bad('empty art payload')
   const c = await requireStream(ctx, id)
   const p = `/${id}/${kind}${ext}`
+  // A re-upload strands the SUPERSEDED blob: hyperdrive keeps its bytes in the blobs
+  // core forever unless clear() releases them — overwriting the path is not enough, and
+  // neither is del (same rule as pruneUpdateArtifacts).
+  //
+  // ⚠ RECLAIM RUNS LAST, AFTER the new bytes and the record that points at them are
+  // committed. Reclaiming first is how a disk-full box loses the artwork it still had:
+  // the put that was supposed to replace it fails with ENOSPC, the catalog still names
+  // the file, and the retry fails identically — a cleanup that only ever runs on the
+  // way to a REPLACEMENT must never leave a hole when the replacement does not arrive.
+  //
+  // ⚠ Cleared by captured DESCRIPTOR, not by path: hyperdrive.clear(p) resolves whatever
+  // the path holds NOW, which by then is the blob just written. The descriptor read
+  // before the put names the old blocks and only those.
+  //
+  // Only the path being overwritten is reclaimed. Art at the OTHER extensions is left
+  // alone on purpose: normArt accepts any 'assets/…' string, so another catalog record
+  // may legitimately point at this file, and freeing its bytes (or dropping its entry)
+  // would leave that record dangling. Overwriting THIS path cannot dangle anything —
+  // a reference to it simply resolves to the new bytes. Stale-extension art is reclaimed
+  // when the stream itself is purged (deleteStreams above).
+  let stale = null
+  try {
+    await ctx.assets.getBlobs() // clear() silently frees nothing while drive.blobs is unset
+    stale = (await ctx.assets.entry(p, { wait: false }))?.value?.blob ?? null
+  } catch {} // a never-used assets drive has nothing to reclaim
   await ctx.assets.put(p, data)
   c[kind] = 'assets' + p
   await ctx.db.put('catalog/' + id, c)
+  if (stale) { try { await ctx.assets.blobs.clear(stale) } catch {} } // best-effort: a leaked blob must never fail the upload
   return { id, [kind]: c[kind], bytes: data.length }
 }
 
@@ -630,6 +751,7 @@ export function precheckUpdate (ctx, appId, meta = {}) {
 // versionCode below files already on disk, and a plain two-highest-vc rule would
 // delete the exact artifact the manifest now points at.
 async function pruneUpdateArtifacts (drive, appId, keepFile) {
+  await drive.getBlobs() // ⚠ clear() returns null and frees NOTHING while drive.blobs is unset
   const re = appIdArtifactRe(appId)
   const files = []
   for await (const entry of drive.list('/pkg/')) {
@@ -692,6 +814,7 @@ export function deleteUpdate (ctx, appId) {
     if (!manifest[appId]) notFound(`no update entry for "${appId}"`)
     delete manifest[appId]
     await ctx.updates.put(UPDATE_MANIFEST, b4a.from(JSON.stringify(manifest)))
+    await ctx.updates.getBlobs() // ⚠ clear() returns null and frees NOTHING while drive.blobs is unset
     const re = appIdArtifactRe(appId)
     let filesRemoved = 0
     for await (const entry of ctx.updates.list('/pkg/')) {
@@ -714,6 +837,7 @@ export async function discardUpdateArtifact (ctx, file) {
   let manifest
   try { manifest = await readUpdateManifest(ctx.updates) } catch { return }
   for (const e of Object.values(manifest)) if (e && e.file === file) return
+  try { await ctx.updates.getBlobs() } catch {} // ⚠ clear() frees NOTHING while drive.blobs is unset
   try { await ctx.updates.clear(file) } catch {}
   try { await ctx.updates.del(file) } catch {}
 }

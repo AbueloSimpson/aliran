@@ -154,10 +154,27 @@ jobs:
         run: npm run test:nettune
       - name: Ephemeral feed buffer / rolling window (test:retention)
         run: npm run test:retention
+      # The same rolling-window contract on the EPG side, and it belongs in the required
+      # lane for the same reason: `drive.del()` frees no bytes, so a guide drive that
+      # merely stops LISTING a day keeps paying for it forever. That leak filled the
+      # SolTV disk (~2 GB dead in a 2.9 GB drive), and nothing about it is visible in an
+      # entry count — the assertions here are on allocated bytes via
+      # core.info({ storage: true }). Also pins the pending-purge queue, so a retired
+      # epoch can never again be dropped from epoch.json with its drive still on disk.
+      # LOCAL DHT testnet, no ffmpeg — deterministic.
+      - name: EPG blob reclamation + epoch purge queue (test:epg-reclaim)
+        run: npm run test:epg-reclaim
       # Loopback-only HTTP (in-process panel + local feed server) — deterministic,
       # no DHT, so it belongs in the required lane.
       - name: Remote channel sources (test:sources)
         run: npm run test:sources
+      # The purge mechanics underneath it: the batched stream purge (one whole-record
+      # rewrite per ENTITLED user, never one per dropped channel — the shape that grew the
+      # signed bee to 12.35 GB), the art reclaim that rides it, and the removeSource
+      # guards. Fault-injected (ENOSPC on an art put, a store failure mid-purge) and
+      # race-driven (a sync parked mid-fetch against a purge), all in-process — no DHT.
+      - name: Panel purge mechanics (test:panel-purge)
+        run: npm run test:panel-purge
       # Channel packages / bouquets (S44): CRUD → sealed-grant materialization,
       # selector resolution, provenance split, pre-S44 migration, autoGrant
       # coexistence. In-process panel + loopback feed server — no DHT.

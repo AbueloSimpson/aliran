@@ -69,6 +69,15 @@ chkHex('PANEL_PUBKEY', config.panelPubKey, [64])
 chkHex('PUBLISHER_KEY', config.publisherKey, [64, 128])
 chkInt('EPOCH_DAYS', config.epochDays, 1)
 chkInt('GRACE_HOURS', config.graceHours, 1)
+// Exactly ONE retired epoch is grace-served at a time (guide.js keeps a single _prevDrive),
+// which holds only while a grace window closes before the next epoch is minted. Let
+// GRACE_HOURS reach a whole epoch and a predecessor still inside its window would stop
+// being announced the moment the next rotation landed — viewers that missed the pointer
+// flip would fall back to https with no sign anything was wrong. It also triples what the
+// epoch rotation exists to bound. Reject it here rather than half-honour it at runtime.
+if (Number.isInteger(config.epochDays) && Number.isInteger(config.graceHours) && config.graceHours >= config.epochDays * 24) {
+  problems.push(`GRACE_HOURS must be less than EPOCH_DAYS x 24 (got GRACE_HOURS=${config.graceHours} with EPOCH_DAYS=${config.epochDays}) — only one retired epoch is grace-served at a time`)
+}
 chkInt('GUIDE_DAYS', config.guideDays, 1, 30)
 chkInt('REFRESH_HOURS', config.refreshHours, 1)
 chkInt('SWARM_MAX_PEERS', config.swarmMaxPeers, 1)

@@ -53,6 +53,31 @@ export function utcDay (ts = Date.now()) {
   return new Date(ts).toISOString().slice(0, 10)
 }
 
+// Free the blob blocks behind ONE superseded drive entry. Hypercore is append-only, and
+// hyperdrive touches only the metadata bee: put() appends a NEW blob range and repoints
+// the entry, del() drops the entry (node_modules/hyperdrive/index.js:311-315). In both
+// cases the old bytes stay stored forever unless clear() frees them — the rule the panel
+// states at panel/src/ops.js:626-631 and the broadcaster at broadcaster/src/hls.js:848-858.
+// clear() is LOCAL-only: the merkle tree stays valid, so replication of everything still
+// referenced is untouched; peers simply cannot fetch a range we no longer publish.
+// blockLength 0 (dirs/symlinks/empty) and a drive with no blobs core are no-ops.
+//
+// `drive` is passed in rather than read from the manager: the caller must hand us the SAME
+// drive it wrote to. An offset from one epoch cleared against another frees live blocks.
+//
+// This goes through hyperblobs' own clear(id) rather than core.clear(offset, length):
+// hyperblobs handles an id carrying a blockMap before falling back to the contiguous range
+// (node_modules/hyperblobs/index.js:185-193). hyperdrive.put only ever produces contiguous
+// ids today, so the two agree — but reaching past the public method makes that an
+// unwritten dependency, and pruneOldDays goes through the public drive.clear(name).
+async function clearBlobRange (drive, blob) {
+  if (!blob || !(blob.blockLength > 0)) return
+  try {
+    const blobs = await drive.getBlobs()
+    if (blobs) await blobs.clear(blob)
+  } catch { /* reclaim is best-effort — never fail a write or a prune over it */ }
+}
+
 export class GuideManager {
   constructor (config) {
     this.config = config
@@ -61,7 +86,11 @@ export class GuideManager {
     this._bee = null // sparse panel-catalog replica (read-only)
     this._drive = null // current epoch drive (writer)
     this._prevDrive = null // kept open through the grace window so we still serve it
-    this._state = null // { epoch, driveKey, rotatedAt, prev: { epoch, driveKey, purgeAt } | null }
+    this._prevEpoch = null // which epoch _prevDrive holds (so a purge closes the right session)
+    // { epoch, driveKey, blobsKey, rotatedAt, pending: [ { epoch, driveKey, purgeAt } ],
+    //   prev: <derived mirror of the newest pending entry — see _saveState> }
+    this._state = null
+    this._maintaining = false // _maintain runs off a bare setInterval; never let two overlap
     this._map = new Map() // providerId(epgId) -> streamId
     this._unmatched = new Map() // providerId -> count of guide entries we could not place
     this._puts = 0 // drive appends since boot (frugality telemetry)
@@ -73,6 +102,14 @@ export class GuideManager {
   }
 
   get statePath () { return path.join(this.config.dataDir, 'epoch.json') }
+
+  // Epochs minted out of service but not yet purged, OLDEST first — and since purgeAt is
+  // mintTime + graceHours, oldest-first is also earliest-deadline-first, so the LAST entry
+  // is always the one with the longest left to live. Normally there is at most one (the
+  // predecessor inside its grace window; config validation keeps GRACE_HOURS under a whole
+  // epoch, epg/src/config.js). More than one means a purge is still owed from an earlier
+  // rotation, and every entry but the last is past its deadline.
+  get _pending () { return (this._state && this._state.pending) || [] }
 
   driveInfo () {
     return this._state && {
@@ -130,7 +167,7 @@ export class GuideManager {
         this._saveState()
       }
       this._announceDrive(this._drive)
-      if (this._state.prev) await this._openPrevForGrace()
+      if (this._pending.length) await this._openPrevForGrace()
     }
 
     this._timers.push(setInterval(() => { this._maintain().catch((e) => console.warn('[epg] maintain:', e?.message || e)) }, 60 * 60 * 1000))
@@ -196,32 +233,103 @@ export class GuideManager {
     if (!DAY_RE.test(day)) throw new Error('bad day: ' + day)
     const file = `/v1/${streamId}/${day}.json`
     const next = canonicalDayJson(programs)
-    const cur = await this._drive.get(file).catch(() => null)
+    // PIN the epoch drive for the whole call. `this._drive` is reassigned by _mintEpoch and
+    // nothing serialises this method against rotate(): ingest calls putDay from its own
+    // per-provider interval (src/ingest.js) while _maintain rotates on the hourly one. Read
+    // `this._drive` fresh at each await below and a rotation landing mid-call would take the
+    // blob descriptor from the OLD epoch and clear it against the NEW one. That no-ops in
+    // the instant after the mint (an empty core has nothing at that offset), but rotate()
+    // then copies the whole window into that same core — and once the copy passes the
+    // offset, the clear frees LIVE blocks of the epoch just minted. We are the writer;
+    // there is no peer left to refetch them from.
+    const drive = this._drive
+    const cur = await drive.get(file).catch(() => null)
     if (cur && b4a.equals(cur, next)) { this._skips++; return 'skip' }
-    await this._drive.put(file, next)
+    // The day genuinely changed, so this put SUPERSEDES a blob range that nothing will
+    // reference again — read the outgoing descriptor before the write, free it after.
+    // Nothing above this line moved: a quiet cycle still costs exactly one read and
+    // returns 'skip' before any of it, which is what keeps a refresh free.
+    const stale = cur ? (await drive.entry(file).catch(() => null))?.value?.blob : null
+    await drive.put(file, next)
     this._puts++
+    // AFTER the put, never before. The entry must already point at the new bytes: clearing
+    // first would, on a failed put, leave a live entry whose blocks are gone — and rotate()
+    // reads EVERY entry, so one unreadable day would cost that day its copy.
+    await clearBlobRange(drive, stale)
     return 'put'
   }
 
   // Drop days older than yesterday (UTC) — the sliding window. Runs from _maintain.
+  // Returns the number of day-files dropped.
   async pruneOldDays () {
+    const drive = this._drive // pinned for the whole sweep, for the reason putDay explains
     const floor = utcDay(Date.now() - 24 * 3600 * 1000)
-    for await (const entry of this._drive.list('/v1', { recursive: true })) {
+    // clear() BEFORE del(), the pattern panel/src/ops.js uses in pruneUpdateArtifacts: clear resolves the
+    // blob range THROUGH the drive entry, and del removes that entry. Reversed, the bytes
+    // are unreachable and stay allocated forever. The EPG was the one place that called
+    // del() alone, which is why a drive holding a 7-day window carried months of dead bytes.
+    // The getBlobs() below is belt-and-braces, not the load-bearing part: hyperdrive opens
+    // the blobs core eagerly for a WRITABLE drive, so on the epoch writer it has already
+    // happened. It matters on read-only/replica drives, where clear() silently returns null
+    // when `this.blobs` is still unset (node_modules/hyperdrive/index.js:333) — keeping the
+    // call means this loop never depends on which of those a caller hands it.
+    await drive.getBlobs().catch(() => null)
+    let dropped = 0
+    for await (const entry of drive.list('/v1', { recursive: true })) {
       const m = entry.key.match(/\/(\d{4}-\d{2}-\d{2})\.json$/)
-      if (m && m[1] < floor) await this._drive.del(entry.key)
+      if (m && m[1] < floor) {
+        try { await drive.clear(entry.key) } catch {}
+        await drive.del(entry.key)
+        dropped++
+      }
     }
+    return dropped
   }
 
   // --- epochs ---
 
+  // null ONLY for a genuine first boot (no state file). A state file that exists but will
+  // not parse FAILS CLOSED, like the driveKey-mismatch guard in init(): returning null
+  // there would mint epoch 1 over a store that already holds epochs 1..n, reopening a
+  // months-old namespace as "fresh" and orphaning every epoch above it — the same
+  // unreachable-drive outcome this file works to prevent, reached from the other side.
   _loadState () {
-    try {
-      const s = JSON.parse(fs.readFileSync(this.statePath, 'utf8'))
-      return s && Number.isInteger(s.epoch) && HEX64.test(s.driveKey || '') ? s : null
-    } catch { return null }
+    let raw
+    try { raw = fs.readFileSync(this.statePath, 'utf8') } catch (e) {
+      if (e && e.code === 'ENOENT') return null
+      throw new Error(`epoch.json could not be read (${e?.message || e}) — refusing to mint a fresh epoch over an existing store`)
+    }
+    let s
+    try { s = JSON.parse(raw) } catch (e) {
+      throw new Error(`epoch.json is present but unparseable (${e?.message || e}) — refusing to mint a fresh epoch over an existing store; restore it or delete the data directory outright`)
+    }
+    if (!s || !Number.isInteger(s.epoch) || !HEX64.test(s.driveKey || '')) {
+      throw new Error('epoch.json is present but carries no usable epoch/driveKey — refusing to mint a fresh epoch over an existing store')
+    }
+    // The pending-purge list was a single `prev` slot in earlier builds. Accept either and
+    // normalize to `pending`, sorted oldest-first. An entry we cannot read a deadline from
+    // is due now — a grace window we cannot date is not one we can defend, and leaving it
+    // un-dated is exactly how an epoch stops being reachable.
+    const raws = Array.isArray(s.pending) ? s.pending : (Array.isArray(s.prev) ? s.prev : (s.prev ? [s.prev] : []))
+    s.pending = raws
+      .filter((p) => p && Number.isInteger(p.epoch))
+      .map((p) => ({ epoch: p.epoch, driveKey: p.driveKey || null, purgeAt: Number.isFinite(p.purgeAt) ? p.purgeAt : Date.now() }))
+      .sort((a, b) => a.epoch - b.epoch)
+    return s
   }
 
   _saveState () {
+    // `pending` is the source of truth; nothing in this build reads `prev`. It is written
+    // as a DERIVED mirror of the newest pending entry for exactly one reason: rolling this
+    // deploy back must stay survivable. An older build reads `prev` as an OBJECT, and
+    // handed a list it would announce a drive named `epg-undefined`. With the mirror in
+    // place a downgrade instead degrades to the old single-slot behaviour — it grace-serves
+    // and purges the newest epoch and forgets any older one, which is the bug it already
+    // had, not a new failure. Recomputing here (rather than maintaining two fields) is what
+    // stops the two from ever drifting apart.
+    const pending = this._pending
+    this._state.pending = pending
+    this._state.prev = pending.length ? pending[pending.length - 1] : null
     writeJsonAtomic(this.statePath, this._state)
   }
 
@@ -233,15 +341,32 @@ export class GuideManager {
     const drive = new Hyperdrive(this._store.namespace('epg-' + n))
     await drive.ready()
     const blobs = await drive.getBlobs()
+    // The outgoing epoch JOINS the pending-purge list — it never replaces what is already
+    // on it. A single `prev` slot silently discarded anything still queued, and a discarded
+    // epoch is unreachable forever: nothing in epoch.json names it, so no code path can
+    // ever purge it and its whole drive sits on disk for the life of the box. Two ordinary
+    // situations produced one — a purge that threw (it was dropped at the next rotation
+    // instead of retried), and a service down across a rotation boundary, where _maintain
+    // rotates on its first hourly tick and overwrites the prev it was about to purge.
+    const pending = this._pending.slice()
+    if (this._state) pending.push({ epoch: this._state.epoch, driveKey: this._state.driveKey, purgeAt: Date.now() + this.config.graceHours * 3600 * 1000 })
     this._drive = drive
-    this._state = { epoch: n, driveKey: b4a.toString(drive.key, 'hex'), blobsKey: b4a.toString(blobs.core.key, 'hex'), rotatedAt: Date.now(), prev: this._state ? { epoch: this._state.epoch, driveKey: this._state.driveKey, purgeAt: Date.now() + this.config.graceHours * 3600 * 1000 } : null }
+    this._state = { epoch: n, driveKey: b4a.toString(drive.key, 'hex'), blobsKey: b4a.toString(blobs.core.key, 'hex'), rotatedAt: Date.now(), pending, prev: null }
     this._saveState()
     this._announceDrive(drive)
     console.log(`[epg] epoch ${n} drive ${this._state.driveKey.slice(0, 8)}… announced`)
   }
 
+  // Grace-serve the predecessor with the latest deadline — the last list entry, since
+  // purgeAt rises with the mint time. Anything older is past its window (config validation
+  // caps GRACE_HOURS below one epoch, so only one can ever be inside its own), and so is
+  // this entry once its own deadline has passed: both are purge-only, and re-announcing a
+  // drive we are about to delete would be worse than not serving it.
   async _openPrevForGrace () {
-    this._prevDrive = new Hyperdrive(this._store.namespace('epg-' + this._state.prev.epoch))
+    const prev = this._pending[this._pending.length - 1]
+    if (!prev || Date.now() >= prev.purgeAt) return
+    this._prevDrive = new Hyperdrive(this._store.namespace('epg-' + prev.epoch))
+    this._prevEpoch = prev.epoch
     await this._prevDrive.ready()
     this._announceDrive(this._prevDrive)
   }
@@ -253,12 +378,34 @@ export class GuideManager {
     const oldEpoch = this._state.epoch
     await this._mintEpoch(oldEpoch + 1)
     let copied = 0
+    let skipped = 0
     for await (const entry of old.list('/v1', { recursive: true })) {
-      const buf = await old.get(entry.key)
-      if (buf) { await this._drive.put(entry.key, buf); copied++ }
+      // Per ENTRY. _mintEpoch has ALREADY flipped this._drive, this._state and epoch.json
+      // by the time we reach this loop, so letting one unreadable day throw out of rotate()
+      // would strand the service mid-flip: onRotate never fires, the panel pointer keeps
+      // naming the retired drive, rotatedAt has reset so nothing retries for another
+      // epochDays, and the purge deletes the drive viewers are still being pointed at once
+      // graceHours elapses. A skipped day costs one day of guide until the next ingest
+      // refresh rewrites it; a thrown one costs the whole guide.
+      try {
+        const buf = await old.get(entry.key)
+        if (buf) { await this._drive.put(entry.key, buf); copied++ }
+      } catch (e) {
+        skipped++
+        console.warn(`[epg] rotate: could not copy ${entry.key} (${e?.message || e}) — the next ingest will rewrite it`)
+      }
     }
+    // Any predecessor still open here is one an earlier rotation left behind, and it is
+    // past its grace: config validation keeps GRACE_HOURS under a single epoch, so minting
+    // a new one means the last one's window has closed. Hand the session back rather than
+    // leaking it until close().
+    if (this._prevDrive && this._prevDrive !== old) { try { await this._prevDrive.close() } catch {} }
     this._prevDrive = old
-    console.log(`[epg] rotated to epoch ${this._state.epoch} (${copied} files copied; old drive grace until ${new Date(this._state.prev.purgeAt).toISOString()})`)
+    this._prevEpoch = oldEpoch
+    const grace = this._pending[this._pending.length - 1]
+    const owed = this._pending.length > 1 ? `; ${this._pending.length - 1} earlier epoch(s) still owed a purge` : ''
+    const lost = skipped ? `, ${skipped} SKIPPED` : ''
+    console.log(`[epg] rotated to epoch ${this._state.epoch} (${copied} files copied${lost}; old drive grace until ${new Date(grace.purgeAt).toISOString()}${owed})`)
     if (this.onRotate) await this.onRotate(this.driveInfo())
   }
 
@@ -266,22 +413,67 @@ export class GuideManager {
   // once its grace passed. Each step independent — one failure must not stop the rest.
   async _maintain () {
     if (this._closed) return
-    try { await this.pruneOldDays() } catch (e) { console.warn('[epg] prune:', e?.message || e) }
+    // This is driven by a bare setInterval that never awaits us, and the body below waits
+    // on multi-GB filesystem deletes (purge) and a network write (rotate -> onRotate). Two
+    // overlapping ticks could double-mint an epoch or race each other's state writes, so
+    // one runs at a time and a tick that arrives early is simply the next hour's problem.
+    if (this._maintaining) return
+    this._maintaining = true
+    try {
+      await this._maintainOnce()
+    } finally {
+      this._maintaining = false
+    }
+  }
+
+  async _maintainOnce () {
+    try {
+      const dropped = await this.pruneOldDays()
+      if (dropped) console.log(`[epg] pruned ${dropped} day-file(s) out of the window (blob bytes reclaimed)`)
+    } catch (e) { console.warn('[epg] prune:', e?.message || e) }
     const ageDays = (Date.now() - this._state.rotatedAt) / 86400000
     if (ageDays >= this.config.epochDays) {
       try { await this.rotate() } catch (e) { console.warn('[epg] rotate:', e?.message || e) }
     }
-    if (this._state.prev && Date.now() >= this._state.prev.purgeAt) {
+    // Drain the pending-purge list: EVERY epoch whose grace has passed, not only the
+    // newest. A purge that throws stays on the list and is retried on the next tick
+    // instead of being forgotten at the next rotation.
+    if (!this._pending.length) return
+    const purged = new Set()
+    for (const p of this._pending.slice()) {
+      if (Date.now() < p.purgeAt) continue
+      // Reuse the open grace session when it is this epoch — purging a namespace out from
+      // under a live drive session is not something to invite.
+      const reuse = !!(this._prevDrive && this._prevEpoch === p.epoch)
+      let drive = null
       try {
-        const drive = this._prevDrive || new Hyperdrive(this._store.namespace('epg-' + this._state.prev.epoch))
+        drive = reuse ? this._prevDrive : new Hyperdrive(this._store.namespace('epg-' + p.epoch))
+        // Whatever happens from here, this is no longer the grace-served session: purge()
+        // closes it on the way through, and a failed attempt must not park a half-open
+        // drive in _prevDrive for the next tick to reuse.
+        if (reuse) { this._prevDrive = null; this._prevEpoch = null }
         await drive.ready()
         await drive.purge()
-        this._prevDrive = null
-        console.log(`[epg] purged epoch ${this._state.prev.epoch} drive after grace`)
-        this._state.prev = null
-        this._saveState()
-      } catch (e) { console.warn('[epg] purge:', e?.message || e) }
+        drive = null // purge() closed it for us
+        purged.add(p.epoch)
+        console.log(`[epg] purged epoch ${p.epoch} drive after grace`)
+      } catch (e) {
+        console.warn('[epg] purge:', e?.message || e)
+      } finally {
+        // ready() can throw with the session already constructed. Since a failed entry stays
+        // queued and is retried every hour, not closing here would leak a drive plus its
+        // corestore session and open cores on EVERY tick, for ever.
+        if (drive) { try { await drive.close() } catch {} }
+      }
     }
+    if (!purged.size) return
+    // Filter the LIVE list — never write back one computed before the awaits above. Even
+    // with the re-entrancy guard this is the honest way to express it: what we learned in
+    // this loop is "these epochs are gone", and that is exactly what gets removed. A
+    // precomputed keep-list would silently discard anything added to the list meanwhile,
+    // which is the very orphan _mintEpoch's comment promises can no longer happen.
+    this._state.pending = this._pending.filter((p) => !purged.has(p.epoch))
+    this._saveState()
   }
 
   status () {
@@ -289,7 +481,11 @@ export class GuideManager {
       epoch: this._state?.epoch ?? null,
       driveKey: this._state?.driveKey ?? null,
       rotatedAt: this._state?.rotatedAt ?? null,
-      prev: this._state?.prev ?? null,
+      // `prev` keeps its old shape (the grace-served predecessor, or null) so scrapers
+      // and /status readers are untouched; pendingPurge > 1 is the operator's signal that
+      // an older epoch is still on disk owing a purge — previously invisible.
+      prev: this._pending[this._pending.length - 1] ?? null,
+      pendingPurge: this._pending.length,
       mappedChannels: this._map.size,
       unmatched: Object.fromEntries(this._unmatched),
       puts: this._puts,

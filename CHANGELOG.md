@@ -334,6 +334,111 @@ an item that carries one is telling you exactly which claim is still on paper.
 
 ### Fixed
 
+- **Retiring a channel rewrote every subscriber's whole account record — once per channel —
+  and it filled a 24 GB disk.** Adding channels was already batched: one pass over the
+  accounts, one write per account, however many channels arrived. Removing them was not.
+  Each removal walked every account and rewrote it in full, so a sync that retired *D*
+  channels cost *D × accounts* whole-record writes. Because an account record carries one
+  sealed grant per entitled channel — about 455 KB across a 2,200-channel lineup — and the
+  store is append-only, none of it was ever reclaimed. The live-events sources retire
+  finished fixtures every half hour, so one ordinary cycle retiring 86 matches wrote ~382 MB
+  that could never be freed; a catch-up sync after downtime retired 217 and wrote 1.12 GB in
+  three minutes. The database reached 12.35 GB against ~6.5 MB of actual state, the disk hit
+  100%, and the panel could not restart — with no space, Docker could not even mount its
+  filesystem, so "nobody can sign in" was the first symptom of a storage bug. Removal is now
+  one pass and one write per account **that actually held one of the retired channels**, and
+  the same batching is used when a whole source is removed and when a config restore prunes
+  extra channels. Measured on the regression fixture: 400,582 bytes and 40 writes became
+  38,452 bytes and 13 — and the saving grows with the size of the batch, so a production
+  cycle drops from ~382 MB to ~4.5 MB.
+
+  The regression test asserts **bytes**, not just write counts: the existing idiom counted
+  blocks, and a block count looks perfectly healthy while each block quietly carries 455 KB.
+  It also pins the exact write count, so a future rewrite cannot quietly start touching
+  accounts that hold nothing — the viewer engine arms its live-entitlement watcher on the
+  promise that it doesn't.
+
+  Alongside it, three smaller faults on the same paths: deleting a channel dropped its
+  artwork entries without freeing the bytes (same `del`-without-`clear` mistake as the EPG
+  above); the three OTA-artifact reclaim paths called `clear()` before the blob store was
+  open, which silently frees nothing; and a channel named `constructor` or `toString` was
+  treated as granted to everyone, rewriting every account and reporting revocations that
+  never happened.
+
+  ⚠ **`DELETE /api/sources/:name` can now answer 400 where it always answered 200.** Removing
+  a source is single-flighted, and "remove it" and "remove it but keep the channels" are
+  different operations — so a second call whose intent differs from the one already running
+  is refused by name instead of silently inheriting it. Previously the second caller got 200
+  and the first caller's behaviour: asking to *keep* 550 channels while a purge was running
+  destroyed all of them. Identical intent still joins the running call, so an operator's
+  timed-out retry behaves as before.
+
+  ⚠ **Retiring a channel now always mints a fresh key when the id comes back.** The source
+  sync used to reuse a leftover key; a live-events playlist reissues the same ids week to
+  week, so a viewer who had already unsealed one kept working access to a channel that had
+  been revoked. Removal and re-import are now genuinely a new grant.
+
+  ⚠ **Disabling a source does not fence anything on its own** — the scheduler reads the
+  source list once per tick and a manual sync ignores the disabled flag entirely. Removal
+  and sync are now mutually exclusive by name; the disable is bookkeeping, not a guard. A
+  removal can therefore wait for an in-flight sync of that same source (bounded by the fetch
+  timeout). Before this, a sync landing mid-removal left catalog records with no key behind,
+  visible to every viewer and impossible to grant to anyone — and unreachable by the repair
+  path, because the source that would have healed them was already gone.
+
+- **The EPG drive was an archive pretending to be a sliding window, and it filled a disk.**
+  The guide holds seven days and prunes anything older every hour — but pruning called
+  `drive.del()`, which drops the metadata entry and nothing else. Hypercore is append-only:
+  the bytes behind a deleted entry stay stored for ever unless `clear()` frees them. So the
+  drive stopped *listing* old days while still paying for every one of them, going back to
+  the day the service started. On the production deployment that was roughly 2 GB dead
+  inside a 2.9 GB drive, and it is what ran the box out of space. The panel states this rule
+  for update artifacts and the broadcaster states it for expired segments; the EPG was the
+  one place that missed it. A day whose schedule genuinely *changed* leaked the same way
+  from the other side — the superseded revision was stranded — so both paths now free the
+  bytes they retire. The byte-compare that makes a quiet refresh free is untouched: an
+  unchanged day still appends nothing and now also clears nothing.
+
+  Retired **epochs** could go missing too. Every `epochDays` a fresh drive is minted and the
+  old one kept briefly, then purged; but the state file had a single `prev` slot, and
+  minting simply overwrote it. If a purge had failed, or the service was down across a
+  rotation boundary, the epoch sitting in that slot was dropped from `epoch.json` with its
+  drive still on disk — named by nothing, purgeable by no code path, permanent. It is a list
+  now, drained every hour, and a purge that fails stays queued and is retried instead of
+  being forgotten. `status()` gained `pendingPurge`, which is the first time an operator
+  could see this at all; anything above 1 means an epoch is still owed a purge.
+
+  Two adjacent hazards closed while in there. A guide write that overlapped a rotation could
+  clear a blob range read from the *old* epoch against the *new* one, freeing live blocks of
+  the drive just minted — and we are the writer, so there is no peer to fetch them back
+  from; the write now pins its drive for the whole call. And one unreadable day during a
+  rotation used to abort the copy *after* the pointer state had already flipped, stranding
+  the service mid-rotation with the panel still advertising a drive about to be purged; the
+  copy is now per-entry, and a skipped day is rewritten by the next ingest.
+
+  ⚠ **`GRACE_HOURS` must now be less than `EPOCH_DAYS × 24`, and the service refuses to
+  start otherwise.** Only one retired epoch is ever grace-served, so a grace window that
+  outlived an epoch was already being silently half-honoured. The defaults (30 days / 48
+  hours) are unaffected — but an operator running a short `EPOCH_DAYS` should check this
+  before upgrading, because it will fail fast at boot rather than at the next rotation.
+
+  ⚠ **A corrupt `epoch.json` is now fatal at startup instead of being ignored.** It used to
+  fall through to "mint epoch 1", which reopened a months-old namespace as if it were fresh
+  and orphaned everything above it. A missing file is still an ordinary first boot.
+
+  ⚠ **This stops new dead bytes; it does not sweep bytes already dead.** An epoch orphaned
+  by the old code is not named in `epoch.json`, so nothing can find it — that needs a manual
+  sweep of stale `epg-*` namespaces on the box. ⚠ Rolling the deploy back is survivable but
+  lossy: the state file still carries the old single-slot `prev` alongside the new list, so
+  an older build reads it correctly rather than announcing a drive called `epg-undefined` —
+  but it reverts to forgetting every epoch except the newest.
+
+  Covered by a new suite that asserts on **allocated bytes** (`core.info({ storage: true })`),
+  because none of this is visible in an entry count and blob files are sparse, so apparent
+  size lies. It measures a 5.94 → 1.06 MiB reclaim across a prune, pins the purge queue
+  through a failed purge and a rotation landing mid-drain, and reproduces the write/rotate
+  race. ⚠ Verified locally and in CI only — not yet observed on the production box.
+
 - **The desktop player blamed itself for a channel that was dead upstream.** On the one
   condition the phone and the television both call "Channel offline" — a redirect channel
   that has spent its retry ladder, four attempts over about 18 seconds — the desktop said

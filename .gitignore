@@ -74,3 +74,8 @@ mcp/*.tgz
 # Project-scope MCP client wiring for the aliran MCP server (machine-local
 # absolute paths — each operator generates their own via `--doctor`)
 .mcp.json
+
+# Operator scratch pulled from upstream providers while investigating a source
+# (schedule dumps, saved provider pages). Working notes, not repo content.
+/mlbapi.json
+/sx.html

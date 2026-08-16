@@ -77,7 +77,7 @@ import crypto from 'hypercore-crypto'
 import { sealTo } from '@aliran/core'
 import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
 import { loadSecrets, saveSecrets } from './store.js'
-import { OpsError, checkName, deleteStream, normArt, normEpgUrl, normRedirectUrl, normRedirectHeaders } from './ops.js'
+import { OpsError, checkName, deleteStreams, normArt, normEpgUrl, normRedirectUrl, normRedirectHeaders } from './ops.js'
 import { reconcilePackages } from './packages.js'
 
 const bad = (m) => { throw new OpsError('bad-request', m) }
@@ -544,32 +544,114 @@ export async function listSources (ctx) {
   return Object.entries(sources).map(([name, s]) => ({ name, ...s, channels: counts[name] || 0 }))
 }
 
-// Remove a source. Default PURGES its channels (deleteStream: catalog + secret +
+// Remove a source. Default PURGES its channels (ops.deleteStreams: catalog + secret +
 // grants + art). keepChannels detaches them instead — the source stamp (and epg
 // pointers) are stripped and they live on as ordinary manual redirect channels.
-export async function removeSource (ctx, name, opts = {}) {
+//
+// This is the most expensive operation the panel has — a 550-channel source is 550
+// catalog deletes plus a rewrite of every entitled user — and it runs inside ONE
+// uncancellable admin request. Four things guard it:
+//
+//   - SINGLE-FLIGHT PER INTENT. A dashboard whose request timed out retries, and two
+//     interleaved purges walk the same id list; the loser's delete hit an id the winner
+//     had already removed, the OpsError escaped the loop, and the registry entry was
+//     never dropped — leaving a registered source with its channels half gone. A retry
+//     joins the running call, exactly like syncSource.
+//     ⚠ ONLY AN IDENTICAL INTENT MAY JOIN. keepChannels is not a detail — it is "detach
+//     550 channels" versus "destroy them with every grant, secret and art blob". Joining
+//     across it would answer a DETACH request with a completed PURGE, reporting 200 and
+//     `detached: 0` for channels that no longer exist. Three front doors carry the flag
+//     (admin-server ?keepChannels=1, admin-cli --keep-channels, MCP panel_delete_source),
+//     so the mismatch is refused rather than silently reinterpreted.
+//
+//   - DISABLE FIRST. `enabled:false` is persisted before a single channel is touched, so
+//     any scheduler tick that reads the registry AFTER this point skips the source.
+//     ⚠ THIS ALONE FENCES NOTHING, and it must not be read as if it did: a tick snapshots
+//     the registry once (makeSourcesScheduler) and then awaits a sync per source, so a
+//     tick already in progress carries a stale `enabled`, and doSync deliberately ignores
+//     `enabled` altogether so manual syncs keep working on a disabled source. The two
+//     guards below are what actually close the race; this one just stops new ticks.
+//
+//   - NO SYNC ACROSS THE PURGE, in both directions. A sync already running is awaited
+//     before anything is deleted, and doSync refuses to START while a purge holds the
+//     name. Without both, a sync that fetched its feed before the purge writes its
+//     catalog records back AFTERWARDS: the ids are in its pre-purge snapshot, so they
+//     take the update branch, and what lands is a set of channels whose secrets the purge
+//     already deleted, owned by a source no longer in the registry — permanently
+//     ungrantable and beyond the reach of the update-branch re-mint, which only ever runs
+//     for a source that still exists. (applyFeed re-checks the registry as a third net.)
+//
+//   - TOLERANT batch delete: whatever else goes missing underneath us, the purge runs to
+//     the end and the registry entry comes off.
+const purging = new Map() // `${dataDir}\n${name}` -> { p, keepChannels } (single-flight; an identical-intent remove joins it)
+
+export function removeSource (ctx, name, opts = {}) {
+  const key = ctx.dataDir + '\n' + name // same unambiguous pair syncSource keys on
+  const keepChannels = !!opts.keepChannels
+  const running = purging.get(key)
+  if (running) {
+    if (running.keepChannels !== keepChannels) {
+      bad(`source "${name}" is already being ${running.keepChannels ? 'detached (keepChannels)' : 'purged'} — wait for that to finish before asking for the other`)
+    }
+    return running.p
+  }
+  const p = doRemove(ctx, name, { keepChannels }).finally(() => purging.delete(key))
+  purging.set(key, { p, keepChannels })
+  return p
+}
+
+async function doRemove (ctx, name, opts) {
+  const key = ctx.dataDir + '\n' + name
   const sources = loadSources(ctx.dataDir)
   if (!hasOwn(sources, name)) notFound(`no such source: ${name}`)
-  const owned = await ownedIds(ctx, name)
-  let removed = 0
-  let detached = 0
-  for (const id of owned) {
+  // Everything above ran synchronously, so `purging` already holds this call by the time
+  // the first await below yields — which is what makes the doSync gate reliable.
+  const wasEnabled = sources[name].enabled
+  if (wasEnabled !== false) {
+    sources[name].enabled = false
+    saveSources(ctx.dataDir, sources)
+  }
+  try {
+    // Join a sync that started before we claimed the name (its own failure is not ours).
+    try { await inflight.get(key) } catch {}
+    const owned = await ownedIds(ctx, name)
+    let removed = 0
+    let detached = 0
+    let failed = []
     if (opts.keepChannels) {
-      const node = await ctx.db.get('catalog/' + id)
-      if (node) {
-        const c = node.value
-        delete c.source; delete c.epgUrl; delete c.epgId
-        await ctx.db.put('catalog/' + id, c)
-        detached++
+      for (const id of owned) {
+        const node = await ctx.db.get('catalog/' + id)
+        if (node) {
+          const c = node.value
+          delete c.source; delete c.epgUrl; delete c.epgId
+          await ctx.db.put('catalog/' + id, c)
+          detached++
+        }
       }
     } else {
-      await deleteStream(ctx, id)
-      removed++
+      const done = await deleteStreams(ctx, owned, { tolerant: true })
+      removed = done.ok.length
+      failed = done.failed
     }
+    // Re-load before persisting — a purge can run for minutes and an admin may have
+    // edited the registry meanwhile (the same rule doSync follows).
+    const fresh = loadSources(ctx.dataDir)
+    delete fresh[name]
+    saveSources(ctx.dataDir, fresh)
+    return { name, removed, detached, ...(failed.length ? { failed } : {}) }
+  } catch (err) {
+    // Put `enabled` back. A half-finished removal already costs the operator a repair;
+    // it must not ALSO leave a source that has quietly stopped importing with nothing
+    // anywhere saying why.
+    try {
+      const back = loadSources(ctx.dataDir)
+      if (hasOwn(back, name) && back[name].enabled === false && wasEnabled !== false) {
+        back[name].enabled = wasEnabled ?? true
+        saveSources(ctx.dataDir, back)
+      }
+    } catch {} // the original failure is the one worth reporting
+    throw err
   }
-  delete sources[name]
-  saveSources(ctx.dataDir, sources)
-  return { name, removed, detached }
 }
 
 async function ownedIds (ctx, name) {
@@ -1099,7 +1181,7 @@ export async function sourceChannels (ctx, name) {
 
 // Owned entries only: create missing, update changed, delete gone. Unchanged
 // entries are not re-put (zero bee appends for an unchanged feed). Deletions run
-// FIRST because deleteStream rewrites the secrets file itself — minting new
+// FIRST because deleteStreams rewrites the secrets file itself — minting new
 // secrets after keeps our snapshot from resurrecting deleted ones.
 async function applyFeed (ctx, name, mapped) {
   const report = { added: 0, updated: 0, removed: 0, unchanged: 0, conflicts: [], epgSkipped: 0 }
@@ -1144,12 +1226,15 @@ async function applyFeed (ctx, name, mapped) {
     }
   }
 
+  // ONE purge for the WHOLE removal set, never one per channel: ops.deleteStreams walks
+  // the users once and re-puts each entitled account at most once. Per id it re-wrote
+  // every entitled user's whole record once PER DROPPED CHANNEL, and one sync retiring
+  // 217 finished events grew the signed bee by 1.12 GB (see deleteStreams' header).
+  const gone = []
   for (const [id, cur] of current) {
-    if (cur && cur.source === name && !mapped.entries.has(id)) {
-      await deleteStream(ctx, id)
-      report.removed++
-    }
+    if (cur && cur.source === name && !mapped.entries.has(id)) gone.push(id)
   }
+  if (gone.length) report.removed = (await deleteStreams(ctx, gone)).ok.length
 
   const secrets = loadSecrets(ctx.dataDir)
   let secretsDirty = false
@@ -1158,7 +1243,15 @@ async function applyFeed (ctx, name, mapped) {
     const cur = current.get(id)
     if (cur && cur.source !== name) { report.conflicts.push(id); continue } // manual or foreign channel — never touched
     if (!cur) {
-      if (secrets[id] === undefined) { secrets[id] = b4a.toString(crypto.randomBytes(32), 'hex'); secretsDirty = true }
+      // ⚠ MINTS UNCONDITIONALLY, like addStream. An id with no catalog record has no
+      // grants either (deleteStreams strips them before it deletes the record), so there
+      // is nothing to strand — while REUSING a secret found lying around would hand a
+      // returning id the very key a client unsealed before the purge. Events playlists
+      // re-issue ids week after week, so "this id existed before" is the normal case, not
+      // the exotic one, and ops.deleteStreams' crash residue is precisely a secret whose
+      // catalog record is already gone. Purging a channel must mean a fresh key when it
+      // comes back, or the purge did not revoke anything.
+      secrets[id] = b4a.toString(crypto.randomBytes(32), 'hex'); secretsDirty = true
       puts.push([id, {
         title: m.title,
         description: m.description,
@@ -1184,6 +1277,15 @@ async function applyFeed (ctx, name, mapped) {
       }, 'added'])
       continue
     }
+    // ⚠ THE UPDATE BRANCH MINTS TOO, and only ever repairs. A catalog record whose secret
+    // is missing can never be granted to anyone — reconcileGrants and reconcilePackages
+    // both skip an id with no secret — and nothing else in the panel would ever notice:
+    // the channel simply exists, ungrantable, forever. That state is reachable (a crash
+    // inside a purge between the catalog deletes and the secrets write, an interrupted
+    // restore), so every sync closes it here instead of leaving a keyless zombie. When
+    // the secret is present — the normal case, every sync of every source — this costs
+    // one map lookup and writes nothing.
+    if (secrets[id] === undefined) { secrets[id] = b4a.toString(crypto.randomBytes(32), 'hex'); secretsDirty = true }
     const next = {
       ...cur,
       title: m.title,
@@ -1211,6 +1313,13 @@ async function applyFeed (ctx, name, mapped) {
     if (JSON.stringify(next) !== JSON.stringify(cur)) puts.push([id, next, 'updated'])
     else report.unchanged++
   }
+  // LAST CHECK BEFORE WRITING. Everything above was computed from a snapshot taken when
+  // this sync began, and a removal that finished in between has already deleted these
+  // ids, their secrets and their grants. Writing the snapshot back would resurrect them
+  // as records owned by a source that no longer exists — ungrantable, invisible to every
+  // repair path, and reachable by no future sync. removeSource's own guards stop the
+  // sync from starting or overlapping; this is the net under both of them.
+  if (!hasOwn(loadSources(ctx.dataDir), name)) notFound(`source "${name}" was removed during this sync`)
   // Secrets land on disk BEFORE the catalog references them — a crash in between
   // leaves an unreferenced secret (harmless, reused on the next sync), never a
   // granted channel without a key.
@@ -1278,6 +1387,11 @@ export function syncSource (ctx, name) {
 async function doSync (ctx, name) {
   const all = loadSources(ctx.dataDir)
   if (!hasOwn(all, name)) notFound(`no such source: ${name}`)
+  // A purge holds this name: the source is on its way out, and a sync that started now
+  // would spend a fetch only to write back records the purge is deleting (removeSource's
+  // header has the full shape). `enabled` cannot carry this — doSync ignores it on
+  // purpose so manual syncs work on a disabled source.
+  if (purging.has(ctx.dataDir + '\n' + name)) notFound(`source "${name}" is being removed`)
   const source = all[name]
   const cfg = scfg(ctx)
   const startedAt = Date.now()
