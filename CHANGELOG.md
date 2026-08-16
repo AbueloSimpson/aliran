@@ -334,6 +334,35 @@ an item that carries one is telling you exactly which claim is still on paper.
 
 ### Fixed
 
+- **The desktop player blamed itself for a channel that was dead upstream.** On the one
+  condition the phone and the television both call "Channel offline" — a redirect channel
+  that has spent its retry ladder, four attempts over about 18 seconds — the desktop said
+  "Playback failed". That title names the wrong culprit: it reads as this machine, this
+  network, this player, and it is the surface an operator is most likely to be looking at
+  while a viewer complains, so it sent them hunting a local fault for a channel that is
+  simply off the air. The player already knew the difference; it just had no way to say
+  so. Its error callback now carries the same `{ code: 'offline' }` the React Native
+  component has always passed, and the desktop's error surface renders the translated
+  "Channel offline" heading and hint for it, in all 14 languages, exactly as the phone
+  does. Retry ladders, timings and the peer-to-peer path are untouched: a persistent P2P
+  failure still gets the neutral "Playback failed", because the engine's own self-heal
+  resets that ladder and reaching its end says nothing about the channel. Verified over
+  CDP against a throwaway panel and a server answering 404 — the heading renders in both
+  English and Spanish and holds, the ladder still fires 4 attempts at 2.6 / 5.0 / 10.0 s
+  and gives up at 17.65 s, re-selecting the channel re-arms a fresh ladder, and a
+  dead-feedKey P2P channel still shows the neutral wording.
+
+  ⚠ The two players still **disagree about a channel that answers nothing at all**. The
+  phone has an offline watchdog and shortens its ladder on a permanent HTTP refusal; the
+  desktop has neither, so a channel that connects and never produces a frame reaches the
+  desktop as a plain engine error and is still titled "Playback failed" there. This entry
+  closes the spent-ladder case only.
+
+  The same surface also used to print "Playback failed" **twice** — as the heading and
+  again as the body — whenever the peer-to-peer give-up fired, because that path had no
+  sentence of its own and passed the heading as its message. The body is now suppressed
+  when it would merely repeat the heading, leaving the heading and its retry instruction.
+
 - **The television's main menu cut its last entry off the bottom of the screen.** When the
   TV menu moved to the phone's vertical left rail, the six section entries laid out at
   602dp against a 540dp viewport (a 1080p set at density 320), so Exit sat below the fold

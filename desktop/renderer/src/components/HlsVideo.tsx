@@ -83,9 +83,14 @@ export interface HlsVideoProps {
   /** A playback error the host should surface. `info.code === 'offline'` marks the one
    *  case the host must NOT phrase as a player fault: a cdn/redirect channel that spent
    *  the retry ladder is dead upstream, so the host titles it "channel offline" instead
-   *  of "playback failed". Same discrimination as the RN component's onError (see
-   *  sdk/react-native/src/AliranVideo.tsx giveUp) — the two surfaces must not disagree
-   *  about the same channel. Absent code = phrase it neutrally. */
+   *  of "playback failed". The SIGNATURE is the RN component's onError verbatim (see
+   *  sdk/react-native/src/AliranVideo.tsx giveUp), and the spent-cdn-ladder case now
+   *  agrees across the two surfaces. The COVERAGE does not yet: RN also raises the code
+   *  from its offline watchdog (NO_ANSWER / CDN_TUNE) and from a ladder it shortens on a
+   *  permanent HTTP refusal, and this component has neither — a channel that answers
+   *  nothing still reaches the host here as a plain engine error, so the phone can say
+   *  "offline" where the desktop says "playback failed". Absent code = phrase it
+   *  neutrally. */
   onError?: (message: string, info?: { code?: 'offline' }) => void
   /** The frozen-live-edge self-heal kicked in (logging hook; onTune 'start' re-arms the UI). */
   onStall?: () => void

@@ -571,8 +571,13 @@ export function LiveScreen ({ onExit, initialStreamId, initialCategory, onGuide 
           ) : (
             <>
               <div className="live-error-title">{t('live.playbackFailed')}</div>
-              {/* The engine's own message, English by design (S56) — never translated. */}
-              <div className="live-error-msg">{error}</div>
+              {/* The engine's own message, English by design (S56) — never translated.
+                  Suppressed when it IS the title: HlsVideo's p2p give-up has no prose
+                  of its own and passes live.playbackFailed as the message, which used
+                  to stack the same line twice ("Falló la reproducción" over itself).
+                  A title plus the retry hint below is the whole surface in that case;
+                  the RN twin has a real sentence there instead (AliranVideo giveUp). */}
+              {error !== t('live.playbackFailed') && <div className="live-error-msg">{error}</div>}
             </>
           )}
           <div className="live-error-hint">{t('hints.retryEnter', { enter: 'Enter' })}</div>
