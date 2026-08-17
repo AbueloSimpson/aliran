@@ -89,6 +89,7 @@ nav:
           - Operating panel & broadcaster: kb/operator.md
           - Backup, restore & key rotation: kb/backup-and-rotation.md
           - Backup & recovery walkthroughs: kb/recovery-walkthroughs.md
+          - Compacting the panel bee: kb/panel-bee-compaction.md
           - Offline slate media: kb/offline-slate.md
           - Publishing the dashboards: kb/public-dashboards.md
           - Android & RN builds: kb/android-build.md
