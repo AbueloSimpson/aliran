@@ -307,14 +307,14 @@ behaviour tested elsewhere.
 | Rotate the channel's stream key | **Evicts from that channel**, as for every other device. | reasoned |
 | "Log out all devices" (`tokenVersion`) | **Does not evict.** It ends live sessions; a device still holding working keys takes a new token on its next start. | asserted |
 | Revoke the one device | **Does not evict.** It drops the enrolment; the device re-enrols. | reasoned |
-| Fill the account's device slots, on a panel configured `devicePolicy: reject` | **Does not evict.** The panel answers `device-limit`, which says the slots are full — not that these keys are dead. The set keeps them and signs itself in the moment a slot frees. | asserted |
+| Fill the account's device slots, on a panel configured `devicePolicy: reject` | **Does not evict.** The panel refuses on the device limit, which says the slots are full — not that these keys are dead. The set keeps them and signs itself in the moment a slot frees. | asserted |
 
 The middle three are not new behaviour and not specific to televisions — a device
 holding a saved *password* signs straight back in after all of them, and always has.
 They are listed because storing keys makes it worth saying out loud which lever is
 the real one: **change the password.**
 
-**`device-limit`, and why it keeps.** It is the one refusal on that list that reads
+**The device limit, and why it keeps.** It is the one refusal on that list that reads
 like a verdict and is not, and treating it as one was a defect. Slots free: a viewer
 signs another device out, an admin revokes one, the operator raises the limit, or a
 new device evicts the least recently used one — and the identical stored keys work
@@ -346,6 +346,40 @@ device has left, or a verdict from the panel above). A key store that did not an
 swarm still dialling, an account record that has not replicated to this device yet: all
 of those **keep** what is held and try again on the next start.
 
+**The whole rule, message by message.** Every failure the panel's `session` responder
+or the engine's login path can hand a television, and which way it decides. The table
+is generated from the predicate in `client/backend/signin-vault.mjs`, and
+`npm run test:signin-vault` fails when a copy of it drifts — including this one.
+
+<!-- signin-verdicts: BEGIN — generated; npm run test:signin-vault checks this copy -->
+
+```text
+ERASE  authPriv must be 64 bytes (hex or buffer)
+ERASE  key handover does not match this account
+ERASE  panel returned an invalid session token
+ERASE  session failed: account disabled
+ERASE  session failed: unknown user
+ERASE  the panel issued no session token — the key handover did not sign this device in
+KEEP   invalid credentials
+KEEP   key recovery failed
+KEEP   session failed: auth failed
+KEEP   session failed: bad request
+KEEP   session failed: busy
+KEEP   session failed: device-limit
+KEEP   session failed: missing deviceId
+KEEP   session failed: no session challenge (login first)
+KEEP   session failed: sessions unavailable
+KEEP   the panel issued no session challenge — it is too old for a key handover
+KEEP   unknown user
+```
+
+<!-- signin-verdicts: END -->
+
+Two rows differ only by the `session failed: ` prefix and decide opposite ways. The
+prefixed one is the panel's own database answering. The bare one is thrown after
+reading *this device's* replica of the signed record, which on a cold start has not
+caught up — a set that read the two alike erased an account over a cold DHT.
+
 **A deleted account is the honest cost of that default**, and it is worth an operator
 knowing exactly what it leaves behind. Deleting the account leaves an inert record on
 the television's disk, because "this device's copy of the signed record has no such
@@ -354,9 +388,9 @@ account" is what a cold start looks like as well. Three consequences follow:
 - The set **spends a small login budget on every boot** trying it — see below. It
   never locks the account out, and it never stops trying either.
 - The record **cannot be revived by re-creating the username.** Creating an account
-  again mints a fresh keypair, so the stored key fails the seal probe
-  (`key handover does not match this account`) and *that* does erase. Re-creating a
-  deleted viewer therefore evicts the television rather than restoring it.
+  again mints a fresh keypair, so the stored key fails the seal probe — a key-handover
+  mismatch, on the erasing side of the table above. Re-creating a deleted viewer
+  therefore evicts the television rather than restoring it.
 - The set falls through to its sign-in screen every time, which is what a viewer
   sees. Nothing on the television says the account is gone.
 

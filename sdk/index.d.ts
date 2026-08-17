@@ -759,25 +759,47 @@ export class AliranPlayer {
    * the panel throttle, account status, device registration, maxDevices) and takes a
    * panel-signed token for THIS device.
    *
-   * Split the rejections, and split them NARROWLY. Erase only on a verdict about the
-   * account: 'session failed: account disabled', 'session failed: unknown user', or
-   * 'key handover does not match this account' (what a password rotation looks like from
-   * here). Everything else KEEPS the keys and retries — 'not connected to panel', a
-   * closed channel, a key store that did not answer, and a bare 'unknown user' with no
-   * 'session failed:' prefix, which is a record that has not replicated yet rather than
-   * an account that does not exist.
-   *
-   * 'session failed: device-limit' KEEPS, and this comment used to say the opposite. It
-   * says the operator's device SLOTS are full, which is a fact about their configuration
-   * and not a judgement on these keys; slots free when a device is signed out, revoked,
-   * evicted, or the limit is raised. See client/backend/signin-vault.mjs, which is the
-   * implementation and has always classified it correctly. 'session failed: busy' keeps
-   * too — the panel lost a write race and is asking for another attempt.
+   * Split the rejections, and split them NARROWLY. Erasing is the only irreversible act
+   * here — it sends a viewer to another room for a phone — so a rejection erases only on
+   * positive evidence that the stored material can never work again. The table below is
+   * the whole rule; anything not on it keeps the keys and retries.
    *
    * "Anything the panel refused" IS NOT THE RULE, and reading it that way destroyed
-   * credentials here: 'session failed:' also fronts 'auth failed', 'bad request',
-   * 'no session challenge (login first)' and 'missing deviceId' — refusals of the
-   * REQUEST, not decisions about the device.
+   * credentials here. The 'session failed: ' prefix fronts refusals of the REQUEST and
+   * facts about the operator's configuration just as often as it fronts a verdict about
+   * the account, so it is the CODE behind the prefix that decides — never the prefix.
+   * Note the two rows that differ only by that prefix: the bare form is thrown after
+   * reading this device's own replica, which on a cold start has simply not caught up.
+   *
+   * The table is generated from the predicate in client/backend/signin-vault.mjs, and
+   * tools/signin-vault-test.mjs fails when this copy of it drifts. Change the predicate,
+   * not the table.
+   *
+   * signin-verdicts: BEGIN
+   *
+   *   ERASE  authPriv must be 64 bytes (hex or buffer)
+   *   ERASE  key handover does not match this account
+   *   ERASE  panel returned an invalid session token
+   *   ERASE  session failed: account disabled
+   *   ERASE  session failed: unknown user
+   *   ERASE  the panel issued no session token — the key handover did not sign this device in
+   *   KEEP   invalid credentials
+   *   KEEP   key recovery failed
+   *   KEEP   session failed: auth failed
+   *   KEEP   session failed: bad request
+   *   KEEP   session failed: busy
+   *   KEEP   session failed: device-limit
+   *   KEEP   session failed: missing deviceId
+   *   KEEP   session failed: no session challenge (login first)
+   *   KEEP   session failed: sessions unavailable
+   *   KEEP   the panel issued no session challenge — it is too old for a key handover
+   *   KEEP   unknown user
+   *
+   * signin-verdicts: END
+   *
+   * Everything the engine can fail on that is not a message on that table keeps the keys
+   * too: 'not connected to panel', a closed channel, a key store that did not answer, a
+   * host that did not answer in time.
    *
    * Budget the retries in the panel's units, not yours. It counts every login attempt,
    * not just failed ones, and locks the (account, device) pair out for fifteen minutes

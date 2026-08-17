@@ -2,11 +2,22 @@
 // sign-in. No network, no DHT, no panel: this is the part that can be reasoned about on
 // its own, and the part whose mistakes are silent.
 //
-// The interesting assertions are the LAST TWO groups. terminalSignInError() decides whether
+// The interesting assertions are the LAST THREE groups. terminalSignInError() decides whether
 // a television keeps the account it is holding or erases it, and erasing is the only
 // irreversible thing in this feature: it sends a viewer to another room for a phone. It
 // decides on the wording of errors that sdk/login.js writes and codes that panel/src/rpc.js
 // answers with.
+//
+// THE SECOND-TO-LAST GROUP asks the same question of the documents, because a rule is only as
+// good as the copy somebody else reads. sdk/index.d.ts told embedders to ERASE on
+// 'session failed: device-limit' — which this predicate has never done — so an SDK consumer
+// who followed the type definitions destroyed a viewer's account keys over an operator's full
+// device slots. English is not parsed: each prose surface carries one table in a fixed form
+// between two markers, this file GENERATES that table from the same two authorities, and the
+// copies are compared line by line. Then the checker is run against surfaces broken on
+// purpose, so it cannot quietly stop matching — which is the failure mode that let the .d.ts
+// sit wrong, and the same one that hid a panel code from the regex below when it moved out of
+// a `return json({...})` literal.
 //
 // The LAST group is about the other half of the same judgement: a code classified KEEP is a
 // code the device RETRIES, and a retry that reaches the panel costs a `login` the panel's
@@ -163,8 +174,17 @@ try {
   check(sessionStart > 0, 'the session responder is where this test expects it')
   // The responder ends where the next one begins; everything between is its own.
   const sessionBody = rpc.slice(sessionStart, rpc.indexOf('rpc.respond(', sessionStart + 20))
-  const sessionCodes = [...sessionBody.matchAll(/json\(\{\s*error:\s*'([^']+)'/g)].map((m) => m[1])
-  check(sessionCodes.length >= 8, `the responder answers ${sessionCodes.length} error codes`)
+  // Answer SITES and answered CODES are two different counts, and the difference is not
+  // cosmetic. The floor below is a tripwire on the regex itself — the failure mode that
+  // once hid a code from this group — so it counts sites, which only ever grow. Everything
+  // after it asks what the responder CAN answer, so it reads the SET: the zero-write login
+  // gave three codes a second exit apiece ('account disabled', 'unknown user' and
+  // 'device-limit', each answered from both branches of the compare-and-swap retry), and a
+  // code answered twice is still one code to classify and one row to document.
+  const sessionSites = [...sessionBody.matchAll(/json\(\{\s*error:\s*'([^']+)'/g)].map((m) => m[1])
+  const sessionCodes = [...new Set(sessionSites)]
+  check(sessionSites.length >= 8,
+    `the responder answers ${sessionCodes.length} error codes, from ${sessionSites.length} sites`)
 
   // The two halves, declared here and checked against what the panel really answers. A new
   // code in that responder lands in neither list and fails the last check in this group —
@@ -228,6 +248,137 @@ try {
   }
   const missing = Object.keys(LOGIN_PROSE).filter((m) => !thrown.includes(m))
   check(missing.length === 0, 'every classified message is one login.js still throws — stale: ' + JSON.stringify(missing))
+
+  // --- COUPLED TO THE PROSE THAT TELLS SOMEBODY ELSE WHAT TO DO -------------------------
+  // Everything above binds the classification to the code that PRODUCES these messages.
+  // Nothing above bound it to the documents that tell an embedder what to DO with them —
+  // and sdk/index.d.ts spent a long time listing 'session failed: device-limit' among the
+  // rejections that must erase, which is the opposite of what signin-vault.mjs has always
+  // done. An SDK consumer who followed the type definitions destroyed a viewer's account
+  // keys over an operator's full device slots.
+  //
+  // Prose cannot be parsed, so it is not parsed. Each surface carries ONE table in a fixed
+  // machine-readable form between two markers, this file GENERATES that table from the
+  // authorities it already reads, and the copies are compared line by line and in order.
+  // A missing block, a line that does not parse, a message the table has lost, a message
+  // it has grown, or a verdict that disagrees with the predicate all fail — and a surface
+  // that quietly stops carrying a block fails loudest of all, because that is the shape of
+  // the failure this whole file exists to prevent.
+  //
+  // Outside the block, a document may NAME a message. It may not decide anything about one:
+  // a line that holds a message AND a word like "erase" or "keep" is a second opinion, and
+  // the whole point is that there is one. That check is deliberately blind to what the
+  // sentence actually says — it never has to be right about English, only about whether a
+  // claim is being made somewhere it should not be.
+  console.log('coupling — the erase/keep table an embedder reads')
+  const MARK_BEGIN = 'signin-verdicts: BEGIN'
+  const MARK_END = 'signin-verdicts: END'
+  const CLAIM = /\b(eras\w*|evict\w*|destroy\w*|destruct\w*|discard\w*|delet\w*|wipe[sd]?|keep\w*|kept|retain\w*)\b/i
+  const SURFACES = ['sdk/index.d.ts', 'docs/sdk-guide.md', 'docs/security-model.md']
+
+  // The table itself: every message the panel's `session` responder and sdk/login.js can
+  // produce — both read off the disk above, neither typed here — plus one instance of the
+  // length guard login.js composes at runtime. The verdict column is the predicate's own
+  // answer, so the table cannot be stale with respect to the code it documents.
+  const verdictOf = (message) => (terminalSignInError(new Error(message)) ? 'ERASE' : 'KEEP')
+  const documented = [
+    ...sessionCodes.map((c) => 'session failed: ' + c),
+    ...Object.keys(LOGIN_PROSE),
+    'authPriv must be 64 bytes (hex or buffer)'
+  ]
+  const rows = new Map()
+  for (const message of documented) rows.set(message, { message, verdict: verdictOf(message) })
+  // ERASE first, then KEEP, each in plain byte order — a total order that does not move
+  // when panel/src/rpc.js reorders its own answers, so the three copies stay diffable.
+  const TABLE = [...rows.values()].sort((a, b) =>
+    a.verdict !== b.verdict ? (a.verdict === 'ERASE' ? -1 : 1) : a.message < b.message ? -1 : a.message > b.message ? 1 : 0)
+  const renderRow = (r) => r.verdict.padEnd(5) + '  ' + r.message
+  const CANONICAL = TABLE.map(renderRow).join('\n')
+  // A message that collided with another would leave one of them undocumented and nothing
+  // downstream would notice: the copies would agree with a table that had lost a row.
+  check(TABLE.length === documented.length,
+    `the table carries all ${documented.length} messages — ${sessionCodes.length} the panel answers, ` +
+    `${Object.keys(LOGIN_PROSE).length} login.js throws, and the length guard it composes`)
+
+  /** Everything wrong with one surface, as a list of sentences. Empty means it agrees. */
+  function verdictProblems (name, text, table) {
+    const out = []
+    const lines = text.split(/\r?\n/)
+    const begin = lines.findIndex((l) => l.includes(MARK_BEGIN))
+    const end = lines.findIndex((l, i) => i > begin && l.includes(MARK_END))
+    if (begin < 0 || end < 0 || end <= begin) {
+      out.push(`${name} carries no '${MARK_BEGIN}' … '${MARK_END}' block — there is nothing to check, which is the failure`)
+      return out
+    }
+    if (lines.slice(begin + 1).some((l) => l.includes(MARK_BEGIN))) out.push(`${name} opens a second verdict block`)
+
+    // The block. Comment furniture and code fences are stripped; ANY other line has to be
+    // a verdict line, so a sentence smuggled in beside the table is a failure and not a
+    // line the parser skips.
+    const body = []
+    for (let i = begin + 1; i < end; i++) {
+      const raw = lines[i].replace(/^\s*\*/, '').trim()
+      if (raw === '' || raw.startsWith('```')) continue
+      const m = /^(ERASE|KEEP)\s+(\S.*?)\s*$/.exec(raw)
+      if (!m) { out.push(`${name}:${i + 1}: not a verdict line: ${JSON.stringify(raw)}`); continue }
+      body.push({ verdict: m[1], message: m[2], line: i + 1 })
+    }
+    for (let i = 0; i < Math.max(body.length, table.length); i++) {
+      const got = body[i]
+      const want = table[i]
+      if (!got) { out.push(`${name} has lost a row: ${renderRow(want)}`) } else if (!want) {
+        out.push(`${name}:${got.line}: "${got.message}" is not a message this classification knows`)
+      } else if (got.message !== want.message) {
+        out.push(`${name}:${got.line}: expected ${JSON.stringify(want.message)}, found ${JSON.stringify(got.message)}`)
+      } else if (got.verdict !== want.verdict) {
+        out.push(`${name}:${got.line}: says ${got.verdict} for "${got.message}" — client/backend/signin-vault.mjs says ${want.verdict}`)
+      }
+    }
+
+    // …and nothing outside it decides anything. Naming a message is fine; naming one on a
+    // line that also erases, evicts, keeps or destroys is a second copy of the rule.
+    const terms = [...new Set([...table.map((r) => r.message), ...sessionCodes])].sort((a, b) => b.length - a.length)
+    for (let i = 0; i < lines.length; i++) {
+      if (i >= begin && i <= end) continue
+      const hit = terms.find((t) => lines[i].includes(t))
+      if (hit && CLAIM.test(lines[i])) {
+        out.push(`${name}:${i + 1}: "${hit}" on a line that decides its fate — only the table decides: ${lines[i].trim()}`)
+      }
+    }
+    return out
+  }
+
+  for (const surface of SURFACES) {
+    const problems = verdictProblems(surface, read(surface), TABLE)
+    check(problems.length === 0, `${surface} agrees with the predicate` +
+      (problems.length ? '\n         ' + problems.join('\n         ') + '\n\n       the table these surfaces must carry:\n\n' + CANONICAL + '\n' : ''))
+  }
+
+  // AND THE CHECKER IS PROVED TO STILL BITE. Nothing above fails when verdictProblems()
+  // stops matching, and a guard that silently stops matching is worse than no guard: it is
+  // exactly how a code went invisible to the regex in the group above when it moved out of
+  // a `return json({...})` literal. So the checker is run against surfaces built here, each
+  // broken one way, and each one has to be caught.
+  console.log('the checker itself — planted contradictions must be caught')
+  const fixture = (body) => ['prose above.', MARK_BEGIN, ...body, MARK_END, 'prose below.'].join('\n')
+  const good = TABLE.map((r) => '   * ' + renderRow(r))
+  check(verdictProblems('fixture', fixture(good), TABLE).length === 0,
+    'a surface that agrees raises nothing (so the fixtures below fail for their own reason)')
+  const flipped = good.map((l) => (l.includes('device-limit') ? l.replace('KEEP  ', 'ERASE ') : l))
+  check(flipped.join() !== good.join() && verdictProblems('fixture', fixture(flipped), TABLE).some((p) => p.includes('device-limit')),
+    'a flipped verdict is caught — THE DEFECT THIS GROUP EXISTS FOR')
+  check(verdictProblems('fixture', 'prose with no block at all.', TABLE).length > 0,
+    'a surface that dropped its block is caught')
+  check(verdictProblems('fixture', fixture(good.filter((l) => !l.includes('account disabled'))), TABLE).length > 0,
+    'a row quietly deleted from the table is caught')
+  check(verdictProblems('fixture', fixture([...good, '   * ERASE  session failed: whatever']), TABLE).length > 0,
+    'a row invented in the table is caught')
+  check(verdictProblems('fixture', fixture([...good, '   * and device-limit erases, by the way']), TABLE).length > 0,
+    'a sentence smuggled into the block is caught')
+  check(verdictProblems('fixture', fixture(good) + '\nand a device-limit refusal erases the stored keys.', TABLE).length > 0,
+    'a second opinion in the prose OUTSIDE the block is caught')
+  check(verdictProblems('fixture', fixture(good) + '\nthe panel answers device-limit when the slots are full.', TABLE).length === 0,
+    '…while prose that only NAMES a code is left alone')
 
   // --- WHAT A BOOT MAY SPEND AT THE PANEL -----------------------------------------------
   // The other currency of a retry, and the one nothing was counting. A KEPT sign-in is

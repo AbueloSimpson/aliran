@@ -231,6 +231,21 @@ an item that carries one is telling you exactly which claim is still on paper.
   re-keys it**, and that is now written down where an operator will find it.
   Lanes: `test:signin-vault`, `test:signin-resume`.
 
+  **And the erase-or-keep rule is bound to the prose that documents it, not only
+  to the code that implements it.** The type definitions spent a long time telling
+  an SDK embedder to erase on a full device slot — the opposite of what the engine
+  has always done — so a consumer who followed them destroyed a viewer's account
+  keys over an operator's configuration. Each of the three surfaces that describe
+  the rule (`sdk/index.d.ts`, `docs/sdk-guide.md`, `docs/security-model.md`) now
+  carries one machine-readable table between markers; `test:signin-vault`
+  **generates** that table from the panel's own error codes, the engine's own
+  thrown strings and the predicate's own verdict for each, and fails when any copy
+  drifts, loses a row, grows one, or decides anything about a message outside the
+  table. The checker is then run against surfaces broken on purpose, because a
+  guard that quietly stops matching is exactly how the wrong `.d.ts` survived —
+  and how a panel code went invisible to this file once already, when it moved out
+  of a `return json({…})` literal.
+
 - **"Play on my TV" — handoff between two devices of one account.** They meet on
   a rendezvous derived from the account key: no code, no viewer action, a
   once-a-day roll, and a controller that looks up without ever announcing, so a
