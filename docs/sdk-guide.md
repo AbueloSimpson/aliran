@@ -1011,19 +1011,54 @@ start.
 is the one irreversible act here and it costs a viewer a walk to another
 room for a phone.
 
-| Keep and retry | Erase |
-|---|---|
-| `not connected to panel`, a closed channel, a swarm still dialling | `key handover does not match this account` (what a password rotation looks like from here) |
-| A bare `unknown user` — the account record has not replicated to this device yet | A `session` verdict on the **account**: `account disabled`, `unknown user` |
-| A key store that did not answer, or a host that did not answer in time | A stored record that fails its own integrity check |
-| `device-limit` — the operator's slots are full, which frees itself | The operator this record names is no longer this device's operator |
+Every message the panel's `session` responder and the engine's own login
+path can produce, and what each one means for a stored sign-in. The table
+is generated from `client/backend/signin-vault.mjs`, and
+`npm run test:signin-vault` fails when a copy of it drifts — including
+this one. Change the predicate, not the table.
+
+<!-- signin-verdicts: BEGIN — generated; npm run test:signin-vault checks this copy -->
+
+```text
+ERASE  authPriv must be 64 bytes (hex or buffer)
+ERASE  key handover does not match this account
+ERASE  panel returned an invalid session token
+ERASE  session failed: account disabled
+ERASE  session failed: unknown user
+ERASE  the panel issued no session token — the key handover did not sign this device in
+KEEP   invalid credentials
+KEEP   key recovery failed
+KEEP   session failed: auth failed
+KEEP   session failed: bad request
+KEEP   session failed: device-limit
+KEEP   session failed: missing deviceId
+KEEP   session failed: no session challenge (login first)
+KEEP   session failed: sessions unavailable
+KEEP   the panel issued no session challenge — it is too old for a key handover
+KEEP   unknown user
+```
+
+<!-- signin-verdicts: END -->
+
+Two rows differ only by the `session failed: ` prefix, and they are
+opposites. The bare form is thrown after reading **this device's own
+replica** of the signed record, which on a cold start has simply not
+caught up yet; the prefixed one is the panel's own database answering.
+
+Everything the engine can fail on that is not a message on that table
+keeps the keys too: `not connected to panel`, a closed channel, a swarm
+still dialling, a key store that did not answer, a host that did not
+answer in time. Two more conditions erase, and no message can name them
+for you: a stored record that fails its own integrity check, and a record
+naming an operator this device has left.
 
 **"Anything the panel said" is not the rule, and reading it that way
-destroys credentials.** The same responder also answers `bad request`,
-`no session challenge (login first)`, `missing deviceId`, `auth failed`,
-`sessions unavailable` and `device-limit` — a malformed call, a lost
-one-shot challenge, a panel missing its own signing key, an operator
-whose device slots are full. None of those is a judgement on the keys.
+destroys credentials.** Most of what the `session` responder answers is a
+refusal of the **request** or a fact about the operator's configuration —
+a malformed call, a lost one-shot challenge, a panel missing its own
+signing key, an operator whose device slots are full. None of those is a
+judgement on the keys, and the table is the only thing that says which
+ones are.
 
 **Bound your retries by panel logins, not by seconds.** Every attempt
 that reaches the panel spends a `login` the panel's throttle counts, per
