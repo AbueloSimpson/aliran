@@ -751,14 +751,34 @@ an item that carries one is telling you exactly which claim is still on paper.
   of each 86dp tile — the emoji glyph's line box (36dp), the label's top margin (8dp) and
   the focus border (6dp) — did not go through the theme's single density ramp, so only
   36dp per tile answered it. Even at the ramp's documented floor the rail still measured
-  551dp and still clipped. The glyph and the margin now ride the ramp, which brings the
-  rail to 530dp of 540: **with the default six sections, every entry is visible at rest.**
-  Verified on a 1080p TCL set by building and photographing both sides of the fix.
-  Enabling a VOD provider adds a seventh entry and the rail scrolls again, as it is built
-  to — the ScrollView keeps every entry reachable, and shrinking the tiles far enough to
-  force seven onto the screen would cost more legibility than it buys. The television's
-  density ramp is unchanged at 0.72, and the phone tiles are a separate, already-tuned
-  component; both are untouched.
+  551dp and still clipped, which is why the ramp alone was never the lever. The glyph and
+  the margin now ride the ramp, which brought the rail to 530dp of 540 on its own; the
+  television's later step to 0.66 — an operator density preference, not part of this fix
+  — takes it to 496dp. Either way: **with the default six sections, every entry is visible
+  at rest.** Verified on two 1080p TCL sets by building and photographing both sides of
+  the fix. Enabling a VOD provider adds a seventh entry and the rail scrolls again, as it
+  is built to — the ScrollView keeps every entry reachable, and shrinking the tiles far
+  enough to force seven onto the screen would cost more legibility than it buys. The
+  phone tiles are a separate, already-tuned component and are untouched.
+
+  **The suite that was supposed to catch this could not have.** `TvMenuRail` faked the
+  television by assigning `theme.isTV = true` in a `beforeEach` — after the ESM import of
+  `MenuScreen` had already run its `StyleSheet.create`, so the file rendered the TV branch
+  with phone numbers baked in (the phone density ramp, the phone tile rung, glyph 13
+  against the set's 17). The sharp end is the entry count: the Exit tile is gated on the
+  real `Platform.isTV`, which a theme mutation never touches, so **the entry being clipped
+  was not in the rendered tree at all** — no sizing assertion written against that harness
+  could have failed, at any density. Fixed with the pattern the other TV suites already
+  use (`defineProperty` over `Platform.isTV` before the require), plus a guard on the
+  harness itself, so it fails if it ever silently reverts to phone metrics. A fit guard
+  now composes the tile out of the styles the component really rendered and checks that
+  six of them fit a 540dp viewport; text height is the one thing a jest tree cannot
+  supply, so the two line boxes are modelled from ratios measured off device screencaps
+  and rounded **up**, because a fit guard must over-estimate. It reproduces the
+  device-measured figures exactly (496dp for six, 571dp for seven) and returns 608dp for
+  the pre-fix tile against a 602dp measurement, so it demonstrably rejects the layout that
+  shipped rather than passing vacuously. Every other suite that fakes `isTV` was audited
+  for the same defect; the one that legitimately fakes late now says why.
 
 - **A wedged player remounted itself until Android killed the app.** `<AliranVideo>`'s
   stall ladder had no upper bound: while the playhead sat still it remounted every 12

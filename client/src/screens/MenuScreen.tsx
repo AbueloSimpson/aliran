@@ -45,8 +45,8 @@ interface MenuItem {
 // and a horizontal surface wash (left edge → transparent), giving the composite a
 // subtle diagonal drift toward the rail.
 // Menu icon size, trimmed on device. TWO ROUNDS OF 15%, the same way the overall density
-// knob was tuned (theme.ts SCALE: 0.85 → 0.80 → 0.68 phone, 1.0 → 0.8 → 0.72 TV) — the
-// glyphs read too large on both a phone and a television.
+// knob was tuned (theme.ts SCALE: 0.85 → 0.80 → 0.68 phone, 1.0 → 0.8 → 0.72 → 0.66 TV) —
+// the glyphs read too large on both a phone and a television.
 //
 // This factor stays SEPARATE from theme's px()/SCALE ramp so the two decisions stay
 // legible, but the TV rail's glyph now composes the two (px(34 * ICON_SCALE)) — see the
@@ -60,13 +60,13 @@ interface MenuItem {
 //   label marginTop, a literal 8                                  =  8dp
 //
 // so only 36 of the 86 answered SCALE, and no reachable SCALE could close a 62dp gap on
-// its own — even at 0.6 the rail still measured 551dp. The fix is to put the glyph and
-// the marginTop (44 of that 50) ON the ramp, which lands the six-entry rail at 530dp of
-// 540. SCALE stays at 0.72: it is global and already near its floor, so the rail's own
-// geometry is the right place to pay for this (theme.ts carries that reasoning). The
-// 6dp border stays off the ramp deliberately — see the `entry` style. The PHONE tiles
-// (railGlyph/railLabel) are untouched: a different, already-tuned component that does
-// not clip.
+// its own — even at the documented 0.6 floor the rail still measured 551dp. Putting the
+// glyph and the marginTop (44 of that 50) ON the ramp is what actually FIXES it, and it
+// fixed it at SCALE 0.72: 530dp of 540. The operator's later step to 0.66 (theme.ts
+// carries that decision, and it is a density preference rather than a fit) then buys the
+// margin rather than the fit — 496dp of 540. The 6dp border stays off the ramp
+// deliberately — see the `entry` style. The PHONE tiles (railGlyph/railLabel) are
+// untouched: a different, already-tuned component that does not clip.
 const ICON_SCALE = 0.85 * 0.85
 
 const WASH_BANDS = 16
@@ -169,15 +169,18 @@ export function MenuScreen ({ navigation }: Props) {
     // focus — the accent ring is the selection state a remote viewer navigates by.
     // Top-aligned on purpose (no flexGrow/center like the phone rail): a centered
     // overflow in a ScrollView clips the top entries out of reach. The DEFAULT set of
-    // six (no VOD provider) must fit at rest and does — 530dp of a 540dp viewport.
-    // Device-verified on the Android 11 TCL set (1920x1080, density 320) by building
-    // both sides: before the sizing fix SALIR's label was entirely below the fold, after
-    // it the whole tile is on screen. The measured tile pitch was 81dp against the 80dp
-    // (74 tile + 6 gap) this comment predicts, so the model is good to about a dp.
-    // That is a ~10dp margin, so if an entry is ever added to the
-    // default set, re-measure: the lever is this rail's own paddingVertical/gap (see
-    // the `entry` and `tvRailContent` styles), NOT theme's SCALE.
-    // A seventh entry (VOD enabled) takes it to 610dp and it scrolls, which is what
+    // six (no VOD provider) must fit at rest and does — 496dp of a 540dp viewport at the
+    // shipped SCALE of 0.66, device-measured on both TCL sets; it did NOT before the
+    // sizing fix (602dp, SALIR below the fold). The fix itself was device-verified on the
+    // Android 11 set (1920x1080, density 320) by building both sides, at the 0.72 it
+    // landed on first: SALIR's label was entirely below the fold before and the whole
+    // tile on screen after, at 530dp. The measured tile pitch was 81dp against the 80dp
+    // (74 tile + 6 gap) this comment predicts, so the model is good to about a dp — which
+    // is what makes the ~44dp of margin here worth trusting rather than re-measuring.
+    // If an entry is ever added to the default set, re-measure anyway: the lever is this
+    // rail's own paddingVertical/gap (see the `entry` and `tvRailContent` styles), NOT
+    // theme's SCALE.
+    // A seventh entry (VOD enabled) takes it to 571dp and it scrolls, which is what
     // the ScrollView is here for — the rail is reachable, just not all at rest.
     // The wordmark + hero/now-playing lines move to
     // the lower-right hero area, phone-style — the old absolute bottom-left footer
@@ -334,8 +337,11 @@ const styles = StyleSheet.create({
   // These three (entry/glyph/label) are the TV rail's tiles — MenuEntry is rendered only
   // from the isTV branch above, the phone uses railEntry/railGlyph/railLabel — so every
   // number here is a TV number and putting them on the ramp cannot touch the phone.
-  // The TV tile's height budget at SCALE 0.72, which is what has to stay under the
-  // viewport (6 tiles + 5 gaps + 2 × [safeY + spacing(1)] = 530 of 540dp):
+  // The TV tile's height budget. These are the numbers at SCALE 0.72, which is where the
+  // fix landed and where every part of it was measured on device; the ramp has since
+  // stepped to 0.66 by operator decision, which takes the same six-entry rail to 496dp.
+  // Either way it is the rail total — 6 tiles + 5 gaps + 2 × [safeY + spacing(1)] — that
+  // has to stay under a 540dp viewport:
   //
   //   focus border 3 × 2                          =  6dp  off ramp, deliberately
   //   paddingVertical spacing(1.25) × 2           = 22dp
@@ -343,10 +349,16 @@ const styles = StyleSheet.create({
   //   label marginTop px(8)                       =  6dp
   //   label line box  type.label 12 × ~1.17       = 14dp
   //                                                 ----
-  //                                                 74dp
+  //                                                 74dp  → a 530dp rail at 0.72
   //
   // paddingVertical is the lever if this ever needs to give: 1.25 → 1 takes the tile to
   // 70dp and the rail to 506. Reach for that, not theme's SCALE.
+  //
+  // None of those figures is load-bearing on its own, and deliberately so — a budget in a
+  // comment is a budget nothing checks. TvMenuRail's fit guard recomputes this whole sum
+  // from the styles this component actually renders, at whatever SCALE is set, and fails
+  // when six entries stop fitting 540dp. Change a number here and that lane is what tells
+  // you.
   entry: {
     alignItems: 'center', justifyContent: 'center',
     minWidth: theme.isTV ? 132 : 92,

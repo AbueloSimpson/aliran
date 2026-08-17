@@ -26,8 +26,14 @@ const isTV = Platform.isTV
 // took the space out of the name, because the name is the only elastic thing in a row of
 // number + name + LIVE badge + logo. Scaling the whole ramp shrinks the number, the
 // badge, the logo and the lettering together, and the name gets the difference.
-// Tuned on the TCL set: 1.0 → 0.8 (names became readable) → 0.72, the operator's call
-// from an actual viewing distance, which is the only place this question can be settled.
+// Tuned on the TCL set: 1.0 → 0.8 (names became readable) → 0.72 → 0.66, each step the
+// operator's call from an actual viewing distance, which is the only place this question
+// can be settled. The 0.72 → 0.66 step came with the main menu's left rail: six section
+// entries measured 602dp against a 540dp viewport and clipped SALIR off the bottom. The
+// ramp was only half the fix — see MenuScreen's entry/glyph/label styles, which had to be
+// put ON this ramp first (at 0.72 they were 50 of each entry's 86dp, so no reachable
+// SCALE could have closed the gap on its own). With those on the ramp, 0.66 lands the
+// rail at 496dp — a fitting rail with ~44dp of headroom rather than a hairline pass.
 //
 // ⚠ THIS KNOB IS NEAR ITS FLOOR ALREADY — do not reach for it to make one screen fit.
 // It is global (~30 files), and the type it drives is at the bottom of what a 10-foot UI
@@ -43,8 +49,10 @@ const isTV = Platform.isTV
 // So: when a single screen overflows, fix that screen's own geometry. The TV main menu's
 // left rail overflowed a 540dp viewport at 602dp and was fixed entirely inside
 // MenuScreen.tsx, by putting the two parts of its tile that were OFF this ramp (the emoji
-// line box and the label's top margin) ON it. SCALE stayed at 0.72. See MenuScreen's
-// entry/glyph/label styles.
+// line box and the label's top margin) ON it. SCALE stayed at 0.72 for that fix — the
+// step to 0.66 below came afterwards and for a different reason. See MenuScreen's
+// entry/glyph/label styles, and TvMenuRail's fit guard, which recomputes the rail's
+// height from the rendered styles at whatever this knob is set to.
 //
 // (The guide's channel column used to be a constraint here — its parts had to sum inside
 // CH_COL_W. It is not one any more: GuideScreen's chName is `flex: 1` and takes whatever
