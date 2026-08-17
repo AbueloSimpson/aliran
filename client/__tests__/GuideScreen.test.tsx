@@ -10,10 +10,19 @@
 // two-tier tap — first tap selects a row and raises the upper-right preview card
 // (the live thumb's ONE surface), the second tap on the same row tunes.
 
+// WS-event additions: a guide-less row no longer spends its whole strip on "No program
+// information" — it carries the station's full name and the channel list's LIVE badge
+// over that note, and dims off air. On phone that cell is the ONLY place either can be
+// read: this grid's 72dp channel column is a number and a logo, with no name at all.
+
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text, Image } from 'react-native'
+import { Text, Image, StyleSheet } from 'react-native'
+// The badge string comes from the catalog, not an English literal — `common.live` is
+// "LIVE" in en but "EN VIVO"/"IN DIRETTA" elsewhere, and these lanes are about the
+// badge, not the wording. Aliased: several tests below bind a local `t` to a text dump.
+import { t as tr } from '@aliran/i18n'
 
 // RN's FlatList pulls in untranspiled ESM this preset cannot parse (the VodScreen
 // suite's lesson) — replace it with a plain "render every row" list.
@@ -44,6 +53,13 @@ import type { Stream } from '../src/worklet'
 function texts (tree: RendererInstance): string {
   return tree.root.findAllByType(Text).map(t => [t.props.children].flat(9).map(String).join('')).join(' | ')
 }
+
+/** Every Text node printing EXACTLY this string (a count, not a substring hit). */
+function printing (tree: RendererInstance, exact: string) {
+  return tree.root.findAllByType(Text)
+    .filter((n: any) => [n.props.children].flat(9).map(String).join('') === exact)
+}
+const flat = (n: any) => (StyleSheet.flatten(n.props.style) || {}) as Record<string, any>
 
 const mounted: RendererInstance[] = []
 async function createTree (el: React.ReactElement): Promise<RendererInstance> {
@@ -182,7 +198,12 @@ test('overlay mode: first tap selects (preview card, no tune); second tap on the
   await ReactTestRenderer.act(async () => { rowFor(tree, 'Shop TV').props.onPress() })
   expect(onTune).not.toHaveBeenCalled()
   const t = texts(tree)
-  expect(t).toContain('Shop TV') // the card names the placed channel
+  // SCOPED TO THE CARD, not "the string is somewhere in the tree": a guide-less row now
+  // prints its own name in its empty cell, so a bare substring hit would pass even if
+  // the card never rendered. The card's line is the only one pairing NUMBER with name.
+  expect(printing(tree, 'Shop TV')).toHaveLength(1) // the row's empty-cell name
+  expect(tree.root.findAllByType(Text).some((x: any) =>
+    /^\d{3}\s+Shop TV$/.test([x.props.children].flat(9).map(String).join('')))).toBe(true)
   expect(t).toContain('Tap again to watch') // the second-tap teaching line
   // The card carries the live thumb — the ONE ?t= probe in the whole guide.
   expect(tree.root.findAllByType(Image).some((i) => /feedthumb\/shop-tv\?t=/.test(i.props.source.uri))).toBe(true)
@@ -289,4 +310,139 @@ test('guide chip: hidden when there is nothing to send', async () => {
   ;(backend as any).streams = [guided, guideless]
   const tree = await createTree(<GuidePanel playingId={null} onTune={jest.fn()} onSendToTv={jest.fn()} />)
   expect(texts(tree)).not.toContain('PLAY ON TV')
+})
+
+// ─── What a GUIDE-LESS row says (the television grid's treatment, on phone) ───────
+//
+// It used to say one thing: "No program information" across a two-hour strip of
+// nothing, beside a channel column of a number and a logo. On this operator's lineup
+// that is not an edge case — it is the LIVE EVENTS rails, whose channels rotate
+// through one fixture after another and carry no EPG at all, so the row's entire
+// information is its title and whether it is on air, and the phone grid was printing
+// NEITHER. The empty cell now carries what IS known, over the honest no-schedule note,
+// which stays (D2 — never fake a program) as a footnote.
+
+const OFF_LOGO = 'http://127.0.0.1:1234/assets/mlb-2/logo.png'
+const ON_LOGO = 'http://127.0.0.1:1234/assets/mlb-1/logo.png'
+// The rotating events: no epgUrl/epgId/guideBase at all, so nothing is ever fetched for
+// them and the strip is empty by construction — the rows this treatment is for.
+const event: Stream = { id: 'mlb-1', title: 'Yankees vs Red Sox', isLive: true, logo: ON_LOGO }
+const eventOff: Stream = { id: 'mlb-2', title: 'Dodgers vs Giants', isLive: false, logo: OFF_LOGO }
+
+// preview defaults to 'none', so nothing selects and NO preview card mounts — every
+// count below is the grid's own rows and nothing else.
+async function eventGrid (): Promise<RendererInstance> {
+  const now = Date.now()
+  jest.spyOn(epg, 'getPrograms').mockResolvedValue([{ title: 'On Air Now', start: now - 6e5, stop: now + 6e5 }])
+  ;(backend as any).streams = [guided, event, eventOff]
+  return createTree(<GuidePanel playingId="moon-cat" onTune={jest.fn()} />)
+}
+
+const imageWithUri = (tree: RendererInstance, uri: string) =>
+  tree.root.findAllByType(Image).find((i: any) => i.props.source.uri === uri)!
+
+test('a guide-less row spends its empty strip on the station\'s FULL name', async () => {
+  const tree = await eventGrid()
+  // ONCE — and that count is the point. The phone's channel column is a number and a
+  // logo with no name box at all, so the empty cell is the only place the name prints;
+  // this also pins that we did NOT go widen that 72dp column to add one. (The TV grid
+  // asserts twice here, because its column does carry a name.)
+  expect(printing(tree, 'Yankees vs Red Sox')).toHaveLength(1)
+  // A row WITH a schedule shows its programs, not its name — the name belongs in the
+  // empty cell only, never pasted over everyone's cells.
+  expect(printing(tree, 'Moon Cat')).toHaveLength(0)
+  expect(printing(tree, 'On Air Now')).toHaveLength(1)
+})
+
+/** The exact strings printed in the same cell line as `name` — i.e. its siblings. */
+function lineWith (tree: RendererInstance, name: string): string[] {
+  const node = printing(tree, name)[0]
+  if (!node) return []
+  return node.parent!.findAllByType(Text)
+    .map((n: any) => [n.props.children].flat(9).map(String).join(''))
+}
+
+test('…and on whether it is on air, in the channel list\'s badge', async () => {
+  const tree = await eventGrid()
+  // Exactly one badge in the grid…
+  expect(printing(tree, tr('common.live'))).toHaveLength(1)
+  // …AND it is on the live event's own line. The count alone would pass just as well
+  // with the guard inverted — the badge would simply move to the off-air row.
+  expect(lineWith(tree, 'Yankees vs Red Sox')).toContain(tr('common.live'))
+  expect(lineWith(tree, 'Dodgers vs Giants')).not.toContain(tr('common.live'))
+})
+
+test('an off-air channel dims, guide or no guide — the channel list\'s grammar', async () => {
+  const tree = await eventGrid()
+  const off = printing(tree, 'Dodgers vs Giants')
+  const on = printing(tree, 'Yankees vs Red Sox')
+  // Both guarded: an unguarded for-of over an empty array is a test that passes
+  // because the thing it checks stopped rendering.
+  expect(off).toHaveLength(1)
+  expect(on).toHaveLength(1)
+  for (const node of off) expect(flat(node).opacity).toBe(0.5)
+  for (const node of on) expect(flat(node).opacity).toBeUndefined()
+  // The column's logo carries it too — with no name there, the logo IS the identity.
+  expect(flat(imageWithUri(tree, OFF_LOGO)).opacity).toBe(0.5)
+  expect(flat(imageWithUri(tree, ON_LOGO)).opacity).toBeUndefined()
+})
+
+// THE TWO STYLE PROPERTIES THE CELL ACTUALLY DEPENDS ON, because nothing else in this
+// suite would notice their loss — react-test-renderer runs no layout, so every other
+// lane here would stay green with the cell rendering at the wrong size or clipping the
+// wrong half of its content.
+test('the note is SMALLER than the name above it, and carries its own explicit size', async () => {
+  const tree = await eventGrid()
+  const note = printing(tree, tr('live.noProgramInfo'))[0]
+  const name = printing(tree, 'Yankees vs Red Sox')[0]
+  // The trap this pins: `cellEmpty` had no fontSize of its own while it was composed
+  // onto the same <Text> as `cellTitle`. On its own line without one, RN falls back to
+  // 14dp and the footnote prints LARGER than the station name.
+  expect(typeof flat(note).fontSize).toBe('number')
+  expect(flat(note).fontSize).toBeLessThan(flat(name).fontSize)
+})
+
+test('the NAME is what gives way on a narrow strip, never the badge', async () => {
+  const tree = await eventGrid()
+  // ChannelRow's rule (its titleLine): the name shrinks, the badge keeps its intrinsic
+  // width. `common.live` is 4 characters in en and 10 in it ("IN DIRETTA"), so on the
+  // 192dp strip floor a badge without this would be the thing that got ellipsized.
+  expect(flat(printing(tree, 'Yankees vs Red Sox')[0]).flexShrink).toBe(1)
+  expect(flat(printing(tree, tr('common.live'))[0]).flexShrink).toBeUndefined()
+})
+
+test('a record with NO isLive at all is unknown, not off air — it must not dim', async () => {
+  // The strict `=== false` guard. Plenty of catalog records carry no isLive; dimming
+  // them would mark half a lineup dead on the strength of a missing field.
+  jest.spyOn(epg, 'getPrograms').mockResolvedValue([])
+  ;(backend as any).streams = [{ id: 'unknown-1', title: 'Silent Channel' }]
+  const tree = await createTree(<GuidePanel playingId={null} onTune={jest.fn()} />)
+  const name = printing(tree, 'Silent Channel')
+  expect(name).toHaveLength(1)
+  expect(flat(name[0]).opacity).toBeUndefined()
+  // And no badge either — absent is not "live" (the same `stream.isLive &&` guard).
+  expect(printing(tree, tr('common.live'))).toHaveLength(0)
+})
+
+test('the honest "no schedule" answer is still there — a name is not a program', async () => {
+  const tree = await eventGrid()
+  // D2: the grid never invents a program. Two guide-less rows, two notes.
+  expect(printing(tree, tr('live.noProgramInfo'))).toHaveLength(2)
+})
+
+test('a row whose first fetch is still in flight says NOTHING about its schedule (WS17)', async () => {
+  // The treatment lives strictly in the `visible.length === 0` arm, never the skeleton
+  // one: claiming "no schedule" — in ANY form, including a bare name-and-badge card —
+  // while the first EPG fetch runs is the exact bug useEpgProgramsState exists to stop.
+  let resolve!: (p: any[]) => void
+  jest.spyOn(epg, 'getPrograms').mockReturnValue(new Promise((r) => { resolve = r }))
+  ;(backend as any).streams = [guided, event]
+  const tree = await createTree(<GuidePanel playingId={null} onTune={jest.fn()} />)
+  expect(printing(tree, 'Moon Cat')).toHaveLength(0) // skeleton cells, not the treatment
+  expect(printing(tree, tr('live.noProgramInfo'))).toHaveLength(1) // the event row alone
+  expect(printing(tree, tr('common.live'))).toHaveLength(1) //  …and its badge alone
+  await ReactTestRenderer.act(async () => { resolve([]) })
+  // Resolved empty → NOW the guided row is genuinely guide-less and takes the treatment.
+  expect(printing(tree, 'Moon Cat')).toHaveLength(1)
+  expect(printing(tree, tr('common.live'))).toHaveLength(2)
 })

@@ -11,7 +11,7 @@
 import React from 'react'
 import ReactTestRenderer from 'react-test-renderer'
 import type { ReactTestRenderer as RendererInstance } from 'react-test-renderer'
-import { Text, StyleSheet } from 'react-native'
+import { Text, ScrollView, StyleSheet } from 'react-native'
 
 const { Platform } = require('react-native')
 const realIsTV = Object.getOwnPropertyDescriptor(Platform, 'isTV')!
@@ -113,4 +113,25 @@ test('focusing the selected item keeps the accent pill (active beats focused)', 
   const { tree } = await rail()
   await ReactTestRenderer.act(async () => { row(tree, 'All').props.onFocus() })
   expect(pillBg(tree, 'All')).toBe(theme.colors.accent)
+})
+
+// ─── Fit: the rail is bounded by its PANEL, never by its own content ───
+
+test('a parent with more sub-categories than fit scrolls inside the rail, instead of growing past it', async () => {
+  // Nacional, on the operator's lineup: far more children than a 540dp television
+  // viewport holds.
+  const many = Array.from({ length: 40 }, (_, i) => ({ key: `Nacional/${i}`, label: `SUB ${i}` }))
+  const { tree } = await rail({ items: many, selected: 'Nacional/0', parentHeader: { label: 'Nacional', onBack: jest.fn() } })
+  const scroll = tree.root.findByType(ScrollView)
+  // THE REGRESSION, in the only place a unit test can see it: these two were
+  // `flexGrow: 0`, and RN defaults flexShrink to 0 as well, so the rail laid out at its
+  // CONTENT height — nothing bounded it, and the extra items simply drew past the bottom
+  // of the rail's own rounded panel, over the video. The ScrollView could not save it
+  // either: a ScrollView scrolls only when a PARENT bounds its height, so at content
+  // height there was no overflow to scroll and the spill WAS the scrolling. `flex: 1`
+  // (grow and shrink) hands both the pane's height.
+  expect(StyleSheet.flatten(scroll.props.style)?.flex).toBe(1)
+  expect(StyleSheet.flatten(scroll.parent?.props.style)?.flex).toBe(1)
+  // …and the items are all still THERE, reachable by scrolling rather than clipped away.
+  expect(row(tree, 'SUB 39')).toBeTruthy()
 })

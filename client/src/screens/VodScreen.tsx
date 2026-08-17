@@ -372,7 +372,17 @@ export function VodScreen ({ navigation }: Props) {
           contentContainerStyle={styles.grid}
           initialNumToRender={columns * 4}
           windowSize={5}
-          removeClippedSubviews
+          // …BUT NOT CLIPPING, ON A TELEVISION. removeClippedSubviews does not change
+          // what is MOUNTED (windowSize and initialNumToRender decide that, above) — it
+          // DETACHES the mounted tiles that are off-screen from the native view tree, and
+          // on Android a detached view is also out of FOCUS SEARCH. The tiles ARE this
+          // grid's focusables (the open press, the My-List long press, and the first
+          // tile's preferred focus all live on them), so a DOWN press on the last visible
+          // row finds nothing below it and focus wraps back to the top of the grid, taking
+          // the scroll with it — the channel list's "it goes down four or five channels
+          // and jumps back up", on posters. Phone keeps the flag: touch has no focus to
+          // lose.
+          removeClippedSubviews={!theme.isTV}
           getItemLayout={getItemLayout}
           onScrollToIndexFailed={onScrollToIndexFailed}
           viewabilityConfigCallbackPairs={viewabilityPairs}

@@ -934,8 +934,11 @@ export function LiveScreen ({ route, navigation }: Props) {
   // no focus strip (a strip is only found by a key that moves focus), so they arrive from
   // the Activity instead — see channelKeys.ts. Only while fullscreen: with a panel up the
   // viewer is browsing, and zapping the picture out from under them is not what the key
-  // means there. The tune scope stays LIVE across the effect's closure: zap() reads it
-  // through tuneScopeRef at press time (the deps only refresh streams/playingId).
+  // means there. THE KEYS ARE NOT IDLE THEN — the channel list takes them over and pages
+  // itself a screenful (ChannelListPanel's pager), the same gesture the guide grid has;
+  // this early return is what keeps the two from both answering one press. The tune scope
+  // stays LIVE across the effect's closure: zap() reads it through tuneScopeRef at press
+  // time (the deps only refresh streams/playingId).
   useEffect(() => onChannelKey((direction) => {
     if (overlayRef.current !== 'none') return
     zap(direction === 'up' ? 1 : -1)

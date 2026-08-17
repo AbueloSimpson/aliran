@@ -436,6 +436,48 @@ an item that carries one is telling you exactly which claim is still on paper.
   in** — a real answer in place of a date the panel would have to guess. An entry from an
   older panel still shows its real expiry until that device signs in again.
 
+- **The phone guide could not tell you which channel a guide-less row even was, let alone
+  whether it was on air.** The curated live-events channels rotate through one fixture after
+  another and carry no EPG at all, so each of their rows spent a two-hour strip saying "No
+  program information" — and on phone that was the row's *entire* text, because this grid's
+  72dp channel column is a number and a station logo with no name box at all. A viewer who
+  could not read the logo could not identify the channel, and nothing anywhere on the row
+  said whether the event had started. The empty cell now spends that width on what **is**
+  known: the station's full name and the channel list's LIVE pill on one line, over the
+  honest no-schedule note, which stays — the grid still never invents a program — as the
+  smaller half of the cell. Off-air channels dim in the channel list's own grammar, guide or
+  no guide. This is the treatment the television guide already had, ported across; the two
+  grids are parallel implementations with independently written styles, and the phone one
+  differs where the hosts differ — it drops the TV's per-cell focus styling (a phone row has
+  no focus; the whole row highlights), it prints the name **once** rather than twice (the TV
+  column has a name box and repeats it), and it raises the name a type step instead of
+  lowering the note, because the phone note was already at the bottom of the ramp.
+
+  The badge reads the same `isLive` the channel list does, and it means what it means there:
+  for a **redirect** channel that is the panel's liveness truth — the prober flips it false
+  after a url has been dead for N sweeps and back on the first success, which is exactly what
+  an event slot does between fixtures — but a **peer-to-peer** channel never expires it,
+  because the broadcaster heartbeat only ever writes `true`. There it says "the broadcaster
+  is running", not "this event has started". A record carrying no `isLive` at all is treated
+  as unknown: it neither dims nor gets a badge, and renders exactly as it did before.
+
+  Eight new lanes in the phone guide suite pin the name (and its count, which is what stops a
+  future change quietly widening that column), the badge and *which row* carries it, the
+  dimming, the strict absent-vs-false rule, the surviving no-schedule note, the two style
+  properties the cell depends on, and the one that matters most — that none of it appears
+  while the first EPG fetch is still in flight, which is the whole reason that row tracks a
+  `ready` flag separately from an empty result.
+
+  ⚠ **Not device-verified, and the suite cannot verify it.** The renderer these tests use
+  performs no layout, so nothing here proves two lines fit a 50dp row on a handset — that is
+  arithmetic done by hand (~24dp of a 38dp content box, holding to Android's 1.3× font-scale
+  maximum) plus two lanes that pin the *inputs* to it: that the note declares a size at all,
+  and that the name is the element that shrinks. Only a real phone settles the rest.
+  ⚠ The empty cell keys on "nothing in **this window**", not "no guide at all" — so paging
+  the grid past the end of an ordinary channel's feed (it pages to +48 h; few feeds reach
+  that) also shows the name, with a present-tense LIVE badge in a cell that may be a day
+  away. The television guide does the same; both are worth a second look together.
+
 - **Retiring a channel rewrote every subscriber's whole account record — once per channel —
   and it filled a 24 GB disk.** Adding channels was already batched: one pass over the
   accounts, one write per account, however many channels arrived. Removing them was not.
@@ -540,6 +582,93 @@ an item that carries one is telling you exactly which claim is still on paper.
   size lies. It measures a 5.94 → 1.06 MiB reclaim across a prune, pins the purge queue
   through a failed purge and a rotation landing mid-drain, and reproduces the write/rotate
   race. ⚠ Verified locally and in CI only — not yet observed on the production box.
+
+- **The television's left menu came apart on a long category.** Three separate faults in
+  the browse overlay, all of them only visible once a category is longer than the screen —
+  which on this operator's lineup is most of them.
+
+  *The category rail grew past its own panel.* A parent with many sub-categories (Nacional)
+  drew its last children below the rail's rounded panel, over the video. The rail and its
+  scroll view were laid out `flexGrow: 0`, and React Native defaults `flexShrink` to 0 as
+  well, so the rail took its **content** height and nothing bounded it; the scroll view
+  could not save it either, because a scroll view only scrolls when a parent bounds its
+  height — at content height there was no overflow to scroll, and the spill *was* the
+  scrolling. Both now take the pane's height (`flex: 1`), so a long parent scrolls inside
+  the panel and the D-pad carries the scroll with it.
+
+  *Holding DOWN walked four or five channels and jumped back to the top.* The channel list
+  ran with `removeClippedSubviews`, which detaches off-screen rows from the native view
+  tree — and on Android a detached view is also out of **focus search**. The rows are this
+  list's focusables, so a DOWN press on the last visible row found nothing below it and
+  focus wrapped back to the start of the list, taking the scroll with it. Holding the key
+  made it certain, because a smooth scroll is still in flight when the next press arrives;
+  pressing slowly gave Android time to scroll, re-attach and find the row, which is exactly
+  why it "worked if you went slower". The flag is now off on television and kept on phone,
+  where touch has no focus to lose. This is **not** a mounted-window change: `windowSize`
+  and `initialNumToRender` are untouched, so the per-row EPG cost that those two govern is
+  identical. The guide grid keeps the flag, its rows holding nothing focusable at all.
+
+  *And there was no fast way through 200 channels.* The remote's CHANNEL UP/DOWN buttons
+  now page the channel list a screenful at a time — the gesture the guide grid has always
+  had, on the surface a viewer actually browses. The page is measured from the panel's own
+  height (one row of overlap, so you can see where you came from), it pages from where the
+  D-pad is rather than from the top, it stops at both ends instead of wrapping, and the
+  row it lands on is asked to take the focus — a scroll that left the focus behind would
+  strand the next press on an off-screen row. In fullscreen the same keys still zap, which
+  is what they did before; the two never both answer one press.
+
+  ⚠ Covered by a new unit suite (paging, clamping, measurement, the focus hand-off and the
+  clipping rule) and by a rail-fit lane, but **not yet run on the TCL sets**: the focus
+  behaviour these fix is Android's, and only the set can confirm the hold-to-scroll feel.
+
+- **Two more television lists had the same detached-row fault.** The clipping half of the
+  entry above was never specific to the channel list. `removeClippedSubviews` detaches the
+  mounted-but-off-screen cells from the native view tree, on Android a detached view is
+  also out of focus search, and *any* list whose cells are its focusables therefore loses
+  the D-pad at the bottom edge of the screen and wraps back to the top. Two others were
+  running with it on.
+
+  *The Movies & Series poster grid* — the one of the two a viewer can reach on a set today,
+  wherever the panel has a VOD provider configured. Its tiles carry the open press, the My
+  List long press and the grid's TV preferred focus, so a DOWN press off the last visible
+  row found nothing below it and jumped back to the first poster, scroll and all.
+
+  *The in-player search results*, whose cards are Pressables in the same way. That panel is
+  still phone-gated — television has its own Search screen — so nothing was broken on a set
+  here; but the component is deliberately written D-pad ready, and the flag would have been
+  sitting there waiting for whoever adopted it.
+
+  Both now do what the channel list does: the flag is off on television, kept on phone
+  where touch has no focus to lose. Neither is a mounted-window change — `windowSize` and
+  `initialNumToRender` are untouched in both, so the number of live cells — and with it the
+  poster downloads the VOD grid pays for — is exactly what it was. The television guide
+  grid still keeps the flag: focus there is virtual and its rows hold nothing focusable at
+  all.
+
+  ⚠ Covered by a regression lane each — the flag off on television, the mounted window
+  unchanged, and the cells shown to be the focusables that make it matter — but, like the
+  channel list's, **not yet exercised on a television**: what these fix is Android's own
+  focus search, and only the set can confirm the feel.
+
+- **The full-screen guide could not tell a live event from one that had finished.** The
+  curated Live Events rails are rotating channels — a slot that carries one fixture after
+  another — and they have no EPG at all, so every one of their rows spent a two-hour strip
+  saying "No program information", beside a channel column that can only hold a logo and
+  about 100dp of two-line name. "Yankees vs Red Sox 8:00 PM" is not a name that fits that,
+  and nothing on the row said whether the event was on air. The empty cell now spends its
+  width on what **is** known: the station's full name and the channel list's own LIVE
+  badge, over the honest no-schedule note, which stays (the grid still never invents a
+  program) as the smaller half of the cell. Off-air channels dim in the channel list's
+  grammar, guide or no guide.
+
+  ⚠ The badge reads the same `isLive` the channel list does. For redirect channels that is
+  the panel's liveness truth — the prober flips it false after a url has been dead for N
+  sweeps and back on the first success, which is exactly what a rotating event slot does
+  between fixtures — but a **peer-to-peer channel never expires it**, because the
+  broadcaster heartbeat only ever writes `isLive: true`. On those the badge means "the
+  broadcaster is running", not "this event has started". ⚠ Television grid only: the phone
+  guide's guide-less cell is untouched, and its channel column shows a number and a logo
+  with no name at all.
 
 - **The desktop player blamed itself for a channel that was dead upstream.** On the one
   condition the phone and the television both call "Channel offline" — a redirect channel

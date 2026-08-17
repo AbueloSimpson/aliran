@@ -27,7 +27,10 @@
 // the channel FlatList, under the same mounted-window discipline as the TV grid —
 // every mounted row runs an EPG fetch (the thumb probe left the rows with WS11 —
 // only the single preview card probes). Tapping a row tunes its channel (or selects,
-// see above); guide-less rows show the honest "No program information" cell (D2).
+// see above); guide-less rows spend that empty strip on what IS known about the
+// channel — its full name and the channel list's LIVE badge — over the honest "No
+// program information" note, which stays (D2 — never fake a program) as the smaller
+// half of the cell. Off-air channels dim in the list's grammar, guide or no guide.
 //
 // Header chips (phone, LiveScreen guide mode): SEARCH and "Play on TV", both there for
 // the same reason — portrait's resting state is this guide and the NowPlayingBar only
@@ -322,6 +325,17 @@ function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW
   // Once per row render, not once per title site (catalog.displayTitle).
   const title = displayTitle(stream)
 
+  // OFF AIR, in the channel list's own grammar (ChannelRow: the name dims, the badge
+  // is withheld). `isLive` is the panel's liveness truth — the redirect prober flips
+  // it false on a url dead for N sweeps and back on the first success (panel
+  // liveness.js), which is exactly the state an event channel lands in between
+  // fixtures; a PEER-TO-PEER channel never expires it, because the broadcaster
+  // heartbeat only ever writes true, so there it reads "the broadcaster is running",
+  // not "this event has started".
+  // ⚠ STRICTLY === false. A record with no isLive at all is UNKNOWN, not off air, and
+  // must render exactly as it does today.
+  const offAir = stream.isLive === false
+
   return (
     <Pressable
       style={[styles.row, playing && styles.rowPlaying, selected && styles.rowSelected]}
@@ -331,10 +345,19 @@ function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW
       onPress={onPress}
     >
       <View style={styles.chCol}>
+        {/* The NUMBER keeps its full weight — it is an addressing handle, not
+            identity, and it is the one part of the row that stays true off air. The
+            logo box is the identity here (this column has no name — see the empty
+            cell below), so it is what carries the dim.
+            ⚠ That EXTENDS the channel list's grammar rather than copying it:
+            ChannelRow dims the title and the vod runtime badge and leaves its logo
+            at full strength. It follows the TELEVISION guide's column instead, which
+            dims logo and name together — the two guides should agree, and a column
+            with no text has nothing else to say "off air" with. */}
         <Text style={[styles.chNumber, selected && styles.chTextSelected]}>{formatChannelNumber(number)}</Text>
         {stream.logo
-          ? <Image source={{ uri: stream.logo }} style={styles.chLogo} resizeMode="contain" accessibilityLabel={title} />
-          : <View style={[styles.chLogo, styles.chLogoFallback]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
+          ? <Image source={{ uri: stream.logo }} style={[styles.chLogo, offAir && styles.dimmed]} resizeMode="contain" accessibilityLabel={title} />
+          : <View style={[styles.chLogo, styles.chLogoFallback, offAir && styles.dimmed]}><Text style={[styles.chInitial, selected && styles.chTextSelected]}>{(title || '?').slice(0, 1).toUpperCase()}</Text></View>}
       </View>
       <View style={[styles.strip, { width: stripW }]}>
         {!ready
@@ -342,7 +365,34 @@ function GuideRowPhone ({ stream, number, playing, selected, windowStart, stripW
           : visible.length === 0
           ? (
             <View style={[styles.cell, styles.cellAtStart, { width: stripW }]}>
-              <Text style={[styles.cellTitle, styles.cellEmpty]} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
+              {/* THE STATION'S FULL NAME AND WHETHER IT IS ON AIR — because on a
+                  guide-less row this cell is the only place either can be read. The
+                  phone's channel column is 72dp of number + logo and carries no name
+                  at all, so before this the row said literally nothing about which
+                  channel it was unless the viewer could read the logo. The rows where
+                  that bites are the rotating EVENT channels, whose "schedule" IS the
+                  title ("Yankees vs Red Sox") and which carry no EPG at all. Here the
+                  whole 2 h strip is free, so the name is shown whole, in the channel
+                  list's own vocabulary (LIVE pill, dimmed when off air). The honest
+                  "no schedule" answer (D2 — never fake a program) keeps its own line
+                  underneath as the smaller half, which is the right weight for the
+                  least useful thing in the cell.
+
+                  ⚠ THIS ARM IS "NOTHING IN THIS WINDOW", NOT "NO GUIDE AT ALL".
+                  `visible` is an OVERLAP test against the paged 2 h window
+                  (guide.ts visiblePrograms), so a perfectly well-guided channel lands
+                  here too once the viewer pages past the end of its feed — the grid
+                  pages out to +48 h and few feeds reach that — or across an overnight
+                  schedule gap. The name is right there either way; the LIVE badge is
+                  the part that reads oddly, because it is present tense in a cell
+                  that may be 30 hours from now. The television grid behaves
+                  identically (this is a port of it), so the two stay consistent
+                  rather than one of them being quietly "fixed" here. */}
+              <View style={styles.emptyLine}>
+                <Text style={[styles.cellTitle, styles.emptyTitle, offAir && styles.dimmed]} numberOfLines={1}>{title}</Text>
+                {stream.isLive && <Text style={styles.live}>{t('common.live')}</Text>}
+              </View>
+              <Text style={styles.cellEmpty} numberOfLines={1}>{t('live.noProgramInfo')}</Text>
             </View>
             )
           : visible.map((p) => {
@@ -605,7 +655,38 @@ const styles = StyleSheet.create({
   cellTitle: { color: theme.colors.text, fontSize: theme.type.caption, fontWeight: '700' },
   cellTime: { color: theme.colors.textDim, fontSize: theme.type.caption - 2, fontVariant: ['tabular-nums'], marginTop: 1 },
   cellPast: { opacity: 0.5 },
-  cellEmpty: { color: theme.colors.textDim, fontStyle: 'italic', fontWeight: '400' },
+
+  // The guide-less cell's two lines. `cell` itself is NOT touched — SkeletonCells
+  // shares it, and reshaping it would reshape the loading silhouette too.
+  //
+  // THE ROW HEIGHT DOES NOT MOVE FOR THIS (getItemLayout and the styles must agree
+  // exactly). `cell` is PH_ROW_INNER_H = 50 tall, less its 2dp border and 4dp padding
+  // per side = 38dp of content box. At Roboto's ~1.27x line box: the first line is set
+  // by the BADGE, not the name — the pill's 8dp text plus its 1dp padding per side is
+  // 12.2dp against the 9dp name's 11.4 — and the note is another 10.2 + its 2dp
+  // margin. ~24.4dp of 38, so the pair fits with room to spare and nothing above
+  // needs to move. ⚠ That headroom is what absorbs the OS font-scale setting: it
+  // still fits at Android's 1.3x maximum (~32dp) and first clips at ~1.7x, where
+  // `cell`'s justifyContent:center + overflow:hidden would trim BOTH ends.
+  emptyLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  // The name goes UP one step (caption → label) rather than the note going down: on
+  // phone `cellTitle` is already `caption`, so shrinking the note would land it at
+  // `caption - 1` — the idiom theme.ts says to RETIRE, not to add sites to.
+  // flexShrink so the NAME is what gives way on a narrow strip (ChannelRow's rule):
+  // the badge is the widest-varying part across locales ("IN DIRETTA", "EN DIRECT",
+  // "EN VIVO") and it must never be the thing that gets clipped.
+  emptyTitle: { fontSize: theme.type.label, flexShrink: 1 },
+  // Its own <Text> now, so it needs its own size — composed onto cellTitle it used to
+  // inherit one, and without this it would fall back to RN's default 14dp and print
+  // LARGER than the name above it.
+  cellEmpty: { color: theme.colors.textDim, fontSize: theme.type.caption, fontStyle: 'italic', marginTop: 2 },
+  // ChannelRow's LIVE badge vocabulary (filled pill), at plain `caption` rather than
+  // the `caption - 2` that site uses — this cell has width to spare, and at the phone
+  // ramp `caption - 2` is 6dp. No new site below the type floor. It reads on the
+  // cell's own dark surface in both row states: a SELECTED row's light fill lands
+  // behind the cell, never under it (see rowSelected).
+  live: { color: theme.colors.onPrimary, backgroundColor: theme.colors.live, fontSize: theme.type.caption, fontWeight: '800', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 3, overflow: 'hidden' },
+  dimmed: { opacity: 0.5 },
   cellHairline: { position: 'absolute', left: 6, right: 6, bottom: 3 },
 
   nowFloat: {
