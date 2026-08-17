@@ -166,6 +166,58 @@ The position in the array sets the curation `order`, and the panel ignores an
 source. The panel ignores category strings in the feed, so a provider never names
 your rails. The panel also ignores all other fields.
 
+### Event sources (`ephemeral`) - a feed, not a ledger
+
+A list of live sports matches is not a channel lineup. Five hundred entries
+live a few hours each, and roughly half are replaced every half-hour sync. The
+panel's signed database is append-only and **nothing can ever reclaim it**, so
+carrying that churn in the catalog costs hundreds of megabytes a day that only
+a full offline compaction gets back.
+
+Mark such a source **`ephemeral`** and its channels go into a separate events
+drive instead. A sync of an ephemeral source writes **nothing at all** to the
+signed database - no channel record, no stream key, no grant - and an old
+revision of the list is genuinely deleted, so the space comes back.
+
+```bash
+# dashboard: Sources tab (API/MCP field `ephemeral`), or on the CLI:
+node src/admin-cli.js add-source events https://provider.example/events.m3u --format m3u --category "Live Events" --prefix ev. --ephemeral
+node src/admin-cli.js set-source events --ephemeral true   # or turn it on later
+```
+
+> **Turn it on only once your viewer apps are updated.** An app that does not
+> know about the events drive cannot see those channels, and the first sync
+> after you switch the flag on removes them from the catalog - so on an older
+> app they simply disappear. That first sync is also the one write this costs:
+> every sync after it is free.
+
+Two more things change for an ephemeral source, and both are automatic:
+
+- **Entitlement is by source, not by channel.** A viewer record carries a short
+  `eventSources` list naming the sources they may watch, instead of a key per
+  event. `autoGrant` still means "everyone gets this"; with `autoGrant: false`,
+  put the source in a [package](user-management.md) and its holders get it.
+  Bouquet selectors (`source:`, `category:`, globs) work exactly as before.
+  Entitlement follows the source **as registered**, not what it is currently
+  carrying: an `autoGrant` ephemeral source is granted to everyone the moment
+  you add it, before its first pull, and it stays granted through a night when
+  the provider's list is empty. That is deliberate - it is what stops a feed
+  that goes quiet from rewriting every viewer record twice.
+- **The program guide still works.** The EPG service reads this drive as well as
+  the catalog, matching the same `epgId` - see [EPG service](epg-service.md).
+  (Keep `epg` off for an event list anyway: providers share one placeholder
+  guide id across a whole day of matches.)
+
+Deleting an ephemeral source clears its list off the drive and updates every
+viewer who was entitled to it, in one pass. That pass is the one write a
+removal costs, and it is per entitled viewer - so delete sources deliberately
+rather than as a way of tidying up.
+
+The drive rotates itself every `EVENTS_EPOCH_DAYS` so its own index cannot grow
+without limit. `DATA_DIR/events-epoch.json` records which epoch is current and
+**must travel with the rest of `DATA_DIR`** in any restore - see
+[backup and rotation](kb/backup-and-rotation.md).
+
 ### Playlist (M3U) sources
 
 Set `format: 'm3u'` (dashboard source dialog, `--format m3u` on the CLI, or `format`

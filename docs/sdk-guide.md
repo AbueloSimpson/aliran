@@ -1016,14 +1016,24 @@ room for a phone.
 | `not connected to panel`, a closed channel, a swarm still dialling | `key handover does not match this account` (what a password rotation looks like from here) |
 | A bare `unknown user` — the account record has not replicated to this device yet | A `session` verdict on the **account**: `account disabled`, `unknown user` |
 | A key store that did not answer, or a host that did not answer in time | A stored record that fails its own integrity check |
-| `device-limit` — the operator's slots are full, which frees itself | The operator this record names is no longer this device's operator |
+| `device-limit` — the operator's slots are full, and slots free | The operator this record names is no longer this device's operator |
+| `busy` — the panel lost a write race and asked you to try again | |
 
 **"Anything the panel said" is not the rule, and reading it that way
 destroys credentials.** The same responder also answers `bad request`,
 `no session challenge (login first)`, `missing deviceId`, `auth failed`,
-`sessions unavailable` and `device-limit` — a malformed call, a lost
+`sessions unavailable`, `device-limit` and `busy` — a malformed call, a lost
 one-shot challenge, a panel missing its own signing key, an operator
-whose device slots are full. None of those is a judgement on the keys.
+whose device slots are full, and a moment of contention. None of those is
+a judgement on the keys.
+
+A note on `device-limit`, because the reason it keeps has changed even
+though the answer has not. A device enrolment no longer expires on its own,
+so a slot no longer frees itself simply by waiting: it frees when a viewer
+signs another device out, when an admin revokes one, when the operator
+raises the limit, or when a new device evicts the least recently used one.
+Keeping is if anything more clearly right than before — a device that erased
+would have to redo a handover to meet a limit that will not clear itself.
 
 **Bound your retries by panel logins, not by seconds.** Every attempt
 that reaches the panel spends a `login` the panel's throttle counts, per

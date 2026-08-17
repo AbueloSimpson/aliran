@@ -315,12 +315,19 @@ They are listed because storing keys makes it worth saying out loud which lever 
 the real one: **change the password.**
 
 **`device-limit`, and why it keeps.** It is the one refusal on that list that reads
-like a verdict and is not, and treating it as one was a defect. Slots free
-themselves: an enrolment expires (30 days) or a viewer signs another device out, and
-the identical stored keys work again. Erasing gains the viewer nothing — they must
-then redo a handover *and* still meet the same limit — while keeping costs one
-refused login per boot until a slot opens. It belongs with `sessions unavailable`:
-a fact about the operator's configuration, not a judgement on an account.
+like a verdict and is not, and treating it as one was a defect. Slots free: a viewer
+signs another device out, an admin revokes one, the operator raises the limit, or a
+new device evicts the least recently used one — and the identical stored keys work
+again. Erasing gains the viewer nothing — they must then redo a handover *and* still
+meet the same limit — while keeping costs one refused login per boot until a slot
+opens. It belongs with `sessions unavailable`: a fact about the operator's
+configuration, not a judgement on an account.
+
+An enrolment used to lapse on its own after `SESSION_TTL_DAYS`, which made "wait and
+the slot frees itself" literally true. It no longer does — enrolments are durable, and
+only the four levers above remove one. The classification is unchanged and the
+argument for it is stronger, not weaker: waiting alone will not clear the limit for a
+device that erased either.
 
 Two qualifications, and they cut opposite ways. It is **unreachable on a default
 deployment**: `devicePolicy` defaults to `evict` and nothing the panel ships passes
@@ -727,7 +734,7 @@ floor (19 MiB, t=2) and in RFC 9106 territory.
 | Argon2id — panel login | 256 MiB, t=3 | Strong. Runs in a worker thread, single-flight, so cost cannot stall the loop. |
 | Argon2id — control/reseller admins | 64 MiB, t=2 | Adequate for interactive admin login (≥ OWASP floor); same worker/single-flight protection. |
 | `POW_DIFFICULTY` | 16 leading zero bits | Reasonable admission control; per-attempt, connection-bound (below). |
-| `SESSION_TTL_DAYS` | 30 | Intentional (returning users work offline); revocation is online via `tokenVersion`. |
+| `SESSION_TTL_DAYS` | 30 | Intentional (returning users work offline); revocation is online via `tokenVersion`. Bounds the signed token only — the device's enrollment is durable, and per-device revoke still drops it immediately. |
 | admin/control session TTL | 12 h | Appropriate for a privileged HTTP session. |
 | `LOCKOUT_THRESHOLD` / `LOCKOUT_SECONDS` | 10 / 900 s | Reasonable fixed window; the counter map is now bounded (below). |
 

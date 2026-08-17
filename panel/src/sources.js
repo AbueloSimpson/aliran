@@ -67,6 +67,33 @@
 // Bee frugality: unchanged entries are compared and NOT re-put — a sync of an
 // unchanged feed (or a 304) appends nothing to the Hyperbee.
 //
+// EPHEMERAL SOURCES (`ephemeral: true`, default FALSE) — a feed, not a ledger (S57).
+// Frugality is not enough for an EVENT lineup. ~550 match channels live a few hours each
+// and roughly half are replaced per 30-minute sync, so the entries genuinely CHANGE every
+// cycle and every change is a block the append-only bee can never reclaim — measured at
+// 200-660 MB/day (docs/kb/panel-bee-compaction.md). An ephemeral source therefore writes
+// NOTHING to the bee at all:
+//
+//   - no catalog/<id> record — its channels are published as a per-source shard into the
+//     events Hyperdrive instead (src/events.js), where a superseded revision is cleared
+//     and its bytes come back
+//   - no minted stream secret, and therefore no sealed per-user grant: reconcileGrants is
+//     not run. Entitlement is `user.eventSources` (packages.js), a ~200-byte list of
+//     SOURCE names written only when an admin changes bouquets
+//   - nothing in catalogSnapshot, because there is nothing in the catalog
+//
+// ⚠ `ephemeral` is ORTHOGONAL to `autoGrant` and must never be folded into it. autoGrant
+// keeps its meaning ("everyone gets this source") and is now expressed through
+// eventSources rather than through sealed keys; reusing autoGrant:false to mean ephemeral
+// would drop the source out of the package reconcile's carve-out and strip every viewer's
+// entitlement in one pass (packages.js states that rule where it is enforced).
+//
+// ⚠ FLIPPING IT ON IS A ONE-WAY DOOR FOR OLD CLIENTS. The first sync after the flip
+// PURGES the source's catalog records — that is the point, and it is why the flag ships
+// default-off: a viewer app that does not yet read the events drive loses those channels
+// the moment an operator flips it. That purge is the only bee write an ephemeral source
+// ever makes; every sync after it appends exactly zero blocks.
+//
 // Registry: DATA_DIR/sources.json (plain — nothing secret in it; secrets/ stays
 // reserved for credential material).
 
@@ -177,6 +204,27 @@ function checkEpgFormat (format, epg, epgUrl) {
   if (format === 'm3u') return
   if (epg != null && normBool(epg)) bad("epg applies to m3u sources only — a json feed already carries its own guide ids (set format to 'm3u')")
   if (epgUrl != null && String(epgUrl).trim() !== '') bad("epgUrl applies to m3u sources only — a json feed's own url is already its guide pointer (set format to 'm3u')")
+}
+
+// An event's WINDOW, when the feed declares one. Third-party data, so it is parsed rather
+// than trusted and normalized to ISO-8601 UTC — a client that shows "starts 19:00" must not
+// be handed a provider's local string with no zone. Anything unparseable becomes null,
+// because a wrong time is worse than no time on an events rail.
+//
+// This is read ONLY on the ephemeral path (events.js canonicalEntry). applyFeed builds its
+// catalog record field by field, so an extra key on a mapped entry is invisible to the
+// non-ephemeral path — which is what keeps today's catalog records byte-identical.
+export function normEventTime (v) {
+  if (v == null || v === '') return null
+  // Bare seconds/milliseconds since the epoch are what most providers emit; anything else
+  // goes through Date's own parser.
+  const s = String(v).trim()
+  let ms = null
+  if (/^\d{9,10}$/.test(s)) ms = Number(s) * 1000
+  else if (/^\d{12,13}$/.test(s)) ms = Number(s)
+  else { const t = Date.parse(s); if (Number.isFinite(t)) ms = t }
+  if (ms == null || !Number.isFinite(ms)) return null
+  try { return new Date(ms).toISOString() } catch { return null }
 }
 
 function normCategoryLabel (v) {
@@ -396,6 +444,11 @@ export function addSource (ctx, name, opts = {}) {
     category: normCategoryLabel(opts.category),
     prefix: normPrefix(opts.prefix, name),
     autoGrant: opts.autoGrant == null ? true : normBool(opts.autoGrant),
+    // Feed, not ledger (see the header): this source's channels live in the events drive
+    // and never touch the signed bee. OFF by default and it must stay a deliberate
+    // decision — turning it on empties the lineup of every viewer app that does not yet
+    // read the drive, so no upgrade may ever set it for an operator.
+    ephemeral: opts.ephemeral == null ? false : normBool(opts.ephemeral),
     enabled: opts.enabled == null ? true : normBool(opts.enabled),
     // Source-scoped cleartext exemption (see normRedirectUrl in ops.js): OFF by default,
     // so a source imports https-only until the operator deliberately opts a provider in.
@@ -471,6 +524,15 @@ export function setSource (ctx, name, fields = {}) {
   if (fields.category != null) s.category = normCategoryLabel(fields.category)
   if (fields.prefix != null) s.prefix = normPrefix(fields.prefix, name)
   if (fields.autoGrant != null) s.autoGrant = normBool(fields.autoGrant)
+  // Same ETag dance as format/groups/epg, and here it is the strongest case of all: the
+  // bytes are identical and the flag decides WHERE they land — the signed bee or the
+  // events drive. A cached ETag would answer 304, skip the whole re-map, and leave the
+  // channels exactly where the operator just asked them not to be.
+  if (fields.ephemeral != null) {
+    const next = normBool(fields.ephemeral)
+    if (next !== !!s.ephemeral) s.etag = null
+    s.ephemeral = next
+  }
   if (fields.enabled != null) s.enabled = normBool(fields.enabled)
   if (fields.allowCleartext != null) {
     // Like format/groups/exclude, this changes how the SAME feed bytes MAP: an http entry
@@ -534,14 +596,21 @@ export function setSource (ctx, name, fields = {}) {
   return { name, ...s }
 }
 
-// Registry + a live count of owned catalog entries per source (one catalog scan).
+// Registry + a live count of owned entries per source (one catalog scan). An EPHEMERAL
+// source owns nothing in the catalog, so its count comes from the events drive instead —
+// counting its catalog records would report a confident 0 for a source that is carrying
+// 550 channels.
 export async function listSources (ctx) {
   const sources = loadSources(ctx.dataDir)
   const counts = {}
   for await (const { value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
     if (value && value.source) counts[value.source] = (counts[value.source] || 0) + 1
   }
-  return Object.entries(sources).map(([name, s]) => ({ name, ...s, channels: counts[name] || 0 }))
+  return Object.entries(sources).map(([name, s]) => ({
+    name,
+    ...s,
+    channels: s.ephemeral === true && ctx.events ? ctx.events.entries(name).length : counts[name] || 0
+  }))
 }
 
 // Remove a source. Default PURGES its channels (ops.deleteStreams: catalog + secret +
@@ -604,6 +673,15 @@ async function doRemove (ctx, name, opts) {
   const key = ctx.dataDir + '\n' + name
   const sources = loadSources(ctx.dataDir)
   if (!hasOwn(sources, name)) notFound(`no such source: ${name}`)
+  // ⚠ REFUSE BEFORE ANYTHING MOVES. An ephemeral source's channels are a shard of the
+  // events drive, and without a manager we cannot drop it — skipping that step would delete
+  // the registry entry and STRAND the shard: still in /v1/index.json, copied into every
+  // future epoch by rotate(), still in snapshot() so the liveness prober keeps probing dead
+  // urls, and unreachable by any future code path because the source no longer exists.
+  // Refusing here (rather than after `enabled:false` is persisted) leaves nothing to undo.
+  if (sources[name].ephemeral === true && !ctx.events) {
+    bad(`source "${name}" is ephemeral but this context holds no events drive — run it against a panel store, or its published shard would be stranded`)
+  }
   // Everything above ran synchronously, so `purging` already holds this call by the time
   // the first await below yields — which is what makes the doSync gate reliable.
   const wasEnabled = sources[name].enabled
@@ -633,12 +711,39 @@ async function doRemove (ctx, name, opts) {
       removed = done.ok.length
       failed = done.failed
     }
+    // An ephemeral source's channels live in the events drive, so `owned` above is empty
+    // and neither branch reached them. Drop the whole shard — cleared, then deleted, so
+    // the bytes come back rather than sitting in the drive for the life of the epoch.
+    // keepChannels has no meaning here: there is nothing to detach INTO, since a detached
+    // channel is by definition a catalog record. Say so in the count rather than pretending.
+    //
+    // ⚠ REFUSE rather than skip when there is no events manager (applyEphemeral takes the
+    // same stance). Silently skipping deletes the registry entry and STRANDS the shard: it
+    // stays in /v1/index.json for ever, gets copied into every future epoch by rotate(),
+    // stays in snapshot() so the liveness prober keeps probing dead urls, and no code path
+    // can ever reach it again because the source it belonged to no longer exists.
+    let shardDropped = false
+    if (sources[name].ephemeral === true) shardDropped = (await ctx.events.dropSource(name)).dropped === true
     // Re-load before persisting — a purge can run for minutes and an admin may have
     // edited the registry meanwhile (the same rule doSync follows).
     const fresh = loadSources(ctx.dataDir)
     delete fresh[name]
     saveSources(ctx.dataDir, fresh)
-    return { name, removed, detached, ...(failed.length ? { failed } : {}) }
+    // The catalog path leaves grants converged by construction (deleteStreams strips them),
+    // but `eventSources` is derived from the REGISTRY, and the registry entry has only just
+    // gone. Without this pass every holder keeps the dead source name until the next sync of
+    // any source happens to reconcile — and pays a full record rewrite then, off a trigger
+    // that has nothing to do with the removal.
+    //
+    // ⚠ THIS IS A BEE WRITE ON A PATH THAT HAD NONE, and it is worth naming rather than
+    // discovering: removing an ephemeral source rewrites one record per ENTITLED user —
+    // on production that is ~510 KB each. It is bounded and correct (a removal is a
+    // bouquet change, exactly the event `eventSources` is allowed to cost a write for),
+    // and it happens once per removal rather than per sync. But an operator who deletes
+    // ten sources in a row is spending ten passes over the user table, so do it
+    // deliberately, not as a way of tidying up.
+    if (sources[name].ephemeral === true) await reconcilePackages(ctx)
+    return { name, removed, detached, ...(shardDropped ? { shardDropped } : {}), ...(failed.length ? { failed } : {}) }
   } catch (err) {
     // Put `enabled` back. A half-finished removal already costs the operator a repair;
     // it must not ALSO leave a source that has quietly stopped importing with nothing
@@ -757,7 +862,12 @@ function mapFeed (source, feed, { maxChannels }) {
       logo,
       order: Math.min(i, 9999),
       epgUrl: source.url, // schedule lives in the same feed — a future client fetches it on demand
-      epgId: rawId
+      epgId: rawId,
+      // The event WINDOW, under the spellings providers actually use. Read by the ephemeral
+      // path only (see normEventTime); a catalog record has never carried it and still does
+      // not, so nothing about a non-ephemeral source's records changes.
+      startsAt: normEventTime(ch.startsAt ?? ch.start ?? ch.startTime ?? ch.start_at),
+      endsAt: normEventTime(ch.endsAt ?? ch.end ?? ch.stop ?? ch.endTime ?? ch.end_at)
     })
   }
   // `filtered` counts what the m3u filters (group + name) left out; a json feed has neither
@@ -891,6 +1001,11 @@ export function parseM3U (text) {
         tvgName: attrs['tvg-name'] || '',
         logo: attrs['tvg-logo'] || '',
         group: attrs['group-title'] || '',
+        // No standard attribute names an event's window, but the providers that DO carry one
+        // spell it these ways. Carried raw and normalized in mapM3U (the trust boundary lives
+        // there, not here); read only on the ephemeral path.
+        start: attrs.start || attrs['tvg-start'] || attrs['start-time'] || '',
+        stop: attrs.stop || attrs.end || attrs['tvg-stop'] || attrs['end-time'] || '',
         url: '',
         headers: {}
       }
@@ -1098,7 +1213,9 @@ function mapM3U (source, text, { maxChannels }) {
       // source.url either: pointing a client at the playlist it is already playing would
       // have it fetch a channel list where it expects a schedule.
       epgUrl: null,
-      epgId: epgOn ? String(e.tvgId || '').trim().slice(0, 128) || null : null
+      epgId: epgOn ? String(e.tvgId || '').trim().slice(0, 128) || null : null,
+      startsAt: normEventTime(e.start),
+      endsAt: normEventTime(e.stop)
     })
   }
   // THE DUPLICATE-ID GUARD — the reason `epg` is opt-in at all.
@@ -1165,9 +1282,20 @@ export async function sourceChannels (ctx, name) {
   const isM3U = (s.format || 'json') === 'm3u'
   const slugOf = (key) => key.slice('catalog/'.length + (s.prefix || '').length)
   const channels = []
-  for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
-    if (value && value.source === name) {
-      channels.push({ feedId: isM3U ? slugOf(key) : value.epgId || slugOf(key), id: key.slice('catalog/'.length), title: value.title, order: value.order ?? null, excluded: false })
+  if (s.ephemeral === true && ctx.events) {
+    // The imported half comes from the events drive, not the catalog — the dialog is the
+    // one place an operator SEES what a source is carrying, and for an ephemeral source
+    // the catalog answer is a confident, wrong zero. The `feedId` rule is unchanged (it is
+    // what `exclude` is keyed on, so it must stay the id the MAPPER tests).
+    for (const e of ctx.events.entries(name)) {
+      const slug = e.id.slice((s.prefix || '').length)
+      channels.push({ feedId: isM3U ? slug : e.epgId || slug, id: e.id, title: e.title, order: e.order ?? null, excluded: false })
+    }
+  } else {
+    for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+      if (value && value.source === name) {
+        channels.push({ feedId: isM3U ? slugOf(key) : value.epgId || slugOf(key), id: key.slice('catalog/'.length), title: value.title, order: value.order ?? null, excluded: false })
+      }
     }
   }
   channels.sort((a, b) => (a.order ?? 1e9) - (b.order ?? 1e9))
@@ -1331,6 +1459,73 @@ async function applyFeed (ctx, name, mapped) {
   return report
 }
 
+// ---------------------------------------------------------------- apply (ephemeral)
+
+// applyFeed's counterpart for an EPHEMERAL source (see the file header). It appends ZERO
+// blocks to the signed bee by construction — there is no catalog put, no secret to mint and
+// no grant to seal — and publishes the whole lineup as one shard of the events drive
+// instead, where a superseded revision is cleared and its bytes come back.
+//
+// One catalog scan does two jobs, and both of them are reads:
+//
+//   - the ONE-TIME TRANSITION. A source flipped from ordinary to ephemeral still owns
+//     catalog records, secrets and sealed grants from before the flip. Leaving them would
+//     show every channel twice (once from the bee, once from the drive) and defeat the
+//     whole point, so the first ephemeral sync purges them through the same batched
+//     deleteStreams a removal uses — ONE pass over the users, at most one put each. That
+//     purge is the only bee write an ephemeral source ever makes; from the second sync on
+//     `owned` is empty and this costs a scan.
+//   - CONFLICTS, the same rule applyFeed enforces from the other side: an id a manual or
+//     foreign channel already holds in the catalog is left out of the shard, because a
+//     viewer merging the two lists would otherwise see one id twice and pick by luck.
+async function applyEphemeral (ctx, name, mapped) {
+  if (!ctx.events) bad(`source "${name}" is ephemeral but this context holds no events drive — run it against a panel store`)
+  const owned = []
+  const foreign = new Set()
+  for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
+    const id = key.slice('catalog/'.length)
+    if (value && value.source === name) owned.push(id)
+    else if (value) foreign.add(id)
+  }
+  // …and the OTHER SHARDS, which are the half a catalog scan cannot see. applyFeed refuses
+  // an id a manual or foreign channel already holds; two ephemeral sources publishing the
+  // same id is that same clash one level over, and left alone it is silent: the index would
+  // carry the id under two shards, listSources would count it twice, and a client merging
+  // the shards would render the channel twice and pick a url by luck. INCUMBENT WINS, the
+  // rule applyFeed already follows — the source that is already publishing an id keeps it.
+  const published = ctx.events.snapshot()
+  // A filtered COPY, never a mutation of `mapped`: doSync reads mapped.entries.size back for
+  // the emptiedByFilter warning, and quietly shrinking it here would make a conflict look
+  // like a filter that matched nothing.
+  const conflicts = []
+  const publishable = new Map()
+  for (const [id, m] of mapped.entries) {
+    if (foreign.has(id)) { conflicts.push(id); continue }
+    const holder = published.get(id)
+    if (holder && holder.source && holder.source !== name) { conflicts.push(id); continue }
+    publishable.set(id, m)
+  }
+  const catalogPurged = owned.length ? (await deleteStreams(ctx, owned, { tolerant: true })).ok.length : 0
+  const pub = await ctx.events.publish(name, publishable)
+  return {
+    added: pub.added,
+    updated: pub.updated,
+    removed: pub.removed,
+    unchanged: pub.unchanged,
+    conflicts,
+    epgSkipped: 0,
+    // Drive-side facts an operator needs to reason about the feature at all: which file
+    // viewers are being pointed at, and whether this cycle cost the drive anything.
+    ephemeral: true,
+    published: pub.count,
+    shard: pub.shard,
+    driveRev: pub.rev,
+    driveChanged: pub.changed,
+    // Non-zero exactly once per source, on the sync that follows the flip.
+    catalogPurged
+  }
+}
+
 // ---------------------------------------------------------------- grants
 
 // Seal the stream secrets of `ids` to every user missing them (or one user via
@@ -1409,12 +1604,21 @@ async function doSync (ctx, name) {
       // blinking to zero on every 304.
       // `subcats` rides with them too — the derived rails are a reading of the body, and
       // the channels really are still on them, so a 304 must not report "no sub-rails".
-      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, epgSkipped: source.lastReport?.epgSkipped ?? 0, epgDeclared: source.lastReport?.epgDeclared ?? null, emptiedByFilter: false, subcats: source.lastReport?.subcats ?? null, subcatOverflow: source.lastReport?.subcatOverflow ?? 0 }
+      // The ephemeral fields ride with `filtered` for the same reason: the shard viewers are
+      // being pointed at has not moved, so a 304 must report the file it really is serving
+      // rather than blinking to "no shard". `driveChanged` is the exception — it describes
+      // THIS cycle, and this cycle changed nothing.
+      report = { notModified: true, added: 0, updated: 0, removed: 0, unchanged: null, conflicts: [], skipped: [], skippedCount: 0, truncated: 0, excluded: (source.exclude || []).length, filtered: source.lastReport?.filtered ?? 0, epgSkipped: source.lastReport?.epgSkipped ?? 0, epgDeclared: source.lastReport?.epgDeclared ?? null, emptiedByFilter: false, subcats: source.lastReport?.subcats ?? null, subcatOverflow: source.lastReport?.subcatOverflow ?? 0, ...(source.ephemeral === true ? { ephemeral: true, published: source.lastReport?.published ?? 0, shard: source.lastReport?.shard ?? null, driveRev: source.lastReport?.driveRev ?? null, driveChanged: false, catalogPurged: 0 } : {}) }
     } else {
       // One dispatch, two mappers, one contract — everything downstream (applyFeed, the
       // report, the dashboard) is format-blind.
       const mapped = format === 'm3u' ? mapM3U(source, fetched.text, cfg) : mapFeed(source, fetched.feed, cfg)
-      const applied = await applyFeed(ctx, name, mapped)
+      // …and one more dispatch, on WHERE the mapped lineup lands. Both appliers return the
+      // same report shape, so the mappers, the report, the registry and the dashboard stay
+      // blind to this too. The whole of the ephemeral difference is these two lines.
+      const applied = source.ephemeral === true
+        ? await applyEphemeral(ctx, name, mapped)
+        : await applyFeed(ctx, name, mapped)
       report = {
         notModified: false,
         ...applied,
@@ -1447,9 +1651,18 @@ async function doSync (ctx, name) {
     }
     // Grants reconcile on EVERY sync (304 included): users created since the last
     // sync converge without any feed change.
-    report.granted = source.autoGrant !== false ? await reconcileGrants(ctx, await ownedIds(ctx, name)) : 0
+    //
+    // ⚠ NEVER for an ephemeral source. Its channels have no minted secret, so this pass
+    // could seal nothing anyway — but it would still walk every user record, and the point
+    // of the flag is that a sync of 550 events touches the signed bee zero times. `granted`
+    // reports 0 rather than null: nothing was sealed, and that is a measurement, not a gap.
+    report.granted = source.ephemeral !== true && source.autoGrant !== false
+      ? await reconcileGrants(ctx, await ownedIds(ctx, name))
+      : 0
     // Package reconcile rides every sync too (S44): a `source:`/`category:`/glob
-    // member may cover channels this sync just imported, retagged or removed.
+    // member may cover channels this sync just imported, retagged or removed. It runs for
+    // an ephemeral source as well, and appends nothing once converged — its job there is
+    // `user.eventSources`, which only moves when a bouquet does.
     await reconcilePackages(ctx)
 
     // Re-load before persisting — an admin may have edited the registry while we fetched.
@@ -1476,7 +1689,12 @@ async function doSync (ctx, name) {
         emptiedByFilter: !!report.emptiedByFilter, // the filters matched nothing and the rail was pruned
         subcats: report.subcats ?? null, // m3u + autoSubcategory only: the sub-rails this sync derived
         subcatOverflow: report.subcatOverflow ?? 0, // entries pushed to the parent by the distinct-rail cap
-        granted: report.granted
+        granted: report.granted,
+        // Ephemeral only (absent on every other source, so a dashboard reading an ordinary
+        // row sees exactly what it saw before): the drive file viewers are pointed at,
+        // whether this cycle cost the drive anything at all, and the one-time count of
+        // catalog records the flip retired.
+        ...(report.ephemeral ? { ephemeral: true, published: report.published, shard: report.shard, driveRev: report.driveRev, driveChanged: !!report.driveChanged, catalogPurged: report.catalogPurged } : {})
       }
       saveSources(ctx.dataDir, fresh)
     }

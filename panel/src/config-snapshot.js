@@ -203,7 +203,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const catShape = (c) => [c.label, c.order ?? null, !!c.hidden]
 const pkgShape = (p) => [p.label, p.members, !!p.default]
 
-const SOURCE_FIELDS = ['url', 'category', 'prefix', 'autoGrant', 'enabled', 'intervalMs', 'exclude', 'format', 'groups', 'titleInclude', 'titleExclude', 'autoSubcategory', 'allowCleartext', 'epg', 'epgUrl']
+const SOURCE_FIELDS = ['url', 'category', 'prefix', 'autoGrant', 'ephemeral', 'enabled', 'intervalMs', 'exclude', 'format', 'groups', 'titleInclude', 'titleExclude', 'autoSubcategory', 'allowCleartext', 'epg', 'epgUrl']
 
 // Sources diff PER FIELD, exactly like streamDiff and for the same reason: an artifact
 // written before a field existed does not MENTION that field, and "not mentioned" has to
@@ -410,7 +410,7 @@ export async function apply (ctx, env, opts = {}) {
       if (d && !Object.keys(d).length) continue
       try {
         if (!cur) {
-          sources.addSource(ctx, name, { url: s.url, category: s.category, prefix: s.prefix, autoGrant: s.autoGrant, enabled: s.enabled, intervalMs: s.intervalMs, exclude: s.exclude, format: s.format, groups: s.groups, titleInclude: s.titleInclude, titleExclude: s.titleExclude, autoSubcategory: s.autoSubcategory, allowCleartext: s.allowCleartext, epg: s.epg, epgUrl: s.epgUrl })
+          sources.addSource(ctx, name, { url: s.url, category: s.category, prefix: s.prefix, autoGrant: s.autoGrant, ephemeral: s.ephemeral, enabled: s.enabled, intervalMs: s.intervalMs, exclude: s.exclude, format: s.format, groups: s.groups, titleInclude: s.titleInclude, titleExclude: s.titleExclude, autoSubcategory: s.autoSubcategory, allowCleartext: s.allowCleartext, epg: s.epg, epgUrl: s.epgUrl })
         } else {
           sources.setSource(ctx, name, d)
         }

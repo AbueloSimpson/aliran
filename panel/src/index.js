@@ -38,7 +38,10 @@ export async function startPanel () {
   const keys = openKeys(config.dataDir)
   if (!keys) { console.error('No panel keys. Run: node src/admin-cli.js init'); process.exit(1) }
 
-  const { store, db, assets, updates } = await openStore(config.dataDir, keys)
+  const { store, db, assets, updates, events } = await openStore(config.dataDir, keys, {
+    eventsEpochDays: config.events.epochDays,
+    eventsGraceHours: config.events.graceHours
+  })
   const panelPubKey = b4a.toString(keys.signing.publicKey, 'hex')
   // Service pairing code: a 12-character alias for the key above, DERIVED from it with
   // a memory-hard KDF (core/pairing.js). Nothing is minted or stored — it is a property
@@ -71,7 +74,7 @@ export async function startPanel () {
   // provenance fields (manualGrants/packages). Idempotent: a converged deployment
   // appends nothing, so this is silent and free on every later boot.
   const pkgCount = Object.keys(loadPackages(config.dataDir)).length
-  const rec = await reconcilePackages({ config, keys, db, assets, updates, dataDir: config.dataDir })
+  const rec = await reconcilePackages({ config, keys, db, assets, updates, events, dataDir: config.dataDir })
   if (rec.users > 0) console.log(`[packages] reconciled ${pkgCount} package(s): +${rec.sealed} sealed, -${rec.removed} removed across ${rec.users} user record(s)`)
   else if (pkgCount > 0) console.log(`[packages] ${pkgCount} package(s) registered — all user grants converged`)
 
@@ -148,7 +151,7 @@ export async function startPanel () {
     // pairingCode is passed in ALREADY DERIVED: /api/status is polled by every open
     // dashboard, and the KDF that makes the code hard to grind would make that endpoint
     // expensive to serve. It is constant for the life of the keypair anyway.
-    admin = await startAdminServer({ config, keys, db, assets, updates, dataDir: config.dataDir, swarm, activity, analytics, reports, notifier, pairingCode: code }, {
+    admin = await startAdminServer({ config, keys, db, assets, updates, events, dataDir: config.dataDir, swarm, activity, analytics, reports, notifier, pairingCode: code }, {
       host: config.admin.host,
       port: config.admin.port,
       sessionTtlMs: config.admin.sessionTtlHours * 3600000,
@@ -160,15 +163,35 @@ export async function startPanel () {
   // Remote channel sources (S27): pull provider JSON feeds on their intervals and
   // materialize them as redirect-channel categories. Runs in-process for the same
   // single-writer reason as the admin API.
-  const sourcesSched = makeSourcesScheduler({ config, keys, db, assets, updates, dataDir: config.dataDir, activity })
-  const sourceCount = Object.keys(loadSources(config.dataDir)).length
+  const sourcesSched = makeSourcesScheduler({ config, keys, db, assets, updates, events, dataDir: config.dataDir, activity })
+  const allSources = loadSources(config.dataDir)
+  const sourceCount = Object.keys(allSources).length
+  const ephemeralCount = Object.values(allSources).filter((s) => s.ephemeral === true).length
   if (sourceCount > 0) console.log(`Channel sources: ${sourceCount} registered — due feeds sync ~${Math.round(config.sources.bootDelayMs / 1000)}s after boot, then every tick.`)
 
+  // Ephemeral event channels (src/events.js). Nothing to run when no source asked for it:
+  // the drive is minted on first publish, so a deployment with no ephemeral source has no
+  // drive, no bee pointer and no maintenance tick. The tick that DOES run is hourly and
+  // does two things — rotate the epoch when it ages out (bounding the drive's own
+  // append-only metadata bee) and purge every retired epoch whose grace has passed.
+  const eventsTimers = []
+  if (ephemeralCount > 0 || events.enabled) {
+    const info = events.driveInfo()
+    console.log(info
+      ? `Events drive: ${ephemeralCount} ephemeral source(s) — epoch ${info.epoch}, rev ${info.rev}, key ${info.key.slice(0, 16)}… (meta/eventsKey). Their channels are NOT in the signed catalog; rotates every ${config.events.epochDays}d.`
+      : `Events drive: ${ephemeralCount} ephemeral source(s) registered — the drive is minted on the first sync that publishes one.`)
+    const t = setInterval(() => { events.maintain().catch((err) => console.warn('[events] maintain:', err.message || err)) }, 3600000)
+    if (t.unref) t.unref()
+    eventsTimers.push(t)
+  }
+
   // Redirect-channel liveness (src/liveness.js): probes redirect urls and flips
-  // isLive so dead links dim in the viewer's list instead of spinning forever.
-  const liveness = makeLivenessProber({ config, db, activity })
+  // isLive so dead links dim in the viewer's list instead of spinning forever. It reads
+  // BOTH the catalog and the events drive — a drive-sourced event with no probe would
+  // render permanently live, which is the failure that module exists to prevent.
+  const liveness = makeLivenessProber({ config, db, activity, events })
   console.log(config.liveness.intervalMinutes > 0
-    ? `Redirect liveness: probing redirect urls every ${config.liveness.intervalMinutes} min — a url dead ${config.liveness.failsToFlip} sweeps dims (isLive:false), the first success undims. LIVENESS_INTERVAL_MINUTES=0 disables.`
+    ? `Redirect liveness: probing redirect urls every ${config.liveness.intervalMinutes} min — a url dead ${config.liveness.failsToFlip} sweeps dims (isLive:false), ${config.liveness.successesToFlip === 1 ? 'the first success undims' : `${config.liveness.successesToFlip} consecutive successes undim`}. LIVENESS_INTERVAL_MINUTES=0 disables.`
     : 'Redirect liveness: DISABLED (LIVENESS_INTERVAL_MINUTES=0) — dead redirect urls stay listed as live.')
 
   // Analytics sampling (S48). Fast tick (5 min): the swarm connection count — every
@@ -206,9 +229,9 @@ export async function startPanel () {
     console.log('Viewer reports: DISABLED (REPORTS_RETENTION_DAYS=0) — the `report` RPC method is not served.')
   }
 
-  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); analytics.close(); reports.close(); notifier.close(); sourcesSched.close(); liveness.close(); if (admin) await admin.close(); await enrich.close(); await swarm.destroy(); await store.close(); process.exit(0) }
+  const shutdown = async () => { for (const t of analyticsTimers) clearInterval(t); for (const t of eventsTimers) clearInterval(t); analytics.close(); reports.close(); notifier.close(); sourcesSched.close(); liveness.close(); if (admin) await admin.close(); await enrich.close(); await events.close(); await swarm.destroy(); await store.close(); process.exit(0) }
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown)
-  return { swarm, store, db, keys, admin, enrich, sourcesSched, liveness, analytics, reports, notifier }
+  return { swarm, store, db, keys, admin, enrich, sourcesSched, liveness, analytics, reports, notifier, events }
 }
 
 // Run directly (not when imported by a test).

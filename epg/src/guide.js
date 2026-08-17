@@ -22,6 +22,21 @@
 // and matches each provider channel id against the catalog records' admin-owned
 // `epgId` field. Files are written under the STREAM id; viewers never see provider
 // ids. Unmatched provider ids surface in status() as an operator to-do.
+//
+// …and the EVENTS half of that mapping. An `ephemeral` source's channels are
+// deliberately NOT in the catalog (panel/src/events.js): they are published as
+// shards of a second panel-owned drive, advertised under meta/eventsKey. A mapping
+// built from catalog/* alone would therefore go silently blind to exactly the
+// channels an operator most often turns a guide on for, so this service reads that
+// drive too and merges its epgIds in. The CATALOG WINS a duplicate, which is the
+// same incumbent rule first-mapping-wins already expresses: a record that exists
+// beats one being published.
+//
+// It is POLLED, not watched. A second bee.watch(range) would be a second watcher to
+// go permanently deaf at a panel fork (docs/kb/panel-bee-compaction.md), and what is
+// polled is one small index file whose `rev` short-circuits the whole pass when
+// nothing changed. A panel with no ephemeral source advertises no meta/eventsKey and
+// the poll costs a single bee read.
 
 import fs from 'fs'
 import path from 'path'
@@ -91,7 +106,14 @@ export class GuideManager {
     //   prev: <derived mirror of the newest pending entry — see _saveState> }
     this._state = null
     this._maintaining = false // _maintain runs off a bare setInterval; never let two overlap
-    this._map = new Map() // providerId(epgId) -> streamId
+    this._map = new Map() // providerId(epgId) -> streamId, from the panel CATALOG
+    // …and the same mapping for channels that live in the panel's events drive instead.
+    // Kept as its own map so the catalog stays the incumbent on a duplicate however the
+    // two are refreshed, and so a failed events read can never blank the catalog mapping.
+    this._eventsDrive = null
+    this._eventsKeyHex = null
+    this._eventsRev = null
+    this._eventsMap = new Map() // providerId(epgId) -> streamId, from the events drive
     this._unmatched = new Map() // providerId -> count of guide entries we could not place
     this._puts = 0 // drive appends since boot (frugality telemetry)
     this._skips = 0 // byte-compare skips since boot
@@ -147,6 +169,15 @@ export class GuideManager {
       this._swarm.join(hcrypto.hash(panelKey), { client: true, server: false })
       this._watchCatalog()
       await this._rebuildMapping().catch(() => {}) // first pass is best-effort; the watch retries
+      // Events-drive mapping (see the header): polled, first pass best-effort. 0 turns it
+      // off outright — a deployment with no ephemeral source loses nothing by it.
+      const everyMs = (this.config.eventsRefreshMinutes ?? 10) * 60000
+      if (everyMs > 0) {
+        await this._refreshEventsMapping().catch(() => {})
+        const t = setInterval(() => { this._refreshEventsMapping().catch(() => {}) }, everyMs)
+        if (t.unref) t.unref()
+        this._timers.push(t)
+      }
     }
 
     // Epoch state: resume the recorded epoch, or mint epoch 1.
@@ -215,10 +246,62 @@ export class GuideManager {
     if (!this._closed) this._map = map
   }
 
-  // providerId -> streamId (config overrides win over catalog epgId matches).
+  // One pass over the panel's EVENTS drive: the epgIds of channels that are published
+  // rather than catalogued. Three short-circuits, in the order that makes the steady state
+  // free — no pointer (the default deployment), an unchanged `rev` (the common case, since
+  // the index only moves when a shard does), and only then the shard reads.
+  //
+  // A pointer that ROTATED is handled by reopening under a key-derived namespace, the
+  // sdk/player.js _doOpenEpg pattern: each epoch's replica is its own namespace, so the
+  // retired one is purged wholesale instead of being grown over.
+  async _refreshEventsMapping () {
+    if (!this._bee || this._closed) return
+    const meta = await this._bee.get('meta/eventsKey').catch(() => null)
+    const keyHex = meta?.value?.key
+    if (!keyHex || typeof keyHex !== 'string' || !HEX64.test(keyHex)) return
+    if (keyHex !== this._eventsKeyHex) {
+      const old = this._eventsDrive
+      const drive = new Hyperdrive(this._store.namespace('events-replica-' + keyHex.slice(0, 16)), b4a.from(keyHex, 'hex'))
+      await drive.ready()
+      this._swarm.join(drive.discoveryKey, { client: true, server: false })
+      this._eventsDrive = drive
+      this._eventsKeyHex = keyHex
+      this._eventsRev = null // a new epoch republishes everything; nothing carries over
+      if (old) { try { await old.purge() } catch { try { await old.close() } catch {} } }
+    }
+    // A cold replica answers null WITHOUT waiting for a peer, which would read as "no
+    // events published". Learn the real length from a peer first — exactly the trap
+    // sdk/player.js documents for the updates manifest.
+    await this._eventsDrive.core.update({ wait: true }).catch(() => {})
+    const buf = await this._eventsDrive.get('/v1/index.json').catch(() => null)
+    if (!buf) return
+    let idx
+    try { idx = JSON.parse(b4a.toString(buf)) } catch { return }
+    if (!idx || !Array.isArray(idx.sources)) return
+    if (this._eventsRev != null && idx.rev === this._eventsRev) return // nothing moved
+    const map = new Map()
+    for (const s of idx.sources) {
+      if (!s || typeof s.shard !== 'string') continue
+      const shard = await this._eventsDrive.get(s.shard).catch(() => null)
+      if (!shard) continue
+      let list
+      try { list = JSON.parse(b4a.toString(shard)) } catch { continue }
+      if (!Array.isArray(list)) continue
+      // First mapping wins inside the drive too, for the same reason it does in the
+      // catalog: a repeated epgId is an operator mistake, not an identity.
+      for (const e of list) if (e && e.epgId && e.id && !map.has(String(e.epgId))) map.set(String(e.epgId), e.id)
+    }
+    if (this._closed) return
+    this._eventsMap = map
+    this._eventsRev = idx.rev
+  }
+
+  // providerId -> streamId (config overrides win over catalog epgId matches, and the
+  // catalog wins over the events drive — the incumbent rule, stated in the header).
   resolveStreamId (providerId, overrides) {
     if (overrides && Object.prototype.hasOwnProperty.call(overrides, providerId)) return overrides[providerId]
-    return this._map.get(String(providerId)) || null
+    const id = String(providerId)
+    return this._map.get(id) || this._eventsMap.get(id) || null
   }
 
   noteUnmatched (providerId, entries) {
@@ -487,6 +570,11 @@ export class GuideManager {
       prev: this._pending[this._pending.length - 1] ?? null,
       pendingPurge: this._pending.length,
       mappedChannels: this._map.size,
+      // Split out rather than folded into mappedChannels: a jump in one and not the other
+      // is what tells an operator WHICH side of the mapping stopped working.
+      mappedEvents: this._eventsMap.size,
+      eventsKey: this._eventsKeyHex,
+      eventsRev: this._eventsRev,
       unmatched: Object.fromEntries(this._unmatched),
       puts: this._puts,
       skips: this._skips,
@@ -503,6 +591,7 @@ export class GuideManager {
     if (this._swarm) { try { await this._swarm.destroy() } catch {} }
     if (this._drive) { try { await this._drive.close() } catch {} }
     if (this._prevDrive) { try { await this._prevDrive.close() } catch {} }
+    if (this._eventsDrive) { try { await this._eventsDrive.close() } catch {} }
     if (this._bee) { try { await this._bee.close() } catch {} }
     if (this._store) { try { await this._store.close() } catch {} }
   }

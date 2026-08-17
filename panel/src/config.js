@@ -144,6 +144,17 @@ export const config = {
     maxBytes: int(process.env.SOURCES_MAX_BYTES, 5242880),
     maxChannels: int(process.env.SOURCES_MAX_CHANNELS, 500)
   },
+  // Ephemeral event channels (src/events.js): the drive that carries an `ephemeral`
+  // source's lineup instead of the signed bee. There is NO on/off knob here — the flag
+  // lives per source, so a deployment with no ephemeral source never mints a drive and
+  // these two are never consulted. They bound the drive's OWN append-only metadata bee:
+  // every `epochDays` a fresh drive is minted and the retired one is served for
+  // `graceHours` (long enough for a viewer that was offline across the flip to catch the
+  // new pointer) before it is purged outright.
+  events: {
+    epochDays: int(process.env.EVENTS_EPOCH_DAYS, 7),
+    graceHours: int(process.env.EVENTS_GRACE_HOURS, 6)
+  },
   // Redirect-channel liveness probe (src/liveness.js): redirect channels have no
   // broadcaster heartbeat, so the panel probes their urls itself and flips isLive —
   // dead links dim in the viewer's list instead of spinning. 0 minutes disables.
@@ -153,6 +164,14 @@ export const config = {
     intervalMinutes: int(process.env.LIVENESS_INTERVAL_MINUTES, 10),
     timeoutMs: int(process.env.LIVENESS_TIMEOUT_MS, 8000),
     failsToFlip: int(process.env.LIVENESS_FAILS_TO_FLIP, 3),
+    // Consecutive successful sweeps an UNDIM needs. 1 is the historical behaviour and stays
+    // the default: a provider flapping at the edge of its capacity re-lights the channel on
+    // every lucky probe, which is worth fixing only where it costs unreclaimable bee bytes —
+    // and for events it no longer does (they live on a clearable drive, src/events.js).
+    // Raising it to failsToFlip makes the two directions symmetric, at the price of ~20 more
+    // minutes of a started match reading offline. A stable-channel lineup may want that; a
+    // sports lineup does not.
+    successesToFlip: int(process.env.LIVENESS_SUCCESSES_TO_FLIP, 1),
     bootDelayMs: int(process.env.LIVENESS_BOOT_DELAY_MS, 90000)
   }
 }
@@ -223,7 +242,17 @@ chkInt('SOURCES_MAX_CHANNELS', config.sources.maxChannels, 1)
 chkInt('LIVENESS_INTERVAL_MINUTES', config.liveness.intervalMinutes, 0)
 chkInt('LIVENESS_TIMEOUT_MS', config.liveness.timeoutMs, 1000)
 chkInt('LIVENESS_FAILS_TO_FLIP', config.liveness.failsToFlip, 1)
+chkInt('LIVENESS_SUCCESSES_TO_FLIP', config.liveness.successesToFlip, 1)
 chkInt('LIVENESS_BOOT_DELAY_MS', config.liveness.bootDelayMs, 0)
+// A grace window at or past a whole epoch means a drive could be retired before its
+// predecessor's window closed — two live pointers' worth of drive on disk with nothing
+// draining, which is exactly the orphan the pending list exists to make impossible.
+chkInt('EVENTS_EPOCH_DAYS', config.events.epochDays, 1)
+chkInt('EVENTS_GRACE_HOURS', config.events.graceHours, 1)
+if (Number.isInteger(config.events.epochDays) && Number.isInteger(config.events.graceHours) &&
+  config.events.graceHours >= config.events.epochDays * 24) {
+  problems.push(`EVENTS_GRACE_HOURS must be under one epoch (< ${config.events.epochDays * 24}, got ${config.events.graceHours})`)
+}
 chkBootstrap('BOOTSTRAP', config.bootstrap)
 
 // --- check-config dry-run (S49a) ---

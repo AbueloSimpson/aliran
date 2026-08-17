@@ -534,12 +534,56 @@ used to leave a channel with no working source behind an HTTP 200).
   "pub": "<hex>",              // user X25519 public key
   "encPriv": "<nonce||cipher hex>",   // private key sealed under a key derived from rwd
   "wrapped": { "<streamId>": "<stream key sealed to pub, hex>" },
-  "devices": [ { "deviceId": "<pubkey>", "label": "Pixel 8", "expiresAt": 0, "tokenVersion": 1, "status": "active" } ],
+  "devices": [ { "deviceId": "<pubkey>", "label": "Pixel 8", "issuedAt": 0, "tokenVersion": 1, "status": "active" } ],
   "tokenVersion": 1,
   "maxDevices": 2,
   "status": "active"
 }
 ```
+
+A device entry carries **no expiry**. `SESSION_TTL_DAYS` is the lifetime of the
+panel-signed *token* the device holds, which the app checks offline and the panel
+re-checks whenever the token is presented — the record never held a second copy of
+it worth keeping. Two consequences:
+
+- **An enrollment is durable.** It holds its device slot until an admin revokes it,
+  a `tokenVersion` bump clears it, or a new device past `maxDevices` evicts it. A
+  television that is off for two months comes back to its own slot.
+- **A login by an already-enrolled device writes nothing.** The bee is append-only
+  and never compacted, so a per-login record rewrite cost its full size forever —
+  on a large account, half a megabyte per sign-in.
+
+Entries written by older panels still carry an `expiresAt`; each one heals to the
+shape above at that device's next login, and a lapsed one is dropped then.
+
+### Device recency (`seen/<username>`)
+
+```jsonc
+{ "<deviceId>": 20684 }   // day number = floor(epoch ms / 86 400 000)
+```
+
+`issuedAt` is *enrollment* time and nothing refreshes it, so it cannot say which
+device is actually in use. This key does, in its own record so that saying it costs
+a few hundred bytes instead of a full account rewrite. It is written **only when a
+device's day changes** — at most one small block per device per day, and nothing at
+all for repeat sign-ins within a day.
+
+It decides two things:
+
+- **Which device is evicted** when a new one arrives at `maxDevices`: the
+  **least recently seen**, with enrollment order breaking a tie. Ordering by
+  `issuedAt` instead would evict the household's daily driver (enrolled longest
+  ago) and keep a handset abandoned months earlier.
+- **What the device list reports** as `lastSeenAt` — a real sign-in day, where the
+  old expiry could only say "within the last `SESSION_TTL_DAYS`".
+
+A device with no entry yet counts as last seen on its enrollment day. Entries are
+pruned when the device leaves the account, and the key is deleted with the user.
+Lowering `maxDevices` trims the surplus in this order on the next login.
+
+Like every other key here it replicates to viewers, which is why the precision is a
+day: it deliberately says less than the per-login millisecond `expiresAt` it
+replaced.
 
 ### Televisions and the account rendezvous
 

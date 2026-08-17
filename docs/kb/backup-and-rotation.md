@@ -312,6 +312,21 @@ signing secret, so treat the archive with the same care as
 `DATA_DIR` is *complete* — a panel reopened from the copy serves the same
 catalog, verifies the same admins, and signs with the same identity.
 
+⚠ **Back up the whole `DATA_DIR`, never a hand-picked list of files.** The
+archive above does, and so does a `tar` of the volume — the hazard is a
+file-by-file restore or a migration that copies "the important ones".
+`DATA_DIR/events-epoch.json` is small, uninteresting-looking and
+**load-bearing**: it is the only record of which epoch namespace the
+[ephemeral events drive](../content-management.md) is currently using. Restore
+the cores without it and the panel would have no way to tell a missing state
+file from a first boot — it would mint a fresh epoch at the *same*
+deterministic public key over an empty history, which is a hypercore conflict
+on every client and repeater that ever replicated a block of it, and nothing
+recovers from that. The panel therefore **refuses to start** in that state
+rather than guess: it checks the `meta/eventsKey` record in its own signed
+database, and a pointer with no state file is a hard boot error naming the
+file. If you meet it, put `events-epoch.json` back from the archive.
+
 ### Seeing the archives from a dashboard
 
 Each dashboard lists the archives it can see, with their age, and marks the

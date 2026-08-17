@@ -10,11 +10,13 @@ import Hyperdrive from 'hyperdrive'
 import fs from 'fs'
 import path from 'path'
 import sodium from 'sodium-native'
+import hcrypto from 'hypercore-crypto'
 import b4a from 'b4a'
 import { purgeStaleCores } from '@aliran/core/store-gc.js'
 import { writeJsonAtomic } from '@aliran/core/atomic-write.js'
+import { openEvents, EVENTS_KEY } from './events.js'
 
-export async function openStore (dataDir, keys) {
+export async function openStore (dataDir, keys, opts = {}) {
   const store = new Corestore(dataDir)
   await store.ready()
   const core = store.get({ keyPair: keys.signing })
@@ -50,19 +52,55 @@ export async function openStore (dataDir, keys) {
     await db.put('meta/updatesKey', { key: updatesKeyHex, blobsKey: updatesBlobsHex })
   }
 
+  // Ephemeral events Hyperdrive (src/events.js, advertised as meta/eventsKey). Same
+  // ownership/discovery pattern as assets and updates, with one difference that decides
+  // where this call has to sit: the drive is EPOCH-ROTATED and MINTED ON FIRST USE, so its
+  // cores are not among the panel's own five and would read as stray.
+  //
+  // ⚠ THIS MUST STAY ABOVE reclaimStrayCores. ready() opens the current epoch AND every
+  // epoch still owed a purge; guard 2 below keeps every core the store holds OPEN, which is
+  // the only thing standing between an events drive and `rmSync`. Move this call below the
+  // sweep and the panel deletes its own events drive on the next boot.
+  //
+  // On a deployment with no ephemeral source there is no state file, so this opens nothing,
+  // writes nothing and returns an inert manager — the whole feature is off by construction.
+  // ⚠ "No state file" only means first boot when meta/eventsKey is ALSO absent; ready()
+  // throws otherwise rather than let the sweep below reach an advertised drive. That makes
+  // events-epoch.json load-bearing: it must travel with DATA_DIR in any restore.
+  let events
+  try {
+    events = await openEvents({ store, db, dataDir, epochDays: opts.eventsEpochDays, graceHours: opts.eventsGraceHours })
+  } catch (err) {
+    // A refusal here is a boot failure, and a boot failure must not leave the corestore's
+    // lock held: the operator's next move is to fix the data directory and start again, and
+    // an orphaned lock would make that second attempt fail for a different reason.
+    try { await store.close() } catch {}
+    throw err
+  }
+
   // Every core the panel owns is now open, and nothing else has opened one yet — the one
-  // moment where the keep set below is complete by construction.
-  const reclaimed = reclaimStrayCores(dataDir, { store, core, assets, updates })
+  // moment where the keep set below is complete by construction. The advertised events
+  // pointer rides along as a SECOND, independent way to account for the events cores: see
+  // the eventsPointer note on reclaimStrayCores.
+  //
+  // Read AFTER openEvents on purpose. A resumed manager re-advertises on the way through,
+  // so a pointer record that had been corrupted is already repaired by the time we read it
+  // here — and if it could not be repaired (no state file), openEvents threw and we never
+  // reached this line. Either way the sweep below never runs against a record it cannot
+  // account for.
+  const eventsPointer = (await db.get(EVENTS_KEY))?.value ?? null
+  const reclaimed = reclaimStrayCores(dataDir, { store, core, assets, updates, eventsPointer })
   if (reclaimed && reclaimed.removed > 0) {
     console.log(`[gc] reclaimed ${reclaimed.removed} stray core dir(s), ${(reclaimed.bytesFreed / 1e6).toFixed(2)} MB freed (blobsKey probe cores stranded by earlier builds)`)
   }
 
-  return { store, db, core, assets, updates, reclaimed }
+  return { store, db, core, assets, updates, events, reclaimed }
 }
 
-// The cores the panel OWNS: the signed bee (accounts + catalog) plus the metadata +
-// blobs cores of the assets and updates drives. Anything else under <dataDir>/cores/
-// is stray.
+// The cores the panel owns AT A FIXED KEY: the signed bee (accounts + catalog) plus the
+// metadata + blobs cores of the assets and updates drives. The events drive's epoch cores
+// are owned too but are NOT fixed — they are covered by guard 2 below, not by this count,
+// which is why the number does not move when an epoch rotates.
 const PANEL_CORE_COUNT = 5
 
 // One-shot start-time reclaim of stray cores (the sweep itself is @aliran/core/store-gc.js,
@@ -82,12 +120,26 @@ const PANEL_CORE_COUNT = 5
 //   1. all FIVE of the panel's own discovery keys must resolve. They do by construction
 //      here — the bee core is opened by keyPair, and hyperdrive's _open() creates a WRITABLE
 //      drive's blobs core during ready(), so neither drive's .blobs is null at this point.
-//   2. every core the store currently holds OPEN is kept regardless. Today that is the same
-//      five, but it is what keeps this correct if openStore ever opens a sixth: it is kept
-//      automatically, with no edit here. It also means a sweep can never yank a core out
-//      from under a live session, so calling this later (with an enricher probe in flight)
-//      would still be safe.
-export function reclaimStrayCores (dataDir, { store, core, assets, updates }) {
+//   2. every core the store currently holds OPEN is kept regardless. That is what carries
+//      the EVENTS drive (src/events.js), whose epoch namespaces are minted at runtime and
+//      cannot be enumerated from a fixed list — openStore opens the live epoch and every
+//      pending one immediately above this call, so they are kept with no edit here. It also
+//      means a sweep can never yank a core out from under a live session, so calling this
+//      later (with an enricher probe in flight) would still be safe.
+//   3. `eventsPointer` — the meta/eventsKey record, if one is advertised — is kept even when
+//      nothing has it open. Guard 2 depends on the manager having resumed, and the manager
+//      resumes off a FILE (events-epoch.json). A missing state file therefore used to mean
+//      an inert manager plus two unaccounted core directories, and this sweep would delete
+//      the very drive the signed bee is still pointing viewers at. events.js now refuses to
+//      boot in that state, which is the real fix; this is the second lock on the same door,
+//      derived from the bee rather than from the filesystem. Both keys go in because a
+//      keyless mirror needs both and a sweep that kept only one would still be a delete.
+//      ⚠ A pointer record that EXISTS but carries an unusable key skips the whole sweep.
+//      Dropping just that key would make this guard ask the same question the boot check
+//      asks — "is there a usable key" — and the two locks would open to one malformed
+//      record between them. A record we cannot resolve is a core we cannot account for,
+//      which is precisely the condition guard 1 already refuses to delete under.
+export function reclaimStrayCores (dataDir, { store, core, assets, updates, eventsPointer }) {
   const keep = new Set()
   for (const c of [
     core,
@@ -98,6 +150,12 @@ export function reclaimStrayCores (dataDir, { store, core, assets, updates }) {
   }
   if (keep.size !== PANEL_CORE_COUNT) return null // cannot account for our own cores — delete nothing
   for (const id of store.cores.keys()) keep.add(id)
+  if (eventsPointer != null) {
+    for (const hex of [eventsPointer.key, eventsPointer.blobsKey]) {
+      if (typeof hex !== 'string' || !/^[0-9a-f]{64}$/i.test(hex)) return null // a pointer we cannot resolve — delete nothing
+      try { keep.add(b4a.toString(hcrypto.discoveryKey(b4a.from(hex, 'hex')), 'hex')) } catch { return null }
+    }
+  }
   try { return purgeStaleCores(dataDir, keep) } catch { return null }
 }
 

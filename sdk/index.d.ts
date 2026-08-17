@@ -751,12 +751,19 @@ export class AliranPlayer {
    * panel-signed token for THIS device.
    *
    * Split the rejections, and split them NARROWLY. Erase only on a verdict about the
-   * account: 'session failed: account disabled', 'session failed: device-limit',
-   * 'session failed: unknown user', or 'key handover does not match this account' (what a
-   * password rotation looks like from here). Everything else KEEPS the keys and retries —
-   * 'not connected to panel', a closed channel, a key store that did not answer, and a
-   * bare 'unknown user' with no 'session failed:' prefix, which is a record that has not
-   * replicated yet rather than an account that does not exist.
+   * account: 'session failed: account disabled', 'session failed: unknown user', or
+   * 'key handover does not match this account' (what a password rotation looks like from
+   * here). Everything else KEEPS the keys and retries — 'not connected to panel', a
+   * closed channel, a key store that did not answer, and a bare 'unknown user' with no
+   * 'session failed:' prefix, which is a record that has not replicated yet rather than
+   * an account that does not exist.
+   *
+   * 'session failed: device-limit' KEEPS, and this comment used to say the opposite. It
+   * says the operator's device SLOTS are full, which is a fact about their configuration
+   * and not a judgement on these keys; slots free when a device is signed out, revoked,
+   * evicted, or the limit is raised. See client/backend/signin-vault.mjs, which is the
+   * implementation and has always classified it correctly. 'session failed: busy' keeps
+   * too — the panel lost a write race and is asking for another attempt.
    *
    * "Anything the panel refused" IS NOT THE RULE, and reading it that way destroyed
    * credentials here: 'session failed:' also fronts 'auth failed', 'bad request',

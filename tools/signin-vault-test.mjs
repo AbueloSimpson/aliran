@@ -171,14 +171,16 @@ try {
   // which is the point: somebody has to decide whether it evicts a television.
   //
   // The second list is NOT "malformed requests". It is everything that is not a judgement
-  // on these keys, and it holds three different kinds: a refusal of the REQUEST (a bad
+  // on these keys, and it holds four different kinds: a refusal of the REQUEST (a bad
   // call, a lost one-shot challenge, a signature that did not verify), a panel that cannot
-  // issue sessions at all, and an operator whose device slots are full. Only the first kind
-  // is a bug somewhere; the other two are configuration, and configuration changes.
+  // issue sessions at all, an operator whose device slots are full, and the panel being
+  // too busy to settle the write right now. Only the first kind is a bug somewhere; the
+  // next two are configuration, and configuration changes; the last is a moment passing.
   const VERDICTS = ['account disabled', 'unknown user']
   const NOT_VERDICTS = [
     'sessions unavailable', //                the PANEL is missing its own signing key
     'device-limit', //                        maxDevices with devicePolicy 'reject' — slots, not keys
+    'busy', //                                lost the compare-and-swap on the account record too many times
     'bad request',
     'no session challenge (login first)',
     'auth failed',

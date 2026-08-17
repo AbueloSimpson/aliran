@@ -56,6 +56,48 @@
 //
 // ZERO wire/SDK/app impact: clients receive `wrapped` at login exactly as
 // before; nothing outside the panel reads the provenance fields.
+//
+// EPHEMERAL SOURCES (S57) — the one place the "a grant is CRYPTOGRAPHIC" model above does
+// not reach. An ephemeral source's channels never enter the catalog and never get a minted
+// stream secret (sources.js), so there is nothing to seal: `wrapped` cannot express their
+// entitlement, and a sealed key per event would be exactly the per-channel write this whole
+// feature exists to delete. So a SECOND field carries them:
+//
+//   eventSources: [names]   the ephemeral SOURCES this user may read shards of, ~200 bytes,
+//                           written only when it actually changes — which is when an admin
+//                           changes a bouquet, not on every sync
+//
+// It is derived, never hand-edited: a source with autoGrant on covers everyone, and a
+// package member that reaches the SOURCE covers that package's holders. So
+// `source:live-events` and `category:Live Events` keep meaning what an operator expects,
+// even though neither can find those ids in the catalog.
+//
+// ⚠ TWO DIFFERENT QUESTIONS, TWO DIFFERENT INPUTS, and conflating them is a bug that only
+// shows up in production:
+//
+//   what a package CONTAINS  -> resolved against the catalog UNION the published events
+//                               lineup (resolutionSnapshot), because that is a question
+//                               about channels and channels are where they are
+//   which SOURCES a user gets -> derived from sources.json + packages.json ALONE
+//                               (memberCoversSource), because a list read off the current
+//                               lineup FLICKERS: a feed that empties overnight resolves its
+//                               package to zero channels, drops the source from every
+//                               holder's record, and puts it back an hour later. Two full
+//                               rewrites of every user record per oscillation — megabytes
+//                               of exactly the unreclaimable writes this feature deletes.
+//
+// A record without the field behaves exactly as today, and a deployment with no ephemeral
+// source never grows one — a converged reconcile still appends zero.
+//
+// ⚠ AND THE CARVE-OUT. The removal rule below deletes a wrapped entry that no provenance
+// covers. An ephemeral source's ids are invisible to a catalog scan, so without an explicit
+// carve-out the first reconcile after the flag flips would strip every one of them from
+// every user — emptying the events lineup of every client still reading `wrapped`, in one
+// pass, with no feed change to explain it. The carve-out is BY IDENTITY, never by prefix: a
+// prefix says nothing about ownership, so a manual catalog channel that merely starts with
+// an ephemeral source's prefix would inherit the carve-out and keep its sealed key through
+// a revoked bouquet for ever. This is also why `ephemeral` is NOT expressed as
+// `autoGrant:false`: that flag's whole meaning is "drop out of the carve-out".
 
 import fs from 'fs'
 import path from 'path'
@@ -177,7 +219,7 @@ export async function listPackages (ctx) {
   const packages = loadPackages(ctx.dataDir)
   const names = Object.keys(packages)
   if (names.length === 0) return []
-  const catalog = await catalogSnapshot(ctx)
+  const catalog = await resolutionSnapshot(ctx)
   const holders = {}
   for await (const { value } of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) {
     for (const n of (value && value.packages) || []) holders[n] = (holders[n] || 0) + 1
@@ -191,7 +233,7 @@ export async function listPackages (ctx) {
 export async function getPackage (ctx, name) {
   const packages = loadPackages(ctx.dataDir)
   if (!hasOwn(packages, name)) notFound(`no such package: ${name}`)
-  const resolved = resolveMembers(packages[name].members, await catalogSnapshot(ctx))
+  const resolved = resolveMembers(packages[name].members, await resolutionSnapshot(ctx))
   let holders = 0
   for await (const { value } of ctx.db.createReadStream({ gt: 'user/', lt: 'user0' })) {
     if (((value && value.packages) || []).includes(name)) holders++
@@ -201,13 +243,38 @@ export async function getPackage (ctx, name) {
 
 // ---------------------------------------------------------------- resolution
 
-// One pass over the catalog: id -> the two fields selectors match on.
+// One pass over the catalog: id -> the two fields selectors match on. Strictly what the
+// BEE holds — an ephemeral source is absent here by construction, and that is the contract
+// (callers that need the whole universe use resolutionSnapshot).
 async function catalogSnapshot (ctx) {
   const catalog = new Map()
   for await (const { key, value } of ctx.db.createReadStream({ gt: 'catalog/', lt: 'catalog0' })) {
     catalog.set(key.slice('catalog/'.length), { source: (value && value.source) || null, category: (value && value.category) || [] })
   }
   return catalog
+}
+
+// The universe a SELECTOR resolves against: the catalog plus the events drive's published
+// lineup, in one map with the same { source, category } shape, so `source:`/`category:`/glob
+// members keep meaning what an operator expects on either side of the divide.
+//
+// The catalog WINS a collision, matching applyEphemeral's conflict rule from the other side:
+// a record that exists beats one being published, so an id can never be governed from two
+// places at once.
+//
+// ⚠ This is for RESOLUTION only — what a package contains, and which ids are ours to leave
+// alone. It must never become the input to `eventSources`, which is derived from the
+// registry precisely so a momentarily empty shard cannot rewrite every user record
+// (reconcilePackages states the full argument).
+async function resolutionSnapshot (ctx) {
+  const all = await catalogSnapshot(ctx)
+  if (ctx.events && ctx.events.enabled) {
+    for (const [id, e] of ctx.events.snapshot()) {
+      if (all.has(id)) continue
+      all.set(id, { source: e.source || null, category: e.category || [] })
+    }
+  }
+  return all
 }
 
 // 'category:Nacional' covers 'Nacional' and 'Nacional/Norte' — same self-or-child
@@ -236,6 +303,38 @@ export function resolveMembers (members, catalog) {
   return ids
 }
 
+// Does this package member reach an ephemeral SOURCE? Answered from the registry alone —
+// the source's own configuration, never the ids it happens to be carrying — because this is
+// what `eventSources` is derived from and that list must not flicker with the feed (see
+// reconcilePackages). The four member kinds map onto a source like this:
+//
+//   source:<name>   exact, the unambiguous case
+//   category:<slug> self-or-child IN BOTH DIRECTIONS. A source railed at 'Live Events' is
+//                   reached by 'category:Live Events' and also by 'category:Live Events/MLB',
+//                   because autoSubcategory derives that child from the entry names — the
+//                   registry cannot know which children exist, only that they are its own.
+//   <glob>          the glob's literal head against the source's id namespace, either way
+//                   round ('ev.*' and 'ev.mlb-*' both reach prefix 'ev.', and '*' reaches
+//                   everything). Deliberately an OVER-approximation: entitling a shard the
+//                   operator's bouquet was meant to cover is the safe direction to be wrong.
+//   <id>            an explicit id inside the source's namespace
+export function memberCoversSource (name, s, m) {
+  if (typeof m !== 'string' || m === '') return false
+  const prefix = s.prefix || name + '.'
+  if (m.startsWith('source:')) return m.slice('source:'.length) === name
+  if (m.startsWith('category:')) {
+    const slug = m.slice('category:'.length)
+    const cat = String(s.category || '')
+    if (!cat || !slug) return false
+    return cat === slug || cat.startsWith(slug + '/') || slug.startsWith(cat + '/')
+  }
+  if (m.includes('*')) {
+    const lit = m.slice(0, m.indexOf('*'))
+    return prefix.startsWith(lit) || lit.startsWith(prefix)
+  }
+  return m.startsWith(prefix)
+}
+
 // ---------------------------------------------------------------- reconcile
 
 // THE engine: make every user's `wrapped` equal seal(manualGrants ∪ the resolved
@@ -254,7 +353,7 @@ export async function reconcilePackages (ctx, { onlyUser } = {}) {
   const packages = loadPackages(ctx.dataDir)
   const sources = loadSources(ctx.dataDir)
   const secrets = loadSecrets(ctx.dataDir)
-  const catalog = await catalogSnapshot(ctx)
+  const catalog = await resolutionSnapshot(ctx)
   const resolved = new Map(Object.entries(packages).map(([name, p]) => [name, resolveMembers(p.members, catalog)]))
   // autoGrant-source channels: granted-to-everyone by the source engine — a
   // package reconcile treats them as covered (removing one would just flap back
@@ -262,6 +361,27 @@ export async function reconcilePackages (ctx, { onlyUser } = {}) {
   const autoNames = new Set(Object.entries(sources).filter(([, s]) => s.autoGrant !== false).map(([n]) => n))
   const autoIds = new Set()
   for (const [id, c] of catalog) if (c.source && autoNames.has(c.source)) autoIds.add(id)
+  // …and the ephemeral half of the same carve-out (see the header). Those ids leave the
+  // catalog when the flag flips, so `autoIds` cannot see them and the removal rule below
+  // would strip every one of them from every user in a single pass.
+  //
+  // ⚠ BY IDENTITY, NEVER BY PREFIX. A prefix test is not a statement about ownership: a
+  // MANUAL catalog channel called `ev.manual-channel` starts with the `ev.` source's prefix
+  // and would fall in the same hole — its sealed stream key would then survive a revoked
+  // bouquet for ever, which is grant revocation quietly ceasing to work. normPrefix
+  // validates the charset only, so prefixes are not even unique between sources: one
+  // ordinary source whose prefix merely BEGINS with an ephemeral one's would put its whole
+  // id-space in there too. The pre-existing autoIds carve-out is exact (id -> source, read
+  // off the record), and this one now is as well: the id set the ephemeral sources really
+  // publish, plus the catalog records they still own during the window between the flag
+  // flip and the first sync that retires them. Ephemeral sources are covered whatever their
+  // autoGrant setting — autoGrant decides who is ENTITLED (below), never whose an id is.
+  const ephemeral = Object.entries(sources).filter(([, s]) => s.ephemeral === true)
+  const ephemeralNames = new Set(ephemeral.map(([n]) => n))
+  const ephemeralIds = new Set()
+  if (ephemeralNames.size) for (const [id, c] of catalog) if (c.source && ephemeralNames.has(c.source)) ephemeralIds.add(id)
+  const autoEventSources = ephemeral.filter(([, s]) => s.autoGrant !== false).map(([n]) => n)
+  const covered = (id) => autoIds.has(id) || ephemeralIds.has(id)
 
   let sealed = 0
   let removed = 0
@@ -275,7 +395,7 @@ export async function reconcilePackages (ctx, { onlyUser } = {}) {
     // Provenance migration (pre-S44 records): adopt existing grants as manual,
     // except autoGrant-source ones (see the header) — additive by construction,
     // since adopted ids are entitled and autoGrant ids are carved out below.
-    if (!Array.isArray(user.manualGrants)) { user.manualGrants = Object.keys(user.wrapped).filter((id) => !autoIds.has(id)); dirty = true }
+    if (!Array.isArray(user.manualGrants)) { user.manualGrants = Object.keys(user.wrapped).filter((id) => !covered(id)); dirty = true }
     if (!Array.isArray(user.packages)) { user.packages = []; dirty = true }
     // Assignments to packages that no longer exist are pruned (removePackage
     // rewrites users through this same path).
@@ -294,13 +414,56 @@ export async function reconcilePackages (ctx, { onlyUser } = {}) {
       sealed++
     }
     for (const id of Object.keys(user.wrapped)) {
-      if (entitled.has(id) || autoIds.has(id)) continue
+      if (entitled.has(id) || covered(id)) continue
       delete user.wrapped[id]
       dirty = true
       removed++
     }
+
+    // The ephemeral half of entitlement: SOURCE names, not channel ids.
+    //
+    // ⚠ DERIVED FROM THE REGISTRY, NEVER FROM THE PUBLISHED LINEUP. Reading it off the ids
+    // a shard currently carries looks equivalent and oscillates: a sports feed that empties
+    // overnight, a filter that matches nothing for one cycle, or a shard `_loadIndex` could
+    // not read at boot all momentarily resolve a `source:`-member package to zero channels —
+    // which would drop the source from every holder's list, then put it back on the next
+    // sync, rewriting EVERY user record twice per cycle. On production records that is
+    // megabytes per oscillation of exactly the unreclaimable writes this whole feature
+    // exists to delete. sources.json and packages.json do not flicker, so this does not.
+    //
+    // Written ONLY when it moves, which is what keeps a 30-minute sync free: the lineup
+    // churns constantly and this list does not. Empty means absent, so a deployment with no
+    // ephemeral source never grows the field and a record that never had it is untouched.
+    //
+    // A consequence of being registry-derived, and it is the intended one: an autoGrant
+    // ephemeral source entitles everyone the moment it is REGISTERED, before it has
+    // published anything — even if its first sync publishes zero channels because every id
+    // collided. That costs one record rewrite per user, once, and it is the honest reading
+    // of "everyone gets this source": entitlement is to the SOURCE, not to whatever it
+    // happens to be carrying this half hour.
+    const wantEvents = new Set(autoEventSources)
+    if (ephemeral.length) {
+      for (const p of user.packages) {
+        const members = (hasOwn(packages, p) && packages[p].members) || []
+        for (const [n, s] of ephemeral) {
+          if (wantEvents.has(n) || !members.some((m) => memberCoversSource(n, s, m))) continue
+          wantEvents.add(n)
+        }
+      }
+    }
+    const nextEvents = [...wantEvents].sort()
+    const curEvents = Array.isArray(user.eventSources) ? user.eventSources : null
+    if (nextEvents.length === 0) {
+      if (curEvents) { delete user.eventSources; dirty = true }
+    } else if (!curEvents || JSON.stringify(curEvents) !== JSON.stringify(nextEvents)) {
+      user.eventSources = nextEvents; dirty = true
+    }
+
     if (dirty) { await ctx.db.put(key, user); users++ }
   }
+  // The return shape is deliberately unchanged: `users` already counts every record this
+  // pass wrote, eventSources moves included, and a caller asserting the exact no-op shape
+  // (tools/e2e-packages-test.mjs) is the frugality guarantee itself.
   return { sealed, removed, users }
 }
 

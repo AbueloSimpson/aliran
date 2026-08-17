@@ -1,9 +1,11 @@
 // Tests for the redirect-channel liveness probe (panel/src/liveness.js): probe
 // classification (playlist / DASH / direct file / HTML / HTTP error / timeout),
 // header pass-through (record headers + the player-shaped UA fallback), the
-// 3-consecutive-sweeps hysteresis with first-success flip-back, put-only-on-flip
-// bee frugality, the url-change counter reset, and the network-layer self-outage
-// guard that discards a sweep instead of dimming the lineup.
+// 3-consecutive-sweeps hysteresis with first-success flip-back BY DEFAULT, the
+// opt-in recovery hysteresis (LIVENESS_SUCCESSES_TO_FLIP > 1, and a broken run
+// starting over), put-only-on-flip bee frugality, the url-change counter reset,
+// and the network-layer self-outage guard that discards a sweep instead of
+// dimming the lineup.
 // npm run test:liveness
 import assert from 'assert'
 import http from 'http'
@@ -129,7 +131,7 @@ const quiet = () => {}
   log('B: headers — record Referer/UA ride the probe; fallback UA is the player-shaped one ✓')
 }
 
-// ===== C: hysteresis — 3 failed sweeps flip, first success flips back =====
+// ===== C: hysteresis — 3 failed sweeps flip DOWN, the FIRST success flips back UP =====
 {
   state.dead = true
   const db = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8`), 'catalog/ok1': redirect(`${BASE}/ok.m3u8`) })
@@ -152,13 +154,55 @@ const quiet = () => {}
   assert.strictEqual(db.stats.puts, 1, 'still dead: put-only-on-flip — no block spent restating it')
 
   state.dead = false // the event started
+  // ⚠ THE DEFAULT MUST NOT MOVE. Recovery hysteresis exists (C2), but a deployment that
+  // opted into nothing must behave exactly as it did: one success undims. The flapping the
+  // other setting prevents is only worth preventing where it costs unreclaimable bee bytes,
+  // and paying 20 more minutes of a started match reading offline is the worse trade on a
+  // sports lineup. This assertion is the guard on that decision.
   const recovery = await prober.probeNow()
-  assert.strictEqual(db.m.get('catalog/ev1').isLive, true, 'FIRST success flips back — no hysteresis on recovery')
+  assert.strictEqual(db.m.get('catalog/ev1').isLive, true, 'FIRST success flips back — the DEFAULT is no hysteresis on recovery')
   assert.strictEqual(db.stats.puts, 2)
   assert.strictEqual(recovery.up, 1)
   assert.deepStrictEqual(activity.entries[1], { type: 'liveness', streamId: 'ev1', isLive: true })
+  await prober.probeNow()
+  assert.strictEqual(db.stats.puts, 2, 'still alive: put-only-on-flip holds in this direction too')
   prober.close()
-  log('C: hysteresis — flip at 3, put-only-on-flip, first-success recovery ✓')
+  log('C: hysteresis — flip at 3, first-success recovery by default, put-only-on-flip both ways ✓')
+}
+
+// ===== C2: recovery hysteresis is available, opt-in, and really consecutive =====
+{
+  // A panel that has not set the knob gets 1 — asserted through the CONFIG path, not just
+  // the opts one, because config is where a deployment's default actually comes from.
+  state.dead = true
+  const dbD = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8`) })
+  const dflt = makeLivenessProber({ config: { liveness: { failsToFlip: 1 } }, db: dbD, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, log: quiet })
+  await dflt.probeNow()
+  assert.strictEqual(dbD.m.get('catalog/ev1').isLive, false)
+  state.dead = false
+  await dflt.probeNow()
+  assert.strictEqual(dbD.m.get('catalog/ev1').isLive, true, 'an unset LIVENESS_SUCCESSES_TO_FLIP undims on the first success')
+  dflt.close()
+
+  // Raised to 3 it is symmetric with the way down, and a broken run starts over.
+  state.dead = true
+  const db = makeDb({ 'catalog/ev1': redirect(`${BASE}/toggle.m3u8`) })
+  const prober = makeLivenessProber({ config: { liveness: { successesToFlip: 3 } }, db, activity: null }, { intervalMs: 3600000, bootDelayMs: 3600000, timeoutMs: 2000, failsToFlip: 1, log: quiet })
+  await prober.probeNow()
+  assert.strictEqual(db.m.get('catalog/ev1').isLive, false, 'down on the first failure at failsToFlip 1')
+  state.dead = false
+  await prober.probeNow(); await prober.probeNow() // two of the three it needs
+  assert.strictEqual(db.m.get('catalog/ev1').isLive, false, 'two of three: not back yet')
+  state.dead = true
+  await prober.probeNow() // …and one failure in between
+  state.dead = false
+  await prober.probeNow(); await prober.probeNow()
+  assert.strictEqual(db.m.get('catalog/ev1').isLive, false, 'the broken run started over — "consecutive" has to mean consecutive, or one answer in three counts its way up')
+  await prober.probeNow()
+  assert.strictEqual(db.m.get('catalog/ev1').isLive, true, 'three UNBROKEN successes flip it back')
+  assert.strictEqual(db.stats.puts, 2, 'and the climb itself spent no blocks')
+  prober.close()
+  log('C2: LIVENESS_SUCCESSES_TO_FLIP defaults to 1; raised, it is symmetric and really consecutive ✓')
 }
 
 // ===== D: token rotation must not shield a dead channel — counters key on the ID =====

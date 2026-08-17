@@ -208,6 +208,13 @@
     'accounts.devices.slots': '{active} of {max} device slot(s) in use — devices enroll themselves when the viewer signs in; a new device past the cap evicts the oldest.',
     'accounts.devices.none': 'No devices enrolled — nobody has signed in to this account yet.',
     'accounts.devices.unnamed': 'unnamed device',
+    // The normal cases. An enrollment holds its slot until it is revoked or pushed out
+    // by the cap — the panel stores no expiry for it, so none is shown; what it does
+    // know is the DAY the device last signed in. The two "session …" lines below
+    // describe entries written by an older panel only, and each one goes away at that
+    // device's next sign-in.
+    'accounts.devices.subEnrolled': 'enrolled {enrolled} · holds its slot until revoked',
+    'accounts.devices.subSeen': 'enrolled {enrolled} · last signed in {lastSeen} · holds its slot until revoked',
     'accounts.devices.subExpired': 'enrolled {enrolled} · session expired {expires} — not signed in since',
     'accounts.devices.subLive': 'enrolled {enrolled} · session live until {expires} (renews at sign-in)',
     'accounts.devices.toastRevoked': 'Device revoked — the slot is free; the app signs out on its next check',
@@ -589,6 +596,8 @@
     'accounts.devices.slots': '{active} de {max} espacio(s) de dispositivo en uso. Los dispositivos se registran solos cuando el espectador inicia sesión; uno nuevo por encima del límite expulsa al más antiguo.',
     'accounts.devices.none': 'No hay dispositivos registrados: nadie inició sesión todavía en esta cuenta.',
     'accounts.devices.unnamed': 'dispositivo sin nombre',
+    'accounts.devices.subEnrolled': 'registrado el {enrolled} · conserva su espacio hasta que lo revoques',
+    'accounts.devices.subSeen': 'registrado el {enrolled} · último inicio de sesión el {lastSeen} · conserva su espacio hasta que lo revoques',
     'accounts.devices.subExpired': 'registrado el {enrolled} · sesión vencida el {expires}, sin iniciar sesión desde entonces',
     'accounts.devices.subLive': 'registrado el {enrolled} · sesión activa hasta el {expires} (se renueva al iniciar sesión)',
     'accounts.devices.toastRevoked': 'Dispositivo revocado: el espacio está libre; la app cierra la sesión en su próxima comprobación',

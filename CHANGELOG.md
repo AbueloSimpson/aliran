@@ -21,6 +21,42 @@ an item that carries one is telling you exactly which claim is still on paper.
 
 ### Added
 
+- **Event channels become a feed instead of a ledger entry (`ephemeral` sources).**
+  A source marked `ephemeral` publishes its channels into a panel-owned events
+  Hyperdrive (advertised as one bee record, `meta/eventsKey` = `{ key, blobsKey }`)
+  rather than into the signed catalog. A sync of one appends **zero blocks and zero
+  bytes** to the signed database — measured across three full replacements of a
+  400-channel lineup — because there is no channel record, no minted stream key and
+  no grant reconcile on that path. The problem it removes is structural: ~550 sports
+  events churning every 30 minutes wrote 200-660 MB/day into an append-only log that
+  nothing can reclaim, so the only cure was an offline compaction. On the drive a
+  superseded revision is `clear()`ed and then `del()`eted, so the bytes really come
+  back, and the drive rotates epochs every `EVENTS_EPOCH_DAYS` to bound its own
+  index. Entitlement moves with it: `user.eventSources` is a ~200-byte list of source
+  names, written only when a bouquet changes, in place of a sealed key per event.
+  Package selectors (`source:`, `category:`, globs), the EPG guide mapping and the
+  redirect liveness probe all reach the drive-sourced channels. **Off by default and
+  per source** — a panel with no ephemeral source mints no drive, writes no pointer
+  and opens no core.
+  ⚠ Turning the flag on is a one-way door for viewer apps that have not been updated:
+  the first sync afterwards removes those channels from the catalog, so an older app
+  stops seeing them. The client half is not in this release.
+  ⚠ `DATA_DIR/events-epoch.json` is load-bearing and must travel with the rest of
+  `DATA_DIR`. Restore the cores without it and the panel **refuses to start** rather
+  than re-mint the same drive key over an empty history; the error names the file.
+  ⚠ An ephemeral channel has no admin surface — `restricted` (the parental PIN gate),
+  `featured`, operator descriptions and art uploads live on catalog records only.
+  Covered by `npm run test:events` (a required CI lane).
+
+- **The redirect liveness probe gains an opt-in recovery hysteresis.**
+  `LIVENESS_SUCCESSES_TO_FLIP` sets how many consecutive successful sweeps bring a
+  dimmed channel back. It **defaults to `1`, which is the existing behaviour** — a
+  started event undims on the very next sweep. Raise it (to `3`, matching
+  `LIVENESS_FAILS_TO_FLIP`) where a provider flapping at the edge of its capacity is
+  oscillating the lineup, at the cost of ~20 more minutes of a live match reading
+  offline. The probe now also sweeps channels published to the events drive, which
+  would otherwise render as permanently live.
+
 - **The `aliran-kit` Kotlin binding reaches parity with the React Native player on
   playback recovery.** A host that embeds the Android binding directly now gets the
   same bounded behaviour the phone app has: an error ladder that retries at 2.5, 5
@@ -333,6 +369,72 @@ an item that carries one is telling you exactly which claim is still on paper.
   the apps cannot drift apart on what a viewer is allowed to see.
 
 ### Fixed
+
+- **Signing in rewrote the whole account record, every time — half a megabyte of permanent
+  log per sign-in.** The panel's account database is append-only and is never compacted, so
+  a record it rewrites costs its full size forever. Every successful login rewrote the whole
+  record for one reason: to push a device's stored expiry date forward. On the production
+  deployment one account record is 510 KB, so each sign-in of each device left half a
+  megabyte behind that nothing would ever reclaim. That copy was never needed — a session's
+  real lifetime is inside the panel-signed token the device holds, which the app checks
+  offline and the panel re-checks whenever the token is presented. Devices are now enrolled
+  **without** a stored expiry, and a login by an already-enrolled device writes **nothing at
+  all**. Measured by the new regression test: 100 sequential logins went from 100 writes and
+  95,900 bytes to **0 writes and 0 bytes**. It asserts both the write count and the byte
+  count, because either one alone can look healthy while the other grows.
+
+  This also **fixes a bug an operator could see**. Because the expiry lived in the record, a
+  device that stayed offline longer than `SESSION_TTL_DAYS` was silently dropped from the
+  account by the next sign-in of *any* device — it lost its slot, came back to a password
+  prompt, and re-enrolling it evicted one of the household's other devices. An enrollment is
+  now durable: it holds its slot until an admin revokes it, "log out all devices" clears it,
+  or a new device past the limit evicts it. **Revocation is unchanged** — per-device revoke,
+  the token-version bump and disabling an account all take effect on the very next check,
+  exactly as before. Records written by older panels keep working and heal to the new shape
+  on the first write.
+
+- **Which device gets signed out at the device limit is now decided by when each one was
+  last used.** The expiry that went away was also the only thing the panel knew about
+  recency, because every sign-in refreshed it. Enrollment time cannot stand in — nothing
+  ever refreshes it — so ordering by it would have evicted the household's *daily driver*
+  (the one enrolled longest ago) and kept the handset nobody had touched since spring. The
+  panel now keeps a small separate record of the **day** each device last signed in, and
+  evicts the least recently used, with enrollment order breaking a tie. That is strictly
+  better than the behaviour it replaces, which could only tell "used within the last
+  `SESSION_TTL_DAYS`" from "not". It costs at most one small write per device per day —
+  measured at 91 bytes per device per day — against the half megabyte per sign-in it
+  replaces, and repeat sign-ins within a day still write nothing.
+
+  The same record makes **lowering the device limit work again**. Previously the surplus
+  drained away only because entries expired; with durable enrollments, eight devices under
+  a limit of two would have stayed live for ever and the reseller dashboard would have read
+  "8 of 2 device slots in use" permanently. The surplus is now trimmed, least-recently-used
+  first, on the next sign-in.
+
+- **An admin removing one device could lose the removal to a sign-in happening at the same
+  instant.** Both read the account record and both wrote it back, so whichever finished
+  last won — and the sign-in's copy still had the removed device in it. The device came
+  back with nothing in the dashboard to say so. The sign-in now writes only if the record
+  is still the revision it read, and redoes its decision against the winner otherwise. This
+  was possible before this release too, but it mattered less then: the resurrected device
+  expired itself within `SESSION_TTL_DAYS`, where a durable enrollment would have held the
+  slot for ever.
+
+  There is one narrow case left over, and the panel now **says so in its log** rather than
+  leaving it silent: if an account is deleted at the exact moment somebody is signing in to
+  it, the sign-in can re-create the record before it notices, and it undoes that — but only
+  while the record is still the one it wrote, because `delete-user` followed by
+  `create-user` is a routine repair that can land in the same instant and must not be
+  destroyed. If a third write arrives on the re-created record first, the undo stands down
+  and the deleted account is left in the database with its old password still working. No
+  session is issued for it, and the panel logs a warning naming the account and telling the
+  operator to run `delete-user` again.
+
+  One operator-visible consequence, deliberately: the device list can no longer show when a
+  session expires, because the panel no longer knows. The dashboard, the CLI and the
+  reseller's device dialog now show **when each device enrolled and the day it last signed
+  in** — a real answer in place of a date the panel would have to guess. An entry from an
+  older panel still shows its real expiry until that device signs in again.
 
 - **Retiring a channel rewrote every subscriber's whole account record — once per channel —
   and it filled a 24 GB disk.** Adding channels was already batched: one pass over the

@@ -146,26 +146,45 @@ const SESSION_FAILED = 'session failed: '
  *
  * NOT HERE EITHER, AND IT USED TO BE: 'device-limit'. It reads like a verdict and is not
  * one either — it says the operator's SLOTS ARE FULL, not that these keys are dead, and
- * the two differ in the way that matters: slots free themselves. An enrolment expires
- * (sessionTtlMs, 30 days) or a viewer signs another device out, and the same stored keys
- * work again. Erasing helps nobody — the viewer must then redo a handover AND still meet
- * the same limit — while keeping means the set signs itself in the moment a slot frees. It
+ * the two differ in the way that matters: slots free. A viewer signs another device out,
+ * an admin revokes one, or the operator raises the limit, and the same stored keys work
+ * again. Erasing helps nobody — the viewer must then redo a handover AND still meet the
+ * same limit — while keeping means the set signs itself in the moment a slot frees. It
  * belongs beside 'sessions unavailable': a fact about the operator's configuration, not a
  * judgement on this account.
+ *
+ * What has CHANGED about how a slot frees, and it matters for the sentence above: an
+ * enrolment no longer expires on its own. It used to lapse after sessionTtlMs (30 days),
+ * which made "wait and it will free itself" literally true. The panel now keeps the
+ * enrolment until something removes it — a revoke, a token-version bump, or a new device
+ * evicting the LEAST RECENTLY USED one. So the wait is no longer unbounded-but-certain;
+ * it is until somebody acts. The classification is unchanged and for the same reason
+ * (this is the operator's configuration, not a judgement on these keys), and keeping is
+ * now MORE clearly right, not less: under 'reject' a television that erased would have
+ * to redo a handover to reach a limit that will not clear itself either.
  *
  * Two things about it are worth having written down, because they cut opposite ways and
  * both are true. It is UNREACHABLE on any deployment this repo ships: panel/src/rpc.js
  * takes `devicePolicy` as a parameter defaulting to 'evict', and panel/src/index.js never
- * passes it, so the limit evicts the oldest device instead of refusing the new one. And it
- * is the ONLY entry on either list that ANOTHER DEVICE can trigger: on an operator who does
- * set 'reject', a television whose own enrolment expired while it was switched off comes
- * back as a new device, finds the household's other sets holding every slot, and — under
- * the old classification — destroyed its account keys over somebody else's phone.
+ * passes it, so the limit evicts the least recently used device instead of refusing the new
+ * one. And it is the ONLY entry on either list that ANOTHER DEVICE can trigger: on an
+ * operator who does set 'reject', a television that lost its slot — evicted while it was
+ * switched off, or revoked — comes back as a new device, finds the household's other sets
+ * holding every slot, and, under the old classification, destroyed its account keys over
+ * somebody else's phone. (It used to reach that state a third way, by its enrolment simply
+ * expiring after 30 days. That no longer happens: enrolments are durable, so a set that is
+ * merely switched off for a season keeps its slot and never sees this code at all.)
  *
  * KEEPING IT COSTS A RETRY EVERY BOOT, which is why it could not land on its own: a
  * kept-and-refused sign-in is retried, and until the restore door's budget was denominated
  * in panel logins rather than seconds, that retry loop was how a television locked itself
  * out. See client/src/screens/SplashScreen.tsx.
+ *
+ * NOT HERE, AND THE EASIEST CALL ON THE LIST: 'busy'. The panel settles the account record
+ * with a compare-and-swap so a concurrent admin change cannot be lost, and answers 'busy'
+ * when it loses that race more times than its bound allows. It is a moment passing, not a
+ * fact about anything — the credentials were already verified before the panel got there —
+ * and the next attempt normally wins. Keep, and let the bounded retry do its work.
  *
  * tools/signin-vault-test.mjs reads the responder's literals OUT OF panel/src/rpc.js and
  * fails if a code appears there that this list has never classified.

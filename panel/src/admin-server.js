@@ -74,8 +74,16 @@
 //   POST   /api/publishers/:name/status      {status:'active'|'revoked'}
 //   POST   /api/publishers/:name/scopes      {scopes:['east-*',…]} (streamId globs)
 //   GET    /api/sources                      remote channel sources (S27) + owned-channel counts
-//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,enabled?,intervalMs?,format?,groups?,
-//                                             titleInclude?,titleExclude?,autoSubcategory?,allowCleartext?,epg?,epgUrl?}
+//   POST   /api/sources                      {name,url,category,prefix?,autoGrant?,ephemeral?,enabled?,intervalMs?,format?,
+//                                             groups?,titleInclude?,titleExclude?,autoSubcategory?,allowCleartext?,epg?,epgUrl?}
+//                                            ephemeral (default FALSE) publishes this source's channels into the
+//                                            events Hyperdrive (meta/eventsKey) instead of the signed catalog:
+//                                            ZERO bee blocks per sync, superseded revisions cleared and reclaimed,
+//                                            entitlement by user.eventSources rather than sealed per-channel grants.
+//                                            It is for EVENT lists — 550 matches replaced every half hour is
+//                                            hundreds of MB/day the append-only bee can never reclaim. ⚠ Turning it
+//                                            ON purges this source's catalog records on the next sync, so a viewer
+//                                            app that does not yet read the drive loses those channels
 //                                            format 'json' (default) | 'm3u'; groups = the m3u group-titles to import
 //                                            (case-insensitive exact match; absent/[] = every entry);
 //                                            titleInclude/titleExclude = m3u name filters — case-insensitive
@@ -104,9 +112,11 @@
 //                                            (validated like the feed url: https, or http on loopback for testing);
 //                                            '' clears it. Both are m3u-only and REFUSED on a json source
 //   PATCH  /api/sources/:name                edit any field (incl. exclude:[{id,title}] — deselected feed ids)
-//                                            a format, groups, title-filter, autoSubcategory, allowCleartext, epg or
-//                                            epgUrl change resets the ETag, so the next sync re-reads the body and re-maps
+//                                            a format, groups, title-filter, autoSubcategory, allowCleartext, ephemeral,
+//                                            epg or epgUrl change resets the ETag, so the next sync re-reads the body and re-maps
 //   DELETE /api/sources/:name                purges its channels; ?keepChannels=1 detaches them instead
+//                                            (an ephemeral source has no catalog records to detach — its shard is
+//                                            cleared and dropped from the events drive either way)
 //   GET    /api/sources/:name/channels       imported + excluded entries (the channels-dialog data)
 //   GET    /api/categories                   category vocabulary + per-category channel counts
 //   POST   /api/categories                   {slug,label?,order?,hidden?} upsert presentation

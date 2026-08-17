@@ -32,7 +32,7 @@ Every service shares two behaviors:
 | `ARGON2_MEM_KIB` | `65536` | Argon2id memory cost, in KiB (64 MiB). The viewer's device pays this at every typed login, so size it to the weakest client hardware, not the server. Stored per user record — a change applies to new enrollments and password rotations only. |
 | `ARGON2_TIME` | `2` | Argon2id time cost, in iterations. |
 | `MAX_DEVICES_DEFAULT` | `2` | Default number of concurrent devices allowed per user. |
-| `SESSION_TTL_DAYS` | `30` | Session and token lifetime, in days. Long by design. |
+| `SESSION_TTL_DAYS` | `30` | Lifetime of the panel-signed session token, in days. Long by design. The device's *enrollment* does not expire with it: the device keeps its slot until an admin revokes it, `logout-all` clears it, or a new device past `MAX_DEVICES_DEFAULT` evicts the **least recently used** one. |
 | `POW_DIFFICULTY` | `16` | Login proof-of-work difficulty, in bits. |
 | `LOCKOUT_THRESHOLD` | `10` | Failed login attempts allowed before lockout. |
 | `LOCKOUT_SECONDS` | `900` | Lockout duration, in seconds. |
@@ -57,6 +57,13 @@ Every service shares two behaviors:
 | `SOURCES_FETCH_TIMEOUT_MS` | `30000` | HTTP timeout for one source pull. |
 | `SOURCES_MAX_BYTES` | `5242880` | Maximum feed size the panel accepts. Enforced while streaming the download. |
 | `SOURCES_MAX_CHANNELS` | `500` | Maximum entries the panel imports from one source. The panel truncates the feed beyond this. |
+| `EVENTS_EPOCH_DAYS` | `7` | How often the ephemeral **events drive** mints a fresh epoch. That drive carries the channels of any source marked `ephemeral`, instead of the signed catalog. Its own index is append-only, so rotation is what bounds it: a new drive is minted, the current index and shards are copied in, and the `meta/eventsKey` pointer is flipped — one appended block per epoch. There is no on/off knob here; the flag lives per source, and a deployment with no ephemeral source never mints a drive at all. |
+| `EVENTS_GRACE_HOURS` | `6` | How long a retired events epoch keeps being served after a rotation, so a viewer that was offline across the pointer flip still finds its lineup. It is purged outright afterwards. Must be under one whole epoch, or the panel refuses to boot. |
+| `LIVENESS_INTERVAL_MINUTES` | `10` | How often the panel probes redirect-channel URLs and flips `isLive`, so a dead provider link dims in the viewer's list instead of spinning. **Set this to `0` to disable the probe entirely** — dead redirect URLs then stay listed as live. Event playlists are the population this exists for: between events they legitimately 404. |
+| `LIVENESS_TIMEOUT_MS` | `8000` | HTTP timeout for one liveness probe. |
+| `LIVENESS_FAILS_TO_FLIP` | `3` | Consecutive failed sweeps before a channel is marked offline (~30 minutes at the default interval). One blip must not dim a channel. |
+| `LIVENESS_SUCCESSES_TO_FLIP` | `1` | Consecutive successful sweeps before a channel comes back. `1` is the default, so a started event undims on the very next sweep. Raise it — to `3`, matching `LIVENESS_FAILS_TO_FLIP` — if a flapping provider is oscillating your lineup, at the cost of roughly 20 more minutes of a live match reading offline. Worth it on a lineup of stable channels; usually not on a sports one. |
+| `LIVENESS_BOOT_DELAY_MS` | `90000` | Delay before the first liveness sweep after the panel boots. |
 | `SWARM_RCVBUF_MB` / `SWARM_SNDBUF_MB` | `2` / `2` | Swarm UDP socket buffers, in MB (`0` uses the OS default). Every client replicates the catalog over this one swarm. **This only takes effect if the host allows it** — the OS clamps it to `net.core.{r,w}mem_max`. The optional `deploy/sysctl/install.sh` script raises that ceiling. See the [KB](kb/network-tuning.md). |
 | `BOOTSTRAP` | *(empty)* | Custom DHT bootstrap nodes. Optional. |
 | `BACKUP_DIR` | `./backups` | Where the dashboard's Backup page looks for [recovery archives](kb/backup-and-rotation.md#four-files-four-jobs). The shipped compose file mounts the host `./backups` here **read-only** and sets this to `/backups` — leave it unset there. The page can only list: a cold backup stops the service, so archives are made on the box with `deploy/backup.sh`. |

@@ -261,15 +261,18 @@ try {
 
   // The operator's device slots being FULL. This one looks like a verdict and is not, and
   // that reading was a real defect: 'device-limit' says nothing about these keys, only that
-  // there is no room right now — and rooms empty. An enrolment expires (sessionTtlMs) or a
-  // viewer signs a device out, and the same stored material works again. A device that
-  // erased on it has thrown away a credential that was about to start working, and gained
-  // the viewer nothing: after a fresh handover they meet the identical limit.
+  // there is no room right now — and rooms empty. A viewer signs a device out, an admin
+  // revokes one, or the operator raises the limit, and the same stored material works
+  // again. A device that erased on it has thrown away a credential that was about to start
+  // working, and gained the viewer nothing: after a fresh handover they meet the identical
+  // limit.
   //
   // It is also the one refusal ANOTHER DEVICE can cause. Note what has to be true for a
-  // television to see it: its own enrolment gone (30 days off, or revoked) AND the
-  // household's other sets holding every slot. Under the old classification the phone that
-  // took the last slot silently destroyed the television's sign-in.
+  // television to see it: its own slot gone (evicted as the least recently used, or
+  // revoked) AND the household's other sets holding every slot. Under the old
+  // classification the phone that took the last slot silently destroyed the television's
+  // sign-in. An enrolment used to lapse on its own after 30 days, which was a third way in
+  // — enrolments are durable now, so simply being switched off for a season is not.
   //
   // Reachable only on an operator who configured devicePolicy 'reject' — nothing this repo
   // ships passes it, and the default 'evict' drops the oldest device instead.

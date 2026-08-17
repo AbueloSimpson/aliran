@@ -161,14 +161,33 @@ export async function revoke (ctx, username, streamId) {
   return userSummary(username, user)
 }
 
+// AN ENROLLMENT NO LONGER EXPIRES, so this can no longer report when a session does.
+// The session's lifetime is inside the panel-signed TOKEN the device holds (see the
+// `session` responder in src/rpc.js), and the panel does not keep a copy — writing one
+// cost a full record rewrite per login. So `expiresAt` is null for every device enrolled
+// by this build and `expired` is false. Both fields are KEPT, not dropped: a record
+// written by an older build still carries a real date, which stays honest to show until
+// that device's next login heals the entry.
+//
+// `lastSeenAt` replaces the "last seen" reading the old expiry doubled as, and it is a
+// better answer than the one it replaces: the expiry only ever said "signed in within
+// the last SESSION_TTL_DAYS", where this is the actual sign-in day. It comes from
+// `seen/<username>`, the small recency map the login responder keeps beside the record.
+// DAY PRECISION — it is midnight UTC of the day the device last signed in, so render a
+// DATE, never a time. Null for a device that has not signed in since this panel started
+// keeping the map (including every device enrolled by an older build).
 export async function listDevices (ctx, username) {
   const user = await requireUser(ctx, username)
   const now = Date.now()
-  return (user.devices || []).map((d) => ({
+  const seenNode = await ctx.db.get('seen/' + username)
+  const seen = seenNode && seenNode.value && typeof seenNode.value === 'object' && !Array.isArray(seenNode.value) ? seenNode.value : {}
+  const devices = Array.isArray(user.devices) ? user.devices : [] // a malformed record must not 500 the dashboard
+  return devices.filter((d) => d && typeof d === 'object').map((d) => ({
     deviceId: d.deviceId,
     label: d.label || '',
     issuedAt: d.issuedAt || null,
-    expiresAt: d.expiresAt || null,
+    lastSeenAt: Number.isSafeInteger(seen[d.deviceId]) ? seen[d.deviceId] * 86400000 : null,
+    expiresAt: d.expiresAt || null, // legacy entries only — null once the entry heals
     expired: !!(d.expiresAt && d.expiresAt <= now)
   }))
 }
@@ -193,9 +212,15 @@ export async function revokeDevice (ctx, username, deviceId) {
 // device enrollment. Session tokens already issued keep validating OFFLINE until
 // they expire (inherent to signed tokens); online checks and future logins fail
 // immediately.
+//
+// `seen/<username>` (the device-recency map the login responder keeps beside the
+// record — see src/rpc.js) goes with it: nothing else would ever collect it, and it
+// names the account's device ids. Deleted AFTER the record, so a login racing the
+// delete finds the account already gone and refuses rather than re-stamping recency.
 export async function deleteUser (ctx, username) {
   await requireUser(ctx, username)
   await ctx.db.del('user/' + username)
+  await ctx.db.del('seen/' + username)
   return { username, deleted: true }
 }
 
@@ -244,6 +269,11 @@ export function userSummary (username, u) {
     grants: Object.keys(u.wrapped || {}),
     manualGrants: Array.isArray(u.manualGrants) ? u.manualGrants : Object.keys(u.wrapped || {}),
     packages: Array.isArray(u.packages) ? u.packages : [],
+    // Ephemeral-source entitlement (S57): the SOURCES whose event shards this viewer may
+    // read. Derived by the package reconcile, never hand-edited, and empty on every
+    // deployment that has no ephemeral source — so this reads [] exactly as it did before
+    // the field existed.
+    eventSources: Array.isArray(u.eventSources) ? u.eventSources : [],
     maxDevices: u.maxDevices,
     devices: (u.devices || []).length,
     tokenVersion: u.tokenVersion || 1

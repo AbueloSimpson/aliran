@@ -1309,13 +1309,25 @@ async function revokeGrant (username, streamId) {
 }
 
 // Devices dialog with per-device revoke ✕ (S16a: cooperative — no tokenVersion bump).
+//
+// An enrollment does NOT expire (see ops.listDevices): the session's lifetime lives in
+// the signed token the device holds, and the panel keeps no copy of it. So this shows
+// when the device enrolled and when it last signed in — an "expires …" line here would
+// be a date the panel cannot know. `lastSeenAt` is DAY-precise, so it renders as a date
+// with no time. A legacy entry that still carries an expiry is labelled as such and
+// disappears at that device's next login.
 async function showDevices (username) {
+  const seenNote = (d) => (d.lastSeenAt
+    ? ` · last seen ${new Date(d.lastSeenAt).toLocaleDateString()}`
+    : ' · not seen since')
+  const expiryNote = (d) => (d.expiresAt
+    ? ` · ${d.expired ? 'legacy session expired' : 'legacy expiry'} ${new Date(d.expiresAt).toLocaleString()}`
+    : '')
   const render = (devices) => (devices.length
     ? devices.map((d) => `<li data-device="${esc(d.deviceId)}">
         <span class="mono">${esc(d.deviceId)}</span> ${esc(d.label)}
         <button class="device-x" title="remove this device enrollment">✕</button><br>
-        <span class="muted">issued ${d.issuedAt ? new Date(d.issuedAt).toLocaleString() : '—'} ·
-        ${d.expired ? 'expired' : 'expires ' + (d.expiresAt ? new Date(d.expiresAt).toLocaleString() : '—')}</span></li>`).join('')
+        <span class="muted">enrolled ${d.issuedAt ? new Date(d.issuedAt).toLocaleDateString() : '—'}${seenNote(d)}${expiryNote(d)}</span></li>`).join('')
     : '<li class="muted">no active devices</li>')
   const wire = () => {
     for (const btn of document.querySelectorAll('#devices-list .device-x')) {

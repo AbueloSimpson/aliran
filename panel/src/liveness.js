@@ -6,11 +6,22 @@
 // interval and flips ONLY the record's isLive field:
 //
 //   - dead needs 3 consecutive failed SWEEPS (~30 min at the default) — one blip
-//     must not dim a channel; alive needs ONE success — a live event channel must
-//     undim on the sweep after its event starts. Event playlists are the primary
-//     population here: between events they legitimately 404, so dimming them while
-//     idle is correct, and the flip-back cadence is why the interval defaults to
-//     10 min rather than something slower.
+//     must not dim a channel; alive needs ONE success by DEFAULT, so a live event
+//     channel undims on the sweep after its event starts. Event playlists are the
+//     primary population here: between events they legitimately 404, so dimming
+//     them while idle is correct, and the flip-back cadence is why the interval
+//     defaults to 10 min rather than something slower.
+//
+//     The asymmetry is deliberate and was re-decided, not inherited. Recovery
+//     hysteresis is available — LIVENESS_SUCCESSES_TO_FLIP raises the run of
+//     consecutive successes an undim needs, and 3 makes the two directions
+//     symmetric — but it is NOT the default, because the flapping it prevents was
+//     only ever worth preventing for what it cost the append-only bee. Ephemeral
+//     sources (S57) remove that cost outright: a drive flip is clearable, so a
+//     channel that oscillates there costs bytes that come back. What raising it
+//     does cost is real and never comes back — 20 extra minutes of a live match
+//     showing offline, on a sports service. Bad trade at the default; a fine one
+//     for an operator whose lineup is stable channels rather than events.
 //   - the probe sends the record's own playback `headers` (Referer/Origin/UA) so a
 //     hotlink-checked provider answers the probe the way it answers a viewer; when
 //     the record names no User-Agent it sends a player-shaped one — never the Node
@@ -28,11 +39,21 @@
 //     heartbeat rebuilds isLive every 5 min and would ping-pong puts against the
 //     prober forever on the append-only bee.
 //
-// Writes follow the house rules: re-read the record immediately before the put,
-// change NOTHING but isLive (`status` is broadcaster/ops vocabulary and stays
-// untouched), put only on an actual flip (bee frugality, S29 — the bee is
-// append-only and every needless put costs a block forever), and record an
-// activity entry per flip (a flip is noteworthy; a quiet sweep is not).
+// EPHEMERAL SOURCES (S57). An ephemeral source's channels are published to the
+// events Hyperdrive and never enter the catalog (panel/src/events.js), so a sweep
+// that only read `catalog/*` would stop seeing exactly the population this module
+// was designed around — an idle event channel would render permanently LIVE, which
+// is the failure this file exists to prevent. So the sweep reads BOTH: catalog
+// redirect records and the drive's published entries, judged identically. The only
+// difference is where the verdict lands — a catalog flip is one bee put, a drive
+// flip is one shard revision (whose superseded bytes are reclaimed), batched so a
+// sweep costs at most one revision per source however many entries moved.
+//
+// Writes follow the house rules on both sides: re-read the record immediately
+// before the put, change NOTHING but isLive (`status` is broadcaster/ops vocabulary
+// and stays untouched), put only on an actual flip (bee frugality, S29 — the bee is
+// append-only and every needless put costs a block forever), and record an activity
+// entry per flip (a flip is noteworthy; a quiet sweep is not).
 
 const CATALOG_GT = 'catalog/'
 const CATALOG_LT = 'catalog0'
@@ -132,9 +153,10 @@ function decide (buf) {
 }
 
 /**
- * The sweeping prober. ctx = { config, db, activity } (the panel's own singletons).
+ * The sweeping prober. ctx = { config, db, activity, events } (the panel's own
+ * singletons; `events` is optional — without it only catalog records are swept).
  * opts override config for tests: { intervalMs, bootDelayMs, timeoutMs, failsToFlip,
- * concurrency, fetchImpl, log }.
+ * successesToFlip, concurrency, fetchImpl, log }.
  */
 export function makeLivenessProber (ctx, opts = {}) {
   const c = (ctx.config && ctx.config.liveness) || {}
@@ -142,12 +164,21 @@ export function makeLivenessProber (ctx, opts = {}) {
   const bootDelayMs = opts.bootDelayMs ?? c.bootDelayMs ?? 90000
   const timeoutMs = opts.timeoutMs ?? c.timeoutMs ?? 8000
   const failsToFlip = opts.failsToFlip ?? c.failsToFlip ?? 3
+  // ⚠ DEFAULT 1 — today's behaviour exactly, and deliberately NOT failsToFlip. Recovery
+  // hysteresis is a real option (see the header) but it is opt-in: defaulting it to 3 would
+  // change what an existing deployment does having opted into nothing, and it would pay 20
+  // extra minutes of a started match reading offline to prevent flapping that no longer
+  // costs unreclaimable bytes.
+  const successesToFlip = opts.successesToFlip ?? c.successesToFlip ?? 1
   const concurrency = opts.concurrency ?? 4
   const fetchImpl = opts.fetchImpl ?? fetch
   const log = opts.log ?? ((...a) => console.log(...a))
 
-  // streamId|url -> consecutive failed sweeps. In-memory on purpose (see header).
+  // streamId -> consecutive failed sweeps, and its mirror for the way back up. Both
+  // in-memory on purpose (see header): the record holds the flag itself, so a panel
+  // restart costs at most one extra window in either direction.
   const fails = new Map()
+  const ups = new Map()
   let closed = false
   let running = false
 
@@ -171,7 +202,18 @@ export function makeLivenessProber (ctx, opts = {}) {
         // it on an append-only bee forever. The heartbeat owns isLive there; the
         // clash record itself is the admin's to resolve (rpc.js's own note).
         if (value.feedKey) continue
-        targets.push({ id: key.slice(CATALOG_GT.length), url: value.url, headers: value.headers || null, wasLive: value.isLive !== false })
+        targets.push({ id: key.slice(CATALOG_GT.length), url: value.url, headers: value.headers || null, wasLive: value.isLive !== false, drive: false })
+      }
+      // …and the drive-sourced half (S57). Same predicate, same judgement — an ephemeral
+      // entry is a redirect record that happens to live somewhere the bee cannot grow from.
+      // An id the CATALOG already holds is skipped: applyEphemeral refuses to publish one,
+      // but a sweep must not depend on that having gone first.
+      if (ctx.events && ctx.events.enabled) {
+        const seen = new Set(targets.map((t) => t.id))
+        for (const [id, e] of ctx.events.snapshot()) {
+          if (!e || !e.redirect || !e.url || e.type === 'vod' || e.feedKey || seen.has(id)) continue
+          targets.push({ id, url: e.url, headers: e.headers || null, wasLive: e.isLive !== false, drive: true })
+        }
       }
       if (targets.length === 0) return { probed: 0 }
 
@@ -212,6 +254,11 @@ export function makeLivenessProber (ctx, opts = {}) {
       // alive clears the counter on its first sweep anyway (first success wins).
       const seen = new Set()
       let up = 0; let down = 0; let failing = 0
+      // Drive-sourced flips are BATCHED: every one of them rewrites the same per-source
+      // shard, so applying them one at a time would mint a revision per channel and
+      // supersede it immediately. One apply at the end costs one revision per source that
+      // actually moved, whatever the number of entries.
+      const driveVerdicts = new Map()
       for (let i = 0; i < targets.length; i++) {
         const t = targets[i]
         const r = results[i]
@@ -219,18 +266,36 @@ export function makeLivenessProber (ctx, opts = {}) {
         seen.add(t.id)
         if (r.alive) {
           fails.delete(t.id)
-          if (!t.wasLive && await flip(t.id, true, t.url)) { up++; log(`[liveness] "${t.id}" is answering again — back in the lineup`) }
+          if (t.wasLive) { ups.delete(t.id); continue } // already in the lineup — nothing to count
+          const n = (ups.get(t.id) || 0) + 1
+          ups.set(t.id, n)
+          if (n < successesToFlip) continue
+          if (t.drive) { driveVerdicts.set(t.id, { isLive: true, probedUrl: t.url }); continue }
+          if (await flip(t.id, true, t.url)) { up++; log(`[liveness] "${t.id}" answered ${n} sweeps running — back in the lineup`) }
         } else {
+          ups.delete(t.id)
           const n = (fails.get(t.id) || 0) + 1
           fails.set(t.id, n)
           if (n >= failsToFlip) failing++
-          if (n >= failsToFlip && t.wasLive && await flip(t.id, false, t.url)) {
+          if (n < failsToFlip || !t.wasLive) continue
+          if (t.drive) { driveVerdicts.set(t.id, { isLive: false, probedUrl: t.url }); continue }
+          if (await flip(t.id, false, t.url)) {
             down++; log(`[liveness] "${t.id}" dead ${n} sweeps (${r.reason}) — marked offline`)
           }
         }
       }
+      if (driveVerdicts.size && ctx.events) {
+        const applied = await ctx.events.applyLiveness(driveVerdicts)
+        for (const id of applied.ids) {
+          const live = driveVerdicts.get(id).isLive
+          if (live) up++; else down++
+          log(`[liveness] "${id}" (events drive) ${live ? 'is answering again — back in the lineup' : 'marked offline'}`)
+          if (ctx.activity) ctx.activity.record('liveness', { streamId: id, isLive: live })
+        }
+      }
       // Counters for vanished channels go with them.
       for (const key of fails.keys()) if (!seen.has(key)) fails.delete(key)
+      for (const key of ups.keys()) if (!seen.has(key)) ups.delete(key)
 
       if (up || down) log(`[liveness] probed ${probed} redirect url(s): ${down} newly offline, ${up} recovered`)
       return { probed, up, down, failing }

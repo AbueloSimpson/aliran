@@ -368,6 +368,11 @@ async function main () {
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
       allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // let this source import http:// stream urls
+      // --ephemeral publishes this source's channels to the events DRIVE instead of the
+      // signed catalog: zero bee blocks per sync, and a viewer app that does not yet read
+      // the drive stops seeing them. Off unless asked for, and it is not reversible for
+      // those viewers until they update.
+      ephemeral: opts.ephemeral != null ? opts.ephemeral : undefined,
       enabled: opts.disabled === true ? false : undefined
     })
     console.log(`Added ${s.format} source "${name}" → category "${s.category}" (prefix "${s.prefix}", every ${Math.round(s.intervalMs / 3600000 * 10) / 10}h, autoGrant ${s.autoGrant}` +
@@ -404,6 +409,8 @@ async function main () {
       intervalMs: opts['interval-hours'] != null ? Math.round(parseFloat(opts['interval-hours']) * 3600000) : undefined,
       autoGrant: opts['auto-grant'] != null ? opts['auto-grant'] : undefined,
       allowCleartext: opts['allow-cleartext'] != null ? opts['allow-cleartext'] : undefined, // flip the http:// exemption for this source
+      ephemeral: opts.ephemeral != null ? opts.ephemeral : undefined, // publish to the events drive instead of the signed catalog
+
       epg: opts.epg != null ? opts.epg : undefined, // take the entries' tvg-id as the guide id (m3u)
       autoSubcategory: opts['auto-subcategory'] != null ? opts['auto-subcategory'] : undefined, // derive the rail from each entry's leading [TAG] (m3u)
       // --epg-url "" clears it, and the channels then carry no guide address at all (there
@@ -524,9 +531,15 @@ async function main () {
     return
   }
 
-  const { store, db, assets } = await openStore(config.dataDir, keys)
-  const ctx = { config, keys, db, assets, dataDir: config.dataDir }
-  const done = async () => { await store.close() }
+  // `events` rides the ctx so a CLI sync-source of an EPHEMERAL source publishes to the
+  // same drive the panel serves (sources.js refuses one without it rather than silently
+  // writing the lineup into the bee after all).
+  const { store, db, assets, events } = await openStore(config.dataDir, keys, {
+    eventsEpochDays: config.events.epochDays,
+    eventsGraceHours: config.events.graceHours
+  })
+  const ctx = { config, keys, db, assets, events, dataDir: config.dataDir }
+  const done = async () => { await events.close(); await store.close() }
 
   switch (cmd) {
     case 'create-user': {
@@ -573,7 +586,13 @@ async function main () {
     case 'list-devices': {
       const username = pos[0]; if (!username) return usage(await done())
       for (const d of await ops.listDevices(ctx, username)) {
-        console.log(d.deviceId, '->', JSON.stringify({ label: d.label, issuedAt: d.issuedAt, expiresAt: d.expiresAt, expired: d.expired }))
+        // Enrollment does not expire (ops.listDevices says why), so there is nothing
+        // honest to print for expiry — only a legacy entry still carries a date, and
+        // that one is reported until its device's next login heals it. `lastSeen` is a
+        // DAY, so it prints as a date: the panel records recency at day granularity.
+        const legacy = d.expiresAt ? { legacyExpiresAt: d.expiresAt, expired: d.expired } : {}
+        const lastSeen = d.lastSeenAt ? new Date(d.lastSeenAt).toISOString().slice(0, 10) : null
+        console.log(d.deviceId, '->', JSON.stringify({ label: d.label, enrolledAt: d.issuedAt, lastSeen, ...legacy }))
       }
       break
     }
@@ -890,7 +909,8 @@ function usage () {
   add-source <name> <url> --category <label> [--format json|m3u] [--groups "Live Events,PPV"]
                           [--title-include "[MLB],[NFL]"] [--title-exclude "(WEBCAST),(STRMXHD)"]
                           [--auto-subcategory] [--epg] [--epg-url https://…/guide.json]
-                          [--prefix p.] [--interval-hours N] [--auto-grant false] [--allow-cleartext] [--disabled]
+                          [--prefix p.] [--interval-hours N] [--auto-grant false] [--allow-cleartext]
+                          [--ephemeral] [--disabled]
                                         Register a remote channel feed as a category. --format m3u reads an M3U
                                         playlist: ids come from the channel names, #EXTVLCOPT lines import as
                                         playback headers, and --groups picks the group-titles to take (blank = all).
@@ -931,8 +951,19 @@ function usage () {
                                         id that it finds on more than one channel of this source, or on a channel
                                         of a different source, and counts it in the sync report. Use --epg for a
                                         list of TV channels, not for events.
+                                        --ephemeral is for an EVENT list, and it changes where the channels are
+                                        kept. Normally every channel is written into the panel's own record book,
+                                        which only ever grows: a list of 550 matches that changes every half hour
+                                        writes hundreds of megabytes a day that nothing can ever clean up. With
+                                        --ephemeral the channels go into a separate file store instead, where an
+                                        old version really is deleted and its space comes back. Nothing is
+                                        written to the record book at all.
+                                        Off by default, and turn it on ONLY once your apps are updated: an older
+                                        app does not know about the separate store, so those channels vanish from
+                                        its list on the first sync after you turn it on.
   list-sources                          List channel sources + last sync state
   set-source <name> [--url --format --category --prefix --interval-hours --auto-grant --allow-cleartext true|false
+                     --ephemeral true|false
                      --enabled true|false --exclude "feedId1,feedId2" --groups "Live Events"
                      --title-include "[MLB]" --title-exclude "(WEBCAST)"
                      --epg true|false --epg-url https://…/guide.json]
@@ -941,6 +972,9 @@ function usage () {
                                         (--title-include/--title-exclude filter an m3u by entry name, upper and
                                          lower case ignored; exclude wins; "" takes every name again)
                                         (--allow-cleartext true lets this source import http:// stream urls; source-scoped)
+                                        (--ephemeral true keeps this source's channels in the separate event store
+                                         instead of the panel's record book — see add-source. Turning it on removes
+                                         them from the record book on the next sync, so older apps lose them)
                                         (--epg true keeps the guide id (tvg-id) of each m3u entry on its channel, for
                                          your EPG service to match; the guide address in the playlist is reported, not
                                          stored. --epg-url is the app-format guide address, "" for none, and --epg

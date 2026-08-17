@@ -103,7 +103,7 @@ user already had is revoked by the upgrade.
 
 ```bash
 admin-cli set-max-devices alice 2     # concurrent device limit
-admin-cli list-devices alice          # enrolled devices (id, label, issued/expiry)
+admin-cli list-devices alice          # enrolled devices (id, label, enrolled, last seen)
 admin-cli logout-device alice <deviceId>   # drop ONE enrollment (see below)
 admin-cli logout-all alice            # bump tokenVersion -> forces re-login everywhere
 ```
@@ -112,6 +112,16 @@ The panel enforces device limits at login, by serializing the count check and
 the add together. If you log a device out, a copy of that device with a still
 valid cached session keeps working until its next contact with the panel, or
 until the session expires — whichever comes first.
+
+An enrollment does **not** expire on its own. It holds its slot until you revoke
+it, until `logout-all` (or a password change, or disabling the account) clears
+every device, or until a new device arrives at the limit — in which case the
+**least recently used** device is the one that loses its slot. `list-devices`
+reports `lastSeen` as a date, because the panel records it to the day; a device
+that has not signed in since you upgraded reports `null` until it does.
+
+Lowering the limit does not sign anyone out immediately: the surplus is trimmed,
+least recently used first, at the next sign-in on that account.
 
 !!! warning "Per-device logout is session hygiene, not content protection"
     Logging out one device removes its enrollment **without** bumping

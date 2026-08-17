@@ -113,6 +113,25 @@ jobs:
       # bounded. Loopback SecretStream pair, no DHT — deterministic.
       - name: Login RPC hardening (test:rpc-hardening)
         run: npm run test:rpc-hardening
+      # Zero-write login: the panel bee is append-only and never compacted, so a record
+      # rewritten on every sign-in costs its full size FOREVER (510 KB per login on the
+      # production deployment). 100 sequential logins on an enrolled device must move
+      # neither core.length NOR core.byteLength — both, because a block count would pass
+      # while the blocks grew. Fifteen lanes, and most of them guard defects this change
+      # could reintroduce rather than the saving itself: eviction must follow LAST USE and
+      # not enrolment order (ordering by issuedAt signs out the household's daily driver),
+      # a lowered maxDevices must converge instead of leaving the surplus live for ever,
+      # and four write races must hold — an admin revoke landing between a login's read
+      # and its write, a sibling's recency stamp surviving another device's prune, the
+      # undo of a resurrected record not eating an account the operator re-created inside
+      # the same window, and a retried decision re-reading recency rather than reusing a
+      # map it already knows is stale. Each of those four is driven deterministically by
+      # parking the responder mid-write. Plus durable enrolment, legacy-record migration,
+      # malformed records failing closed instead of killing the panel, revocation through
+      # an unmodified core/session.js, and every failure branch. Loopback SecretStream
+      # pairs over a real panel store, no DHT — deterministic.
+      - name: Zero-write login (test:session-zero-write)
+        run: npm run test:session-zero-write
       - name: Client store corruption recovery (test:corrupt)
         run: npm run test:corrupt
       - name: ffmpeg argument builders (test:args)
@@ -180,6 +199,20 @@ jobs:
       # coexistence. In-process panel + loopback feed server — no DHT.
       - name: Channel packages (test:packages)
         run: npm run test:packages
+      # Ephemeral event channels (S57): the claim is that an `ephemeral` source's sync
+      # appends ZERO blocks AND ZERO bytes to the signed bee — asserted on both, since a
+      # block count alone would hold while bytes grew. Also pins the things that are cheap
+      # to break and invisible when broken: the default-off promise (no pointer, no drive,
+      # no core until a source asks), the byte-compare that makes a quiet cycle free, the
+      # clear()-then-del() that actually returns the bytes, the epoch purge QUEUE (a
+      # retired epoch may never be dropped while its drive is on disk), the fail-closed
+      # boot when events-epoch.json goes missing under an advertised meta/eventsKey — the
+      # one path that would re-mint the SAME public key over an empty history — and that
+      # `eventSources` is derived from the registry, so a feed that empties overnight
+      # cannot rewrite every user record. LOCAL DHT testnet + loopback feed server, no
+      # ffmpeg — deterministic.
+      - name: Ephemeral event channels (test:events)
+        run: npm run test:events
       # Live entitlement (S57): a viewer with the app OPEN follows their own panel-signed
       # `user/<name>` record without re-logging in — a channel cataloged AND granted
       # mid-session becomes playable (url + headers verbatim), and a revoked redirect

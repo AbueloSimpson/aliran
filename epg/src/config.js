@@ -41,6 +41,14 @@ export const config = {
   // that do not fit env vars. See providers.example.json.
   providersFile: process.env.PROVIDERS_FILE || './providers.json',
   refreshHours: int(process.env.REFRESH_HOURS, 6), // default cadence; per-provider override
+  // Ephemeral event channels (panel/src/events.js) are NOT in the panel catalog, so the
+  // epgId -> streamId mapping cannot find them by reading catalog/* alone. This is how
+  // often the events drive's index is re-read to pick up the ones that are. Deliberately
+  // POLLED and not watched: a second bee.watch(range) is a second watcher to go deaf at a
+  // panel fork (docs/kb/panel-bee-compaction.md), and the index is one small file. Set 0
+  // to switch the whole events mapping off; a panel with no ephemeral source advertises no
+  // meta/eventsKey and this costs one bee read per interval either way.
+  eventsRefreshMinutes: int(process.env.EVENTS_REFRESH_MINUTES, 10),
   swarmMaxPeers: int(process.env.SWARM_MAX_PEERS, 256),
   swarmRcvBuf: mib(process.env.SWARM_RCVBUF_MB, 4),
   swarmSndBuf: mib(process.env.SWARM_SNDBUF_MB, 4),
@@ -80,6 +88,7 @@ if (Number.isInteger(config.epochDays) && Number.isInteger(config.graceHours) &&
 }
 chkInt('GUIDE_DAYS', config.guideDays, 1, 30)
 chkInt('REFRESH_HOURS', config.refreshHours, 1)
+chkInt('EVENTS_REFRESH_MINUTES', config.eventsRefreshMinutes, 0)
 chkInt('SWARM_MAX_PEERS', config.swarmMaxPeers, 1)
 chkInt('STATUS_PORT', config.status.port, 0, 65535)
 for (const e of config.bootstrap) {

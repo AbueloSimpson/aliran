@@ -622,9 +622,20 @@ function passwordDialog (r) {
   }, { okLabel: t('common.change') })
 }
 // Devices are SELF-ENROLLED: the viewer app registers itself at sign-in (id +
-// label), the panel stamps the dates and enforces the slot cap there. So this
-// dialog reads as slots + sign-in freshness, and is honest about what Revoke
+// label), the panel stamps the enrollment date and enforces the slot cap there.
+// So this dialog reads as slots + enrollment, and is honest about what Revoke
 // does (cooperative: frees the slot; the app drops to login on its next check).
+//
+// An enrollment does NOT expire. The session's lifetime is inside the signed token
+// the device holds and the panel keeps no copy, so `expiresAt` comes back null for
+// every device enrolled by a current panel. What the row shows instead is when the
+// device enrolled and when it last signed in (`lastSeenAt`, DAY-precise — render a
+// date, never a time). Only a record written by an older panel still carries an
+// expiry, and that one goes away at the device's next sign-in.
+//
+// The status dot is deliberately neutral until there IS a sign-in to report: every
+// listed device holds a live slot, so a green dot on all of them would carry no
+// information. Green now means "this device has actually signed in".
 async function devicesDialog (r) {
   const list = await api('GET', `/accounts/${encodeURIComponent(r.account)}/devices`)
   const active = () => list.filter((d) => !d.revoked && !d.expired).length
@@ -635,14 +646,18 @@ async function devicesDialog (r) {
     rows.push(el('p', { className: 'muted', textContent: t('accounts.devices.none') }))
   } else {
     for (const d of list) {
-      const sub = t(d.expired ? 'accounts.devices.subExpired' : 'accounts.devices.subLive', {
+      const key = d.expiresAt
+        ? (d.expired ? 'accounts.devices.subExpired' : 'accounts.devices.subLive')
+        : (d.lastSeenAt ? 'accounts.devices.subSeen' : 'accounts.devices.subEnrolled')
+      const sub = t(key, {
         enrolled: fmtDate(d.issuedAt),
+        lastSeen: fmtDate(d.lastSeenAt),
         expires: fmtDate(d.expiresAt)
       })
       const row = el('div', { className: 'dlg-list-row' }, [
         el('div', { className: 'meta' }, [
           el('div', { className: 'dev-top' }, [
-            statusEl(d.expired ? '' : 'ok', d.label || t('accounts.devices.unnamed')),
+            statusEl(!d.expired && d.lastSeenAt ? 'ok' : '', d.label || t('accounts.devices.unnamed')),
             el('span', { className: 'mono muted dev-id', textContent: d.deviceId.slice(0, 12) + (d.deviceId.length > 12 ? '…' : ''), title: d.deviceId })
           ]),
           el('div', { className: 'muted dev-sub', textContent: sub })

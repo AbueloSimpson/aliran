@@ -56,6 +56,15 @@ grace time (default: 48 hours), then deleted.
 
 ## How channels are matched
 
+The service reads the panel catalog **and the panel's events drive**.
+A source marked `ephemeral` keeps its channels out of the catalog
+entirely (see [content management](content-management.md)), so the
+service reads that drive as well and matches the same `epgId` field on
+the entries it publishes. A catalog record wins if both carry the same
+id. The drive index is re-read every `EVENTS_REFRESH_MINUTES` (default
+10); set it to `0` to switch that pass off. A panel with no ephemeral
+source publishes no drive, and the pass costs one small read.
+
 The service reads the panel catalog. A catalog record's `epgId` field
 names that channel's id in the provider feed. Set `epgId` on a stream in
 the panel to attach a guide to it. Provider channels with no match are

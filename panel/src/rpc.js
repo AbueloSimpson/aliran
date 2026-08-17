@@ -14,6 +14,12 @@ const json = (o) => b4a.from(JSON.stringify(o))
 // legitimate report (300 chars of text + 50 capped events).
 const MAX_REPORT_BYTES = 16384
 
+// How many times the `session` responder redoes its device decision when a concurrent
+// writer lands first (see the CAS note in that responder). Same-account contention is
+// bounded by the device limit, so this is generous; different accounts are different
+// bee keys and never contend at all.
+const MAX_SESSION_CAS_RETRIES = 5
+
 // Decode a client-supplied hex field to a Buffer, or return null when it is absent,
 // not a string, or not valid (even-length) hex — optionally pinning the exact decoded
 // byte length. EVERY b4a.from(x, 'hex') on an attacker-controlled RPC field MUST go
@@ -120,6 +126,11 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
 
   // Prove login (Ed25519 signature over sessionChallenge) → device-limit enforcement +
   // a panel-signed session token. Requires `db` + `keys.signing`.
+  //
+  // Issuance is STATELESS for an already-enrolled device: it appends nothing to the bee
+  // (see the two notes at the device block). Revocation is unaffected — sessionLive
+  // still re-derives liveness from the record on every presentation, so an admin
+  // per-device revoke and a tokenVersion bump behave exactly as before.
   rpc.respond('session', async (reqBuf) => {
     if (!db || !keys || !keys.signing) return json({ error: 'sessions unavailable' })
     let req
@@ -141,29 +152,303 @@ export function attachLoginRpc (socket, { keys, oprfKey, difficulty, throttle, d
       if (analytics) analytics.loginFailed()
       return json({ error: 'auth failed' })
     }
-    if (!deviceId) return json({ error: 'missing deviceId' })
+    // Typed, not just truthy. A non-string id would be stored verbatim, never match a
+    // stored (string) id again, and re-enrol on EVERY login — a per-login record rewrite
+    // reintroduced through the back door. Same `hexField` philosophy: fail closed on a
+    // shape a real client never sends. The error string is unchanged, so nothing
+    // client-side sees a difference.
+    if (typeof deviceId !== 'string' || !deviceId) return json({ error: 'missing deviceId' })
 
     const now = Date.now()
-    let devices = (user.devices || []).filter((d) => !d.expiresAt || d.expiresAt > now)
+    // THE SESSION'S LIFETIME LIVES IN THE TOKEN, NOT IN THE RECORD. It is signed into
+    // the payload below, checked offline by the client (sdk/login.js checkSession) and
+    // re-checked here on presentation (the `report` responder). The copy the enrollment
+    // used to carry beside it was pure duplication — and it was the expensive kind,
+    // because advancing it meant rewriting the WHOLE user record on EVERY login of EVERY
+    // device, onto an append-only bee that is never compacted. On the production
+    // deployment one such record is 510 KB: half a megabyte of permanent, unreclaimable
+    // log per sign-in. So devices are enrolled with NO `expiresAt` at all.
     const expiresAt = now + sessionTtlMs
-    const existing = devices.find((d) => d.deviceId === deviceId)
-    if (existing) {
-      existing.expiresAt = expiresAt; existing.tokenVersion = user.tokenVersion
-    } else {
-      if (devices.length >= (user.maxDevices || 2)) {
-        if (devicePolicy === 'reject') { if (analytics) analytics.loginFailed(); return json({ error: 'device-limit', devices: devices.map((d) => ({ deviceId: d.deviceId, label: d.label })) }) }
-        devices.sort((a, b) => (a.issuedAt || 0) - (b.issuedAt || 0))
-        devices.shift() // evict oldest
-      }
-      devices.push({ deviceId, label: deviceLabel || '', issuedAt: now, expiresAt, tokenVersion: user.tokenVersion, status: 'active' })
-    }
-    user.devices = devices
-    await db.put('user/' + username, user)
 
-    const token = signToken(keys.signing.secretKey, { userId: username, deviceId, issuedAt: now, expiresAt, tokenVersion: user.tokenVersion })
+    // …WHICH IS SAFE BECAUSE BOTH READERS ALREADY TREAT A MISSING EXPIRY AS "NOT
+    // EXPIRED": core/session.js sessionLive (`if (d.expiresAt && d.expiresAt <= now)`)
+    // and the prune below. The prune stays for records written by older builds — a
+    // legacy entry that really has lapsed is still dropped, so a record heals on its
+    // next write instead of needing a migration.
+    //
+    // It also fixes a bug rather than only saving bytes: with a stored expiry, a device
+    // offline for longer than SESSION_TTL_DAYS was pruned out by the next login of ANY
+    // device — it silently lost its slot, dropped to a password prompt on its return,
+    // and re-enrolling it evicted a sibling. Enrolment is now durable; only an admin
+    // revoke, a tokenVersion bump, or the device limit ever removes one.
+
+    // RECENCY MOVES TO ITS OWN TINY KEY, because the expiry that just went away was the
+    // record's ONLY recency signal — it was refreshed on every login, which is exactly
+    // what made it expensive. `issuedAt` cannot replace it: it is ENROLMENT time and
+    // nothing has ever refreshed it, so evicting "the oldest issuedAt" throws out the
+    // household's DAILY DRIVER (enrolled longest ago) and keeps the handset that was
+    // abandoned six months back — the very sign-out this change exists to stop.
+    //
+    // `seen/<username>` carries that signal alone: deviceId → day number, a few hundred
+    // bytes, written at most once per user per day per active device. A device signing
+    // in repeatedly within one day still writes NOTHING, and folding it back into
+    // `user/<name>` would restore the 510 KB per-login write this whole change removes.
+    // Day granularity is also the privacy floor — the bee replicates to every viewer, so
+    // this deliberately says less than the per-login millisecond `expiresAt` it replaces.
+    // `seen/` sorts outside every `user/` / `catalog/` / `catmeta/` range scan in the
+    // panel, the repeater, the EPG service and the client (all are prefix-bounded).
+    const today = Math.floor(now / 86400000)
+    const seenKey = 'seen/' + username
+    const readSeen = async () => {
+      const n = await db.get(seenKey)
+      return { node: n, map: n && n.value && typeof n.value === 'object' && !Array.isArray(n.value) ? n.value : {} }
+    }
+    // Re-read on every retry of the loop below (`let`, not `const`): a retry redoes the
+    // eviction decision, and doing that against a recency map from before the write that
+    // forced the retry would order the devices by a stale answer.
+    let seen = await readSeen()
+    // No entry yet = not seen since it enrolled, which IS its enrolment day. Both sides
+    // are day numbers, so the two sources are directly comparable.
+    //
+    // Both inputs are PANEL-stamped — a client cannot inflate its own recency — so the
+    // only way to reach a future-dated day is panel clock skew at enrolment or a
+    // hand-edited record. Such an entry sorts last and is effectively unevictable while
+    // any rival exists; an operator's per-device revoke is the lever if it ever happens.
+    const lastSeenDay = (d) => {
+      const day = seen.map[d.deviceId]
+      if (Number.isSafeInteger(day)) return day
+      return Math.floor((Number.isSafeInteger(d.issuedAt) ? d.issuedAt : 0) / 86400000)
+    }
+    // Least-recently-seen first; enrolment order breaks a tie so the order is total.
+    const staleFirst = (a, b) => lastSeenDay(a) - lastSeenDay(b) || (a.issuedAt || 0) - (b.issuedAt || 0)
+
+    // COMPARE-AND-SWAP, because everything below is a read-modify-write on a record an
+    // admin can be mutating at the same instant. The race is older than this change, but
+    // durable enrolment changed its blast radius: a per-device revoke lost to a
+    // concurrent enrolling login used to lapse itself back out within SESSION_TTL_DAYS,
+    // and would now hold the slot FOREVER with nothing in the dashboard to say the
+    // device came back. hyperbee evaluates `cas` INSIDE its write lock, so "the record
+    // is still the revision I read" is atomic; when it is not, we re-read and redo the
+    // whole decision against the winner's record. This covers any concurrent writer —
+    // ops.js, packages.js, sources.js — not just the admin path.
+    //
+    // Still unguarded, deliberately and unchanged from before: the OPPOSITE direction, a
+    // bulk grant/package reconcile clobbering a device enrolled a millisecond earlier.
+    // That one self-heals — the device re-enrols on its next login.
+    let base = node
+    let attempts = 0
+    let refusal = null // a devicePolicy:'reject' answer, delivered AFTER any repair lands
+    let effectiveTokenVersion = 1
+    let enrolled = []
+    for (;;) {
+      const u = base.value
+      // Re-checked every attempt, not just on the first read: an admin disable landing
+      // between the read and the write must not be overwritten by this login.
+      if (u.status && u.status !== 'active') { if (analytics) analytics.loginFailed(); return json({ error: 'account disabled' }) }
+
+      // A malformed tokenVersion (an object/array in a hand-edited record) would make
+      // the identity compare below a REFERENCE compare that never converges — every
+      // login would rewrite the record for ever. No shipped op can produce one
+      // (createUser writes 1; logout-all / disable / set-password all do (x||1)+1), so
+      // this is a guard, not a migration: normalise to the default sessionLive assumes.
+      const tv = Number.isSafeInteger(u.tokenVersion) ? u.tokenVersion : 1
+      const maxDevices = Number.isSafeInteger(u.maxDevices) && u.maxDevices >= 1 ? u.maxDevices : 2
+
+      // Array.isArray + a per-entry shape filter, not a truthiness check: `devices`
+      // arrives from a JSON record, and `{}` / `"x"` / `[null]` there would make the
+      // touches below throw a TypeError — which safety-catch rethrows into a microtask
+      // and kills the whole panel (see the hexField note at the top of this file). A
+      // malformed list reads as empty and is repaired by the write.
+      const stored = Array.isArray(u.devices) ? u.devices : []
+      const devices = stored.filter((d) =>
+        d && typeof d === 'object' && typeof d.deviceId === 'string' && (!d.expiresAt || d.expiresAt > now))
+      let dirty = devices.length !== stored.length || (u.devices !== undefined && !Array.isArray(u.devices))
+      // The legacy strip covers the WHOLE record, not only the entry signing in. It
+      // rides a write that is already happening, so it costs nothing extra — and
+      // leaving a SIBLING's stale expiry in place would leave the old bug armed for
+      // that device: it would lapse, be pruned by someone else's login, and lose its
+      // slot before it ever logged in to heal itself.
+      for (const d of devices) { if (d.expiresAt !== undefined) { delete d.expiresAt; dirty = true } }
+
+      // Remove `n` entries, least-recently-seen first, never `keep`. Sorts a COPY so the
+      // surviving entries keep their stored order and an unchanged record stays byte-
+      // identical (a reorder alone would cost a block).
+      const dropStale = (n, keep) => {
+        if (n <= 0) return
+        const doomed = new Set(devices.filter((d) => d !== keep).sort(staleFirst).slice(0, n))
+        for (let i = devices.length - 1; i >= 0; i--) if (doomed.has(devices[i])) devices.splice(i, 1)
+      }
+
+      const existing = devices.find((d) => d.deviceId === deviceId)
+
+      // A LOWERED maxDevices USED TO CONVERGE ONLY BECAUSE ENTRIES LAPSED. Nothing drops
+      // a durable enrolment on its own, so 8 devices under a cap of 2 would stay 8 for
+      // ever — every one of them live, a ninth evicting exactly one, and the reseller
+      // dashboard reading "8 of 2 device slot(s) in use" permanently. Trim the surplus
+      // on the next login that writes anyway; one write per account and it converges.
+      if (devices.length > maxDevices) { dropStale(devices.length - maxDevices, existing); dirty = true }
+
+      refusal = null
+      if (existing) {
+        // ZERO-WRITE LOGIN: an already-enrolled device whose entry is already in the
+        // current shape has nothing to update, so no block is appended at all.
+        // `label` is deliberately NOT synced from the request: the pre-change responder
+        // never updated it either, and re-labelling on every login would put the
+        // per-login write straight back for any client that varies its label.
+        // `status` is deliberately NOT healed either — nothing in this repo reads a
+        // device entry's status (not sessionLive, not listDevices), so a heal clause on
+        // it would be a write trigger for a dead field. It is still written on a fresh
+        // enrolment, to keep the record shape docs/reference.md documents.
+        if (existing.tokenVersion !== tv) { existing.tokenVersion = tv; dirty = true }
+      } else if (devices.length >= maxDevices && devicePolicy === 'reject') {
+        // Refused — but the prune/strip/trim above still lands (below), so a 'reject'
+        // deployment migrates off the legacy shape and converges on a lowered cap
+        // exactly like an 'evict' one. Pre-change this path returned before the write
+        // and such a deployment could never heal at all. The reply itself is built at
+        // the bottom of the responder, in the `json({ error: 'device-limit', … })` shape
+        // tools/signin-vault-test.mjs scans for — that guard decides whether a television
+        // ERASES its stored account keys on a code, and a code it cannot see is a code
+        // nobody classified.
+        refusal = devices.map((d) => ({ deviceId: d.deviceId, label: d.label }))
+      } else {
+        if (devices.length >= maxDevices) dropStale(devices.length - maxDevices + 1, null)
+        // A non-string label would be stored verbatim and rendered by three dashboards.
+        devices.push({ deviceId, label: typeof deviceLabel === 'string' ? deviceLabel : '', issuedAt: now, tokenVersion: tv, status: 'active' })
+        dirty = true
+      }
+
+      effectiveTokenVersion = tv
+      enrolled = devices
+      if (!dirty) break
+
+      u.devices = devices
+      let casRan = false
+      let casOk = false
+      await db.put('user/' + username, u, { cas: (prev) => { casRan = true; casOk = prev.seq === base.seq; return casOk } })
+      if (casOk) break
+      if (!casRan) {
+        // hyperbee only consults `cas` when the key ALREADY EXISTS (_put's `c === 0`
+        // branch and TreeNode.insertKey's; the insert path never calls it). So a cas that
+        // never ran means the record was deleted between the read and this write — and
+        // the put just resurrected a deleted account. Undo it and refuse, rather than
+        // handing a token to a user the operator removed.
+        //
+        // The undo is ITSELF compare-and-swapped, because `delete-user alice` followed by
+        // `create-user alice` is a routine repair and the whole sequence can land inside
+        // this window. Deleting THAT record would destroy a live account, its verifier and
+        // every sealed grant — far worse than the resurrection being undone. `del` takes
+        // `cas` on the same key-match gate, so the delete only fires while the record is
+        // still byte-for-byte the one this put created.
+        //
+        // …WHICH LEAVES ONE STATE THIS CANNOT REPAIR, AND IT IS THE REASON FOR THE WARNING
+        // BELOW. If a third writer (a grant or package reconcile holding a pre-delete read)
+        // rewrites the resurrected record inside this same window, the record is no longer
+        // byte-identical to what this put wrote, the cas declines, and the DELETED ACCOUNT
+        // STAYS IN THE BEE — carrying its old verifier, so the old password still opens it.
+        // No session is issued (the reply below refuses, and a well-behaved client erases
+        // its stored keys on it), but the account is back. Nothing else in this responder
+        // would ever say so: there is no activity record on this path and the only other
+        // trace is one analytics counter. So it is logged, loudly, with the fix.
+        //
+        // The two are told apart by `authPub`, which enroll() mints fresh on every
+        // create-user and set-password: a record still carrying THIS one is the dead
+        // account, and any other authPub means the operator's own re-created account is
+        // sitting there and the cas correctly stood down.
+        const mine = JSON.stringify(u)
+        let resurrected = false
+        await db.del('user/' + username, {
+          cas: (prev) => {
+            if (JSON.stringify(prev.value) === mine) return true
+            resurrected = !!prev.value && typeof u.authPub === 'string' && prev.value.authPub === u.authPub
+            return false
+          }
+        })
+        if (resurrected) {
+          console.warn(`[session] RESURRECTED A DELETED ACCOUNT: "${username}" was deleted while it was signing in, this panel re-created the record, ` +
+            'and another write landed on it before the undo could run — so the undo stood down rather than destroy what it found. ' +
+            'The account is back in the database with its OLD password verifier and grants, and no session was issued for it. ' +
+            `Re-run: admin-cli delete-user ${username}`)
+        }
+        if (analytics) analytics.loginFailed()
+        return json({ error: 'unknown user' })
+      }
+      // Someone wrote first. Redo the whole decision against THEIR record, and against a
+      // freshly-read recency map — the eviction order is derived from it. Bounded at
+      // MAX_SESSION_CAS_RETRIES: same-account contention is capped by the device limit
+      // (different accounts are different keys and never contend), so exhausting this
+      // means the panel is thrashing — and a transient refusal beats a lost admin
+      // mutation.
+      //
+      // `busy` is NOT counted as a login failure. The rule this responder follows is that
+      // the counter tracks attempts the panel RESOLVED: an account it turned down (unknown
+      // user, disabled, a signature that did not verify) or a policy that turned one away
+      // (device-limit — not a credential outcome, and counted, deliberately and from
+      // before this change). `busy` resolved nothing at all: the credentials verified,
+      // and the panel simply could not settle its own write. Counting it would make panel
+      // contention read as failed logins in the operator's dashboard. The uncounted
+      // branches above — 'bad request', 'missing deviceId', 'no session challenge' — are
+      // uncounted for the same reason: nothing was decided.
+      // Classified 'keep' by client/backend/signin-vault.mjs: it is transient contention,
+      // never a judgement on a television's stored keys.
+      if (++attempts >= MAX_SESSION_CAS_RETRIES) return json({ error: 'busy' })
+      const fresh = await db.get('user/' + username)
+      if (!fresh) { if (analytics) analytics.loginFailed(); return json({ error: 'unknown user' }) }
+      base = fresh
+      seen = await readSeen()
+    }
+    if (refusal) { if (analytics) analytics.loginFailed(); return json({ error: 'device-limit', devices: refusal }) }
+
+    // Stamp this device's day, and drop entries for devices that are no longer enrolled.
+    //
+    // Compare-and-swapped like the record, and for a reason beyond tidiness: two devices
+    // of one household signing in at the same moment both read this map, and a
+    // last-write-wins put would drop the other's stamp. That is not cosmetic — the lost
+    // stamp is exactly the recency the eviction order above reads, so the next eviction
+    // would judge a device by its enrolment date again. It also costs BLOCKS: the map
+    // stays wrong, so every later login rewrites it. Losing the race just re-reads and
+    // re-merges. A stamp is advisory, so exhausting the retries is NOT worth failing a
+    // login over — the next login writes it.
+    //
+    // Compared field-by-field rather than by JSON, so key ORDER can never make an
+    // unchanged map look changed and cost a block.
+    const enrolledIds = new Set(enrolled.map((d) => d.deviceId))
+    for (let seenTry = 0; seenTry < MAX_SESSION_CAS_RETRIES; seenTry++) {
+      // WHAT IS STILL ENROLLED IS RE-READ, NOT ASSUMED. `enrolled` is the array THIS
+      // responder settled on, read before the stamp write — and a sibling device that
+      // finished its own login in between is enrolled in the RECORD while being absent
+      // from that snapshot. Pruning against the snapshot would delete its fresh stamp,
+      // which is precisely the recency the eviction order reads: the sibling would fall
+      // back to its enrolment day and become the next eviction candidate. Same defect as
+      // the one the CAS below closes, one step narrower. The extra read costs nothing in
+      // the common case because there is normally nothing to prune at all.
+      const doomed = Object.keys(seen.map).filter((id) => !enrolledIds.has(id))
+      let live = enrolledIds
+      if (doomed.length) {
+        const cur = await db.get('user/' + username)
+        const curDevices = cur && cur.value && Array.isArray(cur.value.devices) ? cur.value.devices : []
+        live = new Set(curDevices.map((d) => d && d.deviceId).filter((x) => typeof x === 'string'))
+      }
+      const seenNext = {}
+      for (const [id, day] of Object.entries(seen.map)) if (live.has(id) && Number.isSafeInteger(day)) seenNext[id] = day
+      seenNext[deviceId] = today
+      const wasKeys = Object.keys(seen.map)
+      const nextKeys = Object.keys(seenNext)
+      if (wasKeys.length === nextKeys.length && !nextKeys.some((k) => seen.map[k] !== seenNext[k])) break
+      let casRan = false
+      let casOk = false
+      const wantSeq = seen.node ? seen.node.seq : -1
+      await db.put(seenKey, seenNext, { cas: (prev) => { casRan = true; casOk = prev.seq === wantSeq; return casOk } })
+      if (casOk) break
+      // cas never ran = the key was absent, so this was the insert we intended (or the
+      // account was deleted underneath us, which leaves a stamp `deleteUser` collects).
+      if (!casRan && !seen.node) break
+      seen = await readSeen()
+    }
+
+    const token = signToken(keys.signing.secretKey, { userId: username, deviceId, issuedAt: now, expiresAt, tokenVersion: effectiveTokenVersion })
     if (activity) activity.record('session', { user: username, deviceId })
     if (analytics) analytics.sessionIssued(username) // reduced to counts — see analytics.js
-    return json({ token, expiresAt, tokenVersion: user.tokenVersion })
+    return json({ token, expiresAt, tokenVersion: effectiveTokenVersion })
   })
 
   // Broadcaster registers a stream. Authenticated with a publisher key (Ed25519):
