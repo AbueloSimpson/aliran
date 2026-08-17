@@ -14,12 +14,31 @@ the same IPC protocol, for **any Android app** — **one APK from Android 5.0
 | `EngineNotice` | Brandable "engine can't run here" screen with an optional action button — your fallback seam |
 | `demo/` | Reference host: login → channel list → live playback on 10+; notice + plain-HLS fallback below |
 
+## Testing
+
+The unit tests need nothing but a checkout and a JDK — the recovery ladders, the IPC
+message parser and the container-hint rule are plain Kotlin, deliberately kept out of
+the Android-dependent view so they can be tested this way:
+
+```bash
+cd sdk/android
+./gradlew :aliran-kit:testDebugUnitTest   # ~50 JVM tests: ladders, protocol, source type
+```
+
+CI runs exactly that on every push and pull request (`.github/workflows/ci.yml`, the
+`sdk-android` job), alongside `npm run test:kit-parity` from the repo root — the drift
+guard that pins this module's ladder constants and give-up predicates against the React
+Native player it is ported from.
+
 ## Building
 
-Prerequisites (the engine runtime is vendored from the RN package's checkout):
+Packaging — an AAR, or the demo APK — additionally needs the engine runtime, which is
+vendored from the RN package's checkout. Skip this if you are only running the tests;
+the build fails with a list of what is missing if you are not.
 
 ```bash
 cd ../../client && npm install        # places react-native-bare-kit + prebuilds
+npm run bundle-backend                # the Bare engine bundle the worklet boots from
 # addons: any client Android build populates them, or:
 #   cd node_modules/react-native-bare-kit/android && node link.mjs
 ```
@@ -28,7 +47,7 @@ Then:
 
 ```bash
 cd sdk/android
-./gradlew :aliran-kit:testDebugUnitTest   # JVM protocol tests
+./gradlew :aliran-kit:assembleDebug       # the AAR
 ./gradlew :demo:assembleDebug             # the demo APK (minSdk 21)
 ```
 

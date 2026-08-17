@@ -1,9 +1,11 @@
-# Test suites on every push to main and every PR. Two lanes:
-#   core    — fast + deterministic (loopback/local-testnet only, never the public
-#             DHT; ffmpeg installed for test:vod). REQUIRED: keep it green.
-#   e2e-dht — end-to-end suites over the real Hyperswarm DHT (+ ffmpeg for the media
-#             ones). The public DHT can be flaky from hosted runners, so this job is
-#             continue-on-error: it reports signal but can never block a merge.
+# Test suites on every push to main and every PR. Three lanes:
+#   core        — fast + deterministic (loopback/local-testnet only, never the public
+#                 DHT; ffmpeg installed for test:vod). REQUIRED: keep it green.
+#   sdk-android — the Kotlin binding's own JVM unit tests (gradle, no emulator).
+#                 REQUIRED, and deterministic for the same reason core is.
+#   e2e-dht     — end-to-end suites over the real Hyperswarm DHT (+ ffmpeg for the media
+#                 ones). The public DHT can be flaky from hosted runners, so this job is
+#                 continue-on-error: it reports signal but can never block a merge.
 name: ci
 
 on:
@@ -345,6 +347,18 @@ jobs:
       # injection path that puts a provider identity on the wire, so it must not drift.
       - name: Desktop redirect headers (test:desktop-redirect-headers)
         run: npm run test:desktop-redirect-headers
+      # aliran-kit <-> React Native player parity: the drift guard for a deliberate PORT.
+      # sdk/android/aliran-kit re-implements sdk/react-native/src/AliranVideo.tsx's
+      # recovery behaviour in Kotlin, and each side's own suite is perfectly happy with a
+      # ladder that no longer matches the other platform — the parity was verified once,
+      # by a human reading two files. This lane pins what must not diverge: the six
+      # ladder constants, the schedules they derive, the give-up predicates (including
+      # which HTTP refusals shorten the ladder), the reconnect rung, the offline
+      # watchdog's two arms and the container-extension rule. Reads source, runs
+      # nothing — no JVM, no Android, no bundler — so it belongs beside the desktop twin
+      # lanes above rather than in the gradle job below.
+      - name: aliran-kit / React Native player parity (test:kit-parity)
+        run: npm run test:kit-parity
       # Viewer translation catalogs (S56a): key/placeholder/plural parity across the
       # 14 locales, the report-copy pins against the never-touch label table, and a
       # scan proving no t()/tn() call site names a key that does not exist. Reads
@@ -359,6 +373,79 @@ jobs:
       # DHT at all, so it is fully deterministic — belongs in the required lane.
       - name: Reseller panel end-to-end (test:reseller)
         run: npm run test:reseller
+
+  sdk-android:
+    name: aliran-kit Kotlin SDK (required)
+    runs-on: ubuntu-latest
+    # 30 = the one step timeout below (20) plus headroom for checkout, the JDK setup, the
+    # Gradle distribution download and the SDK platform install. Keep it above that sum,
+    # or a slow early step silently cancels the later ones — the same rule the core and
+    # e2e-dht jobs state. This is a CEILING on a hung job, not a target: a warm cache
+    # finishes the whole lane in about two minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # aliran-kit pins jvmToolchain(17); AGP 8.12 wants 17 too.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # The wrapper's own Gradle 9.0 distribution plus the AGP / Kotlin / media3
+      # artifacts. Keyed on the build scripts and the wrapper properties (the only
+      # things in this repo that change what gets downloaded); the restore-key keeps a
+      # warm cache across every unrelated edit.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('sdk/android/**/*.gradle.kts', 'sdk/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      # compileSdk 36. Runner images carry a rolling set of platforms, so ask for it
+      # rather than assume it — a no-op when it is already installed. Non-fatal on
+      # purpose: if the images ever move the cmdline-tools path, AGP downloads the
+      # platform itself, and the gradle step below is the real assertion either way.
+      - name: Ensure the compileSdk platform is present (android-36)
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platforms;android-36" \
+            || echo "sdkmanager unavailable here — leaving the platform to AGP's own SDK download"
+      # The Kotlin binding third-party hosts embed (sdk/android/aliran-kit): the bounded
+      # error + stall ladders, the offline watchdog, the IPC message parser, the
+      # line accumulator and the container-hint rule — ~50 JVM tests, no emulator and no
+      # instrumentation. The view itself is not JVM-testable by design, which is exactly
+      # why the ladders live in their own plain-Kotlin RecoveryLadders.kt.
+      #
+      # ⚠ WHAT THIS DELIBERATELY DOES NOT DO: install the phone app. The module's engine
+      # runtime is vendored out of client/node_modules/react-native-bare-kit and the Bare
+      # bundle out of client/backend — a gigabyte of React Native toolchain, none of which
+      # any of these tests touch. Reaching it used to be mandatory, because the engine
+      # checks sat on `preBuild`; they now sit on the packaging tasks instead (see
+      # aliran-kit/build.gradle.kts), and BareEngineHost compiles against
+      # src/enginestub/java when the real jar is absent. So this job builds from a plain
+      # checkout, and the trade that buys — CI never compiling against the REAL BareKit
+      # API — is written out in full in src/enginestub/java/to/holepunch/bare/kit/IPC.java.
+      #
+      # testDebugUnitTest, not `test`: the release variant would run the same 50 tests a
+      # second time against the same plain-Kotlin sources.
+      - name: aliran-kit unit tests (gradle testDebugUnitTest)
+        timeout-minutes: 20
+        working-directory: sdk/android
+        # --no-daemon so the JVM exits before actions/cache reads ~/.gradle back out.
+        run: ./gradlew --no-daemon --console=plain :aliran-kit:testDebugUnitTest
+      # The JUnit XML is the only place a single failing lane is named; a red job
+      # otherwise reports "there were failing tests" and nothing else. Tolerant of there
+      # being no results at all — a failure BEFORE the tests ran (a compile error, a
+      # missing SDK platform) already said what it was, and this step must not bury it
+      # under a second red X of its own.
+      - name: Failing test detail
+        if: ${{ failure() }}
+        run: |
+          results=sdk/android/aliran-kit/build/test-results/testDebugUnitTest
+          if [ -d "$results" ]; then
+            for f in "$results"/*.xml; do [ -e "$f" ] && { echo "=== $f"; cat "$f"; }; done
+          else
+            echo "no test results — the job failed before the tests ran"
+          fi
 
   docker-build:
     name: docker images build (best effort, non-blocking)

@@ -24,19 +24,27 @@ panel).
 ## 0. Get the library building
 
 `aliran-kit` is consumed from the repo for now — there is no Maven
-artifact yet. One-time prerequisites: the engine runtime is vendored from
-the React Native package's checkout:
+artifact yet. A clone and a JDK 17 are enough to run its unit tests:
 
 ```bash
 git clone https://github.com/AbueloSimpson/aliran && cd aliran
-cd client && npm install && cd ..
+cd sdk/android
+./gradlew :aliran-kit:testDebugUnitTest   # ~50 JVM tests: recovery ladders, IPC protocol
+```
+
+Building an APK needs one thing more. The P2P engine runtime is vendored
+from the React Native package's checkout, so fetch it once:
+
+```bash
+cd client && npm install && npm run bundle-backend && cd ..
 # the per-ABI addon set (populated by any client Android build, or directly):
 cd client/node_modules/react-native-bare-kit/android && node link.mjs && cd ../../../..
 
 cd sdk/android
-./gradlew :aliran-kit:testDebugUnitTest   # sanity: JVM protocol tests
 ./gradlew :demo:assembleDebug             # the runnable reference APK
 ```
+
+If you skip a step there, the build stops and names what is missing.
 
 To use it from your own project, include the module — `includeBuild`/
 `include` from your settings.gradle, or copy `aliran-kit/` into your
